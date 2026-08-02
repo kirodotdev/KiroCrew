@@ -2548,7 +2548,9 @@
       "reasoning_effort": "Effort de raisonnement",
       "smarter": "Plus intelligent",
       "use_configured_default": "Utiliser la valeur par défaut configurée",
-      "use_model_default": "Utiliser la valeur par défaut du modèle"
+      "use_model_default": "Utiliser la valeur par défaut du modèle",
+      "default_with_level": "Par défaut · {{level}}",
+      "effort_help": "L’effort de raisonnement définit la durée de réflexion du modèle avant de répondre. Plus il est élevé, plus le modèle prend le temps de résoudre les problèmes difficiles (réponses plus lentes mais meilleures) ; plus il est faible, plus la réponse est rapide. Désactiver le remplacement par session revient à la valeur par défaut définie dans Paramètres → Chat, ou au choix du modèle lui-même si aucune valeur par défaut n’est définie (Fable/Opus/Sonnet uniquement)."
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Ajoutez un registre d'organisation pour découvrir les applications propres à votre équipe",
@@ -4305,7 +4307,22 @@
       "more_pull_request_in_this_session_other": "{{count}} pull requests supplémentaires dans cette session",
       "more_pull_request_or_issue_in_this_session_many": "{{count}} pull requests ou issues supplémentaires dans cette session",
       "more_pull_request_or_issue_in_this_session_one": "{{count}} pull request ou issue supplémentaire dans cette session",
-      "more_pull_request_or_issue_in_this_session_other": "{{count}} pull requests ou issues supplémentaires dans cette session"
+      "more_pull_request_or_issue_in_this_session_other": "{{count}} pull requests ou issues supplémentaires dans cette session",
+      "filter_unread": "Non lues",
+      "filter_unread_description": "Afficher uniquement les sessions avec des messages non lus",
+      "filter_running": "En cours",
+      "filter_running_description": "Afficher uniquement les sessions sur lesquelles l’agent travaille activement",
+      "filter_pinned": "Épinglées",
+      "filter_pinned_description": "Afficher uniquement les sessions épinglées",
+      "filter_recent": "Récentes",
+      "filter_recent_description": "Afficher uniquement les sessions actives dans la période sélectionnée",
+      "sort_newest": "Plus récentes",
+      "sort_oldest": "Plus anciennes",
+      "sort_created_newest": "Création (plus récentes)",
+      "sort_created_oldest": "Création (plus anciennes)",
+      "sort_name_asc": "A → Z",
+      "sort_name_desc": "Z → A",
+      "clear_named_filter": "Effacer le filtre {{filter}}"
     },
     "devFleetPage": {
       "actions": "Actions",
@@ -5348,7 +5365,13 @@
       "usage": "Utilisation",
       "usage_tracking_is_not_available_for": "Le suivi de l'utilisation n'est pas disponible pour",
       "v": "· v",
-      "view_details": "Voir les détails"
+      "view_details": "Voir les détails",
+      "stat_cron_jobs": "Tâches cron",
+      "stat_lessons": "Leçons",
+      "stat_messages": "Messages",
+      "stat_sessions": "Sessions",
+      "stat_subagents": "Sous-agents",
+      "stat_uptime": "Temps actif"
     },
     "popoutFrame": {
       "session": "Session"
@@ -6634,6 +6657,16 @@
   "store": {
     "chatSlice": {
       "truncated": "…(tronqué)"
+    }
+  },
+  "lib": {
+    "effort": {
+      "default": "Par défaut",
+      "high": "Élevé",
+      "low": "Faible",
+      "max": "Maximal",
+      "medium": "Moyen",
+      "xhigh": "Très élevé"
     }
   }
 }

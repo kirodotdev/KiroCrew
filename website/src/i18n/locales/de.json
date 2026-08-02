@@ -2510,7 +2510,9 @@
       "reasoning_effort": "Denkaufwand",
       "smarter": "Intelligenter",
       "use_configured_default": "Konfigurierten Standard verwenden",
-      "use_model_default": "Modellstandard verwenden"
+      "use_model_default": "Modellstandard verwenden",
+      "default_with_level": "Standard · {{level}}",
+      "effort_help": "Der Denkaufwand legt fest, wie lange das Modell vor der Antwort nachdenkt. Höher bedeutet mehr Zeit zum Durchdenken schwieriger Probleme (langsamer, bessere Antworten); niedriger ist schneller. Wird die Übersteuerung pro Sitzung deaktiviert, fällt der Denkaufwand auf den Standard unter Einstellungen → Chat zurück oder, wenn kein Standard gesetzt ist, auf die Wahl des Modells selbst (nur Fable/Opus/Sonnet)."
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Fügen Sie eine Organisations-Registry hinzu, um teamspezifische Apps zu entdecken",
@@ -4246,7 +4248,22 @@
       "more_pull_request_in_this_session_one": "{{count}} weiterer Pull Request in dieser Sitzung",
       "more_pull_request_in_this_session_other": "{{count}} weitere Pull Requests in dieser Sitzung",
       "more_pull_request_or_issue_in_this_session_one": "{{count}} weiterer Pull Request oder Issue in dieser Sitzung",
-      "more_pull_request_or_issue_in_this_session_other": "{{count}} weitere Pull Requests oder Issues in dieser Sitzung"
+      "more_pull_request_or_issue_in_this_session_other": "{{count}} weitere Pull Requests oder Issues in dieser Sitzung",
+      "filter_unread": "Ungelesen",
+      "filter_unread_description": "Nur Sitzungen mit ungelesenen Nachrichten anzeigen",
+      "filter_running": "Läuft",
+      "filter_running_description": "Nur Sitzungen anzeigen, an denen der Agent aktiv arbeitet",
+      "filter_pinned": "Angepinnt",
+      "filter_pinned_description": "Nur Sitzungen anzeigen, die du angepinnt hast",
+      "filter_recent": "Kürzlich",
+      "filter_recent_description": "Nur Sitzungen anzeigen, die im gewählten Zeitraum aktiv waren",
+      "sort_newest": "Neueste",
+      "sort_oldest": "Älteste",
+      "sort_created_newest": "Erstellt (neueste)",
+      "sort_created_oldest": "Erstellt (älteste)",
+      "sort_name_asc": "A → Z",
+      "sort_name_desc": "Z → A",
+      "clear_named_filter": "Filter „{{filter}}“ zurücksetzen"
     },
     "devFleetPage": {
       "actions": "Aktionen",
@@ -5284,7 +5301,13 @@
       "usage": "Verbrauch",
       "usage_tracking_is_not_available_for": "Die Verbrauchserfassung ist nicht verfügbar für",
       "v": "· v",
-      "view_details": "Details anzeigen"
+      "view_details": "Details anzeigen",
+      "stat_cron_jobs": "Cron-Jobs",
+      "stat_lessons": "Lektionen",
+      "stat_messages": "Nachrichten",
+      "stat_sessions": "Sitzungen",
+      "stat_subagents": "Subagenten",
+      "stat_uptime": "Betriebszeit"
     },
     "popoutFrame": {
       "session": "Sitzung"
@@ -6565,6 +6588,16 @@
   "store": {
     "chatSlice": {
       "truncated": "…(gekürzt)"
+    }
+  },
+  "lib": {
+    "effort": {
+      "default": "Standard",
+      "high": "Hoch",
+      "low": "Niedrig",
+      "max": "Maximal",
+      "medium": "Mittel",
+      "xhigh": "Sehr hoch"
     }
   }
 }

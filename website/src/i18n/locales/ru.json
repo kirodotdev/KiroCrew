@@ -2586,7 +2586,9 @@
       "reasoning_effort": "Глубина размышлений",
       "smarter": "Умнее",
       "use_configured_default": "Использовать заданное по умолчанию",
-      "use_model_default": "Использовать значение модели по умолчанию"
+      "use_model_default": "Использовать значение модели по умолчанию",
+      "default_with_level": "По умолчанию · {{level}}",
+      "effort_help": "Глубина размышлений определяет, сколько модель думает перед ответом. Выше — больше времени на обдумывание сложных задач (медленнее, но ответы лучше); ниже — быстрее. Если отключить переопределение для сессии, используется значение по умолчанию из «Настройки → Чат», а если оно не задано — собственный выбор модели (только Fable/Opus/Sonnet)."
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Добавьте реестр организации, чтобы находить приложения вашей команды",
@@ -4364,7 +4366,22 @@
       "more_pull_request_or_issue_in_this_session_few": "ещё {{count}} пул-реквеста или задачи в этой сессии",
       "more_pull_request_or_issue_in_this_session_many": "ещё {{count}} пул-реквестов или задач в этой сессии",
       "more_pull_request_or_issue_in_this_session_one": "ещё {{count}} пул-реквест или задача в этой сессии",
-      "more_pull_request_or_issue_in_this_session_other": "ещё {{count}} пул-реквеста или задачи в этой сессии"
+      "more_pull_request_or_issue_in_this_session_other": "ещё {{count}} пул-реквеста или задачи в этой сессии",
+      "filter_unread": "Непрочитанные",
+      "filter_unread_description": "Показывать только сессии с непрочитанными сообщениями",
+      "filter_running": "В работе",
+      "filter_running_description": "Показывать только сессии, над которыми агент активно работает",
+      "filter_pinned": "Закреплённые",
+      "filter_pinned_description": "Показывать только закреплённые сессии",
+      "filter_recent": "Недавние",
+      "filter_recent_description": "Показывать только сессии, активные в выбранном периоде",
+      "sort_newest": "Сначала новые",
+      "sort_oldest": "Сначала старые",
+      "sort_created_newest": "Дата создания (сначала новые)",
+      "sort_created_oldest": "Дата создания (сначала старые)",
+      "sort_name_asc": "А → Я",
+      "sort_name_desc": "Я → А",
+      "clear_named_filter": "Сбросить фильтр «{{filter}}»"
     },
     "devFleetPage": {
       "actions": "Действия",
@@ -5412,7 +5429,13 @@
       "usage": "Использование",
       "usage_tracking_is_not_available_for": "Отслеживание использования недоступно для",
       "v": "· v",
-      "view_details": "Подробнее"
+      "view_details": "Подробнее",
+      "stat_cron_jobs": "Cron-задачи",
+      "stat_lessons": "Уроки",
+      "stat_messages": "Сообщения",
+      "stat_sessions": "Сессии",
+      "stat_subagents": "Субагенты",
+      "stat_uptime": "Время работы"
     },
     "popoutFrame": {
       "session": "Сессия"
@@ -6703,6 +6726,16 @@
   "store": {
     "chatSlice": {
       "truncated": "...(усечено)"
+    }
+  },
+  "lib": {
+    "effort": {
+      "default": "По умолчанию",
+      "high": "Высокая",
+      "low": "Низкая",
+      "max": "Максимальная",
+      "medium": "Средняя",
+      "xhigh": "Очень высокая"
     }
   }
 }

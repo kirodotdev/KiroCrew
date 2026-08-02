@@ -370,34 +370,51 @@ function readStoredHiddenFolders(): Set<string> {
 interface SessionFilterDef {
   key: SessionFilterKey
   storageKey: string
-  label: string
-  description: string
   color: string
   icon: (active: boolean) => React.ReactNode
 }
 
+/**
+ * Catalog keys for the filter rows, chips and tooltips.
+ *
+ * Keys, not copy: these tables are module-level, so an `i18nT()` call here would
+ * resolve once at boot and never follow a language switch — the lookup happens
+ * where each label renders. Shaped as flat `Record`s of full literal keys and
+ * indexed inline at the `i18nT()` call, because that is the form
+ * `scripts/check-i18n-keys.mjs` can resolve statically; a key it cannot resolve
+ * is a key it cannot verify exists.
+ */
+export const FILTER_LABEL_KEY: Record<SessionFilterKey, string> = {
+  unread: 'pages.chatSidebar.filter_unread',
+  running: 'pages.chatSidebar.filter_running',
+  pinned: 'pages.chatSidebar.filter_pinned',
+  recent: 'pages.chatSidebar.filter_recent',
+}
+export const FILTER_DESCRIPTION_KEY: Record<SessionFilterKey, string> = {
+  unread: 'pages.chatSidebar.filter_unread_description',
+  running: 'pages.chatSidebar.filter_running_description',
+  pinned: 'pages.chatSidebar.filter_pinned_description',
+  recent: 'pages.chatSidebar.filter_recent_description',
+}
+
 const SESSION_FILTERS: SessionFilterDef[] = [
   {
-    key: 'unread', storageKey: 'mc-session-unread-only', label: 'Unread',
-    description: 'Show only sessions with unread messages',
+    key: 'unread', storageKey: 'mc-session-unread-only',
     color: 'var(--accent)',
     icon: (active) => <Circle size={12} className={active ? 'text-accent' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--accent)' } : {})} />,
   },
   {
-    key: 'running', storageKey: 'mc-session-running-only', label: 'In progress',
-    description: 'Show only sessions the agent is actively working on',
+    key: 'running', storageKey: 'mc-session-running-only',
     color: 'var(--warn)',
     icon: (active) => <Zap size={12} className={active ? 'text-[var(--warn)]' : 'text-muted'} {...(active ? { fill: 'var(--warn)', stroke: 'none' } : {})} />,
   },
   {
-    key: 'pinned', storageKey: 'mc-session-pinned-only', label: 'Pinned',
-    description: 'Show only sessions you have pinned',
+    key: 'pinned', storageKey: 'mc-session-pinned-only',
     color: 'var(--accent)',
     icon: (active) => <Pin size={12} className={active ? 'text-accent' : 'text-muted'} {...(active ? { fill: 'var(--accent)', stroke: 'none' } : {})} />,
   },
   {
-    key: 'recent', storageKey: 'mc-session-recent-only', label: 'Recent',
-    description: 'Show only sessions active within the selected window',
+    key: 'recent', storageKey: 'mc-session-recent-only',
     color: 'var(--ok)',
     icon: (active) => <Clock size={12} className={active ? 'text-[var(--ok)]' : 'text-muted'} />,
   },
@@ -525,14 +542,24 @@ interface ChatSidebarProps {
 }
 
 type SortKey = 'date-desc' | 'date-asc' | 'created-desc' | 'created-asc' | 'name-asc' | 'name-desc'
-const SORT_OPTIONS: { value: SortKey; label: string }[] = [
-  { value: 'date-desc', label: 'Newest' },
-  { value: 'date-asc', label: 'Oldest' },
-  { value: 'created-desc', label: 'Created (Newest)' },
-  { value: 'created-asc', label: 'Created (Oldest)' },
-  { value: 'name-asc', label: 'A → Z' },
-  { value: 'name-desc', label: 'Z → A' },
+/** Sort options, in menu order. The label lives in `SORT_LABEL_KEY`. */
+const SORT_OPTIONS: { value: SortKey }[] = [
+  { value: 'date-desc' },
+  { value: 'date-asc' },
+  { value: 'created-desc' },
+  { value: 'created-asc' },
+  { value: 'name-asc' },
+  { value: 'name-desc' },
 ]
+/** Catalog key per sort option — same resolvable shape as `FILTER_LABEL_KEY`. */
+export const SORT_LABEL_KEY: Record<SortKey, string> = {
+  'date-desc': 'pages.chatSidebar.sort_newest',
+  'date-asc': 'pages.chatSidebar.sort_oldest',
+  'created-desc': 'pages.chatSidebar.sort_created_newest',
+  'created-asc': 'pages.chatSidebar.sort_created_oldest',
+  'name-asc': 'pages.chatSidebar.sort_name_asc',
+  'name-desc': 'pages.chatSidebar.sort_name_desc',
+}
 const SORT_LS_KEY = 'mc-session-sort'
 /** Flat view ("explode chats out of folders") persistence key. */
 const FLAT_VIEW_LS_KEY = 'mc-sidebar-flat-view'
@@ -2886,7 +2913,7 @@ function ChatSidebar({
                     return (
                       <DropdownMenuSub key={filterDef.key}>
                         <DropdownMenuSubTrigger
-                          title={filterDef.description}
+                          title={i18nT(FILTER_DESCRIPTION_KEY[filterDef.key])}
                           onClick={() => toggleFilter('recent')}
                           onKeyDown={e => {
                             if (e.key === 'Enter' || e.key === ' ') {
@@ -2897,7 +2924,7 @@ function ChatSidebar({
                         >
                           {filterDef.icon(active)}
                           <span className="flex-1 truncate">
-                            {filterDef.label}
+                            {i18nT(FILTER_LABEL_KEY[filterDef.key])}
                             <span className="text-muted"> · {formatRecentWindow(recentWindowMs)}</span>
                             {slotCount > 0 ? ` (${slotCount})` : ''}
                           </span>
@@ -2968,12 +2995,12 @@ function ChatSidebar({
                   return (
                     <DropdownMenuItem
                       key={filterDef.key}
-                      title={filterDef.description}
+                      title={i18nT(FILTER_DESCRIPTION_KEY[filterDef.key])}
                       // Keep the menu open so multiple filters can be toggled.
                       onSelect={e => { e.preventDefault(); toggleFilter(filterDef.key) }}
                     >
                       {filterDef.icon(active)}
-                      <span className="flex-1 truncate">{filterDef.label}{slotCount > 0 ? ` (${slotCount})` : ''}</span>
+                      <span className="flex-1 truncate">{i18nT(FILTER_LABEL_KEY[filterDef.key])}{slotCount > 0 ? ` (${slotCount})` : ''}</span>
                       {active && <Check size={14} className="text-accent shrink-0" />}
                     </DropdownMenuItem>
                   )
@@ -2985,7 +3012,7 @@ function ChatSidebar({
                     key={o.value}
                     onSelect={() => { setSortKey(o.value); safeSetItem(SORT_LS_KEY, o.value) }}
                   >
-                    <span className="flex-1">{o.label}</span>
+                    <span className="flex-1">{i18nT(SORT_LABEL_KEY[o.value])}</span>
                     {sortKey === o.value && <Check size={14} className="text-accent shrink-0" />}
                   </DropdownMenuItem>
                 ))}
@@ -3066,6 +3093,12 @@ function ChatSidebar({
         <div className="px-3 pb-1 flex items-center gap-1.5 flex-wrap">
           {SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key)).map(filterDef => {
             const slotCount = filterCounts[filterDef.key] ?? 0
+            const filterLabel = i18nT(FILTER_LABEL_KEY[filterDef.key])
+            // The label goes in as-is. It used to be `.toLowerCase()`d to read as
+            // mid-sentence English, which does not survive translation: German
+            // nouns are capitalised, CJK has no case, and Turkish lowercases `I`
+            // to a dotless `ı`.
+            const clearLabel = i18nT('pages.chatSidebar.clear_named_filter', { filter: filterLabel })
             return (
               <button
                 key={filterDef.key}
@@ -3073,10 +3106,10 @@ function ChatSidebar({
                 className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors"
                 style={{ background: `color-mix(in srgb, ${filterDef.color} 10%, transparent)`, color: filterDef.color, borderWidth: 1, borderColor: `color-mix(in srgb, ${filterDef.color} 30%, transparent)` }}
                 onClick={() => toggleFilter(filterDef.key)}
-                title={`Clear ${filterDef.label.toLowerCase()} filter`}
-                aria-label={`Clear ${filterDef.label.toLowerCase()} filter`}
+                title={clearLabel}
+                aria-label={clearLabel}
               >
-                {filterDef.label}{filterDef.key === 'recent' ? ` · ${formatRecentWindow(recentWindowMs)}` : ''}{slotCount > 0 ? ` (${slotCount})` : ''}
+                {filterLabel}{filterDef.key === 'recent' ? ` · ${formatRecentWindow(recentWindowMs)}` : ''}{slotCount > 0 ? ` (${slotCount})` : ''}
                 <X size={11} />
               </button>
             )

@@ -2510,7 +2510,9 @@
       "reasoning_effort": "রিজনিং প্রচেষ্টা",
       "smarter": "আরও বুদ্ধিমান",
       "use_configured_default": "কনফিগার করা ডিফল্ট ব্যবহার করুন",
-      "use_model_default": "মডেলের ডিফল্ট ব্যবহার করুন"
+      "use_model_default": "মডেলের ডিফল্ট ব্যবহার করুন",
+      "default_with_level": "ডিফল্ট · {{level}}",
+      "effort_help": "রিজনিং প্রচেষ্টা ঠিক করে দেয় উত্তর দেওয়ার আগে মডেল কতক্ষণ ভাববে। বেশি মানে কঠিন সমস্যা নিয়ে বেশি সময় ধরে রিজনিং (ধীর, কিন্তু ভালো উত্তর); কম মানে দ্রুত। সেশন-ভিত্তিক ওভাররাইড বন্ধ করলে সেটিংস → চ্যাট-এর ডিফল্টে ফিরে যায়, আর কোনো ডিফল্ট সেট না থাকলে মডেলের নিজের পছন্দে (শুধু Fable/Opus/Sonnet)।"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "টিম-নির্দিষ্ট অ্যাপ খুঁজে পেতে প্রতিষ্ঠানের একটি রেজিস্ট্রি যোগ করুন",
@@ -4246,7 +4248,22 @@
       "more_pull_request_in_this_session_one": "এই সেশনে আরও {{count}}টি পুল রিকোয়েস্ট",
       "more_pull_request_in_this_session_other": "এই সেশনে আরও {{count}}টি পুল রিকোয়েস্ট",
       "more_pull_request_or_issue_in_this_session_one": "এই সেশনে আরও {{count}}টি পুল রিকোয়েস্ট বা ইস্যু",
-      "more_pull_request_or_issue_in_this_session_other": "এই সেশনে আরও {{count}}টি পুল রিকোয়েস্ট বা ইস্যু"
+      "more_pull_request_or_issue_in_this_session_other": "এই সেশনে আরও {{count}}টি পুল রিকোয়েস্ট বা ইস্যু",
+      "filter_unread": "অপঠিত",
+      "filter_unread_description": "শুধু অপঠিত মেসেজ আছে এমন সেশনগুলো দেখায়",
+      "filter_running": "চলমান",
+      "filter_running_description": "শুধু যেসব সেশনে এজেন্ট সক্রিয়ভাবে কাজ করছে সেগুলো দেখায়",
+      "filter_pinned": "পিন করা",
+      "filter_pinned_description": "শুধু পিন করা সেশনগুলো দেখায়",
+      "filter_recent": "সাম্প্রতিক",
+      "filter_recent_description": "শুধু নির্বাচিত সময়সীমার মধ্যে সক্রিয় ছিল এমন সেশনগুলো দেখায়",
+      "sort_newest": "সবচেয়ে নতুন",
+      "sort_oldest": "সবচেয়ে পুরোনো",
+      "sort_created_newest": "তৈরি হয়েছে (সবচেয়ে নতুন)",
+      "sort_created_oldest": "তৈরি হয়েছে (সবচেয়ে পুরোনো)",
+      "sort_name_asc": "A → Z",
+      "sort_name_desc": "Z → A",
+      "clear_named_filter": "{{filter}} ফিল্টার সাফ করুন"
     },
     "devFleetPage": {
       "actions": "অ্যাকশন",
@@ -5284,7 +5301,13 @@
       "usage": "ব্যবহার",
       "usage_tracking_is_not_available_for": "ব্যবহার ট্র্যাকিং উপলব্ধ নয়",
       "v": "· v",
-      "view_details": "বিবরণ দেখুন"
+      "view_details": "বিবরণ দেখুন",
+      "stat_cron_jobs": "Cron জব",
+      "stat_lessons": "শিক্ষা",
+      "stat_messages": "বার্তা",
+      "stat_sessions": "সেশন",
+      "stat_subagents": "সাবএজেন্ট",
+      "stat_uptime": "আপটাইম"
     },
     "popoutFrame": {
       "session": "সেশন"
@@ -6565,6 +6588,16 @@
   "store": {
     "chatSlice": {
       "truncated": "…(সংক্ষিপ্ত করা হয়েছে)"
+    }
+  },
+  "lib": {
+    "effort": {
+      "default": "ডিফল্ট",
+      "high": "উচ্চ",
+      "low": "নিম্ন",
+      "max": "সর্বোচ্চ",
+      "medium": "মধ্যম",
+      "xhigh": "অতি উচ্চ"
     }
   }
 }

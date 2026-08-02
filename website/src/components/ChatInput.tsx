@@ -58,7 +58,7 @@ import ApprovalModePicker from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
 // Re-exported here for back-compat with existing `from './ChatInput'` imports.
 export {
-  EFFORT_DISPLAY,
+  EFFORT_LABEL_KEY,
   EFFORT_LEVELS,
   REASONING_EFFORT_PROVIDERS,
   modelSupportsEffort,

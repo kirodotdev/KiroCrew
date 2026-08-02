@@ -374,9 +374,27 @@ committed number can always be re-snapshotted past.
 | unextracted JSX strings | `--baseline=N` in `package.json` | **[added-lines]** — same population, no ledger |
 | host-locale calls | `BASELINE` in `src/i18n/localeFormatting.test.ts` | that file's own **[added-lines]** / **[vs-base]** — a `toLocale*`/`localeCompare` on a line you wrote, or a touched file whose count grew vs the base ref |
 | render-time defects, per surface | `src/i18n/render-baseline.json` | `check-i18n-render.mjs` **[vs-base]** — renders the base commit and fails on any per-surface increase |
+| untranslated strings inside ALL-CAPS constants | `src/i18n/untranslated-strict-baseline.json` (one aggregate) | **[added-lines]** — same population, per line |
 
 For these four, a decrease is reported and tolerated: you do not re-snapshot anything,
 and a change that improves one of these numbers without editing it will pass.
+
+`eslint-plugin-i18next` exempts every literal under an ALL-CAPS variable declarator, which
+is where this dashboard keeps its module-level UI-copy tables — so `SESSION_FILTERS`,
+`SORT_OPTIONS` and `EFFORT_DISPLAY` shipped untranslated in ten locales while their files
+reported clean. `eslint-rules/i18n-strict.js` closes that hole and marks the findings it
+recovers; `eslint.i18n.strict.config.js` is the config the diff-scoped gates run.
+
+**Two consequences worth knowing before you are surprised by them:**
+
+- **`[added-lines]` now sees inside ALL-CAPS constants.** Touch any line in a
+  pre-existing label table and the gate fails on copy you did not write. That is the
+  intended tightening — the fix is the same either way: store a catalog key in the table
+  and translate where it renders (`FILTER_LABEL_KEY` in `pages/ChatSidebar.tsx`).
+- **The per-file ceilings still use the UPSTREAM rule.** They measure only the findings
+  the marker does not tag, so `untranslated-baseline.json` keeps the population it was
+  snapshotted from and closing the hole forced no bulk `--update`. The recovered strings
+  get their own aggregate instead, so the class has a number to drive to zero.
 
 **Still exact in both directions, because nothing diff-scoped covers them:**
 `deadKeys.test.ts`, `glossary.test.ts` (DNT), and `check-i18n-keys.mjs`'s dynamic-site

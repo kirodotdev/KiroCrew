@@ -56,14 +56,27 @@ export default [
       'src/**/*.prompt.ts',
       // Generated and data-only.
       'src/i18n/locales/**',
-      // Agent-prompt modules: text handed to a MODEL, never rendered to the user.
-      // The skill names, file paths and role framing they carry are English
-      // identifiers the agent matches on, so translating them would degrade
-      // instruction-following while changing nothing anyone sees. Scoped to the
-      // `*Prompt.ts` filename convention so the exemption is declared by where a
-      // string lives, not hidden in a content regex — a file named this way holds
-      // ONLY prompt text, and its user-visible siblings stay fully gated.
+      // Generated sources: the copy's real home is the panel that declares the
+      // setting, which is scanned and baselined on its own. Editing a `.gen.ts`
+      // is overwritten by `npm run gen:settings`, so a finding here is
+      // unactionable AND a double count of a string already covered elsewhere.
+      'src/**/*.gen.ts',
+      // Model-facing prompt modules that do not carry the `*.prompt.ts` suffix
+      // handled above: text handed to a MODEL, not user-visible copy. The skill
+      // names, file paths and role framing they carry are English identifiers the
+      // agent matches on, so translating them would degrade instruction-following
+      // while changing nothing anyone sees. Each is declared by WHERE the string
+      // lives rather than by a content regex — these files hold ONLY prompt text,
+      // and their user-visible siblings stay fully gated.
+      //
+      // Stated as false-negative classes, per the rule this file follows
+      // elsewhere: any user-visible copy ever added to these paths will not be
+      // reported. None of them was reported before `i18n-strict` either (the
+      // ALL-CAPS suppression already hid all of it), so this removes no coverage
+      // that existed — it declines to add noise.
       'src/apps/*/companionPrompt.ts',
+      'src/prompts/**',
+      'src/apps/*/prompts.ts',
     ],
     linterOptions: {
       // Every `eslint-disable` comment in this codebase targets the MAIN config's
@@ -94,6 +107,14 @@ export default [
     },
     plugins: { i18next: i18nextPlugin },
     rules: {
+      // This binding is NOT what runs over the tree: `eslint.i18n.strict.config.js`
+      // derives from this array and swaps in `eslint-rules/i18n-strict.js`, and that
+      // is the config `scripts/check-i18n-strings.mjs` executes. This one survives as
+      // the shared OPTIONS below plus the reference definition of "what upstream
+      // reports" — the per-file ceilings are the strict run's unmarked findings,
+      // which `src/test/i18nStrictRule.test.ts` pins to exactly this rule's output.
+      // Keeping it here is what lets the ALL-CAPS hole close without a bulk
+      // `--update` re-snapshot of a ledger four open branches share.
       'i18next/no-literal-string': [
         'warn',
         {
@@ -138,6 +159,21 @@ export default [
               // `onClick` and `userId`. Requiring an interior capital keeps the
               // identifiers out and the words in.
               '^[a-z][a-z0-9]*[A-Z][a-zA-Z0-9]*$',
+              // A CATALOG KEY, i.e. the dotted path `i18nT()` takes. Needed
+              // because the gate's own recommended fix for a dynamic key is a
+              // table of literal keys (`STATUS_LABEL_KEY`, `FILTER_LABEL_KEY`,
+              // `EFFORT_LABEL_KEY`), and those tables live at module level under
+              // an ALL-CAPS name. Before `i18n-strict` closed the ALL-CAPS hole
+              // they were suppressed as a side effect; without this pattern the
+              // gate would report the very shape it tells you to write.
+              //
+              // Deliberately narrow: every segment must start with a lowercase
+              // letter and hold only word characters, and there must be at least
+              // one dot. Real copy has spaces. Known false negative, stated:
+              // a dotted lowercase token IS exempt everywhere, so
+              // `'user.name'`-shaped copy would be missed — it is not a shape UI
+              // copy takes.
+              '^[a-z][a-zA-Z0-9]*(?:\\.[a-z][a-zA-Z0-9_]*)+$',
               '^[A-Z][A-Z0-9_]*$',
               '^[\\w.-]+/[\\w./-]*$',
               '^https?://',

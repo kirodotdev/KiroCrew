@@ -14,7 +14,7 @@ import type { RootState } from '../store'
 
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
 
-import ChatInput, { REASONING_EFFORT_PROVIDERS, EFFORT_DISPLAY, modelSupportsEffort } from '../components/ChatInput'
+import ChatInput, { REASONING_EFFORT_PROVIDERS, EFFORT_LABEL_KEY, modelSupportsEffort } from '../components/ChatInput'
 import ReasoningEffortDropdown from '../components/ReasoningEffortDropdown'
 
 beforeEach(() => { vi.clearAllMocks() })
@@ -63,13 +63,13 @@ describe('ChatInput reasoning effort button', () => {
     expect(btn).toBeDisabled()
   })
 
-  it('EFFORT_DISPLAY covers all valid values incl xhigh', () => {
-    expect(EFFORT_DISPLAY['']).toBeDefined()
-    expect(EFFORT_DISPLAY['low']).toBeDefined()
-    expect(EFFORT_DISPLAY['medium']).toBeDefined()
-    expect(EFFORT_DISPLAY['high']).toBeDefined()
-    expect(EFFORT_DISPLAY['xhigh']).toBeDefined()
-    expect(EFFORT_DISPLAY['max']).toBeDefined()
+  it('EFFORT_LABEL_KEY covers all valid values incl xhigh', () => {
+    expect(EFFORT_LABEL_KEY['']).toBeDefined()
+    expect(EFFORT_LABEL_KEY['low']).toBeDefined()
+    expect(EFFORT_LABEL_KEY['medium']).toBeDefined()
+    expect(EFFORT_LABEL_KEY['high']).toBeDefined()
+    expect(EFFORT_LABEL_KEY['xhigh']).toBeDefined()
+    expect(EFFORT_LABEL_KEY['max']).toBeDefined()
   })
 
   it('REASONING_EFFORT_PROVIDERS is acp-only (kiro-cli is the sole provider)', () => {

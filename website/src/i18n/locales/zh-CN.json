@@ -2472,7 +2472,9 @@
       "reasoning_effort": "推理强度",
       "smarter": "更聪明",
       "use_configured_default": "使用已配置的默认值",
-      "use_model_default": "使用模型默认值"
+      "use_model_default": "使用模型默认值",
+      "default_with_level": "默认 · {{level}}",
+      "effort_help": "推理强度决定模型在回答前思考多久。强度越高，用于思考难题的时间越长（更慢，但答案更好）；越低则越快。关闭会话级覆盖后，会回退到“设置 → 聊天”中的默认值，或在未设置默认值时交由模型自行决定（仅 Fable/Opus/Sonnet）。"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "添加组织注册表以发现团队专属应用",
@@ -4187,7 +4189,22 @@
       "expand_folder_name": "展开文件夹 {{name}}",
       "expand_group_results": "展开 {{group}} 的结果",
       "more_pull_request_in_this_session_other": "此会话中还有 {{count}} 个拉取请求",
-      "more_pull_request_or_issue_in_this_session_other": "此会话中还有 {{count}} 个拉取请求或 issue"
+      "more_pull_request_or_issue_in_this_session_other": "此会话中还有 {{count}} 个拉取请求或 issue",
+      "filter_unread": "未读",
+      "filter_unread_description": "仅显示有未读消息的会话",
+      "filter_running": "运行中",
+      "filter_running_description": "仅显示代理正在处理的会话",
+      "filter_pinned": "已置顶",
+      "filter_pinned_description": "仅显示你已置顶的会话",
+      "filter_recent": "最近",
+      "filter_recent_description": "仅显示所选时间窗口内活跃过的会话",
+      "sort_newest": "最新",
+      "sort_oldest": "最早",
+      "sort_created_newest": "创建时间（最新）",
+      "sort_created_oldest": "创建时间（最早）",
+      "sort_name_asc": "A → Z",
+      "sort_name_desc": "Z → A",
+      "clear_named_filter": "清除“{{filter}}”筛选"
     },
     "devFleetPage": {
       "actions": "操作",
@@ -5220,7 +5237,13 @@
       "usage": "用量",
       "usage_tracking_is_not_available_for": "用量统计不适用于",
       "v": "· v",
-      "view_details": "查看详情"
+      "view_details": "查看详情",
+      "stat_cron_jobs": "定时任务",
+      "stat_lessons": "经验",
+      "stat_messages": "消息",
+      "stat_sessions": "会话",
+      "stat_subagents": "子代理",
+      "stat_uptime": "运行时长"
     },
     "popoutFrame": {
       "session": "会话"
@@ -6496,6 +6519,16 @@
   "store": {
     "chatSlice": {
       "truncated": "…（已截断）"
+    }
+  },
+  "lib": {
+    "effort": {
+      "default": "默认",
+      "high": "高",
+      "low": "低",
+      "max": "最高",
+      "medium": "中",
+      "xhigh": "超高"
     }
   }
 }

@@ -132,6 +132,22 @@ function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
   )
 }
 
+type StatId = 'uptime' | 'sessions' | 'messages' | 'cronJobs' | 'subagents' | 'lessons'
+/**
+ * Catalog key per status tile. A flat `Record` of full literal keys, indexed
+ * inline at the `i18nT()` call — the shape `scripts/check-i18n-keys.mjs` can
+ * resolve. These six labels were raw English in the tile array, so they rendered
+ * `UPTIME` / `SESSIONS` / `MESSAGES` above translated copy in every locale.
+ */
+export const STAT_LABEL_KEY: Record<StatId, string> = {
+  uptime: 'pages.overviewPage.stat_uptime',
+  sessions: 'pages.overviewPage.stat_sessions',
+  messages: 'pages.overviewPage.stat_messages',
+  cronJobs: 'pages.overviewPage.stat_cron_jobs',
+  subagents: 'pages.overviewPage.stat_subagents',
+  lessons: 'pages.overviewPage.stat_lessons',
+}
+
 export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
   const connected = useAppSelector(s => s.dashboard.connected)
@@ -203,14 +219,16 @@ export default function OverviewPage() {
       {/* Stat tiles */}
       <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
         {([
-          { label: 'Uptime', value: uptime, accent: true },
-          { label: 'Sessions', value: status?.sessions },
-          { label: 'Messages', value: status?.messages },
-          { label: 'Cron Jobs', value: status?.cron_jobs },
-          { label: 'Subagents', value: status?.subagents },
-          { label: 'Lessons', value: status?.lessons },
-        ] as { label: string; value?: string | number | null; accent?: boolean }[]).map((s, i) => (
-          <StatCard key={s.label} label={s.label} value={s.value} accent={s.accent} delay={i * 60} />
+          { id: 'uptime', value: uptime, accent: true },
+          { id: 'sessions', value: status?.sessions },
+          { id: 'messages', value: status?.messages },
+          { id: 'cronJobs', value: status?.cron_jobs },
+          { id: 'subagents', value: status?.subagents },
+          { id: 'lessons', value: status?.lessons },
+        ] as { id: StatId; value?: string | number | null; accent?: boolean }[]).map((s, i) => (
+          // Keyed on the stable id, not the label: a language switch changes the
+          // label, which would remount every tile and replay the stagger animation.
+          <StatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} value={s.value} accent={s.accent} delay={i * 60} />
         ))}
         <TunnelStatus delay={6 * 60} />
         {/* Extension slot: downstream-registered status cards (e.g. an edition

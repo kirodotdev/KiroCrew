@@ -2510,7 +2510,9 @@
       "reasoning_effort": "रीज़निंग प्रयास",
       "smarter": "अधिक स्मार्ट",
       "use_configured_default": "कॉन्फ़िगर किया गया डिफ़ॉल्ट उपयोग करें",
-      "use_model_default": "मॉडल का डिफ़ॉल्ट उपयोग करें"
+      "use_model_default": "मॉडल का डिफ़ॉल्ट उपयोग करें",
+      "default_with_level": "डिफ़ॉल्ट · {{level}}",
+      "effort_help": "रीज़निंग प्रयास तय करता है कि मॉडल उत्तर देने से पहले कितनी देर सोचेगा। उच्च प्रयास यानी कठिन समस्याओं पर ज़्यादा देर तक सोचना (धीमा, पर बेहतर उत्तर); कम प्रयास तेज़ रहता है। प्रति-सत्र ओवरराइड बंद करने पर सेटिंग्स → चैट में सेट किया गया डिफ़ॉल्ट लागू होता है, या डिफ़ॉल्ट सेट न होने पर मॉडल अपना चुनाव करता है (केवल Fable/Opus/Sonnet)।"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "टीम-विशिष्ट ऐप्स खोजने के लिए संगठन की रजिस्ट्री जोड़ें",
@@ -4246,7 +4248,22 @@
       "more_pull_request_in_this_session_one": "इस सत्र में {{count}} और पुल रिक्वेस्ट",
       "more_pull_request_in_this_session_other": "इस सत्र में {{count}} और पुल रिक्वेस्ट",
       "more_pull_request_or_issue_in_this_session_one": "इस सत्र में {{count}} और पुल रिक्वेस्ट या इश्यू",
-      "more_pull_request_or_issue_in_this_session_other": "इस सत्र में {{count}} और पुल रिक्वेस्ट या इश्यू"
+      "more_pull_request_or_issue_in_this_session_other": "इस सत्र में {{count}} और पुल रिक्वेस्ट या इश्यू",
+      "filter_unread": "अपठित",
+      "filter_unread_description": "केवल अपठित संदेशों वाले सत्र दिखाता है",
+      "filter_running": "चल रहे",
+      "filter_running_description": "केवल वे सत्र दिखाता है जिन पर एजेंट सक्रिय रूप से काम कर रहा है",
+      "filter_pinned": "पिन किए गए",
+      "filter_pinned_description": "केवल पिन किए गए सत्र दिखाता है",
+      "filter_recent": "हाल के",
+      "filter_recent_description": "केवल चुनी गई अवधि में सक्रिय रहे सत्र दिखाता है",
+      "sort_newest": "नवीनतम",
+      "sort_oldest": "सबसे पुराने",
+      "sort_created_newest": "बनाया गया (नवीनतम)",
+      "sort_created_oldest": "बनाया गया (सबसे पुराने)",
+      "sort_name_asc": "A → Z",
+      "sort_name_desc": "Z → A",
+      "clear_named_filter": "{{filter}} फ़िल्टर साफ़ करें"
     },
     "devFleetPage": {
       "actions": "कार्रवाइयां",
@@ -5284,7 +5301,13 @@
       "usage": "उपयोग",
       "usage_tracking_is_not_available_for": "इसके लिए उपयोग ट्रैकिंग उपलब्ध नहीं है:",
       "v": "· v",
-      "view_details": "विवरण देखें"
+      "view_details": "विवरण देखें",
+      "stat_cron_jobs": "Cron जॉब",
+      "stat_lessons": "सीख",
+      "stat_messages": "संदेश",
+      "stat_sessions": "सत्र",
+      "stat_subagents": "सबएजेंट",
+      "stat_uptime": "अपटाइम"
     },
     "popoutFrame": {
       "session": "सेशन"
@@ -6565,6 +6588,16 @@
   "store": {
     "chatSlice": {
       "truncated": "…(छोटा किया गया)"
+    }
+  },
+  "lib": {
+    "effort": {
+      "default": "डिफ़ॉल्ट",
+      "high": "उच्च",
+      "low": "कम",
+      "max": "अधिकतम",
+      "medium": "मध्यम",
+      "xhigh": "अति उच्च"
     }
   }
 }

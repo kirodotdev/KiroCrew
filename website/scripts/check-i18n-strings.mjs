@@ -58,9 +58,22 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { ALL_CAPS_MARKER } from '../eslint-rules/i18n-strict.js'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 const BASELINE = path.join(ROOT, 'src/i18n/untranslated-baseline.json')
+const STRICT_BASELINE = path.join(ROOT, 'src/i18n/untranslated-strict-baseline.json')
+
+const STRICT_BASELINE_COMMENT =
+  'Untranslated user-visible strings that live INSIDE an ALL-CAPS module constant, '
+  + 'which `eslint-plugin-i18next` exempts by default (see eslint-rules/i18n-strict.js). '
+  + 'One aggregate, not per-file: `[added-lines]` already fails at zero tolerance on any '
+  + 'of these on a line you wrote, which is what licenses an upward-only count '
+  + '(website/AGENTS.md, ratchet rule). Per-file would recreate the cross-branch conflict '
+  + 'the shared ledger has, for no extra enforcement. UPWARD-ONLY, and the goal is 0: at '
+  + 'zero this class is gone and both this file and the exemption can be deleted. '
+  + 'Re-snapshot with `node scripts/check-i18n-strings.mjs --update`.'
 
 const BASELINE_COMMENT =
   'Untranslated user-visible strings, per file. Generated — re-snapshot with '
@@ -226,7 +239,13 @@ function scan() {
       [
         ESLINT_BIN,
         'src',
-        '--config', 'eslint.i18n.config.js',
+        // The STRICT config, and the only full-tree pass. Its findings carry a
+        // marker when they exist only because the wrapper looked inside an
+        // ALL-CAPS constant, so this one run yields BOTH populations: the
+        // upstream-visible strings that the per-file ceilings measure, and the
+        // strict-only debt that upstream hid. Running eslint twice to separate
+        // them would double the slowest step in `i18n:check`.
+        '--config', 'eslint.i18n.strict.config.js',
         '--no-inline-config',
         '--format', 'json',
       ],
@@ -244,15 +263,31 @@ function scan() {
 
   const byFile = {}
   const perFile = []
+  let strictOnly = 0
+  const strictOnlyByFile = {}
   for (const file of JSON.parse(raw)) {
     if (file.messages.length === 0) continue
     const rel = path.relative(path.join(ROOT, 'src'), file.filePath).split(path.sep).join('/')
     const counts = {}
+    // Split, then classify: a marked finding is one the ceilings never counted, so
+    // folding it into a per-file ceiling would be the bulk re-snapshot this design
+    // exists to avoid.
+    const upstreamVisible = []
     for (const m of file.messages) {
+      if (m.message.endsWith(ALL_CAPS_MARKER)) {
+        strictOnly += 1
+        strictOnlyByFile[rel] = (strictOnlyByFile[rel] || 0) + 1
+        continue
+      }
+      upstreamVisible.push(m)
+    }
+    for (const m of upstreamVisible) {
       const c = classify(m.message)
       counts[c] = (counts[c] || 0) + 1
     }
-    byFile[rel] = { total: file.messages.length, ...Object.fromEntries(Object.entries(counts).sort()) }
+    if (upstreamVisible.length > 0) {
+      byFile[rel] = { total: upstreamVisible.length, ...Object.fromEntries(Object.entries(counts).sort()) }
+    }
     // Line numbers are kept, not just counts: the diff-scoped gate needs to know WHICH
     // lines each finding covers, and re-running eslint to get them would double the
     // slowest step in `i18n:check`. `endLine` matters as much as `line` — a multi-line
@@ -262,7 +297,7 @@ function scan() {
       messages: file.messages.map((m) => ({ line: m.line, endLine: m.endLine, message: m.message })),
     })
   }
-  return { byFile, perFile }
+  return { byFile, perFile, strictOnly, strictOnlyByFile }
 }
 
 /**
@@ -341,15 +376,7 @@ function diffScope() {
  * Only touched files are linted, so the cost is proportional to the diff.
  */
 async function baseCounts(scope, files) {
-  const { ESLint } = await import('eslint')
-  const engine = new ESLint({
-    cwd: ROOT,
-    overrideConfigFile: 'eslint.i18n.config.js',
-    // Match the main scan, which passes `--no-inline-config`: every `eslint-disable` in
-    // this tree targets the OTHER config's rules, and honouring them here reports each
-    // as a problem.
-    allowInlineConfig: false,
-  })
+  const engine = await strictEngine()
   const counts = {}
   for (const rel of files) {
     const source = scope.readBase(`website/src/${rel}`)
@@ -357,10 +384,37 @@ async function baseCounts(scope, files) {
       counts[rel] = 0
       continue
     }
-    const results = await engine.lintText(source, { filePath: path.join(ROOT, 'src', rel) })
+    const results = await engine.lintText(source, {
+      filePath: path.join(ROOT, 'src', rel),
+      warnIgnored: false,
+    })
     counts[rel] = results[0] ? results[0].messages.length : 0
   }
   return counts
+}
+
+/**
+ * The eslint engine the DIFF-SCOPED gates run: same options as the ceiling scan,
+ * plus the ALL-CAPS declarator hole closed (`eslint.i18n.strict.config.js`).
+ *
+ * The split is deliberate and documented in that file: the ceilings keep the
+ * upstream rule so the committed ledger stays valid, while the gates that have no
+ * ledger — `[added-lines]` at zero tolerance, and `[vs-base]` computed live on
+ * both sides — hold every line a branch writes to the stricter standard. Without
+ * this, a module-level ALL-CAPS label table is invisible to every gate, which is
+ * how `ChatSidebar`'s filter/sort menus and `lib/effort.ts`'s level labels shipped
+ * untranslated in ten locales while their files reported clean.
+ */
+async function strictEngine() {
+  const { ESLint } = await import('eslint')
+  return new ESLint({
+    cwd: ROOT,
+    overrideConfigFile: 'eslint.i18n.strict.config.js',
+    // Match the main scan, which passes `--no-inline-config`: every `eslint-disable` in
+    // this tree targets the OTHER config's rules, and honouring them here reports each
+    // as a problem.
+    allowInlineConfig: false,
+  })
 }
 
 /** Files that gained untranslated strings relative to their own state at the base. */
@@ -376,7 +430,7 @@ export function grewVersusBase(headCounts, baseCountsByFile) {
 
 async function main() {
   const update = process.argv.includes('--update')
-  const { byFile, perFile } = scan()
+  const { byFile, perFile, strictOnly, strictOnlyByFile } = scan()
   const total = Object.values(byFile).reduce((a, f) => a + f.total, 0)
 
   if (update) {
@@ -387,6 +441,14 @@ async function main() {
     }
     fs.writeFileSync(BASELINE, `${JSON.stringify(current, null, 2)}\n`)
     console.log(`wrote ${path.relative(ROOT, BASELINE)}: ${total} strings across ${Object.keys(byFile).length} files`)
+    fs.writeFileSync(STRICT_BASELINE, `${JSON.stringify({
+      _comment: STRICT_BASELINE_COMMENT,
+      _total: strictOnly,
+    }, null, 2)}\n`)
+    console.log(
+      `wrote ${path.relative(ROOT, STRICT_BASELINE)}: ${strictOnly} strings inside ALL-CAPS `
+      + `constants across ${Object.keys(strictOnlyByFile).length} files`,
+    )
     return
   }
 
@@ -407,18 +469,22 @@ async function main() {
       + '(push to main). Only the per-file ceilings were checked.',
     )
   } else {
-    // 1. A literal on a line this branch wrote.
+    // Both gates below count EVERY finding from the strict pass, including the ones
+    // the per-file ceilings deliberately exclude: they have no ledger to raise, so
+    // they are where the ALL-CAPS hole is enforced.
+    const touched = Object.keys(scope.added)
+      .filter((p) => p.startsWith('website/src/') && /\.tsx?$/.test(p))
+      .map((p) => p.slice('website/src/'.length))
+    // 1. A literal on a line this branch wrote — marked findings included, since a
+    //    string inside an ALL-CAPS table is exactly what this gate exists to catch.
     const introduced = findingsOnAddedLines(perFile, scope.added)
     console.log(`[added-lines] ${introduced.length} untranslated string(s) on lines this branch wrote.`)
 
     // 2. A file that gained findings relative to its OWN state at the base. Catches the
     //    case line attribution cannot: an edit to the surrounding context that turns an
     //    exempt site into a real one while the literal's line is untouched.
-    const touched = Object.keys(scope.added)
-      .filter((p) => p.startsWith('website/src/') && /\.tsx?$/.test(p))
-      .map((p) => p.slice('website/src/'.length))
     const grewFromBase = grewVersusBase(
-      Object.fromEntries(Object.entries(byFile).map(([rel, f]) => [rel, f.total])),
+      Object.fromEntries(perFile.map(({ rel, messages }) => [rel, messages.length])),
       await baseCounts(scope, touched),
     )
     console.log(`[vs-base] ${grewFromBase.length} touched file(s) gained untranslated strings vs the base.`)
@@ -450,7 +516,11 @@ async function main() {
       console.error(
         '\nWrap them with `i18nT()` (or `useTranslation`) and add the keys to the catalog. If a\n'
         + 'string is genuinely not user-visible copy, exclude it by shape in\n'
-        + '`eslint.i18n.config.js` and say why.',
+        + '`eslint.i18n.config.js` and say why.\n\n'
+        + 'These two gates run `eslint.i18n.strict.config.js`, which also looks INSIDE\n'
+        + 'ALL-CAPS module constants — the per-file ceilings do not, so a finding here can be\n'
+        + 'one the ceiling numbers never counted. Store a catalog key in the table and\n'
+        + 'translate where it renders (see `FILTER_LABEL_KEY` in pages/ChatSidebar.tsx).',
       )
       process.exit(1)
     }
@@ -465,6 +535,46 @@ async function main() {
     )
     process.exit(1)
   }
+
+  // The class the ceilings do not cover, as its own upward-only number so it has
+  // something to converge to zero. Without it, "the ledger at 0 means no
+  // untranslated strings" would become false the moment the last per-file ceiling
+  // is cleared — ~1100 real strings inside ALL-CAPS constants would still be there,
+  // counted by nothing. Separate file, one aggregate: it conflicts with no other
+  // branch, and `[added-lines]` supplies the diff-scoped strictness that licenses an
+  // upward-only count at all (website/AGENTS.md, ratchet rule).
+  if (!fs.existsSync(STRICT_BASELINE)) {
+    console.error(`missing ${path.relative(ROOT, STRICT_BASELINE)} — run with --update`)
+    process.exit(2)
+  }
+  const strictCeiling = JSON.parse(fs.readFileSync(STRICT_BASELINE, 'utf-8'))._total
+  if (!Number.isInteger(strictCeiling)) {
+    // A dropped key or a bad merge resolution would otherwise leave `undefined`
+    // here, `1100 > undefined` is false, and the gate would report "at or below the
+    // ceiling of undefined" and never fail again. Fail loud instead — same reason
+    // `assertUpstreamShape` throws rather than degrading to an empty gate.
+    console.error(
+      `${path.relative(ROOT, STRICT_BASELINE)} has no integer \`_total\` (found `
+      + `${JSON.stringify(strictCeiling)}). Re-snapshot it with --update; a gate that `
+      + 'cannot read its own ceiling must fail, not pass.',
+    )
+    process.exit(2)
+  }
+  if (strictOnly > strictCeiling) {
+    const worst = Object.entries(strictOnlyByFile).sort((a, b) => b[1] - a[1]).slice(0, 15)
+    console.error(
+      `${strictOnly} untranslated string(s) sit inside ALL-CAPS module constants, above the\n`
+      + `ceiling of ${strictCeiling}. These are invisible to the per-file ceilings by design —\n`
+      + 'store a catalog key in the table and translate where it renders (see\n'
+      + '`FILTER_LABEL_KEY` in pages/ChatSidebar.tsx). Densest files:\n'
+      + worst.map(([f, n]) => `  ${n}\t${f}`).join('\n'),
+    )
+    process.exit(1)
+  }
+  console.log(
+    `OK: ${strictOnly} untranslated string(s) inside ALL-CAPS constants across `
+    + `${Object.keys(strictOnlyByFile).length} files, at or below the ceiling of ${strictCeiling}.`,
+  )
 
   // Deliberately NOT a failure — see the header. Re-snapshotting is optional and
   // never required to land a change, which is what keeps parallel branches from

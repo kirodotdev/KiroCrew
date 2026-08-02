@@ -1000,6 +1000,10 @@
       "comment_other": "{{count}} comments",
       "comment_unread_one": "{{count}} comment · unread",
       "comment_unread_other": "{{count}} comments · unread"
+    },
+    "reasoningEffortDropdown": {
+      "default_with_level": "Default · {{level}}",
+      "effort_help": "Reasoning effort sets how long the model thinks before answering. Higher means more time reasoning through hard problems (slower, better answers); lower is faster. Turning off the per-session override falls back to the default in Settings → Chat, or to the model's own choice when no default is set (Fable/Opus/Sonnet only)."
     }
   },
   "hooks": {
@@ -1408,7 +1412,22 @@
       "more_pull_request_in_this_session_one": "{{count}} more pull request in this session",
       "more_pull_request_in_this_session_other": "{{count}} more pull requests in this session",
       "more_pull_request_or_issue_in_this_session_one": "{{count}} more pull request or issue in this session",
-      "more_pull_request_or_issue_in_this_session_other": "{{count}} more pull requests or issues in this session"
+      "more_pull_request_or_issue_in_this_session_other": "{{count}} more pull requests or issues in this session",
+      "filter_unread": "Unread",
+      "filter_unread_description": "Show only sessions with unread messages",
+      "filter_running": "In progress",
+      "filter_running_description": "Show only sessions the agent is actively working on",
+      "filter_pinned": "Pinned",
+      "filter_pinned_description": "Show only sessions you have pinned",
+      "filter_recent": "Recent",
+      "filter_recent_description": "Show only sessions active within the selected window",
+      "sort_newest": "Newest",
+      "sort_oldest": "Oldest",
+      "sort_created_newest": "Created (Newest)",
+      "sort_created_oldest": "Created (Oldest)",
+      "sort_name_asc": "A → Z",
+      "sort_name_desc": "Z → A",
+      "clear_named_filter": "Clear {{filter}} filter"
     },
     "devFleetPage": {
       "applies_the_last_pull_build_the_dashboard_will_b": "Applies the last Pull+Build. The dashboard will briefly disconnect and reconnect on its own.",
@@ -1743,7 +1762,13 @@
     "overviewPage": {
       "all_systems_running": "All systems running",
       "connecting": "Connecting…",
-      "reconnecting": "Reconnecting…"
+      "reconnecting": "Reconnecting…",
+      "stat_cron_jobs": "Cron Jobs",
+      "stat_lessons": "Lessons",
+      "stat_messages": "Messages",
+      "stat_sessions": "Sessions",
+      "stat_subagents": "Subagents",
+      "stat_uptime": "Uptime"
     },
     "popoutFrame": {
       "session": "Session"
@@ -2277,6 +2302,16 @@
   "store": {
     "chatSlice": {
       "truncated": "…(truncated)"
+    }
+  },
+  "lib": {
+    "effort": {
+      "default": "Default",
+      "high": "High",
+      "low": "Low",
+      "max": "Max",
+      "medium": "Medium",
+      "xhigh": "Extra High"
     }
   }
 }

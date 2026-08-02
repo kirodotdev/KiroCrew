@@ -108,6 +108,8 @@
     "pages.telemetryPanel.ok": "Status value in a telemetry row, meaning healthy. A state, not the confirmation button.",
     "apps.crewCompanion.reminders.add_button": "Button that saves the reminder typed in the box beside it. The verb \"add\", not the arithmetic sense.",
     "apps.crewCompanion.settings.custom_placeholder": "Placeholder in a small number field for a custom break interval. Short for \"minutes\" (the unit), not \"minimum\".",
-    "apps.crewCompanion.time.now": "Relative time label on a reminder that is due at this moment, shown where others read \"20 min from now\"."
+    "apps.crewCompanion.time.now": "Relative time label on a reminder that is due at this moment, shown where others read \"20 min from now\".",
+    "lib.effort.low": "Reasoning-effort level in the chat model picker: the least thinking time, fastest answers. An adjective naming an amount of effort, not a volume or a priority.",
+    "lib.effort.max": "Reasoning-effort level in the chat model picker: the highest setting the model offers. Short for \"maximum\" — the top of a scale, not a verb."
   }
 }

@@ -2548,7 +2548,9 @@
       "reasoning_effort": "Livello di ragionamento",
       "smarter": "Più intelligente",
       "use_configured_default": "Usa il valore predefinito configurato",
-      "use_model_default": "Usa il valore predefinito del modello"
+      "use_model_default": "Usa il valore predefinito del modello",
+      "default_with_level": "Predefinito · {{level}}",
+      "effort_help": "Il livello di ragionamento determina quanto tempo il modello riflette prima di rispondere. Un valore più alto significa più tempo per ragionare sui problemi difficili (risposte più lente ma migliori); uno più basso è più veloce. Se disattivi la sostituzione per sessione, si torna al valore predefinito in Impostazioni → Chat, oppure alla scelta del modello stesso quando non è impostato alcun valore predefinito (solo Fable/Opus/Sonnet)."
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Aggiungi un registry dell'organizzazione per scoprire app specifiche del team",
@@ -4305,7 +4307,22 @@
       "more_pull_request_in_this_session_other": "{{count}} altre pull request in questa sessione",
       "more_pull_request_or_issue_in_this_session_many": "{{count}} altre pull request o issue in questa sessione",
       "more_pull_request_or_issue_in_this_session_one": "{{count}} altra pull request o issue in questa sessione",
-      "more_pull_request_or_issue_in_this_session_other": "{{count}} altre pull request o issue in questa sessione"
+      "more_pull_request_or_issue_in_this_session_other": "{{count}} altre pull request o issue in questa sessione",
+      "filter_unread": "Non lette",
+      "filter_unread_description": "Mostra solo le sessioni con messaggi non letti",
+      "filter_running": "In corso",
+      "filter_running_description": "Mostra solo le sessioni su cui l’agente sta lavorando attivamente",
+      "filter_pinned": "Fissate",
+      "filter_pinned_description": "Mostra solo le sessioni che hai fissato",
+      "filter_recent": "Recenti",
+      "filter_recent_description": "Mostra solo le sessioni attive nel periodo selezionato",
+      "sort_newest": "Più recenti",
+      "sort_oldest": "Più vecchie",
+      "sort_created_newest": "Creazione (più recenti)",
+      "sort_created_oldest": "Creazione (più vecchie)",
+      "sort_name_asc": "A → Z",
+      "sort_name_desc": "Z → A",
+      "clear_named_filter": "Cancella il filtro {{filter}}"
     },
     "devFleetPage": {
       "actions": "Azioni",
@@ -5348,7 +5365,13 @@
       "usage": "Utilizzo",
       "usage_tracking_is_not_available_for": "Il monitoraggio dell'utilizzo non è disponibile per",
       "v": "· v",
-      "view_details": "Visualizza i dettagli"
+      "view_details": "Visualizza i dettagli",
+      "stat_cron_jobs": "Job cron",
+      "stat_lessons": "Lezioni",
+      "stat_messages": "Messaggi",
+      "stat_sessions": "Sessioni",
+      "stat_subagents": "Subagenti",
+      "stat_uptime": "Tempo di attività"
     },
     "popoutFrame": {
       "session": "Sessione"
@@ -6634,6 +6657,16 @@
   "store": {
     "chatSlice": {
       "truncated": "…(troncato)"
+    }
+  },
+  "lib": {
+    "effort": {
+      "default": "Predefinito",
+      "high": "Alto",
+      "low": "Basso",
+      "max": "Massimo",
+      "medium": "Medio",
+      "xhigh": "Molto alto"
     }
   }
 }

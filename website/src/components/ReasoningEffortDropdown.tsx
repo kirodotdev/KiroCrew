@@ -8,11 +8,6 @@ import { Slider, Toggle } from './ui'
 import InfoTip from './InfoTip'
 
 import { i18nT } from '../i18n/t'
-const EFFORT_HELP =
-  'Reasoning effort sets how long the model thinks before answering. Higher means ' +
-  'more time reasoning through hard problems (slower, better answers); lower is faster. ' +
-  'Turning off the per-session override falls back to the default in Settings → Chat, ' +
-  'or to the model\'s own choice when no default is set (Fable/Opus/Sonnet only).'
 
 // Cold-start fallback before /api/effort-levels resolves (or on fetch failure).
 // Concrete levels only — "default" is a separate toggle, not a slider notch.
@@ -103,7 +98,9 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
   // implied the model picks its own effort, which is false once a default is
   // configured in Settings → Chat.
   const currentLabel = isDefault
-    ? (defaultEffort ? `Default · ${effortLabel(defaultEffort)}` : 'Default')
+    ? (defaultEffort
+        ? i18nT('components.reasoningEffortDropdown.default_with_level', { level: effortLabel(defaultEffort) })
+        : i18nT('lib.effort.default'))
     : effortLabel(concrete[idx] ?? '')
   const atMax = !isDefault && idx >= maxIdx
   // Turning the toggle on clears the per-slot override — which yields the
@@ -131,7 +128,7 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
             </motion.span>
           </AnimatePresence>
         </span>
-        <span className="ml-auto flex"><InfoTip text={EFFORT_HELP} placement="top" /></span>
+        <span className="ml-auto flex"><InfoTip text={i18nT('components.reasoningEffortDropdown.effort_help')} placement="top" /></span>
       </div>
       <Slider
         aria-label={i18nT('components.reasoningEffortDropdown.reasoning_effort')}

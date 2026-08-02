@@ -2548,7 +2548,9 @@
       "reasoning_effort": "Esfuerzo de razonamiento",
       "smarter": "Más inteligente",
       "use_configured_default": "Usar el valor predeterminado configurado",
-      "use_model_default": "Usar el predeterminado del modelo"
+      "use_model_default": "Usar el predeterminado del modelo",
+      "default_with_level": "Predeterminado · {{level}}",
+      "effort_help": "El esfuerzo de razonamiento define cuánto tiempo piensa el modelo antes de responder. Más esfuerzo significa más tiempo razonando problemas difíciles (respuestas más lentas y mejores); menos esfuerzo es más rápido. Al desactivar la anulación por sesión, se vuelve al valor predeterminado de Ajustes → Chat o, si no hay ninguno definido, a la elección del propio modelo (solo Fable/Opus/Sonnet)."
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Añade un registro de la organización para descubrir apps específicas del equipo",
@@ -4305,7 +4307,22 @@
       "more_pull_request_in_this_session_other": "{{count}} pull requests más en esta sesión",
       "more_pull_request_or_issue_in_this_session_many": "{{count}} pull requests o incidencias más en esta sesión",
       "more_pull_request_or_issue_in_this_session_one": "{{count}} pull request o incidencia más en esta sesión",
-      "more_pull_request_or_issue_in_this_session_other": "{{count}} pull requests o incidencias más en esta sesión"
+      "more_pull_request_or_issue_in_this_session_other": "{{count}} pull requests o incidencias más en esta sesión",
+      "filter_unread": "Sin leer",
+      "filter_unread_description": "Mostrar solo las sesiones con mensajes sin leer",
+      "filter_running": "En ejecución",
+      "filter_running_description": "Mostrar solo las sesiones en las que el agente está trabajando activamente",
+      "filter_pinned": "Fijadas",
+      "filter_pinned_description": "Mostrar solo las sesiones que has fijado",
+      "filter_recent": "Recientes",
+      "filter_recent_description": "Mostrar solo las sesiones activas dentro del intervalo seleccionado",
+      "sort_newest": "Más recientes",
+      "sort_oldest": "Más antiguas",
+      "sort_created_newest": "Creación (más recientes)",
+      "sort_created_oldest": "Creación (más antiguas)",
+      "sort_name_asc": "A → Z",
+      "sort_name_desc": "Z → A",
+      "clear_named_filter": "Borrar el filtro {{filter}}"
     },
     "devFleetPage": {
       "actions": "Acciones",
@@ -5348,7 +5365,13 @@
       "usage": "Uso",
       "usage_tracking_is_not_available_for": "El seguimiento de uso no está disponible para",
       "v": "· v",
-      "view_details": "Ver detalles"
+      "view_details": "Ver detalles",
+      "stat_cron_jobs": "Tareas cron",
+      "stat_lessons": "Lecciones",
+      "stat_messages": "Mensajes",
+      "stat_sessions": "Sesiones",
+      "stat_subagents": "Subagentes",
+      "stat_uptime": "Tiempo activo"
     },
     "popoutFrame": {
       "session": "Sesión"
@@ -6634,6 +6657,16 @@
   "store": {
     "chatSlice": {
       "truncated": "…(truncado)"
+    }
+  },
+  "lib": {
+    "effort": {
+      "default": "Predeterminado",
+      "high": "Alto",
+      "low": "Bajo",
+      "max": "Máximo",
+      "medium": "Medio",
+      "xhigh": "Muy alto"
     }
   }
 }

@@ -2548,7 +2548,9 @@
       "reasoning_effort": "Esforço de raciocínio",
       "smarter": "Mais inteligente",
       "use_configured_default": "Usar o padrão configurado",
-      "use_model_default": "Usar o padrão do modelo"
+      "use_model_default": "Usar o padrão do modelo",
+      "default_with_level": "Padrão · {{level}}",
+      "effort_help": "O esforço de raciocínio define por quanto tempo o modelo pensa antes de responder. Valores maiores significam mais tempo raciocinando sobre problemas difíceis (mais lento, respostas melhores); valores menores são mais rápidos. Ao desativar a substituição por sessão, o esforço volta ao padrão definido em Configurações → Chat, ou à escolha do próprio modelo quando nenhum padrão está definido (apenas Fable/Opus/Sonnet)."
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Adicione um registro da organização para descobrir apps específicos da equipe",
@@ -4305,7 +4307,22 @@
       "more_pull_request_in_this_session_other": "{{count}} pull requests adicionais nesta sessão",
       "more_pull_request_or_issue_in_this_session_many": "{{count}} pull requests ou issues adicionais nesta sessão",
       "more_pull_request_or_issue_in_this_session_one": "{{count}} pull request ou issue adicional nesta sessão",
-      "more_pull_request_or_issue_in_this_session_other": "{{count}} pull requests ou issues adicionais nesta sessão"
+      "more_pull_request_or_issue_in_this_session_other": "{{count}} pull requests ou issues adicionais nesta sessão",
+      "filter_unread": "Não lidas",
+      "filter_unread_description": "Mostrar apenas sessões com mensagens não lidas",
+      "filter_running": "Em execução",
+      "filter_running_description": "Mostrar apenas sessões em que o agente está trabalhando ativamente",
+      "filter_pinned": "Fixadas",
+      "filter_pinned_description": "Mostrar apenas sessões que você fixou",
+      "filter_recent": "Recentes",
+      "filter_recent_description": "Mostrar apenas sessões ativas no período selecionado",
+      "sort_newest": "Mais recentes",
+      "sort_oldest": "Mais antigas",
+      "sort_created_newest": "Criadas (mais recentes)",
+      "sort_created_oldest": "Criadas (mais antigas)",
+      "sort_name_asc": "A → Z",
+      "sort_name_desc": "Z → A",
+      "clear_named_filter": "Limpar filtro {{filter}}"
     },
     "devFleetPage": {
       "actions": "Ações",
@@ -5348,7 +5365,13 @@
       "usage": "Uso",
       "usage_tracking_is_not_available_for": "O acompanhamento de uso não está disponível para",
       "v": "· v",
-      "view_details": "Ver detalhes"
+      "view_details": "Ver detalhes",
+      "stat_cron_jobs": "Tarefas cron",
+      "stat_lessons": "Lições",
+      "stat_messages": "Mensagens",
+      "stat_sessions": "Sessões",
+      "stat_subagents": "Subagentes",
+      "stat_uptime": "Tempo ativo"
     },
     "popoutFrame": {
       "session": "Sessão"
@@ -6634,6 +6657,16 @@
   "store": {
     "chatSlice": {
       "truncated": "…(truncado)"
+    }
+  },
+  "lib": {
+    "effort": {
+      "default": "Padrão",
+      "high": "Alto",
+      "low": "Baixo",
+      "max": "Máximo",
+      "medium": "Médio",
+      "xhigh": "Muito alto"
     }
   }
 }
