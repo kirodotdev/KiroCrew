@@ -60,6 +60,19 @@ SESSIONS_DIR_NAME = "sessions"
 ARCHIVE_DIR_NAME = "archive"
 ARCHIVE_RETENTION_DAYS = 7
 _CONSOLIDATION_THRESHOLD = 30  # preferences/projects update threshold (messages)
+# Skill detection judges a wider window than the incremental history tail: a
+# reusable procedure usually spans the whole session, not just the slice since
+# the last consolidation, so a tail-only view systematically misses skills in
+# any session consolidated more than once. Bound the window so pathologically
+# long sessions stay cost-safe.
+_SKILL_DETECTION_WINDOW = 200
+
+
+def _fmt_message(m: dict) -> str:
+    """Render one transcript message for a consolidation / skill-detection prompt."""
+    tools = f" [tools: {', '.join(m['tools'])}]" if m.get("tools") else ""
+    return f"[{m.get('ts', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}"
+
 
 _SESSION_MAX_BYTES = 2 * 1024 * 1024  # 2MB
 _SESSION_KEEP_LINES = 200
@@ -2563,6 +2576,12 @@ class HistoryConsolidator:
         self._history_consolidated: dict[str, float] = {}  # key → last history consolidation time
         # Separate offset for prefs-only consolidation (doesn't advance main offset)
         self._prefs_offset: dict[str, int] = {}
+        # Session length at the last skill-detection pass, so an unchanged
+        # (rotation_generation, message_count) at the last skill-detection
+        # pass, so an unchanged session isn't re-judged on every history
+        # consolidation — while a rotation (which bumps the generation and
+        # swaps the window's content) still forces a fresh pass.
+        self._last_skillgen_marker: dict[str, tuple[int, int]] = {}
 
     def maybe_consolidate(self, key: str) -> None:
         """Fire preferences/projects consolidation if message threshold exceeded."""
@@ -2618,9 +2637,9 @@ class HistoryConsolidator:
         and the ``kirocrew consolidate`` CLI command.  Skips if the session
         is already being consolidated or has no unconsolidated messages.
 
-        Safety: _consolidate() internally enforces _session_touched_sensitive()
-        as part of the auto_skills_eligible gate — sensitive sessions never
-        produce skills regardless of entry point.
+        Safety: skill detection (_run_skill_detection) re-checks
+        _session_touched_sensitive() over its window before proposing anything,
+        so sensitive sessions never produce skills regardless of entry point.
         """
         if key in self._running:
             return
@@ -2701,11 +2720,7 @@ class HistoryConsolidator:
             else:
                 memory = self._memory
 
-            def _fmt(m: dict) -> str:
-                tools = f" [tools: {', '.join(m['tools'])}]" if m.get("tools") else ""
-                return f"[{m.get('ts', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}"
-
-            conversation = "\n".join(_fmt(m) for m in unconsolidated)
+            conversation = "\n".join(_fmt_message(m) for m in unconsolidated)
 
             current_prefs = memory.read_preferences()
             current_projects = memory.read_projects()
@@ -2786,61 +2801,12 @@ class HistoryConsolidator:
                     "implicit corrections the user made without saying 'remember'."
                 )
 
-            # ── Auto skill creation ──
-            # Only eligible when the feature is enabled, we have a loader to
-            # write to, we're on the history path (so prefs-only doesn't retrigger
-            # extraction), and the session has enough tool calls to be non-trivial.
-            auto_skills_eligible = (
-                include_history
-                and self._auto_skills_enabled
-                and self._skills_loader is not None
-                and _count_tool_call_messages(unconsolidated) >= self._auto_min_tool_calls
-                and not _session_touched_sensitive(unconsolidated)
-            )
-            if auto_skills_eligible:
-                scripts_field = ""
-                if self._generate_scripts:
-                    scripts_field = (
-                        ', "scripts": (optional array, part of THIS new_skill '
-                        "object) ONLY when the procedure includes a "
-                        "DETERMINISTIC, always-identical step sequence worth "
-                        "running verbatim (a fixed command chain, a set API "
-                        "sequence, a predictable file transform). Each item: "
-                        '{"filename": "<name>.py", "language": "python", '
-                        '"content": "<self-contained Python, no network to '
-                        "unknown hosts, no credential access, no destructive "
-                        'commands, <=4KB>"}. Python ONLY (must run on Windows). '
-                        "Omit for judgment-based / context-dependent procedures. "
-                        "Scripts always require human approval"
-                    )
-                keys.append(
-                    '"new_skill": Object or null. Return an object ONLY if this '
-                    "session contained a non-trivial reusable multi-step procedure "
-                    "that future sessions would benefit from (e.g. debugging a "
-                    "specific class of error, running a multi-command sequence, "
-                    "a research synthesis flow). Shape: "
-                    '{"slug": "<kebab-case-4-to-60-chars>", '
-                    '"description": "<=150 chars, starts with verb>", '
-                    '"triggers": "<3-8 comma-separated keywords/phrases>", '
-                    '"procedure_md": "<concise markdown body with '
-                    "## When to use / ## Steps / ## Gotchas sections, "
-                    '<=8000 chars>"' + scripts_field + "}. "
-                    'Return null if the session was trivial, a single-shot answer, '
-                    "a one-off failure, or involved sensitive paths. Do NOT "
-                    "include absolute paths, credentials, tokens, or user PII in "
-                    "the procedure body."
-                )
-                if self._auto_refine_enabled:
-                    keys.append(
-                        '"refined_skill": Object or null. If an existing '
-                        '"auto/..." skill was loaded during this session AND '
-                        "the agent found a better procedure than the one "
-                        "documented in that skill, return: "
-                        '{"name": "auto/<existing-slug>", '
-                        '"description": "<updated>", "triggers": "<updated>", '
-                        '"procedure_md": "<refined markdown>"}. Return null '
-                        "if nothing was refined. Do not fabricate refinements."
-                    )
+            # ── Auto skill detection ──
+            # Skill detection runs as its OWN pass (below, after the memory
+            # writes) over a wider last-N window of the full session — not the
+            # incremental history tail — so a reusable procedure that spans the
+            # whole session is judged as a unit. It is therefore intentionally
+            # absent from this consolidation prompt's keys.
 
             numbered = "\n\n".join(f"{i + 1}. {k}" for i, k in enumerate(keys))
             prompt_parts = [
@@ -2895,13 +2861,19 @@ class HistoryConsolidator:
             ):
                 await run_in_embed_pool(self._save_lessons, raw_lessons)
 
-            # Auto skill creation / refinement.
-            # Guarded by flag + eligibility — failures are logged, never fatal.
-            if auto_skills_eligible:
+            # Auto skill detection — a SEPARATE LLM pass over the full-session
+            # window (see _run_skill_detection), not the incremental tail. Runs
+            # only on history consolidation, guarded by flag + loader; failures
+            # are logged, never fatal.
+            if (
+                include_history
+                and self._auto_skills_enabled
+                and self._skills_loader is not None
+            ):
                 try:
-                    await asyncio.to_thread(self._process_auto_skills, result, key)
+                    await self._run_skill_detection(key)
                 except Exception:
-                    logger.warning("Auto-skill processing failed for %s", key, exc_info=True)
+                    logger.warning("Auto-skill detection failed for %s", key, exc_info=True)
 
             # Autonomous lifecycle: age-based archival must run even when this
             # pass created/approved no skill, otherwise skills never age out on
@@ -2944,6 +2916,118 @@ class HistoryConsolidator:
             raise
         finally:
             self._running.discard(key)
+
+    async def _run_skill_detection(self, key: str) -> None:
+        """Detect a reusable skill from the FULL session (bounded window).
+
+        Unlike history/semantic/lesson extraction — which correctly runs on the
+        incremental unconsolidated tail — skill detection judges the last
+        ``_SKILL_DETECTION_WINDOW`` messages of the WHOLE session, decoupled
+        from the consolidation offset. A reusable procedure usually spans a
+        session rather than the slice since the last consolidation, so a
+        tail-only view systematically misses skills in any session consolidated
+        more than once. The skill need only be demonstrated by PART of the
+        window; the pass does not have to cover the whole session.
+
+        Runs as its own LLM call so the consolidation prompt stays tail-scoped
+        (widening THAT prompt would re-summarize already-consolidated messages
+        into duplicate history/semantic entries). A per-session
+        (rotation_generation, count) guard skips re-running when nothing new has
+        been appended since the last pass, yet still forces a fresh pass after a
+        transcript rotation (which swaps the window's content); genuine repeats
+        are still caught by the dedupe verdict in ``_process_auto_skills``.
+        """
+        if self._skills_loader is None:
+            return
+        all_messages = await asyncio.to_thread(self._log._read_messages, key)
+        if not all_messages:
+            return
+        # Key the guard on (rotation generation, message count), NOT count
+        # alone. The transcript rotates at _SESSION_MAX_BYTES / _SESSION_KEEP_LINES:
+        # a rotation bumps rotation_generation and replaces the window with fresh
+        # messages even when the resulting count matches a prior value, so a
+        # count-only guard would wrongly treat a rotated session as unchanged and
+        # never propose its skill. Comparing the pair re-detects after any
+        # rotation while still skipping a genuinely unchanged session.
+        generation = await asyncio.to_thread(
+            lambda: int(self._log._read_metadata(key).get("rotation_generation", 0) or 0)
+        )
+        marker = (generation, len(all_messages))
+        if self._last_skillgen_marker.get(key) == marker:
+            return
+        window = all_messages[-_SKILL_DETECTION_WINDOW:]
+        if _count_tool_call_messages(window) < self._auto_min_tool_calls:
+            return
+        if _session_touched_sensitive(window):
+            return
+
+        scripts_field = ""
+        if self._generate_scripts:
+            scripts_field = (
+                ', "scripts": (optional array, part of THIS new_skill '
+                "object) ONLY when the procedure includes a "
+                "DETERMINISTIC, always-identical step sequence worth "
+                "running verbatim (a fixed command chain, a set API "
+                "sequence, a predictable file transform). Each item: "
+                '{"filename": "<name>.py", "language": "python", '
+                '"content": "<self-contained Python, no network to '
+                "unknown hosts, no credential access, no destructive "
+                'commands, <=4KB>"}. Python ONLY (must run on Windows). '
+                "Omit for judgment-based / context-dependent procedures. "
+                "Scripts always require human approval"
+            )
+        skill_keys = [
+            '"new_skill": Object or null. Return an object ONLY if this '
+            "session contained a non-trivial reusable multi-step procedure "
+            "that future sessions would benefit from (e.g. debugging a "
+            "specific class of error, running a multi-command sequence, "
+            "a research synthesis flow). The procedure may be demonstrated by "
+            "only PART of the excerpt below — you do NOT need to cover the whole "
+            "session, just capture the one reusable procedure it contains. Shape: "
+            '{"slug": "<kebab-case-4-to-60-chars>", '
+            '"description": "<=150 chars, starts with verb>", '
+            '"triggers": "<3-8 comma-separated keywords/phrases>", '
+            '"procedure_md": "<concise markdown body with '
+            "## When to use / ## Steps / ## Gotchas sections, "
+            '<=8000 chars>"' + scripts_field + "}. "
+            'Return null if the session was trivial, a single-shot answer, '
+            "a one-off failure with no reusable takeaway, or involved "
+            "sensitive paths. When a session plausibly contains a procedure "
+            "a future session could reuse, lean toward returning it — every "
+            "candidate is staged for human approval before it can activate, "
+            "so a borderline proposal is cheap while a miss is lost for good. "
+            "Do NOT include absolute paths, credentials, tokens, or user PII "
+            "in the procedure body."
+        ]
+        if self._auto_refine_enabled:
+            skill_keys.append(
+                '"refined_skill": Object or null. If an existing '
+                '"auto/..." skill was loaded during this session AND '
+                "the agent found a better procedure than the one "
+                "documented in that skill, return: "
+                '{"name": "auto/<existing-slug>", '
+                '"description": "<updated>", "triggers": "<updated>", '
+                '"procedure_md": "<refined markdown>"}. Return null '
+                "if nothing was refined. Do not fabricate refinements."
+            )
+        numbered = "\n\n".join(f"{i + 1}. {k}" for i, k in enumerate(skill_keys))
+        conversation = "\n".join(_fmt_message(m) for m in window)
+        prompt = (
+            "You are a skill-extraction agent. Review this session excerpt and "
+            "return a JSON object with these keys:\n\n" + numbered
+            + "\n\n## Session excerpt\n" + conversation
+            + "\n\nRespond with ONLY valid JSON, no markdown fences."
+        )
+        result = await self._call_llm(prompt)
+        # Record the (generation, count) marker regardless of outcome so an
+        # unchanged session isn't re-evaluated on every subsequent
+        # consolidation, but a rotation still forces a fresh pass.
+        self._last_skillgen_marker[key] = marker
+        if not result:
+            return
+        # _event_loop was captured by our caller (_consolidate) so the
+        # thread-offloaded dedupe judge can marshal back onto the gateway loop.
+        await asyncio.to_thread(self._process_auto_skills, result, key)
 
     def _save_lessons(self, raw: object) -> None:
         """Save extracted lessons from consolidation result."""
