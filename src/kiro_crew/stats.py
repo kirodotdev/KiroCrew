@@ -19,8 +19,9 @@ class Stats:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._init_counters()
+                    inst = super().__new__(cls)
+                    inst._init_counters()
+                    cls._instance = inst  # publish only after fully initialized
         return cls._instance
 
     def _init_counters(self) -> None:

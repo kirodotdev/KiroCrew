@@ -136,6 +136,71 @@ class TestStats(unittest.TestCase):
 
     # -- thread safety --
 
+    def test_singleton_publish_after_init(self) -> None:
+        """Regression test for #427: singleton must be fully initialized before publish.
+
+        This test deterministically triggers the race by injecting a barrier into
+        _init_counters that forces the following interleaving:
+
+        Thread A                          Thread B
+        --------                          --------
+        __new__: acquires lock
+        __new__: creates instance
+        __new__: calls _init_counters
+          _init_counters: barrier.wait()
+                                          __new__: lock-free check sees non-None
+                                          __new__: returns half-built instance
+                                          snapshot(): AttributeError on _mu/_c
+          _init_counters: finishes
+
+        If the singleton is published before _init_counters completes, thread B
+        sees a half-built instance and snapshot() raises AttributeError. The fix
+        is to assign cls._instance only after _init_counters returns.
+        """
+        # Reset singleton so we can create a fresh one
+        Stats._instance = None
+
+        barrier = threading.Barrier(2)
+        results: list[object] = [None, None]  # [thread_b_result_or_error, thread_a_instance]
+
+        original_init_counters = Stats._init_counters
+
+        def slow_init_counters(self: Stats) -> None:
+            # Signal thread B that we're inside _init_counters but not done
+            barrier.wait()
+            # Give thread B time to grab the half-built instance and call snapshot
+            import time
+
+            time.sleep(0.05)
+            original_init_counters(self)
+
+        def thread_a() -> None:
+            with patch.object(Stats, "_init_counters", slow_init_counters):
+                results[1] = Stats()
+
+        def thread_b() -> None:
+            barrier.wait()  # Wait for thread A to be inside _init_counters
+            try:
+                inst = Stats()
+                # Try to use the instance - this will fail if it's half-built
+                results[0] = inst.snapshot()
+            except AttributeError as e:
+                results[0] = e
+
+        t_a = threading.Thread(target=thread_a)
+        t_b = threading.Thread(target=thread_b)
+
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=5)
+        t_b.join(timeout=5)
+
+        # With the fix, thread B should get a fully initialized instance (dict result)
+        # Without the fix, thread B gets AttributeError
+        assert isinstance(
+            results[0], dict
+        ), f"Expected snapshot dict, got {type(results[0]).__name__}: {results[0]}"
+
     def test_thread_safety(self) -> None:
         s = Stats()
         barrier = threading.Barrier(10)
