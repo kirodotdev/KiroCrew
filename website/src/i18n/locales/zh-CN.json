@@ -3892,6 +3892,7 @@
       "toggle_sessions": "切换会话列表",
       "tokens": "个令牌",
       "too_many_files_max_20": "文件过多（最多 20 个）",
+      "folder_drop_desktop_only": "拖入文件夹会插入其路径 - 仅在桌面应用中可用。",
       "tool_search_deferred": "工具搜索 · 按需加载",
       "tool_search_deferred_hint": "工具规格按需加载——不会每轮都发送给模型。",
       "tool_search_full": "工具搜索 · 完整加载",

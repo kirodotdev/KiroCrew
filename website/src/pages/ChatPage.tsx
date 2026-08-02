@@ -110,6 +110,8 @@ import { groupDisplayItems, applyRunningState } from './chat/groupDisplayItems'
 import { setSessionPreviewPending, normalizeUrl, PREVIEW_FOCUS_EVENT, PREVIEW_SNIP_EVENT, PREVIEW_ENABLE_BROWSE_EVENT, BROWSE_MODE_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
 import { fileLandingSlot } from '../utils/uploadRouting'
+import { classifyDrop } from '../utils/dropClassify'
+import { droppedFilePath } from '../lib/electron'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
 import { toSlug } from '../utils/shareUrl'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
@@ -1869,9 +1871,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setDragOver(false)
-    const files = Array.from(e.dataTransfer.files)
+    setUploadError('')
+    // Folders become a composer path (CLI muscle memory); files keep uploading.
+    // See utils/dropClassify for the directory-detection + path-resolution rules.
+    const { files, folderPaths, blockedFolders } = classifyDrop(e.dataTransfer, droppedFilePath)
+    if (folderPaths.length) {
+      const text = folderPaths.join(' ')
+      setInput(prev => (prev.trim() ? (prev.endsWith(' ') ? prev + text : prev + ' ' + text) : text))
+    }
     if (files.length) {
       uploadFiles(files)
+    }
+    // A directory was detected but no absolute path is available (plain browser,
+    // no Electron webUtils bridge). Don't upload a 0-byte folder as garbage -
+    // surface a notice even when files were also dropped, so the folder does not
+    // vanish silently. Set after uploadFiles, whose entry-time reset would
+    // otherwise clear this message.
+    if (blockedFolders > 0 && !folderPaths.length) {
+      setUploadError(i18nT('pages.chatPage.folder_drop_desktop_only'))
     }
   }, [uploadFiles])
 

@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
@@ -6,6 +6,17 @@ contextBridge.exposeInMainWorld("kirocrew", {
 });
 
 contextBridge.exposeInMainWorld("electronAPI", {
+  // Absolute path of a dropped/selected File. Electron 32+ removed File.path;
+  // webUtils.getPathForFile is the supported replacement and must run in the
+  // preload (it needs the renderer's webUtils). Used by the composer to insert a
+  // dropped folder's path as text instead of uploading it.
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return "";
+    }
+  },
   onStatus: (cb) => {
     const handler = (_e, msg) => cb(msg);
     ipcRenderer.on("status", handler);

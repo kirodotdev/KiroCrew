@@ -3992,6 +3992,7 @@
       "toggle_sessions": "Alternar sessões",
       "tokens": "tokens",
       "too_many_files_max_20": "Arquivos demais (máx. 20)",
+      "folder_drop_desktop_only": "Soltar uma pasta insere o caminho dela - disponível apenas no aplicativo para desktop.",
       "tool_search_deferred": "Busca de ferramentas · Adiada",
       "tool_search_deferred_hint": "As especificações das ferramentas são carregadas sob demanda — não enviadas ao modelo a cada turno.",
       "tool_search_full": "Busca de ferramentas · Totalmente carregada",
