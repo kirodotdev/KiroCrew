@@ -364,6 +364,57 @@ def test_process_dup_still_rejects(monkeypatch):
     assert rej and rej[0]["metadata"]["existing"] == "auto/deploy-helper"
 
 
+def test_process_no_candidate_emits_skipped_audit(monkeypatch):
+    """When the model returns no new_skill, emit a 'skipped' audit event.
+
+    Regression test for the observability gap: an eligible session that ran the
+    skill-gen prompt but got no candidate previously left NO SEL event, making
+    'asked, model declined' indistinguishable from 'never asked' in the audit
+    log. The else-branch in _process_auto_skills now records it.
+    """
+    loader = FakeLoader()
+    c = _mk(loader)
+    # _dedupe_candidate must never be consulted — there is no candidate.
+    monkeypatch.setattr(
+        c, "_dedupe_candidate",
+        lambda *a, **k: pytest.fail("dedupe called for a null candidate"),
+    )
+    recorded: list[dict] = []
+    ctx = _sel_recorder(recorded)
+    try:
+        # result carries a history_entry but new_skill is absent (model declined).
+        c._process_auto_skills({"history_entry": "did some work"}, "sess")
+    finally:
+        ctx.stop()
+    assert loader.staged == []
+    skipped = [
+        r for r in recorded
+        if r.get("tool_name") == "auto_skill_create"
+        and r.get("outcome") == "skipped"
+        and r.get("metadata", {}).get("reason") == "no_candidate_proposed"
+    ]
+    assert len(skipped) == 1
+    assert skipped[0]["session_key"] == "sess"
+
+
+def test_process_null_new_skill_emits_skipped_audit(monkeypatch):
+    """A literal ``new_skill: null`` is treated the same as an absent key."""
+    loader = FakeLoader()
+    c = _mk(loader)
+    recorded: list[dict] = []
+    ctx = _sel_recorder(recorded)
+    try:
+        c._process_auto_skills({"new_skill": None}, "sess")
+    finally:
+        ctx.stop()
+    assert loader.staged == []
+    assert any(
+        r.get("outcome") == "skipped"
+        and r.get("metadata", {}).get("reason") == "no_candidate_proposed"
+        for r in recorded
+    )
+
+
 def test_process_new_stages_as_new(monkeypatch):
     loader = FakeLoader()
     c = _mk(loader)  # approval_required=True → stages

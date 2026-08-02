@@ -3555,6 +3555,24 @@ class HistoryConsolidator:
                                     "reason": "creation_failed",
                                 },
                             )
+        else:
+            # Eligible session ran the skill-gen prompt, but the model returned
+            # no new-skill candidate. Emit a lightweight audit trail so
+            # operators can distinguish "asked, model declined" from "never
+            # asked" — previously this branch left no SEL event or log line,
+            # making it impossible to tell from the audit log whether skill
+            # generation was ever attempted during a consolidation.
+            logger.info(
+                "Auto-skill: model proposed no skill candidate for session %s",
+                key,
+            )
+            sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="skipped",
+                metadata={"reason": "no_candidate_proposed"},
+            )
 
         # Refine path (only if explicitly enabled)
         if not self._auto_refine_enabled:
