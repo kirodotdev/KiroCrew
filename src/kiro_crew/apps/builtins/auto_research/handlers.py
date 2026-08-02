@@ -24,6 +24,7 @@ from kiro_crew.apps.builtins.auto_research.workflow_template import (
     RESEARCH_WORKFLOW_SOURCE,
     build_workflow_args,
 )
+from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.autonudge import get_instance as _autonudge_instance
 from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_utils import _history_key_for
@@ -75,10 +76,7 @@ def _fence_untrusted(text: str) -> str:
     model is told to treat the fenced span as data rather than instructions.
     """
     nonce = uuid.uuid4().hex
-    return (
-        f"<<<BEGIN_UNTRUSTED_CONTENT_{nonce}>>>\n{text}\n"
-        f"<<<END_UNTRUSTED_CONTENT_{nonce}>>>"
-    )
+    return f"<<<BEGIN_UNTRUSTED_CONTENT_{nonce}>>>\n{text}\n" f"<<<END_UNTRUSTED_CONTENT_{nonce}>>>"
 
 
 # Resolved per call, never captured at import: an import-time binding freezes
@@ -98,9 +96,7 @@ def research_dir() -> Path:
 def db_path() -> Path:
     """Campaigns sqlite DB path, resolved against the live data home (issue #874)."""
     return (
-        DB_PATH
-        if DB_PATH is not None
-        else data_home() / "apps" / "auto-research" / "campaigns.db"
+        DB_PATH if DB_PATH is not None else data_home() / "apps" / "auto-research" / "campaigns.db"
     )
 
 
@@ -781,6 +777,32 @@ def _should_pause_for_question(cid: str, auto_approve: bool) -> bool:
     return True
 
 
+async def _suspend_research_loops_while_disabled(state: Any) -> None:
+    """Deactivate every research autonudge loop and clear its slot trust.
+
+    Called from the watchdog when the app is disabled. The 24h trust expiry lives
+    in the per-campaign body that a disabled cycle skips, and autonudge loops fire
+    regardless of the enabled flag — so without this a disabled app keeps a running
+    campaign's tools auto-approved indefinitely past the cap. Idempotent: once the
+    loops are inactive and trust is cleared, later disabled cycles are no-ops.
+    Re-enabling restores trust and re-arms the loop in the per-campaign body.
+    """
+    svc = _autonudge_instance()
+    if svc is None:
+        return
+    for loop in svc.list_all():
+        if not loop.slot_key.startswith("research-"):
+            continue
+        if loop.active:
+            try:
+                await svc.update(loop.id, active=False)
+            except Exception:  # noqa: BLE001 — disable cleanup must not raise
+                logger.warning("auto_research: could not deactivate loop %s on disable", loop.id)
+        slot = state._slots.get(loop.slot_key) if state is not None else None
+        if slot is not None and getattr(slot, "_trust", False):
+            slot._trust = False
+
+
 async def _watchdog_loop(app: web.Application | None = None) -> None:
     state = app.get("state") if app is not None else None
     last_counts: dict[str, int] = {}
@@ -788,6 +810,23 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
     while True:
         try:
             await asyncio.sleep(POLL_INTERVAL)
+            # A builtin whose background loop must respect enabled state:
+            # register_routes always appends this loop at startup, so gate every
+            # cycle on the app's live enabled flag before doing any DB work.
+            # Checking per-cycle (not once at startup) means enabling the app
+            # later starts work without a gateway restart, and disabling it stops
+            # the work. is_app_enabled reads installed.json synchronously, so run
+            # it off the event loop.
+            if not await asyncio.to_thread(is_app_enabled, "auto-research"):
+                # Disabling the app must NOT leave a running campaign auto-approved.
+                # The per-campaign 24h trust expiry lives in the body below, which a
+                # disabled cycle skips, and the autonudge loops fire regardless of the
+                # enabled flag — so without this a disabled app keeps a slot's
+                # _trust=True and its loop nudging past the 24h cap. Deactivate every
+                # research loop and clear its slot trust first; re-enabling
+                # re-establishes trust and re-arms the loop in the per-campaign body.
+                await _suspend_research_loops_while_disabled(state)
+                continue
             db = _get_db()
             active = db.execute(
                 "SELECT id, idle_secs, max_cycles, started_at, auto_approve, execution_mode "
@@ -827,6 +866,13 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                 if slot is not None and not slot._trust:
                     slot._trust = True
                     _audit("campaign_trust_reestablished", cid)
+                # Re-arm the autonudge loop if a prior app-disable deactivated it
+                # (see _suspend_research_loops_while_disabled at the enabled guard).
+                _svc = _autonudge_instance()
+                if _svc is not None:
+                    _loop = _svc.get_by_slot(f"research-{cid}")
+                    if _loop is not None and not _loop.active:
+                        await _svc.update(_loop.id, active=True)
                 # Attended: pause for the user. Unattended: discard the stray
                 # question + keep running (code-enforced; see helper).
                 if _should_pause_for_question(cid, bool(row["auto_approve"])):
@@ -969,9 +1015,7 @@ async def _launch_loop(request: web.Request, cid: str) -> None:
                 state.conversation_log.set_title, _history_key_for(slot.key), slot.title
             )
         except Exception:
-            logger.warning(
-                "auto_research: failed to persist slot title for %s", cid, exc_info=True
-            )
+            logger.warning("auto_research: failed to persist slot title for %s", cid, exc_info=True)
     state.push_slot_title(slot.key, slot.title)
     # The worker runs autonomously — auto-approve its tools so the loop never
     # stalls on per-tool approval prompts (brakes: max_cycles, Stop, sandbox,
@@ -1592,9 +1636,7 @@ async def _read_json_body(request: web.Request):
     except Exception:
         return web.json_response({"error": "invalid JSON body"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "request body must be a JSON object"}, status=400
-        )
+        return web.json_response({"error": "request body must be a JSON object"}, status=400)
     return body
 
 

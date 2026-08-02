@@ -518,9 +518,40 @@ def _cleanup_app_crons_from_scheduler(app_name: str) -> int:
     return removed
 
 
+def _run_app_mcp_server(app_name: str) -> None:
+    """Run the named app's stdio MCP server in this process.
+
+    Resolved by convention (``<app package>.mcp_server:run_mcp_server``) rather
+    than a manifest field: the manifest already names the server via
+    ``mcpServers.<name>.command``, and a second declaration of the same fact is
+    one more thing to drift.
+
+    Errors go to stderr and exit non-zero — stdout carries JSON-RPC, so a
+    diagnostic written there would corrupt the stream kiro-cli is parsing.
+    """
+    module_name = f"kiro_crew.apps.builtins.{app_name.replace('-', '_')}.mcp_server"
+    try:
+        mod = importlib.import_module(module_name)
+    except ImportError as exc:
+        print(f"App {app_name!r} has no MCP server ({module_name}): {exc}", file=sys.stderr)
+        sys.exit(1)
+    runner = getattr(mod, "run_mcp_server", None)
+    if runner is None:
+        print(f"{module_name} defines no run_mcp_server()", file=sys.stderr)
+        sys.exit(1)
+    runner()
+
+
 def _handle_app(args: argparse.Namespace) -> None:
     """Dispatch app subcommands: install, list, enable, disable, uninstall, info."""
     action = getattr(args, "app_action", None)
+
+    if action == "mcp":
+        # Spawned by kiro-cli as a stdio MCP server (declared in the app's
+        # manifest mcpServers). stdout is the JSON-RPC channel — never print to
+        # it here, or the handshake breaks.
+        _run_app_mcp_server(args.name)
+        return
 
     if action == "install":
         result = install_app(args.source)
@@ -886,15 +917,17 @@ def _cron_preview(args: argparse.Namespace) -> None:
         script_path, func_name = resolve_script_path(args.script)
     except (ValueError, FileNotFoundError, PermissionError) as e:
         sel().log_api_access(
-            caller="cli", operation="cron.preview",
-            outcome="denied", source="cli",
+            caller="cli",
+            operation="cron.preview",
+            outcome="denied",
+            source="cli",
             resources=f"script={args.script} reason={type(e).__name__}",
         )
         print(f"Error: {e}")
         sys.exit(1)
 
     # Set env vars before loading module so top-level code can see them
-    for kv in (args.env or []):
+    for kv in args.env or []:
         if "=" in kv:
             k, v = kv.split("=", 1)
             os.environ[k] = v
@@ -911,7 +944,9 @@ def _cron_preview(args: argparse.Namespace) -> None:
         print(f"Error: function '{func_name}' not found in {script_path}")
         sys.exit(1)
     if inspect.iscoroutinefunction(func):
-        print(f"Error: function '{func_name}' is async; cron preview only supports synchronous functions")
+        print(
+            f"Error: function '{func_name}' is async; cron preview only supports synchronous functions"
+        )
         sys.exit(1)
 
     @dataclass
@@ -976,8 +1011,10 @@ def _cron_preview(args: argparse.Namespace) -> None:
     finally:
         ctx.close()
         sel().log_api_access(
-            caller="cli", operation="cron.preview",
-            outcome=outcome, source="cli",
+            caller="cli",
+            operation="cron.preview",
+            outcome=outcome,
+            source="cli",
             resources=f"script={script_path}:{func_name}",
         )
     if outcome == "error":

@@ -1403,7 +1403,9 @@
         "installed": "Установлено",
         "update": "Обновить",
         "verified_publisher": "Проверенный издатель",
-        "verified_publisher_first_party": "Проверенный издатель (собственный)"
+        "verified_publisher_first_party": "Проверенный издатель (собственный)",
+        "desktop_app": "Настольное приложение",
+        "desktop_app_hint": "Включить можно отсюда, но собственное окно приложения требует настольного приложения KiroCrew."
       },
       "categoryRail": {
         "add_source": "Добавить источник",
@@ -1419,7 +1421,9 @@
       "featureCard": {
         "enable": "Включить",
         "get": "Получить",
-        "installed": "Установлено"
+        "installed": "Установлено",
+        "desktop_app": "Настольное приложение",
+        "desktop_app_hint": "Включить можно отсюда, но собственное окно приложения требует настольного приложения KiroCrew."
       },
       "featuredSpotlight": {
         "enable": "Включить",
@@ -3272,7 +3276,8 @@
       "updating": "Обновление…",
       "v": "v",
       "v_2": "· v",
-      "websocket_events": "События WebSocket"
+      "websocket_events": "События WebSocket",
+      "desktop_app_hint": "Включить можно отсюда, но собственное окно приложения требует настольного приложения KiroCrew."
     },
     "appPage": {
       "loading_app": "Загрузка приложения…"

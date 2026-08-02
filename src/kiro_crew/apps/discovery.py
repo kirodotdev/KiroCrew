@@ -4,6 +4,7 @@ Replaces the hardcoded ``_BUILTIN_APPS`` list in ``manager.py`` with
 filesystem-based discovery. Each subdirectory of ``builtins/`` that contains
 a valid ``app.json`` is registered as a builtin app.
 """
+
 from __future__ import annotations
 
 import json
@@ -89,6 +90,31 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     if pp_d:
         d["publishProvider"] = pp_d
 
+    # The REMAINING declarative fields, same reasoning as the agents/skills block
+    # above (#1076): this dict is what register_builtin_apps() persists as the
+    # app.json snapshot, and register_app() reads that snapshot rather than the
+    # packaged manifest — so any typed field not copied here is silently dropped
+    # for every builtin. agents/skills was the instance that shipped; these are
+    # the rest of the same class, and the round-trip guard covers all of them.
+    if manifest.sops:
+        d["sops"] = list(manifest.sops)
+    if manifest.jobFamilies:
+        d["jobFamilies"] = list(manifest.jobFamilies)
+    notif_d = manifest.notifications.to_dict()
+    if notif_d:
+        d["notifications"] = notif_d
+    platform_d = manifest.platform.to_dict() if manifest.platform else {}
+    if platform_d:
+        d["platform"] = platform_d
+    if manifest.license:
+        d["license"] = manifest.license
+    if manifest.minKiroCrewVersion:
+        d["minKiroCrewVersion"] = manifest.minKiroCrewVersion
+    if manifest.signer:
+        d["signer"] = manifest.signer
+    if manifest.signature:
+        d["signature"] = manifest.signature
+
     return d
 
 
@@ -130,19 +156,19 @@ def discover_builtin_apps(builtins_dir: Path | None = None) -> list[dict[str, An
             if errors:
                 logger.warning(
                     "Skipping builtin %s: validation errors: %s",
-                    entry.name, "; ".join(errors),
+                    entry.name,
+                    "; ".join(errors),
                 )
                 continue
             apps.append(_manifest_to_builtin_dict(manifest))
             logger.debug("Discovered builtin app: %s v%s", manifest.name, manifest.version)
         except (json.JSONDecodeError, ValueError) as exc:
-            logger.warning(
-                "Failed to parse builtin manifest %s: %s", manifest_path, exc
-            )
+            logger.warning("Failed to parse builtin manifest %s: %s", manifest_path, exc)
         except Exception:
             logger.warning(
                 "Unexpected error loading builtin manifest: %s",
-                manifest_path, exc_info=True,
+                manifest_path,
+                exc_info=True,
             )
 
     logger.info("Discovered %d builtin app(s) from %s", len(apps), builtins_dir)

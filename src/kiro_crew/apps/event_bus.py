@@ -3,13 +3,21 @@
 Thin wrapper over the existing DashboardState.broadcast() mechanism.
 Apps publish events scoped to their declared ``permissions.events`` list.
 """
+
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable
 
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+
+#: Fixed WS message type for ALL app-published events. App event names are
+#: app-chosen and collide with CORE WS types (an app publishing "notification"
+#: would land in the dashboard's notification feed), so app events ride under one
+#: namespaced type with the real event name carried inside the envelope.
+APP_EVENT_WS_TYPE = "app_event"
 
 logger = logging.getLogger(__name__)
 
@@ -118,3 +126,48 @@ class EventBus:
         if isinstance(value, list):
             return [self._redact_value(item) for item in value]
         return value
+
+
+def build_broadcast_fn(send: object) -> object:
+    """Adapt a ``(msg_type, data)`` sender to the single-payload callback an
+    :class:`EventBus` calls.
+
+    The two shapes cannot be wired directly: EventBus hands its callback ONE
+    payload dict (``{"type", "app", "data"}``) while the gateway's WS sender takes
+    two positional args. Passing the bound method straight through raises
+    TypeError inside every publish; passing a non-existent attribute silently
+    yields None, which leaves the app with ``events=None`` and every app event a
+    no-op. Both failure modes were live.
+    """
+
+    # Capture the gateway loop at wiring time (this runs during async gateway
+    # setup). `_broadcast` is called from BOTH the loop AND worker threads — the
+    # Mochi owner loop offloads its ticks via `asyncio.to_thread`, and those fire
+    # app events — while the WS sender schedules each send ON the loop
+    # (`ensure_future`). Called straight from a worker thread that raises, and the
+    # sender's error path marks every client dead and evicts them. So marshal a
+    # worker-thread broadcast back onto the loop with `call_soon_threadsafe`.
+    try:
+        _loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _loop = None
+
+    def _broadcast(payload: dict) -> None:
+        event_type = str(payload.get("type", ""))
+        # All non-`type` fields ride inside the WS data arg (the wire is
+        # `{type, data}`), and the REAL event name goes in `event` — the WS
+        # `type` is the fixed APP_EVENT_WS_TYPE so an app's event name can never
+        # collide with a core WS message type. `app` and `_scope` are preserved so
+        # the client can tell which app emitted it and at what scope.
+        envelope = {k: v for k, v in payload.items() if k != "type"}
+        envelope["event"] = event_type
+        try:
+            _running = asyncio.get_running_loop()
+        except RuntimeError:
+            _running = None
+        if _loop is not None and _running is not _loop:
+            _loop.call_soon_threadsafe(send, APP_EVENT_WS_TYPE, envelope)  # type: ignore[arg-type]
+        else:
+            send(APP_EVENT_WS_TYPE, envelope)  # type: ignore[operator]
+
+    return _broadcast

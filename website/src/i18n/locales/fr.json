@@ -1386,7 +1386,9 @@
         "installed": "Installée",
         "update": "Mettre à jour",
         "verified_publisher": "Éditeur vérifié",
-        "verified_publisher_first_party": "Éditeur vérifié (officiel)"
+        "verified_publisher_first_party": "Éditeur vérifié (officiel)",
+        "desktop_app": "Application de bureau",
+        "desktop_app_hint": "Tu peux l'activer d'ici, mais la fenêtre propre à l'app nécessite l'app de bureau KiroCrew."
       },
       "categoryRail": {
         "add_source": "Ajouter une source",
@@ -1401,7 +1403,9 @@
       "featureCard": {
         "enable": "Activer",
         "get": "Obtenir",
-        "installed": "Installée"
+        "installed": "Installée",
+        "desktop_app": "Application de bureau",
+        "desktop_app_hint": "Tu peux l'activer d'ici, mais la fenêtre propre à l'app nécessite l'app de bureau KiroCrew."
       },
       "featuredSpotlight": {
         "enable": "Activer",
@@ -3231,7 +3235,8 @@
       "updating": "Mise à jour…",
       "v": "v",
       "v_2": "· v",
-      "websocket_events": "Événements WebSocket"
+      "websocket_events": "Événements WebSocket",
+      "desktop_app_hint": "Tu peux l'activer d'ici, mais la fenêtre propre à l'app nécessite l'app de bureau KiroCrew."
     },
     "appPage": {
       "loading_app": "Chargement de l'application…"

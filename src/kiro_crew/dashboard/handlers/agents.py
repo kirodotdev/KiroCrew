@@ -54,6 +54,33 @@ _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 logger = logging.getLogger(__name__)
 
 
+def _namespaced_agent_file_exists(agent_name: str) -> bool:
+    """True when an app-registered agent file backs *agent_name*.
+
+    App agents are materialized as ``<app>--<agent>.json`` (namespaced file
+    names prevent two apps' same-named agents from clobbering each other), but
+    kiro-cli resolves agents by the JSON ``name`` field, not the file name. A
+    file-name-only existence check therefore reports a perfectly spawnable app
+    agent as missing on every boot.
+    """
+    # Resolved per call, not read from a module constant: the agents dir tracks
+    # the live data home (see config.md "Data Home"), and a frozen constant would
+    # glob the real ~/.kiro from an isolated run.
+    from kiro_crew.agent import kiro_agents_dir_path
+
+    try:
+        for path in kiro_agents_dir_path().glob(f"*--{agent_name}.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("name") == agent_name:
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _err500(exc: BaseException) -> web.Response:
     """Return a generic 500 with a correlation id; log the detail server-side.
 
@@ -154,6 +181,17 @@ async def api_agent_config(request: web.Request) -> web.Response:
             else:
                 mc_cfg.pop("removedTools", None)
             write_config_atomically(mc_cfg_path, mc_cfg)
+            # Governance floor on the WHOLE-object write path: this handler
+            # persists the request's config verbatim, so a dashboard PUT could
+            # otherwise restore a ceiling-governed @denied grant or a governed
+            # server's autoApprove that the per-ref writers strip. Filter the map
+            # here too (no-op on an ungoverned host).
+            from kiro_crew.platform.governance import sanitize_agent_config_governance
+
+            # Offloaded: the filter resolves the ceiling AND scans the profile
+            # directory per ref, which is synchronous filesystem work — running it
+            # inline would stall the aiohttp event loop for the duration.
+            await asyncio.to_thread(sanitize_agent_config_governance, config)
             installed_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
             # Restart kiro-cli sessions so new config takes effect
             await _h._reset_all_sessions(request)
@@ -311,7 +349,11 @@ async def api_capability_mcp_install(request: web.Request) -> web.Response:
         )
 
         async with _get_config_lock():
-            _sync_mcp_to_agent(server_id, True)
+            # Off the loop: _sync_mcp_to_agent acquires bridges' synchronous
+            # _mcp_lock and does a full RMW of kirocrew.json. If a concurrent app
+            # registration holds that lock, a direct call would block the gateway
+            # loop until it releases. Every other caller offloads — match it.
+            await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         return web.json_response({"ok": True, "server_id": server_id})
@@ -342,7 +384,9 @@ async def api_capability_mcp_uninstall(request: web.Request) -> web.Response:
         )
 
         async with _get_config_lock():
-            _sync_mcp_to_agent(server_id, False, remove=True)
+            # Off the loop for the same reason as install: the synchronous
+            # _mcp_lock RMW must not block the gateway if app registration holds it.
+            await asyncio.to_thread(lambda: _sync_mcp_to_agent(server_id, False, remove=True))
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         return web.json_response({"ok": True, "server_id": server_id})
@@ -454,9 +498,7 @@ async def _mutate_agent_package(request: web.Request, *, install: bool) -> web.R
     # edition to reject a traversal or a shell metacharacter. Same allowlist the
     # MCP mutation endpoints use.
     if not _is_valid_capability_package(package):
-        return web.json_response(
-            {"error": f"Invalid package name '{package[:64]}'"}, status=400
-        )
+        return web.json_response({"error": f"Invalid package name '{package[:64]}'"}, status=400)
     mgr = _capability_manager()
     if not mgr.available():
         return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
@@ -516,9 +558,7 @@ async def api_capability_plugins_list(request: web.Request) -> web.Response:
     if not mgr.available():
         return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
     try:
-        plugins, out_of_sync = await asyncio.gather(
-            mgr.list_plugins(), mgr.plugins_out_of_sync()
-        )
+        plugins, out_of_sync = await asyncio.gather(mgr.list_plugins(), mgr.plugins_out_of_sync())
         return web.json_response({"plugins": plugins, "out_of_sync": out_of_sync})
     except Exception as exc:
         return _err500(exc)
@@ -1121,7 +1161,18 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 # would itself be a correctness bug. The warning turns an
                 # otherwise silent spawn-time (ACP session/set_mode) failure into
                 # an actionable log line pointing at the offending seam row.
-                if not (kiro_agents_dir_path() / f"{disc.name}.json").exists():
+                # Upstream resolves the agents dir per call (data-home safety);
+                # the namespaced check is for app-provided agents, which live as
+                # `<app>--<agent>.json` and would otherwise look "missing".
+                # Off the loop: both the stat and the namespaced glob touch the
+                # filesystem, and on a populated agents directory this per-agent
+                # check (in a loop) would stall the gateway loop and heartbeat.
+                _dn = disc.name
+                _has_on_disk = await asyncio.to_thread(
+                    lambda: (kiro_agents_dir_path() / f"{_dn}.json").exists()
+                    or _namespaced_agent_file_exists(_dn)
+                )
+                if not _has_on_disk:
                     logger.warning(
                         "syncing agent %r (source=%s) with no on-disk config at "
                         "%s — if it is not ACP-resolvable it will persist into "

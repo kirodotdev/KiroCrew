@@ -1068,7 +1068,9 @@
         "installed": "Installed",
         "update": "Update",
         "verified_publisher": "Verified publisher",
-        "verified_publisher_first_party": "Verified publisher (first-party)"
+        "verified_publisher_first_party": "Verified publisher (first-party)",
+        "desktop_app": "Desktop app",
+        "desktop_app_hint": "Enabling works from here, but the app's own window needs the KiroCrew desktop app."
       },
       "categoryRail": {
         "add_source": "Add source",
@@ -1081,7 +1083,9 @@
       "featureCard": {
         "enable": "Enable",
         "get": "Get",
-        "installed": "Installed"
+        "installed": "Installed",
+        "desktop_app": "Desktop app",
+        "desktop_app_hint": "Enabling works from here, but the app's own window needs the KiroCrew desktop app."
       },
       "featuredSpotlight": {
         "enable": "Enable",
@@ -2352,7 +2356,8 @@
       "updating": "Updating…",
       "v": "v",
       "v_2": "· v",
-      "websocket_events": "WebSocket Events"
+      "websocket_events": "WebSocket Events",
+      "desktop_app_hint": "Enabling works from here, but the app's own window needs the KiroCrew desktop app."
     },
     "appPage": {
       "loading_app": "Loading app…"

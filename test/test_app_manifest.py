@@ -1,4 +1,5 @@
 """Tests for kiro_crew.apps.manifest — AppManifest parser and validator."""
+
 from __future__ import annotations
 
 import json
@@ -35,6 +36,7 @@ def _valid_manifest(**overrides) -> dict:
 # ---------------------------------------------------------------------------
 # Validation tests
 # ---------------------------------------------------------------------------
+
 
 class TestValidation:
     def test_valid_minimal(self):
@@ -82,16 +84,16 @@ class TestValidation:
         assert any("path traversal" in e for e in errors)
 
     def test_path_traversal_ui_entry(self):
-        m = AppManifest.from_dict(_valid_manifest(
-            ui={"pages": [{"route": "/x", "label": "X", "entryPoint": "../bad.js"}]}
-        ))
+        m = AppManifest.from_dict(
+            _valid_manifest(
+                ui={"pages": [{"route": "/x", "label": "X", "entryPoint": "../bad.js"}]}
+            )
+        )
         errors = m.validate()
         assert any("path traversal" in e for e in errors)
 
     def test_path_traversal_backend_entrypoint(self):
-        m = AppManifest.from_dict(_valid_manifest(
-            backend={"entryPoint": "../../etc/evil.py"}
-        ))
+        m = AppManifest.from_dict(_valid_manifest(backend={"entryPoint": "../../etc/evil.py"}))
         errors = m.validate()
         assert any("path traversal" in e for e in errors)
 
@@ -101,18 +103,16 @@ class TestValidation:
         assert any("path traversal" in e for e in errors)
 
     def test_absolute_backend_entrypoint(self):
-        m = AppManifest.from_dict(_valid_manifest(
-            backend={"entryPoint": "/tmp/evil.py"}
-        ))
+        m = AppManifest.from_dict(_valid_manifest(backend={"entryPoint": "/tmp/evil.py"}))
         errors = m.validate()
         assert any("path traversal" in e for e in errors)
 
     def test_module_style_entrypoint_ok(self):
         # A dotted module-style backend entryPoint has no '..' and is not
         # absolute, so the containment helper must not false-positive on it.
-        m = AppManifest.from_dict(_valid_manifest(
-            backend={"entryPoint": "kiro_crew.apps.builtins.x.server"}
-        ))
+        m = AppManifest.from_dict(
+            _valid_manifest(backend={"entryPoint": "kiro_crew.apps.builtins.x.server"})
+        )
         assert m.validate() == []
 
     def test_canonical_containment_with_app_root(self, tmp_path):
@@ -126,28 +126,20 @@ class TestValidation:
         (app_root / "link.py").symlink_to(outside / "secret.py")
         (app_root / "ok.py").write_text("y = 2\n")
 
-        escaping = AppManifest.from_dict(_valid_manifest(
-            backend={"entryPoint": "link.py"}
-        ))
+        escaping = AppManifest.from_dict(_valid_manifest(backend={"entryPoint": "link.py"}))
         errors = escaping.validate(app_root=app_root)
         assert any("path traversal" in e for e in errors)
 
-        contained = AppManifest.from_dict(_valid_manifest(
-            backend={"entryPoint": "ok.py"}
-        ))
+        contained = AppManifest.from_dict(_valid_manifest(backend={"entryPoint": "ok.py"}))
         assert contained.validate(app_root=app_root) == []
 
     def test_cron_missing_name(self):
-        m = AppManifest.from_dict(_valid_manifest(
-            crons=[{"every": 60, "message": "hi"}]
-        ))
+        m = AppManifest.from_dict(_valid_manifest(crons=[{"every": 60, "message": "hi"}]))
         errors = m.validate()
         assert any("cron" in e and "name" in e for e in errors)
 
     def test_cron_missing_schedule(self):
-        m = AppManifest.from_dict(_valid_manifest(
-            crons=[{"name": "job1"}]
-        ))
+        m = AppManifest.from_dict(_valid_manifest(crons=[{"name": "job1"}]))
         errors = m.validate()
         assert any("every" in e or "cron_expr" in e for e in errors)
 
@@ -155,10 +147,11 @@ class TestValidation:
         # The string "false" is truthy under bool() — a type slip here would
         # silently re-enable a disabled-by-design cron. Manifest validation
         # must reject non-boolean values with a clear error.
-        m = AppManifest.from_dict(_valid_manifest(
-            crons=[{"name": "j1", "every": 300, "message": "go",
-                    "enabled": "false"}]
-        ))
+        m = AppManifest.from_dict(
+            _valid_manifest(
+                crons=[{"name": "j1", "every": 300, "message": "go", "enabled": "false"}]
+            )
+        )
         errors = m.validate()
         assert any("'enabled' must be a JSON boolean" in e for e in errors)
         # The flagged manifest must not accidentally register the cron
@@ -167,30 +160,27 @@ class TestValidation:
 
     def test_cron_enabled_boolean_values_accepted(self):
         for value, expected in ((False, False), (True, True)):
-            m = AppManifest.from_dict(_valid_manifest(
-                crons=[{"name": "j1", "every": 300, "message": "go",
-                        "enabled": value}]
-            ))
+            m = AppManifest.from_dict(
+                _valid_manifest(
+                    crons=[{"name": "j1", "every": 300, "message": "go", "enabled": value}]
+                )
+            )
             assert m.validate() == []
             assert m.crons[0].enabled is expected
         # Absent key: default enabled, no error.
-        m = AppManifest.from_dict(_valid_manifest(
-            crons=[{"name": "j1", "every": 300, "message": "go"}]
-        ))
+        m = AppManifest.from_dict(
+            _valid_manifest(crons=[{"name": "j1", "every": 300, "message": "go"}])
+        )
         assert m.validate() == []
         assert m.crons[0].enabled is True
 
     def test_ui_page_missing_route(self):
-        m = AppManifest.from_dict(_valid_manifest(
-            ui={"pages": [{"label": "X"}]}
-        ))
+        m = AppManifest.from_dict(_valid_manifest(ui={"pages": [{"label": "X"}]}))
         errors = m.validate()
         assert any("route" in e for e in errors)
 
     def test_ui_page_missing_label(self):
-        m = AppManifest.from_dict(_valid_manifest(
-            ui={"pages": [{"route": "/x"}]}
-        ))
+        m = AppManifest.from_dict(_valid_manifest(ui={"pages": [{"route": "/x"}]}))
         errors = m.validate()
         assert any("label" in e for e in errors)
 
@@ -198,41 +188,51 @@ class TestValidation:
         # The optional INACTIVE-state icon variant (a muted/dark image the sidebar
         # swaps in when the nav row is not active) survives from_dict -> to_dict,
         # and is omitted when unset (back-compat with manifests that lack it).
-        m = AppManifest.from_dict(_valid_manifest(
-            ui={"pages": [{
-                "route": "/x", "label": "X",
-                "iconUrl": "icon.svg", "iconInactiveUrl": "icon-inactive.svg",
-            }]}
-        ))
+        m = AppManifest.from_dict(
+            _valid_manifest(
+                ui={
+                    "pages": [
+                        {
+                            "route": "/x",
+                            "label": "X",
+                            "iconUrl": "icon.svg",
+                            "iconInactiveUrl": "icon-inactive.svg",
+                        }
+                    ]
+                }
+            )
+        )
         page = m.ui.pages[0]
         assert page.iconInactiveUrl == "icon-inactive.svg"
         assert page.to_dict()["iconInactiveUrl"] == "icon-inactive.svg"
-        bare = AppManifest.from_dict(_valid_manifest(
-            ui={"pages": [{"route": "/x", "label": "X"}]}
-        )).ui.pages[0]
+        bare = AppManifest.from_dict(
+            _valid_manifest(ui={"pages": [{"route": "/x", "label": "X"}]})
+        ).ui.pages[0]
         assert "iconInactiveUrl" not in bare.to_dict()
 
     def test_valid_with_all_fields(self):
-        m = AppManifest.from_dict({
-            "name": "oncall-watchtower",
-            "version": "0.2.0",
-            "displayName": "Oncall Watch Tower",
-            "description": "Unified oncall dashboard",
-            "author": "zezhexu",
-            "license": "MIT",
-            "minKiroCrewVersion": "1.3.0",
-            "agents": ["agents/ticket-analyst.json"],
-            "skills": ["skills/ticket-triage"],
-            "sops": ["sops/ticket-rca.sop.md"],
-            "mcpServers": {"cw-mcp": {"command": "capmgr", "args": ["mcp", "run", "cw"]}},
-            "crons": [{"name": "refresh", "every": 3600, "message": "refresh data"}],
-            "ui": {"pages": [{"route": "/apps/owt", "label": "Dashboard", "icon": "Shield"}]},
-            "backend": {"entryPoint": "backend/app.py"},
-            "permissions": {"mcpTools": ["GetPipelineHealth"], "storage": True},
-            "setup": {"onInstall": "backend/setup.py:on_install"},
-            "tags": ["oncall"],
-            "jobFamilies": ["SDE"],
-        })
+        m = AppManifest.from_dict(
+            {
+                "name": "oncall-watchtower",
+                "version": "0.2.0",
+                "displayName": "Oncall Watch Tower",
+                "description": "Unified oncall dashboard",
+                "author": "zezhexu",
+                "license": "MIT",
+                "minKiroCrewVersion": "1.3.0",
+                "agents": ["agents/ticket-analyst.json"],
+                "skills": ["skills/ticket-triage"],
+                "sops": ["sops/ticket-rca.sop.md"],
+                "mcpServers": {"cw-mcp": {"command": "capmgr", "args": ["mcp", "run", "cw"]}},
+                "crons": [{"name": "refresh", "every": 3600, "message": "refresh data"}],
+                "ui": {"pages": [{"route": "/apps/owt", "label": "Dashboard", "icon": "Shield"}]},
+                "backend": {"entryPoint": "backend/app.py"},
+                "permissions": {"mcpTools": ["GetPipelineHealth"], "storage": True},
+                "setup": {"onInstall": "backend/setup.py:on_install"},
+                "tags": ["oncall"],
+                "jobFamilies": ["SDE"],
+            }
+        )
         assert m.validate() == []
         assert m.name == "oncall-watchtower"
         assert len(m.crons) == 1
@@ -243,6 +243,7 @@ class TestValidation:
 # ---------------------------------------------------------------------------
 # Serialization round-trip tests
 # ---------------------------------------------------------------------------
+
 
 class TestRoundTrip:
     def test_minimal_round_trip(self):
@@ -268,17 +269,33 @@ class TestRoundTrip:
             "crons": [{"name": "j1", "every": 300, "agent": "a", "message": "go"}],
             "ui": {
                 "pages": [
-                    {"route": "/apps/my-app", "label": "Main", "icon": "Star",
-                     "entryPoint": "ui/bundle.js", "mountFunction": "mountMain"}
+                    {
+                        "route": "/apps/my-app",
+                        "label": "Main",
+                        "icon": "Star",
+                        "entryPoint": "ui/bundle.js",
+                        "mountFunction": "mountMain",
+                    }
                 ],
                 "sidebar": {"section": "Tools", "order": 5},
             },
-            "backend": {"entryPoint": "backend/app.py", "port": "9000",
-                        "healthCheck": "/ping", "routes": "/api/apps/my-app"},
-            "permissions": {"mcpTools": ["ToolA"], "storage": True, "network": True,
-                            "memory": "shared", "cron": True},
-            "setup": {"onInstall": "setup.py:init",
-                      "configSchema": {"type": "object", "properties": {"key": {"type": "string"}}}},
+            "backend": {
+                "entryPoint": "backend/app.py",
+                "port": "9000",
+                "healthCheck": "/ping",
+                "routes": "/api/apps/my-app",
+            },
+            "permissions": {
+                "mcpTools": ["ToolA"],
+                "storage": True,
+                "network": True,
+                "memory": "shared",
+                "cron": True,
+            },
+            "setup": {
+                "onInstall": "setup.py:init",
+                "configSchema": {"type": "object", "properties": {"key": {"type": "string"}}},
+            },
             "tags": ["dev", "tools"],
             "jobFamilies": ["SDE", "SDM"],
         }
@@ -303,6 +320,7 @@ class TestRoundTrip:
 # Parsing edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestParsing:
     def test_from_empty_dict(self):
         m = AppManifest.from_dict({})
@@ -312,7 +330,9 @@ class TestParsing:
         assert len(errors) >= 4  # all 4 required fields missing
 
     def test_crons_non_dict_entries_skipped(self):
-        m = AppManifest.from_dict(_valid_manifest(crons=["not-a-dict", {"name": "ok", "every": 60}]))
+        m = AppManifest.from_dict(
+            _valid_manifest(crons=["not-a-dict", {"name": "ok", "every": 60}])
+        )
         assert len(m.crons) == 1
         assert m.crons[0].name == "ok"
 
@@ -349,9 +369,9 @@ _kebab_name = st.from_regex(r"[a-z][a-z0-9]*(-[a-z0-9]+)*", fullmatch=True).filt
 )
 
 # Strategy for semver strings
-_semver = st.tuples(
-    st.integers(0, 99), st.integers(0, 99), st.integers(0, 99)
-).map(lambda t: f"{t[0]}.{t[1]}.{t[2]}")
+_semver = st.tuples(st.integers(0, 99), st.integers(0, 99), st.integers(0, 99)).map(
+    lambda t: f"{t[0]}.{t[1]}.{t[2]}"
+)
 
 # Strategy for simple JSON-safe extra values
 _extra_value = st.one_of(
@@ -376,8 +396,10 @@ class TestPropertyBased:
     ):
         """Property 1: validate() returns an error for each missing required field."""
         m = AppManifest(
-            name=name, version=version,
-            displayName=display_name, description=description,
+            name=name,
+            version=version,
+            displayName=display_name,
+            description=description,
         )
         errors = m.validate()
         if not name:
@@ -397,21 +419,45 @@ class TestPropertyBased:
         extra_keys=st.lists(
             st.text(
                 alphabet=st.characters(whitelist_categories=("L", "N")),
-                min_size=1, max_size=15,
-            ).filter(lambda k: k not in {
-                "name", "version", "displayName", "description", "author",
-                "license", "minKiroCrewVersion", "agents", "skills", "sops",
-                "mcpServers", "crons", "ui", "backend", "permissions",
-                "setup", "tags", "jobFamilies",
-            }),
-            max_size=5, unique=True,
+                min_size=1,
+                max_size=15,
+            ).filter(
+                lambda k: k
+                not in {
+                    "name",
+                    "version",
+                    "displayName",
+                    "description",
+                    "author",
+                    "license",
+                    "minKiroCrewVersion",
+                    "agents",
+                    "skills",
+                    "sops",
+                    "mcpServers",
+                    "crons",
+                    "ui",
+                    "backend",
+                    "permissions",
+                    "setup",
+                    "tags",
+                    "jobFamilies",
+                }
+            ),
+            max_size=5,
+            unique=True,
         ),
         extra_vals=st.lists(_extra_value, max_size=5),
     )
     @settings(max_examples=100)
     def test_serialization_round_trip(
-        self, name: str, version: str, display_name: str, description: str,
-        extra_keys: list[str], extra_vals: list,
+        self,
+        name: str,
+        version: str,
+        display_name: str,
+        description: str,
+        extra_keys: list[str],
+        extra_vals: list,
     ):
         """Property 2: from_dict(json.loads(to_json())) produces equivalent to_dict()."""
         extra = dict(zip(extra_keys, extra_vals))
@@ -474,15 +520,17 @@ class TestSetupConfigHooks:
         assert "onDisableTimeout" not in d
 
     def test_manifest_with_new_hooks(self):
-        m = AppManifest.from_dict(_valid_manifest(
-            setup={
-                "onInstall": "bash setup.sh",
-                "onUpdate": "bash update.sh",
-                "onEnable": "bash enable.sh",
-                "onDisable": "bash disable.sh",
-                "onEnableTimeout": 90,
-            }
-        ))
+        m = AppManifest.from_dict(
+            _valid_manifest(
+                setup={
+                    "onInstall": "bash setup.sh",
+                    "onUpdate": "bash update.sh",
+                    "onEnable": "bash enable.sh",
+                    "onDisable": "bash disable.sh",
+                    "onEnableTimeout": 90,
+                }
+            )
+        )
         assert m.setup.onUpdate == "bash update.sh"
         assert m.setup.onEnable == "bash enable.sh"
         assert m.setup.onEnableTimeout == 90
@@ -491,6 +539,7 @@ class TestSetupConfigHooks:
 # ---------------------------------------------------------------------------
 # Dependencies tests
 # ---------------------------------------------------------------------------
+
 
 class TestDependencies:
     def test_empty_dependencies(self):
@@ -525,26 +574,30 @@ class TestDependencies:
         assert "managedBy" not in d  # default "gateway" omitted
 
     def test_mixed_string_and_object_entries(self):
-        deps = Dependencies.from_dict({
-            "capabilities": {
-                "mcp": [
-                    "simple-mcp",
-                    {"id": "custom-mcp", "managedBy": "app"},
-                ]
+        deps = Dependencies.from_dict(
+            {
+                "capabilities": {
+                    "mcp": [
+                        "simple-mcp",
+                        {"id": "custom-mcp", "managedBy": "app"},
+                    ]
+                }
             }
-        })
+        )
         assert len(deps.capabilities.mcp) == 2
         assert deps.capabilities.mcp[0] == "simple-mcp"
         assert deps.capabilities.mcp[1] == {"id": "custom-mcp", "managedBy": "app"}
 
     def test_manifest_with_dependencies(self):
-        m = AppManifest.from_dict(_valid_manifest(
-            dependencies={
-                "managedBy": "gateway",
-                "capabilities": {"mcp": ["aws-docs"]},
-                "commands": ["node"],
-            }
-        ))
+        m = AppManifest.from_dict(
+            _valid_manifest(
+                dependencies={
+                    "managedBy": "gateway",
+                    "capabilities": {"mcp": ["aws-docs"]},
+                    "commands": ["node"],
+                }
+            )
+        )
         assert m.dependencies.managedBy == "gateway"
         assert m.dependencies.capabilities.mcp == ["aws-docs"]
         assert m.dependencies.commands == ["node"]
@@ -559,11 +612,15 @@ class TestDependencies:
 # Property tests for new dataclasses
 # ---------------------------------------------------------------------------
 
+
 class TestSignatureFields:
     def test_signature_fields_roundtrip(self):
-        m = AppManifest.from_dict(_valid_manifest(
-            signer="acme", signature="deadbeef",
-        ))
+        m = AppManifest.from_dict(
+            _valid_manifest(
+                signer="acme",
+                signature="deadbeef",
+            )
+        )
         assert m.signer == "acme"
         assert m.signature == "deadbeef"
         d = m.to_dict()
@@ -583,7 +640,8 @@ class TestSignatureFields:
         # Payload is deterministic regardless of source dict field ordering and
         # is independent of the signature field itself.
         base = _valid_manifest(
-            signer="acme", signature="sig-A",
+            signer="acme",
+            signature="sig-A",
             permissions={"mcpTools": ["B", "A"], "network": True},
         )
         m1 = AppManifest.from_dict(base)
@@ -592,16 +650,19 @@ class TestSignatureFields:
         assert m1.signing_payload() == m2.signing_payload()
 
         # Changing the signature does NOT change the signed payload.
-        m3 = AppManifest.from_dict(_valid_manifest(
-            signer="acme", signature="sig-B",
-            permissions={"mcpTools": ["B", "A"], "network": True},
-        ))
+        m3 = AppManifest.from_dict(
+            _valid_manifest(
+                signer="acme",
+                signature="sig-B",
+                permissions={"mcpTools": ["B", "A"], "network": True},
+            )
+        )
         assert m1.signing_payload() == m3.signing_payload()
         assert isinstance(m1.signing_payload(), bytes)
 
 
 class TestManifestNewProperties:
-    # Feature: app-classification-redesign, Property 3: Manifest 数据类序列化往返一致性
+    # Feature: app-classification-redesign, Property 3: Manifest dataclass serialisation round-trips
     @given(
         on_install=st.text(max_size=30),
         on_update=st.text(max_size=30),
@@ -613,14 +674,24 @@ class TestManifestNewProperties:
     )
     @settings(max_examples=200)
     def test_setup_config_round_trip_property(
-        self, on_install, on_update, on_uninstall, on_enable, on_disable,
-        enable_timeout, disable_timeout,
+        self,
+        on_install,
+        on_update,
+        on_uninstall,
+        on_enable,
+        on_disable,
+        enable_timeout,
+        disable_timeout,
     ):
         """**Validates: Requirements 4.2**"""
         cfg = SetupConfig(
-            onInstall=on_install, onUpdate=on_update, onUninstall=on_uninstall,
-            onEnable=on_enable, onDisable=on_disable,
-            onEnableTimeout=enable_timeout, onDisableTimeout=disable_timeout,
+            onInstall=on_install,
+            onUpdate=on_update,
+            onUninstall=on_uninstall,
+            onEnable=on_enable,
+            onDisable=on_disable,
+            onEnableTimeout=enable_timeout,
+            onDisableTimeout=disable_timeout,
         )
         d = cfg.to_dict()
         restored = SetupConfig.from_dict(d)
@@ -632,11 +703,13 @@ class TestManifestNewProperties:
         assert restored.onEnableTimeout == cfg.onEnableTimeout
         assert restored.onDisableTimeout == cfg.onDisableTimeout
 
-    # Feature: app-classification-redesign, Property 3: Dependencies 序列化往返一致性
+    # Feature: app-classification-redesign, Property 3: Dependencies serialisation round-trips
     @given(
         managed_by=st.sampled_from(["gateway", "app"]),
         mcp_deps=st.lists(st.from_regex(r"[a-z][a-z0-9\-]{0,20}", fullmatch=True), max_size=5),
-        skill_deps=st.lists(st.from_regex(r"[A-Za-z][A-Za-z0-9]{0,20}", fullmatch=True), max_size=5),
+        skill_deps=st.lists(
+            st.from_regex(r"[A-Za-z][A-Za-z0-9]{0,20}", fullmatch=True), max_size=5
+        ),
         commands=st.lists(st.from_regex(r"[a-z][a-z0-9]{0,10}", fullmatch=True), max_size=5),
     )
     @settings(max_examples=200)
@@ -655,7 +728,7 @@ class TestManifestNewProperties:
         assert restored.capabilities.skills == deps.capabilities.skills
         assert restored.commands == deps.commands
 
-    # Feature: app-classification-redesign, Property 4: 单依赖项 managedBy 覆盖
+    # Feature: app-classification-redesign, Property 4: a single dependency can override managedBy
     @given(
         default_managed=st.sampled_from(["gateway", "app"]),
         override_managed=st.sampled_from(["gateway", "app"]),
@@ -663,15 +736,17 @@ class TestManifestNewProperties:
     @settings(max_examples=100)
     def test_managed_by_override_property(self, default_managed, override_managed):
         """**Validates: Requirements 5.5**"""
-        deps = Dependencies.from_dict({
-            "managedBy": default_managed,
-            "capabilities": {
-                "mcp": [
-                    "simple-dep",
-                    {"id": "override-dep", "managedBy": override_managed},
-                ]
+        deps = Dependencies.from_dict(
+            {
+                "managedBy": default_managed,
+                "capabilities": {
+                    "mcp": [
+                        "simple-dep",
+                        {"id": "override-dep", "managedBy": override_managed},
+                    ]
+                },
             }
-        })
+        )
         # String entry uses default
         entry0 = deps.capabilities.mcp[0]
         assert isinstance(entry0, str)
@@ -699,3 +774,57 @@ class TestCapabilityDepTypesContract:
         from kiro_crew.apps.dependency_ledger import CAPABILITY_DEP_TYPES
 
         assert set(_INSTALLABLE_TYPES) <= set(CAPABILITY_DEP_TYPES)
+
+
+class TestRequiresDesktopApp:
+    """``platform.requiresDesktopApp`` — the surface axis, distinct from ``os``.
+
+    ``os`` constrains the machine the gateway runs on; this constrains the
+    surface the user views from (Electron shell vs browser tab). It is a UX
+    gate, so the only contract worth pinning is that it round-trips faithfully
+    and stays absent-by-default (an omitted flag must never read as True, or
+    every app would silently become desktop-only).
+    """
+
+    def test_defaults_to_false(self):
+        from kiro_crew.apps.manifest import PlatformConfig
+
+        assert PlatformConfig().requiresDesktopApp is False
+        assert PlatformConfig.from_dict({}).requiresDesktopApp is False
+
+    def test_omitted_from_dict_when_false(self):
+        from kiro_crew.apps.manifest import PlatformConfig
+
+        # Absent-not-null: the wire form stays minimal, matching how the other
+        # PlatformConfig fields serialize.
+        assert "requiresDesktopApp" not in PlatformConfig().to_dict()
+
+    def test_round_trips_when_true(self):
+        from kiro_crew.apps.manifest import PlatformConfig
+
+        cfg = PlatformConfig.from_dict({"requiresDesktopApp": True})
+        assert cfg.requiresDesktopApp is True
+        assert cfg.to_dict()["requiresDesktopApp"] is True
+        assert PlatformConfig.from_dict(cfg.to_dict()).requiresDesktopApp is True
+
+    def test_non_bool_values_are_coerced(self):
+        from kiro_crew.apps.manifest import PlatformConfig
+
+        # Manifests are user-authored JSON; a truthy string must not crash the
+        # parse, and a falsy value must not enable the gate.
+        assert PlatformConfig.from_dict({"requiresDesktopApp": "yes"}).requiresDesktopApp is True
+        assert PlatformConfig.from_dict({"requiresDesktopApp": 0}).requiresDesktopApp is False
+        assert PlatformConfig.from_dict({"requiresDesktopApp": None}).requiresDesktopApp is False
+
+    def test_independent_of_os_axis(self):
+        from kiro_crew.apps.manifest import PlatformConfig
+
+        # Declaring a desktop surface must not narrow the gateway OS list.
+        cfg = PlatformConfig.from_dict({"requiresDesktopApp": True})
+        assert cfg.supports_platform("darwin") is True
+        assert cfg.supports_platform("linux") is True
+
+    def test_survives_full_manifest_round_trip(self):
+        manifest = AppManifest.from_dict(_valid_manifest(platform={"requiresDesktopApp": True}))
+        assert manifest.platform.requiresDesktopApp is True
+        assert AppManifest.from_dict(manifest.to_dict()).platform.requiresDesktopApp is True

@@ -1369,7 +1369,9 @@
         "installed": "ইনস্টল করা আছে",
         "update": "আপডেট করুন",
         "verified_publisher": "যাচাই করা প্রকাশক",
-        "verified_publisher_first_party": "যাচাই করা প্রকাশক (ফার্স্ট-পার্টি)"
+        "verified_publisher_first_party": "যাচাই করা প্রকাশক (ফার্স্ট-পার্টি)",
+        "desktop_app": "ডেস্কটপ অ্যাপ",
+        "desktop_app_hint": "এখান থেকেই চালু করা যায়, কিন্তু অ্যাপের নিজের উইন্ডো চালাতে KiroCrew ডেস্কটপ অ্যাপ দরকার।"
       },
       "categoryRail": {
         "add_source": "সোর্স যোগ করুন",
@@ -1383,7 +1385,9 @@
       "featureCard": {
         "enable": "চালু করুন",
         "get": "নিন",
-        "installed": "ইনস্টল করা আছে"
+        "installed": "ইনস্টল করা আছে",
+        "desktop_app": "ডেস্কটপ অ্যাপ",
+        "desktop_app_hint": "এখান থেকেই চালু করা যায়, কিন্তু অ্যাপের নিজের উইন্ডো চালাতে KiroCrew ডেস্কটপ অ্যাপ দরকার।"
       },
       "featuredSpotlight": {
         "enable": "চালু করুন",
@@ -3190,7 +3194,8 @@
       "updating": "আপডেট হচ্ছে…",
       "v": "v",
       "v_2": "· v",
-      "websocket_events": "WebSocket ইভেন্ট"
+      "websocket_events": "WebSocket ইভেন্ট",
+      "desktop_app_hint": "এখান থেকেই চালু করা যায়, কিন্তু অ্যাপের নিজের উইন্ডো চালাতে KiroCrew ডেস্কটপ অ্যাপ দরকার।"
     },
     "appPage": {
       "loading_app": "অ্যাপ লোড হচ্ছে…"

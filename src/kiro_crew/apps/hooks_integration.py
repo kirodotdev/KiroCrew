@@ -9,6 +9,7 @@ These functions are called from routes.py and server.py at the appropriate
 lifecycle points. They are designed to be non-breaking — if no hooks are
 declared, behavior is identical to before.
 """
+
 from __future__ import annotations
 
 import logging
@@ -40,7 +41,13 @@ _route_registry: RouteRegistry | None = None
 _lifecycle_dispatcher: LifecycleDispatcher | None = None
 
 
-def init_hooks_system(app: web.Application, *, cron_service: Any = None, broadcast_fn: Any = None) -> None:
+def init_hooks_system(
+    app: web.Application,
+    *,
+    cron_service: Any = None,
+    broadcast_fn: Any = None,
+    spawn_impl: Any = None,
+) -> None:
     """Initialize the hooks system at gateway startup.
 
     Called from server.py after all core routes are registered.
@@ -53,6 +60,7 @@ def init_hooks_system(app: web.Application, *, cron_service: Any = None, broadca
     _lifecycle_dispatcher = LifecycleDispatcher(
         cron_service=cron_service,
         broadcast_fn=broadcast_fn,
+        spawn_impl=spawn_impl,
     )
 
     logger.info("Hooks system initialized")
@@ -77,6 +85,7 @@ def _build_app_context_from_info(
     app_info: dict[str, Any],
     cron_service: Any = None,
     broadcast_fn: Any = None,
+    spawn_impl: Any = None,
 ) -> Any:
     """Build an AppContext from app info dict — shared helper for consistent context."""
     name = app_info.get("name", "")
@@ -90,6 +99,7 @@ def _build_app_context_from_info(
         permissions=permissions,
         cron_service=cron_service,
         broadcast_fn=broadcast_fn,
+        spawn_impl=spawn_impl,
         app_config=manifest.get("extra", {}),
     )
 
@@ -100,6 +110,7 @@ async def on_app_enable(
     *,
     cron_service: Any = None,
     broadcast_fn: Any = None,
+    spawn_impl: Any = None,
 ) -> dict[str, Any]:
     """Called after an app is enabled — register routes and invoke startup hook.
 
@@ -165,7 +176,7 @@ async def on_app_enable(
     )
 
     # Build AppContext for this app (shared helper ensures consistency)
-    ctx = _build_app_context_from_info(app_info, cron_service, broadcast_fn)
+    ctx = _build_app_context_from_info(app_info, cron_service, broadcast_fn, spawn_impl)
 
     # Register routes if declared
     routes_hook = hooks.get("routes", "")
@@ -218,7 +229,8 @@ async def on_app_disable(app_name: str, app_info: dict[str, Any]) -> dict[str, A
     shutdown_hook = hooks.get("on_shutdown", "")
     if shutdown_hook and _lifecycle_dispatcher:
         success = await _lifecycle_dispatcher._invoke(
-            app_name, shutdown_hook,
+            app_name,
+            shutdown_hook,
             _lifecycle_dispatcher._build_context(app_info),
         )
         result["hooks_shutdown"] = "ok" if success else "failed"
@@ -247,8 +259,9 @@ async def on_app_disable(app_name: str, app_info: dict[str, Any]) -> dict[str, A
                     result["cron_cleanup"] = f"removed {removed} job(s)"
             except CronStoreBusy as exc:
                 logger.warning(
-                    "App %s: cron cleanup could not complete on disable — "
-                    "store busy: %s", app_name, exc,
+                    "App %s: cron cleanup could not complete on disable — " "store busy: %s",
+                    app_name,
+                    exc,
                 )
                 result["cron_cleanup"] = "failed: cron store busy — jobs may still be enabled"
                 sel().log_api_access(
@@ -262,7 +275,9 @@ async def on_app_disable(app_name: str, app_info: dict[str, Any]) -> dict[str, A
     return result
 
 
-async def on_gateway_startup(*, cron_service: Any = None, broadcast_fn: Any = None) -> None:
+async def on_gateway_startup(
+    *, cron_service: Any = None, broadcast_fn: Any = None, spawn_impl: Any = None
+) -> None:
     """Called during gateway startup — register routes then invoke on_startup hooks.
 
     Order matches on_app_enable: routes first, then startup hooks.
@@ -308,7 +323,9 @@ async def on_gateway_startup(*, cron_service: Any = None, broadcast_fn: Any = No
                 if registered:
                     logger.info(
                         "Startup: registered %d cron(s) for app %s: %s",
-                        len(registered), name, ", ".join(registered),
+                        len(registered),
+                        name,
+                        ", ".join(registered),
                     )
                 sel().log_api_access(
                     caller="gateway",
@@ -331,7 +348,7 @@ async def on_gateway_startup(*, cron_service: Any = None, broadcast_fn: Any = No
         if not hooks:
             continue
 
-        ctx = _build_app_context_from_info(app_info, cron_service, broadcast_fn)
+        ctx = _build_app_context_from_info(app_info, cron_service, broadcast_fn, spawn_impl)
 
         # Register routes (if declared)
         routes_hook = hooks.get("routes", "")
@@ -355,7 +372,8 @@ async def on_gateway_shutdown() -> None:
 
     enabled = [a for a in list_apps() if a.get("enabled")]
     apps_with_hooks = [
-        a for a in enabled
+        a
+        for a in enabled
         if a.get("manifest", {}).get("backend", {}).get("hooks", {}).get("on_shutdown")
     ]
 

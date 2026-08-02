@@ -370,7 +370,9 @@ def _migrate_owned_kiro_registration() -> None:
             for key in _SUPERSEDED_PLAYWRIGHT_KEYS
         )
         legacy_direct = servers.get(_LEGACY_DIRECT_PLAYWRIGHT_KEY)
-        legacy_direct_present = isinstance(legacy_direct, dict) and not _spec_is_proxy(legacy_direct)
+        legacy_direct_present = isinstance(legacy_direct, dict) and not _spec_is_proxy(
+            legacy_direct
+        )
         # Leave the file untouched unless there is a KiroCrew-owned entry to
         # migrate, AND the canonical slot is either empty or already our proxy
         # (safe to (re)write). If the canonical key holds a user-declared *direct*
@@ -577,6 +579,19 @@ def _converge_playwright_agent_files() -> None:
             continue
         if converge_playwright_servers(data):
             try:
+                # Governance floor: this rewrites allowedTools while converging
+                # Playwright refs, so run the whole map through the shared filter
+                # before persisting — a ceiling-governed grant/autoApprove must not
+                # survive a convergence sweep of a KiroCrew-owned agent config.
+                # No-op on an ungoverned host.
+                try:
+                    from kiro_crew.platform.governance import (
+                        sanitize_agent_config_governance,
+                    )
+
+                    sanitize_agent_config_governance(data)
+                except Exception:  # noqa: BLE001 — never break convergence on this
+                    logger.debug("governance sanitize unavailable during converge", exc_info=True)
                 # Preserve the file's existing permission bits: an agent config
                 # may hold MCP ``env`` credentials and be mode 0600 — atomic_write
                 # would otherwise recreate it with the umask default (commonly

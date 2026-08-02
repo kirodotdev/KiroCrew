@@ -1140,9 +1140,7 @@ Examples:
     sec_sub.add_parser("verify", help="Verify security event log HMAC integrity")
 
     # policy — governance model inspection (read-only; MCP-safe)
-    tel_parser = sub.add_parser(
-        "telemetry", help="Inspect or disable anonymous usage telemetry"
-    )
+    tel_parser = sub.add_parser("telemetry", help="Inspect or disable anonymous usage telemetry")
     tel_sub = tel_parser.add_subparsers(dest="telemetry_action")
     tel_sub.add_parser(
         "status", help="Show exactly what the anonymous beacon sends (and whether it will)"
@@ -1711,6 +1709,11 @@ Examples:
     app_enable.add_argument("name", help="App name to enable")
     app_disable = app_sub.add_parser("disable", help="Disable an installed app")
     app_disable.add_argument("name", help="App name to disable")
+    app_mcp = app_sub.add_parser(
+        "mcp",
+        help="Run an app's MCP server on stdio (spawned by kiro-cli, not for humans)",
+    )
+    app_mcp.add_argument("name", help="App name whose MCP server to run")
     app_uninstall = app_sub.add_parser(
         "uninstall", help="Uninstall an app (preserves app data by default)"
     )

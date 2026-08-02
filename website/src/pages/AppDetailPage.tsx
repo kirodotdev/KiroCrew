@@ -13,6 +13,7 @@ import {
   Clock, ChevronLeft, ChevronRight, X, Monitor, Copy, Terminal,
   Sparkles,
 } from 'lucide-react'
+import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
 import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
 import AppIcon from '../components/AppIcon'
@@ -52,7 +53,10 @@ type AppInfo = {
   resources?: string  // "gateway" | "app"
   lifecycle?: string  // "gateway" | "app" | "locked"
   // Platform
-  platform?: { os?: string[]; installMode?: string; clientInstall?: { shell?: string; postInstall?: string } }
+  platform?: { os?: string[]; installMode?: string; clientInstall?: { shell?: string; postInstall?: string }
+    // Set when the app's UI needs the Electron shell (native windows,
+    // global shortcuts, tray). A UX gate only — the marker is client-side.
+    requiresDesktopApp?: boolean }
   // Manifest (from installed app)
   manifest?: AppManifest
 }
@@ -100,6 +104,10 @@ interface AppManifest {
   heroImageDetail?: string
   heroImageDetailDark?: string
   ui?: { pages?: { route?: string; label?: string; icon?: string; iconUrl?: string }[] }
+  // Installed apps carry the platform config here (a registry/catalog entry
+  // exposes it top-level instead); `needsDesktopApp` reads both. Without this the
+  // desktop requirement was invisible on surfaces that pass the manifest shape.
+  platform?: { requiresDesktopApp?: boolean; os?: string[] }
   agents?: string[]
   skills?: string[]
   crons?: { name: string }[]
@@ -426,6 +434,12 @@ export default function AppDetailPage() {
 
   const isSelfManaged = app.resources === 'app'
   const isBuiltin = app.origin === 'builtin'
+  // An app can declare that its UI only works inside the Electron shell
+  // (native always-on-top windows, global shortcuts, tray). Browser sessions
+  // are told to use the desktop app instead of being handed a broken UI.
+  // UX gate only: the marker is client-side, so nothing security-relevant may
+  // rest on it (see PlatformConfig.requiresDesktopApp in manifest.py).
+  const desktopOnly = needsDesktopApp(app)
   const canUpdate = app.lifecycle === 'gateway'
   const canUninstall = app.lifecycle !== 'locked'
   const agentCount = app.manifest?.agents?.length || 0
@@ -547,7 +561,24 @@ export default function AppDetailPage() {
                   {app.enabled ? (
                     <Btn onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
                   ) : (
+                    /* Enable stays available in a browser: enabling is a
+                       server-side state change (backend, agents and crons run
+                       in the gateway) and only the app's own window needs the
+                       desktop shell. The requirement is shown in TEXT here (not
+                       only a hover title): a tooltip is unreachable by touch or
+                       keyboard, and the bare "Desktop app" label reads as a
+                       category tag rather than a requirement — and this detail
+                       page is where a user decides to enable the app. The compact
+                       store row / feature card keep the badge alone (the decision
+                       does not happen there). */
+                    <>
                     <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {i18nT('pages.appDetailPage.enable')}</Btn>
+                    {desktopOnly && (
+                    <span className="text-[13px] text-muted flex items-center gap-1.5">
+                      <Monitor size={14} /> {i18nT('pages.appDetailPage.desktop_app_hint')}
+                    </span>
+                  )}
+                    </>
                   )}
                 </>
               )}
@@ -563,7 +594,30 @@ export default function AppDetailPage() {
                   {app.enabled ? (
                     <Btn onClick={() => handleAction('disable')} disabled={actionLoading === 'disable'}><PowerOff size={14} /> {i18nT('pages.appDetailPage.disable')}</Btn>
                   ) : (
+                    /* Enable stays available in a browser: enabling is a
+                       server-side state change (backend, agents and crons run
+                       in the gateway) and only the app's own window needs the
+                       desktop shell. Replacing the button with a static claim
+                       left every browser user at a dead end — and this page is
+                       where store rows land, so it was the common path. Same
+                       pattern as AppListRow / FeatureCard. */
+                    <>
                     <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {i18nT('pages.appDetailPage.enable')}</Btn>
+                    {desktopOnly && (
+                    /* The consequence is VISIBLE here, not only in `title`. A
+                       hover tooltip does not exist on touch and is not reachable
+                       by keyboard, and on its own the bare "Desktop app" label
+                       reads as a category tag rather than a requirement — so the
+                       one place a user decides whether to enable the app was the
+                       one place the requirement could go unread. The compact
+                       store row and feature card keep the badge alone: every
+                       other badge in those components works that way, and the
+                       decision does not happen there. */
+                    <span className="text-[13px] text-muted flex items-center gap-1.5">
+                      <Monitor size={14} /> {i18nT('pages.appDetailPage.desktop_app_hint')}
+                    </span>
+                  )}
+                    </>
                   )}
                   {canUpdate && app.updateAvailable && <Btn onClick={handleInstall} disabled={actionLoading === 'install'} className="!bg-[var(--info)] !text-white hover:!opacity-80">{actionLoading === 'install' ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.appDetailPage.updating')}</> : <><ArrowUp size={14} /> {i18nT('pages.appDetailPage.update')}</>}</Btn>}
                   {canUpdate && !app.updateAvailable && <Btn onClick={() => handleAction('update')} disabled={actionLoading === 'update'} title={i18nT('pages.appDetailPage.sync_app_from_its_source_directory')}><RefreshCw size={14} /> {i18nT('pages.appDetailPage.sync')}</Btn>}

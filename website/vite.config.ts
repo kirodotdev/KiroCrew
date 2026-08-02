@@ -5,10 +5,11 @@
 // layer — the catch-all fallback handler in integration/mocks/server.ts answers
 // otherwise-unmatched requests before any dial — with happy-dom's official
 // disable-loading settings (below) as defense-in-depth. See both notes there.
+import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, type Plugin } from 'vite'
 /// <reference types="vitest" />
 import react from '@vitejs/plugin-react'
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs'
 import { execSync } from 'child_process'
 import http from 'http'
 import path from 'path'
@@ -309,8 +310,73 @@ function bundleReportPlugin(): Plugin {
   }
 }
 
+/**
+ * App window entries: discovery + dev-server URL rewrite.
+ *
+ * An app may ship standalone HTML windows at `src/apps/<app>/<name>.html`
+ * (separate Vite bundles, loaded by a shell window rather than the SPA
+ * router). Discovery is the filesystem — there is no registration list to
+ * keep in sync. Each entry is served at `/app-windows/<app>/<name>.html`:
+ * `dashboard/server.py` registers that route in production from the same
+ * convention, and the plugin below answers it in dev, so exactly one URL
+ * contract holds across dev, production and the loading shell's tests.
+ *
+ * The URL keeps the `<app>` / `<name>` boundary the filesystem has, so the
+ * rewrite is a straight prefix swap. The earlier flat `/<app>-<name>.html`
+ * could not do that: with hyphens legal in both halves the split was a GUESS,
+ * and this middleware used to try each hyphen position and take the first file
+ * that existed — silently serving another app's window rather than refusing.
+ *
+ * A rewrite rather than a redirect: the shell loads these into a
+ * BrowserWindow, and a 30x would leave the window's URL pointing somewhere
+ * other than what the caller asked for, which instance-switch logic
+ * compares against.
+ */
+const APP_WINDOWS_ROOT = fileURLToPath(new URL('./src/apps', import.meta.url))
+/** Keep in sync with `APP_WINDOW_URL_PREFIX` in `dashboard/server.py`. */
+const APP_WINDOW_URL_PREFIX = 'app-windows'
+
+function appWindowEntries(): Record<string, string> {
+  const entries: Record<string, string> = {}
+  if (!existsSync(APP_WINDOWS_ROOT)) return entries
+  for (const dirent of readdirSync(APP_WINDOWS_ROOT, { withFileTypes: true })) {
+    if (!dirent.isDirectory()) continue
+    const dir = path.join(APP_WINDOWS_ROOT, dirent.name)
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith('.html')) continue
+      const name = file.slice(0, -'.html'.length)
+      entries[`${APP_WINDOW_URL_PREFIX}/${dirent.name}/${name}`] = path.join(dir, file)
+    }
+  }
+  return entries
+}
+
+function appWindowUrls(): Plugin {
+  return {
+    name: 'app-window-urls',
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const [reqPath, query] = (req.url ?? '').split('?')
+        // Two bounded segments, no dots and no slashes inside either, so nothing
+        // resembling `..` or a nested path can be spelled; existence under
+        // src/apps/ is the second gate.
+        const match = new RegExp(
+          `^/${APP_WINDOW_URL_PREFIX}/([a-z0-9_-]+)/([a-z0-9_-]+)\\.html$`,
+        ).exec(reqPath)
+        if (match) {
+          const [, app, name] = match
+          if (existsSync(path.join(APP_WINDOWS_ROOT, app, `${name}.html`))) {
+            req.url = `/src/apps/${app}/${name}.html${query ? `?${query}` : ''}`
+          }
+        }
+        next()
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), tailwindRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin()],
+  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), tailwindRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -449,6 +515,17 @@ export default defineConfig({
     // /assets, while an inline SVG would also conflict with security review.
     assetsInlineLimit: (filePath) => (filePath.endsWith('slack-logo.svg') || filePath.endsWith('discord-logo.svg') || filePath.endsWith('telegram-logo.svg') ? false : undefined),
     rollupOptions: {
+      // Multi-entry: the dashboard SPA plus every app window entry
+      // discovered under src/apps/<app>/<name>.html (see appWindowEntries —
+      // the same convention dashboard/server.py serves in production). The
+      // entries live INSIDE each app's folder so an app stays one
+      // self-contained folder and can be lifted out without hunting for
+      // stragglers; their SERVED urls are `/app-windows/<app>/<name>.html` in both dev
+      // and production.
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        ...appWindowEntries(),
+      },
       output: {
         // Split the heaviest eager vendor libraries out of the ~6MB main
         // `index` chunk into named, long-term-cacheable vendor chunks. This

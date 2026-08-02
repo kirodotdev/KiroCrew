@@ -29,6 +29,7 @@ itself fail-closed belongs to the CPP governance seam, not this gate.
 
 See ``docs/system-specs/modules/security.md`` (App admission).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -106,7 +107,10 @@ class AppAdmissionPolicy:
             mode=str(d.get("mode", MODE_OPEN)),
             banned=_coerce_str_list(d.get("banned", [])),
             approved=(_coerce_str_list(approved) if approved is not None else None),
-            require_signature=bool(d.get("require_signature", False)),
+            # A RESTRICTION, so it fails the other way from a capability grant
+            # (see Permissions.from_dict): only a literal `false` turns it off, so
+            # a malformed value keeps signature verification ON.
+            require_signature=d.get("require_signature", False) is not False,
             trust_keys={str(k): str(v) for k, v in (d.get("trust_keys") or {}).items()},
         )
 
@@ -197,11 +201,7 @@ def app_admission_denied(
 
     # Whether the fleet has configured ANY active enforcement beyond the open
     # default. Only when NOTHING is configured do we take the open fast path.
-    enforcing = (
-        policy.mode != MODE_OPEN
-        or policy.approved is not None
-        or policy.require_signature
-    )
+    enforcing = policy.mode != MODE_OPEN or policy.approved is not None or policy.require_signature
     if not enforcing:
         return None
 

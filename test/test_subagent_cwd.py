@@ -291,6 +291,37 @@ class TestSpawnCwd:
         assert queued["_preassigned_id"] == info.id
 
     @pytest.mark.asyncio
+    async def test_prevalidated_app_spawn_at_capacity_is_rejected_not_queued(
+        self, tmp_path: Path,
+    ) -> None:
+        """A prevalidated app spawn must be REJECTED (not queued) at capacity.
+
+        ``_agent_prevalidated`` skips the drain-time agent-directory ownership
+        scan, so a queued prevalidated spawn could run a same-named FOREIGN agent
+        under the app's auto-approval if the app were disabled and its agent file
+        removed while it waited. Fail closed: reject so the caller revalidates
+        ownership on retry (GPT security finding).
+        """
+        manager = SubagentManager(
+            sessions=_mock_sessions(), ctx_builder=_mock_ctx_builder_auto_spawn(),
+        )
+        manager._running_count = manager._max_concurrent  # force capacity → queue path
+        mock_cfg = MagicMock()
+        mock_cfg.agent.spawn_min_memory_gb = 0
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), \
+             patch("kiro_crew.subagent._vet_spawn_governance", return_value=None), \
+             patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=mock_cfg):
+            info = manager.spawn(
+                "t", agent="probe--probe-bg", app="probe", _agent_prevalidated=True,
+            )
+
+        assert info is not None
+        assert info.done is True
+        assert info.queued is not True, "prevalidated spawn must not be queued"
+        assert "revalidate" in (info.error or "")
+        assert manager._queue == [], "prevalidated spawn must not enter the queue"
+
+    @pytest.mark.asyncio
     async def test_spawn_fails_closed_when_config_load_raises(
         self, tmp_path: Path,
     ) -> None:

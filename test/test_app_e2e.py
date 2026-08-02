@@ -4,6 +4,7 @@ Tests the full lifecycle: manifest parsing → install → register → enable �
 disable → deregister → uninstall. Also validates OncallWatchTower's actual
 app.json manifest.
 """
+
 from __future__ import annotations
 
 import json
@@ -83,11 +84,13 @@ def app_env(tmp_path, monkeypatch):
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
     import kiro_crew.apps.bridges as bridges_mod
+
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
-    # Patch _MCP_JSON_PATH to avoid file descriptor errors in tests
+    # Patch _mcp_json_path to avoid file descriptor errors in tests
     mcp_path = tmp_path / "mcp.json"
-    monkeypatch.setattr(bridges_mod, "_MCP_JSON_PATH", mcp_path)
+    monkeypatch.setattr(bridges_mod, "_mcp_json_path", lambda: mcp_path)
     import kiro_crew.apps.backend as bmod
+
     bmod._processes.clear()
     bmod._allocated_ports.clear()
     monkeypatch.setattr(
@@ -99,6 +102,7 @@ def app_env(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # Full lifecycle test
 # ---------------------------------------------------------------------------
+
 
 class TestFullLifecycle:
     def test_install_register_enable_disable_uninstall(self, tmp_path, app_env):
@@ -122,10 +126,13 @@ class TestFullLifecycle:
         assert len(reg.crons) == 2
         assert reg.errors == []
 
-        # Verify agent symlinks
+        # Verify agent configs. These are MATERIALIZED COPIES, not symlinks:
+        # the registered file merges the app's per-user MCP policy into the
+        # template, and a builtin's template lives in the read-only package.
         kiro = app_env["kiro_agents"]
-        assert (kiro / "e2e-app--analyst.json").is_symlink()
-        assert (kiro / "e2e-app--fetcher.json").is_symlink()
+        assert (kiro / "e2e-app--analyst.json").is_file()
+        assert not (kiro / "e2e-app--analyst.json").is_symlink()
+        assert (kiro / "e2e-app--fetcher.json").is_file()
 
         # Verify skill symlinks
         skills_dir = app_env["home"] / "skills" / "e2e-app"
@@ -171,6 +178,7 @@ class TestFullLifecycle:
 # ---------------------------------------------------------------------------
 # OncallWatchTower manifest validation
 # ---------------------------------------------------------------------------
+
 
 class TestOncallWatchTowerManifest:
     """Validate OncallWatchTower's actual app.json against our manifest parser."""

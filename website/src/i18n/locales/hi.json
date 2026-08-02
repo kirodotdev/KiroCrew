@@ -1369,7 +1369,9 @@
         "installed": "इंस्टॉल है",
         "update": "अपडेट करें",
         "verified_publisher": "सत्यापित प्रकाशक",
-        "verified_publisher_first_party": "सत्यापित प्रकाशक (फ़र्स्ट-पार्टी)"
+        "verified_publisher_first_party": "सत्यापित प्रकाशक (फ़र्स्ट-पार्टी)",
+        "desktop_app": "डेस्कटॉप ऐप",
+        "desktop_app_hint": "यहाँ से चालू कर सकते हैं, लेकिन ऐप की अपनी विंडो के लिए KiroCrew डेस्कटॉप ऐप चाहिए।"
       },
       "categoryRail": {
         "add_source": "स्रोत जोड़ें",
@@ -1383,7 +1385,9 @@
       "featureCard": {
         "enable": "सक्षम करें",
         "get": "प्राप्त करें",
-        "installed": "इंस्टॉल है"
+        "installed": "इंस्टॉल है",
+        "desktop_app": "डेस्कटॉप ऐप",
+        "desktop_app_hint": "यहाँ से चालू कर सकते हैं, लेकिन ऐप की अपनी विंडो के लिए KiroCrew डेस्कटॉप ऐप चाहिए।"
       },
       "featuredSpotlight": {
         "enable": "सक्षम करें",
@@ -3190,7 +3194,8 @@
       "updating": "अपडेट हो रहा है…",
       "v": "v",
       "v_2": "· v",
-      "websocket_events": "WebSocket इवेंट"
+      "websocket_events": "WebSocket इवेंट",
+      "desktop_app_hint": "यहाँ से चालू कर सकते हैं, लेकिन ऐप की अपनी विंडो के लिए KiroCrew डेस्कटॉप ऐप चाहिए।"
     },
     "appPage": {
       "loading_app": "ऐप लोड हो रहा है…"

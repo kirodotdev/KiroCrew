@@ -9,7 +9,7 @@
  * built-ins), or an Installed check. The row opens the detail page, honoring
  * Cmd/Ctrl-click for a new tab.
  */
-import { ArrowUp, BadgeCheck, Check, Package, Power } from 'lucide-react'
+import { ArrowUp, BadgeCheck, Check, Package, Power, Monitor } from 'lucide-react'
 import { Btn } from '../ui'
 import Clickable from '../Clickable'
 import AppIcon from '../AppIcon'
@@ -17,6 +17,7 @@ import { gradientFor } from './gradient'
 import { categoryFor } from './categories'
 import { useHeroArt } from './useHeroArt'
 import { sourceLabel, isVerified, type RegistryApp } from './types'
+import { needsDesktopApp } from '../../lib/electron'
 
 import { i18nT } from '../../i18n/t'
 export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnable }: {
@@ -76,7 +77,27 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
               <Power size={12} /> {i18nT('components.appstore.installedAppCard.enabled')}
             </span>
           ) : (
-            <Btn disabled={busy} onClick={onEnable}><Power size={14} /> {i18nT('components.appstore.appListRow.enable')}</Btn>
+            /* A desktop-only builtin is still ENABLE-able from a browser: enabling
+               is a server-side state change (backend, agents and crons run in the
+               gateway); only its UI needs the desktop shell. Offer the action and
+               say what it needs — a static tag would strand a remote user with no
+               way to turn it on. The Monitor badge's hint lives in a hover title,
+               so carry the same hint as the button's accessible name for keyboard
+               / screen-reader users (same reason AppDetailPage shows it in text). */
+            <span className="inline-flex items-center gap-2">
+              <Btn
+                disabled={busy}
+                onClick={onEnable}
+                aria-label={needsDesktopApp(app)
+                  ? `${i18nT('components.appstore.appListRow.enable')}. ${i18nT('components.appstore.appListRow.desktop_app_hint')}`
+                  : undefined}
+              ><Power size={14} /> {i18nT('components.appstore.appListRow.enable')}</Btn>
+              {needsDesktopApp(app) && (
+                <span className="inline-flex items-center gap-1 text-[12px] text-muted" title={i18nT('components.appstore.appListRow.desktop_app_hint')}>
+                  <Monitor size={12} /> {i18nT('components.appstore.appListRow.desktop_app')}
+                </span>
+              )}
+            </span>
           )
         ) : app.installed && app.updateAvailable ? (
           <Btn disabled={busy} className="border-[var(--info)] text-[var(--info)] hover:text-[var(--info)] hover:border-[var(--info)]" onClick={onUpdate}>

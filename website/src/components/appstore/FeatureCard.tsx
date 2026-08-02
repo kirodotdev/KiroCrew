@@ -3,7 +3,7 @@
  * the locked hybrid design). Compact art-left / text-right card using the
  * app's own theme-appropriate hero art, with a gradient + icon fallback.
  */
-import { Check, Package, Power } from 'lucide-react'
+import { Check, Package, Power, Monitor } from 'lucide-react'
 import { Btn } from '../ui'
 import Clickable from '../Clickable'
 import AppIcon from '../AppIcon'
@@ -11,6 +11,7 @@ import { gradientFor } from './gradient'
 import { categoryFor } from './categories'
 import { useHeroArt } from './useHeroArt'
 import type { RegistryApp } from './types'
+import { needsDesktopApp } from '../../lib/electron'
 
 import { i18nT } from '../../i18n/t'
 export default function FeatureCard({ app, onOpen, onGet, onEnable, busy }: {
@@ -58,10 +59,31 @@ export default function FeatureCard({ app, onOpen, onGet, onEnable, busy }: {
           role="presentation"
         >
           <span className="text-[11px] text-muted">{categoryFor(app.tags)}</span>
+          {/* Same as AppListRow: enabling is server-side, so a browser user can
+              do it; only the app's UI needs the desktop shell. */}
           {hiddenBuiltin ? (
-            <Btn primary className="rounded-full px-3.5 text-[12px] font-semibold" disabled={busy} onClick={onEnable}>
-              <Power size={13} /> {i18nT('components.appstore.featureCard.enable')}
-            </Btn>
+            <span className="inline-flex items-center gap-2">
+              <Btn
+                primary
+                className="rounded-full px-3.5 text-[12px] font-semibold"
+                disabled={busy}
+                onClick={onEnable}
+                /* The desktop badge beside this is visual only; carry its hint as
+                   the button's accessible name so keyboard/screen-reader users
+                   learn the app's window needs the desktop build (same as
+                   AppListRow and AppDetailPage). */
+                aria-label={needsDesktopApp(app)
+                  ? `${i18nT('components.appstore.featureCard.enable')}. ${i18nT('components.appstore.featureCard.desktop_app_hint')}`
+                  : undefined}
+              >
+                <Power size={13} /> {i18nT('components.appstore.featureCard.enable')}
+              </Btn>
+              {needsDesktopApp(app) && (
+                <span className="inline-flex items-center gap-1 text-[12px] text-muted" title={i18nT('components.appstore.featureCard.desktop_app_hint')}>
+                  <Monitor size={12} /> {i18nT('components.appstore.featureCard.desktop_app')}
+                </span>
+              )}
+            </span>
           ) : app.installed ? (
             <span className="inline-flex items-center gap-1 text-[12px] text-muted"><Check size={12} /> {i18nT('components.appstore.featureCard.installed')}</span>
           ) : (

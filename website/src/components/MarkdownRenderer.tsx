@@ -548,7 +548,16 @@ function escapedNodeTree(node: HastNode): HastNode {
   return wrap(children)
 }
 
-function rehypeSanitize() {
+/**
+ * Exported so every markdown surface in the product shares ONE sanitize policy.
+ *
+ * Any renderer that admits raw HTML (`rehype-raw`) needs this immediately after
+ * it, and a second surface must never carry its own copy of the allowlist: the
+ * policy is security-relevant, so a fork would silently drift out of step with
+ * this one. The plugin is pure (no React, no styling), so a surface that cannot
+ * reuse the component itself can still reuse the policy.
+ */
+export function rehypeSanitize() {
   return (tree: HastNode) => {
     const walk = (node: HastNode, parent: HastNode, index: number) => {
       // TS strict-null: HastNode.children is `HastNode[] | undefined`. Callers only

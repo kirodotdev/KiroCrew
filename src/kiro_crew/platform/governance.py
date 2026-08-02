@@ -43,7 +43,16 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Mapping, Optional, Protocol, Tuple, runtime_checkable
+from typing import (
+    Callable,
+    Dict,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Protocol,
+    Tuple,
+    runtime_checkable,
+)
 
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform.admission import (
@@ -2003,6 +2012,350 @@ def resolve_pinned_commands(
     if profile is not None:
         pins = pins + profile.pinned_command_patterns()
     return _dedup(pins)
+
+
+#: Host builtin tool name -> the governed scopes its calls are evaluated under.
+#:
+#: This is the POLICY-WRITE-TIME counterpart to :func:`classify_tool_args`. The
+#: gate classifies a builtin from the real call (``tool_kind`` + ``raw_params``),
+#: because that is the only reliable source for a path or a URL — but deciding
+#: whether a tool may be put on an auto-approve list happens BEFORE any call
+#: exists, so the only thing available is the name. Hence a name map, and hence
+#: it lives here next to ``SCOPE_CATALOG`` rather than in a caller: a new governed
+#: builtin is a data change in this file, which is the rule AGENTS.md states for
+#: scopes. A parallel copy in an app-layer module silently re-opened the
+#: auto-approve shortcut for anything the copy had not heard of.
+BUILTIN_TOOL_SCOPES: Dict[str, Tuple[str, ...]] = {
+    # `code` is the edit/LSP/AST-rewrite tool: it writes files AND can shell out
+    # (format/build), and it is itself a governed tool. Mapping it to all three
+    # scopes means a ceiling that constrains filesystem.write, commands, OR the
+    # tool allow-list withholds its blanket auto-approve, so its edits go through
+    # the PreToolUse gate. Missing entirely, it defaulted to auto-approved and a
+    # `filesystem.write` ceiling could not reach it — unrestricted edits with no
+    # permission request.
+    "code": ("commands", "tools", "filesystem.write"),
+    "execute_bash": ("commands",),
+    "fs_read": ("filesystem.read",),
+    "fs_write": ("filesystem.write",),
+    "glob": ("filesystem.read",),
+    "grep": ("filesystem.read",),
+    "web_fetch": ("network.egress",),
+    "web_search": ("network.egress",),
+}
+
+# The scopes whose enforcement is an ALWAYS-ON, ceiling-independent floor applied
+# at the PreToolUse gate: sensitive-path blocking for filesystem tools and
+# denied-command rules for shell tools. A builtin mapping to any of these must
+# never receive a blanket auto-approve (which would skip that floor) — see
+# may_skip_gate. `network.egress` is deliberately excluded: it is ceiling-only,
+# not an always-on floor, so network builtins may still auto-approve absent a
+# ceiling.
+_FLOOR_GATE_SCOPES: frozenset[str] = frozenset({"filesystem.read", "filesystem.write", "commands"})
+
+
+def _ceiling_mentions_mcp_server(ceiling: Optional[GovernanceCeiling], server: str) -> bool:
+    """Whether the ``mcp`` ruleset names this server at ANY granularity.
+
+    Reads the ruleset's own patterns rather than probing, because a probe cannot
+    see a per-tool rule: ``@srv/delete`` matches only itself, so a sentinel tool
+    sails past it. Matches ``@server`` and ``@server/<tool>``, case-insensitively,
+    in both the allow and the deny list — an ALLOW-mode ruleset that lists only
+    some of a server's tools is also an opinion, and auto-approving the whole
+    server would grant the rest.
+
+    A pattern scan deliberately does NOT answer "is this scope governed" — it
+    answers "is THIS SERVER named". The empty-allowlist case (allow-mode with no
+    patterns = deny-all) produces no patterns to match and is caught by the
+    server-level ``gate_decision`` probe in :func:`may_skip_gate` BEFORE this
+    runs; see ``_ruleset_has_an_opinion`` for why counting patterns is the wrong
+    test for the scope-level question. Do not "fix" this function to return True
+    on an empty ruleset: that would tax every server for a rule about one.
+    """
+    if ceiling is None:
+        return False
+    ruleset = ceiling.get("mcp")
+    if ruleset is None:
+        return False
+    prefix = f"@{server}".casefold()
+    patterns = tuple(getattr(ruleset, "allow", ()) or ()) + tuple(
+        getattr(ruleset, "deny", ()) or ()
+    )
+    for pattern in patterns:
+        candidate = str(pattern).strip().casefold()
+        if candidate == prefix or candidate.startswith(prefix + "/"):
+            return True
+    return False
+
+
+def _ruleset_has_an_opinion(rules: object) -> bool:
+    """Whether a scope's ruleset constrains anything at all.
+
+    Counting patterns is NOT the test, and getting that wrong inverts the answer
+    in the strictest case there is: under ``mode="allow"`` an EMPTY allowlist is
+    the empty set — deny-all — so a ruleset with no patterns is MAXIMALLY
+    governed, while a pattern-count check reads it as "no opinion" and hands out
+    the auto-approve exemption. See :class:`ScopedRuleset`.
+
+    * allow-mode → always an opinion (an empty allowlist denies everything).
+    * deny-mode with patterns → an opinion.
+    * deny-mode with no patterns → genuinely permits everything; no opinion.
+    """
+    if rules is None:
+        return False
+    mode = str(getattr(rules, "mode", "") or "").strip().lower()
+    if mode == MODE_ALLOW:
+        return True
+    if mode == MODE_DENY:
+        return bool(tuple(getattr(rules, "deny", ()) or ()))
+    # An unrecognized shape is not proof of safety — treat it as an opinion so
+    # the call goes through the gate rather than skipping it.
+    return True
+
+
+def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
+    """Whether an auto-approve entry may bypass the PreToolUse gate.
+
+    The ONE predicate every writer of an ``allowedTools`` list must consult.
+    Auto-approve is the single path that never reaches ``hooks.on_tool_call``, so
+    an entry written without asking this question is a tool the ceiling can no
+    longer refuse — which is exactly the guarantee the governance docs make. Two
+    independent writers produce those lists (app-agent materialization and the
+    host agent's shared-MCP sync); closing the bypass in one of them protects one
+    agent and leaves the other with the hole, so both call this.
+
+    ``ref`` is what actually appears in such a list:
+
+    * ``@server`` / ``@server/tool`` — an MCP reference.
+    * a bare tool name (``fs_read``, ``web_fetch``) — a host builtin.
+
+    Coarser than the gate ON PURPOSE. Auto-approve has only whole-server (and
+    whole-tool) granularity, while the ceiling may speak per tool, per path or
+    per host — arguments that do not exist yet at write time. So the question here
+    is only "could the ceiling ever have something to say about this", and if it
+    could, the shortcut is declined and the real decision is left to the gate,
+    which has the real arguments.
+
+    Returns True (keep the entry) for an ungoverned host, so nothing changes
+    without a ceiling — EXCEPT a BUILTIN whose always-on floor (sensitive-path /
+    denied-command) is enforced at the gate, which is withheld even with no
+    ceiling (see the floor check below). That exception is builtin-only on
+    purpose: the sensitive-path / denied-command floor runs at the gate against
+    the builtin ``fs_read`` / ``fs_write`` / ``execute_bash`` / ``code`` tool
+    arguments. An MCP ``@server`` is a separate process whose file/command access
+    the builtin floor never inspects, so on an ungoverned host an ``@server``
+    keeps its grant and ONLY a ceiling's argument-derived scopes
+    (``filesystem.*`` / ``network.egress``) constrain it — there is no
+    ceiling-independent floor to bypass for a server. Returns False on an
+    evaluator ERROR: not being able to tell cannot mean "skip the control",
+    because there is no later checkpoint on that path — the cost of asking is one
+    permission prompt, and no capability is lost.
+    """
+    # Defensive: a non-string ref (a malformed, hand-edited config) cannot be a
+    # valid tool/@server reference — treat it as "do not auto-approve" rather
+    # than crash on ref.startswith() below. The list writers also discard such
+    # entries, but this keeps the predicate safe for any caller.
+    if not isinstance(ref, str):
+        return False
+    # A builtin whose MANDATORY, ceiling-INDEPENDENT floor lives at the
+    # PreToolUse gate must NEVER be auto-approved: auto-approve is the one path
+    # that skips hooks.on_tool_call, and that floor (sensitive-path blocking for
+    # filesystem tools — ~/.ssh, ~/.aws, ...; denied-command rules for shell
+    # tools) is always-on and un-disableable. Skipping it would expose
+    # credentials/run denied commands even with NO enterprise ceiling present.
+    # Network-only builtins (web_fetch/web_search) carry no such floor, and
+    # read-only file tools still auto-approve via hooks AFTER the floor runs — so
+    # this only closes the bypass, it does not add prompts.
+    if not ref.startswith("@") and _FLOOR_GATE_SCOPES.intersection(
+        BUILTIN_TOOL_SCOPES.get(ref, ())
+    ):
+        return False
+    if ceiling is None:
+        return True
+    try:
+        if ref.startswith("@"):
+            server = ref[1:].split("/", 1)[0]
+            if not server:
+                return False
+            # Server-level first: the gate sees MCP tools as
+            # ``mcp__<server>__<tool>``, so a sentinel classifies to
+            # ``@server/probe`` and any server-level pattern (including a
+            # wildcard, which a literal scan would miss) covers it.
+            if not gate_decision(ceiling, None, f"mcp__{server}__probe").permitted:
+                return False
+            # Then per-tool rules, which the sentinel cannot see.
+            if _ceiling_mentions_mcp_server(ceiling, server):
+                return False
+            # An MCP tool can also read/write files or reach the network, and the
+            # gate enforces those scopes from the REAL call arguments
+            # (classify_tool_args: the edit path, the fetch host) — arguments the
+            # server-name probe cannot carry. Auto-approving the server skips that
+            # gate, so if the ceiling has an opinion on ANY argument-derived scope,
+            # withhold and let the gate apply it against the real path/host.
+            arg_scopes = ("filesystem.read", "filesystem.write", "network.egress")
+            if any(_ruleset_has_an_opinion(ceiling.get(_s)) for _s in arg_scopes):
+                return False
+            return True
+
+        # The generic `tools` scope governs tool NAMES, so it applies to EVERY
+        # builtin — including one absent from the capability map. Without this an
+        # unmapped tool (introspect / session / report / any future builtin)
+        # returned True unconditionally and its shipped `allowedTools` grant
+        # bypassed a `tools`-scope ceiling (e.g. tools.deny=["report"]). The
+        # capability scopes it DOES map to add path/host granularity on top.
+        scopes = ("tools",) + tuple(BUILTIN_TOOL_SCOPES.get(ref, ()))
+        return not any(_ruleset_has_an_opinion(ceiling.get(scope)) for scope in scopes)
+    except Exception:  # noqa: BLE001 — see the fail-closed note above
+        logger.warning("ceiling probe failed for %r; not auto-approving", ref, exc_info=True)
+        return False
+
+
+def strip_ungoverned_auto_approve(servers: Mapping[str, object]) -> Dict[str, object]:
+    """Return ``servers`` with a ceiling-governed ``autoApprove`` removed.
+
+    ``autoApprove`` is the OTHER route to the exemption ``allowedTools`` grants,
+    and a more direct one: kiro-cli approves an autoApproved MCP tool locally and
+    emits no permission request, so ``hooks.on_tool_call`` never runs for it.
+    ``agent.py``'s managed-server block states the rule for the servers KiroCrew
+    ships ("DELIBERATELY NO autoApprove KEY, and none may ever be added"); this
+    applies it to every other source.
+
+    A MAP-level helper on purpose. The key can arrive from an app manifest, a
+    per-agent MCP policy, a managed server spec, or an imported config from
+    another tool — and each fix that covered only the reported source left the
+    others open. Both writers of an agent config (the host's ``install_agent``
+    and app-agent materialization in ``apps/bridges.py``) run their final server
+    map through here, so a new source is covered the moment it lands in that map
+    rather than needing its own patch.
+
+    Only the key is dropped, never the server: the tools stay available and go
+    through the approval gate, which is where a per-tool ceiling rule is applied.
+    Unchanged on an ungoverned host.
+    """
+    out: Dict[str, object] = {}
+    for name, spec in servers.items():
+        if not isinstance(spec, dict) or "autoApprove" not in spec:
+            out[name] = spec
+            continue
+        if may_skip_gate_now(f"@{name}"):
+            out[name] = spec
+            continue
+        trimmed = dict(spec)
+        trimmed.pop("autoApprove", None)
+        logger.info(
+            "Dropped autoApprove from MCP server %s: the governance ceiling "
+            "constrains it, so its tools go through the approval gate",
+            name,
+        )
+        # Revoking a gate exemption is a permission DECISION — the allowedTools
+        # writers emit this same SEL event, so a silent pop here would be the one
+        # withhold path with no audit trail. Best-effort; never break a rebuild.
+        try:
+            sel().log_api_access(
+                caller="system",
+                operation="mcp_auto_approve_withheld",
+                outcome="ok",
+                source="strip_ungoverned_auto_approve",
+                resources=(
+                    f"@{name} autoApprove removed (governance ceiling); "
+                    "calls go through the approval gate"
+                ),
+            )
+        except Exception:  # noqa: BLE001 — audit must not break the filter
+            logger.debug("SEL audit unavailable for autoApprove strip", exc_info=True)
+        out[name] = trimmed
+    return out
+
+
+def may_skip_gate_now(ref: str) -> bool:
+    """:func:`may_skip_gate` against the CURRENTLY installed ceiling.
+
+    The entry point every ``allowedTools`` writer should call: it folds in the one
+    piece each of them would otherwise re-implement — resolving the ceiling — and
+    it fails CLOSED. There are five such writers (the host agent's shared-MCP
+    sync, app-agent materialization, two dashboard MCP-enable paths and doctor's
+    auto-fix), and every one of them independently produces the single state the
+    PreToolUse gate can never see. A per-caller copy is how they diverged: the
+    first fix closed one and left the other four open.
+
+    An unreadable ceiling is deliberately NOT treated like an absent one. ``None``
+    from ``current_context()`` means "ungoverned host, keep every grant"; an
+    exception means "there may be a ceiling and we cannot read it", and answering
+    "skip the gate" to that is the bypass itself.
+    """
+    try:
+        from kiro_crew.platform.context import current_context
+
+        ceiling = getattr(current_context(), "governance", None)
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("cannot resolve the governance ceiling; not auto-approving %r", ref)
+        return False
+    if not may_skip_gate(ref, ceiling):
+        return False
+    # The POLICY ceiling permits (or is absent) — but governance is
+    # ``policy ∩ profile``, and a Level-2 PROFILE can govern this ref even with NO
+    # ceiling (a per-app profile denying ``@srv/delete``). A static allowedTools
+    # writer has no surface to resolve the single active profile, so withhold the
+    # shortcut if ANY configured profile could govern the ref; the runtime gate
+    # then applies the specific one with the real arguments.
+    try:
+        from kiro_crew.platform.governance_profiles import any_configured_profile_governs
+
+        if any_configured_profile_governs(ref):
+            return False
+    except Exception:  # pragma: no cover - defensive; cannot tell -> withhold
+        logger.warning("cannot evaluate profiles for %r; not auto-approving", ref)
+        return False
+    return True
+
+
+def sanitize_agent_config_governance(config: MutableMapping[str, object]) -> None:
+    """In-place: strip ceiling-governed auto-approve grants from a full agent
+    config about to be written to ``kirocrew.json``.
+
+    THE filter for writers that persist the WHOLE config object (the dashboard
+    ``PUT /api/agent/config`` handler, the browser-setup Playwright convergence)
+    rather than mutating one ``allowedTools`` entry at a time. Those writers
+    escaped the per-ref writer inventory precisely because they assign
+    ``config["allowedTools"] = [...]`` / ``config["mcpServers"] = {...}`` wholesale
+    — so a governed ``@denied`` ref or a governed server's ``autoApprove`` written
+    through them restored the very bypass the per-ref writers close. Every
+    whole-config writer MUST call this immediately before it persists, so no
+    future writer can reopen the surface.
+
+    Drops non-string and ceiling-governed ``allowedTools`` entries (same rule and
+    fail-closed semantics as ``may_skip_gate_now``) and removes ``autoApprove``
+    from any governed MCP server (via ``strip_ungoverned_auto_approve``). ``tools``
+    (mount, not auto-approve) is left intact. A no-op on an ungoverned host.
+    """
+    allowed = config.get("allowedTools")
+    if isinstance(allowed, list):
+        kept: list[str] = []
+        withheld: list[str] = []
+        for ref in allowed:
+            if not isinstance(ref, str):
+                continue  # non-string junk is not a valid ref — drop silently
+            (kept if may_skip_gate_now(ref) else withheld).append(ref)
+        config["allowedTools"] = kept
+        if withheld:
+            # Withholding a grant is a permission DECISION — every other
+            # allowedTools writer emits this event, so a silent drop here would
+            # be the one withhold path with no audit trail. Best-effort.
+            try:
+                sel().log_api_access(
+                    caller="system",
+                    operation="mcp_auto_approve_withheld",
+                    outcome="ok",
+                    source="sanitize_agent_config_governance",
+                    resources=(
+                        f"{', '.join(withheld)} removed from allowedTools "
+                        "(governance ceiling); calls go through the approval gate"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — audit must not break the write
+                logger.debug("SEL audit unavailable for config sanitize", exc_info=True)
+    servers = config.get("mcpServers")
+    if isinstance(servers, dict):
+        config["mcpServers"] = strip_ungoverned_auto_approve(servers)
 
 
 def resolve_ordinal(

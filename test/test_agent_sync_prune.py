@@ -154,3 +154,18 @@ class TestAgentSyncPrune:
         assert body["synced"] == []
         assert body["pruned"] == []
         cfg.save.assert_not_called()
+
+
+class TestAgentSyncFsCheckIsOffloaded:
+    """The per-agent on-disk existence check (a stat + a namespaced glob) runs in
+    a loop over discovered agents; on a populated agents directory it must be
+    offloaded or the gateway loop and heartbeat stall."""
+
+    def test_the_on_disk_check_is_awaited_off_loop(self) -> None:
+        import inspect
+
+        from kiro_crew.dashboard.handlers import agents
+
+        src = inspect.getsource(agents._do_agents_sync)
+        assert "await asyncio.to_thread(" in src
+        assert "_namespaced_agent_file_exists(_dn)" in src, "the FS check must run off-loop"

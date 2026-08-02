@@ -3,6 +3,7 @@
 All endpoints are registered under ``/api/apps`` by the dashboard handler
 setup. These are aiohttp-compatible handler functions.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -46,6 +47,7 @@ from kiro_crew.apps.dependency_ledger import (
     classify_for_uninstall,
     declared_capability_keys,
 )
+from kiro_crew.apps.event_bus import build_broadcast_fn
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.hooks_integration import on_app_disable, on_app_enable
 from kiro_crew.apps.manager import (
@@ -76,6 +78,7 @@ from kiro_crew.apps.registry import (
     minimal_env,
     registry_name_from_source,
 )
+from kiro_crew.apps.spawn_sdk import build_spawn_impl
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path
@@ -103,6 +106,7 @@ def _check_min_version(manifest_data: dict[str, Any]) -> str | None:
 # ---------------------------------------------------------------------------
 # Lifecycle script helper
 # ---------------------------------------------------------------------------
+
 
 async def _run_lifecycle_script(
     app_name: str,
@@ -163,9 +167,7 @@ async def _run_lifecycle_script(
                 # Async variant offloads the Windows taskkill spawn to
                 # subprocess_executor so this lifecycle-script timeout path
                 # never blocks the event loop on taskkill.exe.
-                await platform_compat.kill_process_tree_async(
-                    proc.pid, platform_compat.SIGTERM
-                )
+                await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGTERM)
             except OSError:
                 proc.kill()
             try:
@@ -192,6 +194,7 @@ async def _run_lifecycle_script(
 def _redact_warning(msg: str) -> str:
     """Redact credentials and exfiltration URLs from warning strings."""
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
     msg, _ = redact_credentials(msg)
     msg, _ = redact_exfiltration_urls(msg)
     return msg
@@ -353,20 +356,24 @@ def collect_publish_providers(
             logger.warning(
                 "publish provider for app %r declares non-conforming endpoint %r "
                 "(must start with %r, no traversal) — dropping",
-                app_name, endpoint, allowed_prefix,
+                app_name,
+                endpoint,
+                allowed_prefix,
             )
             continue
-        providers.append({
-            "id": str(pp["id"]),
-            "label": str(pp.get("label", pp["id"])),
-            "icon": str(pp.get("icon", "")),
-            "endpoint": endpoint,
-            "kinds": [str(k) for k in pp.get("kinds", []) if k],
-            "setupRoute": str(pp.get("setupRoute", "")),
-            "app": app_name,
-            "origin": "app",
-            "configured": bool(resolver(app_name, pp)),
-        })
+        providers.append(
+            {
+                "id": str(pp["id"]),
+                "label": str(pp.get("label", pp["id"])),
+                "icon": str(pp.get("icon", "")),
+                "endpoint": endpoint,
+                "kinds": [str(k) for k in pp.get("kinds", []) if k],
+                "setupRoute": str(pp.get("setupRoute", "")),
+                "app": app_name,
+                "origin": "app",
+                "configured": bool(resolver(app_name, pp)),
+            }
+        )
     return providers
 
 
@@ -387,17 +394,19 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
         configured = bool(reg["profiles"])
     except Exception:
         configured = False
-    providers.append({
-        "id": "deploy-web-aws",
-        "label": "Publish to public web (your AWS)",
-        "icon": "Globe",
-        "endpoint": "/api/deploy/deploy",
-        "kinds": ["widget", "html", "markdown"],
-        "setupRoute": "/artifacts/deploy",
-        "app": "",
-        "origin": "core",
-        "configured": configured,
-    })
+    providers.append(
+        {
+            "id": "deploy-web-aws",
+            "label": "Publish to public web (your AWS)",
+            "icon": "Globe",
+            "endpoint": "/api/deploy/deploy",
+            "kinds": ["widget", "html", "markdown"],
+            "setupRoute": "/artifacts/deploy",
+            "app": "",
+            "origin": "core",
+            "configured": configured,
+        }
+    )
     return web.json_response({"providers": providers})
 
 
@@ -437,7 +446,9 @@ async def _start_backend_after_install(name: str) -> None:
     next gateway boot via ``start_enabled_app_backends``.
     """
     try:
-        await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
+        await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), start_app_backend, name
+        )
     except Exception:
         logger.warning("Backend auto-start after install failed for app %s", name, exc_info=True)
 
@@ -484,7 +495,13 @@ async def handle_install_app(request: web.Request) -> web.Response:
             subprocess_executor(), install_app, source
         )
         if not result.ok:
-            sel().log_api_access(caller="dashboard", operation="app_install", outcome="failed", resources=source, error=result.error)
+            sel().log_api_access(
+                caller="dashboard",
+                operation="app_install",
+                outcome="failed",
+                resources=source,
+                error=result.error,
+            )
             return web.json_response(result.to_dict(), status=400)
         invalidate_app_secret_cache(result.name)
 
@@ -493,11 +510,16 @@ async def handle_install_app(request: web.Request) -> web.Response:
         # Spawn the backend now so the app is reachable without a gateway reboot
         # (see _start_backend_after_install). No-op for backend-less apps.
         await _start_backend_after_install(result.name)
-    sel().log_api_access(caller="dashboard", operation="app_install", outcome="completed", resources=result.name)
-    return web.json_response({
-        **result.to_dict(),
-        "registration": reg.to_dict(),
-    }, status=201)
+    sel().log_api_access(
+        caller="dashboard", operation="app_install", outcome="completed", resources=result.name
+    )
+    return web.json_response(
+        {
+            **result.to_dict(),
+            "registration": reg.to_dict(),
+        },
+        status=201,
+    )
 
 
 async def handle_update_app(request: web.Request) -> web.Response:
@@ -511,7 +533,9 @@ async def handle_update_app(request: web.Request) -> web.Response:
     lifecycle = info.get("lifecycle", "gateway")
     if lifecycle != "gateway":
         return web.json_response(
-            {"error": f"app {name!r} has lifecycle={lifecycle!r} — cannot be updated via this endpoint"},
+            {
+                "error": f"app {name!r} has lifecycle={lifecycle!r} — cannot be updated via this endpoint"
+            },
             status=400,
         )
 
@@ -532,21 +556,34 @@ async def handle_update_app(request: web.Request) -> web.Response:
         async with app_lifecycle_lock(name):
             reg_install = await install_from_registry(registry_name)
             if not reg_install.get("ok"):
-                sel().log_api_access(caller="dashboard", operation="app_update", outcome="failed", resources=name, error=reg_install.get("error", ""))
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_update",
+                    outcome="failed",
+                    resources=name,
+                    error=reg_install.get("error", ""),
+                )
                 return web.json_response(reg_install, status=400)
             # Install succeeded — now safe to swap resources
             deregister_app(name)
-            await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), stop_app_backend, name
+            )
             if info.get("enabled"):
                 reg_result = register_app(name)
-                await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
+                await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), start_app_backend, name
+                )
                 reg_install["registration"] = reg_result.to_dict()
-        sel().log_api_access(caller="dashboard", operation="app_update", outcome="completed", resources=name)
+        sel().log_api_access(
+            caller="dashboard", operation="app_update", outcome="completed", resources=name
+        )
         return web.json_response(reg_install)
 
     if not source:
         return web.json_response(
-            {"error": "source path required (not found in installed metadata)"}, status=400,
+            {"error": "source path required (not found in installed metadata)"},
+            status=400,
         )
 
     # Per-app lifecycle lock: the deregister → stop → copy → re-register
@@ -557,7 +594,9 @@ async def handle_update_app(request: web.Request) -> web.Response:
     async with app_lifecycle_lock(name):
         # Deregister old resources before update
         deregister_app(name)
-        await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
+        await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), stop_app_backend, name
+        )
 
         # Off-loop: blocking filesystem copy (see handle_install_app).
         # expected_name makes update_app itself reject a source whose
@@ -569,17 +608,29 @@ async def handle_update_app(request: web.Request) -> web.Response:
             # Re-register old resources on failure
             register_app(name)
             if info.get("enabled"):
-                await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
-            sel().log_api_access(caller="dashboard", operation="app_update", outcome="failed", resources=name, error=up_result.error)
+                await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), start_app_backend, name
+                )
+            sel().log_api_access(
+                caller="dashboard",
+                operation="app_update",
+                outcome="failed",
+                resources=name,
+                error=up_result.error,
+            )
             return web.json_response(up_result.to_dict(), status=400)
 
         # Re-register with new manifest if app was enabled
         up_reg = None
         if info.get("enabled"):
             up_reg = register_app(name)
-            await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), start_app_backend, name
+            )
 
-    sel().log_api_access(caller="dashboard", operation="app_update", outcome="completed", resources=name)
+    sel().log_api_access(
+        caller="dashboard", operation="app_update", outcome="completed", resources=name
+    )
     resp: dict[str, Any] = up_result.to_dict()
     if up_reg:
         resp["registration"] = up_reg.to_dict()
@@ -605,7 +656,8 @@ async def handle_register_external(request: web.Request) -> web.Response:
     display_name = body.get("displayName", "")
     if not name or not version or not display_name:
         return web.json_response(
-            {"error": "name, version, and displayName are required"}, status=400,
+            {"error": "name, version, and displayName are required"},
+            status=400,
         )
 
     result = register_external_app(
@@ -619,9 +671,17 @@ async def handle_register_external(request: web.Request) -> web.Response:
         lifecycle=body.get("lifecycle", "app"),
     )
     if not result.ok:
-        sel().log_api_access(caller="dashboard", operation="app_register_external", outcome="failed", resources=name, error=result.error)
+        sel().log_api_access(
+            caller="dashboard",
+            operation="app_register_external",
+            outcome="failed",
+            resources=name,
+            error=result.error,
+        )
         return web.json_response(result.to_dict(), status=400)
-    sel().log_api_access(caller="dashboard", operation="app_register_external", outcome="completed", resources=name)
+    sel().log_api_access(
+        caller="dashboard", operation="app_register_external", outcome="completed", resources=name
+    )
     resp = result.to_dict()
     # Include the generated app secret so the caller can use it for auth
     if result.secret:
@@ -653,7 +713,9 @@ async def _deregister_crons_with_retry(name: str, cron_service: Any) -> int:
                 raise
             logger.info(
                 "Cron cleanup for %s: store busy (attempt %d/%d), retrying",
-                name, attempt, _CRON_CLEANUP_ATTEMPTS,
+                name,
+                attempt,
+                _CRON_CLEANUP_ATTEMPTS,
             )
             await asyncio.sleep(_CRON_CLEANUP_BACKOFF_SECS)
     raise AssertionError("unreachable")  # pragma: no cover
@@ -685,16 +747,18 @@ async def handle_uninstall_preview(request: web.Request) -> web.Response:
     # Classify dependencies
     dep_classification = classify_for_uninstall(name, declared_deps)
 
-    return web.json_response({
-        "app": name,
-        "lifecycle": lifecycle,
-        "resources": {
-            "agents": manifest.get("agents", []),
-            "skills": manifest.get("skills", []),
-            "crons": [c.get("name", "") for c in manifest.get("crons", [])],
-        },
-        "dependencies": dep_classification,
-    })
+    return web.json_response(
+        {
+            "app": name,
+            "lifecycle": lifecycle,
+            "resources": {
+                "agents": manifest.get("agents", []),
+                "skills": manifest.get("skills", []),
+                "crons": [c.get("name", "") for c in manifest.get("crons", [])],
+            },
+            "dependencies": dep_classification,
+        }
+    )
 
 
 async def handle_uninstall_app(request: web.Request) -> web.Response:
@@ -805,7 +869,9 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                     logger.warning(
                         "Uninstall of %s ABORTED: cron cleanup could not "
                         "complete (store busy) and continuing would orphan "
-                        "still-enabled app jobs: %s", name, exc,
+                        "still-enabled app jobs: %s",
+                        name,
+                        exc,
                     )
                     sel().log_api_access(
                         caller="dashboard",
@@ -814,17 +880,20 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                         resources=f"app={name}",
                         error=f"cron cleanup failed, uninstall aborted: {exc}",
                     )
-                    return web.json_response({
-                        "error": (
-                            f"cron cleanup for {name!r} could not complete "
-                            "(cron store busy) — uninstall aborted so the "
-                            "app's scheduled jobs are not orphaned. The app is "
-                            "still installed; retry the uninstall."
-                        ),
-                        "retryable": True,
-                        "app": name,
-                        "log": uninstall_log,
-                    }, status=409)
+                    return web.json_response(
+                        {
+                            "error": (
+                                f"cron cleanup for {name!r} could not complete "
+                                "(cron store busy) — uninstall aborted so the "
+                                "app's scheduled jobs are not orphaned. The app is "
+                                "still installed; retry the uninstall."
+                            ),
+                            "retryable": True,
+                            "app": name,
+                            "log": uninstall_log,
+                        },
+                        status=409,
+                    )
                 except Exception as exc:
                     logger.warning("Cron cleanup failed for %s on uninstall: %s", name, exc)
                     sel().log_api_access(
@@ -842,7 +911,9 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         on_uninstall = (manifest.get("setup") or {}).get("onUninstall", "")
         if on_uninstall:
             script_output = await _run_lifecycle_script(
-                name, on_uninstall, timeout=120,
+                name,
+                on_uninstall,
+                timeout=120,
                 extra_env={
                     "KEEP_DATA": "1" if keep_data else "0",
                     "PURGE_DATA": "0" if keep_data else "1",
@@ -851,6 +922,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             )
             if script_output.get("output"):
                 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
                 cleaned, _ = redact_exfiltration_urls(script_output["output"])
                 cleaned, _ = redact_credentials(cleaned)
                 uninstall_log.append(cleaned)
@@ -859,7 +931,9 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
 
         # Step 3: Stop backend + deregister resources (gateway-managed only)
         if resources == "gateway":
-            await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), stop_app_backend, name
+            )
             deregister_app(name)
 
         # Step 4: Clean dependencies (atomic classify + ledger update)
@@ -874,11 +948,12 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             # would drop the keep and delete a dep the user chose to keep.
             keep_canonical = [canonical_dep_key(k) for k in keep_specific]
             classification = classify_and_clean_for_uninstall(
-                name, declared_deps, keep_specific=keep_canonical,
+                name,
+                declared_deps,
+                keep_specific=keep_canonical,
             )
             removable = [
-                d for d in classification.get("removable", [])
-                if d.get("id") not in keep_canonical
+                d for d in classification.get("removable", []) if d.get("id") not in keep_canonical
             ]
             if removable:
                 cleaned_deps = await clean_dependencies(name, removable)
@@ -893,7 +968,13 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             subprocess_executor(), lambda: uninstall_app(name, keep_data=keep_data)
         )
     if not result.ok:
-        sel().log_api_access(caller="dashboard", operation="app_uninstall", outcome="failed", resources=name, error=result.error)
+        sel().log_api_access(
+            caller="dashboard",
+            operation="app_uninstall",
+            outcome="failed",
+            resources=name,
+            error=result.error,
+        )
         return web.json_response(result.to_dict(), status=400)
     invalidate_app_secret_cache(name)
     _unregister_notification_channels(request, name)
@@ -903,12 +984,15 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         app_reg_name = registry_name_from_source(info.get("source", ""))
         if app_reg_name:
             from kiro_crew.apps.registry import app_source_dir
+
             ws_dir = app_source_dir(app_reg_name)
             if ws_dir.is_dir():
                 shutil.rmtree(ws_dir, ignore_errors=True)
                 uninstall_log.append(f"Removed workspace for {app_reg_name}")
 
-    sel().log_api_access(caller="dashboard", operation="app_uninstall", outcome="completed", resources=name)
+    sel().log_api_access(
+        caller="dashboard", operation="app_uninstall", outcome="completed", resources=name
+    )
     resp = result.to_dict()
     if uninstall_log:
         resp["uninstall_log"] = "\n".join(uninstall_log)
@@ -942,7 +1026,13 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     async with app_lifecycle_lock(name):
         result = enable_app(name)
         if not result.ok:
-            sel().log_api_access(caller="dashboard", operation="app_enable", outcome="failed", resources=name, error=result.error)
+            sel().log_api_access(
+                caller="dashboard",
+                operation="app_enable",
+                outcome="failed",
+                resources=name,
+                error=result.error,
+            )
             return web.json_response(result.to_dict(), status=400)
 
         resp: dict[str, Any] = result.to_dict()
@@ -950,7 +1040,9 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         # Register resources if gateway-managed
         if resources == "gateway":
             reg = register_app(name)
-            backend = await asyncio.get_running_loop().run_in_executor(subprocess_executor(), start_app_backend, name)
+            backend = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), start_app_backend, name
+            )
             # MCP re-registration is HEALTH-GATED. register_app ran before
             # the backend was up, so an HTTP MCP server with backend.port:"auto" carries the
             # manifest's illustrative port. The backend's health-check loop calls
@@ -962,7 +1054,9 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                 try:
                     reregister_app_mcp_servers(name, live_port=getattr(backend, "port", None))
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("MCP re-registration after backend start failed for %s: %s", name, exc)
+                    logger.warning(
+                        "MCP re-registration after backend start failed for %s: %s", name, exc
+                    )
             resp["registration"] = reg.to_dict()
             if backend:
                 resp["backend"] = backend.to_dict()
@@ -997,23 +1091,37 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             if script_output.get("failed"):
                 # Rollback: disable the app again
                 if resources == "gateway":
-                    await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
+                    await asyncio.get_running_loop().run_in_executor(
+                        subprocess_executor(), stop_app_backend, name
+                    )
                     deregister_app(name)
                 disable_app(name)
-                sel().log_api_access(caller="dashboard", operation="app_enable", outcome="failed", resources=name, error="onEnable script failed")
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_enable",
+                    outcome="failed",
+                    resources=name,
+                    error="onEnable script failed",
+                )
                 from kiro_crew.security import redact_credentials
+
                 cleaned, _ = redact_credentials(script_output.get("output", ""))
-                return web.json_response({
-                    "ok": False, "name": name,
-                    "error": "onEnable script failed — app remains disabled",
-                    "script_output": cleaned,
-                }, status=400)
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "name": name,
+                        "error": "onEnable script failed — app remains disabled",
+                        "script_output": cleaned,
+                    },
+                    status=400,
+                )
             resp["onEnable"] = {
                 "output": "",
                 "failed": False,
             }
             if script_output.get("output"):
                 from kiro_crew.security import redact_credentials
+
                 cleaned, _ = redact_credentials(script_output.get("output", ""))
                 resp["onEnable"]["output"] = cleaned
             resp["onEnable"]["failed"] = script_output.get("failed", False)
@@ -1022,9 +1130,20 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         try:
             state = request.app.get("state")
             hooks_result = await on_app_enable(
-                name, info,
+                name,
+                info,
                 cron_service=getattr(state, "crons", None),
-                broadcast_fn=getattr(state, "broadcast", None),
+                # state exposes broadcast_ws, not broadcast: the old
+                # getattr(state, "broadcast", None) always resolved to None, so an
+                # app enabled from the dashboard got NO event bus at all.
+                broadcast_fn=(
+                    build_broadcast_fn(state.broadcast_ws) if state is not None else None
+                ),
+                spawn_impl=(
+                    build_spawn_impl(getattr(state, "subagents", None))
+                    if state is not None
+                    else None
+                ),
             )
             if hooks_result:
                 # Redact any sensitive content in health_status issues
@@ -1044,13 +1163,17 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                 _sync_builtin_config(name, enabled=True)
             except OSError as exc:
                 logger.warning("Failed to sync config.json for %s: %s", name, exc)
-                resp.setdefault("warnings", []).append(_redact_warning(f"config sync failed: {exc}"))
+                resp.setdefault("warnings", []).append(
+                    _redact_warning(f"config sync failed: {exc}")
+                )
             else:
                 svc_warn = await _notify_builtin_service(request, name)
                 if svc_warn:
                     resp.setdefault("warnings", []).append(_redact_warning(svc_warn))
 
-        sel().log_api_access(caller="dashboard", operation="app_enable", outcome="completed", resources=name)
+        sel().log_api_access(
+            caller="dashboard", operation="app_enable", outcome="completed", resources=name
+        )
         return web.json_response(resp)
 
 
@@ -1084,6 +1207,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
             )
             if script_output.get("failed"):
                 from kiro_crew.security import redact_credentials
+
                 raw_output = script_output.get("output", "")[:200]
                 cleaned, _ = redact_credentials(raw_output)
                 warnings.append(f"onDisable script failed: {cleaned}")
@@ -1102,12 +1226,20 @@ async def handle_disable_app(request: web.Request) -> web.Response:
 
         # Deregister resources if gateway-managed
         if resources == "gateway":
-            await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), stop_app_backend, name
+            )
             deregister_app(name)
 
         result = disable_app(name)
         if not result.ok:
-            sel().log_api_access(caller="dashboard", operation="app_disable", outcome="failed", resources=name, error=result.error)
+            sel().log_api_access(
+                caller="dashboard",
+                operation="app_disable",
+                outcome="failed",
+                resources=name,
+                error=result.error,
+            )
             return web.json_response(result.to_dict(), status=400)
         _unregister_notification_channels(request, name)
 
@@ -1134,7 +1266,9 @@ async def handle_disable_app(request: web.Request) -> web.Response:
                 if svc_warn:
                     warnings.append(_redact_warning(svc_warn))
 
-        sel().log_api_access(caller="dashboard", operation="app_disable", outcome="completed", resources=name)
+        sel().log_api_access(
+            caller="dashboard", operation="app_disable", outcome="completed", resources=name
+        )
         resp = result.to_dict()
         if warnings:
             resp["warnings"] = warnings
@@ -1179,13 +1313,12 @@ async def handle_open_app(request: web.Request) -> web.Response:
         caller="dashboard",
     )
     if denied:
-        return web.json_response(
-            {"error": denied, "code": "app_execution_denied"}, status=403
-        )
+        return web.json_response({"error": denied, "code": "app_execution_denied"}, status=403)
 
     # Detect cloud/remote — no DISPLAY and not macOS desktop
     import os
     import platform
+
     is_local = (
         platform.system() == "Darwin"
         or os.environ.get("DISPLAY")
@@ -1193,13 +1326,15 @@ async def handle_open_app(request: web.Request) -> web.Response:
     )
 
     if not is_local:
-        return web.json_response({
-            "ok": False,
-            "name": name,
-            "remote": True,
-            "command": open_cmd,
-            "message": f"KiroCrew is running remotely. Run this on your local machine: {open_cmd}",
-        })
+        return web.json_response(
+            {
+                "ok": False,
+                "name": name,
+                "remote": True,
+                "command": open_cmd,
+                "message": f"KiroCrew is running remotely. Run this on your local machine: {open_cmd}",
+            }
+        )
 
     try:
         base_cmd = ["/bin/sh", "-c", open_cmd]
@@ -1212,14 +1347,19 @@ async def handle_open_app(request: web.Request) -> web.Response:
         )
         # Don't wait — launch is fire-and-forget
         sel().log_api_access(
-            caller="dashboard", operation="app_open",
-            outcome="launched", resources=f"{name} pid={proc.pid}",
+            caller="dashboard",
+            operation="app_open",
+            outcome="launched",
+            resources=f"{name} pid={proc.pid}",
         )
         return web.json_response({"ok": True, "name": name, "pid": proc.pid})
     except Exception as exc:
         sel().log_api_access(
-            caller="dashboard", operation="app_open",
-            outcome="failed", resources=name, error=str(exc),
+            caller="dashboard",
+            operation="app_open",
+            outcome="failed",
+            resources=name,
+            error=str(exc),
         )
         return web.json_response({"error": f"failed to launch: {exc}"}, status=500)
 
@@ -1228,13 +1368,16 @@ async def handle_open_app(request: web.Request) -> web.Response:
 # Registry (browse & install from curated list)
 # ---------------------------------------------------------------------------
 
+
 async def handle_registry(request: web.Request) -> web.Response:
     """GET /api/apps/registry — list all apps available for installation."""
     apps = await list_registry()
-    return web.json_response({
-        "apps": apps,
-        "serverPlatform": get_server_platform(),
-    })
+    return web.json_response(
+        {
+            "apps": apps,
+            "serverPlatform": get_server_platform(),
+        }
+    )
 
 
 async def handle_registry_install(request: web.Request) -> web.Response:
@@ -1262,11 +1405,13 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         # may contain internal hostnames, package URLs, or credential fragments.
         if result.get("log"):
             from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
             cleaned_log, _ = redact_exfiltration_urls(result["log"])
             cleaned_log, _ = redact_credentials(cleaned_log)
             result["log"] = cleaned_log
         if result.get("error"):
             from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
             cleaned_err, _ = redact_exfiltration_urls(result["error"])
             cleaned_err, _ = redact_credentials(cleaned_err)
             result["error"] = cleaned_err
@@ -1274,7 +1419,13 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         if result.get("needsClientInstall"):
             return web.json_response(result, status=200)
         if not result.get("ok"):
-            sel().log_api_access(caller="dashboard", operation="app_registry_install", outcome="failed", resources=name, error=result.get("error", ""))
+            sel().log_api_access(
+                caller="dashboard",
+                operation="app_registry_install",
+                outcome="failed",
+                resources=name,
+                error=result.get("error", ""),
+            )
             return web.json_response(result, status=400)
 
         # Auto-register resources
@@ -1286,7 +1437,9 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         # thread because start_app_backend blocks on a health-check poll.
         await _start_backend_after_install(result["name"])
     result["registration"] = reg.to_dict()
-    sel().log_api_access(caller="dashboard", operation="app_registry_install", outcome="completed", resources=name)
+    sel().log_api_access(
+        caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
+    )
     return web.json_response(result, status=201)
 
 
@@ -1328,6 +1481,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # Create a queue-backed log collector so install_from_registry streams
     # each log line as it's appended — zero changes to the install logic.
     from kiro_crew.apps.registry import StreamingLogLines
+
     queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=500)
     streaming_log = StreamingLogLines(queue)
 
@@ -1352,6 +1506,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     async def _drain_queue() -> None:
         """Forward queued log lines to the SSE stream until sentinel."""
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
         while True:
             line = await queue.get()
             if line is None:
@@ -1395,11 +1550,13 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # fragments from subprocess failures.
     if result.get("log"):
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
         cleaned_log, _ = redact_exfiltration_urls(result["log"])
         cleaned_log, _ = redact_credentials(cleaned_log)
         result["log"] = cleaned_log
     if result.get("error"):
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
         cleaned_err, _ = redact_exfiltration_urls(result["error"])
         cleaned_err, _ = redact_credentials(cleaned_err)
         result["error"] = cleaned_err
@@ -1410,14 +1567,25 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         return resp
 
     if not result.get("ok"):
-        sel().log_api_access(caller="dashboard", operation="app_registry_install_stream", outcome="failed", resources=name, error=result.get("error", ""))
+        sel().log_api_access(
+            caller="dashboard",
+            operation="app_registry_install_stream",
+            outcome="failed",
+            resources=name,
+            error=result.get("error", ""),
+        )
         await _send_sse("done", json.dumps(result))
         await resp.write_eof()
         return resp
 
     # Resource registration + backend start already ran inside the locked
     # transaction above; result carries "registration".
-    sel().log_api_access(caller="dashboard", operation="app_registry_install_stream", outcome="completed", resources=name)
+    sel().log_api_access(
+        caller="dashboard",
+        operation="app_registry_install_stream",
+        outcome="completed",
+        resources=name,
+    )
     await _send_sse("done", json.dumps(result))
     await resp.write_eof()
     return resp
@@ -1427,10 +1595,24 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
 # Static file serving for app UI bundles
 # ---------------------------------------------------------------------------
 
-_ALLOWED_EXTENSIONS = frozenset({
-    ".mjs", ".js", ".css", ".json", ".svg", ".png", ".jpg",
-    ".jpeg", ".gif", ".webp", ".woff", ".woff2", ".ttf", ".map",
-})
+_ALLOWED_EXTENSIONS = frozenset(
+    {
+        ".mjs",
+        ".js",
+        ".css",
+        ".json",
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".map",
+    }
+)
 
 _CONTENT_TYPES = {
     ".mjs": "application/javascript",
@@ -1485,9 +1667,7 @@ async def handle_app_config(request: web.Request) -> web.Response:
             text = await asyncio.to_thread(config_path.read_text, encoding="utf-8")
             return web.json_response(json.loads(text))
         except (json.JSONDecodeError, OSError) as exc:
-            return web.json_response(
-                {"error": f"failed to read config: {exc}"}, status=500
-            )
+            return web.json_response({"error": f"failed to read config: {exc}"}, status=500)
 
     # PUT — write config
     try:
@@ -1496,17 +1676,13 @@ async def handle_app_config(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON"}, status=400)
 
     if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "config must be a JSON object"}, status=400
-        )
+        return web.json_response({"error": "config must be a JSON object"}, status=400)
 
     try:
         content = json.dumps(body, indent=2) + "\n"
         await asyncio.to_thread(atomic_write, config_path, content)
     except OSError as exc:
-        return web.json_response(
-            {"error": f"failed to write config: {exc}"}, status=500
-        )
+        return web.json_response({"error": f"failed to write config: {exc}"}, status=500)
 
     sel().log_api_access(
         caller="dashboard",
@@ -1524,6 +1700,7 @@ async def handle_app_ui_file(request: web.Request) -> web.Response:
     if ".." in file_path or file_path.startswith("/"):
         return web.json_response({"error": "invalid path"}, status=400)
     from pathlib import Path
+
     ext = Path(file_path).suffix.lower()
     if ext not in _ALLOWED_EXTENSIONS:
         return web.json_response({"error": f"file type {ext!r} not allowed"}, status=403)
@@ -1547,6 +1724,7 @@ async def handle_app_ui_file(request: web.Request) -> web.Response:
     # up on a plain refresh. The previous public,max-age=3600 served every
     # app's UI stale for up to an hour after an update.
     from kiro_crew.apps.dev_mode import is_dev_mode_cached
+
     cache = "no-store" if is_dev_mode_cached(name) else "no-cache"
     return web.FileResponse(full_path, headers={"Content-Type": content_type, "Cache-Control": cache})  # type: ignore[return-value]
 
@@ -1558,6 +1736,7 @@ async def handle_app_dev_mode(request: web.Request) -> web.Response:
     within one poll interval, so no gateway restart is needed.
     """
     from kiro_crew.apps.dev_mode import set_dev_mode
+
     name = request.match_info["name"]
     try:
         body = await request.json()
@@ -1583,6 +1762,7 @@ async def handle_app_dev_mode(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Git blob proxy — serve images from a registry app's git repo
 # ---------------------------------------------------------------------------
+
 
 def _blob_cache_dir() -> Path:
     return config_dir() / "cache" / "blobs"
@@ -1612,13 +1792,9 @@ _SAFE_REPO_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # (signatures are optional by default), so an unauthenticated transport would
 # let a network (MITM) attacker swap in an attacker-controlled app. Require TLS
 # for HTTP-style remotes; use an explicit ssh:// / scp form for private ones.
-_SAFE_HTTPS_URL_RE = re.compile(
-    r"^https://[A-Za-z0-9.\-]+(?::[0-9]+)?/[A-Za-z0-9._/\-]+$"
-)
+_SAFE_HTTPS_URL_RE = re.compile(r"^https://[A-Za-z0-9.\-]+(?::[0-9]+)?/[A-Za-z0-9._/\-]+$")
 # scp-style ssh remote: user@host:org/app[.git]
-_SAFE_SCP_URL_RE = re.compile(
-    r"^[A-Za-z0-9._\-]+@[A-Za-z0-9.\-]+:[A-Za-z0-9._/\-]+$"
-)
+_SAFE_SCP_URL_RE = re.compile(r"^[A-Za-z0-9._\-]+@[A-Za-z0-9.\-]+:[A-Za-z0-9._/\-]+$")
 # ssh:// URL form: ssh://user@host[:port]/org/app[.git]
 _SAFE_SSH_URL_RE = re.compile(
     r"^ssh://[A-Za-z0-9._\-]+@[A-Za-z0-9.\-]+(?::[0-9]+)?/[A-Za-z0-9._/\-]+$"
@@ -1745,7 +1921,8 @@ async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path)
     if not await asyncio.to_thread(is_clone_host_trusted, git_url):
         logger.warning(
             "Blob clone refused for repo=%r url=%r: host not in trusted forge/registry set (SSRF gate)",
-            repo, git_url,
+            repo,
+            git_url,
         )
         return False
 
@@ -1779,9 +1956,7 @@ async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path)
             env=anonymous_git_env(),
         )
         try:
-            _, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT
-            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.communicate()
@@ -1790,7 +1965,9 @@ async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path)
 
         if proc.returncode != 0:
             logger.debug(
-                "git clone failed for %s/%s: %s", repo, file_path,
+                "git clone failed for %s/%s: %s",
+                repo,
+                file_path,
                 stderr.decode(errors="replace").strip() if stderr else "",
             )
             return False
@@ -1836,9 +2013,7 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
     # Look up the registry entry's branch; fall back to query param or main
     ref = request.query.get("ref", "")
     if not ref:
-        entry = (
-            await asyncio.to_thread(get_registry_app_by_repo, repo) if repo else None
-        )
+        entry = await asyncio.to_thread(get_registry_app_by_repo, repo) if repo else None
         ref = entry.get("branch", "main") if entry else "main"
 
     # Validate inputs
@@ -1902,7 +2077,12 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
                     return web.json_response({"error": "failed to fetch blob"}, status=502)
 
     content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
-    sel().log_api_access(caller="dashboard", operation="app_blob_proxy", outcome="served", resources=f"repo={repo} path={file_path}")
+    sel().log_api_access(
+        caller="dashboard",
+        operation="app_blob_proxy",
+        outcome="served",
+        resources=f"repo={repo} path={file_path}",
+    )
     return web.FileResponse(  # type: ignore[return-value]
         cache_path,
         headers={
@@ -1944,15 +2124,26 @@ def invalidate_app_secret_cache(name: str) -> None:
     _app_secret_cache.pop(name, None)
 
 
-_PROXY_HOP_HEADERS = frozenset({
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "te", "trailers", "transfer-encoding", "upgrade",
-})
+_PROXY_HOP_HEADERS = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
 
 # Strip sensitive auth headers — app backends use X-KiroCrew-Proxy HMAC, not user cookies
-_PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset({
-    "cookie", "authorization",
-})
+_PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
+    {
+        "cookie",
+        "authorization",
+    }
+)
 
 
 def _resolve_app_backend_url(name: str) -> str | None:
@@ -2068,7 +2259,8 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     backend_url = _resolve_app_backend_url(name)
     if not backend_url:
         return web.json_response(
-            {"error": f"app {name!r} has no reachable backend"}, status=502,
+            {"error": f"app {name!r} has no reachable backend"},
+            status=502,
         )
 
     # Build target URL — preserve the `/api/` prefix from the route so the
@@ -2113,7 +2305,8 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     except OSError as exc:
         logger.warning("Failed to read app secret for %s: %s", name, exc)
         return web.json_response(
-            {"error": "proxy auth failed: cannot read app secret"}, status=502,
+            {"error": "proxy auth failed: cannot read app secret"},
+            status=502,
         )
 
     try:
@@ -2135,7 +2328,8 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
                 resp = web.StreamResponse(
                     status=upstream.status,
                     headers={
-                        k: v for k, v in upstream.headers.items()
+                        k: v
+                        for k, v in upstream.headers.items()
                         if k.lower() not in _PROXY_HOP_HEADERS
                     },
                 )
@@ -2150,7 +2344,8 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     except aiohttp.ClientError as exc:
         logger.warning("Proxy to app %s failed: %s", name, exc)
         return web.json_response(
-            {"error": "backend unreachable"}, status=502,
+            {"error": "backend unreachable"},
+            status=502,
         )
     except asyncio.TimeoutError:
         return web.json_response({"error": "backend timeout"}, status=504)
@@ -2175,9 +2370,17 @@ async def handle_migrate_cleanup(request: web.Request) -> web.Response:
             "io_error": 500,
         }
         status = _cleanup_status.get(result.error_code, 400)
-        sel().log_api_access(caller="dashboard", operation="app_migrate_cleanup", outcome="failed", resources=name, error=result.error)
+        sel().log_api_access(
+            caller="dashboard",
+            operation="app_migrate_cleanup",
+            outcome="failed",
+            resources=name,
+            error=result.error,
+        )
         return web.json_response(result.to_dict(), status=status)
-    sel().log_api_access(caller="dashboard", operation="app_migrate_cleanup", outcome="completed", resources=name)
+    sel().log_api_access(
+        caller="dashboard", operation="app_migrate_cleanup", outcome="completed", resources=name
+    )
     return web.json_response(result.to_dict())
 
 
@@ -2186,8 +2389,7 @@ async def handle_registries(request: web.Request) -> web.Response:
     if request.method == "GET":
         config = KiroCrewConfig.load()
         registries = [
-            {"name": r.name, "repo": r.repo, "branch": r.branch}
-            for r in config.registries
+            {"name": r.name, "repo": r.repo, "branch": r.branch} for r in config.registries
         ]
         sel().log_api_access(
             caller="dashboard",
@@ -2268,9 +2470,7 @@ async def handle_registries(request: web.Request) -> web.Response:
             outcome="failed",
             resources=f"config read error: {exc}",
         )
-        return web.json_response(
-            {"error": f"cannot read config: {exc}"}, status=500
-        )
+        return web.json_response({"error": f"cannot read config: {exc}"}, status=500)
     # Detect hosts this PUT newly introduces to the registry trust set. A
     # configured registry host is fed into the loosened-sandbox / SSH-clone
     # trust set (see registry._configured_registry_hosts) AND its apps become
@@ -2288,9 +2488,7 @@ async def handle_registries(request: web.Request) -> web.Response:
     # blocking the only dashboard path that could fix the malformed value.
     prior = data.get("registries") or []
     prior_hosts = {
-        h
-        for r in prior
-        if isinstance(r, dict) and (h := _git_url_host(str(r.get("repo", ""))))
+        h for r in prior if isinstance(r, dict) and (h := _git_url_host(str(r.get("repo", ""))))
     }
     newly_trusted_hosts: list[str] = []
     for r in validated:
@@ -2342,9 +2540,7 @@ async def handle_registries_refresh(request: web.Request) -> web.Response:
         # refreshed EVERY configured registry — an unintended fan-out of git
         # clones / cache writes from a malformed request. Reject it as a 400.
         if not isinstance(body, dict):
-            return web.json_response(
-                {"error": "request body must be a JSON object"}, status=400
-            )
+            return web.json_response({"error": "request body must be a JSON object"}, status=400)
         raw = body.get("repo")
         if raw is not None:
             repo = str(raw).strip() or None

@@ -209,7 +209,8 @@ they go live without waiting for a Gateway restart.
     "storage": true,
     "cron": true,
     "memory": "app-scoped",
-    "network": false
+    "network": false,
+    "spawn": false
   }
 }
 ```
@@ -223,6 +224,24 @@ they go live without waiting for a Gateway restart.
 | `permissions.cron` | boolean | Can create cron jobs |
 | `permissions.memory` | string | Memory access: `""` (none), `"app-scoped"`, or `"shared"` |
 | `permissions.network` | boolean | Can make external network requests |
+| `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
+
+#### `permissions.spawn` — Background Agents
+
+Unlike the advisory fields above, this one **gates a real capability**: `ctx.spawn`
+is absent from the app context unless the manifest declares it, so an app that
+did not ask cannot start an agent even by importing the SDK. Declared rather than
+inferred so "which apps can start an agent" is answerable from the manifest
+instead of from an app's import graph.
+
+Spawns run through the HOST's subagent manager, which means they inherit the
+host's spawn accounting and approval mode rather than getting a private path.
+Cost is the app's to bound: an app that spawns on a timer needs its own budget
+(see the activity-budget pattern in `builtins/mochi/activity_budget.py`), because
+the platform does not rate-limit spawns per app today.
+
+API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
+`SpawnError`.
 
 > **Advisory today, not enforced in-process.** These fields are **not** a runtime sandbox. The validator functions in `apps/permissions.py` (`validate_permissions`, `format_permissions_summary`) are currently **not wired into the install or runtime path** — they are only exercised by unit tests — so the manifest `permissions` block is neither enforced nor even surfaced today: `mcpTools` is not gated at tool dispatch and an empty `mcpTools` list is treated as unrestricted. What actually confines an app today is the HTTP app-token scope (`permissions.api` allowlist, deny-by-default — see `security.md`) plus the OS sandbox. Install-time path traversal is blocked separately by `_check_path_safety(name)` + `manifest.validate()`, not by the permission validator. Full in-process enforcement is tracked in [app-sandbox-roadmap.md](./app-sandbox-roadmap.md).
 
@@ -323,6 +342,7 @@ Control how KiroCrew manages the app:
   "platform": {
     "os": ["macos", "linux"],
     "arch": [],
+    "requiresDesktopApp": false,
     "installMode": "server",
     "clientInstall": {
       "shell": "curl -fsSL https://example.com/install.sh | bash",
@@ -336,6 +356,7 @@ Control how KiroCrew manages the app:
 |-------|------|---------|-------------|
 | `platform.os` | string[] | `["macos", "linux"]` | Supported platforms |
 | `platform.arch` | string[] | `[]` (any) | Supported architectures |
+| `platform.requiresDesktopApp` | boolean | `false` | App's own UI needs the Electron desktop shell |
 | `platform.installMode` | string | `"server"` | `"server"` or `"client"` |
 | `platform.clientInstall.shell` | string | | One-liner for local install |
 | `platform.clientInstall.postInstall` | string | | Command to run after install |
@@ -344,6 +365,26 @@ When `installMode` is `"client"`, the App Store shows copy-paste terminal
 instructions instead of running the install on the server. This is used for
 apps that must run on the user's local machine (e.g. Electron desktop apps
 when KiroCrew runs on a remote host).
+
+#### `platform.requiresDesktopApp` — Desktop-Only UI
+
+Declares that the app's OWN interface needs the Electron shell (a transparent
+always-on-top window, a tray surface, global shortcuts — things a browser tab
+cannot provide). A different axis from `os`: `os` says which machines the app can
+run on at all, this says which CLIENT can render it.
+
+**It gates rendering, not enabling.** Enabling is a server-side state change —
+the app's backend, hooks, agents and crons all run in the gateway — so a browser
+user can still turn the app on and its autonomous side works. Only the app's own
+window is unavailable. The App Store therefore keeps the Enable action in a
+browser and shows a "Desktop app" hint beside it (`AppListRow`, `FeatureCard`,
+`AppDetailPage`); replacing the button with a static claim left remote users with
+no way to enable the app at all.
+
+**UX gate, not a security boundary.** The marker is evaluated client-side
+(`lib/electron.ts::needsDesktopApp`), so it must never be the only thing standing
+between a caller and a capability. Anything that must not happen in a browser
+belongs behind an app-token scope or a server-side check.
 
 ## Open Command
 

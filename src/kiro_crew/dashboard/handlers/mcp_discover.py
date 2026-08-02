@@ -402,7 +402,10 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
         return web.json_response({"error": _redact_external(message)}, status=500)
 
     async with _get_config_lock():
-        _sync_mcp_to_agent(server_id, True)
+        # Off the loop: _sync_mcp_to_agent takes bridges' synchronous _mcp_lock
+        # for a full kirocrew.json RMW; a direct call would freeze the gateway if
+        # app registration holds that lock. Same offload as api_capability_mcp_install.
+        await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
     state = request.app["state"]
     state.push_refresh("agents")
 

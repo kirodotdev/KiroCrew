@@ -1,4 +1,5 @@
 """Tests for kiro_crew.apps.manager — App lifecycle management."""
+
 from __future__ import annotations
 
 import json
@@ -62,6 +63,7 @@ def app_home(tmp_path, monkeypatch):
 # Validation
 # ---------------------------------------------------------------------------
 
+
 class TestValidation:
     def test_valid_source(self, tmp_path):
         src = _make_app_source(tmp_path)
@@ -89,6 +91,7 @@ class TestValidation:
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
+
 
 class TestInstall:
     def test_install_from_directory(self, tmp_path, app_home):
@@ -159,6 +162,7 @@ class TestInstall:
 # Uninstall
 # ---------------------------------------------------------------------------
 
+
 class TestUninstall:
     def test_uninstall_preserves_data_by_default(self, tmp_path, app_home):
         src = _make_app_source(tmp_path)
@@ -225,7 +229,9 @@ class TestUninstall:
 
         # User data must survive
         assert (data_dir / "priorities.md").read_text(encoding="utf-8") == "- item1\n- item2\n"
-        assert (data_dir / "state" / "oncall.json").read_text(encoding="utf-8") == '{"oncall": true}'
+        assert (data_dir / "state" / "oncall.json").read_text(
+            encoding="utf-8"
+        ) == '{"oncall": true}'
 
     def test_install_rollback_restores_data_on_copy_failure(self, tmp_path, app_home, monkeypatch):
         """If copytree fails after data/ was preserved, rollback must restore data/."""
@@ -256,8 +262,12 @@ class TestUninstall:
 
         # Rollback must have restored data/
         assert data_dir.is_dir(), "data/ directory must be restored after rollback"
-        assert (data_dir / "config.yaml").read_text(encoding="utf-8") == "oncall:\n  rotation: my-rotation\n"
-        assert (data_dir / "state" / "oncall.json").read_text(encoding="utf-8") == '{"oncall": true}'
+        assert (data_dir / "config.yaml").read_text(
+            encoding="utf-8"
+        ) == "oncall:\n  rotation: my-rotation\n"
+        assert (data_dir / "state" / "oncall.json").read_text(
+            encoding="utf-8"
+        ) == '{"oncall": true}'
 
     def test_install_rejects_unsafe_app_name(self, tmp_path, app_home, monkeypatch):
         """Path-traversal name must be rejected with SEL audit event."""
@@ -267,9 +277,9 @@ class TestUninstall:
         sel_calls = []
         monkeypatch.setattr(
             "kiro_crew.apps.manager.sel",
-            lambda: type("FakeSel", (), {
-                "log_api_access": lambda self, **kw: sel_calls.append(kw)
-            })(),
+            lambda: type(
+                "FakeSel", (), {"log_api_access": lambda self, **kw: sel_calls.append(kw)}
+            )(),
         )
         monkeypatch.setattr(
             "kiro_crew.apps.manager._check_path_safety",
@@ -342,9 +352,9 @@ class TestUninstall:
         sel_calls = []
         monkeypatch.setattr(
             "kiro_crew.apps.manager.sel",
-            lambda: type("FakeSel", (), {
-                "log_api_access": lambda self, **kw: sel_calls.append(kw)
-            })(),
+            lambda: type(
+                "FakeSel", (), {"log_api_access": lambda self, **kw: sel_calls.append(kw)}
+            )(),
         )
         src = _make_app_source(tmp_path)
         result = install_app(src)
@@ -359,6 +369,7 @@ class TestUninstall:
 # ---------------------------------------------------------------------------
 # App admission gate
 # ---------------------------------------------------------------------------
+
 
 class TestAppAdmission:
     def _write_policy(self, app_home, policy):
@@ -438,20 +449,31 @@ class TestAppAdmission:
 
         secret = "s3cr3t"
         manifest_data = {
-            "name": "ext-signed", "version": "1.0.0",
-            "displayName": "Ext Signed", "description": "signed external app",
-            "author": "tester", "signer": "acme",
+            "name": "ext-signed",
+            "version": "1.0.0",
+            "displayName": "Ext Signed",
+            "description": "signed external app",
+            "author": "tester",
+            "signer": "acme",
         }
         m = AppManifest.from_dict(manifest_data)
         manifest_data["signature"] = hmac.new(
             secret.encode(), m.signing_payload(), hashlib.sha256
         ).hexdigest()
-        self._write_policy(app_home, {
-            "mode": "enforce", "require_signature": True,
-            "approved": ["ext-signed"], "trust_keys": {"acme": secret},
-        })
+        self._write_policy(
+            app_home,
+            {
+                "mode": "enforce",
+                "require_signature": True,
+                "approved": ["ext-signed"],
+                "trust_keys": {"acme": secret},
+            },
+        )
         result = register_external_app(
-            "ext-signed", "1.0.0", "Ext Signed", manifest_data=manifest_data,
+            "ext-signed",
+            "1.0.0",
+            "Ext Signed",
+            manifest_data=manifest_data,
         )
         assert result.ok
         assert _read_installed("ext-signed") is not None
@@ -459,12 +481,19 @@ class TestAppAdmission:
     def test_register_external_denies_unsigned_manifest(self, tmp_path, app_home):
         from kiro_crew.apps.manager import register_external_app
 
-        self._write_policy(app_home, {
-            "mode": "enforce", "require_signature": True,
-            "approved": ["ext-unsigned"], "trust_keys": {"acme": "s3cr3t"},
-        })
+        self._write_policy(
+            app_home,
+            {
+                "mode": "enforce",
+                "require_signature": True,
+                "approved": ["ext-unsigned"],
+                "trust_keys": {"acme": "s3cr3t"},
+            },
+        )
         result = register_external_app(
-            "ext-unsigned", "1.0.0", "Ext Unsigned",
+            "ext-unsigned",
+            "1.0.0",
+            "Ext Unsigned",
             manifest_data={"name": "ext-unsigned", "version": "1.0.0"},
         )
         assert not result.ok
@@ -478,27 +507,45 @@ class TestAppAdmission:
         from kiro_crew.apps.manifest import AppManifest
 
         secret = "s3cr3t"
-        m = AppManifest.from_dict({
-            "name": "signed-app", "version": "1.0.0",
-            "displayName": "Signed", "description": "signed app",
-            "author": "tester", "signer": "acme",
-        })
+        m = AppManifest.from_dict(
+            {
+                "name": "signed-app",
+                "version": "1.0.0",
+                "displayName": "Signed",
+                "description": "signed app",
+                "author": "tester",
+                "signer": "acme",
+            }
+        )
         sig = hmac.new(secret.encode(), m.signing_payload(), hashlib.sha256).hexdigest()
-        self._write_policy(app_home, {
-            "mode": "enforce", "require_signature": True,
-            "approved": ["signed-app"], "trust_keys": {"acme": secret},
-        })
+        self._write_policy(
+            app_home,
+            {
+                "mode": "enforce",
+                "require_signature": True,
+                "approved": ["signed-app"],
+                "trust_keys": {"acme": secret},
+            },
+        )
         src = _make_app_source(
-            tmp_path, name="signed-app", signer="acme", signature=sig,
+            tmp_path,
+            name="signed-app",
+            signer="acme",
+            signature=sig,
         )
         result = install_app(src)
         assert result.ok
 
     def test_signature_required_denies_missing_signature(self, tmp_path, app_home):
-        self._write_policy(app_home, {
-            "mode": "enforce", "require_signature": True,
-            "approved": ["test-app"], "trust_keys": {"acme": "s3cr3t"},
-        })
+        self._write_policy(
+            app_home,
+            {
+                "mode": "enforce",
+                "require_signature": True,
+                "approved": ["test-app"],
+                "trust_keys": {"acme": "s3cr3t"},
+            },
+        )
         src = _make_app_source(tmp_path)  # no signer/signature
         result = install_app(src)
         assert not result.ok
@@ -509,16 +556,22 @@ class TestAppAdmission:
         # policy must NOT strand them (they are trusted first-party code). The
         # admission gate governs third-party enable, not builtins.
         from kiro_crew.apps.manager import _write_installed
+
         src = _make_app_source(tmp_path, name="builtin-app")
         assert install_app(src).ok
         meta = _read_installed("builtin-app")
         assert meta is not None
         meta.origin = "builtin"
         _write_installed("builtin-app", meta)
-        self._write_policy(app_home, {
-            "mode": "enforce", "require_signature": True,
-            "approved": [], "trust_keys": {},
-        })
+        self._write_policy(
+            app_home,
+            {
+                "mode": "enforce",
+                "require_signature": True,
+                "approved": [],
+                "trust_keys": {},
+            },
+        )
         result = enable_app("builtin-app")
         assert result.ok
         enabled_meta = _read_installed("builtin-app")
@@ -529,10 +582,15 @@ class TestAppAdmission:
         # A non-builtin (unsigned) app is still denied under require_signature.
         src = _make_app_source(tmp_path)  # origin defaults to non-builtin
         assert install_app(src).ok
-        self._write_policy(app_home, {
-            "mode": "enforce", "require_signature": True,
-            "approved": ["test-app"], "trust_keys": {"acme": "s3cr3t"},
-        })
+        self._write_policy(
+            app_home,
+            {
+                "mode": "enforce",
+                "require_signature": True,
+                "approved": ["test-app"],
+                "trust_keys": {"acme": "s3cr3t"},
+            },
+        )
         result = enable_app("test-app")
         assert not result.ok
         assert "blocked by admission policy" in result.error
@@ -546,17 +604,24 @@ class TestAppAdmission:
         policy = AppAdmissionPolicy(
             mode="enforce", require_signature=True, trust_keys={"acme": "s3cr3t"}
         )
-        m = AppManifest.from_dict({
-            "name": "evil-app", "version": "1.0.0", "displayName": "Evil",
-            "description": "d", "author": "tester", "signer": "acme",
-            "signature": "é" * 64,  # non-ASCII, would crash bytes-less compare
-        })
+        m = AppManifest.from_dict(
+            {
+                "name": "evil-app",
+                "version": "1.0.0",
+                "displayName": "Evil",
+                "description": "d",
+                "author": "tester",
+                "signer": "acme",
+                "signature": "é" * 64,  # non-ASCII, would crash bytes-less compare
+            }
+        )
         assert _signature_valid(m, policy) is False
 
 
 # ---------------------------------------------------------------------------
 # Enable / Disable
 # ---------------------------------------------------------------------------
+
 
 class TestEnableDisable:
     def test_enable(self, tmp_path, app_home):
@@ -606,6 +671,7 @@ class TestEnableDisable:
 # Listing
 # ---------------------------------------------------------------------------
 
+
 class TestListing:
     def test_list_empty(self, app_home):
         assert list_apps() == []
@@ -648,12 +714,19 @@ class TestListing:
 # InstalledApp dataclass
 # ---------------------------------------------------------------------------
 
+
 class TestInstalledApp:
     def test_round_trip(self):
         meta = InstalledApp(
-            name="my-app", version="1.0.0", displayName="My App",
-            enabled=True, installedAt="2026-04-10T00:00:00Z", source="/tmp/src",
-            origin="registry", resources="gateway", lifecycle="gateway",
+            name="my-app",
+            version="1.0.0",
+            displayName="My App",
+            enabled=True,
+            installedAt="2026-04-10T00:00:00Z",
+            source="/tmp/src",
+            origin="registry",
+            resources="gateway",
+            lifecycle="gateway",
         )
         d = meta.to_dict()
         meta2 = InstalledApp.from_dict(d)
@@ -674,18 +747,26 @@ class TestInstalledApp:
         assert meta.lifecycle == "gateway"
 
     def test_builtin_fields(self):
-        meta = InstalledApp.from_dict({
-            "name": "channels", "origin": "builtin",
-            "resources": "gateway", "lifecycle": "locked",
-        })
+        meta = InstalledApp.from_dict(
+            {
+                "name": "channels",
+                "origin": "builtin",
+                "resources": "gateway",
+                "lifecycle": "locked",
+            }
+        )
         assert meta.origin == "builtin"
         assert meta.lifecycle == "locked"
 
     def test_external_fields(self):
-        meta = InstalledApp.from_dict({
-            "name": "mochi-pet", "origin": "external",
-            "resources": "app", "lifecycle": "app",
-        })
+        meta = InstalledApp.from_dict(
+            {
+                "name": "some-external-app",
+                "origin": "external",
+                "resources": "app",
+                "lifecycle": "app",
+            }
+        )
         assert meta.origin == "external"
         assert meta.resources == "app"
         assert meta.lifecycle == "app"
@@ -744,30 +825,40 @@ class TestInstalledApp:
 
     def test_migrate_managed_kirocrew_local_source(self):
         """Old managed='kirocrew' with filesystem source → origin='local'."""
-        meta = InstalledApp.from_dict({
-            "name": "old", "managed": "kirocrew",
-            "source": "/Users/dev/my-tool",
-        })
+        meta = InstalledApp.from_dict(
+            {
+                "name": "old",
+                "managed": "kirocrew",
+                "source": "/Users/dev/my-tool",
+            }
+        )
         assert meta.origin == "local"
         assert meta.resources == "gateway"
         assert meta.lifecycle == "gateway"
 
     def test_migrate_managed_kirocrew_registry_source(self):
         """Old managed='kirocrew' with registry: source → origin='registry'."""
-        meta = InstalledApp.from_dict({
-            "name": "old", "managed": "kirocrew",
-            "source": "registry:my-app",
-        })
+        meta = InstalledApp.from_dict(
+            {
+                "name": "old",
+                "managed": "kirocrew",
+                "source": "registry:my-app",
+            }
+        )
         assert meta.origin == "registry"
         assert meta.resources == "gateway"
         assert meta.lifecycle == "gateway"
 
     def test_migrate_skipped_when_origin_present(self):
         """If origin is already in the dict, migration is skipped even with schemaVersion < 2."""
-        meta = InstalledApp.from_dict({
-            "name": "old", "managed": "self",
-            "origin": "local", "schemaVersion": 1,
-        })
+        meta = InstalledApp.from_dict(
+            {
+                "name": "old",
+                "managed": "self",
+                "origin": "local",
+                "schemaVersion": 1,
+            }
+        )
         # origin was explicitly set — migration should NOT override it
         assert meta.origin == "local"
         assert meta.resources == "gateway"  # default, not migrated to "app"
@@ -775,6 +866,7 @@ class TestInstalledApp:
     def test_uninstall_locked_rejected(self, tmp_path, app_home):
         """lifecycle=locked apps cannot be uninstalled."""
         from kiro_crew.apps.manager import register_builtin_apps
+
         register_builtin_apps()
         result = uninstall_app("agent-worlds")
         assert not result.ok
@@ -791,7 +883,7 @@ _valid_lifecycles = st.sampled_from(["gateway", "app", "locked"])
 
 
 class TestInstalledAppProperties:
-    # Feature: app-classification-redesign, Property 1: InstalledApp 序列化往返一致性
+    # Feature: app-classification-redesign, Property 1: InstalledApp serialisation round-trips
     @given(
         name=st.from_regex(r"[a-z][a-z0-9\-]{0,20}", fullmatch=True),
         version=st.from_regex(r"[0-9]+\.[0-9]+\.[0-9]+", fullmatch=True),
@@ -804,9 +896,15 @@ class TestInstalledAppProperties:
     def test_round_trip_property(self, name, version, enabled, origin, resources, lifecycle):
         """**Validates: Requirements 1.4**"""
         meta = InstalledApp(
-            name=name, version=version, displayName=f"App {name}",
-            enabled=enabled, installedAt="2026-01-01T00:00:00Z",
-            source="test", origin=origin, resources=resources, lifecycle=lifecycle,
+            name=name,
+            version=version,
+            displayName=f"App {name}",
+            enabled=enabled,
+            installedAt="2026-01-01T00:00:00Z",
+            source="test",
+            origin=origin,
+            resources=resources,
+            lifecycle=lifecycle,
         )
         d = meta.to_dict()
         restored = InstalledApp.from_dict(d)
@@ -818,7 +916,7 @@ class TestInstalledAppProperties:
         assert restored.lifecycle == meta.lifecycle
         assert restored.schemaVersion == meta.schemaVersion
 
-    # Feature: app-classification-redesign, Property 2: 无效字段值回退到默认值
+    # Feature: app-classification-redesign, Property 2: invalid field values fall back to defaults
     @given(
         bad_origin=st.text(min_size=1, max_size=10).filter(
             lambda s: s not in {"builtin", "registry", "local", "external"}
@@ -833,10 +931,14 @@ class TestInstalledAppProperties:
     @settings(max_examples=200)
     def test_invalid_fields_fallback_property(self, bad_origin, bad_resources, bad_lifecycle):
         """**Validates: Requirements 1.6**"""
-        meta = InstalledApp.from_dict({
-            "name": "test", "origin": bad_origin,
-            "resources": bad_resources, "lifecycle": bad_lifecycle,
-        })
+        meta = InstalledApp.from_dict(
+            {
+                "name": "test",
+                "origin": bad_origin,
+                "resources": bad_resources,
+                "lifecycle": bad_lifecycle,
+            }
+        )
         assert meta.origin == "registry"
         assert meta.resources == "gateway"
         assert meta.lifecycle == "gateway"
@@ -845,6 +947,7 @@ class TestInstalledAppProperties:
 # ---------------------------------------------------------------------------
 # AppResult
 # ---------------------------------------------------------------------------
+
 
 class TestAppResult:
     def test_success(self):
@@ -862,6 +965,7 @@ class TestAppResult:
 
 
 # --- item #5: cleanup_migrated_builtin matches by name, no migratedTo needed ---
+
 
 class TestCleanupMigratedBuiltin:
     """cleanup_migrated_builtin must handle pre-existing installs without migratedTo."""
@@ -945,6 +1049,7 @@ class TestCleanupMigratedBuiltin:
 # a large `build` symlink target froze the loop until the watchdog killed
 # the gateway)
 # ---------------------------------------------------------------------------
+
 
 class TestCopyAppTree:
     def test_symlink_escaping_source_root_omitted(self, tmp_path, app_home):
@@ -1087,7 +1192,7 @@ class TestCopyAppTree:
         dest = app_dir("test-app")
         (dest / "data").mkdir(exist_ok=True)
         (dest / "data" / "state.json").write_text('{"k": 1}')
-        secret = (dest / ".app_secret")
+        secret = dest / ".app_secret"
         secret.write_text("s3cret")
 
         v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
@@ -1242,14 +1347,22 @@ class TestBootSkillReconcile:
 
         # Write installed state and ship the authoritative builtin resources.
         installed = {
-            "name": "test-app", "version": "1.0.0", "displayName": "Test",
-            "enabled": True, "origin": "builtin", "resources": "gateway",
-            "lifecycle": "locked", "schemaVersion": 2,
+            "name": "test-app",
+            "version": "1.0.0",
+            "displayName": "Test",
+            "enabled": True,
+            "origin": "builtin",
+            "resources": "gateway",
+            "lifecycle": "locked",
+            "schemaVersion": 2,
         }
         (app_root / "installed.json").write_text(json.dumps(installed))
         manifest_data = {
-            "name": "test-app", "version": "1.0.0", "displayName": "Test",
-            "description": "t", "author": "t",
+            "name": "test-app",
+            "version": "1.0.0",
+            "displayName": "Test",
+            "description": "t",
+            "author": "t",
             "skills": ["skills/kept-skill"],  # old-skill NOT listed
         }
         (app_root / "app.json").write_text(json.dumps(manifest_data))
@@ -1291,6 +1404,7 @@ class TestBootSkillReconcile:
 # with no backend of any kind still gets none.
 # ---------------------------------------------------------------------------
 
+
 class TestBuiltinSecretForMcpServers:
     def _register_only(self, monkeypatch, apps):
         """Run register_builtin_apps() with exactly `apps` as the builtin set."""
@@ -1307,19 +1421,13 @@ class TestBuiltinSecretForMcpServers:
         # entryPoint → backend
         assert _app_declares_backend({"backend": {"entryPoint": "pkg.server"}})
         # loopback mcpServers URL → backend (the defect case)
-        assert _app_declares_backend(
-            {"mcpServers": {"x": {"url": "http://127.0.0.1:7778/mcp"}}}
-        )
-        assert _app_declares_backend(
-            {"mcpServers": {"x": {"url": "http://localhost:7778/mcp"}}}
-        )
+        assert _app_declares_backend({"mcpServers": {"x": {"url": "http://127.0.0.1:7778/mcp"}}})
+        assert _app_declares_backend({"mcpServers": {"x": {"url": "http://localhost:7778/mcp"}}})
         # no backend of any kind → no secret
         assert not _app_declares_backend({})
         assert not _app_declares_backend({"mcpServers": {}})
         # non-loopback URL is not a reachable local backend
-        assert not _app_declares_backend(
-            {"mcpServers": {"x": {"url": "http://10.0.0.5:7778/mcp"}}}
-        )
+        assert not _app_declares_backend({"mcpServers": {"x": {"url": "http://10.0.0.5:7778/mcp"}}})
         # self-referential gateway port is refused by the proxy → no secret
         assert not _app_declares_backend(
             {"mcpServers": {"x": {"url": "http://127.0.0.1:5476/mcp"}}}
@@ -1406,16 +1514,19 @@ class TestBuiltinDoesNotClobberUserInstall:
         (d / APP_MANIFEST_FILENAME).write_text(
             json.dumps({"name": name, "version": "0.1.0", "displayName": "Mine"}) + "\n"
         )
-        _write_installed(name, InstalledApp(
-            name=name,
-            version="0.1.0",
-            displayName="Collide (user install)",
-            enabled=True,
-            installedAt=_now_iso(),
-            source="/Users/someone/src/collide-app",
-            origin="registry",
-            lifecycle="gateway",
-        ))
+        _write_installed(
+            name,
+            InstalledApp(
+                name=name,
+                version="0.1.0",
+                displayName="Collide (user install)",
+                enabled=True,
+                installedAt=_now_iso(),
+                source="/Users/someone/src/collide-app",
+                origin="registry",
+                lifecycle="gateway",
+            ),
+        )
         return d
 
     def test_user_manifest_is_not_overwritten(self, tmp_path, app_home, monkeypatch):
@@ -1466,12 +1577,21 @@ class TestBuiltinDoesNotClobberUserInstall:
         from kiro_crew.apps.manager import InstalledApp, _builtin_owns_install
 
         ours = InstalledApp(
-            name="x", version="1", displayName="X", enabled=False,
-            installedAt="t", source="builtin",
+            name="x",
+            version="1",
+            displayName="X",
+            enabled=False,
+            installedAt="t",
+            source="builtin",
         )
         theirs = InstalledApp(
-            name="x", version="1", displayName="X", enabled=False,
-            installedAt="t", source="/path/to/x", origin="registry",
+            name="x",
+            version="1",
+            displayName="X",
+            enabled=False,
+            installedAt="t",
+            source="/path/to/x",
+            origin="registry",
         )
         assert _builtin_owns_install(ours)
         assert not _builtin_owns_install(theirs)
@@ -1488,9 +1608,9 @@ class TestMalformedMcpUrlIsSkippedNotFatal:
     """
 
     BAD_URLS = [
-        "http://127.0.0.1:notaport/mcp",   # port is not an integer
-        "http://127.0.0.1:99999/mcp",      # port out of range
-        "http://[::1:/mcp",                # unparsable authority
+        "http://127.0.0.1:notaport/mcp",  # port is not an integer
+        "http://127.0.0.1:99999/mcp",  # port out of range
+        "http://[::1:/mcp",  # unparsable authority
     ]
 
     def test_malformed_urls_return_none_and_do_not_raise(self):
@@ -1511,9 +1631,9 @@ class TestMalformedMcpUrlIsSkippedNotFatal:
         """
         from kiro_crew.apps.manager import resolve_mcp_backend_url
 
-        assert resolve_mcp_backend_url(
-            {"x": {"url": "http://:7778/mcp"}}
-        ) == "http://127.0.0.1:7778"
+        assert (
+            resolve_mcp_backend_url({"x": {"url": "http://:7778/mcp"}}) == "http://127.0.0.1:7778"
+        )
 
     def test_a_good_server_after_a_bad_one_still_resolves(self):
         """Skipping means continuing, not abandoning the whole manifest."""
@@ -1545,7 +1665,7 @@ class TestMalformedMcpUrlIsSkippedNotFatal:
         monkeypatch.setattr(manager, "discover_builtin_apps", lambda *a, **k: [bad])
         monkeypatch.setattr(manager, "_edition_builtin_apps", lambda: [])
 
-        manager.register_builtin_apps()   # must not raise
+        manager.register_builtin_apps()  # must not raise
 
         # It registers, it just gets no secret — there is no reachable backend.
         assert not (manager.app_dir("bad-url-app") / ".app_secret").is_file()
@@ -1553,6 +1673,7 @@ class TestMalformedMcpUrlIsSkippedNotFatal:
     def test_a_valid_loopback_url_is_unaffected(self):
         from kiro_crew.apps.manager import resolve_mcp_backend_url
 
-        assert resolve_mcp_backend_url(
-            {"crew-companion": {"url": "http://127.0.0.1:7778/mcp"}}
-        ) == "http://127.0.0.1:7778"
+        assert (
+            resolve_mcp_backend_url({"crew-companion": {"url": "http://127.0.0.1:7778/mcp"}})
+            == "http://127.0.0.1:7778"
+        )

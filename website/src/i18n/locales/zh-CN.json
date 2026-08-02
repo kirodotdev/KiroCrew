@@ -1352,7 +1352,9 @@
         "installed": "已安装",
         "update": "更新",
         "verified_publisher": "已验证发布者",
-        "verified_publisher_first_party": "已验证发布者（第一方）"
+        "verified_publisher_first_party": "已验证发布者（第一方）",
+        "desktop_app": "桌面端",
+        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 KiroCrew 桌面端才能使用。"
       },
       "categoryRail": {
         "add_source": "添加来源",
@@ -1365,7 +1367,9 @@
       "featureCard": {
         "enable": "启用",
         "get": "获取",
-        "installed": "已安装"
+        "installed": "已安装",
+        "desktop_app": "桌面端",
+        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 KiroCrew 桌面端才能使用。"
       },
       "featuredSpotlight": {
         "enable": "启用",
@@ -3149,7 +3153,8 @@
       "updating": "正在更新…",
       "v": "v",
       "v_2": "· v",
-      "websocket_events": "WebSocket 事件"
+      "websocket_events": "WebSocket 事件",
+      "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 KiroCrew 桌面端才能使用。"
     },
     "appPage": {
       "loading_app": "加载应用…"

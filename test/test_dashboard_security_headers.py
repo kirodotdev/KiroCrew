@@ -50,9 +50,7 @@ class TestApplySecurityHeaders:
         re-download on every page load (and make post-restart reloads bet
         on a 6MB transfer during gateway cold-start)."""
         resp = _make_response()
-        _apply_security_headers(
-            resp, _make_app(), path="/assets/index-D9K94z8J.js"
-        )
+        _apply_security_headers(resp, _make_app(), path="/assets/index-D9K94z8J.js")
         cc = resp.headers["Cache-Control"]
         assert "immutable" in cc
         assert "max-age=31536000" in cc
@@ -70,9 +68,7 @@ class TestApplySecurityHeaders:
         statuses get the immutable treatment."""
         for status in (404, 503):
             resp = web.Response(text="error", status=status)
-            _apply_security_headers(
-                resp, _make_app(), path="/assets/index-D9K94z8J.js"
-            )
+            _apply_security_headers(resp, _make_app(), path="/assets/index-D9K94z8J.js")
             assert "no-store" in resp.headers["Cache-Control"], f"status={status}"
             assert "immutable" not in resp.headers["Cache-Control"], f"status={status}"
 
@@ -83,9 +79,7 @@ class TestApplySecurityHeaders:
         immutable bundle back to uncacheable."""
         for status in (206, 304):
             resp = web.Response(status=status)
-            _apply_security_headers(
-                resp, _make_app(), path="/assets/index-D9K94z8J.js"
-            )
+            _apply_security_headers(resp, _make_app(), path="/assets/index-D9K94z8J.js")
             assert "immutable" in resp.headers["Cache-Control"], f"status={status}"
             assert "no-store" not in resp.headers["Cache-Control"], f"status={status}"
 
@@ -119,9 +113,10 @@ class TestApplySecurityHeaders:
         # from the dashboard host so no host-scoped cookie is sent to the frame.
         assert "http://127.0.0.1:*" in csp
         assert "http://localhost:*" in csp
-        # …and http+https across the loopback hosts normalizeUrl accepts, so a
-        # preview never renders blank due to a CSP-blocked frame.
-        assert "http://[::1]:*" in csp
+        # …and http+https across the IPv4 loopback hosts normalizeUrl accepts, so
+        # a preview never renders blank due to a CSP-blocked frame. IPv6 loopback
+        # ([::1]:*) is intentionally absent — see test_csp_no_ipv6_wildcard_source.
+        assert "http://[::1]:*" not in csp
         assert "https://localhost:*" in csp
         assert "https://127.0.0.1:*" in csp
         # The *.localhost tunnel wildcard, however, stays instances-only.
@@ -139,21 +134,23 @@ class TestApplySecurityHeaders:
             resp = _make_response()
             _apply_security_headers(resp, _make_app(with_instances=with_instances))
             csp = resp.headers["Content-Security-Policy"]
-            connect_src = next(
-                d for d in csp.split(";") if d.strip().startswith("connect-src")
-            )
+            connect_src = next(d for d in csp.split(";") if d.strip().startswith("connect-src"))
             frame_src = next(d for d in csp.split(";") if d.strip().startswith("frame-src"))
             # Every loopback origin the panel can frame, it can also probe.
             for origin in (
                 "http://127.0.0.1:*",
                 "http://localhost:*",
-                "http://[::1]:*",
                 "http://0.0.0.0:*",
                 "https://127.0.0.1:*",
                 "https://localhost:*",
             ):
                 assert origin in frame_src, (origin, frame_src)
                 assert origin in connect_src, (origin, connect_src)
+            # IPv6 loopback wildcard is NOT admitted in either directive — the
+            # bracketed-literal-plus-wildcard-port form is invalid CSP grammar
+            # (see test_csp_no_ipv6_wildcard_source).
+            assert "http://[::1]:*" not in frame_src
+            assert "http://[::1]:*" not in connect_src
             # Pre-existing WebSocket loopback grants stay.
             assert "ws://localhost:*" in connect_src
             assert "ws://127.0.0.1:*" in connect_src
@@ -162,6 +159,24 @@ class TestApplySecurityHeaders:
             assert "http://*.localhost:*" not in connect_src
             assert "https://*" + " " not in connect_src
             assert "*.cloudfront.net" not in connect_src
+
+    def test_csp_no_ipv6_wildcard_source(self) -> None:
+        """Regression: Chromium rejects a CSP host-source that pairs a bracketed
+        IPv6 literal with a wildcard port (``http://[::1]:*``) — it is invalid
+        grammar, so the browser drops the WHOLE source and logs
+        "contains an invalid source". The pet page surfaced exactly that on
+        connect-src/frame-src. No directive in either dashboard mode may contain
+        a bracketed IPv6 host immediately followed by ``:*``."""
+        import re
+
+        # A bracketed IPv6 host (any hex/colon run) directly followed by ``:*``.
+        ipv6_wildcard = re.compile(r"\[[0-9A-Fa-f:]+\]:\*")
+        for with_instances in (False, True):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(with_instances=with_instances))
+            csp = resp.headers["Content-Security-Policy"]
+            hit = ipv6_wildcard.search(csp)
+            assert hit is None, (hit.group(0) if hit else None, csp)
 
     def test_csp_frame_src_allows_cloudfront_previews(self) -> None:
         """Webapp artifact live previews iframe the deployed CloudFront site
@@ -206,9 +221,7 @@ class TestApplySecurityHeaders:
         resp = _make_response()
         _apply_security_headers(resp, _make_app(with_instances=True), request=request)
         csp = resp.headers["Content-Security-Policy"]
-        frame_anc = next(
-            d for d in csp.split(";") if d.strip().startswith("frame-ancestors")
-        )
+        frame_anc = next(d for d in csp.split(";") if d.strip().startswith("frame-ancestors"))
         assert "'self'" in frame_anc
         assert "http://localhost:5476" in frame_anc
         assert "http://127.0.0.1:5476" in frame_anc
@@ -306,9 +319,7 @@ class TestApplySecurityHeaders:
         resp = _make_response()
         _apply_security_headers(resp, _make_app(with_instances=True), request=request)
         csp = resp.headers["Content-Security-Policy"]
-        frame_anc = next(
-            d for d in csp.split(";") if d.strip().startswith("frame-ancestors")
-        )
+        frame_anc = next(d for d in csp.split(";") if d.strip().startswith("frame-ancestors"))
         assert "frame-ancestors 'self'" in csp
         # The forged cookie's parent origin was never appended.
         assert "http://localhost:" not in frame_anc

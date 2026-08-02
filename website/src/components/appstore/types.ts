@@ -34,7 +34,10 @@ export type RegistryApp = {
   origin?: string     // "builtin" | "registry" | "local" | "external"
   resources?: string  // "gateway" | "app"
   lifecycle?: string  // "gateway" | "app" | "locked"
-  platform?: { os?: string[]; installMode?: string; clientInstall?: { shell?: string; postInstall?: string } }
+  platform?: { os?: string[]; installMode?: string; clientInstall?: { shell?: string; postInstall?: string }
+    // Set when the app's UI needs the Electron shell (native windows,
+    // global shortcuts, tray). A UX gate only — the marker is client-side.
+    requiresDesktopApp?: boolean }
 }
 
 /** Installed app shape from ``GET /api/apps`` (mirrors app manager records). */

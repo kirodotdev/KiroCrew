@@ -363,9 +363,7 @@ async def test_cookie_read_uses_host_port() -> None:
     bind_token_ip(token, "127.0.0.1")
     mark_consumed(token)
 
-    req = _make_request(
-        cookies={"mc_token_7778": token}, headers={"Host": "localhost:7778"}
-    )
+    req = _make_request(cookies={"mc_token_7778": token}, headers={"Host": "localhost:7778"})
     resp = await mw(req, _ok_handler)
     assert resp.status == 200
 
@@ -380,8 +378,7 @@ async def test_cookie_server_port_name_denied_when_host_differs() -> None:
     mark_consumed(token)
 
     req = _make_request(
-        path="/api/status",
-        cookies={"mc_token_5476": token}, headers={"Host": "localhost:7778"}
+        path="/api/status", cookies={"mc_token_5476": token}, headers={"Host": "localhost:7778"}
     )
     resp = await mw(req, _ok_handler)
     assert resp.status != 200
@@ -430,9 +427,7 @@ _CLI_LOCAL_SECRET_PATHS = ("/api/token/local", "/api/shutdown", "/api/logout")
 async def test_cli_local_secret_endpoints_bypass_auth(path: str) -> None:
     mw = token_auth_middleware()
     # No token, no cookie — only the header the CLI actually sends.
-    req = _make_request(
-        path=path, method="POST", headers={"X-Local-Secret": "irrelevant-here"}
-    )
+    req = _make_request(path=path, method="POST", headers={"X-Local-Secret": "irrelevant-here"})
     resp = await mw(req, _ok_handler)
     assert resp.status == 200, (
         f"{path} was denied by the auth middleware; the CLI sends no dashboard "
@@ -550,7 +545,7 @@ async def test_apps_ui_bypass_blocks_unsafe_methods(method: str) -> None:
     "path",
     [
         "/apps/code-review-sage",
-        "/apps/mochi-pet",
+        "/apps/mochi",
         "/apps/system-monitor",
         "/apps/some-app-with-dashes",
     ],
@@ -569,9 +564,9 @@ async def test_bare_app_path_is_spa_shell_request(path: str, method: str) -> Non
     import kiro_crew.dashboard.token_auth as ta
 
     req = _make_request(path=path, method=method)
-    assert ta._is_spa_shell_request(req), (
-        f"{method} {path} should be a SPA shell request (browser refresh must work)"
-    )
+    assert ta._is_spa_shell_request(
+        req
+    ), f"{method} {path} should be a SPA shell request (browser refresh must work)"
 
 
 @pytest.mark.asyncio
@@ -590,9 +585,9 @@ def test_apps_sub_paths_are_not_spa_shell(path: str) -> None:
     import kiro_crew.dashboard.token_auth as ta
 
     req = _make_request(path=path, method="GET")
-    assert not ta._is_spa_shell_request(req), (
-        f"GET {path} should NOT be a SPA shell request (has a real server-side handler)"
-    )
+    assert not ta._is_spa_shell_request(
+        req
+    ), f"GET {path} should NOT be a SPA shell request (has a real server-side handler)"
 
 
 @pytest.mark.parametrize(
@@ -685,9 +680,9 @@ def test_app_assets_paths_are_not_spa_shell(path: str) -> None:
 
     assert "/app-assets/" in ta.SPA_FALLBACK_EXCLUDED_PREFIXES
     req = _make_request(path=path, method="GET")
-    assert not ta._is_spa_shell_request(req), (
-        f"GET {path} should NOT be a SPA shell request (static brand asset)"
-    )
+    assert not ta._is_spa_shell_request(
+        req
+    ), f"GET {path} should NOT be a SPA shell request (static brand asset)"
 
 
 # -- Property 9: Loopback no longer bypasses auth (port-forward fix) --
@@ -840,9 +835,7 @@ async def test_sessions_summarize_is_registered_internal_path() -> None:
 
     assert "/api/sessions/summarize" in _STRICT_INTERNAL_API_PATHS
     secret = "test-secret-123"
-    mw = token_auth_middleware(
-        internal_paths=_STRICT_INTERNAL_API_PATHS, internal_secret=secret
-    )
+    mw = token_auth_middleware(internal_paths=_STRICT_INTERNAL_API_PATHS, internal_secret=secret)
     # Internal secret on loopback → granted (the MCP _post path).
     ok = await mw(
         _make_request(
@@ -854,9 +847,7 @@ async def test_sessions_summarize_is_registered_internal_path() -> None:
     )
     assert ok.status == 200
     # No token / no secret → denied (proves it is a protected route, not open).
-    denied = await mw(
-        _make_request(path="/api/sessions/summarize", method="POST"), _ok_handler
-    )
+    denied = await mw(_make_request(path="/api/sessions/summarize", method="POST"), _ok_handler)
     assert denied.status == 403
 
 
@@ -1216,9 +1207,7 @@ def test_signing_secret_existing_file_never_overwritten(tmp_path, monkeypatch) -
     assert stat_after.st_ino == stat_before.st_ino, "existing key file was recreated"
 
 
-def test_signing_secret_write_failure_cleans_up_incomplete_file(
-    tmp_path, monkeypatch
-) -> None:
+def test_signing_secret_write_failure_cleans_up_incomplete_file(tmp_path, monkeypatch) -> None:
     """Regression (PR #338 / GPT 5.6 HIGH): a write failure DURING exclusive
     creation must NOT leave a poisoned short key file behind.
 
@@ -1289,9 +1278,7 @@ def test_signing_secret_write_failure_cleans_up_incomplete_file(
         "logic keeps full coverage on the POSIX matrix."
     ),
 )
-def test_signing_secret_incomplete_file_not_deleted_if_replaced(
-    tmp_path, monkeypatch
-) -> None:
+def test_signing_secret_incomplete_file_not_deleted_if_replaced(tmp_path, monkeypatch) -> None:
     """The write-failure cleanup must NOT delete a valid key that a racing
     sibling substituted at the same path (identity guard on st_dev/st_ino).
 
@@ -1452,9 +1439,7 @@ async def test_shell_not_served_when_handler_unconfigured() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "path", ["/api/status", "/api/agents", "/apps/some-app/api/things"]
-)
+@pytest.mark.parametrize("path", ["/api/status", "/api/agents", "/apps/some-app/api/things"])
 async def test_data_paths_still_gated_when_shell_public(path: str) -> None:
     """The shell bypass MUST NOT leak to data paths: /api/* and the
     /apps/{name}/api/* reverse proxy still require a valid token even with the
@@ -1521,6 +1506,21 @@ def test_no_get_route_outside_shell_exclusions() -> None:
     source = open(server_path, encoding="utf-8").read()
     get_paths = _re.findall(r'add_get\(\s*["\']([^"\']+)["\']', source)
     assert get_paths, "expected add_get route literals in server.py"
+
+    # The one sanctioned non-literal registration: app window entries, where
+    # add_get(route_path, ...) is fed by startup filesystem discovery. Those
+    # routes are excluded from the shell fallback BY CONSTRUCTION — the same
+    # loop that registers each route appends it to register_app_window_paths()
+    # (see test_app_window_entries_register_route_and_exclusion). Assert the
+    # coupling is still in place, then assert discovery is the ONLY dynamic
+    # add_get so a future one cannot ride in under this exemption.
+    dynamic_gets = _re.findall(r"add_get\((?!\s*[\"'])\s*(\w+)", source)
+    assert dynamic_gets == ["route_path"], (
+        f"non-literal add_get registrations in server.py: {dynamic_gets}. Only "
+        f"the app-window-entry discovery loop may register dynamic GET routes, "
+        f"and it must pair every route with register_app_window_paths()."
+    )
+    assert "register_app_window_paths(window_paths)" in source
 
     nonshell = tuple(ta.SPA_FALLBACK_EXCLUDED_PREFIXES)
     bypass_exact = ta._BYPASS_EXACT
@@ -1891,9 +1891,7 @@ async def test_wrong_port_cookie_rejected() -> None:
     mark_consumed(token_b)
 
     # Send server B's cookie to server A — wrong cookie name
-    req = _make_request(
-        path="/api/status", cookies={"mc_token_6777": token_b}, remote="127.0.0.1"
-    )
+    req = _make_request(path="/api/status", cookies={"mc_token_6777": token_b}, remote="127.0.0.1")
     resp = await mw_a(req, _ok_handler)
     assert resp.status == 403
 
@@ -2154,9 +2152,7 @@ async def test_exchanged_cookie_preserves_app_claim() -> None:
     _ta._app_api_allowlist = monkeypatch_allow  # type: ignore[assignment]
     try:
         mw = token_auth_middleware()
-        url_token = generate_token(
-            "some-app", ttl_seconds=MAX_SESSION_TTL_SECS, app="some-app"
-        )
+        url_token = generate_token("some-app", ttl_seconds=MAX_SESSION_TTL_SECS, app="some-app")
         req = _make_request(
             path="/apps/some-app/api/x", query={"token": url_token}, remote="10.0.0.3"
         )
@@ -2402,6 +2398,7 @@ def test_api_auth_refresh_mints_session_token_without_nonce_registration() -> No
 
 # --- item #2: /api/deploy reachable via X-Internal-Secret (MCP tool path) ---
 
+
 @pytest.mark.asyncio
 async def test_deploy_path_accessible_via_internal_secret() -> None:
     """/api/deploy/deploy must be reachable with X-Internal-Secret (mixed_internal_paths).
@@ -2512,9 +2509,7 @@ def test_middleware_factory_does_no_blocking_warmup() -> None:
         warm_auth_singletons,
     )
 
-    factory_lines = {
-        ln.strip() for ln in inspect.getsource(token_auth_middleware).splitlines()
-    }
+    factory_lines = {ln.strip() for ln in inspect.getsource(token_auth_middleware).splitlines()}
     # The bare synchronous warm-up statements must be gone from the factory.
     assert "_get_secret()" not in factory_lines
     assert "_get_revoked_store()" not in factory_lines
@@ -2535,6 +2530,97 @@ def test_start_paths_warm_auth_singletons_off_loop() -> None:
 
     for fn in (_srv.start_dashboard, _srv.start_api_server):
         src = inspect.getsource(fn)
-        assert "await warm_auth_singletons()" in src, (
-            f"{fn.__name__} must await warm_auth_singletons() before serving"
-        )
+        assert (
+            "await warm_auth_singletons()" in src
+        ), f"{fn.__name__} must await warm_auth_singletons() before serving"
+
+
+def test_ambiguous_app_and_window_names_cannot_collide(tmp_path) -> None:
+    """The pair that used to collide now yields two distinct routes.
+
+    The old scheme served these flat at ``/<app>-<window>.html``, which is
+    ambiguous the moment either name contains a hyphen: app ``foo`` + window
+    ``bar-baz`` and app ``foo-bar`` + window ``baz`` both spell
+    ``/foo-bar-baz.html``, so one of them had to be refused and the other's
+    window was simply unavailable. Keeping the boundary the filesystem already
+    has removes the class rather than handling it — this pins that, using the
+    exact pair that was the counter-example.
+    """
+    from kiro_crew.dashboard.server import discover_app_window_entries
+
+    root = tmp_path / "src" / "apps"
+    (root / "foo").mkdir(parents=True)
+    (root / "foo-bar").mkdir(parents=True)
+    (root / "foo" / "bar-baz.html").write_text("<html>first</html>")
+    (root / "foo-bar" / "baz.html").write_text("<html>second</html>")
+    (root / "foo" / "solo.html").write_text("<html>solo</html>")
+
+    entries = discover_app_window_entries(root)
+    routes = dict(entries)
+
+    # Both survive, each addressable, neither shadowing the other.
+    assert len(routes) == 3, f"every window must register: {sorted(routes)}"
+    assert routes["/app-windows/foo/bar-baz.html"] == root / "foo" / "bar-baz.html"
+    assert routes["/app-windows/foo-bar/baz.html"] == root / "foo-bar" / "baz.html"
+    assert "/app-windows/foo/solo.html" in routes
+    # And the URL a caller builds is derivable from the path, not guessed from it.
+    for route, path in entries:
+        assert route == f"/app-windows/{path.parent.name}/{path.name}"
+
+
+def test_app_window_entries_register_route_and_exclusion(tmp_path) -> None:
+    """App window entries: discovery must couple route and shell exclusion.
+
+    server.py enumerates dist/src/apps/<app>/<name>.html at startup and, in one
+    loop, registers GET /<app>-<name>.html AND excludes that exact path from
+    the unauthenticated SPA-shell fallback. This test drives the real
+    registration function against a fixture dist tree and asserts both halves,
+    plus path-shape safety (the route comes from the enumerated file, never
+    from the request).
+    """
+    from aiohttp import web
+
+    import kiro_crew.dashboard.token_auth as ta
+
+    # Fixture dist: one app with two windows, one unrelated non-html file.
+    win = tmp_path / "src" / "apps" / "someapp"
+    win.mkdir(parents=True)
+    (win / "pet.html").write_text("<html></html>")
+    (win / "panel.html").write_text("<html></html>")
+    (win / "notes.txt").write_text("not a window")
+
+    # Drive the REAL discovery helper rather than restating the route
+    # construction: the previous form duplicated it, and duplicated it in the
+    # OLD flat shape, so it kept passing after the scheme changed and asserted
+    # nothing about what the gateway actually registers.
+    from kiro_crew.dashboard.server import (
+        _window_entry_handler,
+        discover_app_window_entries,
+    )
+
+    app = web.Application()
+    window_paths: list[str] = []
+    for route_path, entry in discover_app_window_entries(tmp_path / "src" / "apps"):
+        # Same handler factory the gateway uses — see server._window_entry_handler
+        # for why the path is a closure cell and not a handler parameter.
+        app.router.add_get(route_path, _window_entry_handler(entry))
+        window_paths.append(route_path)
+
+    prior = ta._APP_WINDOW_EXCLUDED_PATHS
+    try:
+        ta.register_app_window_paths(window_paths)
+
+        registered = {r.resource.canonical for r in app.router.routes() if r.method == "GET"}
+        assert {
+            "/app-windows/someapp/panel.html",
+            "/app-windows/someapp/pet.html",
+        } <= registered
+        assert "/app-windows/someapp/notes.html" not in registered  # only .html
+
+        # Both routes are excluded from the shell fallback; a sibling path that
+        # was NOT discovered is not (exact-path matching, no prefix bleed).
+        assert "/app-windows/someapp/pet.html" in ta._APP_WINDOW_EXCLUDED_PATHS
+        assert "/app-windows/someapp/panel.html" in ta._APP_WINDOW_EXCLUDED_PATHS
+        assert "/app-windows/someapp/other.html" not in ta._APP_WINDOW_EXCLUDED_PATHS
+    finally:
+        ta._APP_WINDOW_EXCLUDED_PATHS = prior

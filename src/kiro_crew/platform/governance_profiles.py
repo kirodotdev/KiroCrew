@@ -712,6 +712,36 @@ class ProfileStore:
 _STORE = ProfileStore()
 
 
+def any_configured_profile_governs(ref: str) -> bool:
+    """True if ANY loaded profile has an opinion on *ref*.
+
+    The static ``allowedTools`` writers decide auto-approve at config-BUILD time,
+    where there is no surface/session to resolve the ONE profile a tool call
+    would bind. A profile-only deny (a per-app/per-surface profile denying
+    ``@srv/delete`` on a host with no POLICY ceiling) would then be bypassed by a
+    blanket auto-approve, because ``may_skip_gate`` alone only consults the
+    ceiling. So the writer must withhold if ANY configured profile COULD govern
+    the ref; the runtime gate applies the specific one.
+
+    Reuses the one predicate: ``Profile`` and ``GovernanceCeiling`` both expose
+    ``.get(scope)``, so ``may_skip_gate(ref, profile)`` answers "does THIS profile
+    govern the ref" without duplicating the ref-parsing. Fail-closed: an
+    unresolved store (never-loaded, mid first-load) answers True — "cannot confirm
+    none governs" must not read as "none governs".
+    """
+    from kiro_crew.platform.governance import may_skip_gate
+
+    if not _STORE.resolved():
+        return True
+    # may_skip_gate is typed for a ceiling, but it only reads `.get(scope)`, which
+    # Profile and GovernanceCeiling share — passing a profile answers "does THIS
+    # profile govern the ref" (see resolve, which is scope-map-agnostic).
+    return any(
+        not may_skip_gate(ref, profile)  # type: ignore[arg-type]
+        for profile in _STORE.all_profiles()
+    )
+
+
 def reset_store() -> None:
     """Test helper — drop the cached profiles so the next access reloads."""
     global _STORE

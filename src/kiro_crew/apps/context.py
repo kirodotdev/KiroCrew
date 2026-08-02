@@ -4,6 +4,7 @@ The AppContext is created per-app at enable time and injected into route
 handlers and lifecycle hooks. It provides a controlled surface area — apps
 interact with gateway services only through this interface.
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,6 +16,7 @@ from typing import Any
 from kiro_crew.apps.app_storage import AppStorage
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.event_bus import EventBus
+from kiro_crew.apps.spawn_sdk import SpawnSDK
 
 
 @dataclass
@@ -61,6 +63,7 @@ class AppContext:
     cron: CronSDK | None = None
     events: EventBus | None = None
     storage: AppStorage | None = None
+    spawn: SpawnSDK | None = None
     health: AppHealthStatus = field(default_factory=AppHealthStatus)
 
 
@@ -71,6 +74,7 @@ def build_app_context(
     permissions: dict[str, Any] | None = None,
     cron_service: Any = None,
     broadcast_fn: Any = None,
+    spawn_impl: Any = None,
     app_config: dict[str, Any] | None = None,
 ) -> AppContext:
     """Factory that builds an AppContext based on app permissions.
@@ -100,6 +104,16 @@ def build_app_context(
     if events_list and broadcast_fn is not None:
         event_bus = EventBus(app_name, events_list, broadcast_fn)
 
+    # Build SpawnSDK if permitted. Same shape as the others: no permission or
+    # no host implementation -> None, and the app's own guard reports it.
+    spawn_sdk = None
+    if perms.get("spawn") is True and spawn_impl is not None:
+        # The completion probe rides on the impl callable (see build_spawn_impl)
+        # so the spawn wiring stays a single parameter end to end.
+        spawn_sdk = SpawnSDK(
+            app_name, spawn_impl, done_probe=getattr(spawn_impl, "done_probe", None)
+        )
+
     # Build AppStorage if permitted
     app_storage = None
     if perms.get("storage"):
@@ -113,4 +127,5 @@ def build_app_context(
         cron=cron_sdk,
         events=event_bus,
         storage=app_storage,
+        spawn=spawn_sdk,
     )

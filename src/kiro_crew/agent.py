@@ -59,7 +59,11 @@ from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.platform import current_context
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.platform import safe_context_call
-from kiro_crew.platform.governance import CU_MCP_SERVER
+from kiro_crew.platform.governance import (
+    CU_MCP_SERVER,
+    may_skip_gate_now,
+    strip_ungoverned_auto_approve,
+)
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import (  # circular import: sel imports config which imports agent
     SecurityEvent,
@@ -555,9 +559,7 @@ def run_first_run_setup() -> None:
         # Mark done even when nothing was removed, so the global mcp.json is
         # never re-read/rewritten on later starts.
         _migrations_dir().mkdir(parents=True, exist_ok=True)
-        stale_marker.write_text(
-            datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8"
-        )
+        stale_marker.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
     except Exception:
         logger.warning("First-run: stale MCP purge failed", exc_info=True)
 
@@ -1903,6 +1905,157 @@ def _decline_shared_agent_home() -> Path | None:
     return kiro_agents_dir_path() / AGENT_FILENAME
 
 
+def _strip_ungoverned_auto_approve(servers: dict[str, Any]) -> dict[str, Any]:
+    """Local alias so tests can monkeypatch one name (see governance)."""
+    return dict(strip_ungoverned_auto_approve(servers))
+
+
+def _may_auto_approve(ref: str) -> bool:
+    """Whether ``ref`` may go on an auto-approve list, per the governance ceiling.
+
+    One-line delegate on purpose: the decision AND the ceiling resolution both
+    live in ``platform.governance`` so the five writers of an ``allowedTools``
+    list cannot drift apart. Kept as a named local so it is monkeypatchable in
+    tests without reaching into another module's namespace.
+    """
+    return may_skip_gate_now(ref)
+
+
+def _ceiling_filtered_spec(ref: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """An app's MCP spec with a ceiling-governed ``autoApprove`` removed.
+
+    ``autoApprove`` is a SECOND way to reach the same exemption ``allowedTools``
+    grants, and a more direct one: kiro-cli approves an autoApproved MCP tool
+    locally and emits no permission request, so ``hooks.on_tool_call`` — the deny
+    floor, the sensitive-path check, the governance ceiling — never runs for it.
+    ``agent.py``'s managed-server block states the rule for our own servers
+    ("DELIBERATELY NO autoApprove KEY, and none may ever be added"); this applies
+    it to app-contributed ones, which were copied verbatim.
+
+    That verbatim copy meant the grant was declared by an app MANIFEST — content
+    that can come from outside this repo — rather than by KiroCrew or the user.
+    An app could hand itself a permanent gate exemption by adding three lines to
+    its own JSON.
+
+    Only the key is dropped, never the server: the app keeps its tools, they
+    simply go through the approval gate, which is where a per-tool ceiling rule is
+    actually applied. Unchanged on an ungoverned host, since ``may_skip_gate``
+    permits everything when there is no ceiling.
+    """
+    if "autoApprove" not in spec:
+        return spec
+    if _may_auto_approve(f"@{mcp_server_alias(ref)}"):
+        return spec
+    spec.pop("autoApprove", None)
+    logger.info(
+        "Dropped autoApprove from app MCP server %s: the governance ceiling "
+        "constrains it, so its tools go through the approval gate",
+        ref,
+    )
+    # Revoking a gate exemption is a permission DECISION. This fallback drops the
+    # grant before the final sanitizer can observe it, so without an event here
+    # this would be the one withhold path with no audit trail. Mirror the
+    # allowedTools writers' SEL event. Best-effort; never break a rebuild.
+    try:
+        sel().log_api_access(
+            caller="system",
+            operation="mcp_auto_approve_withheld",
+            outcome="ok",
+            source="_ceiling_filtered_spec",
+            resources=(
+                f"@{mcp_server_alias(ref)} autoApprove removed (governance ceiling); "
+                "calls go through the approval gate"
+            ),
+        )
+    except Exception:  # noqa: BLE001 — audit must not break the filter
+        logger.debug("SEL audit unavailable for app autoApprove strip", exc_info=True)
+    return spec
+
+
+def _collect_app_mcp_servers() -> dict[str, Any]:
+    """MCP servers contributed by ENABLED apps, keyed ``{app}:{server}``.
+
+    App MCP servers are registered straight into this agent config rather than
+    into the shared ``~/.kiro/settings/mcp.json``, because that file is read by
+    everything else sharing ``~/.kiro`` — Kiro IDE and any other kiro-cli agent
+    — so an app's private tools would leak into surfaces that never installed
+    the app. KiroCrew sessions only ever read the agent config
+    (``includeMcpJson`` is pinned False), so writing here is both sufficient and
+    properly scoped.
+
+    That makes the app manifests the authoritative source, which this function
+    re-derives on every rebuild. Without it a ``clean=True`` rebuild would drop
+    every app's servers: clean ignores the existing config, and the entries no
+    longer exist in the global file to be re-mirrored from.
+
+    Never raises — a broken app manifest must not stop the agent config from
+    being written, or a single bad app would take down every session.
+    """
+    servers: dict[str, Any] = {}
+    try:
+        # Imported lazily: kiro_crew.apps imports back into agent/security, so a
+        # module-level import here would close a cycle.
+        from kiro_crew.apps.bridges import registered_app_mcp_servers
+        from kiro_crew.apps.manager import get_app_manifest, is_app_enabled, list_apps
+    except Exception:  # noqa: BLE001 — apps subsystem unavailable
+        return servers
+
+    try:
+        apps = list_apps()
+    except Exception:  # noqa: BLE001
+        return servers
+
+    # The LIVE registered map, not the manifest, is the source of truth for the
+    # spec: for a `backend.port:"auto"` app the manifest carries an ILLUSTRATIVE
+    # port and the reachable one is only known after the backend starts, at which
+    # point reregister_app_mcp_servers writes the resolved URL here. Reading the
+    # manifest instead would copy the illustrative (dead) port back over the live
+    # one on every rebuild, and kiro-cli dials every server in the config — so the
+    # app's tools would fail until the next reregister. The manifest is only the
+    # fallback for a stdio/command server (no port to resolve); an HTTP server
+    # with no live entry is SKIPPED, mirroring _register_mcp_servers' own refusal
+    # to ever write a dead-port URL.
+    registered = registered_app_mcp_servers()
+
+    for app in apps:
+        name = app.get("name") if isinstance(app, dict) else None
+        if not name:
+            continue
+        try:
+            if not is_app_enabled(name):
+                continue
+            manifest = get_app_manifest(name)
+            if not manifest or not manifest.mcpServers:
+                continue
+            for server_name, spec in manifest.mcpServers.items():
+                if not isinstance(spec, dict):
+                    continue
+                ref = f"{name}:{server_name}"
+                live = registered.get(ref)
+                if isinstance(live, dict):
+                    chosen = dict(live)  # resolved live-port URL / pinned command
+                elif spec.get("url"):
+                    # An HTTP server's manifest URL is only illustrative when the
+                    # GATEWAY launches the backend (backend.entryPoint set): the
+                    # port is "auto"-resolved and unknown until the process starts,
+                    # so with no live entry we skip rather than write a dead port
+                    # (mirroring _register_mcp_servers' refusal to write one).
+                    # A SELF-MANAGED HTTP server (no backend.entryPoint — e.g. an
+                    # independent companion app on a fixed port) has an
+                    # authoritative URL and never gets a live registration, so
+                    # preserve the manifest URL instead of dropping the server.
+                    if manifest.backend.entryPoint:
+                        continue
+                    chosen = dict(spec)
+                else:
+                    chosen = dict(spec)  # stdio/command: nothing to resolve
+                servers[ref] = _ceiling_filtered_spec(ref, chosen)
+        except Exception:  # noqa: BLE001 — one bad app must not poison the rest
+            logger.warning("Skipping MCP servers for app %s (manifest error)", name)
+            continue
+    return servers
+
+
 def rebuild_agent_config(*, clean: bool = False) -> Path:
     """Rebuild and write the merged kirocrew.json to ~/.kiro/agents/.
 
@@ -1968,6 +2121,32 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # the Claude Code provider can be re-enabled later without rework; it must
     # not shadow a Kiro-global entry.
     managed_names = set(_MANAGED_MCP_SERVERS)
+
+    # App-contributed MCP servers go in FIRST so an app's namespaced entry
+    # outranks any same-named leftover in the shared global file (every loop
+    # below uses setdefault, so whatever lands here wins). Re-derived from the
+    # enabled apps' manifests on every rebuild, which is what lets a clean
+    # rebuild keep them — see _collect_app_mcp_servers for why apps don't write
+    # the global file at all.
+    #
+    # ASSIGNMENT, not setdefault, for the app's own key. The manifests are the
+    # authoritative source and this re-derives them, so `setdefault` kept
+    # whatever the PREVIOUS rebuild wrote: a spec whose `autoApprove` this pass
+    # had just stripped (the ceiling now governs that server) lost to the stale
+    # grant, the tightening never reached an existing config, and those tools
+    # kept skipping the PreToolUse gate.
+    for _app_srv, _app_spec in _collect_app_mcp_servers().items():
+        if _app_srv not in managed_names:
+            config.setdefault("mcpServers", {})[_app_srv] = _app_spec
+            # MOUNT it: a server present only in `mcpServers` is defined but never
+            # referenced, so kiro-cli never loads it and the app's tools are
+            # silently unavailable. `tools` is the unconditional mount (the final
+            # dedup below removes any duplicate); auto-approve stays governed —
+            # the spec's `autoApprove` was already ceiling-filtered in
+            # _collect_app_mcp_servers, and the final allowedTools pass covers the
+            # @ref if it ever lands there.
+            config.setdefault("tools", []).append(f"@{_app_srv}")
+
     shared_mcp = _load_json(_KIRO_MCP_JSON).get("mcpServers", {})
     for name, spec in shared_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
@@ -2136,6 +2315,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # be registered regardless of fresh/existing config state.
     _shared_added: list[str] = []
     _shared_removed: list[str] = []
+    _shared_not_auto: list[str] = []
     for name, spec in itertools.chain(extra_shared_mcp.items(), shared_mcp.items()):
         if not isinstance(spec, dict) or name in managed_names:
             continue
@@ -2150,11 +2330,28 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
                         _shared_removed.append(ref)
         elif alias in valid_servers:
             valid_servers[alias].pop("disabled", None)
-            for key in ("tools", "allowedTools"):
+            # `tools` is what MOUNTS the server; `allowedTools` additionally
+            # auto-approves it — and auto-approve is the one path that never
+            # reaches the PreToolUse gate. So a server the enterprise ceiling has
+            # an opinion about is mounted but NOT auto-approved: its calls go
+            # through the gate, which applies the per-tool rule with the real
+            # arguments. Without this the ceiling was un-enforceable for every
+            # user-installed MCP server on the primary agent — the same bypass
+            # that was closed for app agents, at the second of the two places
+            # that write such a list. One predicate serves both.
+            keys = ("tools", "allowedTools") if _may_auto_approve(ref) else ("tools",)
+            for key in keys:
                 if ref not in config.get(key, []):
                     config.setdefault(key, []).append(ref)
                     if ref not in _shared_added:
                         _shared_added.append(ref)
+            if "allowedTools" not in keys:
+                lst = config.get("allowedTools")
+                if lst is not None and ref in lst:
+                    # A grant written before the ceiling arrived must not survive it.
+                    lst.remove(ref)
+                if ref not in _shared_not_auto:
+                    _shared_not_auto.append(ref)
     if _shared_added:
         sel().log_api_access(
             caller="system",
@@ -2162,6 +2359,20 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
             outcome="ok",
             source="install_agent",
             resources=f"{', '.join(_shared_added)} added to tools/allowedTools (shared)",
+        )
+    if _shared_not_auto:
+        # Its own SEL record: "mounted but not auto-approved" is a governance
+        # outcome an operator has to be able to see, and it is invisible in the
+        # added/removed pair (the ref still shows as added, to `tools`).
+        sel().log_api_access(
+            caller="system",
+            operation="mcp_auto_approve_withheld",
+            outcome="ok",
+            source="install_agent",
+            resources=(
+                f"{', '.join(_shared_not_auto)} mounted without auto-approve "
+                f"(governance ceiling); calls go through the approval gate"
+            ),
         )
     if _shared_removed:
         sel().log_api_access(
@@ -2247,7 +2458,134 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     for key in ("tools", "allowedTools"):
         config[key] = list(dict.fromkeys(config.get(key, [])))
 
-    _atomic_json_write(path, config)
+    # LAST governance pass over the auto-approve LIST itself. The writers above
+    # apply the ceiling to entries THEY add, but a builtin auto-approve (fs_read,
+    # execute_bash, …) arrives straight from the agent TEMPLATE into
+    # `allowedTools` and no writer ever re-touches it — so a `filesystem.read`
+    # ceiling would leave `fs_read` on the blanket auto-approve list and kiro-cli
+    # would approve every read WITHOUT reaching the PreToolUse gate that carries
+    # the ceiling. Filter the whole assembled list through the one predicate: a
+    # governed builtin (or `@server`) loses its blanket grant and its calls go
+    # through the gate, where the per-argument rule actually applies; anything the
+    # ceiling is silent about is kept (the predicate returns True), and an
+    # ungoverned host keeps everything. `tools` is deliberately left intact —
+    # mounting a tool is not auto-approving it.
+    allowed = config.get("allowedTools")
+    if isinstance(allowed, list):
+        kept: list[str] = []
+        withheld: list[str] = []
+        for ref in allowed:
+            if not isinstance(ref, str):
+                # A malformed non-string entry (e.g. a hand-edited config with
+                # `allowedTools: [1]`) would crash may_skip_gate's
+                # ref.startswith() and fault the whole rebuild. It is not a valid
+                # tool ref, so drop it entirely rather than keep or audit it.
+                continue
+            (kept if _may_auto_approve(ref) else withheld).append(ref)
+        config["allowedTools"] = kept
+        if withheld:
+            # Withholding a grant is a permission DECISION, and this final pass is
+            # the ONLY place a builtin that arrived straight from the shipped
+            # template (fs_read, code, …) loses its blanket auto-approve. The
+            # per-writer paths already emit this SEL event for the grants they
+            # touch; a silent drop here would leave an operator no record of why a
+            # template tool now prompts. Same operation name, so it lands in one
+            # feed. Auditing must never fail the rebuild.
+            try:
+                sel().log_api_access(
+                    caller="system",
+                    operation="mcp_auto_approve_withheld",
+                    outcome="ok",
+                    source="rebuild_agent_config",
+                    resources=(
+                        f"{', '.join(withheld)} mounted without auto-approve "
+                        "(governance ceiling); calls go through the approval gate"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — the audit must not break a rebuild
+                logger.debug("SEL audit unavailable for withheld auto-approve", exc_info=True)
+
+    # kirocrew.json has TWO independent-locked writers: this regenerating one and
+    # the app-MCP registration path (bridges._register_mcp_servers), which does a
+    # read-modify-write of the SAME file under bridges._mcp_lock. We snapshotted
+    # the app servers via registered_app_mcp_servers() far above, so a register
+    # that lands BETWEEN that snapshot and this write would be silently dropped by
+    # our full-file regeneration — "settings or MCP entries silently overwritten".
+    # Hold that same lock across a final re-read+merge of the app-namespaced
+    # servers so the two writers serialize and neither loses the other's entries.
+    # (Only for kirocrew.json — every other agent file this may write has a single
+    # writer.) The re-read uses the UNLOCKED reader because we already hold the lock.
+    from kiro_crew.apps.bridges import (
+        _mcp_json_path,
+        _mcp_lock,
+        _read_mcp_json_unlocked,
+    )
+
+    def _finalize_and_write() -> None:
+        servers_map = config.get("mcpServers")
+        if isinstance(servers_map, dict):
+            # LAST governance pass over the assembled server map. `autoApprove` can
+            # arrive from an app manifest, a per-agent policy, a managed spec or an
+            # imported config; filtering here, on the final map, covers every source.
+            config["mcpServers"] = _strip_ungoverned_auto_approve(servers_map)
+        _atomic_json_write(path, config)
+
+    try:
+        is_kirocrew_json = path.resolve() == _mcp_json_path().resolve()
+    except OSError:
+        is_kirocrew_json = False
+    if is_kirocrew_json:
+        with _mcp_lock():
+            on_disk = _read_mcp_json_unlocked().get("mcpServers", {})
+            if isinstance(on_disk, dict):
+                servers = config.setdefault("mcpServers", {})
+                # on_disk was written under THIS lock by the app register/deregister
+                # path. It is authoritative for a concurrent PORT change (same key,
+                # new URL) and for a concurrent REGISTER (a key our snapshot missed),
+                # so we overwrite/add from it below. But absence from on_disk is NOT
+                # by itself proof that an app server should be dropped: a clean
+                # rebuild (or a missing/empty config) starts with an empty on_disk,
+                # yet every ENABLED app's manifest-derived servers must still be
+                # written — dropping them here made an enabled stdio app's tools
+                # vanish. So drop an app server ONLY when its app is confirmed no
+                # longer enabled (a concurrent deregister), which is what actually
+                # resurrects a dead entry; keep it otherwise.
+                try:
+                    from kiro_crew.apps.manager import is_app_enabled
+
+                    def _app_of_key_enabled(_key: str) -> bool:
+                        try:
+                            return bool(is_app_enabled(_key.split(":", 1)[0]))
+                        except Exception:  # noqa: BLE001 — cannot verify → fail closed
+                            # A malformed installed.json makes enablement
+                            # unverifiable. Keeping the entry would leave a
+                            # deregistered/unknown app's MCP tools callable with no
+                            # way to confirm they should be — so drop it. It is
+                            # re-derived from the manifest on the next clean rebuild.
+                            return False
+
+                except Exception:  # noqa: BLE001 — apps subsystem unavailable
+
+                    def _app_of_key_enabled(_key: str) -> bool:
+                        # If the apps subsystem itself will not import, no app can
+                        # be confirmed enabled — drop app-scoped entries rather than
+                        # retain unverifiable tools.
+                        return False
+
+                on_disk_app = {_k for _k in on_disk if ":" in _k and _k not in managed_names}
+                for _k in [k for k in servers if ":" in k and k not in managed_names]:
+                    if not _app_of_key_enabled(_k):
+                        del servers[_k]
+                for _k, _v in on_disk.items():
+                    # ALWAYS assign, not add-if-missing: on_disk is authoritative
+                    # for app servers, so a concurrent re-registration on a new
+                    # port (same key, new URL) must OVERWRITE our stale snapshot —
+                    # otherwise the dead pre-rebuild URL is persisted.
+                    if _k in on_disk_app:
+                        servers[_k] = _v
+            _finalize_and_write()
+    else:
+        _finalize_and_write()
     logger.info("Installed agent config: %s", path)
 
     # Install KiroCrew AIM capabilities package (includes kirocrew-lite)

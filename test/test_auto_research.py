@@ -1443,6 +1443,58 @@ class TestLoopLaunch:
         svc.update.assert_awaited_once_with("loop1", active=False)
 
 
+class TestSuspendResearchLoopsWhileDisabled:
+    """Disabling the app must deactivate research autonudge loops AND clear their
+    slot trust, so a disabled app grants no standing auto-approval past the 24h cap
+    (the watchdog's per-campaign trust expiry is skipped while disabled)."""
+
+    @pytest.mark.asyncio
+    async def test_deactivates_research_loops_and_clears_trust(self, monkeypatch):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        svc = MagicMock()
+        svc.update = AsyncMock()
+        research_loop = SimpleNamespace(id="loopR", slot_key="research-c1", active=True)
+        other_loop = SimpleNamespace(id="loopX", slot_key="chat:main", active=True)
+        svc.list_all.return_value = [research_loop, other_loop]
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        research_slot = SimpleNamespace(_trust=True)
+        state = SimpleNamespace(_slots={"research-c1": research_slot})
+
+        await h._suspend_research_loops_while_disabled(state)
+
+        # Only the research loop is deactivated; the unrelated chat loop is left alone.
+        svc.update.assert_awaited_once_with("loopR", active=False)
+        # The research slot's standing trust is revoked.
+        assert research_slot._trust is False
+
+    @pytest.mark.asyncio
+    async def test_idempotent_when_already_inactive_and_untrusted(self, monkeypatch):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        svc = MagicMock()
+        svc.update = AsyncMock()
+        svc.list_all.return_value = [
+            SimpleNamespace(id="loopR", slot_key="research-c1", active=False)
+        ]
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        state = SimpleNamespace(_slots={"research-c1": SimpleNamespace(_trust=False)})
+
+        await h._suspend_research_loops_while_disabled(state)
+
+        # Nothing to do: an already-inactive loop is not re-updated.
+        svc.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_autonudge_service_is_safe(self, monkeypatch):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: None)
+        # Must not raise when the service is unavailable.
+        await h._suspend_research_loops_while_disabled(SimpleNamespace(_slots={}))
+
+
 # --- kirocrew-research core agent install ---
 
 

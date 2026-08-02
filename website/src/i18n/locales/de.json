@@ -1369,7 +1369,9 @@
         "installed": "Installiert",
         "update": "Aktualisieren",
         "verified_publisher": "Verifizierter Herausgeber",
-        "verified_publisher_first_party": "Verifizierter Herausgeber (Erstanbieter)"
+        "verified_publisher_first_party": "Verifizierter Herausgeber (Erstanbieter)",
+        "desktop_app": "Desktop-App",
+        "desktop_app_hint": "Aktivieren geht von hier aus, aber das eigene Fenster der App braucht die KiroCrew-Desktop-App."
       },
       "categoryRail": {
         "add_source": "Quelle hinzufügen",
@@ -1383,7 +1385,9 @@
       "featureCard": {
         "enable": "Aktivieren",
         "get": "Abrufen",
-        "installed": "Installiert"
+        "installed": "Installiert",
+        "desktop_app": "Desktop-App",
+        "desktop_app_hint": "Aktivieren geht von hier aus, aber das eigene Fenster der App braucht die KiroCrew-Desktop-App."
       },
       "featuredSpotlight": {
         "enable": "Aktivieren",
@@ -3190,7 +3194,8 @@
       "updating": "Wird aktualisiert…",
       "v": "v",
       "v_2": "· v",
-      "websocket_events": "WebSocket-Ereignisse"
+      "websocket_events": "WebSocket-Ereignisse",
+      "desktop_app_hint": "Aktivieren geht von hier aus, aber das eigene Fenster der App braucht die KiroCrew-Desktop-App."
     },
     "appPage": {
       "loading_app": "App wird geladen…"

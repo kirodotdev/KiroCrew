@@ -1515,9 +1515,13 @@ class TestToolBloatFixes:
         path = _run_install(tmp_path, cfg_dir)
         config = json.loads(path.read_text(encoding="utf-8"))
         # Template (_bundled_defaults) does not grant tool_search, so the narrow
-        # seed does not fire and the user's tools list is preserved exactly.
+        # seed does not fire and the user's tools (MOUNT) list is preserved exactly.
         assert config["tools"] == ["execute_bash", "fs_read", "fs_write", "use_aws", "code"]
-        assert config["allowedTools"] == ["fs_read", "use_aws"]
+        # allowedTools (AUTO-APPROVE) is different: a floor builtin (fs_read —
+        # sensitive-path) is withheld even from a user's explicit grant, because
+        # auto-approve skips the always-on gate floor. It still auto-approves via
+        # hooks after that floor runs. use_aws carries no such floor → preserved.
+        assert config["allowedTools"] == ["use_aws"]
 
     def _tool_search_defaults(self, tmp_path: Path) -> Path:
         """Bundled defaults whose template grants the tool_search built-in."""
@@ -1561,7 +1565,10 @@ class TestToolBloatFixes:
         ]
         # Read-only auto-allowed built-in: NOT added to allowedTools.
         assert "tool_search" not in config["allowedTools"]
-        assert config["allowedTools"] == ["fs_read", "@builder-mcp"]
+        # fs_read is a floor builtin (sensitive-path) → withheld from auto-approve
+        # even though the user's config listed it; @builder-mcp (ungoverned MCP
+        # ref, no ceiling) is preserved.
+        assert config["allowedTools"] == ["@builder-mcp"]
 
     def test_existing_config_tool_search_idempotent(self, tmp_path: Path):
         """A config that already grants tool_search is left unchanged (no dup)."""
@@ -1628,6 +1635,25 @@ class TestToolBloatFixes:
         assert "@kirocrew-cron" not in config["allowedTools"]
         assert "@kirocrew-core" not in config["allowedTools"]
 
+    def test_malformed_allowedtools_entries_are_dropped(self, tmp_path: Path):
+        """A non-string allowedTools entry (hand-edited config) must be dropped,
+        not crash rebuild via may_skip_gate's ref.startswith()."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        existing = {
+            "model": "claude-user-custom",
+            "tools": ["use_aws"],
+            "allowedTools": [1, "use_aws", None, "web_fetch"],
+            "mcpServers": {},
+        }
+        (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
+
+        path = _run_install(tmp_path, cfg_dir)  # must not raise
+        config = json.loads(path.read_text(encoding="utf-8"))
+        # Non-string junk dropped; valid non-floor entries preserved.
+        assert config["allowedTools"] == ["use_aws", "web_fetch"]
+
     def test_dedup_preserves_order(self, tmp_path: Path):
         """Duplicate tools are removed while preserving first-occurrence order."""
         cfg_dir = _bundled_defaults(tmp_path)
@@ -1635,16 +1661,18 @@ class TestToolBloatFixes:
         kiro_dir.mkdir(exist_ok=True)
         existing = {
             "model": "claude-user-custom",
-            "tools": ["shell", "read", "shell", "code", "read"],
-            "allowedTools": ["read", "read", "code"],
+            "tools": ["shell", "read", "shell", "use_aws", "read"],
+            "allowedTools": ["read", "read", "use_aws"],
             "mcpServers": {},
         }
         (kiro_dir / "kirocrew.json").write_text(json.dumps(existing))
 
         path = _run_install(tmp_path, cfg_dir)
         config = json.loads(path.read_text(encoding="utf-8"))
-        assert config["tools"] == ["shell", "read", "code"]
-        assert config["allowedTools"] == ["read", "code"]
+        assert config["tools"] == ["shell", "read", "use_aws"]
+        # Dedup preserves first-occurrence order. ("read"/"shell"/"use_aws" are
+        # not floor builtins, so none is withheld from auto-approve here.)
+        assert config["allowedTools"] == ["read", "use_aws"]
 
     def test_non_dict_json_treated_as_fresh_install(self, tmp_path: Path):
         """Valid JSON that is not a dict → treated as fresh install."""
@@ -3364,6 +3392,35 @@ def _run_install_mcp_merge(
             stack.enter_context(p)
         path = install_agent()
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+class TestRebuildReconcileRetainsEnabledAppServers:
+    """The final kirocrew.json reconcile must not delete an ENABLED app's
+    manifest-derived MCP server just because it is absent from on-disk — a clean
+    rebuild (or a missing/empty config) starts with an empty on_disk, and the
+    app's tools would vanish. It must drop a server only when its app is
+    confirmed no longer enabled (a concurrent deregister).
+
+    Pinned by source inspection: the reconcile is an inline block in
+    ``install_agent`` gated on ``is_kirocrew_json`` (the written path equalling
+    ``bridges._mcp_json_path()``), which the merge-priority harness does not
+    reproduce — so the guarantee is asserted structurally.
+    """
+
+    def test_reconcile_drops_by_enabled_state_not_ondisk_absence(self) -> None:
+        import inspect
+
+        from kiro_crew import agent
+
+        src = inspect.getsource(agent.install_agent)
+        # The drop must be gated on the app being DISABLED (deregistered), not on
+        # mere absence from on_disk — else a clean rebuild with an empty on_disk
+        # would delete an enabled app's manifest-derived server.
+        assert "_app_of_key_enabled" in src
+        assert "if not _app_of_key_enabled(_k):" in src
+        assert "is_app_enabled" in src
+        # The old, buggy condition (delete when absent from on_disk) must be gone.
+        assert "if _k not in on_disk_app:" not in src
 
 
 class TestMcpMergePriority:

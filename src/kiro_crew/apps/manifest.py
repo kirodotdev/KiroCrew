@@ -8,6 +8,7 @@ Design follows the same pattern as :class:`kiro_crew.plugins.manifest.PluginMani
 (dataclass + ``from_dict`` / ``to_dict`` / ``validate`` / round-trip) but with
 app-specific fields.
 """
+
 from __future__ import annotations
 
 import json
@@ -129,10 +130,8 @@ class CronEntry:
             # re-enable a disabled-by-design cron. Non-boolean values are
             # flagged and rejected by AppManifest.validate(); the value falls
             # back to True only so the flagged manifest still round-trips.
-            enabled=(data["enabled"] if isinstance(data.get("enabled"), bool)
-                     else True),
-            enabled_type_invalid=("enabled" in data
-                                  and not isinstance(data["enabled"], bool)),
+            enabled=(data["enabled"] if isinstance(data.get("enabled"), bool) else True),
+            enabled_type_invalid=("enabled" in data and not isinstance(data["enabled"], bool)),
         )
 
 
@@ -331,6 +330,10 @@ class Permissions:
     network: bool = False
     memory: str = ""  # "", "app-scoped", or "shared"
     cron: bool = False
+    #: May spawn a background agent through the host's subagent manager.
+    #: Declared rather than implicit so "which apps can start an agent" is
+    #: auditable from the manifest instead of from an app's import graph.
+    spawn: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -348,18 +351,32 @@ class Permissions:
             d["memory"] = self.memory
         if self.cron:
             d["cron"] = True
+        if self.spawn:
+            d["spawn"] = True
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Permissions:
+        # `is True`, not `bool(...)`, for every CAPABILITY GRANT below. `bool()` on a
+        # JSON value that is not a boolean grants on anything truthy — and the
+        # string `"false"` is truthy, so a manifest that writes `"spawn": "false"`
+        # meaning to DENY would have been handed the capability to launch
+        # unattended agents. Requiring the literal `true` means a malformed or
+        # unexpected value denies, which is the direction a grant must fail in.
+        #
+        # Note this is the opposite coercion from a RESTRICTION (see
+        # `admission.require_signature`): there, an unexpected value must keep the
+        # restriction ON. Same defect class, mirrored fix — the safe default
+        # follows what the field grants or withholds, not the field's type.
         return cls(
             api=[str(p) for p in data.get("api", []) if p],
             events=[str(e) for e in data.get("events", []) if e],
             mcpTools=[str(t) for t in data.get("mcpTools", []) if t],  # noqa: N815
-            storage=bool(data.get("storage", False)),
-            network=bool(data.get("network", False)),
+            storage=data.get("storage") is True,
+            network=data.get("network") is True,
             memory=str(data.get("memory", "")),
-            cron=bool(data.get("cron", False)),
+            cron=data.get("cron") is True,
+            spawn=data.get("spawn") is True,
         )
 
 
@@ -502,7 +519,9 @@ class ClientInstallConfig:
     """
 
     shell: str = ""  # one-liner for the user to run in their terminal
-    postInstall: str = ""  # command to run after install (e.g. "open ~/Applications/Mochi.app")  # noqa: N815
+    postInstall: str = (
+        ""  # command to run after install (e.g. "open ~/Applications/Mochi.app")  # noqa: N815
+    )
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -531,12 +550,27 @@ class PlatformConfig:
     - ``"client"``: Must be installed on the user's local machine.
       When KiroCrew is on an incompatible platform, the App Store shows
       copy-paste terminal instructions instead of running the install.
+
+    ``requiresDesktopApp`` is a different axis from ``os``: ``os`` constrains
+    the machine the GATEWAY runs on, while this constrains the SURFACE the user
+    is viewing from. An app sets it when its UI needs capabilities only the
+    Electron shell provides (native always-on-top windows, global shortcuts,
+    tray, screen capture) and would be broken or pointless in a browser tab.
+    The App Store surfaces the requirement and withholds the enable action from
+    browser sessions.
+
+    It is a UX gate, not a security boundary: the browser marker
+    (``window.kirocrew.isElectron``, set by the shell's preload) is client-side
+    and therefore spoofable. Nothing security-relevant may depend on it — an app
+    whose BACKEND must not run outside the desktop needs a real server-side
+    check, not this flag.
     """
 
     os: list[str] = field(default_factory=lambda: ["macos", "linux"])
     arch: list[str] = field(default_factory=list)  # empty = any arch
     installMode: str = "server"  # "server" | "client"  # noqa: N815
     clientInstall: ClientInstallConfig = field(default_factory=ClientInstallConfig)  # noqa: N815
+    requiresDesktopApp: bool = False  # noqa: N815
 
     # Map user-friendly OS names to sys.platform values
     _OS_TO_PLATFORM = {"macos": "darwin", "linux": "linux"}
@@ -550,6 +584,7 @@ class PlatformConfig:
     def current_os() -> str:
         """Return the user-friendly OS name for the current platform."""
         import sys
+
         return PlatformConfig._PLATFORM_TO_OS.get(sys.platform, sys.platform)
 
     def to_dict(self) -> dict[str, Any]:
@@ -563,16 +598,23 @@ class PlatformConfig:
         ci = self.clientInstall.to_dict()
         if ci:
             d["clientInstall"] = ci
+        if self.requiresDesktopApp:
+            d["requiresDesktopApp"] = True
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlatformConfig:
         ci_raw = data.get("clientInstall", {})
-        ci = ClientInstallConfig.from_dict(ci_raw) if isinstance(ci_raw, dict) else ClientInstallConfig()
+        ci = (
+            ClientInstallConfig.from_dict(ci_raw)
+            if isinstance(ci_raw, dict)
+            else ClientInstallConfig()
+        )
         return cls(
             os=[str(o) for o in data.get("os", ["macos", "linux"])],
             arch=[str(a) for a in data.get("arch", [])],
             installMode=str(data.get("installMode", "server")),  # noqa: N815
+            requiresDesktopApp=bool(data.get("requiresDesktopApp", False)),  # noqa: N815
             clientInstall=ci,  # noqa: N815
         )
 
@@ -593,11 +635,15 @@ class PublishProviderConfig:
     id: str = ""  # stable provider id, e.g. "deploy-web-aws"
     label: str = ""  # action label, e.g. "Publish to public web (your AWS)"
     icon: str = ""  # lucide icon name
-    endpoint: str = ""  # app backend route the artifact page posts to (e.g. /api/apps/deploy-web/deploy)
+    endpoint: str = (
+        ""  # app backend route the artifact page posts to (e.g. /api/apps/deploy-web/deploy)
+    )
     kinds: list[str] = field(default_factory=list)  # supported artifact kinds (empty = all)
     setupRoute: str = ""  # UI route to the app's setup/console page  # noqa: N815
     configFile: str = "config.json"  # relative to <app_dir>/data/  # noqa: N815
-    configuredField: str = ""  # field in configFile that must be non-empty to count as configured  # noqa: N815
+    configuredField: str = (
+        ""  # field in configFile that must be non-empty to count as configured  # noqa: N815
+    )
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -636,6 +682,7 @@ class PublishProviderConfig:
 # ---------------------------------------------------------------------------
 # Main AppManifest
 # ---------------------------------------------------------------------------
+
 
 # Fields that are parsed into typed dataclass attributes
 @dataclass
@@ -717,13 +764,34 @@ class NotificationsConfig:
         return errors
 
 
-_KNOWN_FIELDS = frozenset({
-    "name", "version", "displayName", "description", "author", "license",
-    "minKiroCrewVersion", "signer", "signature", "agents", "skills", "sops",
-    "mcpServers", "crons", "ui", "backend", "permissions", "setup", "tags",
-    "jobFamilies", "platform", "dependencies", "publishProvider",
-    "notifications",
-})
+_KNOWN_FIELDS = frozenset(
+    {
+        "name",
+        "version",
+        "displayName",
+        "description",
+        "author",
+        "license",
+        "minKiroCrewVersion",
+        "signer",
+        "signature",
+        "agents",
+        "skills",
+        "sops",
+        "mcpServers",
+        "crons",
+        "ui",
+        "backend",
+        "permissions",
+        "setup",
+        "tags",
+        "jobFamilies",
+        "platform",
+        "dependencies",
+        "publishProvider",
+        "notifications",
+    }
+)
 
 
 @dataclass
@@ -776,7 +844,9 @@ class AppManifest:
     platform: PlatformConfig = field(default_factory=PlatformConfig)
 
     # --- Publish registry (Route B, §1.3) ---
-    publishProvider: PublishProviderConfig = field(default_factory=PublishProviderConfig)  # noqa: N815
+    publishProvider: PublishProviderConfig = field(
+        default_factory=PublishProviderConfig
+    )  # noqa: N815
 
     # --- Notifications (RFC local notification bus, Phase 2) ---
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
@@ -835,9 +905,7 @@ class AppManifest:
         for path_list_name in ("agents", "skills", "sops"):
             for p in getattr(self, path_list_name):
                 if _path_escapes_app_root(str(p), app_root):
-                    errors.append(
-                        f"{path_list_name} path contains path traversal: {p!r}"
-                    )
+                    errors.append(f"{path_list_name} path contains path traversal: {p!r}")
 
         if self.ui.entry and _path_escapes_app_root(self.ui.entry, app_root):
             errors.append(f"ui.entry contains path traversal: {self.ui.entry!r}")
@@ -854,9 +922,7 @@ class AppManifest:
             if not page.label:
                 errors.append("ui page missing required field: label")
             if page.entryPoint and _path_escapes_app_root(page.entryPoint, app_root):
-                errors.append(
-                    f"ui page entryPoint contains path traversal: {page.entryPoint!r}"
-                )
+                errors.append(f"ui page entryPoint contains path traversal: {page.entryPoint!r}")
 
         # Cron validation
         for cron in self.crons:
@@ -875,7 +941,9 @@ class AppManifest:
                     f"cron entry {cron.name!r}: 'enabled' must be a JSON boolean "
                     "(true/false) — got a non-boolean value"
                 )
-            if not (cron.agent or cron.agent_sequence or cron.message or cron.command or cron.script):
+            if not (
+                cron.agent or cron.agent_sequence or cron.message or cron.command or cron.script
+            ):
                 errors.append(
                     f"cron entry {cron.name!r}: must specify at least one of "
                     "'agent', 'agent_sequence', 'message', 'command', or 'script'"
@@ -1012,24 +1080,14 @@ class AppManifest:
 
         perms_raw = data.get("permissions", {})
         permissions = (
-            Permissions.from_dict(perms_raw)
-            if isinstance(perms_raw, dict)
-            else Permissions()
+            Permissions.from_dict(perms_raw) if isinstance(perms_raw, dict) else Permissions()
         )
 
         setup_raw = data.get("setup", {})
-        setup = (
-            SetupConfig.from_dict(setup_raw)
-            if isinstance(setup_raw, dict)
-            else SetupConfig()
-        )
+        setup = SetupConfig.from_dict(setup_raw) if isinstance(setup_raw, dict) else SetupConfig()
 
         deps_raw = data.get("dependencies", {})
-        deps = (
-            Dependencies.from_dict(deps_raw)
-            if isinstance(deps_raw, dict)
-            else Dependencies()
-        )
+        deps = Dependencies.from_dict(deps_raw) if isinstance(deps_raw, dict) else Dependencies()
 
         platform_raw = data.get("platform", {})
         platform_cfg = (

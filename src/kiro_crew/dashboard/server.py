@@ -149,6 +149,7 @@ from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState
 from kiro_crew.dashboard.token_auth import (
     _cookie_port_from_host,
     _is_spa_shell_request,
+    register_app_window_paths,
     token_auth_middleware,
     token_embed_parent_port,
     warm_auth_singletons,
@@ -405,13 +406,24 @@ _BASE_CSP = (
 
 # Loopback preview origins — always framable AND connectable (see the
 # frame-src / connect-src notes above). Aligned with the URLs
-# WebPreviewPanel.normalizeUrl accepts: http+https on every loopback host
-# (127.0.0.1 / localhost / [::1] / 0.0.0.0), so a preview never renders blank
-# due to a CSP-blocked frame, nor gets declared unreachable due to a
-# CSP-blocked liveness probe.
+# WebPreviewPanel.normalizeUrl accepts: http+https on every loopback host, so a
+# preview never renders blank due to a CSP-blocked frame, nor gets declared
+# unreachable due to a CSP-blocked liveness probe.
+#
+# IPv6 loopback ([::1]) is deliberately OMITTED. A CSP host-source that pairs a
+# bracketed IPv6 literal with a wildcard port — `http://[::1]:*` — is invalid
+# per the CSP grammar, so Chromium drops that ENTIRE source and logs
+# "contains an invalid source: 'http://[::1]:*'". Because the source was being
+# dropped anyway, `[::1]:*` never actually admitted anything; removing it is
+# behaviour-preserving for IPv4 loopback (127.0.0.1 / localhost / 0.0.0.0, whose
+# non-bracketed literals accept a wildcard port) and only silences the console
+# error the pet page surfaced. There is no wildcard-port form Chromium accepts
+# for a bracketed IPv6 host, so IPv6 loopback preview cannot be expressed here
+# without pinning a specific port — which the arbitrary-port preview use case
+# rules out.
 _LOOPBACK_FRAME_SRC = (
-    " http://127.0.0.1:* http://localhost:* http://[::1]:* http://0.0.0.0:*"
-    " https://127.0.0.1:* https://localhost:* https://[::1]:* https://0.0.0.0:*"
+    " http://127.0.0.1:* http://localhost:* http://0.0.0.0:*"
+    " https://127.0.0.1:* https://localhost:* https://0.0.0.0:*"
 )
 # Additional tunnel wildcard, only when the instances feature is enabled.
 _INSTANCES_FRAME_SRC_EXTRA = " http://*.localhost:*"
@@ -595,6 +607,92 @@ def _apply_security_headers(
     resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
 
+# URL prefix for app-shipped standalone HTML windows. One namespace keeps app
+# window URLs from colliding with the SPA's own routes, and the two path segments
+# after it mirror the on-disk `<app>/<name>.html` exactly — see
+# `discover_app_window_entries` for what the previous flat scheme cost.
+APP_WINDOW_URL_PREFIX = "app-windows"
+
+
+def discover_app_window_entries(windows_root: Path) -> list[tuple[str, Path]]:
+    """Enumerate app window entries as ``(route_path, file)``.
+
+    An app ships standalone HTML windows as ``<windows_root>/<app>/<name>.html``
+    and they are served at ``/app-windows/<app>/<name>.html`` — the same two
+    segments, so the URL and the file agree by construction.
+
+    An earlier revision served them FLAT at ``/<app>-<name>.html``, which is
+    ambiguous the moment either name contains a hyphen: app ``foo`` + window
+    ``bar-baz`` and app ``foo-bar`` + window ``baz`` both spell
+    ``/foo-bar-baz.html``. That cost two pieces of machinery — a collision
+    refusal here, and a middleware in ``vite.config.ts`` that guessed the split
+    by trying each hyphen position, which could resolve to the WRONG file rather
+    than refuse. Keeping the boundary in the URL deletes the whole class, so
+    neither exists any more. The duplicate check below is retained as a cheap
+    invariant: with distinct path segments the filesystem cannot produce two
+    identical routes, so a hit means the convention changed under us.
+
+    Returned paths come from the enumerated FILES; the request path is never used
+    to build a filesystem path, so there is no traversal surface.
+    """
+    if not windows_root.is_dir():
+        return []
+    root = windows_root.resolve()
+    out: list[tuple[str, Path]] = []
+    claimed: dict[str, Path] = {}
+    for entry in sorted(windows_root.glob("*/*.html")):
+        # Confine the enumerated file to the build tree. The glob cannot walk out
+        # on its own, but a symlink planted inside `dist/` could, and this function
+        # hands every result to `web.FileResponse` — an unconditional read of
+        # whatever the path points at. Resolving and comparing also makes the
+        # barrier visible to dataflow analysis, which reported this join as a path
+        # injection precisely because the safety was structural rather than stated.
+        resolved = entry.resolve()
+        if root not in resolved.parents:
+            logger.error(
+                "App window entry %s resolves outside the build tree (%s) — refusing "
+                "to serve it.",
+                entry,
+                root,
+            )
+            continue
+        route_path = f"/{APP_WINDOW_URL_PREFIX}/{entry.parent.name}/{entry.stem}.html"
+        prior = claimed.get(route_path)
+        if prior is not None:  # pragma: no cover - unreachable by construction
+            logger.error(
+                "App window entry %s collides with %s on route %s — refusing to "
+                "register the second. Two files cannot share this route, so the "
+                "path convention has drifted.",
+                entry,
+                prior,
+                route_path,
+            )
+            continue
+        claimed[route_path] = resolved
+        out.append((route_path, resolved))
+    return out
+
+
+def _window_entry_handler(entry: Path) -> Callable[[web.Request], Awaitable[web.FileResponse]]:
+    """A handler that serves ONE enumerated window file.
+
+    A factory rather than the usual default-argument idiom
+    (``async def h(req, _file=entry)``). Both avoid the late-binding capture bug
+    in a loop, but the default-argument form puts the path in a REQUEST
+    HANDLER'S SIGNATURE — so it reads, to a human and to dataflow analysis
+    alike, as something a request could supply, and `py/path-injection` flagged
+    it as exactly that. Here the path is a closure cell fixed at registration and
+    the handler takes only the request, which is what is actually true: these
+    routes are built from files enumerated at startup and the request path never
+    reaches the filesystem.
+    """
+
+    async def _serve(_request: web.Request) -> web.FileResponse:
+        return web.FileResponse(entry)
+
+    return _serve
+
+
 def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
     """Register static routes for the React ``dist/`` build on ``app``.
 
@@ -635,6 +733,34 @@ def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
     # no append_version cache-busting.
     if (dist_dir / "app-assets").is_dir():
         app.router.add_static("/app-assets", dist_dir / "app-assets", show_index=False)
+
+    # App window entries — separate Vite bundles an app ships as standalone
+    # HTML windows, loaded by a shell window rather than the SPA router. The
+    # SOURCE html lives inside the app's own folder (website/src/apps/<app>/
+    # <name>.html) so each app stays one self-contained folder, and Vite
+    # mirrors that path into dist. Each discovered entry is served at
+    # /<app>-<name>.html: a flat, stable url the loading shell can hard-code,
+    # independent of where the file sits in dist. (In dev the Vite server
+    # answers the same urls via the `app-window-urls` rewrite in
+    # vite.config.ts, so one url works against either server.)
+    #
+    # Routes are registered from the files enumerated HERE, at startup; the
+    # request path is never used to build a filesystem path, so there is no
+    # traversal surface. The same enumeration feeds the SPA-shell fallback
+    # exclusion (token_auth.register_app_window_paths): the fallback answers
+    # UNAUTHENTICATED GETs so the token bootstrap can load, and a window entry
+    # left inside it would be shadowed by an unauthenticated dashboard shell.
+    # Registering both from one loop makes route/exclusion drift impossible.
+    #
+    # A missing entry is not a small failure: the SPA fallback would answer
+    # with the dashboard shell, so the window would open showing a full
+    # dashboard instead of its own UI.
+    windows_root = dist_dir / "src" / "apps"
+    window_paths: list[str] = []
+    for route_path, entry in discover_app_window_entries(windows_root):
+        app.router.add_get(route_path, _window_entry_handler(entry))
+        window_paths.append(route_path)
+    register_app_window_paths(window_paths)
     logger.info("Serving React build from %s", dist_dir)
 
 
@@ -2247,6 +2373,23 @@ async def start_dashboard(
     # dirs, which must not block the event loop during startup.
     await asyncio.get_running_loop().run_in_executor(subprocess_executor(), register_builtin_apps)
 
+    # Reconcile resources (agents / skills / crons / MCP) for every ENABLED app.
+    # Registration otherwise happens only in the enable path, so an app that
+    # gains agents or skills in a later version never registers them for a user
+    # who already enabled it. Runs on the executor: it walks the apps tree and
+    # writes into ~/.kiro/agents.
+    async def _reconcile_app_resources() -> None:
+        from kiro_crew.apps.bridges import reconcile_enabled_app_resources
+
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), reconcile_enabled_app_resources
+            )
+        except Exception as exc:  # noqa: BLE001 — never block gateway startup
+            logger.warning("App resource reconcile failed: %s", exc)
+
+    await _reconcile_app_resources()
+
     # One-time migration: disable stale deploy_web builtin installs (now core module).
     # Idempotent — logs once and silently succeeds if already gone.
     # R34 F1: the cleanup reads/deletes files under the data dir — run it off
@@ -2291,17 +2434,27 @@ async def start_dashboard(
     if started_apps:
         logger.info("Started %d app backend(s): %s", len(started_apps), ", ".join(started_apps))
 
+    # Both adapters are shared with the enable path (apps/routes.py) so the two
+    # entry points cannot drift into giving an app different capabilities.
+    from kiro_crew.apps.event_bus import build_broadcast_fn
+    from kiro_crew.apps.spawn_sdk import build_spawn_impl
+
+    _app_event_broadcast = build_broadcast_fn(state.broadcast_ws)
+    _app_spawn = build_spawn_impl(state.subagents)
+
     # Initialize App SDK Gateway Hooks system
     init_hooks_system(
         app,
         cron_service=state.crons,
-        broadcast_fn=state.broadcast if hasattr(state, "broadcast") else None,
+        broadcast_fn=_app_event_broadcast,
+        spawn_impl=_app_spawn,
     )
 
     async def _hooks_startup(app_: web.Application) -> None:
         await on_gateway_startup(
             cron_service=state.crons,
-            broadcast_fn=state.broadcast if hasattr(state, "broadcast") else None,
+            broadcast_fn=_app_event_broadcast,
+            spawn_impl=_app_spawn,
         )
         # App dev-mode live reload: watch dev-flagged apps' ui/ dirs and
         # broadcast app_reload WS events on change (see apps/dev_mode.py).

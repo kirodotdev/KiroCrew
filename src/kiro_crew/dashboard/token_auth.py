@@ -17,7 +17,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -424,6 +424,28 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     "/artifact-app/",
 )
 
+# App window entries (`/app-windows/<app>/<name>.html`) are their own Vite bundles, served
+# from this origin and authenticated by the same session cookie as the
+# dashboard. Without an exclusion they land in the SPA-shell fallback, which
+# answers UNAUTHENTICATED GETs so the token bootstrap can load — meaning the
+# shell would be handed out for these paths with no session at all. The set is
+# registered at startup by dashboard/server.py from the SAME filesystem
+# discovery that registers the routes, so route and exclusion cannot drift:
+# a served window entry is excluded by construction.
+_APP_WINDOW_EXCLUDED_PATHS: frozenset[str] = frozenset()
+
+
+def register_app_window_paths(paths: Iterable[str]) -> None:
+    """Exclude app window-entry paths from the SPA-shell fallback.
+
+    Called once at startup with the concrete route paths server.py registered
+    (e.g. every discovered ``/app-windows/<app>/<name>.html``). Exact-path matching, not
+    prefixes: the routes are enumerated files, so the full set is known.
+    """
+    global _APP_WINDOW_EXCLUDED_PATHS
+    _APP_WINDOW_EXCLUDED_PATHS = frozenset(paths)
+
+
 # Regex that matches /apps/ paths with real server-side handlers, which must NOT
 # be shadowed by the SPA shell. apps/routes.py registers exactly two
 # sub-namespaces under /apps/{name}: /ui/ (the app's static bundle) and /api/
@@ -468,6 +490,8 @@ def _is_spa_shell_request(request: web.Request) -> bool:
     path = request.path
     # Fast-path: most paths don't start with /apps/
     if not path.startswith("/apps/"):
+        if path in _APP_WINDOW_EXCLUDED_PATHS:
+            return False
         return not path.startswith(SPA_FALLBACK_EXCLUDED_PREFIXES)
     # /apps/ sub-namespace: exclude only the paths apps/routes.py actually
     # serves (/apps/{name}/api/... and /apps/{name}/ui/...). Everything else

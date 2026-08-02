@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import platform as _plat
 import shutil
@@ -53,8 +54,11 @@ from kiro_crew.platform import (
     current_context,
     safe_context_call,
 )
-from kiro_crew.platform.governance import CU_MCP_SERVER
+from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
+from kiro_crew.sel import sel
 from kiro_crew.transcribe import _find_whisper, ensure_ffmpeg_in_path
+
+logger = logging.getLogger(__name__)
 
 _MIN_NODE_VERSION = 16
 
@@ -134,10 +138,49 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
         if ref not in tools:
             tools.append(ref)
             config_changed = True
-        # Computer use is never blanket-allowed here: see _NO_BLANKET_ALLOW_MCPS.
-        # A pre-existing user-made grant is left alone (doctor never REMOVES a
-        # decision the user owns); doctor simply never mints one.
-        if ref not in allowed and name not in _NO_BLANKET_ALLOW_MCPS:
+        # `allowedTools` auto-approves, which is the one path that never reaches
+        # the PreToolUse gate — so what the ceiling says about this server decides
+        # both whether doctor may mint a grant and whether an existing one stands.
+        if not may_skip_gate_now(ref):
+            # REVOKE, not merely "do not add". A grant can predate the ceiling —
+            # the policy arrives on a host whose config was written while it was
+            # ungoverned — and leaving it in place means the ceiling applies only
+            # to installs that were governed before their first launch. Every
+            # other writer of this list revokes here too (agent.py's shared sync,
+            # both dashboard enable paths); doctor was the one that only declined
+            # to mint, which left `kirocrew doctor` reporting a repaired config
+            # that still carried the exemption.
+            #
+            # This is the one case where doctor removes something from
+            # `allowedTools`: the note below about never removing a user's
+            # decision holds for user preference, and a ceiling is not one.
+            if ref in allowed:
+                allowed.remove(ref)
+                config_changed = True
+                # Revoking a grant is a permission DECISION; every other writer of
+                # this list emits this SEL event when it withholds, and doctor
+                # revoking silently would be the one path with no audit trail.
+                try:
+                    sel().log_api_access(
+                        caller="system",
+                        operation="mcp_auto_approve_withheld",
+                        outcome="ok",
+                        source="cli_doctor",
+                        resources=(
+                            f"{ref} auto-approve revoked (governance ceiling); "
+                            "calls go through the approval gate"
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 — the audit must not break doctor
+                    logger.debug("SEL audit unavailable for doctor revoke", exc_info=True)
+            # Governed hosts otherwise give no reason why a server the user
+            # enabled still prompts on every call — say it once, here, so
+            # `kirocrew doctor` explains it.
+            print(f"  {ref}: 🔒 auto-approve withheld by security policy — calls will prompt")
+        elif ref not in allowed and name not in _NO_BLANKET_ALLOW_MCPS:
+            # Computer use is never blanket-allowed here: see _NO_BLANKET_ALLOW_MCPS.
+            # A pre-existing user-made grant is left alone (doctor never REMOVES a
+            # decision the user owns); doctor simply never mints one.
             allowed.append(ref)
             config_changed = True
 
@@ -224,14 +267,18 @@ def _doctor_data_home() -> None:
                 # The override points AT the legacy dir, so legacy IS the active
                 # data home — not ignored debris (GPT 5.6 MEDIUM: don't mislabel
                 # the home the process is actually using).
-                print(f"  legacy:      ✅ {legacy} is the ACTIVE data home "
-                      f"(KIROCREW_HOME override points to it)")
+                print(
+                    f"  legacy:      ✅ {legacy} is the ACTIVE data home "
+                    f"(KIROCREW_HOME override points to it)"
+                )
             else:
                 # A valid KIROCREW_HOME override elsewhere bypasses migration on
                 # every start, so this legacy dir will NOT be migrated — don't
                 # imply a retry.
-                print(f"  legacy:      ⏹ {legacy} present but IGNORED "
-                      f"(KIROCREW_HOME override active — migration disabled until it is unset)")
+                print(
+                    f"  legacy:      ⏹ {legacy} present but IGNORED "
+                    f"(KIROCREW_HOME override active — migration disabled until it is unset)"
+                )
         elif (home / MIGRATION_MARKER_NAME).exists():
             # Marker present + a legacy dir that detect_data_home_conflict did not
             # flag. Either it is empty leftover, or it survives ONLY to hold a
@@ -239,17 +286,27 @@ def _doctor_data_home() -> None:
             # to delete, since that is the user's live interpreter.
             preserved = preserved_entries(legacy)
             if preserved:
-                print(f"  legacy:      ✅ {legacy} retained to hold the KiroCrew "
-                      f"virtual environment ({', '.join(preserved)})")
-                print(f"               Data was migrated to {home}; the venv stays "
-                      f"here because moving it would break the interpreter.")
-                print("               Do NOT delete it while it is your active "
-                      "install (`which kirocrew` resolves through it).")
+                print(
+                    f"  legacy:      ✅ {legacy} retained to hold the KiroCrew "
+                    f"virtual environment ({', '.join(preserved)})"
+                )
+                print(
+                    f"               Data was migrated to {home}; the venv stays "
+                    f"here because moving it would break the interpreter."
+                )
+                print(
+                    "               Do NOT delete it while it is your active "
+                    "install (`which kirocrew` resolves through it)."
+                )
             else:
-                print(f"  legacy:      ⏹ {legacy} present but UNUSED "
-                      f"(migration already completed; empty leftover, safe to delete)")
+                print(
+                    f"  legacy:      ⏹ {legacy} present but UNUSED "
+                    f"(migration already completed; empty leftover, safe to delete)"
+                )
         else:
-            print(f"  legacy:      ⏹ {legacy} still present (migration will retry on next cold start)")
+            print(
+                f"  legacy:      ⏹ {legacy} still present (migration will retry on next cold start)"
+            )
 
 
 def _linger_enabled(user: str) -> bool | None:
@@ -331,14 +388,8 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         return
     print(f"  session bus: ✅ {sock}")
     if _linger_enabled(user) is False:
-        print(
-            "  linger:      ⚠️  disabled — the per-user systemd instance exits on "
-            "logout,"
-        )
-        print(
-            "               taking running pods with it. "
-            f"Fix: loginctl enable-linger {user}"
-        )
+        print("  linger:      ⚠️  disabled — the per-user systemd instance exits on " "logout,")
+        print("               taking running pods with it. " f"Fix: loginctl enable-linger {user}")
 
 
 def _doctor_model_url_reachable(issues: list[str]) -> None:
