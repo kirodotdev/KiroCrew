@@ -5,13 +5,18 @@ Per code review:
   tears down the session under concurrent ``asyncio.gather``'d sibling tasks
   sharing the same key — the next sibling streams against a torn-down provider.
 - Per-cycle reset (always-recycle) cold-starts the entire MCP toolbelt every
-  minute even on healthy idle sessions.
+  minute even on healthy idle sessions. This cost is now accepted deliberately:
+  it is unobserved (nothing waits on a tick) and strictly cheaper than re-sending
+  an accumulated transcript as input tokens every tick.
 
 Resolution: per-task ``finally`` only releases the per-key semaphore; cycle-end
 recycle is handled once by ``SessionManager.recycle_heartbeat`` (called from
-``HeartbeatService._process_heartbeat_file`` after ``asyncio.gather`` completes,
-matching ``recycle_background``'s ≥70% / 40-prompt-blind thresholds).  Multi-task
-cycles share one warm session; only between cycles do we conditionally recycle.
+``HeartbeatService._process_heartbeat_file`` after ``asyncio.gather`` completes).
+Multi-task cycles share one warm session; between cycles the session is always
+torn down, so each cycle starts fresh — matching the "fresh context each cycle"
+contract in ``config/prompt.md``.  Nobody waits on a heartbeat tick, so the
+per-cycle cold-start is unobserved, whereas a retained transcript would be
+re-sent as input tokens on every tick.
 """
 
 from __future__ import annotations
@@ -152,8 +157,11 @@ class TestOnCycleEndCallback:
 
 
 class TestRecycleHeartbeat:
-    """``SessionManager.recycle_heartbeat`` mirrors ``recycle_background`` —
-    threshold-driven, no eager replacement (heartbeat is on-demand)."""
+    """``SessionManager.recycle_heartbeat`` tears the session down at the end
+    of EVERY cycle, regardless of context% or prompt count — heartbeat
+    promises "fresh context each cycle" and nobody waits on a tick, so the
+    per-cycle cold-start is unobserved while a retained transcript costs input
+    tokens on every tick."""
 
     @pytest.mark.asyncio
     async def test_no_op_when_session_absent(self):
@@ -166,9 +174,11 @@ class TestRecycleHeartbeat:
         await mgr.recycle_heartbeat()
 
     @pytest.mark.asyncio
-    async def test_no_op_below_threshold(self):
-        """Healthy session (under 70% context, under 40 prompts) is preserved
-        — cycle-end recycle must NOT churn warm sessions."""
+    async def test_recycles_healthy_session(self):
+        """A nearly-empty session is STILL recycled. This is the behavioural
+        change: previously a session under 70% context and under 40 prompts
+        was preserved, which is what let the heartbeat transcript accumulate
+        across cycles while the docs promised fresh context."""
         from kiro_crew.session import SessionManager, _Session
 
         mgr = SessionManager(cfg=_make_cfg(), provider_factory=MagicMock())
@@ -181,14 +191,13 @@ class TestRecycleHeartbeat:
 
         await mgr.recycle_heartbeat()
 
-        # Session preserved; no shutdown.
-        assert HEARTBEAT_KEY in mgr._sessions
-        provider.shutdown.assert_not_awaited()
+        assert HEARTBEAT_KEY not in mgr._sessions
+        provider.shutdown.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_recycles_at_pct_threshold(self):
-        """At ≥70% context, recycle drops the session so the next
-        ``get_or_create`` creates a fresh one on demand."""
+        """A full session is recycled too — the next ``get_or_create``
+        creates a fresh one on demand."""
         from kiro_crew.session import SessionManager, _Session
 
         mgr = SessionManager(cfg=_make_cfg(), provider_factory=MagicMock())
@@ -208,8 +217,9 @@ class TestRecycleHeartbeat:
         provider.shutdown.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_recycles_blind_at_40_prompts(self):
-        """When provider can't report context%, fall back to prompt count."""
+    async def test_recycles_when_context_pct_unavailable(self):
+        """A provider that can't report context% is recycled all the same —
+        there is no threshold left to fall back on."""
         from kiro_crew.session import SessionManager, _Session
 
         mgr = SessionManager(cfg=_make_cfg(), provider_factory=MagicMock())
@@ -217,7 +227,7 @@ class TestRecycleHeartbeat:
         provider.context_usage_pct = MagicMock(return_value=0.0)
         provider.shutdown = AsyncMock()
         sess = _Session(provider=provider, is_new=False)
-        sess.prompt_count = 40
+        sess.prompt_count = 1
         mgr._sessions[HEARTBEAT_KEY] = sess
 
         await mgr.recycle_heartbeat()
