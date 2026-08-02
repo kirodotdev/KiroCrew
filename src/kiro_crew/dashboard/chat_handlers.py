@@ -32,6 +32,7 @@ from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
     _attach_variants,
     get_reasoning_effort_values,
+    materialize_slot,
     save_slot_off_loop,
 )
 from kiro_crew.dashboard.chat_runner import _context_usage_payload, _run_chat
@@ -345,6 +346,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
     slot._has_reader = not ws_mode  # Only block SSE broadcast if HTTP SSE reader
     slot._file_changes = []  # Reset file-change accumulator for the new turn
+    # ── Materialize stub slots before a turn starts (on-demand load) ──
+    if slot._stub:
+        materialize_slot(state, slot)
     # ── Sweep orphaned permissions from prior turns ──
     _sweep_stale_permissions(slot)
 
@@ -602,6 +606,10 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
 
+    # Materialize stub slots on first detail access (user activated the tab).
+    if slot._stub:
+        materialize_slot(state, slot)
+
     limit_raw = request.query.get("limit")
     before = request.query.get("before")
 
@@ -757,9 +765,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # One code for BOTH reasons on purpose: a distinct code per reason
             # would turn this 404 into an existence oracle for slots the caller
             # may not know about. The prose stays in `error` for logs.
-            return web.json_response(
-                {"error": "not found", "code": "slot_not_found"}, status=404
-            )
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
         # Pin title if explicitly provided (prevents auto-title from overwriting)
         title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
         if title:
@@ -871,14 +877,10 @@ def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
     _reject_pending_approvals(slot)
     cancelled = state.cancel_questions_for_slot(slot.key)
     if cancelled:
-        logger.info(
-            "Stop: cancelled %d pending question(s) on slot %s", cancelled, slot.key
-        )
+        logger.info("Stop: cancelled %d pending question(s) on slot %s", cancelled, slot.key)
 
 
-async def _reset_slot_session(
-    state: DashboardState, slot: _ChatSlot, session_key: str
-) -> None:
+async def _reset_slot_session(state: DashboardState, slot: _ChatSlot, session_key: str) -> None:
     """Reset a slot's agent session, releasing anything blocked on the old one.
 
     The switch handlers (agent, model, bulk model, reasoning effort, workspace)

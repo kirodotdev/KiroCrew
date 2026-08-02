@@ -7646,7 +7646,11 @@ class TestRegenerateAndVariants:
         ]
         slot.messages[-1]["variant_idx"] = 1
         slot.drain()
-        from kiro_crew.dashboard.chat import _save_slot_to_history, restore_recent_sessions
+        from kiro_crew.dashboard.chat import (
+            _save_slot_to_history,
+            materialize_slot,
+            restore_recent_sessions,
+        )
 
         _save_slot_to_history(state, slot)
         # Clear in-memory state and restore via production path
@@ -7654,6 +7658,14 @@ class TestRegenerateAndVariants:
         restore_recent_sessions(state, window_minutes=9999)
         restored_slot = state._slots.get("s1")
         assert restored_slot is not None
+        # restore_recent_sessions now yields a lazy STUB (no transcript read) so
+        # startup does not materialize every sidebar row. Messages -- and with
+        # them the variant payload -- arrive when the tab is activated, which is
+        # what materialize_slot does on the production path.
+        assert restored_slot._stub is True
+        assert restored_slot.messages == []
+        materialize_slot(state, restored_slot)
+        assert restored_slot._stub is False
         ai = [m for m in restored_slot.messages if m.get("role") == "assistant"][0]
         assert "variants" in ai
         assert len(ai["variants"]) == 2

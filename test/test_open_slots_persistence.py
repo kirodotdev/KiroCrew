@@ -263,18 +263,18 @@ def test_restore_open_slots_rolls_back_partial_slot_on_rehydrate_failure(tmp_pat
 
     state2 = _make_state(tmp_path / "sessions")
 
-    # Patch _rehydrate_slot_from_history so that it leaks a partial slot
+    # Patch _create_stub_slot so that it leaks a partial slot
     # (mirroring the real partial-state path) and then raises. Without the
     # rollback in restore_open_slots, the partial slot would persist.
     from kiro_crew.dashboard import chat_persistence as cp_mod
 
-    def _failing_rehydrate(state_arg, slot_name):
+    def _failing_stub(state_arg, slot_name, **kwargs):
         # Mimic the real failure mode: register an empty slot via
         # get_or_create_slot, then bomb on the fallible work.
         state_arg.get_or_create_slot(slot_name, app="")
-        raise RuntimeError("simulated read_messages failure (e.g. disk EIO)")
+        raise RuntimeError("simulated stub creation failure (e.g. disk EIO)")
 
-    monkeypatch.setattr(cp_mod, "_rehydrate_slot_from_history", _failing_rehydrate)
+    monkeypatch.setattr(cp_mod, "_create_stub_slot", _failing_stub)
     restored = restore_open_slots(state2)
 
     # Rehydrate raised, so nothing was successfully restored.
@@ -328,9 +328,7 @@ def test_rehydrate_slot_restores_persisted_tab_id_for_fork_chaining(tmp_path, mo
 
     # Legacy-session path: no tab_id in meta -> one is generated and written back.
     _seed_session(state, "chat-2-legacy-no-tab-id")
-    snapshot_path.write_text(
-        json.dumps({"keys": ["chat-2-legacy-no-tab-id"], "ts": 0.0})
-    )
+    snapshot_path.write_text(json.dumps({"keys": ["chat-2-legacy-no-tab-id"], "ts": 0.0}))
     state3 = _make_state(tmp_path / "sessions")
     restored = restore_open_slots(state3)
     assert restored == 1
@@ -344,15 +342,11 @@ def test_rehydrate_slot_restores_persisted_tab_id_for_fork_chaining(tmp_path, mo
 
 
 def test_rehydrate_slot_uses_chained_read_with_500_message_window(tmp_path, monkeypatch):
-    """Chained read + 500-message window on rehydrate.
+    """Chained read + 500-message window on materialize.
 
-    ``_rehydrate_slot_from_history`` previously called
-    ``conversation_log.read_messages(history_key)`` (no chain, capped at 200
-    in-memory). ``restore_recent_sessions`` uses
-    ``read_messages_chained(key)`` (capped at 500). Because
-    ``restore_open_slots`` runs FIRST in start_dashboard and dedupes by key,
-    every long-running session lost 200+ messages of visible window on every
-    gateway restart.
+    ``materialize_slot`` must call ``read_messages_chained`` (not
+    ``read_messages``) so the loaded window walks the tab_id ancestry
+    across forks, matching the behavior previously done at restore time.
 
     This test pins:
       1. ``read_messages_chained`` is the call used (not ``read_messages``).
@@ -382,36 +376,41 @@ def test_rehydrate_slot_uses_chained_read_with_500_message_window(tmp_path, monk
         flat_calls.append(key)
         return real_flat(key, *args, **kwargs)
 
-    with patch.object(state2.conversation_log, "read_messages_chained", _spy_chained), \
-            patch.object(state2.conversation_log, "read_messages", _spy_flat):
-        restored = restore_open_slots(state2)
-
+    # First restore creates stubs (no message read).
+    restored = restore_open_slots(state2)
     assert restored == 1
+    slot = state2._slots["chat-1-long"]
+    assert slot._stub is True
+
+    # Materialize triggers the actual read.
+    from kiro_crew.dashboard.chat_persistence import materialize_slot
+
+    with (
+        patch.object(state2.conversation_log, "read_messages_chained", _spy_chained),
+        patch.object(state2.conversation_log, "read_messages", _spy_flat),
+    ):
+        materialize_slot(state2, slot)
+
+    assert slot._stub is False
     history_key = _history_key_for("chat-1-long")
     assert history_key in chained_calls, (
-        f"rehydrate did NOT call read_messages_chained "
+        f"materialize did NOT call read_messages_chained "
         f"(called: chained={chained_calls!r}, flat={flat_calls!r}). "
         "Forked-session ancestry would be invisible to the in-memory window."
     )
     assert history_key not in flat_calls, (
-        "rehydrate still called the non-chained read_messages, "
+        "materialize still called the non-chained read_messages, "
         "which caps at 200 and does not walk fork ancestry."
     )
 
 
 def test_rehydrate_slot_loads_full_500_message_window(tmp_path, monkeypatch):
-    """Functional window-cap pin: rehydrate loads the full window.
+    """Functional window-cap pin: materialize loads the full window.
 
-    Seeds 250 messages — strictly more than the old 200 cap and well below
-    the new 500 cap — then rehydrates and asserts ALL 250 were loaded into
-    the slot. This pin is durable against refactors that the previous
-    inspect-the-source approach was brittle to (extracting 500 to a named
-    constant, reformatting, etc. would silently break a string-match
-    assertion). 250 keeps the test fast (sub-second seeding) while still
-    proving the cap is materially > 200.
-
-    Pre-fix (200 cap), this test would see only the last 200 of 250
-    messages restored. With the 500 cap, all 250 land.
+    Seeds 250 messages - strictly more than the old 200 cap and well below
+    the new 500 cap - then restores as stub and materializes, asserting ALL
+    250 were loaded into the slot. This pin is durable against refactors that
+    the previous inspect-the-source approach was brittle to.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -423,17 +422,25 @@ def test_rehydrate_slot_loads_full_500_message_window(tmp_path, monkeypatch):
         log.append(history_key, "user", f"msg-{i:03d}")
 
     snapshot_path = tmp_path / "open_slots.json"
-    snapshot_path.write_text(
-        json.dumps({"keys": ["chat-1-bigwindow"], "ts": 0.0})
-    )
+    snapshot_path.write_text(json.dumps({"keys": ["chat-1-bigwindow"], "ts": 0.0}))
 
     state2 = _make_state(tmp_path / "sessions")
     restored = restore_open_slots(state2)
     assert restored == 1
     slot = state2._slots["chat-1-bigwindow"]
+    # Stub has no messages loaded.
+    assert slot._stub is True
+    assert len(slot.messages) == 0
+
+    # Materialize loads the full window.
+    from kiro_crew.dashboard.chat_persistence import materialize_slot
+
+    materialize_slot(state2, slot)
+
+    assert slot._stub is False
     assert len(slot.messages) == 250, (
-        f"rehydrate loaded {len(slot.messages)} of 250 seeded "
-        "messages — likely still using the old 200-message cap. "
+        f"materialize loaded {len(slot.messages)} of 250 seeded "
+        "messages - likely still using the old 200-message cap. "
         "The window must be >= 250 (current target: 500)."
     )
     # Verify ordering (oldest first, newest last) — defensive, in case a
@@ -499,16 +506,16 @@ def test_restore_open_slots_rollback_also_discards_restricted_keys(tmp_path, mon
     state2 = _make_state(tmp_path / "sessions")
     from kiro_crew.dashboard import chat_persistence as cp_mod
 
-    def _failing_rehydrate(state_arg, slot_name):
+    def _failing_stub(state_arg, slot_name, **kwargs):
         # Mimic the real failure mode for an INCOGNITO session: register the
-        # slot, mark it restricted (matching what _rehydrate_slot_from_history
+        # slot, mark it restricted (matching what _create_stub_slot
         # does for non-persistent memory_mode), THEN bomb on the fallible
         # downstream work.
         state_arg.get_or_create_slot(slot_name, app="")
         state_arg._restricted_keys.add(f"dashboard:{slot_name}")
-        raise RuntimeError("simulated read_messages_chained failure (e.g. disk EIO)")
+        raise RuntimeError("simulated stub creation failure (e.g. disk EIO)")
 
-    monkeypatch.setattr(cp_mod, "_rehydrate_slot_from_history", _failing_rehydrate)
+    monkeypatch.setattr(cp_mod, "_create_stub_slot", _failing_stub)
     restored = restore_open_slots(state2)
 
     assert restored == 0
@@ -774,9 +781,7 @@ def test_restore_open_slots_async_matches_sync_result(tmp_path, monkeypatch):
 
     sync_state = _make_state(tmp_path / "sessions")
     async_state = _make_state(tmp_path / "sessions")
-    assert restore_open_slots(sync_state) == asyncio.run(
-        restore_open_slots_async(async_state)
-    )
+    assert restore_open_slots(sync_state) == asyncio.run(restore_open_slots_async(async_state))
     assert set(sync_state._slots) == set(async_state._slots) == {"chat-1-same", "chat-2-same"}
 
 
@@ -918,9 +923,7 @@ def test_flush_during_async_restore_does_not_truncate_snapshot(tmp_path, monkeyp
             observed.append(len(json.loads(snapshot.read_text())["keys"]))
         return await real_sleep(delay, *a, **kw)
 
-    with patch(
-        "kiro_crew.dashboard.chat_persistence.asyncio.sleep", side_effect=flushing_sleep
-    ):
+    with patch("kiro_crew.dashboard.chat_persistence.asyncio.sleep", side_effect=flushing_sleep):
         restored = asyncio.run(restore_open_slots_async(state2))
 
     assert restored == 8
@@ -928,9 +931,9 @@ def test_flush_during_async_restore_does_not_truncate_snapshot(tmp_path, monkeyp
     # Assert on the INTERMEDIATE states, not just the final one. Without the guard
     # the file transiently reads 1, 2, 3 … tabs; it only ends up complete because
     # the restore happens to finish. A kill in that window is what loses tabs.
-    assert all(n == len(keys) for n in observed), (
-        f"snapshot was truncated mid-restore: sizes {observed} (expected all {len(keys)})"
-    )
+    assert all(
+        n == len(keys) for n in observed
+    ), f"snapshot was truncated mid-restore: sizes {observed} (expected all {len(keys)})"
     assert set(json.loads(snapshot.read_text())["keys"]) == set(keys)
 
 
@@ -939,9 +942,7 @@ def test_restoring_flag_clears_and_reenables_persistence(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
     _seed_session(state, "chat-1-flag")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-flag"], "ts": 0.0})
-    )
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-flag"], "ts": 0.0}))
 
     state2 = _make_state(tmp_path / "sessions")
     assert state2.restoring_open_slots is False
@@ -962,9 +963,7 @@ def test_restoring_flag_cleared_even_if_restore_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
     _seed_session(state, "chat-1-boom")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-boom"], "ts": 0.0})
-    )
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-boom"], "ts": 0.0}))
 
     state2 = _make_state(tmp_path / "sessions")
     with patch(
