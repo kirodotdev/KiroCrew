@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
+import { ROW_PAD_Y } from '../../utils/pinnedPrompt'
 
 interface PinnedPromptProps {
   /** One-line preview of the pinned prompt. */
@@ -17,16 +18,23 @@ interface PinnedPromptProps {
   onJump: () => void
   /** Ref on the card — measured for the push geometry. */
   cardRef: React.Ref<HTMLDivElement>
+  /**
+   * Reports the card's SETTLED collapsed height. ChatPage derives the hand-off
+   * line from it (`pinHandoffY`), so it must never come from measuring the card
+   * while the expand/collapse morph below is animating `height` — that samples an
+   * expanded-size height and moves the line by the difference.
+   */
+  onCollapsedHeight?: (h: number) => void
 }
 
 /**
  * Vertical padding a transcript row puts around its bubble (`py-1` on the
  * message row wrapper in ChatPage). The pinned band reproduces it so the card
  * sits the same distance below the fold as a bubble sits below its row top —
- * which is also what makes the hand-off land on the exact same pixel.
+ * which is also what makes the hand-off land on the exact same pixel. Imported
+ * from the geometry module because the hand-off line is derived from the same
+ * value (see `pinHandoffY`).
  */
-const ROW_PAD_Y = 4
-
 /** Expand/collapse height-morph — matches the left-nav collapse
  *  (`grid-template-columns 150ms cubic-bezier(0.2,0,0,1)` in App.tsx). The
  *  chevron rotate below uses the same values so the two move as one. */
@@ -34,16 +42,20 @@ const MORPH_MS = 150
 const MORPH_EASE = 'cubic-bezier(0.2,0,0,1)'
 
 /**
- * The most recent prompt at or above the fold, pinned under the session title.
+ * The most recent prompt that has scrolled fully behind the band, pinned under
+ * the session title.
  *
  * The card is a pixel-for-pixel copy of the user bubble's own box — same
  * `px-5 mx-auto` content column, right-aligned, `max-w-[550px]`, `px-4 py-1.5
  * rounded-xl bg-card text-sm` with an inner `my-1.5 leading-relaxed` paragraph —
  * because the transcript row it represents is hidden while it is pinned (see
- * ChatPage's row `visibility`). The two are the same size at the same place at
- * the moment of hand-off, so the bubble appears to stop travelling and stick
- * rather than being replaced. Keep these values in sync with `UserMessage`'s
- * `bubble` and with `MD_COMPONENTS.p` in MarkdownRenderer.
+ * ChatPage's row `visibility`). For a one-line prompt the two are the same size
+ * at the same place at the moment of hand-off, so the bubble appears to stop
+ * travelling and stick rather than being replaced. A taller prompt hands over
+ * once its bottom edge reaches the band's bottom (`pinHandoffY`), i.e. once it is
+ * completely covered by the band, so the swap still happens out of sight. Keep
+ * these values in sync with `UserMessage`'s `bubble` and with `MD_COMPONENTS.p`
+ * in MarkdownRenderer.
  *
  * Deliberate details that protect that equality:
  *   - No `border`. The bubble has none, so a 1px border made the card 2px taller
@@ -65,7 +77,7 @@ const MORPH_EASE = 'cubic-bezier(0.2,0,0,1)'
  *     overflows at W minus the chevron.
  */
 export default function PinnedPrompt({
-  text, fullText, pushUp, bannerH, expanded, onToggleExpanded, onJump, cardRef,
+  text, fullText, pushUp, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight,
 }: PinnedPromptProps) {
   const textRef = useRef<HTMLParagraphElement | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
@@ -85,9 +97,26 @@ export default function PinnedPrompt({
   useLayoutEffect(() => {
     const el = boxRef.current
     if (!el) return
+    // A toggle landing INSIDE the previous morph leaves that morph's inline
+    // height/transition in place — React runs the old effect's cleanup first, and
+    // it only detaches the listener. Reading the box now would report the
+    // animating value as the natural height (the bug this reporting exists to
+    // avoid), so measure where the box visually is, then strip the leftovers so
+    // the next read is the true natural height.
+    const inflight = !!el.style.height
+    const current = inflight ? el.getBoundingClientRect().height : null
+    if (inflight) { el.style.height = ''; el.style.transition = ''; el.style.overflow = '' }
     const target = el.getBoundingClientRect().height
-    const from = lastBoxH.current
+    const from = current ?? lastBoxH.current
     lastBoxH.current = target
+    // `target` is the natural height React has just committed, read with no inline
+    // override in play — i.e. the settled collapsed height whenever this runs
+    // collapsed (mount, and every collapse). Reporting it from here is what keeps
+    // ChatPage from having to measure the card itself: a measurement taken during
+    // the 150ms morph reads an intermediate, up-to-expanded-size height, and the
+    // hand-off line derived from it would jump by the difference — hiding a
+    // transcript row that is still on screen.
+    if (!expanded) onCollapsedHeight?.(target)
     if (from == null || Math.abs(from - target) < 0.5) return
     el.style.overflow = 'hidden'
     el.style.height = `${from}px`
@@ -103,7 +132,7 @@ export default function PinnedPrompt({
     }
     el.addEventListener('transitionend', done)
     return () => el.removeEventListener('transitionend', done)
-  }, [expanded])
+  }, [expanded, onCollapsedHeight])
 
   useEffect(() => {
     // While expanded the text wraps and stops overflowing, so re-measuring would
@@ -111,13 +140,24 @@ export default function PinnedPrompt({
     // Hold the collapsed-state verdict instead; it is re-taken on collapse.
     if (expanded) return
     const el = textRef.current
+    const box = boxRef.current
     if (!el) return
-    const measure = () => setTruncated(el.scrollWidth > el.clientWidth + 1)
+    const measure = () => {
+      setTruncated(el.scrollWidth > el.clientWidth + 1)
+      // Re-report the collapsed height whenever the box itself resizes. The layout
+      // effect above only runs on expand/collapse, so a host font-size or zoom
+      // change would otherwise leave ChatPage's hand-off line on a stale height
+      // until the next remount. Skipped while an inline height is set — that is
+      // the morph animating, and its intermediate values are not the settled
+      // height (this also re-reports once `transitionend` clears it).
+      if (box && !box.style.height) onCollapsedHeight?.(box.getBoundingClientRect().height)
+    }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
+    if (box) ro.observe(box)
     return () => ro.disconnect()
-  }, [text, expanded])
+  }, [text, expanded, onCollapsedHeight])
 
   const showChevron = truncated || expanded
 
@@ -140,7 +180,10 @@ export default function PinnedPrompt({
         // Height must be CONTINUOUS through pushUp === 0, or the clip box jumps
         // the moment the push starts. Carrying both paddings (ROW_PAD_Y * 2)
         // makes this formula equal the natural height at rest and shrink smoothly
-        // from there.
+        // from there. pushUp travels ROW_PAD_Y + bannerH (see computePinPush), so
+        // it bottoms out at a ROW_PAD_Y-tall, empty, transparent strip with the
+        // card entirely clipped away — no fragment of it survives the no-banner
+        // stretch that a tall incoming prompt opens up.
         height: bannerH > 0
           ? Math.max(0, ROW_PAD_Y * 2 + bannerH - pushUp)
           : undefined,

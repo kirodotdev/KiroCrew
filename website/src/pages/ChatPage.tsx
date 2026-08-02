@@ -115,7 +115,7 @@ import { toSlug } from '../utils/shareUrl'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
-import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview } from '../utils/pinnedPrompt'
+import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview, pinHandoffY, pinPushTravel, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
 import {
   loadSeenPullRequestLinks,
   partitionSourceLinks,
@@ -1957,6 +1957,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const pinEnabledRef = useRef(true)
   const [pinned, setPinned] = useState<{ idx: number; text: string; full: string; push: number; bannerH: number } | null>(null)
   const [pinExpanded, setPinExpanded] = useState(false)
+  // Collapsed card height — the hand-off line is derived from it, so it must be
+  // known even while nothing is pinned (no card mounted to measure). Seeded with
+  // the computed default and then reported by PinnedPrompt itself, which is the
+  // only place the SETTLED height is knowable: measuring the card from here would
+  // sample the expand/collapse morph mid-flight and drag the line with it.
+  const pinCollapsedHRef = useRef(DEFAULT_PINNED_CARD_H)
+  const onPinCollapsedHeight = useCallback((h: number) => {
+    if (h > 0) pinCollapsedHRef.current = h
+  }, [])
   // Recompute which prompt is pinned, and how far the incoming prompt has
   // pushed it out, from the current scroll position.
   const updatePinnedPrompt = useCallback(() => {
@@ -1970,34 +1979,50 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const items = el.querySelectorAll('[data-display-index]')
     const foldY = pinFoldRef.current?.getBoundingClientRect().top
       ?? el.getBoundingClientRect().top
-    // First row whose bottom is still below the fold = the topmost row not yet
-    // fully scrolled past it.
-    let foldIdx = -1
-    let foldRowTop = 0
+    // A prompt hands over to the banner only once it is entirely behind the band
+    // (bottom edge at or above the band's bottom), so a prompt taller than the
+    // band scrolls away line by line instead of collapsing the moment it is sent.
+    const handoffY = pinHandoffY(foldY, pinCollapsedHRef.current)
+    // First row whose bottom is still below that line = the topmost row not yet
+    // fully scrolled behind the band.
+    let handoffIdx = -1
     for (const item of items) {
       const htmlItem = item as HTMLElement
-      const rect = htmlItem.getBoundingClientRect()
-      if (rect.bottom > foldY) {
-        foldIdx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
-        foldRowTop = rect.top
+      if (htmlItem.getBoundingClientRect().bottom > handoffY) {
+        handoffIdx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
         break
       }
     }
 
-    if (!pinEnabledRef.current || foldIdx < 0) { setPinned(null); return }
+    if (!pinEnabledRef.current || handoffIdx < 0) { setPinned(null); return }
     const list = displayItemsRef.current
-    const pinIdx = findPinnedPromptIdx(list, foldIdx, foldRowTop < foldY)
+    const pinIdx = findPinnedPromptIdx(list, handoffIdx)
     const pinItem = pinIdx >= 0 ? list[pinIdx] : undefined
     if (!pinItem || pinItem.kind !== 'single') { setPinned(null); return }
     // The incoming prompt pushes the banner out; when its row is not mounted it
-    // is still far below the fold, so there is nothing to push against yet.
+    // is still far below the fold, so there is nothing to push against yet. Its
+    // TOP edge against the fold drives the push (see computePinPush) — an earlier
+    // line than the hand-off, so a tall prompt shoves the card fully out while it
+    // scrolls in, and only takes the pin once its own bottom clears the band.
     const nextIdx = findNextPromptIdx(list, pinIdx)
     const nextEl = nextIdx >= 0
       ? el.querySelector(`[data-display-index="${nextIdx}"]`) as HTMLElement | null
       : null
     const nextTop = nextEl ? nextEl.getBoundingClientRect().top : null
-    const bannerH = pinCardRef.current?.getBoundingClientRect().height ?? 0
+    // Measure the live card when it is mounted, and otherwise fall back to the
+    // last SETTLED collapsed height PinnedPrompt reported: the push threshold
+    // below has to be decidable even while nothing is mounted, or dropping the
+    // banner would zero the height, zero the push, re-mount it, and oscillate at
+    // frame rate.
+    const measured = pinCardRef.current?.getBoundingClientRect().height ?? 0
+    const bannerH = measured > 0 ? measured : pinCollapsedHRef.current
     const push = computePinPush(bannerH, foldY, nextTop)
+    // Fully pushed out: DROP the banner instead of rendering it clipped to
+    // nothing. A tall incoming prompt holds this state for its whole length (it
+    // takes the pin only once its own bottom clears the band), and a card clipped
+    // to zero still shows a hairline of its bottom edge under sub-pixel rounding
+    // and browser zoom — a bubble fragment parked over the prompt being read.
+    if (push >= pinPushTravel(bannerH)) { setPinned(null); return }
     const full = pinItem.msg.content
     const text = promptPreview(full)
     setPinned(prev => (prev && prev.idx === pinIdx && prev.push === push
@@ -4219,6 +4244,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   onToggleExpanded={() => setPinExpanded(p => !p)}
                   onJump={() => scrollToPinnedPrompt(pinned.idx)}
                   cardRef={pinCardRef}
+                  onCollapsedHeight={onPinCollapsedHeight}
                 />
               )}
             </div>
@@ -4360,12 +4386,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} className={`px-5 mx-auto w-full py-1`} style={{
                   maxWidth: 'var(--mc-content-width, 900px)',
                   // The pinned banner is styled as this row's own bubble and sits
-                  // at the exact position and width the bubble had when it crossed
-                  // the fold, so leaving both visible is what betrays them as two
-                  // containers. Hide the real one (visibility, NOT display — the
-                  // virtualizer must keep measuring its height or the transcript
-                  // would reflow under the reader) and the bubble appears to simply
-                  // stop travelling and stick.
+                  // at the exact position and width the bubble had when its bottom
+                  // edge reached the band's bottom, so leaving both visible is what
+                  // betrays them as two containers. Hide the real one (visibility,
+                  // NOT display — the virtualizer must keep measuring its height or
+                  // the transcript would reflow under the reader) and the bubble
+                  // appears to simply stop travelling and stick. A row is only ever
+                  // hidden once it is entirely behind the band, so a tall prompt
+                  // never leaves a visible hole above the response.
                   visibility: pinned?.idx === displayIdx ? 'hidden' : undefined,
                 }}>{item.kind === 'group' ? (() => {
                 const unresolvedGroupPerms = item.msgs.filter(m => m.role === 'permission' && !m.meta?.resolved)
