@@ -4,6 +4,7 @@
 import './extensions'
 import React, { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
+import { withCommitProfiler, installCommitProfilerConsoleApi } from './lib/commitProfiler'
 import { Provider } from 'react-redux'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
@@ -83,6 +84,11 @@ if (import.meta.env.DEV) {
 
 const WorldsPopout = lazy(() => import('./pages/WorldsPopout'))
 
+// Debug-only, and inert unless explicitly armed with ?profile=commits. When
+// disarmed withCommitProfiler returns the children untouched, so no Profiler
+// element enters the tree on a normal load.
+installCommitProfilerConsoleApi()
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary root scope="app-shell">
@@ -100,7 +106,7 @@ createRoot(document.getElementById('root')!).render(
                       element={(
                         <BrandingProvider>
                           <ProviderProvider>
-                            <DashboardBootstrap><App /></DashboardBootstrap>
+                            <DashboardBootstrap>{withCommitProfiler('app', <App />)}</DashboardBootstrap>
                           </ProviderProvider>
                         </BrandingProvider>
                       )}

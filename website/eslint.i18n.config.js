@@ -221,4 +221,19 @@ export default [
       ],
     },
   },
+
+  // Debug-only developer diagnostics: text that goes to the browser console for
+  // whoever is profiling, never to a user through the UI. The module is inert
+  // unless explicitly armed with `?profile=commits`, and translating console
+  // output would mean shipping ten locales of strings no user can reach.
+  //
+  // Scoped to this one file rather than widened globally: a `words.exclude` shape
+  // rule cannot express "prose, but only in this module", and turning the rule off
+  // for `src/lib/**` would silence real copy in its neighbours.
+  {
+    files: ['src/lib/commitProfiler.tsx'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
 ]
