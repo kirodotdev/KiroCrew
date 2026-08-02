@@ -38,11 +38,14 @@ PIN_VERSION=""
 
 # Offline trust root for CLI artifact manifests. These two values are replaced
 # together during the operational KMS-key enablement documented in
-# packaging/signing/README.md. They deliberately ship unconfigured in the
-# repository contract: until a non-exportable signing key is provisioned and
-# its public half is pinned here, the installer refuses before any network I/O.
-CLI_MANIFEST_KEY_ID="UNCONFIGURED"
-CLI_MANIFEST_PUBLIC_KEY_B64="UNCONFIGURED"
+# packaging/signing/README.md, and must stay in lockstep with
+# packaging/signing/cli-manifest-public.pem -- KEY_ID is the SHA-256 of that
+# PEM's DER encoding, so a mismatched pair fails closed before any network I/O.
+# Never edit these in place to rotate: schema v1 pins exactly one key, so an
+# in-place swap breaks every already-deployed installer. Rotation requires the
+# dual-trust sequence in packaging/signing/README.md.
+CLI_MANIFEST_KEY_ID="sha256:d3a83f0c1ff84a2cbee6bd34d889d8725af34358148a6c18ed3ecbbbcceec06b"
+CLI_MANIFEST_PUBLIC_KEY_B64="LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQm9qQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FZOEFNSUlCaWdLQ0FZRUF0MnR0NnZ3ZFZ4Z0tWbTRGQVdkeApwZjZFckx3Y2ljUHlHUGh2SXdXRTRqNmg1YjlwMzFiaktMaWlEakxvK3VpQUJPL21vUjdJUUtoaUNSaXY0d0dTCk1mYnd2ZnNhLy8xNlVBbkNURkRDb1pId0IwVm93cTRYWjZ1NHBrdTFqNlBlRXBMNjVqRXZvcjd1a29HS2xiOVMKQlBva01aN0VtYlpWbmJiSWJBVXYrZ0NWajRCWDRpam5GWkJEMmNPcmtkQWdGR3UraU9jRHVlRDNqTExicXVhUwp0K0tLWXltQ2VxaitPazZ0OFBMQ2VRZmYrWVc4YS9wRU03Wm1tMTJ0Y3BRdEF0OHVCSVdkZE9qaTN1c3BhVlA3CkZJUlhzNnJIajIwTDd0dE9kMGpmKzRWQ0ZtV09FWE4rNWc0YS8rNkcrc3lxeDk4VlR2RVF5cDZVdWZnb0FoQkMKLzFVNG5XajdmMVRFQkV4dXBSRXFUK1lmUmp6aFJUR2NGN0czRUp3MmZjUU1taElIdFpVanM3endVY3NmblhDMwpGQzJBR3pBZnExSGV0WHU5amFOQWZSdjdLZXYxT2hvVmMzYUlONEd3UkpZRDNPNUFSQk5SRGpQUVFWUHBaVW5rCjB1WVdpZExSVDVRUVZMYnlSLzJFKytqTWFyRXBkVXRkZGY1anlwZW5pbFhUQWdNQkFBRT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=="
 
 while [ $# -gt 0 ]; do
   case "$1" in
