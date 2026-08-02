@@ -4896,6 +4896,7 @@ class GatewayOrchestrator:
                     sandbox_mode=self._cfg.agent.sandbox,
                     approval_mode=self._cfg.agent.approval_mode,
                     poolable_servers=frozenset(cfg_gw.poolable_servers),
+                    forward_declared_env=cfg_gw.forward_declared_env,
                 ),
             )
         except Exception:

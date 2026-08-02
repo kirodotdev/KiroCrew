@@ -36,7 +36,11 @@ from kiro_crew import platform_compat
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_caller import CallerContext, _parent_pid
 from kiro_crew.mcp_gateway import transport
-from kiro_crew.mcp_gateway.hashing import hash_command
+from kiro_crew.mcp_gateway.hashing import (
+    ENV_SCRUB_PREFIXES,
+    hash_command,
+    hash_effective_env,
+)
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, PoolKey
 
 logger = logging.getLogger(__name__)
@@ -49,7 +53,10 @@ _HANDSHAKE_TIMEOUT_SECS = 3.0
 _ENSURE_BACKEND_TIMEOUT_SECS = 25.0
 # Scrub-prefixed env keys (rotating secrets) are dropped before hashing
 # so otherwise-identical stubs pool together across credential rotations.
-_ENV_SCRUB_PREFIXES = ("AWS_SECRET", "AWS_SESSION", "OAUTH")
+# Single source of truth lives in ``hashing`` so the rewriter's forwarded set
+# is provably identical to this hashed set (see issue #1078). Kept as a
+# module-level alias for backward compatibility with callers/tests.
+_ENV_SCRUB_PREFIXES = ENV_SCRUB_PREFIXES
 # Content-hash cap for ``binary_version``. Every shipped MCP is <1 MiB, so
 # 4 MiB covers them with margin. Larger binaries
 # (npm/Node/Java runtimes) are NOT hashed synchronously on the cold-start
@@ -192,16 +199,13 @@ def _parse_auto_approve(raw: str) -> list[str]:
 
 
 def _hash_effective_env(env_pairs: dict[str, str]) -> str:
-    """Sorted ``K=V\\0``-delimited SHA-256, skipping scrub-prefixed keys."""
-    h = hashlib.sha256()
-    for k in sorted(env_pairs):
-        if any(k.startswith(p) for p in _ENV_SCRUB_PREFIXES):
-            continue
-        h.update(k.encode("utf-8"))
-        h.update(b"=")
-        h.update(env_pairs[k].encode("utf-8"))
-        h.update(b"\0")
-    return h.hexdigest()
+    """Sorted ``K=V\\0``-delimited SHA-256, skipping scrub-prefixed keys.
+
+    Thin wrapper over :func:`kiro_crew.mcp_gateway.hashing.hash_effective_env`
+    (the single source of truth shared with the rewriter). Kept as a
+    module-level name for backward compatibility with callers/tests.
+    """
+    return hash_effective_env(env_pairs)
 
 
 def _hash_permission_profile(

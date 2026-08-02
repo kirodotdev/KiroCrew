@@ -1070,6 +1070,19 @@ class BackendPool:
         """
         return list(self._backends.values()) + [e.backend for e in self._draining]
 
+    def has_inflight_requests(self) -> bool:
+        """True if ANY current backend (active or draining) has an in-flight
+        request.
+
+        Lock-free snapshot via :meth:`all_backends` (mirroring the abort
+        handler's iteration). gatewayd's graceful-shutdown drain polls this so
+        idle pooled bridge connections no longer hold shutdown hostage: the
+        drain now waits on the condition that actually matters -- outstanding
+        backend work -- instead of on an ever-populated connection set (issue
+        #1078).
+        """
+        return any(b.has_inflight_requests for b in self.all_backends())
+
     async def shutdown_all(self, timeout: float = 5.0) -> None:
         """Shut down every registered backend and clear the pool.
 

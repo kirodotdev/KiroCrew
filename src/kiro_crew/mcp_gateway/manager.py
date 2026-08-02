@@ -59,8 +59,25 @@ _LIVENESS_PING_INTERVAL_SECS = 30.0
 # threshold raced with run_chaos.py and produced spurious
 # "gatewayd_pid_changed_unexpectedly" during legitimate chaos tests.
 _LIVENESS_MAX_CONSECUTIVE_FAILURES = 3
-# SIGTERM → SIGKILL grace period on shutdown.
-_SHUTDOWN_GRACE_SECS = 5.0
+# --- Shutdown budgets (single source of truth) ---------------------------
+# These three are the ONLY place the graceful-shutdown timing is declared.
+# gatewayd imports ``_SHUTDOWN_DRAIN_SECS`` and ``_POOL_SHUTDOWN_SECS`` from
+# here so the daemon's own drain window and the supervisor's SIGTERM grace can
+# never be configured to invert (issue #1078: a 5s grace killed the daemon
+# while it was still inside its own 10s drain, so pool.shutdown_all() never
+# ran and the daemon was SIGKILLed on every restart).
+#
+# The daemon's graceful drain window: in-flight backend requests get this long
+# to finish before gatewayd cancels handlers and tears down the pool.
+_SHUTDOWN_DRAIN_SECS = 10.0
+# Budget for ``pool.shutdown_all()`` after the drain completes.
+_POOL_SHUTDOWN_SECS = 5.0
+# Safety margin so the supervisor never races the daemon's own teardown.
+_SHUTDOWN_GRACE_MARGIN_SECS = 3.0
+# SIGTERM -> SIGKILL grace period on shutdown. DERIVED so the supervisor's
+# grace ALWAYS covers the daemon's drain + pool-shutdown budget; this makes the
+# historical budget inversion impossible to reintroduce by editing one number.
+_SHUTDOWN_GRACE_SECS = _SHUTDOWN_DRAIN_SECS + _POOL_SHUTDOWN_SECS + _SHUTDOWN_GRACE_MARGIN_SECS
 # Respawn backoff: start here, double up to max.
 _RESPAWN_BACKOFF_START_SECS = 1.0
 _RESPAWN_BACKOFF_MAX_SECS = 60.0

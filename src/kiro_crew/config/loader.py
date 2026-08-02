@@ -2791,6 +2791,19 @@ class McpGatewayConfig:
             "per-session. Managed from Settings -> Shared MCP gateway.",
         ),
     )
+    forward_declared_env: bool = field(
+        default=False,
+        metadata=_meta(
+            "Forward Declared Env",
+            "Apply a pooled server's declared NON-SECRET env to its shared "
+            "backend. Default False -- opt-in. Only the keys already folded "
+            "into the pool key (i.e. non-secret keys; rotating-secret prefixes "
+            "AWS_SECRET/AWS_SESSION/OAUTH are excluded) are forwarded, so every "
+            "session sharing a backend agrees on their values. Secrets are "
+            "never forwarded; a server that needs a per-session secret keeps "
+            "reading it from disk or stays poolable:false.",
+        ),
+    )
     prewarm_count: int = field(
         default=0,
         metadata=_meta(
@@ -4555,6 +4568,7 @@ class KiroCrewConfig:
                     s for s in mcp_gateway_data.get("poolable_servers", []) if isinstance(s, str)
                 ],
                 prewarm_count=max(0, _safe_int(mcp_gateway_data.get("prewarm_count", 0), 0)),
+                forward_declared_env=bool(mcp_gateway_data.get("forward_declared_env", False)),
                 read_buffer_limit_bytes=max(
                     1024,
                     _safe_int(

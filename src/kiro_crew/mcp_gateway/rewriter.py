@@ -26,7 +26,11 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
-from kiro_crew.mcp_gateway.hashing import hash_command
+from kiro_crew.mcp_gateway.hashing import (
+    hash_command,
+    hash_effective_env,
+    is_scrubbed_env_key,
+)
 from kiro_crew.mcp_utils import mcp_server_alias
 
 logger = logging.getLogger(__name__)
@@ -68,6 +72,8 @@ def _build_stub_entry(
     work_dir: Path,
     sandbox_mode: str,
     approval_mode: str,
+    target_env: dict[str, str] | None = None,
+    forward_declared_env: bool = False,
     sidecars_written: set[str] | None = None,
 ) -> dict[str, Any]:
     """Return the rewritten ``mcpServers[name]`` entry.
@@ -116,20 +122,62 @@ def _build_stub_entry(
         "--socket", str(socket_path),
     ]
     if env_pairs:
-        # Operational hazard signal: the declared env is folded into the
-        # PoolKey hash (so differing-env sessions never share a backend) but is
-        # NOT applied to the pooled backend — gatewayd spawns it with the
-        # daemon's own scrubbed environment (env_target_resolver never reads
-        # the sidecar). A server that genuinely depends on its declared env
-        # (e.g. a credential) will misbehave when pooled; keep it non-poolable
-        # until per-server env forwarding lands. Warn so the operator sees it.
-        logger.warning(
-            "rewriter: pooled server %r for agent %r declares a non-empty env "
-            "(%d keys); the declared env is NOT applied to the shared pooled "
-            "backend (spawned with the daemon's scrubbed env). Set poolable:false "
-            "if this server depends on that env.",
-            server_name, agent_name, len(env_pairs),
-        )
+        # The declared env is folded into the PoolKey hash (so differing-env
+        # sessions never share a backend). Whether it is APPLIED to the pooled
+        # backend now depends on the opt-in ``forward_declared_env`` flag:
+        #
+        #   * flag off (default): the declared env is NOT applied -- gatewayd
+        #     spawns the backend with the daemon's own scrubbed environment
+        #     (env_target_resolver finds no forwarding entry). A server that
+        #     genuinely depends on its declared env should stay poolable:false.
+        #   * flag on: the NON-SECRET declared keys are forwarded (published
+        #     below, keyed by effective_env_hash). Secret-prefixed keys
+        #     (hashing.ENV_SCRUB_PREFIXES) are never forwarded -- those servers
+        #     keep reading the secret from disk or stay poolable:false.
+        secret_keys = [k for k in env_pairs if is_scrubbed_env_key(str(k))]
+        forwardable = {
+            str(k): str(v) for k, v in env_pairs.items() if not is_scrubbed_env_key(str(k))
+        }
+        if forward_declared_env and target_env is not None and forwardable:
+            # Publish exactly the hashed (non-secret) keys, keyed by the SAME
+            # effective_env_hash the stub registers, so env_target_resolver can
+            # look it back up per (server, env) -- the env analogue of the
+            # MC_MCP_TARGET_<SERVER>__<command_args_hash> command mapping. The
+            # forwarded set is provably identical to the hashed set because
+            # both derive from hashing.ENV_SCRUB_PREFIXES.
+            env_key = "MC_MCP_ENV_" + server_name.replace("-", "_").upper()
+            hashed_key = env_key + "__" + hash_effective_env(forwardable)
+            target_env[hashed_key] = json.dumps(forwardable, sort_keys=True)
+            if secret_keys:
+                logger.warning(
+                    "rewriter: forwarding %d non-secret env key(s) for pooled "
+                    "server %r (agent %r); %d secret-prefixed key(s) are NOT "
+                    "forwarded and are dropped from the pooled backend -- set "
+                    "poolable:false if this server needs them.",
+                    len(forwardable),
+                    server_name,
+                    agent_name,
+                    len(secret_keys),
+                )
+        else:
+            # Operational hazard signal: the declared env is folded into the
+            # PoolKey hash but is NOT applied to the pooled backend -- gatewayd
+            # spawns it with the daemon's own scrubbed environment
+            # (env_target_resolver never forwards it). A server that genuinely
+            # depends on its declared env (e.g. a credential) will misbehave
+            # when pooled; keep it non-poolable, or enable
+            # mcp_gateway.forward_declared_env to forward the non-secret keys.
+            logger.warning(
+                "rewriter: pooled server %r for agent %r declares a non-empty "
+                "env (%d keys); the declared env is NOT applied to the shared "
+                "pooled backend (spawned with the daemon's scrubbed env). Set "
+                "poolable:false if this server depends on that env, or enable "
+                "mcp_gateway.forward_declared_env to forward the non-secret "
+                "keys.",
+                server_name,
+                agent_name,
+                len(env_pairs),
+            )
         # JSON-encode env so values containing ',' or '=' round-trip
         # intact. A prior CSV serialisation ``K=V,K2=V2`` silently
         # truncated any value with a ',' in it — e.g. JAVA_OPTS='-Xmx1g,-Xms512m'
@@ -274,6 +322,7 @@ def _rewrite_single_spec(
     poolable_servers: frozenset[str],
     inject_servers: dict[str, Any] | None = None,
     target_env: dict[str, str] | None = None,
+    forward_declared_env: bool = False,
     sidecars_written: set[str] | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Return ``(new_spec, wrapped_count)``. Idempotent.
@@ -351,6 +400,8 @@ def _rewrite_single_spec(
             work_dir=work_dir,
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
+            target_env=target_env,
+            forward_declared_env=forward_declared_env,
             sidecars_written=sidecars_written,
         )
         wrapped += 1
@@ -420,6 +471,8 @@ def _rewrite_single_spec(
             work_dir=work_dir,
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
+            target_env=target_env,
+            forward_declared_env=forward_declared_env,
             sidecars_written=sidecars_written,
         )
         wrapped += 1
@@ -483,6 +536,7 @@ def rewrite_agents(
     sandbox_mode: str = "auto",
     approval_mode: str = "interactive",
     poolable_servers: frozenset[str] | None = None,
+    forward_declared_env: bool = False,
 ) -> tuple[dict[str, int], dict[str, str]]:
     """Populate ``overlay_dir`` with rewritten copies of ``source_dir/*.json``.
 
@@ -503,16 +557,24 @@ def rewrite_agents(
         poolable_servers: Server names from ``config.mcp_gateway.poolable_servers``.
             A stdio server is pooled when its name is in this set OR its entry
             sets ``poolable: true``. ``None`` is treated as an empty set.
+        forward_declared_env: When True (config
+            ``mcp_gateway.forward_declared_env``; default off), the NON-SECRET
+            declared env of each pooled server is published into ``target_env``
+            as ``MC_MCP_ENV_<SERVER>__<effective_env_hash>`` so
+            ``gatewayd.env_target_resolver`` applies it at spawn. Secret-prefixed
+            keys (``hashing.ENV_SCRUB_PREFIXES``) are never forwarded.
 
     Returns:
         A ``(results, target_env)`` tuple:
 
         * ``results``: mapping ``{agent_filename: wrapped_server_count}``.
           Agents with no MCP servers are omitted.
-        * ``target_env``: mapping ``{MC_MCP_TARGET_<SERVER>: "cmd arg arg"}``
-          suitable for ``GatewaySpec.mcp_target_env``. Gatewayd consults
-          these when a stub registers, to find the real backend command
-          to spawn for a new pool key.
+        * ``target_env``: mapping of gateway-process env vars suitable for
+          ``GatewaySpec.mcp_target_env``. Always carries
+          ``MC_MCP_TARGET_<SERVER>[__<command_args_hash>]`` (the backend command
+          gatewayd spawns per pool key); when ``forward_declared_env`` is set it
+          also carries ``MC_MCP_ENV_<SERVER>__<effective_env_hash>`` (the
+          forwarded non-secret declared env).
     """
     pool_set = poolable_servers or frozenset()
     if not source_dir.is_dir():
@@ -591,6 +653,7 @@ def rewrite_agents(
             poolable_servers=pool_set,
             inject_servers=settings_poolable,
             target_env=target_env,
+            forward_declared_env=forward_declared_env,
             sidecars_written=written_sidecars,
         )
         _collect_target_env(new_spec.get("mcpServers", {}), target_env)

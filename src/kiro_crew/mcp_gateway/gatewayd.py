@@ -49,7 +49,12 @@ from kiro_crew.mcp_gateway import credwatch, socketsec, transport
 from kiro_crew.mcp_gateway.apps import sweep_spool as apps_sweep_spool
 from kiro_crew.mcp_gateway.backend import Backend, BackendGone, spawn_backend
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
-from kiro_crew.mcp_gateway.manager import _scrub_sensitive_env
+from kiro_crew.mcp_gateway.hashing import is_scrubbed_env_key
+from kiro_crew.mcp_gateway.manager import (
+    _POOL_SHUTDOWN_SECS,
+    _SHUTDOWN_DRAIN_SECS,
+    _scrub_sensitive_env,
+)
 from kiro_crew.mcp_gateway.pool import (
     DRAIN_DEADLINE_SECS,
     READ_BUFFER_LIMIT_BYTES,
@@ -130,8 +135,10 @@ _WRITE_REPLY_TIMEOUT_SECS = 30.0
 
 # Graceful-shutdown grace: in-flight connection handlers get this long to
 # finish their current JSON-RPC round-trip before gatewayd cancels them
-# and tears down the pool.
-_SHUTDOWN_DRAIN_SECS = 10.0
+# and tears down the pool. Imported from ``manager`` (single source of truth)
+# so it can never invert against the supervisor's SIGTERM->SIGKILL grace --
+# see manager._SHUTDOWN_GRACE_SECS and issue #1078. ``_POOL_SHUTDOWN_SECS`` is
+# likewise imported and passed to ``pool.shutdown_all`` below.
 
 # Interval between per-backend heartbeat sweeps. A backend
 # that is gone, or wedged with an in-flight request outstanding past
@@ -592,13 +599,17 @@ async def run_gatewayd(
         if server is not None:
             server.close()
 
-        # Phase 1: let in-flight handlers drain cleanly. ``return_exceptions``
-        # because a handler that was already errored will raise from the
-        # gather; that's not a shutdown failure.
-        if connections:
-            drain_deadline = time.monotonic() + _SHUTDOWN_DRAIN_SECS
-            while connections and time.monotonic() < drain_deadline:
-                await asyncio.sleep(0.05)
+        # Phase 1: let in-flight work drain cleanly. Drain on the condition
+        # that actually matters -- no backend has an outstanding request --
+        # instead of "the connection set is empty". A pooled stub's bridge
+        # connection is long-lived and never self-closes, so with pooling
+        # active ``connections`` is essentially never empty and draining on it
+        # always burned the full window (issue #1078). Polling
+        # ``pool.has_inflight_requests()`` lets an idle daemon shut down at once
+        # while still giving genuine in-flight tool calls time to finish.
+        drain_deadline = time.monotonic() + _SHUTDOWN_DRAIN_SECS
+        while pool.has_inflight_requests() and time.monotonic() < drain_deadline:
+            await asyncio.sleep(0.05)
 
         # Phase 2: cancel whatever is still in-flight.
         for task in list(connections):
@@ -659,7 +670,7 @@ async def run_gatewayd(
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(hot_keys.flush)
 
-        await pool.shutdown_all()
+        await pool.shutdown_all(timeout=_POOL_SHUTDOWN_SECS)
         # Clean shutdown drained every backend; drop the out-of-band reap list
         # so a supervising manager never killpg's now-dead pids.
         with contextlib.suppress(OSError):
@@ -912,6 +923,23 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     # environment doesn't leak into Python-based MCP backends (import conflicts).
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
+    # Forward the server's declared NON-SECRET env when the rewriter published
+    # it (config ``mcp_gateway.forward_declared_env``; default off). The entry
+    # is keyed by the SAME ``effective_env_hash`` the stub registered, so only
+    # sessions that agree on those values share this backend -- applying them at
+    # spawn cannot cause cross-tenant divergence. Secret-prefixed keys are never
+    # published (see hashing.ENV_SCRUB_PREFIXES), so a rotating credential never
+    # lands here; the mapping is per-server, so one server's declared env cannot
+    # bleed into another's backend. See issue #1078.
+    env_base = "MC_MCP_ENV_" + pool_key.server_name.upper().replace("-", "_")
+    forwarded_raw = os.environ.get(env_base + "__" + pool_key.effective_env_hash)
+    if forwarded_raw:
+        with contextlib.suppress(json.JSONDecodeError):
+            forwarded = json.loads(forwarded_raw)
+            if isinstance(forwarded, dict):
+                for fk, fv in forwarded.items():
+                    if not is_scrubbed_env_key(str(fk)):
+                        env[str(fk)] = str(fv)
     if pool_key.channel_id:
         env["KIROCREW_CHANNEL_ID"] = pool_key.channel_id
     return command, args, env, pool_key.work_dir

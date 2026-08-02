@@ -502,6 +502,20 @@ class Backend:
     def dead_reason(self) -> Optional[str]:
         return self._dead_reason
 
+    @property
+    def has_inflight_requests(self) -> bool:
+        """True while this backend has a forwarded request awaiting a reply, or
+        an initialize handshake still in flight.
+
+        Used by gatewayd's graceful-shutdown drain to wait on *real* work
+        rather than on the mere presence of a (possibly idle) pooled bridge
+        connection: a pooled stub's bridge connection is long-lived and never
+        self-closes, so draining on the connection set would always burn the
+        full grace window (see issue #1078). ``refcount`` is deliberately NOT
+        consulted here -- it counts attached stubs, not outstanding requests.
+        """
+        return bool(self._pending_requests) or self._init_state == "in_flight"
+
     @staticmethod
     def _now() -> float:
         return time.monotonic()
