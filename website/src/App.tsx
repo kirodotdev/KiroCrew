@@ -2242,7 +2242,7 @@ export default function App() {
                 </div>
                 <div className="min-w-0">
                   <div className="text-[15px] font-medium text-text truncate" title={who}>{who}</div>
-                  {signedInWith && <div className="text-[12px] text-muted truncate">{i18nT('app.signed_in_with', { provider: signedInWith })}</div>}
+                  {signedInWith && <div className="text-[12px] text-muted break-words" title={signedInWith}>{i18nT('app.signed_in_with', { provider: signedInWith })}</div>}
                 </div>
               </div>
             )}
