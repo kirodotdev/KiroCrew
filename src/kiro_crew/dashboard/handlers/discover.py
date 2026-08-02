@@ -65,8 +65,7 @@ def _redact_external(text: str) -> str:
     stops firing and every OTHER parameter -- the actual payload, which this
     regex does not name -- renders verbatim. Running the scrub last keeps the
     whole-URL redaction intact and still catches the short tokens the shape
-    matcher and the entropy heuristic both miss (``?token=abc123`` was passing
-    through verbatim before).
+    matcher and the entropy heuristic both miss (e.g. ``?token=abc123``).
     """
     if not text:
         return text
@@ -93,7 +92,7 @@ def _build_registry() -> ProviderRegistry:
     # endpoint also includes PromptFarm results when configured.
     # NOTE: PromptFarm integration via discover is a future addition —
     # for now, the dedicated Browse PromptFarm modal remains the primary
-    # path for PromptFarm skills. This keeps the initial PR scoped.
+    # path for PromptFarm skills.
 
     return registry
 
@@ -130,9 +129,9 @@ async def api_skills_discover(request: web.Request) -> web.Response:
     query = request.query.get("q", "").strip()
     provider_filter = request.query.get("provider", "").strip() or None
     try:
-        # Clamp BOTH ends: the upper-only min() let limit<=0 through, where
+        # Clamp BOTH ends: an upper-only min() would let limit<=0 through, where
         # merged[:limit] / items[:limit] silently drop results (limit=-1) or
-        # return nothing (limit=0), and &limit=-1 hit the provider URL.
+        # return nothing (limit=0), and &limit=-1 would hit the provider URL.
         limit = max(1, min(int(request.query.get("limit", "20")), 50))
     except ValueError:
         limit = 20

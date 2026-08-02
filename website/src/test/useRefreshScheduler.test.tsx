@@ -195,9 +195,8 @@ describe('useRefreshScheduler', () => {
     // /api/auth/me returns 401. We MUST NOT wait 60s on backoff —
     // we MUST proactively call /api/auth/refresh, then re-fetch /api/auth/me,
     // all silently within a few hundred ms. This is the "no banner flash"
-    // guarantee Tony asked for after the live test caught the race on
-    // 2026-06-18 when overnight cookies expired and the app showed the
-    // 403 token-required UI before the hook could refresh.
+    // guarantee: an expired overnight cookie must not show the 403
+    // token-required UI before the hook can refresh.
     const nowSec = Math.floor(Date.now() / 1000)
     // 1st call: GET /api/auth/me -> 401 (access cookie expired)
     fetchMock.mockResolvedValueOnce(status(401, { error: 'session_expired' }))
@@ -236,7 +235,7 @@ describe('useRefreshScheduler', () => {
     const calls = fetchMock.mock.calls
     // Should be exactly 3 calls: /me, /refresh, /me — no further /refresh attempt.
     // The retry inside queryFn does NOT recurse (allowRefreshFallback semantics
-    // are now: queryFn calls refresh only once, then a plain retry).
+    // are: queryFn calls refresh only once, then a plain retry).
     expect(calls.length).toBe(3)
     expect(calls[0][0]).toBe('/api/auth/me')
     expect(calls[1][0]).toBe('/api/auth/refresh')
@@ -251,7 +250,7 @@ describe('useRefreshScheduler', () => {
   })
 
   it('TR-F-10: cache invalidation after successful refresh re-reads /api/auth/me', async () => {
-    // NEW test for the React Query refactor: validates that mutation.onSuccess
+    // Validates that mutation.onSuccess
     // calls invalidateQueries(['auth-me']) which causes the scheduler to pick
     // up the freshly-rotated session_exp instead of the cached pre-refresh one.
     const nowSec = Math.floor(Date.now() / 1000)
@@ -306,7 +305,7 @@ describe('useRefreshScheduler', () => {
     // with 403 + X-Auth-Required (KiroCrew token_auth._deny), NOT 401. The
     // recovery MUST fire on this signal too — otherwise a cold reopen shows
     // the red session-expired banner and never uses the still-valid 30-day
-    // refresh cookie (the daily-banner bug).
+    // refresh cookie.
     const nowSec = Math.floor(Date.now() / 1000)
     // 1st call: GET /api/auth/me -> 403 + X-Auth-Required (cold reopen)
     fetchMock.mockResolvedValueOnce(

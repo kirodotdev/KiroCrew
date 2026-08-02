@@ -156,8 +156,8 @@ describe('useVirtualChat: rail-collapse resize storm', () => {
       act(() => { ro.fire(nodes.map((n) => setH(n, h))) })
     }
 
-    // Pre-fix this is one scrollTop write per frame (9). With the window it is
-    // zero until the animation settles.
+    // Without the settle window this is one scrollTop write per frame (9). With
+    // the window it is zero until the animation settles.
     expect(writes.n).toBe(0)
 
     act(() => { vi.advanceTimersByTime(RAIL_SETTLE_MS + 20) })

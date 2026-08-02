@@ -88,8 +88,8 @@ describe('createSettingsProvider — search', () => {
   it('scopes legacy per-channel tab prefixes (slack:) to the channels tab', async () => {
     const { nav } = navigate()
     const p = createSettingsProvider(nav)
-    // `slack:` was a valid tab filter before the nav regroup collapsed the
-    // five channel tabs into one; it must keep scoping instead of falling
+    // `slack:` is a legacy per-channel tab filter (the five channel tabs are
+    // now collapsed into one); it must keep scoping instead of falling
     // through to a full-corpus query that matches nothing.
     const arr = await run(p, 'slack: slash')
     const hit = arr.find(r => r.title === 'Slash command')

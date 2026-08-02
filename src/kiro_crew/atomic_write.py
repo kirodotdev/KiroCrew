@@ -46,11 +46,11 @@ def atomic_write(
     *mode* sets explicit permissions (e.g. ``0o600`` for secrets).
     ``None`` (default) applies umask-based permissions (matching ``open()``).
 
-    *newline* is passed straight to ``open()``. The default (``None``) keeps
-    the historical behavior: universal-newline translation, which rewrites
-    ``\\n`` to ``\\r\\n`` on Windows. Pass ``""`` when the content must land on
-    disk byte-for-byte — e.g. a document that is read back, edited and saved
-    again, where translation on every save would accumulate carriage returns.
+    *newline* is passed straight to ``open()``. The default (``None``) applies
+    universal-newline translation, which rewrites ``\\n`` to ``\\r\\n`` on
+    Windows. Pass ``""`` when the content must land on disk byte-for-byte —
+    e.g. a document that is read back, edited and saved again, where
+    translation on every save would accumulate carriage returns.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

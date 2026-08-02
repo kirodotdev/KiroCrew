@@ -693,12 +693,11 @@ _VALID_JAIL_MODES = (JAIL_MODE_AUTO, JAIL_MODE_ON, JAIL_MODE_OFF)
 
 # Standard work-tree roots for ``agent.subagent_cwd_allowed_roots``.  Single
 # source of truth shared by the field default and the fallback in ``from_dict``.
-# The two had drifted — the field default listed two roots, the fallback four —
-# and the FALLBACK was the value real configs got, because ``from_dict`` always
-# passes an explicit value and an absent key reaches the same branch as a
-# malformed one.  Four is therefore what the product actually shipped, so the
-# field default moves to match it.  Narrowing to two instead would revoke
-# ~/workspaces and ~/workplaces from every config that omits the field.
+# Both use the same four roots.  The fallback is the value real configs get:
+# ``from_dict`` always passes an explicit value and an absent key reaches the
+# same branch as a malformed one.  Four is what the product ships; narrowing to
+# two would revoke ~/workspaces and ~/workplaces from every config that omits
+# the field.
 DEFAULT_CWD_ALLOWED_ROOTS = [
     "~/workspace",
     "~/workspaces",
@@ -2285,7 +2284,7 @@ _JSON_TYPE_LABELS: dict[str, str] = {
 # ``session.py`` for ``pool_size``); they live HERE so the API-write gate and
 # the load-time clamp below cannot drift apart.
 #
-# Why the loader must also clamp (pentest — config-loader bound bypass): the
+# Why the loader must also clamp: the
 # REST API rejects out-of-range writes, but a direct edit of ``config.json``
 # (any process running as the same OS user — including a prompt-injected agent
 # with file-write access) bypassed that gate entirely. Each of these knobs
@@ -4235,11 +4234,11 @@ class KiroCrewConfig:
                 daily_reset_hour=_coerce_int(messaging_data.get("daily_reset_hour"), -1),
                 queue_mode=str(messaging_data.get("queue_mode", "steer")),
             ),
-            # orchestrator/watchdog were advertised in config-baseline.json and
-            # served by /api/config/schema, and real consumers read them
-            # (acp/session_handle.py, dashboard/chat_orchestrator.py), but load()
-            # never passed these kwargs — so config.json values were silently
-            # ignored and the dataclass defaults always won.
+            # orchestrator/watchdog are advertised in config-baseline.json,
+            # served by /api/config/schema, and read by real consumers
+            # (acp/session_handle.py, dashboard/chat_orchestrator.py), so load()
+            # passes these kwargs — without them config.json values would be
+            # silently ignored and the dataclass defaults would always win.
             orchestrator=OrchestratorConfig(
                 stage_timeout_seconds=_safe_int(
                     orchestrator_data.get("stage_timeout_seconds", 1800), 1800
@@ -4516,8 +4515,8 @@ class KiroCrewConfig:
                 enabled=stt_data.get("enabled", False),
                 provider=_validated_stt_provider(stt_data.get("provider", "whisper")),
                 whisper_path=stt_data.get("whisper_path", ""),
-                # Default changed from "base" to "turbo" — turbo is faster and
-                # recommended for most users (809M vs 74M, but much better latency).
+                # Default "turbo" — faster and recommended for most users
+                # (809M vs 74M, but much better latency).
                 model=stt_data.get("model", "turbo"),
                 mlx_model=stt_data.get("mlx_model", "mlx-community/whisper-large-v3-turbo"),
                 device=stt_data.get("device", "cpu"),

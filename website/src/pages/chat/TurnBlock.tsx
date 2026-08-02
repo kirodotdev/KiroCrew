@@ -14,8 +14,8 @@ import { OPTION_MARKER_RE } from '../../utils/optionsMarker'
 const isWorkflowRunItem = (it: TurnItem) =>
   it.kind === 'single' && it.msg.role === 'tool' && isWorkflowRunTool(it.msg)
 // Same for a spawn_run launch (SubagentRunCard): folding it into "Worked
-// through N steps" is precisely what left a spawned wave with no visible
-// record in scrollback.
+// through N steps" would leave a spawned wave with no visible record in
+// scrollback.
 const isSpawnRunItem = (it: TurnItem) =>
   it.kind === 'single' && it.msg.role === 'tool' && isSpawnRunTool(it.msg)
 // A workflow completion event renders as its own compact card and must stay
@@ -61,11 +61,11 @@ const isRenderable = (it: TurnItem) =>
  * A mid-turn hand-back: an assistant message carrying an [OPTIONS:] follow-up
  * marker. The agent emits that marker ONLY when it believes it is ending the
  * turn, so a message bearing it is by construction a user-facing hand-back — a
- * direct signal of *intent*, not a proxy for importance. (A length / size
- * heuristic was considered and rejected: the collapse setting is literally
- * "hide intermediate reasoning", so gating on size would override a preference
- * the user set on purpose; gating on [OPTIONS:] instead corrects a
- * misclassification.) A single turn can contain SEVERAL hand-backs when the
+ * direct signal of *intent*, not a proxy for importance. (Gating on [OPTIONS:]
+ * rather than a length / size heuristic is deliberate: the collapse setting is
+ * literally "hide intermediate reasoning", so gating on size would override a
+ * preference the user set on purpose.) A single turn can contain SEVERAL
+ * hand-backs when the
  * agent resumes in the same turn — after a denied tool call, an auto-nudge /
  * monitor cycle, a queued message, or an injected subagent / workflow
  * completion — but findConclusionIdx keeps only the LAST one, so every earlier

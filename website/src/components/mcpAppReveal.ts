@@ -23,8 +23,7 @@
  *  Only ARRAY-shaped arguments are revealable: a prefix of a list of diagram
  *  elements is a meaningful intermediate state, whereas a prefix of a string or
  *  a subset of unrelated scalar keys is noise. When nothing qualifies we return
- *  null and the caller posts the complete input immediately, which is exactly
- *  the pre-existing behaviour.
+ *  null and the caller posts the complete input immediately.
  */
 
 /** Gap between frames, per element.

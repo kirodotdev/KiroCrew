@@ -10,8 +10,8 @@
  * `chat.subagentQueued`, folded from `subagent_spawn`/`tool`/`done`/`queued` WS
  * frames) for live per-agent status, and counts QUEUED agents explicitly — a
  * wave sitting behind the concurrency cap has no per-agent entry yet, which is
- * exactly the window in which the UI used to look empty. Clicking opens the
- * Subagents side panel.
+ * exactly the window in which the UI would otherwise look empty. Clicking opens
+ * the Subagents side panel.
  */
 import { memo } from 'react'
 import { Bot, Loader2, CheckCircle2, AlertCircle, Clock, Square, PanelRight } from 'lucide-react'
@@ -50,9 +50,8 @@ export interface SpawnRunLaunch {
  * `{"content":[{"type":"text","text":"…"}]}`, where the launch header sits
  * mid-line after the JSON preamble and the per-agent lines are escaped `\n`
  * rather than real newlines. Both anchored patterns below therefore fail
- * against the envelope, which is why the card went missing for a real
- * `spawn_run` wave. Concatenating the envelope's text parts restores the shape
- * the patterns were written for.
+ * against the envelope. Concatenating the envelope's text parts restores the
+ * shape the patterns were written for.
  */
 function toolOutputText(output: string): string {
   const trimmed = output.trimStart()
@@ -167,7 +166,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
   // spawn_run lists one line per accepted agent, and in LEGACY scrollback the
   // members that were queued behind the concurrency cap / spawn stagger are
   // listed under a sentinel id (`q1`, `q2`) that the hex-id pattern does not
-  // match. Taking the total from `ids` made a 2-agent wave read "1 agent".
+  // match. Taking the total from `ids` would make a 2-agent wave read "1 agent".
   // Tasks that failed to start are reported in a separate section and never
   // reach the header, so this does not over-count them.
   const total = launch.announced || launch.ids.length
@@ -176,10 +175,10 @@ const SubagentRunCard = memo(function SubagentRunCard({
   // Waves launched by a current backend always are: SubagentManager pre-assigns
   // each queued member's real id at accept time and the drained spawn starts
   // under it, so every announced member appears in the launch text. Two cases
-  // still fall short and must not be claimed on — messages persisted before
-  // that fix (queued members recorded as `q1`/`q2`, with the agent that ran
-  // carrying an id found nowhere in the text), and ids the live slice has since
-  // dropped (history reload, "Dismiss done").
+  // still fall short and must not be claimed on — messages persisted by an
+  // older backend (queued members recorded as `q1`/`q2`, with the agent that
+  // ran carrying an id found nowhere in the text), and ids the live slice has
+  // since dropped (history reload, "Dismiss done").
   const fullyObservable = launch.ids.length >= total && counts.unknown === 0
 
   const label = counts.running > 0

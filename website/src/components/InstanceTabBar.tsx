@@ -63,12 +63,12 @@ function fmtDuration(secs: number): string {
   if (secs < 60) return `<${fmtUnit(1, 'minute', { maximumFractionDigits: 0 })}`
   const h = Math.floor(secs / 3600)
   const m = Math.floor((secs % 3600) / 60)
-  // `dropZero` reproduces the original branching: no leading `0h`, no `0m` tail.
+  // `dropZero` drops a leading `0h` and a trailing `0m`.
   return fmtDurationParts([[h, 'hour'], [m, 'minute']], { dropZero: true })
 }
 
 // Shared tab pill styling. Selected state uses a tinted background ONLY — no
-// highlighted border (item 3) — with a transparent border kept on every tab so
+// highlighted border — with a transparent border kept on every tab so
 // the 24px height never shifts when selection changes.
 function tabCls(active: boolean): string {
   return (
@@ -150,7 +150,7 @@ function InstanceTab({
 }
 
 // Outer container classes per variant. Inline is h-full so its 24px pills sit
-// vertically centered in the 42px header (item 3).
+// vertically centered in the 42px header.
 function barCls(variant: 'strip' | 'inline'): string {
   return variant === 'inline'
     ? 'instance-tab-bar-inline flex items-center h-full gap-1 min-w-0 overflow-x-auto no-scrollbar'
@@ -159,7 +159,7 @@ function barCls(variant: 'strip' | 'inline'): string {
 
 /**
  * Embedded (remote pane) switcher: renders the SAME inline tab bar as the local
- * tab, driven by the model the parent relays into `instances.host` (option B),
+ * tab, driven by the model the parent relays into `instances.host`,
  * and posts switch requests back up so the parent flips `activeId`. This is what
  * collapses the remote pane's two stacked bars into one consolidated header.
  */
@@ -232,7 +232,7 @@ export default function InstanceTabBar({
   )
   const onLocal = useCallback(() => selectInstance(null), [selectInstance])
 
-  // Embedded panes render the parent-relayed switcher (option B). Hooks above
+  // Embedded panes render the parent-relayed switcher. Hooks above
   // still run unconditionally (rules-of-hooks); the instances poll is disabled
   // when embedded, so this is cheap.
   if (embedded) return <EmbeddedInstanceTabBar variant={variant} />

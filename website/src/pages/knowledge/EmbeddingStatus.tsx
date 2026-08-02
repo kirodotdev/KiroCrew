@@ -40,7 +40,6 @@ export function EmbeddingStatus() {
   const embedded = knowledgeStatus?.embedded_items ?? 0
   const pct = total > 0 ? Math.round((embedded / total) * 100) : 0
 
-  // Don't show anything if there are no knowledge items
   if (total === 0) return null
 
   return (

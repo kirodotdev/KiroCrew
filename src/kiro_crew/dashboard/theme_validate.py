@@ -268,13 +268,14 @@ _THEME_CSS_DENY_RE = re.compile(
     r"url\s*\(\s*['\"]?\s*(?:https?:)?//",
     re.IGNORECASE,
 )
-# Evasion normalization for the denylist (arbiter finding-2 family): a hand-rolled
+# Evasion normalization for the denylist: a hand-rolled
 # denylist must see what the BROWSER sees, or a pack smuggles a forbidden token
 # past it. Browsers strip CSS comments and decode `\`-escapes during tokenization,
 # so `ur/**/l(` and `\75 rl(` both become `url(`. We reproduce exactly those two
 # normalizations (comment strip + escape decode) and run the denylist on the
-# normalized text too — NOT a full CSS parse (that is #316's CSSOM rework), just
-# the minimal decode needed so the known evasion families can't hide the tokens.
+# normalized text too — NOT a full CSS parse (that is a separate CSSOM rework),
+# just the minimal decode needed so the known evasion families can't hide the
+# tokens.
 _CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _CSS_ESCAPE_RE = re.compile(r"\\(?:([0-9a-fA-F]{1,6})\s?|(.))", re.DOTALL)
 
@@ -1357,7 +1358,7 @@ def _theme_asset_descriptor(
         if persona_path.is_file():
             desc["hasPersona"] = True
             # Surface persona hash + text so the frontend can key user consent
-            # to this exact content (Design finding 2). Persona is <=2000 chars,
+            # to this exact content. Persona is <=2000 chars,
             # so including the full text is cheap; only expose it when it still
             # passes the install-time persona validation.
             # Read persona.md through the hooks chokepoint, NOT read_text: the

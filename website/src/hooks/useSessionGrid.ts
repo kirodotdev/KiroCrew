@@ -4,7 +4,7 @@ import { loadLayout, saveLayout, anchorOf, isRealSplit, pruneToLive } from './sp
 /** What a leaf pane holds:
  *  - placeholder: empty cell showing the session/terminal picker
  *  - session: a live ChatPane bound to `slot`
- *  - terminal: a TerminalPane bound to PTY session `termId` (Phase 2) */
+ *  - terminal: a TerminalPane bound to PTY session `termId` */
 export type LeafKind = 'placeholder' | 'session' | 'terminal'
 export type GridLeaf = { type: 'leaf'; id: string; kind: LeafKind; slot?: string; termId?: string }
 /** A split node tiles its children along one axis.

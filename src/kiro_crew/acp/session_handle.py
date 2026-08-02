@@ -421,13 +421,12 @@ class AcpSessionHandle:
                 METHOD_PROMPT,
                 {
                     "sessionId": self._session_id,
-                    # An image reaches the model ONLY as an image block. This path
-                    # previously hardcoded a single text block, so every channel
-                    # that appended a local image path (Slack, dashboard) shipped
-                    # a filesystem path as prose and the model never saw the
-                    # picture. Gated on the agent's advertised capability; when it
-                    # is absent the path stays in the text as a tool-openable
-                    # reference rather than being dropped.
+                    # An image reaches the model ONLY as an image block. Sending a
+                    # local image path as a single text block would ship a
+                    # filesystem path as prose (Slack, dashboard) and the model
+                    # would never see the picture. Gated on the agent's advertised
+                    # capability; when it is absent the path stays in the text as a
+                    # tool-openable reference rather than being dropped.
                     # Offloaded: the builder stats and reads image files (up to
                     # MAX_IMAGE_BYTES each) and base64-encodes them. Inline, that
                     # blocking I/O runs on the gateway loop and pauses every other
@@ -1000,10 +999,10 @@ class AcpSessionHandle:
                         # Classify the raw JSON-RPC error so the chat_runner /
                         # llm_helpers retry ladder recognizes transient backend 5xx
                         # (e.g. a mid-stream InternalServerError surfaced as -32603)
-                        # instead of surfacing a bare error card. The kiro raise
-                        # sites previously lacked the transient= flag, so the string
-                        # fallback classifier missed the raw "InternalServerError"
-                        # dict. Mirrors client._raise_acp_error.
+                        # instead of surfacing a bare error card. The transient=
+                        # flag is set explicitly because the string fallback
+                        # classifier misses the raw "InternalServerError" dict.
+                        # Mirrors client._raise_acp_error.
                         raise AcpError(
                             f"ACP error: {msg.error}",
                             transient=_is_transient_raw_error(msg.error),
@@ -1167,10 +1166,10 @@ class AcpSessionHandle:
                         # Classify the raw JSON-RPC error so the chat_runner /
                         # llm_helpers retry ladder recognizes transient backend 5xx
                         # (e.g. a mid-stream InternalServerError surfaced as -32603)
-                        # instead of surfacing a bare error card. The kiro raise
-                        # sites previously lacked the transient= flag, so the string
-                        # fallback classifier missed the raw "InternalServerError"
-                        # dict. Mirrors client._raise_acp_error.
+                        # instead of surfacing a bare error card. The transient=
+                        # flag is set explicitly because the string fallback
+                        # classifier misses the raw "InternalServerError" dict.
+                        # Mirrors client._raise_acp_error.
                         raise AcpError(
                             f"ACP error: {msg.error}",
                             transient=_is_transient_raw_error(msg.error),

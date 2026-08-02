@@ -679,9 +679,9 @@ export function IssueRadarProvider({
   // Deliberately resolved from the FILTERED+sorted list only, with no fallback
   // to the unfiltered fetch: if the current filters/search exclude the selected
   // issue, the detail pane clears rather than showing an item the list no longer
-  // offers. (A fallback here also made the behaviour inconsistent with the PR
-  // pane, whose "me" filters swap the data source entirely, so nothing was left
-  // to fall back to.)
+  // offers. (A fallback here would also make the behaviour inconsistent with the
+  // PR pane, whose "me" filters swap the data source entirely, so nothing is
+  // left to fall back to.)
   const activeIssue = sortedIssues.find((i) => i.number === selectedIssue) ?? null
 
   // ── pull requests: derived list (parallels the issue derivations) ──

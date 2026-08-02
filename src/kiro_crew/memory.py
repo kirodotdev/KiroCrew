@@ -445,7 +445,7 @@ class MemoryStore:
     def _try_create_db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self._index_db), timeout=_DB_BUSY_TIMEOUT_SECS)
         # Wait out transient 'database is locked' contention instead of letting
-        # it surface (where the self-heal used to misread it as corruption).
+        # it surface (where the self-heal would misread it as corruption).
         conn.execute(f"PRAGMA busy_timeout={int(_DB_BUSY_TIMEOUT_SECS * 1000)}")
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5("

@@ -6,11 +6,10 @@ import { FEATURE_REQUEST_PROMPT } from '../prompts/featureRequest'
 
 // The "Request a Feature" flow has two copies of the same instructions: the
 // `feature-request` skill (preferred) and this prompt (self-contained fallback
-// when the skill is unavailable). Both used to bake `enhancement`/`bug` in as the
-// entire label vocabulary — in prose AND in both submit paths — so issues filed
-// through the flow never carried the repo's grouping labels, and every taxonomy
-// change meant editing prose in two files. Both now read the live list via
-// `gh label list`.
+// when the skill is unavailable). Both read the live label list via
+// `gh label list` rather than baking `enhancement`/`bug` in as the entire label
+// vocabulary, so issues filed through the flow carry the repo's grouping labels
+// and a taxonomy change does not mean editing prose in two files.
 //
 // These tests lock that contract on BOTH copies so they cannot drift apart.
 
@@ -20,10 +19,10 @@ const skill = readFileSync(
 )
 
 // Forward guard only: no concrete grouping-label value may be written into
-// either copy. This does NOT fail on the pre-change content (which named no
-// grouping label at all) — the base-failing guards are the submit-path and
-// single-mention assertions below. Matches `area: x` / `platform: x` in prose,
-// code fences, or URLs. No leading `\b`: in an encoded URL the value is preceded
+// either copy. On its own this does NOT fail for content that names no grouping
+// label at all — the base-failing guards are the submit-path and single-mention
+// assertions below. Matches `area: x` / `platform: x` in prose, code fences, or
+// URLs. No leading `\b`: in an encoded URL the value is preceded
 // by `%2C`, whose `C` is a word char, so a boundary would miss `%2Carea%3A%20x`.
 const CONCRETE_GROUPING_LABEL = /(area|platform)(:\s*|%3A%20)[a-z]/i
 
@@ -40,11 +39,10 @@ describe('feature-request label selection', () => {
       expect(text).not.toMatch(CONCRETE_GROUPING_LABEL)
     })
 
-    // The load-bearing regression guard. Before the change both copies named
-    // `enhancement` repeatedly (prose vocabulary + both submit paths); now it
-    // may appear exactly once, in the degraded no-`gh` path. That upper bound is
-    // what a re-baked vocabulary would break, and the lower bound keeps the
-    // degraded path from silently losing its type label.
+    // The load-bearing regression guard. `enhancement` may appear exactly once,
+    // in the degraded no-`gh` path: the upper bound is what a re-baked
+    // vocabulary would break, and the lower bound keeps the degraded path from
+    // silently losing its type label.
     it('names a concrete type label exactly once, for the no-gh path', () => {
       expect(text.match(/\benhancement\b/gi) ?? []).toHaveLength(1)
       expect(text.toLowerCase()).toMatch(/if `?gh`? is unavailable/)

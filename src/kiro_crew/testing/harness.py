@@ -52,8 +52,8 @@ from kiro_crew.kiro_prerequisite import FAKE_ACP_TEST_MODE_ENV
 _LOGGER = logging.getLogger(__name__)
 
 # 60 s default — config init + MCP probe + dashboard bind takes meaningful
-# time on slow machines. Plan suggested 30 s; 60 s gives headroom without
-# masking real hangs. Override via ``KIROCREW_HARNESS_READY_TIMEOUT``.
+# time on slow machines. 60 s gives headroom without masking real hangs.
+# Override via ``KIROCREW_HARNESS_READY_TIMEOUT``.
 DEFAULT_READY_TIMEOUT = 60.0
 
 # How long to wait between SIGTERM and SIGKILL during teardown. Gateway's
@@ -117,8 +117,8 @@ def _resolve_workspace_src() -> Path:
 
     1. We're testing the *current* code, not whatever the developer has
        on PATH. A stale Toolbox install would silently mask regressions.
-    2. The harness needs to work before the composable-CLI CR merges —
-       i.e. when the system install doesn't yet have ``--test-mode``.
+    2. The system install may not have ``--test-mode`` yet, so we must run
+       the in-repo code that does.
     """
     here = Path(__file__).resolve()
     # <pkg>/src/kiro_crew/testing/harness.py -> <pkg>/src

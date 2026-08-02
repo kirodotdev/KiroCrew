@@ -348,8 +348,8 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # httpOnly, ``KIROCREW_INTERNAL_SECRET`` is stripped from agent env by
         # ``sandbox._AGENT_DENIED_ENV_KEYS``, and ``.local_secret`` is on the
         # ``security.py`` sensitive-path denylist), so the PUT the Investigate
-        # seed prompt asks for used to 403 unconditionally and no investigation
-        # ever recorded its findings. Deliberately the FULL path, not the
+        # seed prompt asks for would 403 unconditionally and no investigation
+        # could record its findings. Deliberately the FULL path, not the
         # ``/api/apps/issue-radar`` prefix: prefix-matching here would also admit
         # the app's GitHub/GitLab WRITE routes (label, close/reopen, comment) to
         # anything holding the internal secret. This route is local-only triage
@@ -1116,7 +1116,7 @@ def _write_secret_file(secret_path: Path, secret: str) -> None:
             # pre-existing file with loose perms would stay loose and the caller
             # never learns. On POSIX this applies chmod 0o600 by path;
             # on Windows an owner-only DACL via icacls (fchmod doesn't exist on
-            # Windows — previously this was a silent no-op).
+            # Windows, where a raw fchmod would be a silent no-op).
             platform_compat.restrict_to_owner(secret_path)
             with os.fdopen(fd, "w") as f:
                 fd = -1  # fdopen took ownership; skip the redundant close below
@@ -2905,7 +2905,7 @@ async def start_dashboard(
     # its own info line on success, so no caller-side log here.
     # Awaited (not called bare) so the restore yields to the loop between tabs and
     # the stall watchdog keeps getting its heartbeat — a user with many large tabs
-    # used to block here long enough to trip the 25s watchdog and crash-loop the
+    # would otherwise block here long enough to trip the 25s watchdog and crash-loop the
     # gateway before it finished starting.
     #
     # Both restores run inside suspend_slots_push() so the per-slot broadcasts

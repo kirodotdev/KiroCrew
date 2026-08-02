@@ -38,7 +38,7 @@ describe('sanitizeCredentials: JWT family', () => {
 
   it('redacts the link token even when its signature has no url-safe chars', () => {
     // Redaction must not depend on which characters a random HMAC signature
-    // happens to contain. That was the backend defect this mirrors.
+    // happens to contain.
     const plainSig = 'gVhM4aKLA8dyFHoZlQx6SpYSNPkXA07kpDhWd6UhZIa' // no `-` or `_`
     const out = sanitizeCredentials(`link: ${LINK_PAYLOAD}.${plainSig}`)
 
@@ -104,10 +104,10 @@ describe('sanitizeCredentials: JWT family', () => {
   })
 
   it('redacts a token a renderer concatenated straight onto a label', () => {
-    // Regression for a leak an earlier revision introduced. Adding a left
-    // boundary to the JWS alternative made these MISS while the backend still
-    // redacted them, so the mirror leaked a token the backend caught. A miss is
-    // a leak, which outranks the false positive the boundary was avoiding.
+    // Adding a left boundary to the JWS alternative makes these MISS while the
+    // backend still redacts them, so the mirror would leak a token the backend
+    // catches. A miss is a leak, which outranks the false positive the boundary
+    // would avoid.
     for (const text of [
       `INFO compact=jwt${JWS} copied=true`,
       `https://viewer.example.test/session/jwe${JWS}/claims`,

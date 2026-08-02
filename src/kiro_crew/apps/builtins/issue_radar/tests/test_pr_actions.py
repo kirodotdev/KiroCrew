@@ -581,8 +581,8 @@ class TestGitlabPrActions(unittest.TestCase):
         """GitLab has no independent arm verb: ``merge_when_pipeline_succeeds`` rides
         on the MERGE endpoint and merges immediately when no pipeline is running.
 
-        An earlier revision preflighted the head pipeline and armed only when a run
-        was live. That check is not atomic — a pipeline finishing in the window turns
+        An arm-only path that preflighted the head pipeline and armed only when a run
+        was live would not be atomic — a pipeline finishing in the window turns
         the same request into an immediate merge — and since arming is a BULK action
         with no typed confirmation, losing that race would merge a whole selection
         irreversibly. So it refuses outright, and must not touch the API at all.
@@ -623,8 +623,8 @@ class TestGitlabPrActions(unittest.TestCase):
     def test_the_route_rejects_rebase_for_a_gitlab_repo(self):
         """``_pr_merge_method_field`` reads the tuple off the KEY's own client, so the
         per-provider divergence is enforced at the route with no route change. Reaching
-        for github_client's copy — which an earlier revision did, and which worked only
-        because the tuples happened to match — would now silently mis-validate."""
+        for github_client's copy — which works only when the tuples happen to match —
+        would silently mis-validate."""
         gitlab_key = provider.key_from_parts("g", "p", "gitlab", "gitlab.com")
         method, err = routes._pr_merge_method_field({"method": "rebase"}, gitlab_key)
         self.assertIsNotNone(err)
@@ -751,7 +751,7 @@ class TestAutoMergeMutation(unittest.TestCase):
             m.assert_not_called()
 
     def test_auto_merge_is_reported_from_the_response_not_asserted(self):
-        """A hardcoded True made the result a claim rather than an observation."""
+        """Reporting a hardcoded True would make the result a claim rather than an observation."""
         with mock.patch.object(
             gh, "_run_gh_write", return_value={"node_id": "PR_abc"}
         ), mock.patch.object(

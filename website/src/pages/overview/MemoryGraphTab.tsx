@@ -67,10 +67,10 @@ export default function MemoryGraphTab() {
   // Layout: a ONE-SHOT d3-force pass (settle within a time budget, then stop)
   // — the same "compute a diagram once, never run a live solver" model the
   // Knowledge Graph tab uses. d3's forceManyBody uses a Barnes-Hut quadtree
-  // (O(n log n)) and the pass is time-bounded + one-time, so it does NOT
-  // reintroduce the old freeze (vis-network's O(n²) forceAtlas2 that ran every
-  // frame on the main thread). Real edges (from the fixed backend edge rule)
-  // give connected memory clusters; disconnected nodes are kept in view by a
+  // (O(n log n)) and the pass is time-bounded + one-time, so it does NOT block
+  // the main thread (a live O(n²) forceAtlas2 solver every frame would freeze
+  // the UI). Real edges (from the backend edge rule) give connected memory
+  // clusters; disconnected nodes are kept in view by a
   // gentle forceX/forceY gravity. A golden-angle (sunflower) disc seeds initial
   // positions and is the fallback if d3 fails to load. The client fully owns
   // layout — the server sends only nodes/edges, no coordinates.
@@ -87,7 +87,7 @@ export default function MemoryGraphTab() {
 
     // Read theme-aware colors from the design-system CSS vars on <html> so the
     // graph is legible in BOTH light and dark modes (the Knowledge Graph tab
-    // reads the same vars). Hardcoding colors made text/edges/the hover pill
+    // reads the same vars). Hardcoding colors would make text/edges/the hover pill
     // wrong in one mode — sigma's default hover label paints a hardcoded WHITE
     // pill, which is jarring and low-contrast against light labels in dark mode.
     const readColors = () => {

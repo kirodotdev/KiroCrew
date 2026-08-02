@@ -199,7 +199,7 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
         # Serialize whole runs (see _RUN_LOCK): concurrent starts queue here rather
         # than interleaving over the shared results dir / report index.
         async with _RUN_LOCK:
-            # TOCTOU guard (Codex Finding 2): the dedup in _handle_review_repo ran
+            # TOCTOU guard: the dedup in _handle_review_repo ran
             # BEFORE this lock, so a concurrent repo-review that finished first may
             # have just recorded some of these PRs. Re-dedup against the now-current
             # reviewed index under the lock so we never re-review + re-post a PR that

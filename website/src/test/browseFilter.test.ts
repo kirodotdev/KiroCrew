@@ -29,7 +29,7 @@ type AppEntry = {
 
 /**
  * Browse tab filter: returns all non-hidden builtin apps for discovery.
- * Discover now shows enabled builtins too, each carrying its Enabled/Disabled
+ * Discover shows enabled builtins too, each carrying its Enabled/Disabled
  * state. This mirrors the logic in AppsPage.tsx Browse tab.
  */
 function filterBrowsableBuiltins(apps: AppEntry[]): AppEntry[] {

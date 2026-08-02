@@ -771,8 +771,8 @@ class AppRef:
         """Snapshot cache key: the app identity PLUS the specific window.
 
         Element indices address one WINDOW's accessibility tree, so keying the cache
-        by application alone aliased distinct windows of the same app (reviewer
-        finding): snapshot document A, focus document B, and the follow-up action —
+        by application alone aliased distinct windows of the same app: snapshot
+        document A, focus document B, and the follow-up action —
         which re-resolves to B — retrieved A's cached tree. The fingerprint check
         cannot catch that, because two documents of the same app routinely have
         identically-shaped toolbars, so ``role|subrole|title`` at a given index
@@ -1040,7 +1040,7 @@ class DeniedApp:
     # Matched against the resolved WINDOW TITLE, not the app identity. Needed
     # because a host application can display someone else's UI: KiroCrew's own
     # dashboard served in a browser tab has Chrome's bundle id and Chrome's process
-    # name, so a bundle/name rule cannot see it (reviewer finding). Only ever used
+    # name, so a bundle/name rule cannot see it. Only ever used
     # to ADD a refusal — a title match can never lift a bundle match.
     title_substrings: tuple[str, ...] = field(default_factory=tuple)
 

@@ -162,8 +162,7 @@ class TunnelManager:
     def public_url(self) -> str:
         """The live public URL from the provider, but only while CONNECTED.
 
-        Empty on the no-op Default (state DISABLED).  Guarding on CONNECTED
-        mirrors the pre-seam stub (``url if state == CONNECTED else ""``) so a
+        Empty on the no-op Default (state DISABLED).  Guarding on CONNECTED so a
         companion that keeps its last URL while RECONNECTING/ERROR is not
         reported as live.
         """
@@ -194,7 +193,7 @@ class TunnelManager:
         Registers the connect/disconnect CORS-reflection callbacks with the
         provider, then delegates ``start()``.  The Default provider is a no-op,
         so on the open-source build this logs the "not available in OSS" notice
-        and leaves the tunnel disabled — byte-identical to the previous stub.
+        and leaves the tunnel disabled.
         """
         # A fresh start clears any prior lifecycle pin (STOPPED/DISABLED) so a
         # live provider's snapshot flows through ``status`` again.

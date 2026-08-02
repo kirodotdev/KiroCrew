@@ -2,10 +2,10 @@
  * Regression test: handleOpenDiff routes identical content to the file viewer.
  *
  * When `original === modified` the diff editor adds no signal (two identical
- * panes). The fix routes this case through `handleFileOpen` — a readable file
- * view — exactly like the new-file (empty original) branch. This test drives
- * the real ChatPage handler with original === modified and asserts the
- * markdown panel (file viewer) appears instead of the diff panel.
+ * panes), so handleOpenDiff routes this case through `handleFileOpen` — a
+ * readable file view — exactly like the new-file (empty original) branch. This
+ * test drives the real ChatPage handler with original === modified and asserts
+ * the markdown panel (file viewer) appears instead of the diff panel.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'

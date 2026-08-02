@@ -60,8 +60,8 @@ _FIRST_RUN_LS = {
     "kc-onboarded": "1",   # theme onboarding
 }
 
-# Defaults for the guards added for the "--video wedges the run" defect:
-# a spec that passes in 16s must never be lost to an unbounded teardown.
+# Defaults for the teardown/video guards: a spec that passes in 16s
+# must never be lost to an unbounded teardown.
 _DEFAULT_TEARDOWN_TIMEOUT = 30.0   # seconds per teardown step
 _DEFAULT_MAX_VIDEO_MB = 200        # a sane .webm for a short spec is single-digit MB
 # A process exit status is truncated to its low 8 bits, so a raw failure count
@@ -181,8 +181,8 @@ def _descendant_pids(root: int) -> list[int]:
 def _kill_browser_tree() -> None:
     """Kill the playwright driver + chromium descendants of THIS process.
 
-    A wedged teardown previously left orphaned drivers and ~19 chromium
-    processes behind that had to be killed by hand.
+    A wedged teardown can otherwise leave orphaned drivers and chromium
+    processes behind that must be killed by hand.
     """
     pids = _descendant_pids(os.getpid())
     if not pids:

@@ -45,8 +45,8 @@ describe('AutoNudgePopover goal persistence', () => {
     expect(loadGoalDraft(SLOT)?.message).toBe('Ship the BYOA gate harness')
     first.unmount()
 
-    // 2. The loop is stopped elsewhere → ChatPage passes loop={null} on re-open.
-    //    Before the fix this fell back to the default template.
+    // 2. The loop is stopped elsewhere → ChatPage passes loop={null} on re-open;
+    //    the popover restores the stored draft, not the default template.
     renderPopover(null)
     expect(goalBox().value).toBe('Ship the BYOA gate harness')
   })
@@ -113,8 +113,7 @@ describe('AutoNudgePopover goal persistence', () => {
 
   it('falsy loop fields fall back to default template / 60 / 0, not bare "" / 0 (|| not ??)', () => {
     // A loop with an empty message and idle_secs/max_cycles of 0 must show the
-    // default template + 60, matching pre-fix behavior — regression guard for
-    // the || → ?? operator change flagged in review.
+    // default template + 60 — falsy loop fields fall back (|| not ??).
     renderPopover(makeLoop({ message: '', idle_secs: 0, max_cycles: 0 }))
     expect(goalBox().value).toContain('north star')
     expect((screen.getByDisplayValue('60') as HTMLInputElement).value).toBe('60')
@@ -137,8 +136,8 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
   it('allows clearing the idle field to empty while typing, then defaults to 60 on blur (the reported bug)', () => {
     renderPopover(null)
     expect(idleField().value).toBe('60')
-    // Pre-fix the per-keystroke coercion snapped an emptied field straight back
-    // to 60 (leading digit stuck). Now the empty edit is allowed as-typed...
+    // The empty edit is allowed as-typed rather than snapping straight back to
+    // 60 with the leading digit stuck...
     fireEvent.change(idleField(), { target: { value: '' } })
     expect(idleField().value).toBe('')
     // ...and only commits to the default when the field loses focus.

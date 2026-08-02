@@ -524,9 +524,9 @@ def _get_agent_names() -> list[str]:
             # UnicodeDecodeError (a ValueError subclass, NOT an OSError) is
             # raised by safe_read_file's utf-8 read on a non-UTF-8 *.json —
             # e.g. a macOS AppleDouble ._foo.json stub in ~/.kiro/agents.
-            # Without it here the raise escaped and killed the `/kirocrew
-            # channels` handler / channel-modal refresh task before it opened.
-            # Mirrors the 90e3cccc fix to agent.py's _load_json/_enforce_denied.
+            # Catching it here keeps a non-UTF-8 file from crashing the
+            # `/kirocrew channels` handler / channel-modal refresh task before
+            # it opens. Mirrors agent.py's _load_json.
             name = None
         names.append(name or f.stem)
     return sorted(names)
@@ -2098,9 +2098,8 @@ async def _route_message(
                     orch.channel_history.set_user_name(sender_id, u["name"])
                 break
 
-    # Observe mode: record history from authorized users only.
-    # Previously recorded all channel traffic, but non-owner messages
-    # could influence LLM context.
+    # Observe mode: record history from authorized users only, so non-owner
+    # messages cannot influence LLM context.
     if activation == ACTIVATION_OBSERVE:
         if should_record_observe_history(orch.channel_history, _user_authorized):
             assert orch.channel_history is not None  # narrowed by helper

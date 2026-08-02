@@ -133,8 +133,8 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
           indices: match ? match.indices : [],
           // Declarative Enter contract (§2). The central
           // `dispatchEnter` in CommandPalette routes on this; for sessions
-          // both Enter and ⌘Enter open/switch to the session (task 23 — no
-          // distinct modifier action). `onActivate`/`onCmdActivate` are kept
+          // both Enter and ⌘Enter open/switch to the session (no distinct
+          // modifier action). `onActivate`/`onCmdActivate` are kept
           // as the payload-bound execution path (`open-session` invokes
           // `onActivate`) and as the legacy/mouse fallback.
           enter: { kind: 'open-session', sessionKey: s.key, title },
@@ -145,7 +145,7 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
 
       // Title matches first, then deterministic name order. Skip the re-rank on
       // an empty query so the backend's recency ordering is preserved (Sessions
-      // tab + All-tab recents rely on it — per a review finding).
+      // tab + All-tab recents rely on it).
       if (q.length > 0) {
         results.sort(makeScoreThenNameComparator<Result>(r => r.score, r => r.title))
       }

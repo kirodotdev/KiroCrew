@@ -1,14 +1,11 @@
 /**
  * A failed write never throws away what the user typed.
  *
- * `submit` cleared the draft unconditionally after a fire-and-forget `onAdd`, so with
- * the desktop app closed the typed reminder vanished and the only trace was a muted
- * line at the far end of the page.
- *
- * Third time this PR has had the same shape — the failure notice that never cleared,
- * and the custom-interval field that could not be re-edited after a clamp — so the
- * rule under test is the general one: **the UI does not discard user input on an
- * unconfirmed write.**
+ * The rule under test is the general one: **the UI does not discard user input
+ * on an unconfirmed write.** A fire-and-forget `onAdd` must not clear the draft
+ * until the write is confirmed — otherwise a typed reminder vanishes (e.g. with
+ * the desktop app closed) and the only trace is a muted line at the far end of
+ * the page.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
@@ -64,8 +61,7 @@ describe('the add box and a failing write', () => {
   })
 
   it('does not call onAdd at all when no time was given', async () => {
-    // Unchanged behaviour, pinned so the await refactor did not alter it: the
-    // parser must not invent a time, so the box asks instead of writing.
+    // The parser must not invent a time, so the box asks instead of writing.
     const onAdd = vi.fn().mockResolvedValue(true)
     const input = setup(onAdd)
 

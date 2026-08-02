@@ -248,7 +248,7 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
 
     Shells ``kirocrew computer doctor --json`` instead of calling the frameworks
     here, and that is the whole point: a missing ctypes ``argtypes`` is a SIGSEGV,
-    not an exception (reproduced live during design), and in the gateway that
+    not an exception, and in the gateway that
     would take down every chat session, the cron scheduler, the Slack socket and
     the dashboard WebSocket at once. In a short-lived child the blast radius is a
     permission row that reads ``unknown``.
@@ -283,8 +283,7 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
         # that does NOT inherit from the builtin. Catching only one let a timeout
         # fall through to the generic ``except Exception`` below, which returns the
         # same degraded block but SKIPS THE KILL, leaking one stalled child per
-        # Settings poll. This passed locally on 3.12 and failed only on the 3.10
-        # shard.
+        # Settings poll.
         # Kill the child before giving up: leaving a stalled probe running would
         # accumulate one process per Settings poll (the panel polls every 5s while
         # a grant is missing).
@@ -398,11 +397,7 @@ def _snapshot() -> dict[str, Any]:
         # There is deliberately NO ``read_only`` / governance-lock field here, and no
         # ``409`` on the PUT. Computer use is one operator opt-in on the keystone:
         # ``SCOPE_CATALOG`` carries no ``computer_use*`` row, so there is no ceiling
-        # to report and nothing for the panel to grey out. An earlier revision of
-        # this handler documented both (a ``forbidden``-only ``read_only`` the panel
-        # would key ``disabled`` on, and a 409 when a ceiling forbade a widening
-        # request) — the governance model they belonged to was removed by product
-        # decision, and the prose outlived it, promising a refusal that never fires.
+        # to report and nothing for the panel to grey out.
         # The write boundary that DOES hold is the app-token gate on the PUT (an app
         # token can never write the keystone); see ``api_computer_use_config_save``.
         # Ceilings, so the panel's number inputs bound themselves from the server
@@ -548,15 +543,11 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
 
     **There is no governance ceiling on this route, and therefore no 409.** Computer
     use is one operator opt-in: ``SCOPE_CATALOG`` carries no ``computer_use*`` row, so
-    there is nothing that can forbid a widening request. An earlier revision of this
-    docstring promised a 409 "when the governance ceiling forbids computer use"; the
-    model it referred to was removed by product decision and the sentence outlived it,
-    describing a refusal no code path can produce (there is no ``status=409`` in this
-    module). Do not re-document it without re-implementing it — see
-    ``docs/system-specs/modules/governance.md`` for why computer use is deliberately
-    ungoverned. Other outcomes: ``400`` for a malformed body or an out-of-range value,
-    ``403`` for an app token (above), and ``500`` for a corrupt keystone or
-    ``config.json``, which is left byte-identical rather than clobbered
+    there is nothing that can forbid a widening request (there is no ``status=409`` in
+    this module) — see ``docs/system-specs/modules/governance.md`` for why computer
+    use is deliberately ungoverned. Other outcomes: ``400`` for a malformed body or an
+    out-of-range value, ``403`` for an app token (above), and ``500`` for a corrupt
+    keystone or ``config.json``, which is left byte-identical rather than clobbered
     (``StateCorruptError``, the ``ConfigCorruptError`` precedent).
     """
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
@@ -639,12 +630,9 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
         _audit(request, operation=OP_CONFIG_SAVE, outcome="denied", resources="empty_patch")
         return web.json_response({"error": "no known computer-use fields in body"}, status=400)
 
-    # No governance step here, deliberately. This block used to be a `# ──
-    # Governance ──` header over an explanation of widen-gating with no code beneath
-    # it: the ceiling it described (and the 409 it would have returned) was removed
-    # with the rest of the computer-use governance model, and only the prose
-    # survived. The write boundary that DOES hold is the app-token gate at the top of
-    # this handler.
+    # No governance step here, deliberately: the computer-use governance model
+    # (and the 409 it would have returned) does not exist. The write boundary
+    # that DOES hold is the app-token gate at the top of this handler.
 
     # ── Write ──
     # Read the CURRENT enable before mutating, so the session reset below fires only
@@ -741,15 +729,13 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
 # ── POST /api/computer-use/invoke — the thin shim's loopback leg ──
 
 
-# NOTE: ``_plane_a_can_prompt`` / ``_cu_titles_are_prompt_eligible`` USED to live
-# here, inferring from ``~/.kiro/agents/*.json`` and ``hooks.auto_approve_tools``
-# whether the PreToolUse gate would still prompt, and passing the answer as
-# ``approval_recorded``. Both are deleted: the inference was a read of mutable state
-# at the wrong time (kiro-cli loads its agent config at session start, so a grant
-# removed from disk afterwards inverted the answer in the granting direction), and
-# an ``interactive`` floor is satisfiable only by per-call proof. Do not reintroduce
-# a variant — see the ``approval_recorded=False`` comment in
-# :func:`api_computer_use_invoke`.
+# NOTE: do NOT infer from ``~/.kiro/agents/*.json`` and ``hooks.auto_approve_tools``
+# whether the PreToolUse gate would still prompt and pass the answer as
+# ``approval_recorded``. That inference reads mutable state at the wrong time
+# (kiro-cli loads its agent config at session start, so a grant removed from disk
+# afterwards inverts the answer in the granting direction), and an ``interactive``
+# floor is satisfiable only by per-call proof. See the ``approval_recorded=False``
+# comment in :func:`api_computer_use_invoke`.
 
 
 async def api_computer_use_invoke(request: web.Request) -> web.Response:
@@ -789,10 +775,9 @@ async def api_computer_use_invoke(request: web.Request) -> web.Response:
     learns which surface is calling — it is the AUDIT identity, not a permit; the
     trust comes from the local-secret handshake plus that strict resolution.
 
-    ``approval_recorded`` is passed as ``False`` and no longer changes any outcome:
-    the interactive-approval ceiling it used to satisfy was removed with the rest of
-    the governance model. It is still not minted from the request body, because a
-    body field would be a claim the shim issues to itself.
+    ``approval_recorded`` is passed as ``False`` and does not change any outcome:
+    nothing reads it. It is not minted from the request body, because a body field
+    would be a claim the shim issues to itself.
 
     The dispatch is offloaded: accessibility and capture calls block for tens of
     milliseconds each and must not land on the event loop.
@@ -861,9 +846,8 @@ async def api_computer_use_invoke(request: web.Request) -> web.Response:
                 session_key=resolved_session,
                 agent=resolved_agent,
                 app=resolved_app,
-                # ALWAYS False, and deliberately so (reviewer finding, third round
-                # on this line). No inference from this process can establish that a
-                # human approved THIS call:
+                # ALWAYS False, and deliberately so. No inference from this process
+                # can establish that a human approved THIS call:
                 #
                 # * the internal secret proves kiro-cli is upstream, not that it
                 #   prompted;
@@ -874,12 +858,11 @@ async def api_computer_use_invoke(request: web.Request) -> web.Response:
                 #   auto-approving while a fresh read says a prompt would happen —
                 #   exactly inverted, and the direction that grants.
                 #
-                # Nothing now READS this flag — the approval ceiling it fed was
-                # removed with the rest of the governance model — so it costs no
-                # behaviour. It stays False rather than being deleted because the
-                # reasoning above is what any future per-call-approval feature has to
-                # satisfy, and it would need a signed per-call token from kiro-cli
-                # (an upstream protocol change), not another inference from disk.
+                # Nothing READS this flag, so it costs no behaviour. It stays False
+                # rather than being deleted because the reasoning above is what any
+                # future per-call-approval feature has to satisfy, and it would need a
+                # signed per-call token from kiro-cli (an upstream protocol change),
+                # not another inference from disk.
                 approval_recorded=False,
             )
 

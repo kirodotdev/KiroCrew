@@ -137,8 +137,8 @@ def summarize(doc: dict, top: int = 5) -> str:
     Entries that are not objects are discarded before anything indexes into them.
     A ``samples`` list is attacker-influencable only in the sense that any JSON
     file can be pointed at with ``--path``, but the artifact is also a file on
-    disk that could be truncated or hand-edited, and ``[null]`` previously reached
-    ``first.get(...)`` and raised an uncaught AttributeError. Three separate
+    disk that could be truncated or hand-edited, and ``[null]`` would otherwise
+    reach ``first.get(...)`` and raise an uncaught AttributeError. Three separate
     call sites here assume dict entries (first/last, the peak scan, and the
     process table), so the filter is applied once, up front, rather than guarding
     each.

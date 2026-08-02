@@ -460,8 +460,7 @@ async def _fetch_usage_bg() -> None:
         # ``whoami`` is kiro-cli's own account, and it costs no credits; passing
         # its profile ARN into fetch_usage_limits is what stops a still-valid
         # credential from a signed-out profile supplying the numbers. Fetched
-        # once here and reused by both the API and text branches below (it used
-        # to be spawned separately in each).
+        # once here and reused by both the API and text branches below.
         identity = await _fetch_whoami(kiro_bin)
         raw_arn = identity.get("_profile_arn")
         expected_arn = raw_arn if isinstance(raw_arn, str) and raw_arn else None
@@ -521,7 +520,7 @@ async def _fetch_usage_bg() -> None:
             [kiro_bin, "chat", "--no-interactive", "--agent", "kirocrew-lite", "/usage"],
             mode="standard",
         )
-        argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling (Talos bdf0d7e5)
+        argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling
         proc = await create_subprocess_limited(
             *argv,
             stdout=asyncio.subprocess.PIPE,
@@ -627,14 +626,13 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
         return blocked
     now = time.time()
     if now - _usage_cache_ts > _USAGE_REFRESH_SECS:
-        # Timed refresh only. An earlier revision also refreshed when the kiro-cli
-        # auth store changed on disk, to pick a profile switch up in seconds — but
-        # that store is shared: `data.sqlite3` holds `conversations`, `history` and
-        # `state` alongside `auth_kv`, so ordinary chat traffic rewrites it roughly
-        # every 30 seconds. The trigger therefore fired on nearly every poll, and
-        # each fire can reach the `/usage` text scrape, which spends credits. A
-        # faster readout is not worth billing the user for it; a profile switch is
-        # picked up on the next interval instead.
+        # Timed refresh only — deliberately not triggered by the kiro-cli auth
+        # store changing on disk. That store is shared: `data.sqlite3` holds
+        # `conversations`, `history` and `state` alongside `auth_kv`, so ordinary
+        # chat traffic rewrites it roughly every 30 seconds; a disk-change trigger
+        # would fire on nearly every poll, and each fire can reach the `/usage`
+        # text scrape, which spends credits. A faster readout is not worth billing
+        # the user for it; a profile switch is picked up on the next interval.
         state: DashboardState = request.app["state"]
         task = asyncio.create_task(_fetch_usage_bg())
         state._background_tasks.add(task)

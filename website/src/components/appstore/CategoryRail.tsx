@@ -1,7 +1,7 @@
 /**
  * CategoryRail — left rail of the Discover "All apps" section.
  *
- * Two blocks per the locked hybrid mock:
+ * Two blocks:
  *  - CATEGORIES: canonical categories with app counts; selecting one filters
  *    the list ("All apps" resets).
  *  - SOURCES: where apps come from (trust provenance) — Built-in plus each

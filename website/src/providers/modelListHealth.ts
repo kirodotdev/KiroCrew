@@ -3,7 +3,7 @@
 // auto-only). The model-picker query polls until a live fetch succeeds, so the
 // self-heal decision must key off this explicit signal — NOT the shape/length
 // of the list, which cannot distinguish a live single-model backend from a
-// degraded fallback, and (the bug this replaces) stops polling the moment a
+// degraded fallback, and would stop polling the moment a
 // possibly-stale cached multi-entry list is served.
 //
 // Keyed by provider id (read from the ['available-models', <providerId>] query

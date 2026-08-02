@@ -65,8 +65,8 @@ const EMPTY_BUCKET: Bucket = { tabs: [], activeId: null }
 /* ── Module-level, persisted panel-tab store ──────────────────────────────
  * The strip must survive things that unmount ChatPage: activity-bar close,
  * activity-tab switches, chat switches, full route changes (ChatPage is a
- * route element), AND page reloads. Component-local useState died with the
- * route. So the per-slot buckets live here at module scope (read via
+ * route element), AND page reloads. Component-local useState would not survive
+ * that, so the per-slot buckets live here at module scope (read via
  * useSyncExternalStore) and are mirrored to localStorage. On reload the strip
  * is rehydrated; terminal tabs reconnect to the still-live PTY (backend orphan
  * window) and document tabs re-fetch their content lazily (see below). */
@@ -95,7 +95,7 @@ const inlineDrafts = new Map<string, string>()
 // The store OWNS the draft key format (slot + path). Callers pass slot and path
 // separately and never build the key themselves — a single owner prevents the
 // four coordination sites (open / open-inline / save / slot-reset) from drifting
-// on the key shape and silently reopening the data-loss bugs this closes.
+// on the key shape, which would silently reintroduce data-loss bugs.
 const inlineDraftKey = (slot: string, path: string): string => `${slot}::${path}`
 export function getInlineDraft(slot: string, path: string): string | undefined { return inlineDrafts.get(inlineDraftKey(slot, path)) }
 export function setInlineDraft(slot: string, path: string, content: string): void { inlineDrafts.set(inlineDraftKey(slot, path), content) }
@@ -206,10 +206,8 @@ export function __resetPanelTabs(): void {
 }
 
 /**
- * Tabbed side panel state. Replaces the old mutually-exclusive
- * usePanelState + useDiffPanel + activityTab model: every view (category views,
- * terminal) and every opened document (file / diff / artifact) is a tab in one
- * strip. Opening a document that's already open focuses its tab instead of
+ * Tabbed side panel state: every view (category views, terminal) and every
+ * opened document (file / diff / artifact) is a tab in one strip. Opening a document that's already open focuses its tab instead of
  * duplicating it. Content is held in the module store (not redux) to keep large
  * file bodies out of the store.
  *

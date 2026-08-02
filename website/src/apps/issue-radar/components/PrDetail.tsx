@@ -114,10 +114,10 @@ const COLLAPSED_BODY_PX = 66
  *
  * Takes the markdown STRING (not children) on purpose: the measure effect keys
  * off it, and a string is a stable dependency. Keying off `children` — a fresh
- * JSX object on every render — re-ran the effect on any unrelated re-render (a
- * react-query background refetch, a timestamp toggle) and silently re-collapsed
- * a body the user had just expanded. Expanded state now resets only when the
- * body itself actually changes (i.e. switching to a different PR). */
+ * JSX object on every render — would re-run the effect on any unrelated
+ * re-render (a react-query background refetch, a timestamp toggle) and silently
+ * re-collapse a body the user had just expanded. Expanded state resets only when
+ * the body itself actually changes (i.e. switching to a different PR). */
 function CollapsibleBody({ body }: { body: string }) {
   const [expanded, setExpanded] = useState(false)
   const [overflowing, setOverflowing] = useState(false)
@@ -400,8 +400,8 @@ function CheckRow({ check }: { check: PrCheck }) {
  *
  * The name alone is not safe: when two rows share it (the same workflow started
  * twice for one head sha), the colliding keys make React unable to remove the
- * stale rows on the next render — which showed up as a group heading counting 4
- * while 6 rows were painted below it. The check-run URL disambiguates real rows;
+ * stale rows on the next render — which shows up as a group heading counting 4
+ * while 6 rows are painted below it. The check-run URL disambiguates real rows;
  * the index is the last-resort tiebreaker. */
 function checkKey(c: PrCheck, i: number): string {
   return `${c.name ?? ''}|${c.url ?? ''}|${i}`

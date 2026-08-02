@@ -201,7 +201,7 @@ describe('Session menu — outbound mirror actions', () => {
     const stop = screen.getByText('Stop mirroring to Discord DM')
     expect(screen.queryByText(/Slack/)).not.toBeInTheDocument()
 
-    // Stopping is destructive and now confirms first; accept the prompt.
+    // Stopping is destructive and confirms first; accept the prompt.
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     try {
       fireEvent.click(stop)

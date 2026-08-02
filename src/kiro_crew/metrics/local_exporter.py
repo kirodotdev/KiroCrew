@@ -26,7 +26,7 @@ is opened. Each export cycle opportunistically prunes shards older than
 is back under budget. Pruning is throttled (at most once per
 ``_PRUNE_INTERVAL_SECS``) so a short export interval cannot turn every flush
 into a full directory scan. Both caps are configurable and independently
-disable-able (0). This bounds unbounded on-disk telemetry growth (rec #14).
+disable-able (0). This bounds unbounded on-disk telemetry growth.
 
 OSS-CLEAN: depends only on ``opentelemetry`` + the stdlib.
 """

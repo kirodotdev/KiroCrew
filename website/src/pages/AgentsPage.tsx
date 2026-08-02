@@ -246,9 +246,8 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                           <span className="text-[11px] text-muted font-mono">{a.model}</span>
                         </div>
                       </div>
-                      {/* The word carries the state. This replaced a bare star glyph that
-                          gave a first-time user nothing to read: the feature was reported
-                          as missing while the control was on screen. */}
+                      {/* The word carries the state: a bare star glyph gives a first-time
+                          user nothing to read, so the default-agent control is labeled. */}
                       <span
                         role="button"
                         tabIndex={0}

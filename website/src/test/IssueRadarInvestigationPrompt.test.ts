@@ -1,13 +1,12 @@
 /** The Investigate seed prompt's findings-write instruction.
  *
- * This prompt used to tell the agent to `PUT /api/apps/issue-radar/investigation`
- * directly. An agent session holds no dashboard credential — the access cookie is
- * httpOnly, `KIROCREW_INTERNAL_SECRET` is stripped from agent env, and
- * `.local_secret` is on the sensitive-path denylist — so that call was refused
- * with 403 EVERY time and no investigation ever recorded its findings (the
- * verdict/summary the card renders was dead code). The write now goes through the
- * `issue_radar_record_investigation` MCP tool, whose server holds the internal
- * secret legitimately.
+ * The write goes through the `issue_radar_record_investigation` MCP tool, whose
+ * server holds the internal secret legitimately — NOT a direct
+ * `PUT /api/apps/issue-radar/investigation`. An agent session holds no dashboard
+ * credential (the access cookie is httpOnly, `KIROCREW_INTERNAL_SECRET` is
+ * stripped from agent env, and `.local_secret` is on the sensitive-path
+ * denylist), so a raw-HTTP write is refused with 403 every time and records no
+ * findings (the verdict/summary the card renders).
  *
  * These tests pin the contract in both directions: the tool must be named, and
  * the raw-HTTP instruction must never come back.

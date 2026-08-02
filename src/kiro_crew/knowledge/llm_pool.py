@@ -49,7 +49,7 @@ AGENT_NAME = "kirocrew-knowledge"
 # Seconds the pool may sit FULLY idle (no worker checked out) before it is
 # scaled to zero — all workers shut down, freeing ~1GB of held process trees.
 # Workers respawn lazily on the next acquire(). 0 keeps them warm indefinitely
-# (the historical always-on behaviour). See Mesh idle-TTL bug (2026-07-16).
+# (the always-on behaviour).
 DEFAULT_IDLE_TTL_SECS = 300.0
 
 

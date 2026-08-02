@@ -10,10 +10,9 @@ This module stays dependency-neutral: it imports only the ``acp.types``
 event constants (a stdlib-only leaf) and the ``security`` redactors (also a
 leaf). It does NOT import ``kiro_crew.slack`` or ``kiro_crew.dashboard``.
 
-v1b scope: extracts the channel-neutral core of the native
-``slack/handler.py`` loop. Slack-specific rendering lives in the Slack
-``Renderer`` (``kiro_crew.slack.renderer``); the native loop is rewired onto
-this driver in Stage 3 (gated by the golden-transcript test).
+This driver is the channel-neutral core shared by every transport;
+Slack-specific rendering lives in the Slack ``Renderer``
+(``kiro_crew.slack.renderer``).
 """
 
 from __future__ import annotations

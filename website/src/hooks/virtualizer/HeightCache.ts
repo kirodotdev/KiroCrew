@@ -27,10 +27,10 @@ const MAX_ENTRIES = 2000
 // Hard ceiling on retained entries regardless of row count, so a pathological
 // session cannot make the persisted blob unbounded.
 const HARD_CEILING = 20000
-// Debounce for localStorage writes. Lengthened from the original 100ms because
-// streaming fires many set()s per second; a longer window coalesces them into
-// far fewer full-map JSON serializations. Manual flush() (e.g. on unmount)
-// still persists immediately, and the dirty flag skips no-op flushes.
+// Debounce for localStorage writes. Streaming fires many set()s per second, so
+// a wide window coalesces them into far fewer full-map JSON serializations.
+// Manual flush() (e.g. on unmount) still persists immediately, and the dirty
+// flag skips no-op flushes.
 const FLUSH_DELAY_MS = 750
 // Fallback estimate returned by averageHeight() when nothing is measured yet.
 // Matches the virtualizer's historical flat estimate.

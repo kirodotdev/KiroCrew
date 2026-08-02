@@ -1,4 +1,4 @@
-"""Gateway HTTP handlers for dynamic workflows (M6.3/M6.5).
+"""Gateway HTTP handlers for dynamic workflows.
 
 These back both the chat ``workflow_*`` MCP tools (which call them with
 ``X-Internal-Secret``) and the Workflows dashboard tab. All reach the single
@@ -106,7 +106,7 @@ async def api_workflow_run(request: web.Request) -> web.Response:
 
 
 async def api_workflow_run_intent(request: web.Request) -> web.Response:
-    """POST /api/workflows/run_intent — launch a run that authors itself (M6.7).
+    """POST /api/workflows/run_intent — launch a run that authors itself.
 
     Returns a run_id IMMEDIATELY; the NL intent is turned into a script inside the
     background run (a visible "Authoring" phase) so the slow model call never
@@ -169,7 +169,7 @@ async def api_workflow_run_cancel(request: web.Request) -> web.Response:
 
 
 async def api_workflow_run_rerun(request: web.Request) -> web.Response:
-    """POST /api/workflows/runs/{id}/rerun — restart, replaying the prefix (M6.6)."""
+    """POST /api/workflows/runs/{id}/rerun — restart, replaying the prefix."""
     svc = _svc(request)
     if svc is None:
         return web.json_response({"error": "workflows not available"}, status=503)

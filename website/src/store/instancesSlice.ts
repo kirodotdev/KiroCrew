@@ -3,9 +3,9 @@
  *
  * `warm` holds the in-memory loopback port + minted token for each connected
  * instance whose iframe is kept mounted (hide-not-unmount). It is NEVER
- * persisted and never logged — it lives only for the dashboard session, exactly
- * like the previous page-local state. The header tab strip writes it (on
- * connect) and the viewport reads it (to build iframe src + render).
+ * persisted and never logged — it lives only for the dashboard session. The
+ * header tab strip writes it (on connect) and the viewport reads it (to build
+ * iframe src + render).
  *
  * `activeId` is the instance currently filling the page body, or `null` for the
  * native dashboard (the "Local" tab). `mru` is recency order (front = most

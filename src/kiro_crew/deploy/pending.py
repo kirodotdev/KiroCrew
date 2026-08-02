@@ -80,7 +80,7 @@ def add_pending(params: dict[str, Any]) -> dict[str, Any]:
         "ttl_hours": params.get("ttl_hours", 72),
         "scan_summary": params.get("scan_summary", "clean"),
         "content_digest": params.get("content_digest", ""),
-        # R24: preview was scan-blocked by OVERRIDABLE (non-credential)
+        # Preview was scan-blocked by OVERRIDABLE (non-credential)
         # findings — confirming requires an explicit human override action.
         "override_scan_required": bool(params.get("override_scan_required", False)),
         "created_at_epoch": params.get("created_at_epoch") or time.time(),

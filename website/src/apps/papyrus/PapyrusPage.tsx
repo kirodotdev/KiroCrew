@@ -333,9 +333,9 @@ export default function PapyrusPage() {
    * With `false`, a dirty buffer is instead left exactly as it is: the disk keeps the
    * agent's version, the editor keeps the user's typing, and the post-await guard
    * below declines to overwrite. Nothing is lost on either side, and the user's next
-   * save is a deliberate act on a document they can see. That is the conflict the
-   * reviewer asked for, expressed as "refuse to clobber" rather than a modal —
-   * consistent with how `flushBuffer` already reports a mid-save keystroke.
+   * save is a deliberate act on a document they can see. The conflict surfaces as
+   * "refuse to clobber" rather than a modal — consistent with how `flushBuffer`
+   * already reports a mid-save keystroke.
    */
   const reloadOpenFile = useCallback(async (flushWhenDirty = true): Promise<boolean> => {
     if (!project || !currentFile) return false
@@ -954,9 +954,9 @@ export default function PapyrusPage() {
                   // over: `onSuccess` clears the dirty flag and switches `currentFile`, so
                   // a keystroke during the request is attached to a buffer that is about
                   // to be abandoned — and, because the flag is cleared, is dropped without
-                  // even the unsaved-changes prompt. Listing `create` and not `delete` was
-                  // the omission; the condition is now every mutation that ends with a
-                  // `setDirty(false)` plus a `setCurrentFile`.
+                  // even the unsaved-changes prompt. The condition covers every mutation
+                  // that ends with a `setDirty(false)` plus a `setCurrentFile`, delete
+                  // included.
                   || deleteFileMutation.isPending
                 }
                 diagnostics={currentFile === mainFile ? diagnostics : []}

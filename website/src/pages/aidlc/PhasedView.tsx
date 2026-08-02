@@ -22,12 +22,11 @@ const statusIcon: Record<string, ReactNode> = {
   completed: <CheckCircle className="lucide-inline" />, failed: <XCircle className="lucide-inline" />, skipped: <SkipForward className="lucide-inline" />, cancelled: <Square className="lucide-inline" />, cancelling: <Hourglass className="lucide-inline" />,
 };
 
-// Column and card surfaces come from the theme tokens that actually exist.
-// `--bg-secondary` / `--bg-tertiary` / `--text-muted` were referenced here with
-// dark-only literal fallbacks, and none of the three is defined in any of the 34
-// theme blocks — so the fallback always won and the board stayed navy-on-white in
-// every light theme. `--bg-elevated` raises the column off the page and
-// `--bg-hover` raises the card off the column, in both directions.
+// Column and card surfaces use theme tokens that exist across all 34 theme
+// blocks. `--bg-secondary` / `--bg-tertiary` / `--text-muted` are not defined in
+// any theme, so relying on them with dark-only literal fallbacks leaves the board
+// navy-on-white in light themes. `--bg-elevated` raises the column off the page
+// and `--bg-hover` raises the card off the column, in both directions.
 const COLUMN_STYLE = { background: 'var(--bg-elevated)', border: '1px solid var(--border)',
   borderRadius: 8, padding: 12, minHeight: 80 };
 

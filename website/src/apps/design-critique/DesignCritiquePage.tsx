@@ -98,9 +98,9 @@ export default function DesignCritiquePage() {
   const phaseRef = useRef<Phase>('new')
   const activeSlotRef = useRef('')
   /**
-   * Slots whose run the user cancelled. A single boolean was wrong once more than
-   * one critique could be in flight: cancelling either run tripped the flag every
-   * poller checks, so both exited and the other run's result was discarded.
+   * Slots whose run the user cancelled. Keyed per slot because more than one
+   * critique can be in flight: a single boolean would trip for every poller, so
+   * cancelling one run would exit the others and discard their results.
    */
   const cancelledRef = useRef<Set<string>>(new Set())
   /**
@@ -127,9 +127,9 @@ export default function DesignCritiquePage() {
 
   const narrow = useNarrow(rootRef)
 
-  // Must re-arm on setup, not only clear on teardown: StrictMode mounts, unmounts
-  // and remounts effects, so a teardown-only version left aliveRef false forever
-  // and every poll cancelled itself.
+  // Must re-arm on setup, not only clear on teardown: StrictMode mounts,
+  // unmounts and remounts effects, so a teardown-only version would leave
+  // aliveRef false forever and every poll would cancel itself.
   useEffect(() => {
     aliveRef.current = true
     return () => { aliveRef.current = false }
@@ -235,19 +235,15 @@ export default function DesignCritiquePage() {
    * Clear the persisted job ONLY if it is this run's.
    *
    * One job record is persisted at a time, so an older run reaching its end must
-   * not wipe a newer one's. Start critique A, start B while A is still going, let
-   * A finish: unconditional clearing dropped B's record, and the mount-time
-   * reaper then treated B's slot as a stray and deleted the run with it.
-   * Records are keyed by slot now, so this removes exactly this run's entry
-   * and leaves any other in-flight run resumable.
+   * not wipe a newer one's. Records are keyed by slot, so this removes exactly
+   * this run's entry and leaves any other in-flight run resumable.
    */
   /**
    * End one run completely: forget its resume pointer, release its server slot,
-   * and remove any pending row. Releasing the slot WITHOUT forgetting the job has
-   * now been a defect three separate times (start-over, cancel, terminal
-   * discovery) — a reload then resumed a run whose slot no longer exists and died
-   * on an availability error. Every terminal path goes through here so the two
-   * cannot drift apart again.
+   * and remove any pending row. Releasing the slot WITHOUT forgetting the job
+   * leaves a reload able to resume a run whose slot no longer exists, which then
+   * dies on an availability error. Every terminal path goes through here so the
+   * two cannot drift apart.
    */
   const endRun = (slotKey: string) => {
     // An empty key would reach clearJob()'s clear-all branch and delete every
@@ -290,10 +286,10 @@ export default function DesignCritiquePage() {
     endRun(slotKey)
     setCritiques(next)
     // Take over the screen only if the user is waiting for THIS run. Testing the
-    // phase alone was not enough: starting a second critique puts the phase back
-    // to 'analyzing', so the first run read that as "still waiting for me" and
-    // replaced the second run's in-progress view with its own report. Any run the
-    // user is no longer watching announces itself with the ready chip instead.
+    // phase alone is not enough: starting a second critique puts the phase back
+    // to 'analyzing', so the first run would read that as "still waiting for me"
+    // and replace the second run's in-progress view with its own report. Any run
+    // the user is no longer watching announces itself with the ready chip instead.
     const waiting = isWatching(slotKey)
     if (waiting) showReport(rep, screens, next.find(e => e.slotKey === slotKey) || next[0])
     else setJustFinished({ slotKey, read: rep.overallRead || 'Critique ready', screens, report: rep })
@@ -425,8 +421,8 @@ export default function DesignCritiquePage() {
   // Reap slots we created and never cleaned up. Runs before resume so the live job is spared.
   useEffect(() => {
     // Spare every persisted job AND every run still in flight. Sparing only the
-    // newest job record deleted a background critique's slot the moment a second
-    // one started.
+    // newest job record would delete a background critique's slot the moment a
+    // second one started.
     const keep = new Set<string>(loadLive())
     for (const j of loadJobs()) if (j.slotKey) keep.add(j.slotKey)
     const strays = loadSlots().filter(k => k && !keep.has(k))
@@ -565,10 +561,10 @@ export default function DesignCritiquePage() {
     const next = prev.slice(); const t = next[i]; next[i] = next[j]; next[j] = t; return next
   })
   /**
-   * Attach a poller to a run that is persisted but unattended. Resume used to
-   * start a poller for `loadJob()` only — the newest record — so a critique
-   * backgrounded with `+ New` was never collected after a page revisit, and
-   * clicking its pending row showed a spinner nothing was driving.
+   * Attach a poller to a run that is persisted but unattended. Resume attaches a
+   * poller for EVERY analyzing job, not just the newest record, so a critique
+   * backgrounded with `+ New` is collected after a page revisit instead of
+   * showing a spinner nothing is driving.
    */
   const resumeAnalyzing = (job: Job): void => {
     if (!job.slotKey || pollingRef.current.has(job.slotKey)) return
@@ -588,8 +584,7 @@ export default function DesignCritiquePage() {
 
   /**
    * The "nothing renderable in there" copy, read through normalizeScope so the
-   * model's `cannotSee` / `note` cannot put an object into an error string. Both
-   * empty-result branches used the raw payload before.
+   * model's `cannotSee` / `note` cannot put an object into an error string.
    */
   const discoveryNote = (info: Partial<Scope>): string => {
     const sc = normalizeScope(info)
@@ -713,7 +708,7 @@ export default function DesignCritiquePage() {
   const newCritique = () => {
     // 'scanning' is deliberately NOT here. A scan ends at a scope decision the
     // user has to make, so it cannot finish in the background: leaving it running
-    // meant its completion wrote setScope/setPhase over a newer run, and the
+    // would let its completion write setScope/setPhase over a newer run, and the
     // pending row it earned could never resolve on its own. Treating it as
     // not-running routes it into the cleanup below, which ends it.
     const running = phase === 'analyzing' || phase === 'uploading'
@@ -723,13 +718,14 @@ export default function DesignCritiquePage() {
     clearStaged()
     if (running) {
       // The run is not cancelled, so give it a row in "Your critiques" with a
-      // loading state. Without this the critique kept running invisibly and
-      // looked like it had been thrown away.
+      // loading state. Without this the critique would keep running invisibly
+      // and look like it had been thrown away.
       const k = activeSlotRef.current || slot
       if (k) setCritiques(beginPendingCritique(k, (current && current.screens) || []))
     }
-    // Clear the job record too. Dropping only the slot left the run persisted, so
-    // a reload resumed a critique the user had explicitly started over from.
+    // Clear the job record too. Dropping only the slot would leave the run
+    // persisted, so a reload would resume a critique the user had explicitly
+    // started over from.
     // Marking it cancelled makes an in-flight scan's poller exit on its next
     // check instead of grinding through eight failed polls against a dead slot.
     if (!running && slot) {
@@ -752,8 +748,8 @@ export default function DesignCritiquePage() {
     const job = loadJobs().find(j => j.slotKey === e.slotKey)
     startClock(job && job.ts ? job.ts : e.ts)
     setPhase(e.screens && e.screens.length ? 'analyzing' : 'scanning')
-    // Selecting a pending row only changed UI state before, so a run with no
-    // poller sat at "analyzing" forever. Attach one if nothing is driving it.
+    // Selecting a pending row only changes UI state, so a run with no poller
+    // would sit at "analyzing" forever. Attach one if nothing is driving it.
     if (job && job.stage === 'analyzing') resumeAnalyzing(job)
     else if (!job) resumeAnalyzing({ stage: 'analyzing', slotKey: e.slotKey, screens: e.screens || [], ts: e.ts })
   }
@@ -807,8 +803,9 @@ export default function DesignCritiquePage() {
 
   const stepRange = (f: Finding) => {
     // `steps` arrives from extractJson<Report>, which is an unchecked cast over
-    // model output — a reply with "steps":"1" used to reach .sort() on a string and
-    // take the whole report down. Trust the shape only when it really is an array.
+    // model output — a reply with "steps":"1" would otherwise reach .sort() on a
+    // string and take the whole report down. Trust the shape only when it really
+    // is an array.
     const st = Array.isArray(f.steps) ? f.steps.slice().sort((a, b) => a - b) : []
     if (!st.length) return 'flow'
     if (st.length === 1) return String(st[0])

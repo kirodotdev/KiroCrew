@@ -2,11 +2,11 @@
  * A failed session-create must never eat the user's message.
  *
  * `send()` clears the composer (and deletes its drafts) BEFORE it creates the
- * session for a new-session send. The create used to be a bare
- * `.unwrap()`: when it rejected, send() unwound with the text already gone —
- * nothing sent, no error surfaced, no draft to recover, and `sendingRef` left
- * true. This pins the recovery: text, paste blocks and attachments come back,
- * an error message is shown, and nothing is sent.
+ * session for a new-session send. If the create rejects, the text is already
+ * gone, so send() must recover it — otherwise nothing is sent, no error is
+ * surfaced, there is no draft to recover, and `sendingRef` stays true. This pins
+ * the recovery: text, paste blocks and attachments come back, an error message
+ * is shown, and nothing is sent.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
@@ -227,8 +227,8 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
   })
 
   it('does not treat a substring collision as already restored', async () => {
-    // GPT's case: payload "test" sits inside the newer draft "latest". A bare
-    // substring match calls that already-restored and drops the payload.
+    // Substring collision: payload "test" sits inside the newer draft "latest". A
+    // bare substring match calls that already-restored and drops the payload.
     let rejectCreate: (e: Error) => void = () => {}
     createChatSlot.mockImplementation(() => new Promise((_res, rej) => { rejectCreate = rej }))
     const store = makeStore('test')

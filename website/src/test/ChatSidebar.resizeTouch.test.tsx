@@ -1,10 +1,9 @@
 /**
  * Sidebar column resize via Pointer Events (mouse + touch + pen).
  *
- * The handle used to be `onMouseDown` + window mousemove/mouseup, which never
- * fired for a touch drag — so a tablet at desktop width (where the sidebar is a
- * side-by-side panel with a visible handle) could not resize it. It now uses
- * usePointerDrag, so the same gesture works for any pointer type.
+ * The handle uses usePointerDrag, so the same gesture works for any pointer
+ * type — including a touch drag on a tablet at desktop width, where the sidebar
+ * is a side-by-side panel with a visible handle.
  *
  * Locks the contract:
  *  (1) A pointer drag on the handle changes the panel width by the pointer delta.

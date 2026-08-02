@@ -1,9 +1,8 @@
 /**
  * Test: the sidebar PR/MR chip is a real link.
  *
- * The chip used to be a plain <span> with the URL only in its tooltip, so the
- * PR it names was not reachable from the sidebar. It is now an <a> that opens
- * the pull request in a new tab. Because the session row itself is a
+ * The chip is an <a> that opens the pull request in a new tab, so the PR it
+ * names is reachable from the sidebar. Because the session row itself is a
  * click-to-switch button, the anchor must also stop the click from bubbling —
  * otherwise opening the PR would switch sessions at the same time.
  *
@@ -141,10 +140,8 @@ describe('ChatSidebar – PR chip link', () => {
  * which the backend faithfully projects as `ci: "running"` — so a chip gated
  * only on `merged` spins its spinner indefinitely on work nobody is waiting for.
  *
- * The `merged` half is asserted here too. It was fixed in PR #301 but its test
- * lived in the since-split `ChatSidebar.integration.test.tsx` and did not
- * survive, leaving the whole rule uncovered — which is why the `closed` half
- * went unnoticed. Both states plus a live control now live in one table.
+ * The `merged` half is asserted here too. Both terminal states plus a live
+ * control live in one table.
  */
 describe('ChatSidebar – terminal PR chips suppress CI', () => {
   const url = (n: number) => `https://github.com/kirodotdev/KiroCrew/pull/${n}`

@@ -140,7 +140,7 @@ export function createActionsProvider(deps: ActionsProviderDeps): ResourceProvid
           icon: action.icon,
           score: match.score,
           indices: match.indices,
-          // Declarative §2 Enter action (/ task 27): Actions are pure
+          // Declarative §2 Enter action: Actions are pure
           // command-invocations — Enter runs `action.run`, and ⌘Enter has no
           // distinct behavior (the dispatcher ignores the modifier for this
           // kind). `run` is carried on the action payload so the dispatcher can

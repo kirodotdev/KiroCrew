@@ -250,12 +250,12 @@ describe('FollowUpBar', () => {
   })
 
   // ─── Focus management: clicking a chip must NOT steal keyboard focus ──────
-  // Regression for the active-chat "Enter clears the prompt" bug: when a chip
-  // takes focus on click, a follow-up Enter re-activates the (now picked) chip
-  // and runs its toggle-off branch, deleting the composed input. type=button +
-  // onMouseDown preventDefault keep focus in the textarea so Enter sends. The
-  // toggle still works via mouse re-click and via deliberate keyboard (tab)
-  // activation — we only suppress the mouse-click focus steal.
+  // Keeps keyboard focus in the textarea on chip click. If a chip took focus on
+  // click, a follow-up Enter would re-activate the (now picked) chip and run its
+  // toggle-off branch, deleting the composed input. type=button + onMouseDown
+  // preventDefault keep focus in the textarea so Enter sends. The toggle still
+  // works via mouse re-click and via deliberate keyboard (tab) activation — only
+  // the mouse-click focus steal is suppressed.
   describe('focus management (does not steal focus on click)', () => {
     it('legacy chip (no onSend) is type=button and prevents mousedown default', () => {
       render(<FollowUpBar options={['Alpha']} picked={new Set()} onSelect={() => {}} />)

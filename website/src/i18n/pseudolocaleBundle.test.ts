@@ -5,8 +5,8 @@
  * — the largest single catalog in the app (~88 KB gzip) — and it is already
  * unreachable in production: `devOnly` keeps it out of the picker and
  * `isRestorableLanguage()` refuses it from persisted state. Registering it
- * unconditionally therefore cost every production user a catalog none of them
- * can select.
+ * unconditionally would therefore cost every production user a catalog none of
+ * them can select.
  *
  * `import.meta.env.DEV` is true under vitest, so the production branch is
  * STUBBED and the module re-evaluated rather than merely asserted around: an
@@ -56,7 +56,7 @@ describe('pseudolocale catalog is dev-only', () => {
   it('gates the catalog on the build flag, not on a runtime language check', async () => {
     // Registration must be what changes: keeping the entry and filtering it at
     // selection time would leave the JSON in the bundle, which is the entire
-    // cost being removed here.
+    // cost this gate avoids.
     const dev = await catalogsWithDev(true)
     const prod = await catalogsWithDev(false)
     expect(Object.keys(dev).length - Object.keys(prod).length).toBe(1)

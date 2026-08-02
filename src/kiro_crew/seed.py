@@ -1,8 +1,5 @@
 """``kirocrew seed`` — copy a hand-authored fixture into ``$KIROCREW_HOME``.
 
-Phase 1.A (walking skeleton): one subcommand, one fixture (``empty``), one guardrail
-(``KIROCREW_HOME`` must be set). Safety guardrails and ``--seed-replace`` land in 1.B.
-
 Fixtures ship as package data at ``src/kiro_crew/tests_fixtures/<name>/``.
 Each fixture is a valid ``KIROCREW_HOME`` tree with a ``fixture.yaml``
 declaring ``schema-version``. Shipping inside the package is what lets
@@ -33,14 +30,13 @@ except ImportError:  # pragma: no cover — KiroCrew targets py3.10.
 from kiro_crew.config.paths import _default_home, _legacy_home
 from kiro_crew.sel import sel
 
-# Exit codes — pinned in PRD acceptance. Only 0 and 2 are reachable in 1.A;
-# 1 (I/O error) lands with the non-empty guardrail in 1.B.
+# Exit codes.
 EXIT_OK = 0
 EXIT_IO_ERROR = 1
 EXIT_GUARDRAIL = 2
 
 # Name of the package-data directory that holds the shipped fixtures.
-# Kept as a constant so 1.C's ``seeded_home`` helper reuses the same name.
+# Kept as a constant so the ``seeded_home`` helper reuses the same name.
 _FIXTURES_PKG = "tests_fixtures"
 
 
@@ -101,9 +97,6 @@ def _fixtures_root() -> Path:
 def _resolve_fixture(name: str) -> Path:
     """Return the path to fixture ``name``, or raise ``SeedError``.
 
-    The full "list valid names" error message lands in 1.B; 1.A just names
-    the missing fixture.
-
     Rejects path-traversal attempts (``--fixture ../../.ssh``) before
     ``shutil.copytree`` ever sees the path. Multiple gates are needed because
     each alone is bypassable:
@@ -141,7 +134,7 @@ def _resolve_fixture(name: str) -> Path:
         # List the available fixtures so the user doesn't have to go read
         # ``src/kiro_crew/tests_fixtures/`` or the PRD. Sorted for stable
         # test assertions and so ``empty`` / ``minimal`` / ``rich`` land
-        # in the obvious order as 1.C / 1.D ship them.
+        # in the obvious order.
         available = sorted(
             p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")
         )
@@ -254,8 +247,8 @@ def seed(fixture_name: str, *, replace: bool = False) -> None:
        dev tool. The caller can re-run with ``--seed-replace`` to clean up.
 
     ``symlinks`` is left at the ``shutil.copytree`` default (``False``) so
-    symlinks inside fixtures are followed. We don't ship any fixtures with
-    symlinks today; revisit in 1.C if ``minimal`` / ``rich`` add one.
+    symlinks inside fixtures are followed; no shipped fixture contains a
+    symlink today.
     """
     src = _resolve_fixture(fixture_name)
     # ``_resolve_target`` is called twice deliberately: first with

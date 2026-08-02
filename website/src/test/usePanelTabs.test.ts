@@ -1,14 +1,14 @@
 /**
- * Tests for usePanelTabs — the tabbed side panel state model
- * (introduced with the tabbed side panel revamp). Pins the tab-strip
- * contracts: singleton view tabs, document dedupe/focus, replace-in-place
- * opens, patch-without-focus, neighbor refocus on close, and reordering.
+ * Tests for usePanelTabs — the tabbed side panel state model. Pins the
+ * tab-strip contracts: singleton view tabs, document dedupe/focus,
+ * replace-in-place opens, patch-without-focus, neighbor refocus on close,
+ * and reordering.
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
 
-// The panel-tab store is now module-level + localStorage-persisted (so the
+// The panel-tab store is module-level + localStorage-persisted (so the
 // strip survives ChatPage route unmounts and reloads). Reset it before each
 // test so state doesn't leak across the renderHook calls in this suite.
 beforeEach(() => { __resetPanelTabs() })

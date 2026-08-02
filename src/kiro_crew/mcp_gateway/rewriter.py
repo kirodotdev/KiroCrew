@@ -560,7 +560,8 @@ def rewrite_agents(
     # Per-agent stub scaffolding lives here: the env sidecars written by
     # _build_stub_entry. There is no launcher script -- the overlay entry runs
     # the interpreter directly (see _STUB_MODULE), and channel_id, the one value
-    # that used to require a launcher, is injected per session over ACP instead.
+    # that would otherwise require a launcher, is injected per session over ACP
+    # instead.
     stubs_dir = overlay_dir.parent / "stubs"
     platform_compat.make_owner_only_dir(stubs_dir)
     written: set[str] = set()
@@ -573,12 +574,12 @@ def rewrite_agents(
     # bypasses the gateway unless wrapped (the "kirocrew-lite bypass" class of
     # bug: agents with empty mcpServers inherit the global's unwrapped entries).
     #
-    # Previously the fix was to wrap the poolable servers in the settings
-    # overlay too — but settings/mcp.json has no "name", so those stubs got an
-    # empty ``--agent`` AND collided (same name) with the correctly-wrapped
+    # Wrapping the poolable servers in the settings overlay too does NOT work
+    # — settings/mcp.json has no "name", so those stubs get an
+    # empty ``--agent`` AND collide (same name) with the correctly-wrapped
     # per-agent copy, double-spawning inside kiro-cli (server_init_failure).
     #
-    # The correct fix is two-sided: INJECT each poolable settings server into
+    # The fix is two-sided: INJECT each poolable settings server into
     # every agent's own overlay (wrapped with that agent's name), and DROP it
     # from the settings overlay. Empty-mcpServers agents then get pooled
     # coverage with the right identity, and no name ever appears wrapped in

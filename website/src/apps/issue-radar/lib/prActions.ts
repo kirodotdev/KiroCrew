@@ -27,7 +27,7 @@ import {
 /**
  * Fallback chunk size when the server has not published its cap.
  *
- * Only reached by a cached response written before `bulk_max` shipped; deliberately
+ * Only reached by a cached response with no `bulk_max` field; deliberately
  * conservative so the fallback can never itself exceed the real cap.
  */
 export const DEFAULT_BULK_CHUNK = 25

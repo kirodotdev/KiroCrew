@@ -19,11 +19,11 @@ import { i18nT } from '../i18n/t'
 /**
  * Resolve the theme-consent token to transmit for an installed pack's chat.
  *
- * Two-tier consent, wire side: the client no longer computes a trust boolean —
+ * Two-tier consent, wire side: the client does not compute a trust boolean —
  * it just transmits the RAW stored grant (the sha256 the user granted for the
  * persona content they saw). The backend does the content-binding check: it
  * injects the persona only if this token equals sha256 of the persona.md it
- * reads, so a re-install that swaps persona.md (new sha) no longer matches the
+ * reads, so a re-install that swaps persona.md (new sha) does not match the
  * stale grant and the never-consented persona is never injected.
  *
  * Installed/custom packs are keyed `custom-<slug>` in colorTheme (useTheme), so
@@ -1258,7 +1258,7 @@ export const api = {
     // content-binding, injecting the persona only when this token equals sha256
     // of the persona.md it reads. Omitted for a built-in theme, no grant, or a
     // legacy '1'/'' token (must re-prompt). The legacy `theme_consent` boolean
-    // is intentionally NOT sent anymore: gating is content-bound server-side.
+    // is intentionally NOT sent: gating is content-bound server-side.
     const themeConsent = themeConsentSha(colorTheme)
     return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(browse ? { browse: true } : {}) }), signal })
   },
@@ -1746,7 +1746,7 @@ export const api = {
     // Route to the provider's declared endpoint with the payload shape
     // that _do_deploy expects (site_id + artifact_slug). ttl_hours is sent on
     // BOTH preview and confirm so the previewed TTL matches what is deployed
-    // (R12 F3 — omitting it here made preview use the backend 72h default).
+    // (omitting it here makes preview use the backend 72h default).
     const endpoint = provider?.endpoint || '/api/deploy/deploy'
     const payload: Record<string, unknown> = { site_id: slug, artifact_slug: slug, provider_id: providerId }
     if (ttlHours !== undefined) payload.ttl_hours = ttlHours

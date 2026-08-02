@@ -119,7 +119,7 @@ def denied_rule_for(app: AppRef) -> DeniedApp | None:
       self-target rule: KiroCrew's dashboard served into a browser tab presents
       Chrome's (or Safari's) bundle id and process name, so identity matching cannot
       see it, and the agent could drive our own Settings UI — clicking the very
-      toggle the keystone exists to keep out of its reach (reviewer finding).
+      toggle the keystone exists to keep out of its reach.
 
     Deliberately a SUBSTRING test on the title rather than an exact match: the tab
     title carries a badge prefix (``(3) Kiro Crew``) and a page suffix

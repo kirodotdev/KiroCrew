@@ -622,9 +622,9 @@ async def compile_project(project: Path, main_file: str) -> CompileResult:
     # path whose target is not — the two guards cover different halves and neither
     # substitutes for the other.
     #
-    # This cannot be solved downstream: `pdf_path`'s containment check (added earlier in
-    # this PR) decides what may be SERVED, and by then the write has happened. The only
-    # place to stop it is before the spawn.
+    # This cannot be solved downstream: `pdf_path`'s containment check decides what may
+    # be SERVED, and by then the write has happened. The only place to stop it is before
+    # the spawn.
     #
     # Removing the links instead of refusing was considered and rejected: deleting files
     # a repository shipped, as a side effect of pressing Compile, is its own surprise.

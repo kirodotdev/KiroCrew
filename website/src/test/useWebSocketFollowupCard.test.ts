@@ -3,10 +3,9 @@
  *
  * The reducers and the card component have their own suites, but the adapter in
  * `useWebSocket.ts` — the code that decides which frames are well-formed enough
- * to become a card — was only ever exercised indirectly (GPT review, PR #461
- * round 10). Everything the server sends is already sanitized and redacted; this
- * pins the client's own shape filtering so a malformed or partial frame cannot
- * put junk in the store.
+ * to become a card — is only ever exercised indirectly. Everything the server
+ * sends is already sanitized and redacted; this pins the client's own shape
+ * filtering so a malformed or partial frame cannot put junk in the store.
  */
 import { renderHook, act } from '@testing-library/react'
 import { createElement } from 'react'

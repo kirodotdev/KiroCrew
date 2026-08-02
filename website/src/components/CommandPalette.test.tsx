@@ -9,7 +9,7 @@ const wrapper = ({ children }: { children: ReactNode }) => (
 )
 
 /**
- * Tests for the Search Everywhere palette (step 12):
+ * Tests for the Search Everywhere palette:
  *  - {@link useCommandPalette} global trigger (⌘K / Ctrl+K + double-Shift), and
  *  - the {@link CommandPalette} modal's open render, Tab tab-scoping, Enter
  *    activation, and close paths (Escape wiring + close button + row click).
@@ -80,7 +80,7 @@ const H = vi.hoisted(() => {
   const pagesProvider = { id: 'pages', label: 'Pages', icon: null, search: vi.fn(() => []) }
   const actionsProvider = { id: 'actions', label: 'Actions', icon: null, search: vi.fn(() => []) }
   // P1 providers (Knowledge · Skills · Prompts) — wired into CommandPalette as
-  // direct hooks at steps 17/18. Mock them with stable, empty-search providers
+  // direct hooks. Mock them with stable, empty-search providers
   // so the modal renders without React-Query / Router (matching the P0 mocks).
   const knowledgeProvider = { id: 'knowledge', label: 'Knowledge', icon: null, search: vi.fn(() => []) }
   const skillsProvider = { id: 'skills', label: 'Skills', icon: null, search: vi.fn(() => []) }
@@ -481,8 +481,7 @@ describe('CommandPalette — keyboard & activation', () => {
 })
 
 /**
- * Per-type Enter matrix — central {@link dispatchEnter} routing (§2,
- * task 28).
+ * Per-type Enter matrix — central {@link dispatchEnter} routing (§2).
  *
  * Drives the palette's active (All) tab to render exactly one fixture result
  * carrying a declarative `EnterAction`, then fires the shared hook's
@@ -568,9 +567,9 @@ describe('CommandPalette — per-type Enter matrix (dispatchEnter routing)', () 
   })
 
   it('Skills: Enter navigates to the skills catalog (palette-as-nav) and closes', async () => {
-    // Skills rows are a NAVIGATION target now — Enter opens /capabilities to
+    // Skills rows are a NAVIGATION target — Enter opens /capabilities to
     // view/edit the skill rather than inserting a $token (there is no
-    // per-skill deep link yet). Supersedes the old insert-token contract.
+    // per-skill deep link yet).
     const { onClose } = await mountWith(
       fixture({
         title: 'Skill Row',

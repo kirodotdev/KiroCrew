@@ -189,10 +189,10 @@ export function coerceRefreshPrefs(raw: Partial<RefreshPrefs> | undefined): Refr
  * Used for the issue-list "Updated …" footer; returns '' for a falsy input
  * (e.g. before the first fetch).
  *
- * Formatting is delegated to the locale-aware seam (`src/i18n/format.ts`): the
- * previous ladder of template literals rendered English in every language, and
- * carried its own `month`/`months` plural morphology, which is unexpressible
- * outside English. */
+ * Formatting is delegated to the locale-aware seam (`src/i18n/format.ts`) so it
+ * renders in the active language rather than English-only, and so
+ * `month`/`months` plural morphology comes from CLDR rather than being
+ * hand-rolled (which is unexpressible outside English). */
 export function relativeTime(ms: number): string {
   if (!ms) return ''
   return fmtRelative(ms)
@@ -217,8 +217,8 @@ export function relativeTimeOrDate(iso: string): string {
  * Counts whole CALENDAR days rather than elapsed seconds — 23:59 to 00:01 is
  * "yesterday", not "now" — then lets CLDR word the result. `numeric: 'auto'`
  * inside `fmtRelative` is what produces "yesterday"/"昨天"/"gestern" instead of
- * a mechanical "1 day ago", and it removes the hand-rolled English plural
- * suffixes this function used to carry for months and years.
+ * a mechanical "1 day ago", and it avoids hand-rolled English plural
+ * suffixes for months and years.
  *
  * The `style: 'long'` override is deliberate: this label sits in a timeline
  * where "5 days ago" reads better than the compact "5d ago". */

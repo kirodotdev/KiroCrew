@@ -1,5 +1,5 @@
 // The identity badge shown next to an author across Issue Radar's detail panes
-// (issues AND pull requests). Extracted so both panes render identity
+// (issues AND pull requests). Shared by both panes so they render identity
 // identically — a maintainer must not read as "Owner" on an issue and as
 // nothing on a PR — and so the role vocabulary lives in exactly one place.
 

@@ -212,9 +212,9 @@ export default function PinnedPrompt({
         // the card away as the next prompt pushes it up. Two things it must NOT
         // do: (1) clip the EXPANDED card at rest — an expanded prompt grows
         // multi-line past the collapsed band height, and a constant `hidden` cut
-        // its lower lines off; (2) reintroduce the transition blink. The blink was
-        // never the overflow flip itself — it was the ~4.5px HEIGHT jump that
-        // used to accompany it. With the continuous height below, flipping
+        // its lower lines off; (2) reintroduce the transition blink. The blink is
+        // not the overflow flip itself but a ~4.5px HEIGHT jump alongside it.
+        // With the continuous height below, flipping
         // `visible`→`hidden` at pushUp>0 is seamless: the card has 4px of band
         // padding beneath it, enough for `--shadow-sm` (`0 1px 2px`) to still
         // render in the first push frame, so nothing pops.

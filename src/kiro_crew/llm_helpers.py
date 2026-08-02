@@ -115,9 +115,9 @@ def acp_error_is_transient(exc: BaseException) -> bool:
     string-matching the formatted message for exceptions raised without the flag
     (legacy raise paths, non-``AcpError`` exceptions, tests).
 
-    Fixes a case where ``_format_acp_error`` rewrites a generic 5xx into a friendly
-    string that the marker-based string classifier alone did not recognise, so
-    the retry never fired."""
+    The formatted message may rewrite a generic 5xx into a friendly string that
+    the marker-based string classifier alone does not recognise; relying on the
+    structured flag keeps that case retryable."""
     flag = getattr(exc, "transient", None)
     if isinstance(flag, bool):
         return flag

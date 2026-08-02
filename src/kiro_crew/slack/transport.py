@@ -1,11 +1,9 @@
-"""v1d -- Slack as the first concrete :class:`MessagingTransport`.
+"""Slack as a concrete :class:`MessagingTransport`.
 
 This wraps the existing ``SlackClientOps`` surface in the channel-neutral
-transport contract. It is *additive*: nothing in the live gateway path
-imports it yet. The ``GatewayOrchestrator`` wiring (registering the transport
-and supplying the real turn-dispatch callback) is a separate, gated step
-because that callback drives the shared turn loop that ``handle_message`` has
-not yet been rewired onto.
+transport contract. Nothing in the live gateway path constructs it: the Slack
+path routes through ``slack.transport_dispatch`` (TurnDriver + SlackRenderer)
+and only ``SlackTransport.channel_type`` is read, by ``handlers_system``.
 
 Direction of dependency is ``slack -> messaging`` (allowed): the neutral
 ``messaging`` package never imports Slack.

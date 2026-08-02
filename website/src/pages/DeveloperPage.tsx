@@ -48,10 +48,9 @@ export default function DeveloperPage() {
         )}
         {tab === 'memory' && (
           <>
-            {/* The memory GRAPH visualizer moved here from Settings > Overview
-                (mission-control rewrite) — it is an internals view. The
+            {/* The memory GRAPH visualizer is an internals view. The
                 user-facing memory browser (settings, preferences, projects,
-                history, lessons + vector store card) stays in Settings >
+                history, lessons + vector store card) lives in Settings >
                 Overview > Memory. */}
             <Suspense fallback={<ContentSkeleton rows={6} />}>
               <MemoryGraphTab />

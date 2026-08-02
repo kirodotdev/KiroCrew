@@ -7,10 +7,10 @@ const SKEW_TOLERANCE_MS = 60_000
  * Human-readable relative time from a unix timestamp (seconds).
  *
  * Delegates to the locale-aware seam (`i18n/format.ts`) rather than building the
- * string from a ladder of English template literals. The previous implementation
- * rendered `2m ago` / `3h ago` in every language, because a template literal has
- * no locale to consult. `fmtRelative` asks CLDR, so the same instant reads
- * `2分钟前` in Chinese and `vor 2 Minuten` in German.
+ * string from a ladder of English template literals, which have no locale to
+ * consult and would render `2m ago` / `3h ago` in every language. `fmtRelative`
+ * asks CLDR, so the same instant reads `2分钟前` in Chinese and `vor 2 Minuten`
+ * in German.
  *
  * English output is unchanged for seconds, minutes, hours and multi-day gaps
  * (`45s ago`, `2m ago`, `3h ago`, `5d ago`). Two deltas, both deliberate:

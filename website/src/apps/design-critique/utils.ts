@@ -64,8 +64,8 @@ export function shortLabel(s: string | undefined): string {
 /**
  * Relative age of a critique run, through the shared formatting seam.
  *
- * The hand-rolled ladder this replaces glued a unit onto a number (`s + 's ago'`),
- * which is untranslatable and is what `src/i18n/unitLiterals.test.ts` gates. Narrow
+ * Uses narrow `fmtRelative` rather than gluing a unit onto a number (`s + 's ago'`),
+ * which is untranslatable and is what `src/i18n/unitLiterals.test.ts` gates.
  * `fmtRelative` is byte-identical in English for seconds, minutes, hours and
  * multi-day gaps; the two deliberate deltas documented on the seam apply here too
  * (a sub-second age reads `now` rather than `1s ago`, and exactly one day back reads
@@ -112,10 +112,10 @@ export const saveHistory = (list: HistoryEntry[]): void => { try { localStorage.
 /**
  * Job records are keyed by slotKey, because more than one critique can be in
  * flight at once: `+ New` deliberately does NOT cancel a running run, so a
- * single record meant starting a second critique overwrote the first one's
- * resume pointer — the first run then had nowhere to be resumed from and its
- * result was lost on navigation, even though the reaper was already sparing its
- * slot. Storing one record per slot keeps every in-flight run resumable.
+ * single shared record would let starting a second critique overwrite the first
+ * one's resume pointer — leaving the first run with nowhere to resume from and
+ * its result lost on navigation, even though the reaper spares its slot. Storing
+ * one record per slot keeps every in-flight run resumable.
  *
  * The value is read as an object but tolerates the older single-record shape
  * written by a previous build, so an upgrade in mid-run still resumes.
@@ -185,9 +185,9 @@ export function readableOn(hex: string): string {
  * Coerce a model-supplied report into the shape the UI renders.
  *
  * `extractJson<Report>` is an unchecked cast over model output, so every array
- * field is only *probably* an array. Guarding each render site one at a time has
- * already cost two rounds of the same bug class (`steps` arriving as `"1"`, then
- * `keep` / `couldNotSee` / `rules`), and the failure is worse than a blank
+ * field is only *probably* an array. Guarding each render site one at a time is
+ * fragile — the same bug class recurs (`steps` arriving as `"1"`, `keep` /
+ * `couldNotSee` / `rules` as non-arrays), and the failure is worse than a blank
  * section: the throw happens during render, the route-level ErrorBoundary
  * replaces the page, and because the entry is written to history first, reopening
  * that critique crashes every time.
@@ -252,10 +252,10 @@ export function normalizeScope(raw: Partial<Scope> | null | undefined): Scope | 
     (Array.isArray(v) ? v.filter(x => typeof x === 'string') as string[] : [])
   const text = (v: unknown): string | undefined =>
     (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : undefined)
-  // Built field by field on purpose: a `...raw` spread let any scalar the model
-  // invented survive unchecked, which is how `framework` and `note` stayed
-  // un-normalised after screens and flows were fixed. Constructing the object
-  // explicitly means an unvalidated field cannot reach a React child at all —
+  // Built field by field on purpose: a `...raw` spread lets any scalar the model
+  // invented survive unchecked, which is how a field like `framework` or `note`
+  // can stay un-normalised while screens and flows are guarded. Constructing the
+  // object explicitly means an unvalidated field cannot reach a React child at all —
   // the class is closed by construction rather than one field at a time. Adding
   // a field to Scope now requires deciding how it is coerced.
   const blocked = raw.blocked && typeof raw.blocked === 'object' && !Array.isArray(raw.blocked)
@@ -267,8 +267,8 @@ export function normalizeScope(raw: Partial<Scope> | null | undefined): Scope | 
     blocked: blocked as Scope['blocked'],
     screens: objects<DiscoveryScreen>(raw.screens)
       .filter(s => typeof s.id === 'string' && !!s.id)
-      // Every field the picker renders, not a subset: `group` was missed once and
-      // an object there crashes the route exactly like `label` would. `canSee`
+      // Every field the picker renders, not a subset: an object in `group` crashes
+      // the route exactly like one in `label` would. `canSee`
       // is coerced because a model string "false" is truthy and would silently
       // flip a screen to visible.
       .map(s => ({
@@ -291,11 +291,12 @@ export function normalizeScope(raw: Partial<Scope> | null | undefined): Scope | 
 /**
  * Slots with a run in flight, so the mount-time reaper can spare all of them.
  *
- * Only one job record is persisted (JOBKEY), so the reaper used to spare exactly
- * one slot. That is wrong as soon as two critiques overlap, which the UI allows
- * on purpose — `+ New` deliberately does NOT cancel a running critique, it lets
- * it finish into History. Start A, start B, navigate away, and the reaper deleted
- * A's slot along with its result.
+ * A single persisted job record (JOBKEY) can only spare one slot, which is wrong
+ * as soon as two critiques overlap — which the UI allows on purpose: `+ New`
+ * deliberately does NOT cancel a running critique, it lets it finish into History.
+ * Start A, start B, navigate away, and a single-slot reaper would delete A's slot
+ * along with its result. This list tracks every in-flight slot so the reaper
+ * spares all of them.
  *
  * Entries are timestamped and expire, because a tab closed mid-run would
  * otherwise mark a slot live forever and defeat the reaper it is exempt from.

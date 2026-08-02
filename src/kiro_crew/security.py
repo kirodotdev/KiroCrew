@@ -1057,9 +1057,9 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="sensitive-file-read-cat-kirocrew-env",
-        # The data home moved to ~/.kiro/crew; match the LIVE ~/.kiro/crew/.env
-        # plus the pre-move legacy home, so this deny layer no longer guards
-        # only a path that holds no live secrets.
+        # Match both the LIVE ~/.kiro/crew/.env and the legacy ~/.kirocrew/.env,
+        # since a not-yet-migrated box still holds live secrets at the legacy
+        # path.
         pattern=".*cat.*/(?:\\.kiro/crew|\\.kirocrew)/\\.env.*",
         category="sensitive-file-read",
         description=(

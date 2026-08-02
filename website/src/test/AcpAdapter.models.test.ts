@@ -172,7 +172,7 @@ describe('model-list liveness (self-heal signal)', () => {
 
   it('keeps polling on a degraded CACHED multi-model list (the -32603/stale bug)', async () => {
     // Prime a good live list, then fail: the served list is multi-entry but
-    // degraded — polling MUST continue (the old length>1 heuristic stopped it).
+    // degraded — polling MUST continue.
     ;(api.models as any).mockResolvedValueOnce([
       { model_name: 'auto', description: 'a' },
       { model_name: 'claude-opus-4.8', description: 'b' },

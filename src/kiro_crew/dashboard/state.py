@@ -1045,8 +1045,8 @@ class _ChatSlot:
         self._frozen_prefix_cache: tuple[float, int, int, str, list[str]] | None = None
         # Set by rewind/regenerate after they TRUNCATE the window. While set,
         # _save_slot_to_history takes the archive-safe rewrite path so the
-        # dropped tail is archived — even if the inline rewrite save failed
-        # (#3): the next 5s flush then retries the rewrite instead of silently
+        # dropped tail is archived — even if the inline rewrite save failed:
+        # the next 5s flush then retries the rewrite instead of silently
         # overwriting (the default save skips archiving). Cleared on a
         # successful rewrite save.
         self._pending_rewrite: bool = False
@@ -1083,7 +1083,7 @@ class _ChatSlot:
         # and — the point of the mechanism — REQUEUED as ordinary queue cards
         # by _run_chat's finally when the turn dies first (stall-cancel, user
         # STOP, error). Without this, a steer swallowed by a dying turn
-        # vanished with no trace (2026-07-17 incident; see the requeue site).
+        # vanished with no trace (see the requeue site).
         self._pending_steers: list[str] = []
 
     @property
@@ -1178,7 +1178,7 @@ class _ChatSlot:
             del self.messages[:excess]
             self._resumed_count = max(0, self._resumed_count - excess)
             # A trimmed leading window message may only join the frozen prefix
-            # once it is actually on disk (#8). Credit _disk_older_count only
+            # once it is actually on disk. Credit _disk_older_count only
             # for the persisted portion; the unpersisted overflow (should not
             # happen between 5s flushes) is logged rather than silently counted
             # as on-disk, which would have stranded those turns.
@@ -2459,7 +2459,7 @@ class DashboardState:
         # Disk catches up on the next full rewrite (ack/delete/clear paths).
         sweep_expired_notifications(self._notification_log)
         self._notification_log.append(note)
-        # Bound the in-memory list (GPT 5.6 round 17): only the disk load
+        # Bound the in-memory list: only the disk load
         # path capped it before, so sustained live deliveries grew the list
         # without limit — and the per-delivery sweep above scans it, making
         # delivery O(N²) over time. Same cap as the persisted file; oldest
@@ -3851,14 +3851,14 @@ def _note_ts_epoch(note: dict[str, Any]) -> float | None:
         # float() of a numeric STRING beyond float range (e.g. "-1e999")
         # returns inf/-inf without raising — a -inf epoch would make every
         # TTL comparison read "expired" and the sweep would destroy the row,
-        # violating the never-destroy-on-ambiguity rule (GPT 5.6 round 23).
+        # violating the never-destroy-on-ambiguity rule.
         # NaN likewise carries no ordering meaning. Treat both as
         # unparseable (note kept).
         return parsed if math.isfinite(parsed) else None
     except (TypeError, ValueError, OverflowError):
         # OverflowError: float() of a JSON integer beyond float range (e.g.
         # 10**400) raises rather than returning inf — one poison row must
-        # not abort the whole sweep (GPT 5.6 round 18).
+        # not abort the whole sweep.
         pass
     try:
         return datetime.fromisoformat(str(ts)).timestamp()
@@ -3946,7 +3946,7 @@ def _load_notifications() -> list[dict[str, Any]]:
         # Sweeping after truncation loses data: with more than N rows on
         # disk, newer expired-passive rows would displace older LIVE rows
         # during truncation, and the next full rewrite would delete those
-        # live rows permanently (GPT 5.6 round 11). Disk rewrites lazily on
+        # live rows permanently. Disk rewrites lazily on
         # the next mutation; the in-memory view is authoritative for serving.
         sweep_expired_notifications(entries)
         # Keep only the most recent N live rows
@@ -4010,7 +4010,7 @@ def _maybe_trim_notifications(path: Path) -> None:
     """Trim the notifications file if it exceeds 2x the max.
 
     Expired passive rows are discarded BEFORE the recency cap — the same
-    displacement hazard as the load path (GPT 5.6 round 12): trimming the
+    displacement hazard as the load path: trimming the
     raw tail first would retain newer expired-passive rows while deleting
     older LIVE rows, permanently losing history after the next load-time
     sweep. Unparseable lines are kept (never destroy on ambiguity).

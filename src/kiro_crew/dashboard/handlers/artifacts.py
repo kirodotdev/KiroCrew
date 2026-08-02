@@ -95,9 +95,9 @@ logger = logging.getLogger(__name__)
 # store's content cap (MAX_CONTENT_BYTES = 25 MiB) PLUS headroom for JSON
 # envelope overhead (base64/escaping + the other body fields), so content the
 # store + validation accept (up to 25 MiB) is never rejected earlier at this
-# HTTP boundary. Previously pinned at 2 MiB, which silently became the effective
-# ceiling for dashboard/MCP artifact_save/update once the content cap was raised
-# 1 MiB -> 25 MiB (the "store enforces a stricter cap" assumption inverted).
+# HTTP boundary. A fixed cap smaller than the content cap would silently become
+# the effective ceiling for dashboard/MCP artifact_save/update whenever the
+# content cap is raised (the "store enforces a stricter cap" assumption inverts).
 _MAX_BODY_BYTES = MAX_CONTENT_BYTES + 8 * 1024 * 1024  # 25 MiB content + 8 MiB envelope headroom
 
 # Publish-provider name grammar. Upstream imports this from ``validation`` where
@@ -838,7 +838,7 @@ def _materialize_and_pin(
     chat history's ``file_changes`` (:func:`_recorded_doc_identities`).
     Authorizing the opened descriptor — rather than re-resolving the path a
     second time for the read — closes the symlink/dir-swap TOCTOU window: the
-    file we authorize is exactly the inode we read (AWS-33). Sensitive resolved
+    file we authorize is exactly the inode we read. Sensitive resolved
     targets (``~/.aws`` …) and non-documents are refused up front. Blocking;
     call via ``_run_off_loop``.
     """
@@ -1093,9 +1093,8 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             logger.warning("source_path lookup failed: %s", exc)
             existing = None
         if existing is not None:
-            # R19 F5: run the SAME validation as the normal save path before
-            # the dedup update — the dedup branch previously skipped validation
-            # and silently dropped supplied fields.
+            # Run the SAME validation as the normal save path before the dedup
+            # update, so the dedup branch does not drop supplied fields.
             merr = _validate_inbound_webapp_metadata(body)
             if merr:
                 _audit(
@@ -1107,8 +1106,8 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
                 )
                 return _err(merr)
 
-            # R19 F5: kind conflict — if caller supplies a different kind than
-            # the existing artifact, that's a dedup conflict, not a silent update.
+            # Kind conflict — if caller supplies a different kind than the
+            # existing artifact, that's a dedup conflict, not a silent update.
             supplied_kind = body.get("kind")
             if supplied_kind and supplied_kind != existing.kind:
                 _audit(
@@ -1138,7 +1137,7 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             is_mcp = request.headers.get("X-Internal-Secret") is not None
             actor = "agent" if is_mcp else "user"
 
-            # R19 F5: pass through ALL supported fields (not just content).
+            # Pass through ALL supported fields (not just content).
             update_kwargs: dict[str, Any] = {
                 "content": body.get("content"),
                 "actor": actor,
@@ -1647,8 +1646,7 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
         return _err("restricted session cannot delete artifacts", status=403)
     slug = request.match_info.get("slug", "")
     # Capture the pre-delete version so the deleted-variant WS event carries the
-    # last-known version. The upstream cleanup block that fetched
-    # this was tied to the removed publishing path, so fetch it here directly.
+    # last-known version.
     try:
         _existing = get_default_store().get(slug)
     except ArtifactError:
@@ -2030,8 +2028,8 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
         existing_pub = (await _run_off_loop(lambda: get_default_store().get(slug))).publication
     except ArtifactNotFoundError:
         existing_pub = None
-    # nrb review #19: reject an explicit provider switch on an already-published
-    # artifact rather than silently ignoring it. publish() reuses the existing
+    # Reject an explicit provider switch on an already-published artifact rather
+    # than silently ignoring it. publish() reuses the existing
     # publication's provider, so honoring a switch here would leave the original
     # remote orphaned — require an explicit unpublish first.
     if (
@@ -3295,7 +3293,7 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
     is_agent = bool(body.get("is_agent"))
 
     # Author defaults to the dashboard user's alias (collaboration: comments
-    # show who left them, feedback #7). Agent comments keep their explicit
+    # show who left them). Agent comments keep their explicit
     # author (or the agent badge). getpass.getuser() is the alias on dev desks.
     # The author is LLM/agent-influenced on the MCP path and echoed to the
     # dashboard, so redact + cap it like the body (backend-security-controls).
@@ -3636,7 +3634,7 @@ async def api_artifact_resolve_comment(request: web.Request) -> web.Response:
 
 async def api_artifact_reopen_comment(request: web.Request) -> web.Response:
     """POST /api/artifacts/{slug}/comments/{id}/reopen — reopen a resolved
-    thread (set status back to open). Feedback #1: resolving was a one-way door.
+    thread (set status back to open).
     """
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):

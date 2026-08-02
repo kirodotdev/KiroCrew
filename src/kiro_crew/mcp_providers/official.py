@@ -199,9 +199,9 @@ def _split_args(pkg: dict[str, Any]) -> tuple[list[str], list[str]]:
 
     Runtime arguments belong to the runtime command (npx/uvx/docker) and
     must precede the package target; package arguments are the server's
-    own argv and must follow it. Merging them (the v0 bug) fed runtime
-    flags to the package — and the persisted spec then hit the 409
-    same-name/different-spec guard on reinstall after any fix.
+    own argv and must follow it. Merging them would feed runtime flags to
+    the package, and the persisted spec would then hit the 409
+    same-name/different-spec guard on reinstall.
     """
     runtime = _concrete_bucket(_first(pkg, "runtimeArguments", "runtime_arguments", default=[]))
     package = _concrete_bucket(_first(pkg, "packageArguments", "package_arguments", default=[]))

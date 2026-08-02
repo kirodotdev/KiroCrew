@@ -608,11 +608,11 @@ def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
 
 
 # `pod exec` forwards to a real kirocrew, so it inherits the WHOLE CLI — including
-# verbs that manage the HOST rather than any one instance. An earlier revision
-# denied the dangerous ones by name and that list was incomplete three times over
-# (`stop`, then `restart` for a second reason, then `service`), because the set of
-# host-scoped verbs is open-ended. So this is an ALLOWLIST: every verb below acts
-# only on `KIROCREW_HOME` state, which `pod exec` has already pointed at the pod.
+# verbs that manage the HOST rather than any one instance. This is an ALLOWLIST
+# rather than a denylist because the set of host-scoped verbs is open-ended (a
+# by-name denylist repeatedly missed verbs — `stop`, then `restart`, then
+# `service`): every verb below acts only on `KIROCREW_HOME` state, which
+# `pod exec` has already pointed at the pod.
 # Anything else — present or newly added — is refused until it is deliberately
 # listed, so the failure mode of drift is "temporarily unavailable" rather than
 # "silently operated on the user's live machine".

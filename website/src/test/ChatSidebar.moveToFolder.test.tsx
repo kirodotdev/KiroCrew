@@ -67,7 +67,7 @@ function seedStore(initialFolderId = '') {
 const folderOf = () => store.getState().dashboard.slots.find(s => s.key === SLOT)?.folder_id
 
 function renderMove() {
-  // useMoveSlotToFolder now uses useMutation, so it needs a QueryClientProvider
+  // useMoveSlotToFolder uses useMutation, so it needs a QueryClientProvider
   // in addition to the singleton store Provider.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   const wrapper = ({ children }: { children: React.ReactNode }) => (

@@ -458,8 +458,8 @@ describe('ArtifactDetailPage companion chat', () => {
   })
 
   it('keeps the chat panel open when an anchored comment is added', async () => {
-    // An anchored add is reachable while chatting (the body stays visible), and
-    // the old unconditional setPanel('comments') would yank the conversation.
+    // An anchored add is reachable while chatting (the body stays visible); the
+    // guard keeps it from yanking the conversation over to 'comments'.
     const store = createTestStore()
     seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
     vi.mocked(api).postArtifactComment = vi.fn().mockResolvedValue({ ok: true })

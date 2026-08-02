@@ -1,17 +1,17 @@
 /**
  * The parser must never invent a time, and must not lose one to an earlier number.
  *
- * Two failures with the same root: looseness about what counts as a schedule.
+ * Two behaviors share one root: what counts as a schedule.
  *
- *  - `findClock` tested only the FIRST number-shaped match, so a reminder opening
- *    with a quantity ("take 2 pills … at 3pm") had its real clock hidden behind the
- *    bare `2` and lost its time completely.
- *  - `parseZh` accepted "a day marker was found" as a schedule, so 今天 (today, no
- *    time) fell through to an invented one-hour default — while the English path
- *    correctly asked the user. The two languages disagreed on one rule.
+ *  - `findClock` must scan past a leading quantity — a reminder opening with a
+ *    quantity ("take 2 pills … at 3pm") must not have its real clock hidden
+ *    behind the bare `2`.
+ *  - `parseZh` must not accept "a day marker was found" as a schedule: 今天
+ *    (today, no time) must ask rather than fall through to an invented one-hour
+ *    default, the same as the English path.
  *
  * `needsSchedule`'s contract is that the caller ASKS rather than the parser guessing,
- * so these assert that contract on both sides rather than the two symptoms.
+ * so these assert that contract on both sides.
  */
 import { describe, it, expect } from 'vitest'
 import { parseReminder } from '../apps/crew-companion/reminderParse'
@@ -24,8 +24,8 @@ describe('a leading quantity never hides the clock', () => {
   it('finds 3pm in "take 2 pills every day at 3pm"', () => {
     const r = parse('take 2 pills every day at 3pm')
     expect(r).not.toBeNull()
-    // Previously: findClock matched the bare `2`, failed its own shape test, and
-    // returned null — so this was saved as "one interval from now" (24h).
+    // findClock must not stop at the bare `2` (which fails its own shape test
+    // and returns null), or this saves as "one interval from now" (24h).
     expect(r!.needsSchedule).toBe(false)
     expect(hourOf(r!.fireAt!)).toBe(15)
     expect(r!.recurrence?.everyMinutes).toBe(1440)
@@ -42,7 +42,7 @@ describe('a leading quantity never hides the clock', () => {
   })
 
   it('still refuses to read a bare interval number as a clock', () => {
-    // The guard this fix must NOT weaken: "every 2 hours" has no clock at all.
+    // The guard this must NOT weaken: "every 2 hours" has no clock at all.
     const r = parse('stretch every 2 hours')
     expect(r!.recurrence?.everyMinutes).toBe(120)
   })
@@ -50,7 +50,8 @@ describe('a leading quantity never hides the clock', () => {
 
 describe('the parser never invents a time', () => {
   it('asks when Chinese gives a day but no time', () => {
-    // 今天 is a signal but carries NO time; this was silently scheduled at now + 1h.
+    // 今天 is a signal but carries NO time, so the parser must ask rather than
+    // schedule at now + 1h.
     const r = parse('今天提醒我买牛奶')
     expect(r!.needsSchedule).toBe(true)
     expect(r!.fireAt).toBeNull()
@@ -64,7 +65,8 @@ describe('the parser never invents a time', () => {
   })
 
   it('both languages agree on what counts as a schedule', () => {
-    // The asymmetry WAS the bug, so pin the pairs rather than each side alone.
+    // Pin the en/zh pairs together so the two paths cannot disagree on what
+    // counts as a schedule.
     const pairs: ReadonlyArray<[string, string, boolean]> = [
       ['remind me to buy milk', '提醒我买牛奶', true],          // no time -> ask
       ['today remind me to buy milk', '今天提醒我买牛奶', true], // day, no time -> ask
@@ -79,7 +81,7 @@ describe('the parser never invents a time', () => {
   })
 
   it('a Chinese recurrence with no clock still fires one interval out', () => {
-    // The behaviour the removed `?? 60` was meant to serve must survive.
+    // A Chinese recurrence with no clock still fires one interval out.
     const r = parse('每2小时提醒我喝水')
     expect(r!.needsSchedule).toBe(false)
     expect(r!.recurrence?.everyMinutes).toBe(120)

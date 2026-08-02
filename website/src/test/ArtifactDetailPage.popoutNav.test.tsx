@@ -113,9 +113,8 @@ describe('ArtifactDetailPage popout navigation containment', () => {
   })
 
   it('popout: the companion chat toggle renders and stays in-window', async () => {
-    // The sparkle used to navigate away, which is why it was hidden in popouts.
-    // It is now a panel toggle and a popout has its own store + WS, so it works
-    // in place — and must NOT forward a nav intent to a main window.
+    // The sparkle is a panel toggle, and a popout has its own store + WS, so it
+    // works in place — and must NOT forward a nav intent to a main window.
     vi.mocked(api).createChatSlot = vi.fn().mockResolvedValue({ key: 'new-slot-1' })
     vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
     renderPage(true)

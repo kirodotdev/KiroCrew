@@ -151,8 +151,8 @@ describe('WebAppArtifactCard', () => {
     })
   })
 
-  // FU-6 (pod field-test): an expired/torn-down card must offer a way back to
-  // deployment and must not render a live-looking dead link.
+  // An expired/torn-down card must offer a way back to deployment and must not
+  // render a live-looking dead link.
   it('expired state shows Redeploy and hides the stale public link', () => {
     const artifact = makeArtifact()
     artifact.webapp_metadata!.lifecycle.status = 'expired'
@@ -275,7 +275,7 @@ describe('WebAppArtifactCard', () => {
     vi.unstubAllGlobals()
   })
 
-  // ------------------------------------------------------------- redesign (PR #7)
+  // ------------------------------------------------------------- redesign
 
   const stubPreviewFetch = (remoteFramable: boolean) =>
     vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
@@ -288,8 +288,8 @@ describe('WebAppArtifactCard', () => {
     }) as unknown as Response))
 
   it('live CloudFront deployment embeds a sandboxed site preview iframe', async () => {
-    // Round-7 F2: the remote iframe renders only after the gateway probe
-    // confirms the deployed site is framable.
+    // The remote iframe renders only after the gateway probe confirms the
+    // deployed site is framable.
     stubPreviewFetch(true)
     renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} />)
     const frame = (await screen.findByTitle('Live preview: kanban-demo')) as HTMLIFrameElement
@@ -319,7 +319,7 @@ describe('WebAppArtifactCard', () => {
 
   it('expired card renders no countdown even when a legacy tombstone kept a future expires_at (FU-7)', () => {
     const artifact = makeArtifact()
-    // Legacy (pre-FU-6) tombstone: status expired but expires_at survived.
+    // Legacy tombstone: status expired but expires_at survived.
     artifact.webapp_metadata!.lifecycle.status = 'expired'
     renderWithClient(<WebAppArtifactCard artifact={artifact} />)
     expect(screen.getByText('Expired')).toBeInTheDocument()

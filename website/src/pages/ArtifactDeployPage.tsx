@@ -34,8 +34,6 @@ const cmd: React.CSSProperties = { background: 'var(--bg)', border: '1px solid v
 const label: React.CSSProperties = { fontSize: 11, color: 'var(--muted)', marginBottom: 4, display: 'block' }
 const linkBtn: React.CSSProperties = { background: 'transparent', color: 'var(--accent)', border: '1px solid var(--accent-subtle)', padding: '6px 13px', borderRadius: 9999, fontSize: 12, fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 5, textDecoration: 'none' }
 
-// R16 F4: badge() helper removed — replaced with Badge component from ui.tsx
-
 export default function ArtifactDeployPage() {
   const qc = useQueryClient()
   const [reach, setReach] = useState<Reach | null>(null)
@@ -137,7 +135,7 @@ export default function ArtifactDeployPage() {
     mutationFn: () => jget<{ policy: string; boundary_policy?: string; boundary_policy_name?: string; boundary_note?: string }>(`/iam-policy?tier=${policyTier}`),
     onSuccess: (data) => {
       setPolicy(data.policy)
-      // R25 F2: fullstack also requires the permissions-boundary policy —
+      // Fullstack also requires the permissions-boundary policy —
       // iam:CreateRole is conditioned on it, so first deploy fails without it.
       setBoundaryPolicy(data.boundary_policy || '')
       setBoundaryNote(data.boundary_note ? `${data.boundary_note} (name: ${data.boundary_policy_name || ''})` : '')
@@ -145,7 +143,7 @@ export default function ArtifactDeployPage() {
   })
 
   const recallMut = useMutation({
-    // R26 F1: two-call guard mirroring destroy (R25) — preview resolves the
+    // Two-call guard mirroring destroy — preview resolves the
     // LIVE resources, the dialog names them, and the confirmed call binds to
     // them so a recreated site is refused (409) instead of being emptied.
     mutationFn: async (s: Site) => {
@@ -167,7 +165,7 @@ export default function ArtifactDeployPage() {
   })
 
   const destroyMut = useMutation({
-    // R25 F1: two-call guard on the irreversible path. The preview call
+    // Two-call guard on the irreversible path. The preview call
     // resolves the LIVE resources; the dialog names those; the confirmed
     // call binds to them so a site recreated since preview is refused (409).
     mutationFn: async (s: Site) => {
@@ -211,7 +209,7 @@ export default function ArtifactDeployPage() {
 
   return (
     <>
-      {/* Deploy is a sub-surface of Artifacts (Joe R1): always give the way
+      {/* Deploy is a sub-surface of Artifacts: always give the way
           back to the gallery so the console never feels like a dead end. */}
       <div className="px-6 pt-2">
         <button
@@ -455,7 +453,7 @@ export default function ArtifactDeployPage() {
         </div>
       </Card>
 
-      {/* Pending confirmations (F6) — deploy previews awaiting human confirm */}
+      {/* Pending confirmations — deploy previews awaiting human confirm */}
       <PendingConfirmations qc={qc} />
 
       {/* Ready to deploy — CardTitle + InfoTip */}
@@ -597,7 +595,7 @@ export default function ArtifactDeployPage() {
   )
 }
 
-// ── F6: Pending confirmations component ─────────────────────────────────────
+// ── Pending confirmations component ─────────────────────────────────────
 
 interface PendingEntry {
   id: string
@@ -625,7 +623,7 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
 
   const confirmMut = useMutation({
     mutationFn: async ({ id, overrideScan }: { id: string; overrideScan?: boolean }) => {
-      // R24: entries flagged override_scan_required were blocked by
+      // Entries flagged override_scan_required are blocked by
       // overridable (non-credential) findings — the human's explicit
       // "Deploy anyway" sends override_scan so the backend clears them.
       const res = await fetch(BASE + `/pending/${id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' }, body: JSON.stringify(overrideScan ? { override_scan: true } : {}) })

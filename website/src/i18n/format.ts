@@ -1,19 +1,16 @@
 /**
  * Locale-aware formatting — the single seam for dates, numbers, lists and collation.
  *
- * ## The defect this closes
+ * ## Why this module exists
  *
- * Before this module there were ~300 formatting call sites and **not one of them
- * could consult the selected language**, because there was nowhere to ask. Every
- * call was `toLocaleString()`, `toLocaleDateString([])` or
- * `toLocaleTimeString(undefined, {…})` — all three spellings mean *host* locale,
- * i.e. the browser's, not the app's `dashboard.language`. `LanguageProvider`
- * correctly sets `<html lang>`, but `<html lang>` has no effect on `Intl`. So a
- * dashboard running in Chinese on an en-US browser rendered `7/30/2026` and
- * `Jul 30` inside otherwise-Chinese UI.
- *
- * The root cause was one missing module, not 300 independent bugs. This is that
- * module: every formatter here reads the ACTIVE UI language at call time.
+ * Every formatter here reads the ACTIVE UI language at call time — the one thing
+ * the raw `Intl` spellings cannot do. `toLocaleString()`,
+ * `toLocaleDateString([])` and `toLocaleTimeString(undefined, {…})` all mean
+ * *host* locale (the browser's), not the app's `dashboard.language`:
+ * `LanguageProvider` sets `<html lang>`, but `<html lang>` has no effect on
+ * `Intl`, so a dashboard running in Chinese on an en-US browser would render
+ * `7/30/2026` and `Jul 30` inside otherwise-Chinese UI. Routing every call site
+ * through this single seam is what lets formatting follow the selected language.
  *
  * ## Why plain functions and not hooks
  *
@@ -426,7 +423,7 @@ const RELATIVE_THRESHOLDS: Array<{ unit: Intl.RelativeTimeFormatUnit; seconds: n
 ]
 
 /**
- * Elapsed time as the locale words it — replaces the hand-rolled `Nm ago`.
+ * Elapsed time as the locale words it.
  *
  * `numeric: 'auto'` is deliberate: it is what lets CLDR answer with *yesterday*
  * / *昨天* / *vorgestern* instead of a mechanical "1 day ago", which is the
@@ -434,14 +431,12 @@ const RELATIVE_THRESHOLDS: Array<{ unit: Intl.RelativeTimeFormatUnit; seconds: n
  * It also gives `now` for the sub-threshold case, so callers no longer carry
  * their own "just now" literal.
  *
- * `style: 'narrow'` is the default because the previous hand-rolled output was
- * compact and it sits in dense rows. Narrow English is byte-identical to what
- * this app rendered before for seconds, minutes, hours and multi-day gaps
- * (`45s ago`, `2m ago`, `3h ago`, `5d ago`); only the two deltas below change.
+ * `style: 'narrow'` is the default because these sit in dense rows and narrow
+ * English stays compact (`45s ago`, `2m ago`, `3h ago`, `5d ago`).
  *
- * English deltas, deliberate and reviewed:
- *   - sub-10-second now reads `now` where it read `just now`
- *   - exactly one day back reads `yesterday` where it read `1d ago`
+ * English idioms, deliberate:
+ *   - sub-10-second now reads `now`
+ *   - exactly one day back reads `yesterday`
  *
  * Future timestamps format forwards (`in 5m`) rather than being clamped, so
  * clock skew is visible instead of silently reading as "now".

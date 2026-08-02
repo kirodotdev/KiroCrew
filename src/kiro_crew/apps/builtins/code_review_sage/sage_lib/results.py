@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local result-record store (design §3 component 4, §6).
+"""Local result-record store.
 
 One JSON file per reviewed change under ``data/results/``. This is the loop's
 output and the Focus Report's input — the durable source of truth. Writes are

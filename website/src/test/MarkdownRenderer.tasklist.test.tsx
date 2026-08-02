@@ -1,15 +1,14 @@
 /**
  * GFM task lists must render in block flow — never as flex rows.
  *
- * Regression locked here: task <li>s previously used `flex items-start`,
- * which broke two ways:
+ * `flex items-start` on task <li>s breaks two ways:
  *  1. an item containing a NESTED task list (the shape of every spec
- *     tasks.md: `- [ ] 1. Parent` with `- [ ] 1.1 …` children) laid the
+ *     tasks.md: `- [ ] 1. Parent` with `- [ ] 1.1 …` children) lays the
  *     nested <ul> out BESIDE the parent's text instead of below it;
- *  2. any item long enough to wrap turned each inline chunk (text node,
- *     code chip) into its own flex item — text stacked vertically inside one
- *     chunk while siblings floated beside it — and flex min-width:auto
- *     prevented wrapping entirely, forcing horizontal scroll on the panel.
+ *  2. any item long enough to wrap turns each inline chunk (text node,
+ *     code chip) into its own flex item — text stacks vertically inside one
+ *     chunk while siblings float beside it — and flex min-width:auto
+ *     prevents wrapping entirely, forcing horizontal scroll on the panel.
  *
  * Contract: task items are block-flow with a hanging indent (checkbox on the
  * first line, wrapped lines indented under the text), wrapping enabled, and

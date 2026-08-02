@@ -131,14 +131,14 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if not isinstance(user_meta, dict):
         user_meta = None
     theme_consent = body.get("theme_consent") is True
-    # Content-bound persona consent (Codex HIGH fix): the sha256 hex the user
+    # Content-bound persona consent: the sha256 hex the user
     # granted in the consent modal. Injection is gated on this matching the
     # persona text read from disk server-side; the legacy boolean above is
-    # still parsed (backward-compatible bodies + logging) but no longer grants
+    # still parsed (backward-compatible bodies + logging) but does not grant
     # injection by itself. Normalize + full-match to 64 lowercase hex here so a
     # malformed value (non-ASCII "é", wrong length, non-str) becomes None
     # (absent) rather than reaching hmac.compare_digest and crashing the turn
-    # with a TypeError (GPT HIGH fix).
+    # with a TypeError.
     theme_consent_sha = normalize_theme_consent_sha(body.get("theme_consent_sha"))
     if not isinstance(color_theme, str) or not (
         color_theme == "" or color_theme.startswith("custom-")
@@ -245,7 +245,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 # on stdin.drain(), and if the turn's finally runs during that
                 # suspension it must already see this steer to requeue it
                 # (append-after-await would land on an idle slot and orphan the
-                # message — per code review). The force-stop
+                # message). The force-stop
                 # clear() likewise races correctly: a hard kill during the
                 # await discards the entry, so a late write can't resurrect it.
                 slot._pending_steers.append(message)
@@ -951,8 +951,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         _sync_dashboard_slots(state)
         # Guarantee a frame. get_or_create_slot pushes for a NEW slot, but
         # returns an existing named slot without pushing — and this handler is
-        # now the only thing that files a slot (the client's follow-up PATCH,
-        # which used to supply that push, is gone). Without this, re-creating an
+        # now the only thing that files a slot (the client sends no follow-up
+        # PATCH to supply that push). Without this, re-creating an
         # existing slot name with a different folder_id would move it for the
         # requester while every other connected client kept the stale
         # placement. Inside the suspension this only marks a push owed, so the
@@ -1102,10 +1102,7 @@ def _make_stop_resolver(
     chat_runner.py, through the `_stopping` setter in state.py), and that
     teardown races the escalation. When teardown won, the hard callback bailed,
     `_resolve_stop_event` never ran, and the card pulsed at "stopping" for the
-    rest of the session instead of settling to "stop_failed_reset". Reproduced
-    against a live gateway on 2026-07-31: the gateway logged
-    `stop_turn outcome=hard-done` and then `_on_hard: state not
-    soft_pending/killing, bail` 30ms later.
+    rest of the session instead of settling to "stop_failed_reset".
 
     Precedence needs its own non-racy marker. A cooperative ack that arrives
     after the user escalated must not relabel a hard kill as a clean stop, and
@@ -1837,9 +1834,9 @@ def _model_rejected_reason(model_name: str) -> str | None:
     The dashboard model dropdown falls back to canonical registry keys (e.g.
     ``fable-5-1m``) when /api/models is unavailable (gateway restart / kiro-cli
     cold-start timeout). Those keys are DISPLAY identifiers the ACP CLI rejects
-    as model ids (-32603 "model not available") — selecting one used to write it
-    into ``slot.model`` and break the next turn. This guard is defense-in-depth
-    behind the frontend fix (auto-only fallback): a stale client, a direct API
+    as model ids (-32603 "model not available") — persisting one into
+    ``slot.model`` breaks the next turn. This guard is defense-in-depth behind
+    the frontend's auto-only fallback: a stale client, a direct API
     call, or the openai-compat path can never persist a canonical key. ``auto``
     and ``""`` (provider default) always pass; for the ``claude_code`` provider
     canonical keys ARE the wire format, so they pass there too.
@@ -1937,7 +1934,7 @@ async def _try_live_model_switch(
     ``session/set_model`` switches the model on a running kiro-cli session.
     Verified against kiro-cli 2.15.1: acked synchronously, carries the existing
     conversation across the switch (including across vendors), sticks over
-    subsequent turns, and switches back. That makes the historical reset
+    subsequent turns, and switches back. That makes a session reset
     unnecessary for an idle slot — and the reset is expensive twice over, since
     it kills the whole process tree now AND forces the next message to
     cold-start and replay a compressed transcript.
@@ -2317,8 +2314,7 @@ def _redact_followup_item(item: dict) -> dict:
         # `branch` is LLM-authored too, and it travels further than the text
         # fields: into a git ref, a directory name, SEL records and logs. Run the
         # same redactors, and if either one CHANGES it, drop the field rather than
-        # ship a mangled ref — the frontend then derives a branch from the title
-        # (GPT review round 4).
+        # ship a mangled ref — the frontend then derives a branch from the title.
         scrubbed, _ = redact_exfiltration_urls(branch)
         scrubbed, _ = redact_credentials(scrubbed)
         if scrubbed == branch:
@@ -2342,14 +2338,13 @@ def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Respo
     be a signed local bootstrap subject when no owner is configured (the
     standalone-local case, where the browser's own token is minted for
     ``local-app``). A dashboard token issued for a different subject would
-    otherwise mutate repositories it does not own (GPT review round 12).
+    otherwise mutate repositories it does not own.
 
     ONE exception, and it is the path every MCP call arrives on: a request that
     presented a valid ``X-Internal-Secret`` from loopback is granted by the
     middleware WITHOUT an app claim (there is no app identity to set), so it
     carries ``request["internal_auth"] is True`` instead. Refusing that would
-    403 ``suggest_followup`` outright — the tool could never raise a card (GPT
-    review, PR #461 round 9).
+    403 ``suggest_followup`` outright — the tool could never raise a card.
     """
     if request.get("internal_auth") is True:
         return None
@@ -2410,11 +2405,11 @@ async def api_chat_slot_followup(request: web.Request) -> web.Response:
     # Report the number of sends that COMPLETED instead of an unconditional
     # success, so the MCP tool can tell the model to restate the follow-ups in
     # its reply text rather than being assured they were shown and steered into
-    # silence (Design review, PR #461).
+    # silence.
     #
     # This send is AWAITED: a socket count is taken before any send runs, so an
     # owner window that disconnects in that window produced a failed send already
-    # reported as delivered (GPT review round 12).
+    # reported as delivered.
     #
     # OWNER clients only: an app token can open /api/ws, and an all-clients
     # broadcast would hand it another user's complete handoff prompts.
@@ -2605,7 +2600,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         slot.theme_consent = meta.get("theme_consent") is True
         # Restore from history metadata: re-run the same fail-closed normalizer
         # so a tampered/legacy JSONL can't seed a malformed sha that later
-        # crashes the compare (GPT HIGH fix).
+        # crashes the compare.
         slot.theme_consent_sha = normalize_theme_consent_sha(meta.get("theme_consent_sha"))
     mm = meta.get("memory_mode", "persistent")
     slot.memory_mode = mm

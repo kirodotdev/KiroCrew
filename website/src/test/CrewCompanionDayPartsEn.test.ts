@@ -2,16 +2,14 @@
  * English day parts: position decides, not presence.
  *
  * Every English day-part word is also an ordinary noun or adjective — "morning report",
- * "afternoon tea", "night shift", "evening news". Matching on presence alone read them
- * as the schedule AND blanked them out, so "submit morning report tomorrow" was saved
+ * "afternoon tea", "night shift", "evening news". Matching on presence alone reads them
+ * as the schedule AND blanks them out, so "submit morning report tomorrow" would be saved
  * as "submit report": a word the user typed, silently deleted.
  *
- * This is the THIRD time this shape has been fixed. 晚班 (round 3) and 下午茶 (round 5)
- * are the Chinese originals, guarded by `inSchedulePosition` in reminderParseZh.ts —
- * and `night shift` / `afternoon tea` are literally the same two phrases in English.
- * The Chinese parser was guarded twice and the rule was never carried across, so these
- * tests pin BOTH languages together; a future change that guards one and forgets the
- * other fails here.
+ * 晚班 and 下午茶 are the Chinese originals, guarded by `inSchedulePosition` in
+ * reminderParseZh.ts — and `night shift` / `afternoon tea` are literally the same two
+ * phrases in English. These tests pin BOTH languages together, so a change that guards
+ * one parser and forgets the other fails here.
  */
 import { describe, it, expect } from 'vitest'
 import { parseReminder } from '../apps/crew-companion/reminderParse'
@@ -20,7 +18,7 @@ const NOW = new Date('2026-03-10T09:00:00')
 const p = (s: string) => parseReminder(s, NOW, 'Reminder')
 
 describe('a day-part word inside ordinary text is kept', () => {
-  // The exact case reported, plus the English twins of the two Chinese bugs.
+  // The core case, plus the English twins of the two Chinese bugs.
   const KEEP: Array<[string, string]> = [
     ['submit morning report tomorrow', 'submit morning report'],
     ['buy afternoon tea tomorrow', 'buy afternoon tea'],          // twin of 下午茶
@@ -61,7 +59,7 @@ describe('a day-part word acting as the schedule is consumed', () => {
   }
 
   it('consumes the introducing marker, not just the day part', () => {
-    // Blanking only "evening" used to leave "this" stranded in the saved text.
+    // Blanking only "evening" would leave "this" stranded in the saved text.
     expect(p('this evening call dad').text).toBe('call dad')
     expect(p('take pills in the morning').text).toBe('take pills')
   })
@@ -74,7 +72,7 @@ describe('a day-part word acting as the schedule is consumed', () => {
   })
 
   it('an explicit clock still wins over a day part', () => {
-    // Pinned because findDayPart now scans every occurrence; the clock must not lose.
+    // Pinned because findDayPart scans every occurrence; the clock must not lose.
     const r = p('every morning at 7am')
     expect(new Date(r.fireAt!).getHours()).toBe(7)
   })
@@ -88,8 +86,8 @@ describe('a day-part word acting as the schedule is consumed', () => {
 })
 
 describe('the Chinese guard still holds (the pair must not drift)', () => {
-  // Round 3 and round 5 regressions, restated here so both languages are pinned in
-  // one place. If someone changes one parser's rule, this file fails.
+  // Restated here so both languages are pinned in one place. If someone changes
+  // one parser's rule, this file fails.
   it('keeps 下午茶 intact', () => {
     expect(parseReminder('明天买下午茶', NOW, '提醒').text).toBe('买下午茶')
   })

@@ -4,10 +4,10 @@ import userEvent from '@testing-library/user-event'
 import VectorMemoryCard, { SEMANTIC_RENDER_CAP } from '../pages/overview/VectorMemoryCard'
 import { renderWithProviders } from './helpers'
 
-// Regression: the Semantic Memory table used to render every
-// entry synchronously, freezing the Settings page for 10-20s in vector-only
-// mode. The table must now cap the rendered rows at SEMANTIC_RENDER_CAP and
-// rely on the filter (key OR value) to reach entries past the cap.
+// The Semantic Memory table caps the rendered rows at SEMANTIC_RENDER_CAP and
+// relies on the filter (key OR value) to reach entries past the cap. Rendering
+// every entry synchronously would freeze the Settings page for 10-20s in
+// vector-only mode.
 
 const N = SEMANTIC_RENDER_CAP + 150 // comfortably past the cap
 const VALUE_MARKER = 'zeta-region-marker' // lives only in one entry's (object) value, never in a key

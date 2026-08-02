@@ -13,11 +13,9 @@ const DEV_MODE_EVENT = 'mc-dev-mode-changed'
  *  Deliberately minimal: the Developer Mode toggle is a consent gate, and the
  *  hardcore internals it unlocks (logs, system metrics, memory internals,
  *  MCP pool/gateway controls) live on the standalone Developer PAGE behind
- *  that gate — not in always-visible Settings. The tab's former "Beta
- *  Channel (Braveheart)" toggle was deleted outright: braveheart was the
- *  pre-GitHub integration branch, and the shipped channel model (stable |
- *  insider switcher in Settings > About) already covers early-access
- *  updates. */
+ *  that gate — not in always-visible Settings. Early-access updates are handled
+ *  by the stable | insider channel switcher in Settings > About, so this tab
+ *  carries no beta-channel toggle. */
 export function DeveloperPanel() {
   const navigate = useNavigate()
   const [devMode, setDevMode] = useState(() => localStorage.getItem(DEV_MODE_KEY) === '1')

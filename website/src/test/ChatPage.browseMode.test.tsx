@@ -2,11 +2,11 @@
  * Regression test: the Globe / Browse toggle must be per-session
  * (keyed by slot), not page-global.
  *
- * Previously, browse mode was a single `useState(false)` in ChatPage.
- * ChatPage never remounts on slot switch (only `activeSlot` changes), so the
- * one boolean bled across every session: enabling Browse in session A left it
- * on when switching to session B. The fix keys browse mode by slot, so each
- * session keeps its own toggle and new sessions default to off.
+ * Browse mode is keyed by slot. ChatPage never remounts on slot switch (only
+ * `activeSlot` changes), so a single page-global boolean would bleed across
+ * every session: enabling Browse in session A would leave it on when switching
+ * to session B. Keying by slot gives each session its own toggle, and new
+ * sessions default to off.
  *
  * Browse mode is a per-session Toggle (role="switch", aria-checked) inside the
  * ChatInput "+" drop-up menu ("Let the agent use the browser"), which is what this test observes.

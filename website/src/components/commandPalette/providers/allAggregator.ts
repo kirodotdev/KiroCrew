@@ -26,6 +26,8 @@ import { getProviders as getRegisteredProviders, getProvider } from './index'
  * source and recents source as injected dependencies so it stays free of React
  * hooks and is unit-testable with plain stubs; {@link useAllAggregator} wires
  * the real registry + a recents source derived from the Sessions provider.
+ * Providers register themselves into the registry; the aggregator fans out to
+ * whatever is currently registered.
  */
 
 const PROVIDER_ID = 'all'
@@ -125,8 +127,7 @@ export function createAllAggregator(deps: AllAggregatorDeps): ResourceProvider {
  * React hook: an All aggregator wired to the live provider registry, with
  * recents sourced from the Sessions provider's empty-query output (which
  * returns recent sessions, fully wired to open / resume them — no duplicated
- * mapping here). Providers register themselves into the registry in later
- * steps; until then the aggregator simply has fewer sources to fan out to.
+ * mapping here).
  *
  * @param opts.perProviderLimit - Override the per-provider cap (e.g. for a
  *   denser layout). Defaults to {@link DEFAULT_PER_PROVIDER_LIMIT}.

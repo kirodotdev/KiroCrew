@@ -151,7 +151,7 @@ const ActivityTimeline = memo(function ActivityTimeline({
     }[t] ?? t
   }
   // Distinct hues per type so created/edited/iterated don't visually blur
-  // together (nrb feedback). reverted uses warn (orange) to flag its
+  // together. reverted uses warn (orange) to flag its
   // 'undo-style' semantics; iterated uses info (cyan) so agent-driven
   // updates visually separate from user edits (accent/violet).
   const dot = (t: ArtifactEvent['type']) => ({
@@ -334,19 +334,18 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const { theme, colorTheme, themeVersion } = useTheme()
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
   const [editing, setEditing] = useState(false)
-  // Round 8 polish: while editing, the user can flip to a rendered
-  // preview of the edit buffer (matches the side panel's Edit/Preview
-  // toggle). Stays in edit mode — content isn't committed until Save
-  // and isn't discarded until Cancel.
+  // While editing, the user can flip to a rendered preview of the edit
+  // buffer (matches the side panel's Edit/Preview toggle). Stays in edit
+  // mode — content isn't committed until Save and isn't discarded until
+  // Cancel.
   const [previewDuringEdit, setPreviewDuringEdit] = useState(false)
   const { readingWidth, toggle: toggleReadingWidth, previewStyle: mdPreviewStyle } = useReadingWidth()
   const [editedContent, setEditedContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [showPublish, setShowPublish] = useState(false)
-  // Tag editing (round 4): tags shown in the header are editable
-  // inline. Adding a tag posts metadata-only (no version bump). Removing a
-  // tag works the same way.
+  // Tag editing: tags shown in the header are editable inline. Adding a tag
+  // posts metadata-only (no version bump). Removing a tag works the same way.
   const [addingTag, setAddingTag] = useState(false)
   const [newTag, setNewTag] = useState('')
   // ── Inline-comment state (durable via /api/artifacts/:slug/comments) ──
@@ -399,7 +398,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     })
   }, [slug, commentCount])
   const [popover, setPopover] = useState<{ x: number; y: number; anchor: string; line?: number; column?: number; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
-  // Bidirectional anchor↔comment linking (item #5): flash a sidebar row when
+  // Bidirectional anchor↔comment linking: flash a sidebar row when
   // its in-iframe highlight is clicked; scroll the iframe highlight when a
   // sidebar comment is clicked. Nonce forces a re-trigger on repeat clicks.
   const [iframeScrollTarget, setIframeScrollTarget] = useState<{ id: string; nonce: number } | null>(null)
@@ -450,7 +449,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // === detailQuery.data?.version as "current" — that conflates the
   // selected snapshot with Live and shows live content under a "vN" label,
   // which makes silent saves between snapshots look like they're mutating
-  // historical versions (round 11 bug fix).
+  // historical versions.
   const isCurrent = !selectedVersion
 
   const versionQuery = useQuery<Artifact>({
@@ -463,7 +462,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const editable = !!artifact && isEditableKind(artifact.kind) && isCurrent
   const dirty = editing && !!artifact && editedContent !== (artifact.content ?? '')
 
-  // ── Tag editing handlers (round 4) ────────────────────────────
+  // ── Tag editing handlers ────────────────────────────
   const updateTagsMut = useCallback(async (newTags: string[]) => {
     if (!artifact) return
     // Same in-flight window as commitRename / handleSave: the record still reads
@@ -694,7 +693,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     try {
       // snapshot=true → bumps version (creates a new numbered snapshot).
       // snapshot=false → silently updates the live state without versioning,
-      // matching the explicit-snapshot model from round 5.
+      // matching the explicit-snapshot model.
       await api.updateArtifact(artifact.slug, { content: editedContent, snapshot })
       await queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
       if (snapshot) {
@@ -702,7 +701,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         await queryClient.invalidateQueries({ queryKey: ['artifact-events', slug] })
         // Snapshot is a deliberate checkpoint — drop out of edit mode
         // so the user sees the result. Plain Save (silent) keeps the
-        // user in the editor (review round 13 UX fix): after the query
+        // user in the editor: after the query
         // refetches, artifact.content matches editedContent, dirty
         // becomes false, and the user can keep iterating.
         setEditing(false)
@@ -740,7 +739,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
 
   // Snapshot the current live state without an edit. Used by the Snapshot
   // button when not editing — captures whatever is on disk / current.html
-  // as a new numbered version. round 6: snapshot anytime live
+  // as a new numbered version. Snapshot anytime live
   // differs from the latest numbered version (e.g. after silent saves or
   // external file edits to source_path).
   const handleSnapshotLive = useCallback(async () => {
@@ -923,7 +922,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       // The reply itself succeeded — announce it immediately so other windows
       // mirror it, regardless of what the follow-up reopen does.
       invalidateAndAnnounce()
-      // Replying to a resolved thread auto-reopens it (feedback #10). A second
+      // Replying to a resolved thread auto-reopens it. A second
       // announce picks up the status change; a reopen failure only refetches
       // locally (the reply was already announced above).
       const parent = durableComments.find(c => c.id === vars.parentId)
@@ -1246,10 +1245,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     [artifact?.content, themeVars, theme, usesIframe],
   )
 
-  // Persistent active comment (feedback #4); NO transitory flash (feedback #5).
+  // Persistent active comment; NO transitory flash.
   const [activeCommentId, setActiveCommentId] = useState<string | null>(null)
   const [bodyScrollNonce, setBodyScrollNonce] = useState(0)
-  // Read/unread tracking (feedback #9): a per-artifact set of seen comment ids
+  // Read/unread tracking: a per-artifact set of seen comment ids
   // in localStorage; a thread is unread if any of its comments is unseen.
   const readKey = `mc-cmt-read:${slug}`
   const [readIds, setReadIds] = useState<Set<string>>(new Set())
@@ -1610,8 +1609,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                     the only way to ask the agent to change the artifact.
                     Comments are durable and read by the agent via
                     artifact_get_comments. Works in popout windows too — the
-                    popout has its own store + WS, and the old hide-in-popout
-                    reason (this button used to navigate away) is gone. */}
+                    popout has its own store + WS. */}
                 <button
                   type="button"
                   onClick={() => { void openCompanionChat() }}
@@ -1645,20 +1643,20 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 )}
               </span>
             </button>
-            {/* Pop out — opens the artifact in its own live browser window
-                (was a throwaway blob: tab). Swaps to Focus + Bring-back once
+            {/* Pop out — opens the artifact in its own live browser window.
+                Swaps to Focus + Bring-back once
                 out. Not shown inside the popout window itself (the frame's
                 Return button handles closing). */}
             {!popout && <ArtifactPopoutControl slug={slug} name={artifact.name} />}
             {/* Publish — the single publish surface. Web deploy (Publish to
                 public web on the user's own AWS) and any future publish
                 providers register into PublishHub, so this is the one and only
-                publish action. Labeled (not icon-only) since it is now primary.
-                Shown for non-webapp kinds; webapp artifacts use their own
-                deploy card. NOTE: the internal share/publish-provider surface
-                (Link2 + ArtifactSharePanel) was intentionally removed here — a
-                deliberate public-edition divergence, so an upstream sync must
-                NOT re-add it. */}
+                publish action. Labeled (not icon-only) as the primary publish
+                action. Shown for non-webapp kinds; webapp artifacts use their
+                own deploy card. NOTE: the internal share/publish-provider
+                surface (Link2 + ArtifactSharePanel) is intentionally absent
+                here — a deliberate public-edition divergence, so an upstream
+                sync must NOT re-add it. */}
             {artifact.kind !== 'webapp' && (
               <Btn
                 type="button"
@@ -1709,12 +1707,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           </div>
         )}
 
-        {/* Read-only publication sync-error surface. The interactive share
-            panel that used to auto-open on a publication error was removed with
-            the internal publish UI; this keeps a persisted sync error visible
-            (no controls) if a publishing provider is ever registered. Inert in
-            the public edition, where the registry is empty and
-            `artifact.publication` is always null. */}
+        {/* Read-only publication sync-error surface: keeps a persisted sync
+            error visible (no controls) if a publishing provider is ever
+            registered. Inert in the public edition, where the registry is empty
+            and `artifact.publication` is always null. */}
         {artifact.publication?.last_error && (
           <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded-md border border-danger/40 bg-danger-subtle text-[13px] text-danger">
             <AlertCircle size={14} className="lucide-inline shrink-0 mt-0.5" />
@@ -1730,10 +1726,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         )}
 
         {/* One flex row for EVERY kind, so the right-hand panels are siblings of
-            whatever body is rendered. Previously the row (and both panels) lived
-            only in the non-webapp branch while the toolbar's chat and comments
-            toggles rendered unconditionally — so on a webapp artifact a click
-            created/activated a session that had nowhere to display. */}
+            whatever body is rendered. The toolbar's chat and comments toggles
+            render unconditionally, so scoping the row to the non-webapp branch
+            would let a click on a webapp artifact create/activate a session with
+            nowhere to display. */}
         <div className="flex gap-4 items-start">
           <div className="flex-1 min-w-0">
             {artifact.kind === 'webapp' ? (
@@ -1863,7 +1859,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           />
         )}
 
-        {/* Phase 5: lifecycle event log + activity timeline. */}
+        {/* Lifecycle event log + activity timeline. */}
         <div className="mt-6">
           <h3 className="text-[13px] font-semibold text-text-strong mb-2">{i18nT('pages.artifactDetailPage.activity')}</h3>
           <ActivityTimeline
@@ -1926,7 +1922,7 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
       // Flush any unsaved editor edits to the server FIRST so they become
       // live_dirty and pull_upstream checkpoints them as a version — otherwise
       // the working buffer is lost when the post-pull refetch replaces the
-      // live content (data-loss reported on test).
+      // live content.
       await onBeforeMutate?.()
       const res = await api.pullLatest(artifact.slug)
       if (res.error) setError(res.error)

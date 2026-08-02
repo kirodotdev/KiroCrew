@@ -319,7 +319,7 @@ class TelegramDispatcher:
             if is_new:
                 await self.sessions.set_channel(session_key, channel_id)
             # Publish this turn's session identity so managed MCP tools resolve
-            # X-Session-Key; one shared writer lives in messaging.identity. (#232)
+            # X-Session-Key; one shared writer lives in messaging.identity.
             await publish_turn_identity(self.sessions, session_key)
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_message, _ = await run_in_embed_pool(
@@ -1009,10 +1009,10 @@ class TelegramDispatcher:
             result_text: str | None = None
             try:
 
-                # Compaction runs over the prompt transport (#276):
+                # Compaction runs over the prompt transport:
                 # provider.compact() drives /compact via session/prompt (the
                 # commands/execute path does NOT run compaction — it returns
-                # with no status, the pre-#276 bug). Bound compact()'s prompt
+                # with no status). Bound compact()'s prompt
                 # turn here, then let wait_for_compaction() own its OWN deadline
                 # for a status emitted async after end_turn — it must NOT be
                 # nested inside another timeout, or the graceful "timed out"

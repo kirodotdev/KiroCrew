@@ -33,8 +33,8 @@ def _format_parent_snapshot(slot: _ChatSlot) -> str:
     Iterates newest-first and accumulates under the char cap, then re-reverses
     so the block stays chronological. This keeps the *most recent* turns when
     the transcript exceeds the cap — a side follow-up almost always concerns
-    what just happened, so dropping the tail (the old forward-iterate + break
-    behaviour) starved the model of exactly the relevant context. Mirrors
+    what just happened, so dropping the tail would starve the model of exactly
+    the relevant context. Mirrors
     ``_format_side_history``.
     """
     lines: list[str] = []
@@ -47,7 +47,7 @@ def _format_parent_snapshot(slot: _ChatSlot) -> str:
         text = entry.get("content", "") or ""
         text = text[:_PARENT_LINE_TRUNCATE]
         if role != "user":
-            # Defence in depth. The restore path now redacts `content` on load, so
+            # Defence in depth. The restore path redacts `content` on load, so
             # slot.messages should already be clean here — but this block goes into
             # the side-chat PROMPT, which leaves the dashboard's own storage and is
             # persisted by kiro-cli into its session file. That is an egress path,

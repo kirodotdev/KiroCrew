@@ -160,7 +160,6 @@ export function calculateTopbarSearchLayout(brandWidth: number, actionsWidth: nu
   return { gutter, visible: viewportWidth - (gutter * 2) >= TOPBAR_SEARCH_MIN_WIDTH }
 }
 
-// Icon mapping for builtin apps (manifest icon name → React element)
 // Apps-nav fetch resilience (see refreshAppNav). The dashboard loads
 // `/api/apps` once on mount; right after a `kirocrew update` the gateway is
 // mid-restart (cold backend, apps-dir scan) and that first request can fail or
@@ -417,9 +416,9 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
     <motion.div layout="position"
       ref={rowRef}
       data-onboarding-nav={navId}
-      // The row had only a mouse onClick; role+tabIndex+key handler make it a
-      // real keyboard-operable control (Enter/Space activate, preventing Space
-      // page-scroll). aria-label names it when collapsed (icon-only, no text).
+      // role+tabIndex+key handler make this a real keyboard-operable control
+      // (Enter/Space activate, preventing Space page-scroll). aria-label names
+      // it when collapsed (icon-only, no text).
       role="button"
       tabIndex={0}
       whileHover={collapsed ? undefined : { scale: 1.02 }}
@@ -546,8 +545,8 @@ function OrchestratedRedirect() { const { slug } = useParams(); const { search }
 const NC_CLOSE_MS = 240
 
 /**
- * Topbar Notifications bell. Replaces the former left-rail Notifications item
- * (the surface is now `hiddenFromNav`). Click opens an Activity Feed popover
+ * Topbar Notifications bell. The Notifications surface is `hiddenFromNav`, so
+ * this is its entry point. Click opens an Activity Feed popover
  * (portaled to <body> to escape the topbar's backdrop-filter containing
  * block); clicking an item slides out a detail panel. The full page is
  * preserved at /notifications via the popover's "Open inbox" link.
@@ -820,8 +819,8 @@ export default function App() {
       const r = await fetch('/api/terminal/sessions')
       // Default-on: the terminal is enabled unless the server explicitly says
       // otherwise. A transient/auth-timing failure of this probe must NOT hide
-      // an enabled terminal (previously it fell back to {enabled:false} and,
-      // with staleTime, kept the panel hidden for 60s).
+      // an enabled terminal by falling back to {enabled:false}, which with
+      // staleTime would keep the panel hidden for 60s.
       if (!r.ok) return { enabled: true }
       return r.json()
     },
@@ -1275,10 +1274,9 @@ export default function App() {
     const api = (window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean) => void) => () => void } }).electronAPI
     return api?.onFullScreenChanged?.(setMacFullscreen)
   }, [])
-  // Native traffic lights always sit over the consolidated 42px header now
-  // (option B removed the standalone instance strip), so there is no separate
-  // strip inset to relay to Electron — positionTrafficLights centers on the
-  // header height directly. Remote panes get their own inset via `macInset`.
+  // Native traffic lights sit over the consolidated 42px header, so there is no
+  // separate strip inset to relay to Electron — positionTrafficLights centers on
+  // the header height directly. Remote panes get their own inset via `macInset`.
   const macInset = isMacElectron && !macFullscreen
   const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then(d => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb })), refetchInterval: metricsOpen ? 30_000 : false, enabled: metricsOpen })
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
@@ -1372,8 +1370,8 @@ export default function App() {
 
   // Browser tab title badge — sums every built-in surface's badge (chat,
   // orchestrated, notifications, secretary, ...) plus the orthogonal
-  // `mc:app:badge`-driven dynamic app counts. Secretary used to be added
-  // separately; it now flows through the surface registry.
+  // `mc:app:badge`-driven dynamic app counts. Secretary's badge flows through
+  // the surface registry.
   const totalAttention = builtinAttention + Object.values(appBadges).reduce((a, b) => a + b, 0)
   useEffect(() => {
     document.title = totalAttention > 0 ? `(${totalAttention}) ${botName}` : botName
@@ -2125,7 +2123,7 @@ export default function App() {
                   not the default. `useZoom` lets them set --font-body to sans
                   (Space Grotesk), mono (JetBrains Mono) or system (-apple-system),
                   and mono is ~20% wider. A 12px row measured only against Space
-                  Grotesk shipped and truncated for every mono user.
+                  Grotesk truncates for every mono user.
 
                   "Star us · Report issue" at 12px, measured:
                     Space Grotesk   114.0px against a 132.8px budget — 18.7 spare
@@ -2166,9 +2164,9 @@ export default function App() {
                   {/* pl-3 puts the mark on the same 12px x-offset as the
                       nav-item icons above. No `gap` on this row ON PURPOSE: a row
                       gap applies between ALL THREE children (mark, links,
-                      Discord), so pairing it with ml-0.5 silently doubled the
-                      mark-to-text distance to 6px and cost 4px the budget below
-                      never accounted for. Spacing is explicit per child instead. */}
+                      Discord), so pairing it with ml-0.5 would silently double
+                      the mark-to-text distance to 6px and cost 4px the budget
+                      below never accounts for. Spacing is explicit per child instead. */}
                   <span className="flex items-center shrink-0 text-muted"><GithubIcon size={15} /></span>
                   <div className="rail-community-links flex items-center gap-[5px] flex-1 min-w-0 ml-1.5 text-[12px]">
                     <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" title={i18nT('app.star_kirocrew_on_github')} aria-label={i18nT('app.star_kirocrew_on_github')} className="shrink-0 rounded text-muted hover:text-text transition-colors">{i18nT('app.star_us')}</a>

@@ -74,7 +74,7 @@ class TestRunsPersistence(unittest.TestCase):
 
 class TestRecordReviewedDelivery(unittest.TestCase):
     """Regression for the reviewed-index write path:
-      * Finding 2 (HIGH): a PR is indexed as reviewed ONLY when the poster
+      * a PR is indexed as reviewed ONLY when the poster
         actually delivered (posted_comments >= posting_expected), not merely when
         the poster turn completed (post_ok). A failed gh post must not strand it.
       * The entry is keyed by the collision-free reviewed key (github.com/o/r#n),
@@ -126,7 +126,7 @@ class TestRecordReviewedDelivery(unittest.TestCase):
 
 
 class TestUnderLockRededup(unittest.TestCase):
-    """Regression for Codex Finding 2 (TOCTOU): a repo-review re-checks the reviewed
+    """Regression for a TOCTOU race: a repo-review re-checks the reviewed
     index under _RUN_LOCK, so a PR a concurrent run just recorded is not re-reviewed."""
 
     def setUp(self):

@@ -3,13 +3,12 @@
  * stopped so users can type and queue a follow-up the same way they can during
  * streaming or compaction.
  *
- * Previously the ChatInput was gated by
- *   disabled={slotStopping}
- * which blanked the textarea (pointer-events-none + "Stopping…" placeholder)
- * for the up-to-10s soft-cancel window, so quick "stop and redirect" steering
- * was lost. The backend already queues POST /api/chat while slot.running is
- * true (it never rejects on stop_state) and stop runs with preserve_queue=True
- *, so the gate was purely a frontend artefact.
+ * The ChatInput is NOT gated by `disabled={slotStopping}`: that would blank the
+ * textarea (pointer-events-none + "Stopping…" placeholder) for the up-to-10s
+ * soft-cancel window and lose quick "stop and redirect" steering. The backend
+ * queues POST /api/chat while slot.running is true (it never rejects on
+ * stop_state) and stop runs with preserve_queue=True, so keeping the input live
+ * is safe.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'

@@ -340,8 +340,8 @@ class ComputerUseService:
         try:
             with self._shot_lock:
                 shot_dir = _shot_dir()
-                # ATOMIC unique allocation, not a millisecond timestamp (reviewer
-                # finding). ``self._shot_lock`` serializes writers within ONE service
+                # ATOMIC unique allocation, not a millisecond timestamp.
+                # ``self._shot_lock`` serializes writers within ONE service
                 # instance, but it cannot serialize a second process — the gateway,
                 # the CLI and the permission-probe child all spool into the same
                 # ``tempfile.gettempdir()`` directory — so two captures inside the
@@ -354,8 +354,7 @@ class ComputerUseService:
                 # no window in which it exists world-readable before
                 # ``restrict_to_owner`` runs. The timestamp stays in the PREFIX
                 # because the ring trim orders by name and a human reading the spool
-                # wants it. Mirrors ``capture_macos.persist_jpeg``, which the same
-                # finding was applied to earlier.
+                # wants it. Mirrors ``capture_macos.persist_jpeg``.
                 prefix = f"{SCREENSHOT_FILE_PREFIX}{int(time.time() * _TIMESTAMP_SCALE)}-"
                 handle_fd, path = tempfile.mkstemp(
                     prefix=prefix, suffix=SCREENSHOT_FILE_SUFFIX, dir=shot_dir

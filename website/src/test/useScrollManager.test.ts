@@ -7,10 +7,9 @@ import { useScrollManager } from '../pages/chat/useScrollManager'
  *
  * navToDisplayIndex mounts the target via the virtualizer (a React state
  * update) and then scrolls. For a FAR jump the new window is not painted into
- * the DOM within one frame, so scrollToDisplayIndex's row query misses. The old
- * code teleported to top:0 in that case (the visible bug). It must instead
- * report the miss (return false) and NOT scroll, so the caller can retry on a
- * later frame once the row mounts.
+ * the DOM within one frame, so scrollToDisplayIndex's row query misses. On a
+ * miss it must report the miss (return false) and NOT scroll — never teleport
+ * to top:0 — so the caller can retry on a later frame once the row mounts.
  */
 function makeScroller(): { el: HTMLDivElement; scrollTo: ReturnType<typeof vi.fn> } {
   const el = document.createElement('div')

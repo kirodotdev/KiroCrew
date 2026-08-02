@@ -49,11 +49,11 @@ const URL_A = 'https://github.com/acme/repo/pull/7'
 const STATUS_KEY = ['pull-request-statuses', [URL_A]] as const
 
 /**
- * Regression: the sidebar chips and the Changes-strip detail panel used to read
- * two independent caches that nothing invalidated on an agent turn, so they
- * could render different lifecycles for the same pull request until the user hit
- * Refresh. The gateway now pushes a `source_status` delta when a status changes
- * and forces a re-read at turn boundaries; these tests pin the client half.
+ * The sidebar chips and the Changes-strip detail panel read two independent
+ * caches that a plain agent turn does not invalidate, so without a push they can
+ * render different lifecycles for the same pull request until a manual Refresh.
+ * The gateway pushes a `source_status` delta when a status changes and forces a
+ * re-read at turn boundaries; these tests pin the client half.
  */
 describe('useWebSocket pull-request status sync', () => {
   let qc: QueryClient

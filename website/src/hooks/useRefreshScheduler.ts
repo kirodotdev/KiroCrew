@@ -111,8 +111,8 @@ export function useRefreshScheduler(opts: UseRefreshSchedulerOptions = {}): void
     onSuccess: () => {
       // Reset backoff and invalidate auth-me so the scheduler reschedules
       // off the freshly-rotated session_exp. This is the cache-dedup
-      // benefit code review called out: any component that later starts using
-      // session info will see the rotated value automatically.
+      // benefit: any component that later starts using session info will see
+      // the rotated value automatically.
       backoffIdxRef.current = 0
       void queryClient.invalidateQueries({ queryKey: ['auth-me'] })
       void queryClient.invalidateQueries({ queryKey: ['kiro-prerequisite'] })

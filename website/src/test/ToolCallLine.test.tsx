@@ -305,8 +305,8 @@ describe('ToolCallLine file-open icon', () => {
     // The chip (inside the open button) carries the basename.
     const openBtn = await screen.findByTitle('Open /etc/hosts in side panel')
     expect(openBtn.textContent).toContain('hosts')
-    // The pill label is stripped down to the action word — the full path is no
-    // longer duplicated inline (it lives in the chip tooltip + details).
+    // The pill label is just the action word — the full path is not duplicated
+    // inline (it lives in the chip tooltip + details).
     const pill = screen.getByRole('button', { name: /Show details/i })
     expect(pill.textContent).toContain('Read')
     expect(pill.textContent).not.toContain('/etc/hosts')

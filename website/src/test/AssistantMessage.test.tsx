@@ -158,7 +158,7 @@ describe('AssistantMessage', () => {
 
   // Steer UX: the [STEERING …] ack chip must appear the moment kiro-cli emits the
   // marker — including mid-stream — so the user sees the agent acknowledge the
-  // steer live. Before this it was gated on !isStreaming (only after turn end).
+  // steer live, not only after turn end (never gated on !isStreaming).
   it('renders the Steered ack chip live during streaming (not gated on turn end)', () => {
     render(<AssistantMessage content={'Working on it [STEERING steer-abc123: switching to the job id]'} isStreaming={true} slotRunning={true} />)
     expect(screen.getByText('Steered')).toBeInTheDocument()
@@ -170,8 +170,8 @@ describe('AssistantMessage', () => {
     expect(screen.getByTestId('md')).not.toHaveTextContent('[STEERING')
   })
 
-  // Spinner-scoping (busyAction refactor, 2026-07-07): fork and plan each own
-  // their spinner slot so clicking one does not spin the other's icon.
+  // Spinner-scoping: fork and plan each own their spinner slot so clicking one
+  // does not spin the other's icon.
   it('spins only the Plan button when Plan is clicked; fork icon stays a GitFork, not a spinner', async () => {
     let resolvePlan!: () => void
     const onPlanFromHere = vi.fn(() => new Promise<void>(res => { resolvePlan = res }))
@@ -429,7 +429,7 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(fmtTurnElapsed(42_400)).toBe('42s')
     expect(fmtTurnElapsed(154_000)).toBe('2m 34s')
     // Second-remainder that rounds up to 60 must roll into the next minute,
-    // never render the invalid "1m 60s" (Codex MEDIUM regression guard).
+    // never render the invalid "1m 60s".
     expect(fmtTurnElapsed(119_600)).toBe('2m 0s')
     expect(fmtTurnElapsed(179_600)).toBe('3m 0s')
   })

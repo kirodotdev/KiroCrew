@@ -361,8 +361,8 @@ async def execute_task(
                 elif event.kind == EVENT_PERMISSION_REQUEST:
                     # Honor the user-configured auto-approve trust (hook
                     # TOOL_AUTO_APPROVE from hooks.auto_approve_tools) before the
-                    # interactive prompt — the task runner previously handled only
-                    # TOOL_DENY and always prompted, ignoring explicit trust.
+                    # interactive prompt, so explicit trust is respected instead
+                    # of always prompting.
                     _auto_approved = False
                     _auto_reason = ""
                     if ctx:
@@ -528,7 +528,7 @@ async def execute_task(
             sessions.record_success(session_key)
             sessions.check_context_usage(session_key, client)
 
-            # ── Per-turn usage row (issue #647): attribute task-runner spend. ──
+            # ── Per-turn usage row: attribute task-runner spend. ──
             try:
                 # circular import: reached while kiro_crew.slack.handler is still
                 # initialising (dashboard/handlers/files.py imports is_tracked_channel
@@ -867,7 +867,7 @@ async def self_review(
         _review_t0 = _time.monotonic()
         result = await stream_and_collect_json(client, prompt)
 
-        # ── Per-turn usage row (issue #647): self-review is a separate model turn. ──
+        # ── Per-turn usage row: self-review is a separate model turn. ──
         try:
             # circular import: reached while kiro_crew.slack.handler is still
             # initialising (dashboard/handlers/files.py imports is_tracked_channel

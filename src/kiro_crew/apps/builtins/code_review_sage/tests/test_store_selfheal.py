@@ -23,7 +23,7 @@ class TestSeedConfigUpgrade(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_empty_config_gets_resolved_paths(self):
-        """Simulates the d10750e2 fix scenario: generic handler already wrote {}."""
+        """Simulates the scenario where the generic handler already wrote {}."""
         data = self.root / "data"
         data.mkdir(parents=True)
         (data / "config.json").write_text("{}\n", encoding="utf-8")

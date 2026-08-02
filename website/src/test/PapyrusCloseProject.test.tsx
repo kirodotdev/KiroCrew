@@ -119,8 +119,8 @@ describe('Papyrus closeProject', () => {
   })
 
   it('flushes an unsaved buffer before leaving the workspace', async () => {
-    // The regression: this button reset the buffer with no save, so the edit was
-    // gone with no way back.
+    // Without the flush this button would reset the buffer with no save,
+    // leaving the edit gone with no way back.
     const user = await openWorkspace()
     await makeDirty('\\documentclass{article}\n% precious unsaved edit')
 
@@ -164,8 +164,8 @@ describe('Papyrus closeProject', () => {
  * for it, so losing the buffer to a finishing git pull (or the co-author's turn
  * ending) is even less recoverable than losing it to a button they clicked.
  *
- * `reloadOpenFile` used to `setDirty(false)` and then overwrite the buffer, which
- * stepped around the very guard the passive adopt effect uses to protect unsaved
+ * `reloadOpenFile` must not `setDirty(false)` and then overwrite the buffer, which
+ * would step around the very guard the passive adopt effect uses to protect unsaved
  * typing.
  */
 describe('Papyrus reloadOpenFile', () => {
@@ -272,9 +272,9 @@ describe('Papyrus reloadOpenFile', () => {
   })
 
   it('does not report success when the buffer changed during the save', async () => {
-    // `flushBuffer` used to clear `dirty` as soon as the request resolved, declaring
-    // keystrokes typed DURING the save as saved when only the snapshot was — the
-    // caller then transitioned and lost them.
+    // `flushBuffer` must not clear `dirty` as soon as the request resolves, or it
+    // declares keystrokes typed DURING the save as saved when only the snapshot was —
+    // the caller then transitions and loses them.
     //
     // Asserted on the source rather than through the UI: reaching the race through a
     // handler requires the post-await render to have re-created the callback, and
@@ -296,10 +296,10 @@ describe('Papyrus reloadOpenFile', () => {
   })
 
   it('every write goes through flushBuffer — no direct saveMutation call', async () => {
-    // The bug recurred at three separate call sites (close, create/pull, then
-    // save-and-compile + push), each clearing `dirty` unconditionally after its own
-    // await. This asserts the structural fix: `flushBuffer` is the ONLY place that
-    // calls the save mutation, so a new transition cannot reintroduce it.
+    // The dirty flag is easy to clear unconditionally after an await at any of the
+    // three write call sites (close, create/pull, save-and-compile + push). This
+    // asserts the structural guarantee: `flushBuffer` is the ONLY place that
+    // calls the save mutation, so a new transition cannot reintroduce that.
     const src = PapyrusPageSource
     const calls = src.match(/saveMutation\.mutateAsync/g) ?? []
     expect(calls.length, 'saveMutation.mutateAsync must be called exactly once, inside flushBuffer').toBe(1)
@@ -309,8 +309,8 @@ describe('Papyrus reloadOpenFile', () => {
 
   it('does not overwrite text typed while the refresh read was in flight', async () => {
     // `reloadOpenFile` awaits `fetchQuery`, and the editor stays live across that
-    // await. Without a post-await guard the fetched content replaced whatever the
-    // user typed during the round trip — the same "a save completes and clobbers
+    // await. Without a post-await guard the fetched content would replace whatever
+    // the user typed during the round trip — the same "a save completes and clobbers
     // in-flight typing" family as the flush bugs above, in the other direction.
     let releaseRead: (v: { path: string; content: string }) => void = () => {}
     const readInFlight = new Promise<{ path: string; content: string }>(resolve => {
@@ -412,11 +412,11 @@ describe('Papyrus reloadOpenFile', () => {
 })
 
 describe('Papyrus editor is read-only while the shown text is not the file', () => {
-  // Two findings, one root cause: `currentFile` switches the moment the user picks
-  // a file (or a pull starts rewriting it) but `buffer` only catches up when the
-  // fetch lands. A keystroke in that window attached the PREVIOUS file's text to
-  // the NEW path — which then made the fetched content look "dirty" and got
-  // rejected, so the save wrote the wrong text over the selected file.
+  // `currentFile` switches the moment the user picks a file (or a pull starts
+  // rewriting it) but `buffer` only catches up when the fetch lands. A keystroke in
+  // that window attaches the PREVIOUS file's text to the NEW path — which makes the
+  // fetched content look "dirty" and get rejected, so the save writes the wrong text
+  // over the selected file.
   //
   // Source contract: observing the read-only flag take effect needs a real Monaco
   // instance, and the editor is mocked here as a plain textarea. Asserting the
@@ -436,14 +436,14 @@ describe('Papyrus editor is read-only while the shown text is not the file', () 
   })
 
   it('covers EVERY mutation that clears the dirty flag, not just the ones found so far', () => {
-    // The class, not the instances. `createFileMutation` was listed and
-    // `deleteFileMutation` was not, even though both end their `onSuccess` with
-    // `setDirty(false)` + `setCurrentFile` — so deleting the open file while typing
-    // dropped those keystrokes AND suppressed the unsaved-changes prompt.
+    // The class, not the instances. Any mutation that ends its `onSuccess` with
+    // `setDirty(false)` + `setCurrentFile` opens the same window — e.g. deleting the
+    // open file while typing drops those keystrokes AND suppresses the
+    // unsaved-changes prompt.
     //
-    // Rather than name today's two, this derives the requirement: any mutation whose
-    // success handler clears `dirty` opens the same window and must appear in
-    // `readOnly`. A third one added later fails here instead of shipping the bug again.
+    // Rather than name today's mutations, this derives the requirement: any mutation
+    // whose success handler clears `dirty` must appear in `readOnly`. A new one added
+    // later fails here instead of shipping the bug again.
     const prop = PapyrusPageSource.match(/readOnly=\{([^}]*)\}/)![1]
     const clearsDirty = [...PapyrusPageSource.matchAll(
       /const (\w+Mutation) = useMutation\(\{([\s\S]*?)\n  \}\)/g,
@@ -468,11 +468,11 @@ describe('Papyrus editor is read-only while the shown text is not the file', () 
 
 describe('a failed background refresh does not destroy the buffer', () => {
   // `projectQuery` does NOT set `refetchOnWindowFocus: false` (unlike `fileQuery`),
-  // so returning to the tab refetches it. The error branch then ran `setProject(null)`
-  // on ANY error, which unmounts the workspace — and the editor buffer is the only
-  // copy of unsaved typing, since Papyrus holds the working text in memory and writes
-  // on explicit save. So a laptop resume, a restarting gateway or a dropped wifi
-  // connection silently discarded whatever the user had typed.
+  // so returning to the tab refetches it. Running `setProject(null)` on ANY error
+  // unmounts the workspace — and the editor buffer is the only copy of unsaved
+  // typing, since Papyrus holds the working text in memory and writes on explicit
+  // save. So a laptop resume, a restarting gateway or a dropped wifi connection
+  // would silently discard whatever the user had typed.
   //
   // Same failure mode as the close-project guard this file was written for, reached
   // by a route nobody triggers deliberately — which makes it worse, not better.
@@ -508,12 +508,12 @@ describe('a failed background refresh does not destroy the buffer', () => {
 })
 
 describe('a co-author refresh does not save over the agent edits it is showing', () => {
-  // `reloadOpenFile` flushed the buffer before re-reading. For `pull` that is right
+  // `reloadOpenFile` flushes the buffer before re-reading. For `pull` that is right
   // (the user's text predates the merge). For the co-author refresh it is backwards:
   // the AGENT just edited this file, so the browser buffer is the stale copy — and
-  // flushing saved it over the agent's changes, then read the file back and displayed
-  // the overwrite as if it were the agent's result. The refresh destroyed the work it
-  // existed to show.
+  // flushing would save it over the agent's changes, then read the file back and
+  // display the overwrite as if it were the agent's result, destroying the work the
+  // refresh exists to show.
 
   it('the co-author refresh asks reloadOpenFile not to flush', () => {
     expect(PapyrusPageSource).toContain('await reloadOpenFile(false)')
@@ -577,10 +577,10 @@ describe('a failed conflict reload keeps the overwrite guard up', () => {
 })
 
 describe('an unresolved co-author conflict blocks the save', () => {
-  // Refusing to adopt the disk text was only half a fix. Nothing had CHANGED about the
-  // buffer, so the user's next Cmd+S wrote it straight over the agent's version — the
-  // clobber was postponed, not prevented, and the second time it happened silently with
-  // no refresh to blame it on.
+  // Refusing to adopt the disk text is only half the story. Nothing has CHANGED about
+  // the buffer, so the user's next Cmd+S would write it straight over the agent's
+  // version — the clobber is postponed, not prevented, and this time it happens
+  // silently with no refresh to blame it on.
 
   it('records the divergence instead of just returning', () => {
     const fn = PapyrusPageSource.match(
@@ -631,10 +631,10 @@ describe('an unresolved co-author conflict blocks the save', () => {
 
 describe('the conflict guard is not window-dependent', () => {
   // The `dirtyRef` PRE-check records a conflict when the buffer is already dirty. But a
-  // keystroke landing DURING the fetch hit the post-await guard instead, which returned
-  // without adopting and without recording anything — so typing before the fetch was
-  // protected and typing during it was not, and the next save silently overwrote the
-  // agent. Same divergence, discovered one await later.
+  // keystroke landing DURING the fetch hits the post-await guard instead, which returns
+  // without adopting — so typing before the fetch is protected while typing during it
+  // is not, and the next save would silently overwrite the agent unless the post-await
+  // guard records the conflict too.
 
   it('records the conflict at the post-await guard too', () => {
     const fn = PapyrusPageSource.match(

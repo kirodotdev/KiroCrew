@@ -157,8 +157,8 @@ describe('renderUserContent — markdown rendering', () => {
   })
 
   it('resolves a spaced filename correctly even when an image precedes it (original-list index)', () => {
-    // Arbiter guard: token N=2 must index the ORIGINAL list (image at 0, doc at
-    // 1), and the spaced path must resolve in full — not truncate at the space.
+    // token N=2 must index the ORIGINAL list (image at 0, doc at 1), and the
+    // spaced path must resolve in full — not truncate at the space.
     const content = '![image](/home/user/pic.png)\n\nsee [attached_file 2] /home/user/Q2 Report.docx here'
     const meta = { files: ['/home/user/pic.png', '/home/user/Q2 Report.docx'] }
     const { container } = render(<>{renderUserContent(content, meta, noop)}</>)

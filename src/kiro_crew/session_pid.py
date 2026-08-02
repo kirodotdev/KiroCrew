@@ -53,8 +53,7 @@ def _pid_age_seconds(pid: int, proc_root: str = "/proc") -> float | None:
     start time in epoch ``seconds.microseconds`` — so this needs no
     ``subprocess`` and is safe on the event loop. Empirically required: the
     startup sweep SIGKILL'd a live kiro-cli off a stale dead-gateway entry on
-    macOS (2026-07-29 repro) because the grace window silently did not apply
-    there.
+    macOS because the grace window silently did not apply there.
 
     On Windows: returns None (no grace — sweep behavior unchanged there).
 
@@ -395,9 +394,9 @@ def _sweep_pid_entries(
             # at spawn. If the live process's token DIFFERS, this PID has been
             # RECYCLED onto a different (agent) process — e.g. a fresh
             # gateway's own just-spawned backend landing on a stale dead-
-            # gateway entry's PID (empirically reproduced on macOS
-            # 2026-07-29: sweep SIGKILL'd a live kiro-cli, surfacing as
-            # 'process exited (rc=None)'). Prune the stale entry, never kill.
+            # gateway entry's PID (empirically reproduced on macOS: sweep
+            # SIGKILL'd a live kiro-cli, surfacing as 'process exited
+            # (rc=None)'). Prune the stale entry, never kill.
             #
             # An UNREADABLE live token (None) is "identity unknown", NOT a
             # mismatch: pruning there would untrack a live genuine orphan and

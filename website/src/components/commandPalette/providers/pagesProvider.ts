@@ -128,7 +128,7 @@ export function createPagesProvider(navigate: NavigateFunction): ResourceProvide
           icon: page.icon,
           score: match.score,
           indices: match.indices,
-          // Declarative §2 Enter action (/ task 27): Pages are pure
+          // Declarative §2 Enter action: Pages are pure
           // navigation targets — Enter navigates to `route`, and ⌘Enter has no
           // distinct behavior (the dispatcher ignores the modifier for this
           // kind). `onActivate` stays bound to `navigate(route)` as the

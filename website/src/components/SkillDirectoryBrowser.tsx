@@ -63,8 +63,8 @@ function langForFile(path: string): string {
   return 'plaintext'
 }
 
-/** Delegates to the shared `fmtBytes`; this file previously carried one of four
- *  byte formatters that disagreed on spacing, precision and capitalisation. */
+/** Delegates to the shared `fmtBytes` so byte sizes format consistently
+ *  (spacing, precision and capitalisation). */
 const humanSize = (bytes: number): string => fmtBytes(bytes)
 
 /** Labeled frontmatter strip — the skill's contract (description, triggers,

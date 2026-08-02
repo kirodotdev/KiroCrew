@@ -81,15 +81,15 @@ class SessionMap:
                 # reverse index + challenge-redirect resume path are unaffected,
                 # and populate the Layer-3 own-channel link.
                 canon = canonical_key(key)
-                # An early Discord session-resume build ran new-session
-                # bookkeeping on a cold resumed dashboard session. That called
-                # the legacy Slack-only ``set_channel`` path and persisted the
-                # impossible pair ``slack_thread_ts=""`` +
-                # ``slack_channel_id="discord:<id>"``. ``!unlink`` correctly
-                # removed the Discord mirror but could not remove these separate
-                # legacy fields, so later resume attempts saw a phantom Slack
-                # binding. A genuine Slack link always has a thread timestamp;
-                # scrub only this exact pre-release corruption signature.
+                # Scrub a pre-release corruption signature: a ``dashboard:`` key
+                # carrying no ``slack_thread_ts`` but a ``discord:``
+                # ``slack_channel_id`` is an impossible pair. It is left by an
+                # early Discord session-resume build that ran the legacy
+                # Slack-only ``set_channel`` path on a cold resumed dashboard
+                # session; ``!unlink`` removes the Discord mirror but cannot
+                # clear these separate legacy fields, so a later resume attempt
+                # sees a phantom Slack binding. A genuine Slack link always has a
+                # thread timestamp, so scrub only this exact signature.
                 legacy_channel = entry.get("slack_channel_id")
                 if (
                     canon.startswith("dashboard:")
@@ -510,12 +510,10 @@ class SessionMap:
         self._save()
 
     # --- v1c-B: per-conversation state on the session entry ---------------
-    # Durable backing for the per-thread state that ``slack/handler.py`` has
-    # historically kept in module-global dicts (``_thread_temporary``,
-    # ``_thread_incognito``, ``_thread_agents``, ``_thread_projects``).
-    # Storing it on the session entry makes it survive gateway restarts and
-    # ties its lifetime to the session (pruned with the entry) instead of an
-    # ad-hoc bounded LRU. Additive: existing fields and callers are untouched.
+    # Durable backing for per-thread state (``temporary``, ``incognito``,
+    # ``agents``, ``projects``). Storing it on the session entry makes it
+    # survive gateway restarts and ties its lifetime to the session (pruned
+    # with the entry) rather than an ad-hoc bounded LRU in module-global dicts.
 
     def _ensure_entry(self, key: str) -> dict:
         """Return the entry for *key*, creating a blank one if absent."""

@@ -1,6 +1,6 @@
 /**
  * Rewind helper — wraps `api.rewind` with a rollback callback that fires on
- * failure. Extracted from ChatPage so the success/failure branches can be
+ * failure. Separate from ChatPage so the success/failure branches can be
  * unit-tested without mounting the full chat page.
  */
 

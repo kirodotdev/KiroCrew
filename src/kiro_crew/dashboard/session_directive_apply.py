@@ -1,4 +1,4 @@
-"""Apply a decoded session directive against the consumer's OWN session (#755).
+"""Apply a decoded session directive against the consumer's OWN session.
 
 Called from ``dashboard/chat_runner.py``'s ``EVENT_TOOL_RESULT`` handler — the
 single shared turn loop for every interactive surface (dashboard, Slack,
@@ -329,7 +329,7 @@ async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
 
 
 async def _ask_question(state: Any, slot: Any, args: dict[str, Any]) -> str:
-    """Post a NON-BLOCKING question card to this session's slot (#755). The card
+    """Post a NON-BLOCKING question card to this session's slot. The card
     carries no ask_id, so the frontend submit sends the answers as an ordinary
     next message that resumes the session — the agent must END its turn now."""
     post = getattr(state, "post_question_card", None)

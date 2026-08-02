@@ -89,7 +89,8 @@ _CRON_CRED_PATH_RE = re.compile(
 )
 # Protected secret env vars a cron command must not read by name. Union of the
 # sandbox-scrubbed agent keys (Slack tokens, owner id) and well-known cloud /
-# source-control credential env vars. Fix 4 strips _AGENT_DENIED_ENV_KEYS from
+# source-control credential env vars. The sandbox strips _AGENT_DENIED_ENV_KEYS
+# from
 # the cron subprocess env, but AWS_*/token vars may still be present (or arrive
 # via a future regression), so denying a by-name reference at storage time is a
 # cheap, precise backstop that mirrors the existing execute_bash deniedCommands
@@ -317,9 +318,9 @@ def _vet_script_contents(text: str) -> str | None:
     ``os.environ[...]`` style access). We deliberately do NOT run ``is_denied``
     over a script body: it encodes shell tool-name semantics (e.g. ``*git*push*``)
     that false-positive on ordinary Python source, and destructive-op risk is
-    covered by the now-required ``cron_add`` approval prompt (Fix 3). Credential
+    covered by the now-required ``cron_add`` approval prompt. Credential
     exfiltration — which a human rubber-stamping the prompt would not catch — is
-    the threat this gate closes (defense-in-depth item 5).
+    the threat this gate closes.
     """
     if _CRON_CRED_PATH_RE.search(text):
         return (

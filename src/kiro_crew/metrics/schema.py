@@ -1,18 +1,17 @@
 """Telemetry namespace + attribute-validation guardrails (contract C4).
 
-The self-developed MetricRecord / MetricKind data model was removed in favour of
-the OpenTelemetry SDK instrument types. These validation and redaction helpers
-are kept because OTEL provides neither namespace enforcement nor PII/secret
-redaction — they become the thin facade layer in front of the OTEL instruments.
+These validation and redaction helpers form the thin facade layer in front of
+the OpenTelemetry SDK instrument types, which provide neither namespace
+enforcement nor PII/secret redaction.
 
 OSS-CLEAN: stdlib only, plus the first-party ``kiro_crew.security`` scrubbers.
 PRIVACY: no secrets, PII, or user content in attributes.
 CARDINALITY: metric names and attribute VALUES MUST be low-cardinality constants
 (enum-like) — never raw ids / timestamps / free-form strings templated into a
 name or value. The recorder caches one OTEL instrument per distinct name for the
-process lifetime, so unbounded names/values are a cardinality bomb. Wave-0 caps
-attribute COUNT (MAX_ATTR_COUNT) + redacts string values; hard value-bucketing
-and instrument-cache eviction are deferred to a later wave.
+process lifetime, so unbounded names/values are a cardinality bomb. Attribute
+COUNT is capped (MAX_ATTR_COUNT) + string values redacted; hard value-bucketing
+and instrument-cache eviction are not yet implemented.
 """
 
 from __future__ import annotations
@@ -67,7 +66,7 @@ def _is_high_entropy(value: str) -> bool:
             return True
     # Base64-encoded credential variants: decode and re-check the raw
     # credential patterns on the decoded text (matches redact_credentials()
-    # base64 coverage; security-controls hardening).
+    # base64 coverage).
     stripped = value.strip()
     if (
         len(stripped) >= 16

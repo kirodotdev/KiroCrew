@@ -541,14 +541,14 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
         return 0  # cleanup disabled
     # Rate-limit guard runs BEFORE resolving retention from config so a
     # throttled call (the common case on hot archive paths) returns without
-    # the expensive KiroCrewConfig.load() disk read + parse (Bug #6).
+    # the expensive KiroCrewConfig.load() disk read + parse.
     now = _time.time()
     if now - _last_cleanup < 3600:
         return 0
     # Past the throttle window: stamp _last_cleanup NOW, before resolving
     # retention. Otherwise a config-resolved "disabled" (negative) would return
     # without updating the window, so every subsequent archive write would
-    # re-run the expensive KiroCrewConfig.load() — reintroducing the Bug #6
+    # re-run the expensive KiroCrewConfig.load() — reintroducing the
     # regression for the disabled case.
     _last_cleanup = now
     # Resolve retention from config if not given, honoring a config-resolved
@@ -748,7 +748,7 @@ class ConversationLog:
         self._lock = threading.RLock()
         #: When True, ``recent``/``recent_chained`` may satisfy a cache miss by
         #: reading only the TAIL of the session file instead of parsing the
-        #: whole thing (recommendation #10). Correctness-neutral — see
+        #: whole thing. Correctness-neutral — see
         #: :meth:`_read_tail_messages`.
         self._tail_reads = True
 
@@ -1173,7 +1173,7 @@ class ConversationLog:
         the just-flushed current-turn user message as history when the
         background flush wins the race against kiro-cli spawn.
         """
-        # Recommendation #10: recent-only access with no trailing exclusion can
+        # Recent-only access with no trailing exclusion can
         # be served by reading just the TAIL of the file, skipping a full parse
         # of a potentially 2 MB session log. Only taken on a cache miss (a fresh
         # full-parse cache is already O(1) and is preferred). Returns None to

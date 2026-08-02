@@ -1,6 +1,6 @@
 """Crash-dump store — dedicated file routing for loop-stall watchdog dumps.
 
-The existing loop_watchdog.py (ca9d9bea, 2026-06-26) captures thread stacks on
+The existing loop_watchdog.py captures thread stacks on
 event-loop wedge via faulthandler.  However, those dumps land in raw stderr
 (interleaved with all other output in journal/terminal) and are effectively
 undiscoverable.

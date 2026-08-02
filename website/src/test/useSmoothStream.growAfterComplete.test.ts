@@ -1,5 +1,5 @@
 /**
- * useSmoothStream: content that GROWS after the stream completes (round-2 bugfix).
+ * useSmoothStream: content that GROWS after the stream completes.
  *
  * Once a message finishes, the rAF drain loop stops itself (raf = 0 when
  * !streaming && caughtUp) and never restarts (deps [enabled, speed]). A later

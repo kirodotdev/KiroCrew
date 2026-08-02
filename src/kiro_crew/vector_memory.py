@@ -372,7 +372,7 @@ class VectorMemoryStore:
         # Optional factory that builds an embed_fn on demand. When set, _try_embed()
         # will lazily rebind self.embed_fn if it is None — handles the case where
         # the embedding model was unavailable at gateway boot but landed later, without
-        # requiring a gateway restart. See Mesh-XXXX (embed_fn lazy rebind fix).
+        # requiring a gateway restart.
         self.embed_fn_factory: Callable[[], Callable[[str], list[float] | None] | None] | None = (
             None
         )
@@ -429,8 +429,7 @@ class VectorMemoryStore:
                 logger.info("Applied memory schema migration v%s", ver)
 
         # Set file permissions (owner-only). chmod_safe already logs+swallows
-        # OSError internally and is a no-op on Windows, so no wrapper needed —
-        # matches the socketsec.py + sel.py chmod_safe call sites in this CR.
+        # OSError internally and is a no-op on Windows, so no wrapper needed.
         platform_compat.chmod_safe(self._db_path, 0o600)
 
         # Load persisted FAISS index (or rebuild from SQLite embeddings)
@@ -1053,7 +1052,7 @@ class VectorMemoryStore:
             )
             return False
 
-        # Prompt-injection screening (XPIA defense-in-depth, Talos 696671aa).
+        # Prompt-injection screening (XPIA defense-in-depth).
         # Episodic text is derived from conversation transcripts, so a poisoned
         # turn could persist steering instructions that get re-injected into
         # future contexts. Mirror the semantic-KV screen (validate_semantic) and
@@ -2548,7 +2547,7 @@ class VectorMemoryStore:
         """Return counts of write rejections by reason.
 
         ``injection_blocked`` is counted across BOTH semantic and episodic
-        writes (episodic screening added for Talos 696671aa). The other codes
+        writes. The other codes
         stay semantic-scoped: ``conflict_skip`` is also emitted for episodic
         FAISS dedup, so counting episodic there would conflate benign
         deduplication with policy rejections.

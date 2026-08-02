@@ -132,10 +132,10 @@ _KIROCREW_SAFE_SUBDIRS = {
     "crons",
 }
 
-# The KiroCrew data home has moved from the top-level ~/.kirocrew to ~/.kiro/crew
-# (nested under kiro-cli's ~/.kiro). The granular deny-by-default listing policy
-# must recognize the home wherever it lives: the current ~/.kiro/crew, and a
-# pre-move legacy ~/.kirocrew.
+# The KiroCrew data home is ~/.kiro/crew (nested under kiro-cli's ~/.kiro), with
+# a legacy location at ~/.kirocrew. The granular deny-by-default listing policy
+# must recognize the home wherever it lives: the current ~/.kiro/crew, and the
+# legacy ~/.kirocrew.
 # Each marker is the tuple of trailing path segments that identify the home dir;
 # the segment(s) AFTER the marker are matched against _KIROCREW_SAFE_SUBDIRS.
 # Note ~/.kiro alone is NOT a marker — that is kiro-cli's own dir (agents,

@@ -1,14 +1,11 @@
-// Task Runner workspace shell — the parts that were brought in line with the
-// other builtin apps (Issue Radar as the reference):
+// Task Runner workspace shell — matches the other builtin apps (Issue Radar as
+// the reference):
 //
 //   * the page routes through BUILTIN_COMPONENT_REGISTRY rather than a hardcoded
 //     <Route> in App.tsx,
 //   * the run rail is a real resizable/collapsible column, present in every state,
 //   * the page is full-bleed (no dashboard PageHeader, no page gutters),
 //   * no loading state spins.
-//
-// Each test below fails against the pre-alignment page, so the suite is a
-// regression guard rather than a restatement of the implementation.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
@@ -89,8 +86,8 @@ describe('Task Runner — workspace shell', () => {
   })
 
   it('shows the rail before any run exists', async () => {
-    // Previously the rail only appeared once runs existed, so the main column
-    // jumped sideways the moment the first run landed.
+    // The rail appears before any run exists, so the main column does not jump
+    // sideways the moment the first run lands.
     renderWithProviders(<ProjectsPage />)
     expect(await screen.findByText('No runs yet')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /New Task/ })).toBeInTheDocument()

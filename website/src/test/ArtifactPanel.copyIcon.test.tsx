@@ -4,12 +4,11 @@ import { useRef } from 'react'
 import { Copy, MessageSquarePlus } from 'lucide-react'
 import SelectionToolbar, { type SelectionAction } from '../components/SelectionToolbar'
 
-// Defect #5: the ArtifactPanel copy selection action previously used a literal
-// text `<span>Copy</span>` as its `icon` PLUS `label: 'Copy'`. SelectionToolbar
-// renders BOTH the icon and the label, so the button read "Copy Copy". The fix
-// uses a lucide `<Copy />` icon (matching the file panel). This test verifies
-// that, given an icon that is a lucide element (not a text node), the rendered
-// copy button's text content is exactly "Copy" — i.e. no doubling.
+// SelectionToolbar renders BOTH the icon and the label, so a text-node icon
+// like `<span>Copy</span>` alongside `label: 'Copy'` makes the button read
+// "Copy Copy". A lucide `<Copy />` icon (matching the file panel) keeps the
+// rendered copy button's text content exactly "Copy". This test verifies that,
+// given an icon that is a lucide element (not a text node), there is no doubling.
 
 function Harness({ actions }: { actions: SelectionAction[] }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -29,8 +28,8 @@ describe('SelectionToolbar copy action (ArtifactPanel defect #5)', () => {
     ]
     render(<Harness actions={actions} />)
     const copyBtn = screen.getByRole('button', { name: 'Copy' })
-    // The bug rendered "CopyCopy" (icon-as-text-span + label). With a lucide
-    // icon (an <svg>), the button's textContent is just the label.
+    // A text-span icon renders "CopyCopy" (icon-as-text-span + label). With a
+    // lucide icon (an <svg>), the button's textContent is just the label.
     expect(copyBtn.textContent).toBe('Copy')
     expect(copyBtn.querySelector('svg')).toBeTruthy()
   })
@@ -41,8 +40,8 @@ describe('SelectionToolbar copy action (ArtifactPanel defect #5)', () => {
     ]
     render(<Harness actions={actions} />)
     const copyBtn = screen.getByRole('button', { name: /Copy/ })
-    // This is the old, broken shape — it doubles. Asserting it here pins the
-    // root cause so the fix's intent is unambiguous.
+    // A text-span icon is the broken shape — it doubles. Asserting it here pins
+    // the root cause so the correct behavior's intent is unambiguous.
     expect(copyBtn.textContent).toBe('CopyCopy')
   })
 

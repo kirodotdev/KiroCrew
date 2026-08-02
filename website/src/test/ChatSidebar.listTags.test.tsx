@@ -1,8 +1,7 @@
 /**
- * Regression for Option A (surface session tags in list view): the per-row tag
- * pills must render whenever a slot has tags, independent of the board-only
- * `tagColumnsEnabled` config. Previously the pills were gated behind that flag,
- * so tags were invisible in the default (list) view.
+ * The per-row tag pills render whenever a slot has tags, independent of the
+ * board-only `tagColumnsEnabled` config, so tags are visible in the default
+ * (list) view and not gated behind that flag.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render } from '@testing-library/react'

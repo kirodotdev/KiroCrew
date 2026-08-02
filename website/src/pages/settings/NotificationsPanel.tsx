@@ -39,7 +39,7 @@ function channelLabel(c: NotificationChannel): string {
   return c.channel.startsWith(`${c.source}.`) ? c.channel.slice(c.source.length + 1) : c.channel
 }
 
-/** Per-channel notification settings (RFC Phase 3): mute + priority override,
+/** Per-channel notification settings: mute + priority override,
  *  grouped by source (System first, then apps). Protected channels render
  *  locked. Channels with stored settings but no live registration (app
  *  disabled) stay visible so mutes remain editable. */

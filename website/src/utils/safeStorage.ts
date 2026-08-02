@@ -140,7 +140,7 @@ function warnDev(key: string, err: unknown): void {
  * Non-throwing localStorage read. Returns null when storage access is denied
  * (SecurityError in locked-down embedding contexts / browser policies) or
  * unavailable — a read failure must degrade to "no cached value", never crash
- * the caller (Codex round-20 on the tips 20-min gate read).
+ * the caller.
  */
 export function safeGetItem(key: string): string | null {
   if (typeof localStorage === 'undefined') return null

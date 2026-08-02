@@ -190,8 +190,8 @@ async def api_skills(request: web.Request) -> web.Response:
     # blocking filesystem work — kirocrew list_skills() (os.walk + per-file
     # frontmatter reads), AIM path globs, kiro per-skill resolve/read, and the
     # agent annotation — onto the dedicated DISCOVERY pool in one job. This work
-    # stalled the event loop past the loop-stall watchdog (~25s) on large
-    # skills×agents catalogs before it moved off-loop. Use the discovery pool
+    # would stall the event loop past the loop-stall watchdog (~25s) on large
+    # skills×agents catalogs if run on-loop. Use the discovery pool
     # (NOT maintenance_executor): this scan is browser-triggerable and can be
     # seconds-long, so the maintenance pool would let a few dashboard tabs
     # occupy the workers the orphan-reaper sweeps need to recover from a wedge

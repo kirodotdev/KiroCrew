@@ -690,7 +690,7 @@ async def _stream_task(
                 # communicate via channel posts only. send_notification is
                 # functionally equivalent for reaching the user (feed
                 # publish, badge, sound), so it shares the
-                # containment boundary (PR #422 review).
+                # containment boundary.
                 if _blocked_tool_named(event.text or event.title or ""):
                     sel().log_tool_invocation(
                         session_key=agent.session_key,

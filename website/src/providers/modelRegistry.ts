@@ -1,9 +1,8 @@
-// Re-introduced SLIM as the static fallback source for
-// AcpAdapter.fetchAvailableModels (gateway-restart / kiro-cli cold-start
-// timeout on /api/models). The full registry reader (defaultModel /
-// modelLabel / modelSupportsAuto / contextWindow and their indexes) was
-// removed in the KiroACP-only provider collapse (025d7571) and is NOT
-// restored here — displayModels() is the only consumer-backed export.
+// SLIM static fallback source for AcpAdapter.fetchAvailableModels
+// (gateway-restart / kiro-cli cold-start timeout on /api/models).
+// displayModels() is the only consumer-backed export — there is no full
+// registry reader (defaultModel / modelLabel / modelSupportsAuto /
+// contextWindow and their indexes).
 // Imports the SAME data file the Python backend uses (model_registry.json,
 // parity-guarded by test_model_registry_parity.py) so canonical keys,
 // display names, and context windows agree without an API round-trip.

@@ -7,10 +7,9 @@ import { i18nT } from '../../i18n/t'
 import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields } from '../../i18n/format'
 
 /**
- * Shared notification metadata + helpers. Extracted verbatim from the former
- * inline NotificationsPage so the full page and the topbar bell popover render
- * notifications through the exact same code (one source of truth for kinds,
- * filters, formatting, and date grouping).
+ * Shared notification metadata + helpers, so the full page and the topbar bell
+ * popover render notifications through the exact same code (one source of truth
+ * for kinds, filters, formatting, and date grouping).
  */
 
 export type Kind = 'cron' | 'hook' | 'heartbeat' | 'agent' | 'approval' | 'subagent' | 'taskrunner'
@@ -50,12 +49,11 @@ export function parseTs(ts: string | number): Date {
   // seconds, milliseconds, microseconds, or nanoseconds — depending on the
   // producer. Detect the unit by magnitude and normalize to milliseconds.
   //
-  // The previous implementation did `new Date(ts)` then, only on failure,
-  // `new Date(parseFloat(ts) * 1000)`. That broke for a millisecond epoch
-  // passed as a string: `new Date("1784784205932")` is Invalid Date in V8, so
-  // it fell through and multiplied ms by 1000 (treating it as seconds), which
-  // rendered the year as ~58527. Detecting the unit up front fixes both the
-  // ms-as-string and microsecond-as-number cases.
+  // Detecting the unit up front (rather than `new Date(ts)` with a
+  // `new Date(parseFloat(ts) * 1000)` fallback) is required because a
+  // millisecond epoch passed as a string is Invalid Date in V8, so the fallback
+  // would treat it as seconds and render the year as ~58527. It also handles the
+  // microsecond-as-number case.
   const num =
     typeof ts === 'number'
       ? ts

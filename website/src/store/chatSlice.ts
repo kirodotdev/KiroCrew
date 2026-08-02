@@ -18,14 +18,15 @@ const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has
  *  mutated across dispatches (streaming/thinking accumulation). ChatPage keys
  *  rows by `meta.clientTs ?? ts` and falls back to a WeakMap id minted per
  *  message OBJECT — but Immer replaces the object on every `content +=` commit,
- *  so a ts-less accumulating message minted a NEW id (→ new React key → full
- *  row remount) on every chunk flush. That remount reset useSmoothStream's
- *  reveal cursor (text snapped in whole chunks) and restarted every CSS/Framer
- *  animation in the row (widget-placeholder dots flashing in unison). Stamping
- *  the identity once at append survives Immer's structural sharing for the
- *  message's whole life, including the streaming→assistant finalization that
- *  later sets a server `ts`. (This is the "durable id stamped in the reducer
- *  at append" follow-up ChatPage's stableMsgKey comment pointed at.) */
+ *  so without a stamped identity a ts-less accumulating message would mint a
+ *  NEW id (→ new React key → full row remount) on every chunk flush. That
+ *  remount would reset useSmoothStream's reveal cursor (text snapping in whole
+ *  chunks) and restart every CSS/Framer animation in the row
+ *  (widget-placeholder dots flashing in unison). Stamping the identity once at
+ *  append survives Immer's structural sharing for the message's whole life,
+ *  including the streaming→assistant finalization that later sets a server
+ *  `ts`. (This is the "durable id stamped in the reducer at append" that
+ *  ChatPage's stableMsgKey comment points at.) */
 let bornKeySeq = 0
 const mintBornKey = (): string => `born-${Date.now()}-${bornKeySeq++}`
 
@@ -125,10 +126,10 @@ type SlotQueueItem = { content: string; queueId: string; ts: string }
  *  turns backend queue entries into `queued` message bubbles. Every reducer that
  *  consumes a `fetchSlotDetail` payload (`switchSlot`, `warmSlotCache`,
  *  `refreshSlot`) routes through here so the hydration cannot be hand-copied and
- *  drift apart. That drift is exactly what dropped queued messages before:
- *  `switchSlot` and `warmSlotCache` mirrored the same literal, and a field added
- *  to one was silently forgotten in the other. Centralizing it means a new
- *  slot-detail payload field is added once and consumed everywhere.
+ *  drift apart. Hand-copying it risks dropping queued messages: if `switchSlot`
+ *  and `warmSlotCache` each mirror the same literal, a field added to one is
+ *  silently forgotten in the other. Centralizing it means a new slot-detail
+ *  payload field is added once and consumed everywhere.
  *
  *  Existing `queued` bubbles are stripped first so re-hydration is idempotent —
  *  a `queue_push` WS event may have appended a bubble during the HTTP fetch, and
@@ -324,7 +325,7 @@ interface ChatState {
   // Agent-authored follow-up suggestions (suggest_followup MCP tool), rendered
   // as a card above the composer. Keyed BY SLOT: a single global card let a
   // suggestion arriving in session B silently evict session A's unacted-on card,
-  // contradicting the documented per-session behaviour (GPT review, PR #461).
+  // contradicting the documented per-session behaviour.
   //
   // `ts` is the broadcast timestamp, used to avoid clearing a card that arrived
   // while a slower action (worktree create) was still in flight.
@@ -743,7 +744,7 @@ export const createSlot = createAsyncThunk<
         // via addSlotOptimistic makes it selectable from the sidebar immediately,
         // so a turn sent before scoping landed would run in the DEFAULT checkout.
         // Await the scope, and if it fails delete the session server-side rather
-        // than publish an unscoped one (GPT review, PR #461 round 10).
+        // than publish an unscoped one.
         try {
           await api.chatSlotProject(slot.key, project)
         } catch (err) {
@@ -1069,7 +1070,7 @@ const chatSlice = createSlice({
       if (!card) return
       // Same staleness guard as `clearFollowupCard`: a replacement card can land
       // between render and click, and an unqualified dismiss would delete that
-      // index from a card the user has not seen (GPT review, round 9).
+      // index from a card the user has not seen.
       if (ts != null && card.ts !== ts) return
       const items = card.items.filter((_, i) => i !== index)
       if (items.length) state.followups[slot] = { ...card, items }
@@ -1279,8 +1280,8 @@ const chatSlice = createSlice({
     toggleActivity(state) { state.activityOpen = !state.activityOpen; if (!state.activityOpen) state.focusToolCallId = null; persistActivityOpen(state.activeSlot, state.activityOpen) },
     openActivityPanel(state) { state.activityOpen = true; persistActivityOpen(state.activeSlot, true) },
     openActivityToTab(state, action: PayloadAction<'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>) { state.activityOpen = true; state.activityTab = action.payload; state.focusToolCallId = null; persistActivityOpen(state.activeSlot, true) },
-    /** Tools tab is deprecated — tool details now expand inline in the chat. This action
-     *  signals the matching ToolCallLine pill to auto-expand and scroll into view. */
+    /** Tool details expand inline in the chat. This action signals the matching
+     *  ToolCallLine pill to auto-expand and scroll into view. */
     openActivityToTool(state, action: PayloadAction<string>) { state.focusToolCallId = action.payload },
     /** Clear after the matching pill has consumed the focus signal, so the same trigger
      *  doesn't re-fire on subsequent re-renders. */
@@ -1739,11 +1740,10 @@ const chatSlice = createSlice({
       // the one consumer that reads scrollback rather than the tool log: the
       // inline SubagentRunCard detects a spawn_run launch by parsing
       // "Spawned N subagent(s)." out of `meta.output`. Without this the card
-      // saw nothing until the slot was refetched, because `chatSlotDetail` was
-      // the only source that ever carried this field — making it a reload-only
-      // artifact. Mirrors the server, which writes the same redacted string to
-      // the same field (chat_runner.py EVENT_TOOL_RESULT), so live and reloaded
-      // state now agree.
+      // sees nothing until the slot is refetched, since `chatSlotDetail` would
+      // be the only source carrying this field — a reload-only artifact. Mirrors
+      // the server, which writes the same redacted string to the same field
+      // (chat_runner.py EVENT_TOOL_RESULT), so live and reloaded state agree.
       //
       // Restricted to launch results on purpose. `toolLog` is capped at 100
       // entries but `state.messages` is not, and a single output can reach the
@@ -1767,7 +1767,7 @@ const chatSlice = createSlice({
       if (!log) return
       // Prefer an exact tool_call_id match when a tid is supplied. Only if no
       // entry carries that id do we fall back to the most-recent id-less tool
-      // entry. The old single-pass `... || !log[i].tool_call_id` clause let a
+      // entry. A single-pass `... || !log[i].tool_call_id` clause would let a
       // supplied tid latch onto an unrelated id-less tool sitting later in the
       // log, attaching the output to the wrong tool bubble.
       let target = -1
@@ -2022,10 +2022,10 @@ const chatSlice = createSlice({
   extraReducers: (builder) => {
     builder
       /** Reconcile per-slot caches against the authoritative slots list.
-       *  Sessions that close/archive/delete vanish from the SSE `slots` REPLACE,
-       *  but their transcripts previously stayed resident for the tab's lifetime
-       *  (only `deleteSlot.fulfilled` evicted) — the dominant retention class
-       *  behind multi-GB heaps on long-lived dashboard tabs.
+       *  Sessions that close/archive/delete vanish from the SSE `slots` REPLACE;
+       *  without this reconcile their transcripts stay resident for the tab's
+       *  lifetime (only `deleteSlot.fulfilled` evicts) — the dominant retention
+       *  class behind multi-GB heaps on long-lived dashboard tabs.
        *  Guards: an empty payload is a no-op (SSE reconnect can deliver an
        *  empty frame before the first real snapshot), and the active slot is
        *  never pruned (its live `messages`/optimistic state must not be
@@ -2041,7 +2041,7 @@ const chatSlice = createSlice({
           state.slotSide, state.slotSideClosed, state.slotStatusDetail,
           state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
           // Follow-up cards are per slot and can hold multi-KB prompts, so a
-          // deleted session's card must not outlive it (GPT review round 4).
+          // deleted session's card must not outlive it.
           state.followups,
         ].filter(Boolean)
         const cached = new Set(maps.flatMap(m => Object.keys(m)))
@@ -2075,8 +2075,8 @@ const chatSlice = createSlice({
         const cached = state.slotActivity[action.meta.arg]
         state.toolLog = cached?.toolLog ?? []
         state.subagents = cached?.subagents ?? {}
-        // 'tools' tab was removed in May 2026 (inline expansion replaces it). Cached
-        // pre-migration values fall back to 'files'.
+        // Inline expansion replaces the old 'tools' tab; cached pre-migration
+        // values fall back to 'files'.
         state.activityTab = (cached?.activityTab && cached.activityTab !== ('tools' as never) && cached.activityTab !== ('nav' as never)) ? cached.activityTab : 'files'
         // Panel open/closed is per-chat; a chat we've never opened defaults to closed.
         state.activityOpen = cached?.activityOpen ?? false
@@ -2325,7 +2325,7 @@ const chatSlice = createSlice({
           const cached = state.slotActivity[action.payload.key]
           state.toolLog = cached?.toolLog ?? []
           state.subagents = cached?.subagents ?? {}
-          // 'tools' tab was removed (inline expansion replaces it). Cached pre-migration values fall back to 'files'.
+          // Inline expansion replaces the old 'tools' tab; cached pre-migration values fall back to 'files'.
           state.activityTab = (cached?.activityTab && cached.activityTab !== ('tools' as never) && cached.activityTab !== ('nav' as never)) ? cached.activityTab : 'files'
           state.activityOpen = cached?.activityOpen ?? false
           state.activeSlot = action.payload.key

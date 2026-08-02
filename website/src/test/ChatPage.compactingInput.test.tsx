@@ -3,12 +3,11 @@
  * compacting so users can type and queue messages the same way they can
  * during streaming.
  *
- * Previously the ChatInput was gated by
- *   disabled={slotStopping || slotState === 'compacting'}
- * which blanked the textarea (pointer-events-none + "Stopping…" placeholder)
- * for the 10s–120s that LLM summarisation can take. The backend already
- * queues POST /api/chat during compaction because slot.running stays true
- * — the gate was purely a frontend artefact.
+ * ChatInput is not gated on `slotState === 'compacting'`: gating it there
+ * blanks the textarea (pointer-events-none + "Stopping…" placeholder) for the
+ * 10s–120s that LLM summarisation can take. The backend already queues
+ * POST /api/chat during compaction because slot.running stays true, so a
+ * frontend gate is unnecessary.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'

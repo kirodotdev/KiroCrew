@@ -877,9 +877,9 @@ describe('PrBulkBar', () => {
   })
 
   it('unticks only the SUCCEEDED rows, so a retry cannot duplicate a write', async () => {
-    // Keeping the whole selection on a partial run made the retry re-apply to the
-    // rows that already worked. For `comment` that posts a second copy — the one
-    // action here whose repeat is visible to everyone on the PR.
+    // Unticking only the succeeded rows stops a retry from re-applying to rows
+    // that already worked. For `comment` a repeat posts a second copy — the one
+    // action here whose duplicate is visible to everyone on the PR.
     api.bulkPrAction.mockResolvedValue({
       ...REF, action: 'comment',
       applied: [{ number: 7 }],
@@ -928,8 +928,9 @@ describe('PrBulkBar', () => {
   })
 
   it('reports the rows that landed when a later chunk throws', async () => {
-    // The accumulator lives outside the try: returning null discarded the chunks that
-    // already succeeded, so every one stayed selected and a retry re-applied to it.
+    // The accumulator lives outside the try so chunks that already succeeded are
+    // still reported when a later chunk throws; otherwise every one would stay
+    // selected and a retry would re-apply to it.
     const many = Array.from({ length: 4 }, (_, i) => ({ ...PULL, number: i + 1 }))
     let call = 0
     api.bulkPrAction.mockImplementation(async (_r: unknown, nums: number[]) => {
@@ -971,7 +972,7 @@ describe('PrBulkBar', () => {
 
   it('chunks a large selection on the server-published cap', async () => {
     // The server rejects an over-cap batch outright, so an unchunked "select all" on
-    // a big repo was a flat 400 with nothing applied. The cap comes from the
+    // a big repo would be a flat 400 with nothing applied. The cap comes from the
     // response, never a hardcoded copy.
     const many = Array.from({ length: 7 }, (_, i) => ({ ...PULL, number: i + 1 }))
     api.bulkPrAction.mockImplementation(async (_r: unknown, nums: number[]) => ({
@@ -1010,9 +1011,9 @@ describe('PrBulkBar', () => {
   })
 
   it('disarms a typed confirmation when the selection is SWAPPED at the same size', async () => {
-    // The regression that matters most here. With the reset keyed on the selection
-    // COUNT, swapping 7,8 -> 7,9 never fired it: Apply stayed armed and closed a PR
-    // the user had never confirmed. Keyed on identity, the confirmation is dropped.
+    // The confirmation is keyed on selection IDENTITY, not COUNT. Swapping
+    // 7,8 -> 7,9 (same size) must still drop an armed confirmation, so Apply
+    // cannot close a PR the user never confirmed.
     const PULL_9 = { ...PULL, number: 9 }
     setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [PULL, PULL_8, PULL_9] })
     const { rerender } = wrap(<PrBulkBar />)
@@ -1045,9 +1046,10 @@ describe('PrBulkBar', () => {
   })
 
   it('still reports the outcome after a clean run clears the selection', async () => {
-    // A clean run clears the selection, which used to unmount the bar before the
-    // summary could paint — so the user got no confirmation at all and the
-    // translated success copy was unreachable. The bar now survives on an outcome.
+    // A clean run clears the selection; the bar survives on an outcome so the
+    // summary still paints. Otherwise it would unmount before the summary
+    // rendered, leaving no confirmation and the translated success copy
+    // unreachable.
     api.bulkPrAction.mockResolvedValue({ ...REF, action: 'approve', applied: [{ number: 7 }], failed: [] })
     setCtx({ checkedPulls: new Set([7]), clearCheckedPulls: vi.fn() })
     const { rerender } = wrap(<PrBulkBar />)

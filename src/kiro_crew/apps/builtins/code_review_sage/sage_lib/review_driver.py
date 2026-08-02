@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Review driver — code-enforced two-stage review loop (design §3 component 3,
-pain point #3 plus design-gate waste avoidance).
+"""Review driver — code-enforced two-stage review loop.
 
 Neither the clean-session-per-change guarantee NOR the Phase 1 -> Phase 2 switch
 is left to the LLM. This deterministic driver owns both:
@@ -73,9 +72,9 @@ def _redact(text: str) -> str:
 
 
 DEFAULT_TASK_TIMEOUT = 5400      # 90 min per review turn (the governing cap — passed
-#   through run_review -> _one -> dispatch -> pool.send -> handle.prompt). One heavier
-#   single-pass turn replaces up to 5 old turns; the old 30-min cap force-killed
-#   working large-PR reviews. Stays under the runtime's 2h prompt default.
+#   through run_review -> _one -> dispatch -> pool.send -> handle.prompt). A single
+#   thorough pass needs headroom that a 30-min cap would force-kill on large PRs.
+#   Stays under the runtime's 2h prompt default.
 _REPORT_ARTIFACT_TAG = "sage-report"   # tags every per-run report artifact
 DEFAULT_REPORT_RETENTION = 20    # keep the N most-recent report artifacts; prune older
 
@@ -141,7 +140,7 @@ def _resolve_concurrency(explicit: int | None = None) -> int:
     worker pool's concurrency cap.
 
     Pool workers are direct ACP sessions (NOT ``/api/spawn`` sub-agents), so the
-    gateway sub-agent cap no longer applies — ``review_pool.effective_max_concurrent()``
+    gateway sub-agent cap does not apply — ``review_pool.effective_max_concurrent()``
     is the single source of truth for how many reviews run at once. The pool also
     hard-caps concurrency itself, so this only governs how many tasks the driver offers it."""
     if explicit and explicit > 0:
@@ -267,8 +266,8 @@ def build_review_followup_task(change_link: str) -> str:
     """Bounded coverage backstop — dispatched AT MOST ONCE, and only when the single
     review reported ``coverage_complete=false``. It reviews the STILL-UNCOVERED
     changed files and APPENDS only net-new findings (never repeats/removes existing
-    ones), then marks coverage complete. This is NOT the old convergence loop: it
-    runs at most one targeted pass, signal-driven, not count-delta-driven."""
+    ones), then marks coverage complete. It runs at most one targeted pass,
+    signal-driven, not count-delta-driven."""
     return (
         "You are a Code Review Sage reviewer running in an ISOLATED, CLEAN session. "
         "A prior pass reviewed EXACTLY ONE change: " + change_link + " but reported "
@@ -499,18 +498,17 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         # --- Single thorough review pass (design is ONE dimension, not a gate) ---
         # No separate gate turn and no convergence loop: ONE dispatch does the whole
         # review (design reasoning + all code dimensions) and writes the complete
-        # record. This cuts per-change turns from up to 5 (gate + deep + follow-ups +
-        # post) down to review + post, sharply reducing exposure to the per-turn
-        # timeout / backend-generation failures that killed the old multi-turn flow.
+        # record. Keeping it to review + post (rather than gate + deep + follow-ups +
+        # post) minimizes exposure to per-turn timeout / backend-generation failures.
         progress(change_id, "reviewing", {})
         review_spawn = dispatch(build_review_task(link), timeout)
         rev_rec = results.read_result(change_id, root)
         verdict = str(((rev_rec or {}).get("phase1") or {}).get("gate_verdict", "")).upper()
 
-        # The gate_*/deep_* keys are retained for downstream compatibility — the run
-        # summary, _record_reviewed, and the dashboard still read them; with the
-        # single-pass model they simply reflect the ONE review dispatch (there is no
-        # longer a distinct gate).
+        # The gate_*/deep_* keys are kept for downstream compatibility — the run
+        # summary, _record_reviewed, and the dashboard read them; with the
+        # single-pass model they reflect the ONE review dispatch (there is no
+        # distinct gate).
         rec: dict = {
             "change": link, "change_id": change_id,
             "gate_spawn_ok": review_spawn.get("ok", False),
@@ -526,8 +524,8 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         }
 
         # Fail only when the turn failed OR nothing usable was recorded — never
-        # discard a record that DID land (the old ok-before-recorded ordering
-        # discarded already-written verdicts/findings on a trailing abnormal stop).
+        # discard a record that DID land, so a trailing abnormal stop cannot drop
+        # already-written verdicts/findings.
         if not review_spawn.get("ok", False):
             rec["skipped_reason"] = "review_failed"
             progress(change_id, "failed", {"error": review_spawn.get("error", "review failed")})
@@ -538,9 +536,9 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
             return rec
 
         # --- Bounded coverage backstop: AT MOST ONE targeted follow-up, and only
-        # when the review self-reported incomplete file coverage. This replaces the
-        # blanket 3-round convergence loop with a single, signal-driven pass; a
-        # failed follow-up keeps whatever the first pass recorded.
+        # when the review self-reported incomplete file coverage — a single,
+        # signal-driven pass; a failed follow-up keeps whatever the first pass
+        # recorded.
         if (rev_rec or {}).get("coverage_complete") is False:
             progress(change_id, "reviewing", {"coverage": "followup"})
             followup = dispatch(build_review_followup_task(link), timeout)
@@ -553,7 +551,7 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         red, yellow = counts.get("red", 0), counts.get("yellow", 0)
         # The review only RECORDS findings; the driver builds the Python-redacted
         # comment bodies and a separate poster publishes them verbatim — no LLM
-        # free-text reaches the CR (security control, unchanged).
+        # free-text reaches the CR (security control).
         post = _post_pending(change_id, link)
         posted = post["posted_comments"]
         expected = red + yellow + 1   # inline findings + the always-on ship-readiness comment
@@ -581,7 +579,7 @@ def run_review(changes: list[str], *, dispatch=None, archiver=_default_archiver,
         "gate_spawns": len(per_change),                       # every change is gated
         "deep_spawns": sum(1 for r in per_change if r["phase2_ran"]),
         "design_blocked": len(design_blocked),                # BLOCK verdicts (still deep-reviewed)
-        "phase2_skipped_on_block": 0,                         # BLOCK no longer skips Phase 2
+        "phase2_skipped_on_block": 0,                         # BLOCK does not skip Phase 2
         "deep_reviewed": sum(1 for r in per_change if r["deep_reviewed"]),
         "deep_rounds": sum(r.get("deep_rounds", 0) for r in per_change),  # total Phase-2 rounds
         "design_comments_posted": sum(1 for r in per_change if r.get("design_comment_posted")),

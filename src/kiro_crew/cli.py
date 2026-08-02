@@ -71,11 +71,10 @@ from kiro_crew.skills import SkillsLoader
 logger = logging.getLogger(__name__)
 
 # Markers that uniquely identify the KiroCrew repo root for project-dir
-# auto-detection. The project-level ``agents/`` dir was removed when agent
-# config was consolidated into ``src/kiro_crew/config/`` (commit bbbc1f6e), so
-# ``skills/`` + ``src/kiro_crew/`` is now the stable signature: ``skills/`` is
-# editable-at-root and ``src/kiro_crew/`` pins this to the KiroCrew package repo
-# (not just any directory that happens to contain a ``skills/`` folder).
+# auto-detection. ``skills/`` + ``src/kiro_crew/`` is the stable signature:
+# ``skills/`` is editable-at-root and ``src/kiro_crew/`` pins this to the
+# KiroCrew package repo (not just any directory that happens to contain a
+# ``skills/`` folder).
 _PROJECT_MARKERS = ("skills", "src/kiro_crew")
 
 # Commands that run agent work in-process and so are candidates for the
@@ -346,8 +345,7 @@ def _install_child_watcher() -> None:
     no attribute 'set_child_watcher'`` and killed ``kirocrew gateway`` on
     startup, before the port was ever bound.  The mitigation is not lost: 3.14
     reaps with a single non-thread reaper, so the thread-per-child storm this
-    function exists to prevent cannot occur (verified on 3.14.6 -- 24
-    concurrent children, ``threading.active_count()`` never left 1).
+    function exists to prevent cannot occur.
     ``set_child_watcher`` on a pre-run policy is attached to the loop by
     ``asyncio.run`` -> ``set_event_loop`` (main thread), so installing before
     ``asyncio.run`` here is correct on 3.10 for both watchers.
@@ -379,9 +377,9 @@ def _install_child_watcher() -> None:
     In BOTH cases we must NOT install PidfdChildWatcher (it would ENOSYS on the
     first spawn), but we must ALSO NOT fall back to the default
     ThreadedChildWatcher -- its thread-per-child ``os.waitpid`` reaper storm is
-    the exact wedge this function exists to prevent (2026-07-10: 8 ``_do_waitpid``
-    threads starving the loop past the watchdog's ``exit_after``, killing the
-    gateway seconds after startup under a throttling model backend). Instead
+    the exact wedge this function exists to prevent (8 ``_do_waitpid`` threads
+    starving the loop past the watchdog's ``exit_after``, killing the gateway
+    seconds after startup under a throttling model backend). Instead
     fall through to the SIGCHLD-based SafeChildWatcher, the same watcher the
     macOS path uses.
     """
@@ -426,9 +424,7 @@ def _install_child_watcher() -> None:
     # above).  Replace the default thread-per-child ThreadedChildWatcher with the
     # SIGCHLD-based SafeChildWatcher so a burst of simultaneously-dying
     # kiro-cli/MCP children cannot spawn a thread storm that starves the event
-    # loop (the documented wedge, captured 2026-06-27 as multiple _do_waitpid
-    # frames on macOS and 2026-07-10 on the aarch64 3.12 venv interpreter).
-    # SafeChildWatcher reaps only its own tracked children (unlike
+    # loop. SafeChildWatcher reaps only its own tracked children (unlike
     # FastChildWatcher, which reaps every child and would clobber the manual
     # killpg/_kill_escaped_children path) and attaches its SIGCHLD handler when
     # the loop is set on the main thread -- same install point as the pidfd
@@ -1073,7 +1069,6 @@ Examples:
         "--port", type=int, default=DASHBOARD_PORT, help="Dashboard port for status"
     )
 
-    # update
     # snapshot / restore
     snap_parser = sub.add_parser("snapshot", help="Create a portable backup of Kiro Crew state")
     snap_parser.add_argument(
@@ -1841,7 +1836,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 
     # Persistent file log — respects the configured log_level.
     # On startup, rotate gateway.log → gateway.log.prev so a crash's final
-    # lines are never lost (Lorikeets-3929 D3).  Only for `gateway` subcommand
+    # lines are never lost.  Only for `gateway` subcommand
     # to avoid renaming the file while the gateway is actively writing.
     # encoding="utf-8" is REQUIRED on Windows: KiroCrew logs non-ASCII glyphs and
     # the default file encoding there is cp1252, so a RotatingFileHandler without
@@ -1950,7 +1945,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # and gateway-only — other CLI subcommands are short-lived and skip it.
         faulthandler.enable()
         # Install crash breadcrumbs (atexit + excepthook) before asyncio.run
-        # so any fatal exception writes to crash.log (Lorikeets-3929 D1).
+        # so any fatal exception writes to crash.log.
         # The asyncio loop handler is installed later inside run().
         _install_crash_guard()
         gw_kwargs = _resolve_gateway_args(args)

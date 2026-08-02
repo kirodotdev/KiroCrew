@@ -231,7 +231,7 @@ _STEER_STARTUP_POLL_SECS = 0.5
 # Wave liveness backstop: a wave with lost submissions (submitted < expected,
 # all registered members terminal, nothing queued) is force-reconciled after
 # this many seconds without submission progress, so held digest results can
-# never strand indefinitely (Opus MEDIUM + Design Review CONCERN 1).
+# never strand indefinitely.
 # Deliberately generous — 30 min, symmetric with the per-agent hard ceiling:
 # nothing else waits on this timer (it only fires when zero members run, zero
 # are queued, and submissions stopped arriving), and layers 1+2 (the counted
@@ -249,7 +249,7 @@ _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + i
 
 # Continuation prompt sent when a transient backend error interrupted a turn
 # AFTER output had already streamed. Mirrors the main path's post-token
-# CONTINUE recovery (PR #91): the partial is preserved (result_text keeps
+# CONTINUE recovery: the partial is preserved (result_text keeps
 # accumulating), and the model is asked to finish rather than restart.
 _TRANSIENT_CONTINUE_MSG = (
     "[system] Your previous response was interrupted by a transient backend "
@@ -259,7 +259,7 @@ _TRANSIENT_CONTINUE_MSG = (
 
 # Prefix injected on the one-shot auto-continue after an unexpected (non-user)
 # cancellation, when the first attempt showed ANY activity (text chunk or tool
-# call). Mirrors the main path's cancelled-turn preamble (PR #173). The respawn
+# call). Mirrors the main path's cancelled-turn preamble. The respawn
 # runs on a FRESH session (the original was reset in the old task's finally),
 # so this preamble is the only vehicle for the replay-safety warning: a
 # mutating tool may have executed on the first attempt before any text
@@ -819,10 +819,7 @@ class SubagentInfo:
     # gate and was QUEUED instead of started. Such a record is not registered in
     # ``_agents`` and carries no live state — but its ``id`` IS the id the agent
     # will run under once ``_drain_queue`` starts it (pre-assigned at accept
-    # time), so callers may print it or hold on to it. This flag replaces the old
-    # ``q<n>`` id-prefix sentinel, which signalled "queued" by destroying the
-    # very identity it was reporting on: the drained spawn minted a fresh uuid,
-    # so the id the caller was told never matched the agent that ran.
+    # time), so callers may print it or hold on to it.
     queued: bool = False
     result: str = ""
     result_path: str = ""
@@ -864,8 +861,8 @@ class SubagentInfo:
     # (gateway _subagent_done). The run loop must then SKIP mark_delivered():
     # the result is not yet in the parent's context, and a "delivered"
     # tombstone would exclude it from orphan reconciliation — a gateway
-    # restart mid-wave would silently lose every held completion (Arbiter
-    # item 1). The gateway marks held members delivered when the digest fires.
+    # restart mid-wave would silently lose every held completion. The gateway
+    # marks held members delivered when the digest fires.
     _digest_held: bool = False
     # A reap/stop has STARTED but may still be in its (awaiting) teardown. Split
     # out of `reaped` because that flag carries two incompatible meanings: the
@@ -881,7 +878,7 @@ class SubagentInfo:
     # successfully handed off (i.e. after _on_done returns without raising —
     # the same contract as the per-agent mark_delivered). Settling these at
     # digest COMPOSITION would re-open the restart-loss window between
-    # composing and routing (GPT 5.6 HIGH).
+    # composing and routing.
     _digest_settle_ids: list[str] = field(default_factory=list)
     max_turns: int = 0
     reaped: bool = False
@@ -946,8 +943,8 @@ class SubagentInfo:
     # + queue drain), claimed via `SubagentManager._release_slot`. Separate from
     # both `reaped` and `done`: whichever terminal path arrives first frees the
     # slot exactly once, so neither a reap that loses the report claim nor a
-    # `_run` that sees `reaped` can leave `_running_count` inflated. At the
-    # 60-100 concurrent agents #364 targets, a leaked slot starves the queue.
+    # `_run` that sees `reaped` can leave `_running_count` inflated. At
+    # 60-100 concurrent agents, a leaked slot starves the queue.
     _slot_released: bool = False
     # True once the terminal report's `_on_done` injection has RETURNED, i.e.
     # the outcome actually reached the parent. Distinct from `_finalized` (the
@@ -1078,7 +1075,7 @@ class SubagentManager:
         # Guards the wave digest against firing before every member's POST has
         # arrived — a fast-failing first member must not let the completion
         # fallback see "no pending members" while later submissions are still
-        # in flight (Arbiter item 2). Pruned by finalize_batch().
+        # in flight. Pruned by finalize_batch().
         self._batch_submitted: dict[str, list[int]] = {}
         # Wave liveness: last submission-progress time.time() per batch_id.
         # Drives the reaper's stuck-wave backstop (a wave with lost
@@ -1728,7 +1725,7 @@ class SubagentManager:
         ``_recovering``, because a killed agent has nothing left to respawn.
 
         Scope note: this token governs REPORTING only, and it deliberately does
-        NOT consult ``info.done``. Gating it on ``done`` was the round-5 defect:
+        NOT consult ``info.done``. Gating it on ``done`` is wrong:
         if ``_run_inner`` set ``done`` while the reap awaited its session reset,
         the reaper refused the claim, still marked ``reaped``, and ``_run``'s
         finally then skipped its own claim — nobody reported. The terminal RECORD
@@ -2394,13 +2391,13 @@ class SubagentManager:
         # concurrency gate keeps its identity across the round-trip instead of
         # being announced under one id and starting under another.
         agent_id: str = _preassigned_id or uuid.uuid4().hex[:8]
-        # Submission accounting (Arbiter item 2): count this member as
+        # Submission accounting: count this member as
         # submitted BEFORE any rejection or queue/registration branching. A
         # member refused below (empty task, low memory, bad cwd, governance)
         # never registers and never completes — if it weren't counted here,
         # batch_members_pending() would see submitted < expected FOREVER and
         # the wave digest would never fire, permanently stranding every
-        # sibling's held result (GPT 5.6 HIGH). A queued member re-enters
+        # sibling's held result. A queued member re-enters
         # spawn() via _drain_queue — never double-count it.
         if batch_id and not _from_queue:
             _bs = self._batch_submitted.setdefault(batch_id, [0, max(0, int(batch_total))])
@@ -2750,7 +2747,7 @@ class SubagentManager:
                     metadata={"subagent_id": agent_id, "reason": "no_approval_mechanism"},
                 )
                 # Batch members must still reach the gateway's completion
-                # consumer (GPT 5.6 HIGH): this is a REGISTERED rejection
+                # consumer: this is a REGISTERED rejection
                 # (done=True in _agents), so batch_members_pending() already
                 # counts it as complete — without an announce, a wave whose
                 # final member lands here closes with no event and every held
@@ -2796,8 +2793,8 @@ class SubagentManager:
         Without an announce, the gateway's wave accounting never sees its
         terminal state — and when the rejection is the wave's FINAL
         submission, no later completion event re-evaluates the wave, so
-        every sibling result already held for the digest strands forever
-        (GPT 5.6 HIGH). Announcing lets ``_subagent_done`` count the member
+        every sibling result already held for the digest strands forever.
+        Announcing lets ``_subagent_done`` count the member
         as failed and release the digest when it closes the wave.
 
         Non-batch rejections skip the announce: the caller already receives
@@ -2828,7 +2825,7 @@ class SubagentManager:
     def _conversation_busy(self, conv_key: str) -> SubagentInfo | None:
         """Return the live or QUEUED run on *conv_key*, or None.
 
-        Queued members matter (GPT review, PR #1023): a continuation waiting
+        Queued members matter: a continuation waiting
         in the spawn queue is not in ``_agents`` yet — missing it would let
         ``spawn_release`` delete the session files it needs (the accepted run
         would then die with ``resume_failed``), or let a second continue race
@@ -3326,10 +3323,10 @@ class SubagentManager:
         """True while ANY member of *batch_id* is still outstanding — running
         (registered, not done), queued behind the stagger gate (not yet
         registered), OR not yet submitted (sibling POSTs still in flight —
-        Arbiter item 2: a fast-failing first member must not finalize the
+        a fast-failing first member must not finalize the
         wave and emit a partial digest before the rest of the batch even
         arrives). The wave digest must also not be held hostage by unrelated
-        agents under the same parent (GPT 5.6 round-1 HIGH)."""
+        agents under the same parent."""
         if not batch_id:
             return False
         _bs = self._batch_submitted.get(batch_id)
@@ -3342,7 +3339,7 @@ class SubagentManager:
     def finalize_batch(self, batch_id: str) -> None:
         """Prune per-wave bookkeeping once the wave digest has fired.
 
-        Bounds `_seen_batches` / `_batch_submitted` growth (Opus LOW): without
+        Bounds `_seen_batches` / `_batch_submitted` growth: without
         this, long-lived gateways accrete an entry per wave forever.
         """
         if not batch_id:
@@ -3365,8 +3362,8 @@ class SubagentManager:
         Every sibling POST carried ``batch_total`` counting the lost member,
         but ``spawn()`` never ran for it — so ``submitted < expected``
         forever, ``batch_members_pending()`` stays True, the digest chunk
-        never fires, and held sibling results strand until a gateway restart
-        (Opus MEDIUM + Design Review CONCERN 1). This helper counts the lost
+        never fires, and held sibling results strand until a gateway restart.
+        This helper counts the lost
         member as submitted AND announces a synthetic terminal member through
         the single completion consumer, so the wave's accounting sees a
         failure line and can close.
@@ -3417,7 +3414,7 @@ class SubagentManager:
         multiple losses converge across sweeps) re-enters the completion
         consumer so held sibling results deliver instead of stranding until
         restart. Also bounds the ``_batch_submitted``/``_batch_progress_ts``
-        leak in the stuck case (Opus MEDIUM + Design Review CONCERN 1).
+        leak in the stuck case.
         """
         for batch_id, _bs in list(self._batch_submitted.items()):
             if _bs[1] <= 0 or _bs[0] >= _bs[1]:
@@ -3451,8 +3448,8 @@ class SubagentManager:
         """Settle delivery tombstones for wave members whose injection was
         held for this member's digest. Called ONLY after ``_on_done`` returned
         without raising — the digest has been handed off, so marking the held
-        members delivered no longer risks the restart-loss window (GPT 5.6
-        HIGH: settling at digest composition, before routing, would).
+        members delivered no longer risks the restart-loss window
+        (settling at digest composition, before routing, would).
         """
         for _hid in info._digest_settle_ids:
             try:
@@ -3547,7 +3544,7 @@ class SubagentManager:
                 ):
                     # UNEXPECTED cancellation (not user Stop, not shutdown):
                     # one-shot auto-continue, mirroring the main path's
-                    # unexpected-cancel recovery (PR #173). Skip terminal
+                    # unexpected-cancel recovery. Skip terminal
                     # finalization (via _recovering) and respawn on a fresh
                     # task — this task is being cancelled and cannot continue.
                     #
@@ -3675,7 +3672,7 @@ class SubagentManager:
         parent task tree being torn down around a live subagent (e.g. a
         dashboard slot reset/removal cancelling background tasks, or an event
         during gateway component re-init) — mirroring the main path's
-        unexpected-cancel recovery (PR #173). Every INTENTIONAL cancel site in
+        unexpected-cancel recovery. Every INTENTIONAL cancel site in
         this module sets a terminal marker before cancelling, and the recovery
         branch defers to all of them: ``cancel()`` sets ``user_stopped``,
         ``cancel_all()`` sets ``_shutting_down``, and ``_force_reap`` sets
@@ -3770,11 +3767,11 @@ class SubagentManager:
                     # skipped because another path had already set `done`.
                     info.elapsed = time.time() - info.started
                 # ...and the REPORT goes through the one-shot claim, exactly like
-                # the reap and `_run`'s finally. This site used to fire
-                # `subagent_done` and `_on_done` DIRECTLY, gated only on
-                # done/reaped — a fourth reporter outside the very claim this
+                # the reap and `_run`'s finally. Routing through the claim (not a
+                # direct `subagent_done`/`_on_done` fire) keeps this from being a
+                # fourth reporter outside the very claim this
                 # class uses to guarantee exactly-once delivery, so a reaper
-                # racing a failed respawn could deliver the outcome twice.
+                # racing a failed respawn cannot deliver the outcome twice.
                 # Reporting via `_run_terminal_report` also shields the delivery,
                 # which matters here because `_force_reap` cancels this task.
                 if self._claim_finalize(info):
@@ -4068,7 +4065,7 @@ class SubagentManager:
             # One-shot auto-continue after an unexpected cancellation: tell the
             # model the prior attempt was interrupted so it completes the task
             # instead of assuming a fresh start. Same activity predicate as
-            # the transient-retry path (GPT 5.6 HIGH): a mutating tool may
+            # the transient-retry path: a mutating tool may
             # have executed BEFORE the first text chunk, so tool_count must
             # trigger the preamble too — a bare original prompt after tool
             # activity invites duplicate side effects. (info.tool_count and
@@ -4459,7 +4456,7 @@ class SubagentManager:
         )
         evict_completed_agents(self._agents)
 
-        # ── Per-turn usage row (issue #647): attribute subagent spend. ──
+        # ── Per-turn usage row: attribute subagent spend. ──
         # Deliberately BEFORE `info.done`: the caller's cleanup (which awaits
         # provider.shutdown() -> handle.destroy()) runs after this function
         # returns, so an await placed after `done` sits inside the
@@ -4714,7 +4711,7 @@ class SubagentManager:
                 # exactly what `list_orphans()` uses to exclude a folder from the
                 # next start's reconciliation. Left alone, the outcome is
                 # unrecoverable: never injected, and invisible to the one path
-                # that could still inject it (GPT 5.6 BLOCKING).
+                # that could still inject it.
                 #
                 # Extending the drain to `_ON_DONE_TIMEOUT` instead was rejected:
                 # it would hold gateway shutdown for up to 20 minutes on a single

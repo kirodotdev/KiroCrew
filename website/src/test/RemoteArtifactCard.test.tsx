@@ -3,13 +3,13 @@
  *
  * Covers:
  *  1. Keyboard activation of the inner Fork/Clone buttons must NOT be
- *     hijacked by the row's Enter/Space handler (which now navigates to the
+ *     hijacked by the row's Enter/Space handler (which navigates to the
  *     in-app remote-detail viewer).
  *  2. A millisecond-epoch updated_at string must render a sane relative age,
  *     not "now" forever (ms value misread as a far-future seconds epoch).
  *
- * The row's primary action now NAVIGATES to the in-app read-only remote-detail
- * viewer (/artifacts/remote/:provider/:externalId) instead of opening the
+ * The row's primary action NAVIGATES to the in-app read-only remote-detail
+ * viewer (/artifacts/remote/:provider/:externalId) rather than opening the
  * provider's own view_url in a new tab — the "open original" affordance lives
  * on that detail page. useNavigate requires a Router, so renders are wrapped in
  * MemoryRouter and navigation is asserted via a mocked useNavigate.

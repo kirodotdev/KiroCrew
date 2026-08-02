@@ -239,7 +239,7 @@ def _clone_github(url: str, dest: Path) -> str | None:
     # The URL is agent/user-influenced and git clone runs arbitrary remote
     # content, so route through the sandbox chokepoint (OS filesystem isolation
     # + credential-scrubbed env) and apply the fork-bomb/resource ceiling via
-    # preexec_fn — same discipline as git_coord._git (Talos 92e24570).
+    # preexec_fn — same discipline as git_coord._git.
     argv, env, cleanup = sandboxed_spawn_argv(
         ["git", "clone", "--depth", "1", "--quiet", "--", url, str(dest)]
     )
@@ -270,15 +270,15 @@ def _copy_installed_theme(src: Path, dst: Path) -> None:
     """Copy the theme tree from ``src`` into a private ``dst`` snapshot via a
     per-file, symlink-rejecting, byte-bounded loop, overwriting same-name files.
 
-    TOCTOU hardening (Codex HIGHs, two rounds): the source dir is
+    TOCTOU hardening: the source dir is
     user-controlled and stays writable throughout, so NOTHING read from it can
-    be trusted against an earlier walk. Round 1: ``shutil.copytree(...,
+    be trusted against an earlier walk. First: ``shutil.copytree(...,
     symlinks=False)`` FOLLOWS links, so a file swapped for a symlink between
     validate and copy would get its *target's* bytes copied — we walk without
     following directory links, refuse any non-regular entry, and read each
     file through ``safe_read_file_bytes_nolink`` (open with ``O_NOFOLLOW`` +
     fd-path containment inside ``src``) so a swapped symlink is rejected,
-    never dereferenced. Round 2: even a regular-file→regular-file swap could
+    never dereferenced. Second: even a regular-file→regular-file swap could
     promote unvalidated content, and an unbounded ``read_bytes`` on a swapped
     huge file could exhaust worker memory. So (a) this copy enforces a hard
     cumulative byte ceiling (the max tier total, checked per file BEFORE and
@@ -406,7 +406,7 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
         if err or src is None:
             return None, err or "invalid source", 400
 
-        # ── Stage-first (TOCTOU class fix, Codex HIGH round 2) ──
+        # ── Stage-first (TOCTOU class fix) ──
         # The source dir stays writable by its owner throughout, so a
         # validate-then-copy order can promote content that was swapped in
         # AFTER validation (regular-file→regular-file swaps pass the symlink

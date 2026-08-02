@@ -10,8 +10,8 @@
 //    PR the provider already reports as mergeable; "Auto-merge" hands it to the
 //    provider to land once its required reviews and checks pass. Branch protection is
 //    enforced on the provider's own endpoints, so the button cannot merge something
-//    unreviewed — and offering only auto-merge (an earlier revision) left a repo with
-//    no branch rule, where auto-merge is unavailable, with no merge path at all.
+//    unreviewed — and offering only auto-merge would leave a repo with no branch
+//    rule, where auto-merge is unavailable, with no merge path at all.
 //  * **Verdict actions that need prose open a composer**, they do not fire on
 //    click. "Request changes" without a reason is rejected by the provider anyway,
 //    and an approval is worth a sentence.

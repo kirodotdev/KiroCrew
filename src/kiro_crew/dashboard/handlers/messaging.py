@@ -841,8 +841,8 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     # Bound the body BEFORE decoding, mirroring the app push endpoint: without
     # this the strict-internal route inherits the server-wide client_max_size,
     # and a large JSON object would be buffered and decoded on the event-loop
-    # thread (GPT 5.6 round 11). Shared helper so the cap and the 413/400
-    # contract cannot drift from the app push endpoint (issue #490).
+    # thread. Shared helper so the cap and the 413/400
+    # contract cannot drift from the app push endpoint.
     body, _cap_err = await read_bounded_json(request)
     if _cap_err is not None:
         return _cap_err

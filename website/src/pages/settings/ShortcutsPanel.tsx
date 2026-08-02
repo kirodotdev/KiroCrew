@@ -8,8 +8,7 @@ import { i18nT } from '../../i18n/t'
  * `ShortcutsModal` (shared primitives from ShortcutsModal.tsx), presented in
  * the standard Settings layout: a `SettingsSection` header per shortcut group
  * with the rows in a `SettingsCard` container. Gives keyboard shortcuts a
- * discoverable, permanent home now that the left-nav Shortcuts row was
- * removed in the nav-IA restructure.
+ * discoverable, permanent home in Settings.
  */
 export function ShortcutsPanel() {
   const { enabled, macCtrl, toggle, toggleMacCtrl } = useShortcutPrefs()

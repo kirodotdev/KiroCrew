@@ -271,7 +271,7 @@ export default function SidePanel({
   })
 
   // Resizable width (the actbar grid column is auto-sized, so the panel owns
-  // its own width — mirrors the old DetailPanel resize handle).
+  // its own width).
   const WIDTH_KEY = 'mc-side-panel-width'
   const MIN_W = SIDE_PANEL_MIN_W
   const [width, setWidth] = useState(() => {

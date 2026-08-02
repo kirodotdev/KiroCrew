@@ -58,8 +58,8 @@ logger = logging.getLogger(__name__)
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home" and
-# issue #874; dashboard/handlers/usage.py is the reference implementation.
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
 _DEFAULT_DIR: Path | None = None
 
 
@@ -152,7 +152,7 @@ class CronStoreBusy(TimeoutError):
     """
 
 
-# ── Loop-safety guard (Design Review finding 4 / Arbiter item 3) ────────────
+# ── Loop-safety guard ───────────────────────────────────────────────────────
 # The store lock (``CronService._file_lock``) must NEVER be acquired on a thread
 # that has a running asyncio event loop: the bounded ``time.sleep`` spin would
 # park that loop under contention. The invariant is upheld structurally —
@@ -1128,11 +1128,11 @@ class CronService:
         owner, and folded into the job before its single ``_save()`` -- so no
         caller can strand a half-populated or invalid job on disk, and every
         create path (MCP, apps SDK, dashboard, CLI) shares one check. This
-        rework (PR #331) consolidates **every** first-save field
+        consolidates **every** first-save field
         (``agent_id``/``model``/``silent``/``strict_schedule``/``hide_in_chat``,
         ``command``/``script``/``agent_sequence``/``env``/``persistent_session``)
         into the same single locked build+persist, totalizing over all fields
-        the invariant that issue #391 tracked.
+        the "fully-formed on first save" invariant.
 
         Synchronous variant: the lock+save runs INLINE and so must only be
         called from a loop-less context (CLI / MCP server process / a worker
@@ -1224,10 +1224,9 @@ class CronService:
         The optional presentation/routing fields (``agent_id``, ``model``,
         ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are set
         here so the job is persisted **fully-formed** in the single locked
-        transaction. This closes the create-then-mutate-then-unlocked-``_save``
-        window the dashboard create handler used to have (two concurrent creates
-        could interleave at the ``await`` and the unlocked save could clobber the
-        other request's job).
+        transaction. This closes a create-then-mutate-then-unlocked-``_save``
+        window (two concurrent creates could otherwise interleave at the
+        ``await`` and the unlocked save could clobber the other request's job).
         """
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
@@ -1612,11 +1611,11 @@ class CronService:
     async def remove_jobs(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
         """Remove many jobs under ONE lock/reload/save, off the event loop.
 
-        Returns ``(removed_ids, missing_ids)`` preserving input order. The
-        batch-delete API previously looped :meth:`remove_job`, paying the
-        file-lock + reload + full-serialize + atomic-write cost PER id on the
-        event loop — with up to 500 ids that starves every other gateway task
-        (and on slow/network storage even one save can stall). The disk work
+        Returns ``(removed_ids, missing_ids)`` preserving input order. Looping
+        :meth:`remove_job` per id would pay the file-lock + reload +
+        full-serialize + atomic-write cost PER id on the event loop — with up to
+        500 ids that starves every other gateway task (and on slow/network
+        storage even one save can stall). The disk work
         runs in a worker thread; only ``_arm_timer`` (asyncio.create_task)
         runs back on the loop, and only when something was actually removed.
         """
@@ -1860,23 +1859,20 @@ class CronService:
         """Manually trigger a job via _run_job_isolated (records history)."""
         # Refresh the store off the loop, then resolve + claim on the loop.
         #
-        # Pre-fix this ran `async with self._afile_lock(): self._sync()` on the
-        # event loop, so a manual trigger paid the whole-file read_bytes() +
-        # blake2b hash of crons.json on the loop (the same on-loop-_sync() cost
-        # the timer tick was flagged for). The locked _sync() + snapshot now
-        # runs in a worker thread (_synced_snapshot via asyncio.to_thread);
+        # The locked _sync() + snapshot runs in a worker thread (_synced_snapshot
+        # via asyncio.to_thread) so a manual trigger never pays the whole-file
+        # read_bytes() + blake2b hash of crons.json on the event loop.
         # _executing / _job_run_meta are loop-owned, so the find + claim stays
         # on the loop, with NO await between the snapshot read and the claim so
         # it is atomic against every other loop task (the timer due-scan).
         #
-        # The only residual, pre-existing and benign, race is against the
-        # batch-remove worker: it may delete the job on its own thread in the
-        # instant between our snapshot and our spawn, so a manual run can
-        # execute a just-removed job ONCE (non-destructive — it is not
-        # persisted, and the next scan won't see it). The old lock-held claim
-        # narrowed but never closed this window; the batch-remove worker holds
-        # the SAME flock, so our claim could not have observed a delete mid-way
-        # regardless. Degrades to the in-memory snapshot under lock contention.
+        # One residual, benign race remains against the batch-remove worker: it
+        # may delete the job on its own thread in the instant between our
+        # snapshot and our spawn, so a manual run can execute a just-removed job
+        # ONCE (non-destructive — it is not persisted, and the next scan won't
+        # see it). The batch-remove worker holds the SAME flock, so a lock-held
+        # claim could not observe a delete mid-way regardless. Degrades to the
+        # in-memory snapshot under lock contention.
         snapshot = await asyncio.to_thread(self._synced_snapshot, True)
         job = next((j for j in snapshot if j.id == job_id), None)
         if not job:
@@ -2194,7 +2190,7 @@ class CronService:
                 await asyncio.sleep(jitter)
             exec_started_at = time.time()
             # Notify dashboard that the job has started executing so the live
-            # is_running badge appears without a manual reload (upstream a5326708).
+            # is_running badge appears without a manual reload.
             try:
                 if self._push_refresh:
                     self._push_refresh("crons")
@@ -2336,7 +2332,7 @@ class CronService:
             # suppressed as a dup of the pre-timeout failure, but STILL count
             # the timeout toward the auto-pause threshold: a job that times out
             # on every run must eventually auto-pause instead of running forever
-            # with zero user signal. (#424)
+            # with zero user signal.
             job.last_status = "error"
             job.last_error = f"Timed out after {timeout}s"
             job.last_run_ts = time.time()
@@ -2428,12 +2424,12 @@ class CronService:
         """Persist a job's terminal runtime state under the store lock.
 
         Used for the reaper timeout (:meth:`_force_reap`) and user cancel
-        (:meth:`cancel`) paths, which previously mutated the in-memory job and
-        called a bare, unlocked ``self._save()`` directly on the event loop —
-        the lost-update race GPT flagged: between a concurrent
+        (:meth:`cancel`) paths. Mutating the in-memory job and calling a bare,
+        unlocked ``self._save()`` directly on the event loop would open a
+        lost-update race: between a concurrent
         ``add_job_async``/``update_job_async`` worker's ``_sync`` and its
-        ``_save``, this unlocked save re-serialized a stale ``self._jobs`` and
-        silently dropped the just-added/updated job from ``crons.json``.
+        ``_save``, the unlocked save would re-serialize a stale ``self._jobs``
+        and silently drop the just-added/updated job from ``crons.json``.
 
         WORKER-THREAD ONLY. Mirrors :meth:`_merge_job_result`: enters the
         bounded sync :meth:`_file_lock` (whose spin does ``time.sleep`` and may
@@ -2529,8 +2525,7 @@ class CronService:
         :meth:`_guard_off_event_loop` raises :class:`CronLoopSafetyError` (strict
         mode) or warns (default) if this is entered on a thread with a running
         asyncio loop — so a future writer that calls a sync mutator on the loop
-        is caught rather than silently re-freezing it (Design Review finding 4 /
-        Arbiter item 3).
+        is caught rather than silently re-freezing it.
         """
         self._guard_off_event_loop()
         self._dir.mkdir(parents=True, exist_ok=True)

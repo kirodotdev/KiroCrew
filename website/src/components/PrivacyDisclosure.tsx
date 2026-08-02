@@ -14,7 +14,7 @@ export const COMMANDS = [
 // Keys held in an indexed `as const` map of full literals rather than inline on each
 // SHELL_COMMANDS entry: check-i18n-keys.mjs resolves a map access to the map's value
 // set, but cannot follow a key destructured out of an array of objects, which would
-// exempt the call site from key-existence verification. (Idiom from #1095.)
+// exempt the call site from key-existence verification.
 const SHELL_LABEL_KEY = {
   macos: 'privacyDisclosure.shellMacOSLinuxLabel',
   powershell: 'privacyDisclosure.shellPowerShellLabel',

@@ -29,8 +29,8 @@ import type { Result, ResourceProvider } from '../types'
  * allowlisted resolution. No filesystem path is built from user input here and
  * no second resolution path is introduced (see `paletteActions.ts`).
  *
- * Matching is a client-side {@link fuzzyMatch} over the skill **name** (per the
- * task spec). The list is cached under the React-Query key `['skills']` (shared
+ * Matching is a client-side {@link fuzzyMatch} over the skill **name**. The
+ * list is cached under the React-Query key `['skills']` (shared
  * with `SkillsTab` / the inline `$`-picker) so reopening the palette is free.
  * Highlight `indices` index into the rendered `title` and are emitted as React
  * nodes by the palette, never as HTML strings (`frontend-security` lint rule).
@@ -119,7 +119,7 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
         if (seen.has(s.name)) continue
         seen.add(s.name)
         const title = s.name
-        // Fuzzy-match over the skill name (task spec); indices align with title.
+        // Fuzzy-match over the skill name; indices align with title.
         const match = fuzzyMatch(query, title)
         if (!match) continue
         const token = `$${s.name}`
@@ -132,13 +132,13 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
           icon: skillIcon(),
           score: match.score,
           indices: match.indices,
-          // Declarative Enter contract (§2 / task 24). The central
+          // Declarative Enter contract (§2). The central
           // `dispatchEnter` in CommandPalette routes on this: primary Enter is
           // context-aware (insert `$<skill>` into the active composer, else new
           // seeded session) and ⌘Enter is always a new seeded session, both
           // keyed off `token`. `source` (the SKILL.md path) backs ⌥Enter
-          // preview. The `on*Activate` closures below stay as the legacy/mouse
-          // execution + pre-migration fallback.
+          // preview. The `on*Activate` closures below back the mouse-execution
+          // + fallback path.
           enter: { kind: 'insert-token', token, tokenKind: 'skill', source: s.path },
           // §2 matrix: Enter is context-aware; ⌘Enter is always new-session;
           // ⌥Enter opens the doc. The resolver is invoked at *activation* time

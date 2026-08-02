@@ -37,8 +37,6 @@ export const parentChain = (p: string) => {
 
 export const formatBytes = (n: number | null | undefined) => {
   if (n == null) return ''
-  // Was the fifth independent byte formatter in this repo, found by
-  // `unitLiterals.test.ts` on its first run.
   return fmtBytes(n)
 }
 

@@ -23,8 +23,8 @@ interface DetailPanelProps {
    * panel never grows past its flex row and overflows the `overflow-hidden`
    * container. Callers in a shared, shrinkable row (the chat surface) pass a
    * live, sidebar-aware value (see `panelReserve` in ChatPage). When omitted,
-   * the cap stays the historical viewport-only bound — no row measurement — so
-   * callers in other layouts keep their prior behavior unchanged. */
+   * the cap stays the viewport-only bound — no row measurement — so callers in
+   * other layouts keep their behavior unchanged. */
   reserveWidth?: number
   storageKey?: string
   children: React.ReactNode
@@ -41,7 +41,7 @@ interface DetailPanelProps {
   /** Replace the default header rows (title + close + headerActions and the
    *  secondary row) with a single caller-provided bar. Used by tab bodies in
    *  SidePanel where the tab chip already owns identity + close, so the panel
-   *  renders one minimal single-bar toolbar instead (side-panel revamp).
+   *  renders one minimal single-bar toolbar instead.
    *  When set, `title`, `headerActions`, and `secondaryHeaderActions` are
    *  ignored. */
   customHeader?: React.ReactNode
@@ -71,7 +71,7 @@ interface DetailPanelProps {
 const maxPanelWidth = (rowWidth: number, reserveWidth?: number) => {
   const viewportCap = typeof window !== 'undefined' ? Math.round(window.innerWidth * 0.6) : Infinity
   // Opt-in: only apply the row-minus-reserve cap when a caller supplies a
-  // reserve. Without one, keep the historical viewport-only bound (no row term).
+  // reserve. Without one, keep the viewport-only bound (no row term).
   const rowCap = reserveWidth === undefined ? Infinity : rowWidth - reserveWidth
   return Math.min(rowCap, viewportCap)
 }
@@ -143,11 +143,9 @@ export default function DetailPanel({ title, onClose, footer, headerActions, sec
       startWRef.current = widthRef.current
     },
     onMove: ({ dx }) => {
-      // The old mouse handler grew width as the pointer moved LEFT:
-      //   clampPanelWidth(startW + (startX - clientX), ...).
-      // The hook reports dx = clientX - startX, so (startX - clientX) === -dx
-      // and the raw target is `startW - dx`: drag left (dx < 0) widens, drag
-      // right (dx > 0) narrows — identical to the original.
+      // The handle grows width as the pointer moves LEFT. The hook reports
+      // dx = clientX - startX, so the raw target is `startW - dx`: drag left
+      // (dx < 0) widens, drag right (dx > 0) narrows.
       //
       // Hard-clamp (no rubber-band): this panel is `shrink-0` inside an
       // `overflow-hidden` row, so the row/viewport cap is a LAYOUT INVARIANT

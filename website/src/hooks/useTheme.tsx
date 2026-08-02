@@ -56,9 +56,9 @@ export type ThemeOverlayPosition =
 export type ThemeOverlayAnimation = 'continuous' | 'once' | 'none'
 
 /**
- * Manifest-declared overlay placement/behaviour (§3.1). The backend now surfaces
- * `assets.overlays` as objects (was `string[]`); the loader still tolerates the
- * old string shape for a stale descriptor — see `ThemeExperienceLayer`.
+ * Manifest-declared overlay placement/behaviour (§3.1). The backend surfaces
+ * `assets.overlays` as objects; the loader also tolerates a bare `string`
+ * shape for a stale descriptor — see `ThemeExperienceLayer`.
  * `trigger` is `continuous | activate | idle-<N>s`.
  */
 export interface ThemeOverlayDecl {
@@ -79,7 +79,7 @@ export interface ThemeTopbar {
   hideOnMobile?: boolean
 }
 
-/** One audio trigger entry (§3.3). Consumed by the audio engine in Stage 4. */
+/** One audio trigger entry (§3.3). Consumed by the audio engine. */
 export interface ThemeAudioTrigger {
   src: string
   volume: number
@@ -95,7 +95,7 @@ export interface ThemeAudioAmbient {
   fadeIn: number
 }
 
-/** Parsed `audio/manifest.json` map (§3.3). Typed now; wired in Stage 4. */
+/** Parsed `audio/manifest.json` map (§3.3). */
 export interface ThemeAudioManifest {
   triggers: Record<string, ThemeAudioTrigger>
   ambient: ThemeAudioAmbient | null
@@ -105,11 +105,11 @@ export interface ThemeAssets {
   branding?: ThemeBranding
   fonts?: ThemeFontFace[]
   hasOverrides?: boolean
-  // L2 (consumed in the overlays/audio stage): overlays, topbar, audio, persona.
+  // L2 assets: overlays, topbar, audio, persona.
   overlays?: ThemeOverlayDecl[]
   topbar?: ThemeTopbar
   hasAudio?: boolean
-  /** Parsed audio manifest (Stage 4 consumes this; typed here only). */
+  /** Parsed audio manifest. */
   audio?: ThemeAudioManifest
   hasPersona?: boolean
   /**
@@ -369,7 +369,7 @@ function _groupAllowed(group: string): boolean {
 const _DECL_DENY_RE =
   /@import|expression\s*\(|javascript:|-moz-binding|url\s*\(\s*['"]?\s*(?:https?:)?\/\//i
 
-// Evasion normalization (arbiter finding-2 family): a browser decodes CSS
+// Evasion normalization: a browser decodes CSS
 // `\`-escapes during tokenization, so `\75 rl(` becomes `url(`. Comments are
 // already stripped globally below. Decode escapes and run the denylist on the
 // decoded text too, so an escaped forbidden token can't hide from the scoper.
@@ -460,7 +460,7 @@ function _scopeOverridesCss(css: string): { css: string; kept: number; dropped: 
           }
           // all other at-rules (@import, @font-face, @supports, …) are dropped
         } else if (_groupAllowed(prelude)) {
-          // Fail-closed on declaration BODIES too, not just selectors (arbiter):
+          // Fail-closed on declaration BODIES too, not just selectors:
           // mirror the backend install denylist at runtime so a declaration that
           // EVADES install-time validation (encoding drift, future CSS features)
           // is still dropped before it reaches the main document. Legit packs are

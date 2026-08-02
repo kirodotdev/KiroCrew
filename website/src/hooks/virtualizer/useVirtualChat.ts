@@ -10,8 +10,8 @@
 // pinned to the bottom". It is owned entirely by this hook (callers just use
 // `scrollToBottom()` / `isAtBottom`). The decision logic lives in
 // FollowController as pure functions and is race-proof against the
-// ResizeObserver-vs-scroll-event ordering that plagued the old ref soup — see
-// that module's header for the rationale. The two write sites are:
+// ResizeObserver-vs-scroll-event ordering — see that module's header for the
+// rationale. The two write sites are:
 //   - automatic pins (RO callback + append layout effect) → `pinAuto()`
 //   - explicit pins (slot entry + scrollToBottom API) → `forcePin()`
 //
@@ -20,16 +20,11 @@
 //
 // The stick-release guard distinguishes "the user scrolled" from "we scrolled"
 // by comparing live `scrollTop` against the value we last wrote. An unrecorded
-// write therefore looks exactly like user input and releases follow — which is
-// the historical failure mode that caused an earlier version of this guard to be
-// reverted ("smooth scroll lag causes persistent false positives"). It is safe
-// again only because pins are now instant, so there is no in-flight animation to
-// desynchronise the reference. That makes the invariant load-bearing rather than
-// hygienic: the anchor-compensation write added for #5 has to honour it too, and
-// so must any future one. Browser-verified on this branch (release held across
-// 14 streaming growth ticks with 0 spurious re-pins, re-armed on return to the
-// bottom, at devicePixelRatio 1 and 1.5) — but verification is not a substitute
-// for maintaining the invariant.
+// write therefore looks exactly like user input and releases follow. The guard
+// is reliable only because pins are instant, so there is no in-flight animation
+// to desynchronise the reference. That makes the invariant load-bearing rather
+// than hygienic: the anchor-compensation write has to honour it too, and so must
+// any future one.
 //
 // Visual stability while scrolled up (window expansion, async widget resizes
 // above the viewport) uses native CSS `overflow-anchor: auto` PLUS an explicit
@@ -176,7 +171,7 @@ export function useVirtualChat<T>(
   const streamingIndexRef = useRef(streamingIndex)
   streamingIndexRef.current = streamingIndex
 
-  // ---- Streaming-settle grace (gap #3) ----
+  // ---- Streaming-settle grace ----
   // When `streamingIndex` goes undefined (the turn closed — `isStreaming`
   // flipped false), the row it named often keeps resizing for a short while:
   // a diff/code <SmoothResize> wrapper eases its height toward the content
@@ -309,7 +304,7 @@ export function useVirtualChat<T>(
   // RO-driven follow pins so they don't fire mid-fling — see SCROLL_SETTLE_MS.
   const lastUserScrollAtRef = useRef<number>(0)
 
-  // ---- Scroll-anchor preservation (T4/#5) ----
+  // ---- Scroll-anchor preservation ----
   //
   // While the user is scrolled up reading history, an UPWARD window shift
   // mounts rows above the viewport (recomputeWindow / top-sentinel expansion).
@@ -385,7 +380,7 @@ export function useVirtualChat<T>(
       if (cached !== undefined) return Math.max(cached, 1)
       // Unmeasured row: estimate from the running mean of MEASURED heights,
       // capped by MAX_MEAN_PX so one pathological row cannot inflate every
-      // unmeasured historical row (#1). averageHeight() falls back to the
+      // unmeasured historical row. averageHeight() falls back to the
       // configured estimate only while nothing has been measured at all — it
       // deliberately does NOT hold back for a minimum sample, because measuring
       // that gate in a browser made the drift ~7.5x worse (see HeightCache).
@@ -397,8 +392,8 @@ export function useVirtualChat<T>(
   // ---- Offset index (O(log N) prefix-sum tree over row heights) ----
   //
   // The hot paths (per-rAF scroll window recompute, offset/total spacers, the
-  // 120ms streaming tick) used to walk all N rows via the O(N) free functions
-  // (getOffset / getTotalHeight / computeWindow), which dominated scroll frames
+  // 120ms streaming tick) would each walk all N rows via the O(N) free functions
+  // (getOffset / getTotalHeight / computeWindow), which dominates scroll frames
   // on 5000+ row transcripts. `OffsetIndex` answers the same questions in
   // O(log N) / O(1). It is the authoritative tree, synced HERE on an itemCount
   // (or getH) change so the offset memos have fresh data on the same render,
@@ -436,7 +431,7 @@ export function useVirtualChat<T>(
   // This debounced tick is also the OffsetIndex sync point (per its doc): it
   // reconciles the tree with the batch of measurements that landed, then reads
   // the new total in O(1) — no O(N) getTotalHeight walk ~8x/sec while
-  // streaming (#2).
+  // streaming.
   //
   // `immediate` bypasses the debounce for the CALLER-DESIGNATED streaming row
   // (see `streamingIndex` option). That row's height changes constantly while
@@ -508,7 +503,7 @@ export function useVirtualChat<T>(
 
   // Capture the topmost visible mounted row (smallest index whose bottom edge
   // is still below the viewport top) and its offset from the scroller's top.
-  // Used by the scroll-anchor preservation path (T4/#5). Returns null when no
+  // Used by the scroll-anchor preservation path. Returns null when no
   // mounted row qualifies or the environment has no layout (jsdom).
   const captureTopAnchor = useCallback((): { key: string; top: number } | null => {
     const el = scrollerRef.current
@@ -551,8 +546,8 @@ export function useVirtualChat<T>(
     const count = itemsRef.current.length
     const idx = offsetIndexRef.current
     // Window bounds in O(log N) via the OffsetIndex prefix-sum tree rather than
-    // the O(N) computeWindow linear scan — this is the per-rAF scroll hot path
-    // (#2). Fall back to computeWindow only if the tree is somehow absent.
+    // the O(N) computeWindow linear scan — this is the per-rAF scroll hot path.
+    // Fall back to computeWindow only if the tree is somehow absent.
     let next: { start: number; end: number }
     if (count <= 0) {
       next = { start: 0, end: 0 }
@@ -569,7 +564,7 @@ export function useVirtualChat<T>(
     } else {
       next = computeWindow(el.scrollTop, el.clientHeight, count, getH, overscan)
     }
-    // T4/#5: on an upward shift (window start moving up → more rows mount above
+    // On an upward shift (window start moving up → more rows mount above
     // the viewport) while the user is scrolled up (stick released), record the
     // top anchor so the post-commit layout effect can hold the viewport steady.
     // Skipped while stick is armed — the pin path owns positioning then.
@@ -609,28 +604,23 @@ export function useVirtualChat<T>(
 
   // ---- Pin helpers (the only code that writes el.scrollTop for follow) ----
 
-  // Automatic pin: called when content changed (RO / append / streaming). Now
-  // DELEGATES the decision to FollowController.evaluateAutoPin (T5) — the pure,
-  // unit-tested "race-proof core" that used to be dead code while production
-  // pinAuto implemented a divergent "always pin when stick armed" policy. The
-  // two are reconciled here: evaluateAutoPin reads the LIVE geometry and
+  // Automatic pin: called when content changed (RO / append / streaming).
+  // DELEGATES the decision to FollowController.evaluateAutoPin — the pure,
+  // unit-tested race-proof core. evaluateAutoPin reads the LIVE geometry and
   // (a) never pins when stick is released, (b) releases stick synchronously if
   // the user has scrolled up since our last write (scrollTop < lastWriteTop and
   // still away from the bottom — the distance guard tolerates mid-stream
   // shrink), and (c) otherwise pins to the bottom. Its at-bottom test uses the
-  // DPR-aware epsilon (T3/#4), so this and the delegated core share one gate
-  // instead of the old duplicated `0.5` literals.
+  // DPR-aware epsilon, so this and the delegated core share one gate.
   //
-  // The pin WRITE is INSTANT (behavior:'auto'), not smooth (T3/#4): a streaming
+  // The pin WRITE is INSTANT (behavior:'auto'), not smooth: a streaming
   // response grows the bottom target every token, and a fresh smooth scroll
   // CANCELS the in-flight one and restarts toward the moving target, so on a
   // tall transcript it chases the bottom and never converges. Smooth is
   // reserved for the explicit "jump to latest" path (scrollToBottom).
   //
-  // Delegating restored the synchronous scroll-up release that production had
-  // abandoned because SMOOTH-scroll lag produced false positives; with the
-  // instant write there is no animation lag, so scrollTop == lastWriteTop right
-  // after each pin and the guard is reliable again.
+  // The synchronous scroll-up release is reliable only with the instant write:
+  // there is no animation lag, so scrollTop == lastWriteTop right after each pin.
    // ---- The single chokepoint for programmatic scroll writes ----
   //
   // Enforces the follow invariant STRUCTURALLY rather than by convention: you
@@ -641,9 +631,8 @@ export function useVirtualChat<T>(
   //   - 'release' — we are deliberately leaving the bottom (explicit
   //                 navigation); reset the guard sentinel, follow is off anyway.
   // An unaccounted write is indistinguishable from user input and would release
-  // follow spuriously — the failure mode that got an earlier version of this
-  // guard reverted. Making the argument mandatory means a future contributor has
-  // to make a choice rather than forget one.
+  // follow spuriously. Making the argument mandatory means a future contributor
+  // has to make a choice rather than forget one.
   const writeScrollTop = useCallback(
     (
       el: HTMLDivElement,
@@ -662,9 +651,8 @@ export function useVirtualChat<T>(
       // smooth-pin guard so the listener tolerates the glide (it disarms on
       // arrival, or on a genuine upward move: see the scroll handler).
       //
-      // Only the explicit "jump to latest" path is smooth now; the streaming
-      // pin is instant (#4), which is what removed the previous setter for this
-      // guard and left this hole.
+      // Only the explicit "jump to latest" path is smooth; the streaming pin
+      // is instant, so this guard only needs to cover the jump-to-latest glide.
       if (accounting === 'pin' && behavior === 'smooth') {
         smoothPinActiveRef.current = true
         prevSmoothTopRef.current = el.scrollTop
@@ -724,8 +712,8 @@ export function useVirtualChat<T>(
     // scroll handler already exempts in-flight glides; this path did not.
     //
     // Preserve follow and do NOT write: re-issuing a smooth scroll every resize
-    // tick would cancel and restart the animation each time (the restart trap
-    // fix #4 removed). Content appended mid-glide is instead re-targeted the
+    // tick would cancel and restart the animation each time. Content appended
+    // mid-glide is instead re-targeted the
     // moment the glide lands — the arrival branch of the scroll handler runs
     // pinAuto(), which then snaps instantly to the new bottom.
     if (smoothPinActiveRef.current) return
@@ -875,7 +863,7 @@ export function useVirtualChat<T>(
           if (prevH !== undefined) {
             genuineResize = true
             // Immediate (non-debounced) sync for the actively-streaming row OR
-            // the row still inside its post-stream settle grace (gap #3). The
+            // the row still inside its post-stream settle grace. The
             // grace is a FIXED window from stream completion and is deliberately
             // NOT re-armed here: re-arming per resize would let an oscillating
             // auto-height widget in a just-ended message keep the row immediate
@@ -987,7 +975,7 @@ export function useVirtualChat<T>(
         for (const entry of entries) {
           if (!entry.isIntersecting) continue
           if (entry.target === topSentinelRef.current) {
-            // T4/#5: upward expansion mounts rows above the viewport. Capture
+            // Upward expansion mounts rows above the viewport. Capture
             // the top anchor first (while stick is released — reading history)
             // so the compensation layout effect can hold the viewport steady.
             //
@@ -1015,7 +1003,7 @@ export function useVirtualChat<T>(
   }, [overscan, scrollerEl, captureTopAnchor])
 
   // ---- Scroll-anchor preservation: hold the viewport steady across an
-  //      upward window shift (T4/#5) ----
+  //      upward window shift ----
   //
   // Runs after every windowRange commit. If recomputeWindow / top-sentinel
   // expansion captured a top anchor (only on an upward shift while stick is

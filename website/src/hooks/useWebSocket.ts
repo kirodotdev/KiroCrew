@@ -523,9 +523,8 @@ export function useWebSocket() {
             const n = data as Notification
             dispatch(addNotification(n))
             // Also fire MC_NOTIFICATION_EVENT so useNotificationSound plays the
-            // configured sound. The WS transport previously only dispatched the
-            // Redux action (toast/badge), so notification sounds never played —
-            // only the now-unmounted useSSE fired this event. Mirror useSSE.
+            // configured sound — the Redux action alone only drives the
+            // toast/badge, not the sound.
             // RFC Phase 3: muted-channel (silenced) and passive notes are
             // feed-only — no sound.
             if (!n.silenced && n.priority !== 'passive') {
@@ -843,15 +842,15 @@ export function useWebSocket() {
             // kiro-cli/ACP reasoning (agent_thought_chunk) -> collapsible block.
             dispatch(sseThinkingChunk({ slot: data.slot, content: (data as { content?: string }).content || '' }))
             // Dispatch the status detail only on a genuine kind TRANSITION into
-            // 'thinking'. The old guard tested `!== 'streaming'` and then wrote
-            // 'thinking', which is itself `!== 'streaming'` — so it never
-            // self-limited and re-dispatched on EVERY thought frame with a fresh
-            // `ts`. Because setSlotStatusDetail replaces slotStatusDetail[slot]
-            // wholesale, that bumped the map identity per frame and re-rendered
-            // every whole-map subscriber (ChatSidebar, CommandPalette) for the
-            // duration of the model's reasoning. The sibling chat_chunk guard
-            // above writes 'streaming' and so is naturally idempotent; this is
-            // the same shape, made explicit.
+            // 'thinking'. Guarding merely on `!== 'streaming'` would not
+            // self-limit — 'thinking' is itself `!== 'streaming'`, so it would
+            // re-dispatch on EVERY thought frame with a fresh `ts`. Because
+            // setSlotStatusDetail replaces slotStatusDetail[slot] wholesale, that
+            // bumps the map identity per frame and re-renders every whole-map
+            // subscriber (ChatSidebar, CommandPalette) for the duration of the
+            // model's reasoning. The sibling chat_chunk guard above writes
+            // 'streaming' and so is naturally idempotent; this is the same shape,
+            // made explicit.
             const detailKind = data.slot ? store.getState().chat.slotStatusDetail[data.slot]?.kind : undefined
             if (data.slot && detailKind !== 'streaming' && detailKind !== 'thinking') {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', text: 'Thinking…', ts: Date.now() }))

@@ -115,7 +115,7 @@ async def api_mcp_apps_call(request: web.Request) -> web.Response:
     spool_id = body.get("spool_id")
     tool = body.get("tool")
     arguments = body.get("arguments", {})
-    # #418 callback capability: delivered to the iframe ONLY over the owner-WS
+    # Callback capability: delivered to the iframe ONLY over the owner-WS
     # render frame; relayed back here in the (owner-authenticated, non-model-
     # visible) POST body and forwarded to the gateway, which authorizes on it.
     callback_secret = body.get("callback_secret")

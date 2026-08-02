@@ -1,11 +1,11 @@
 // Feature: chat-virtualizer — spacer-lurch fix for the "flash while scrolled
 // up during streaming" report.
 //
-// CONTEXT: two prior PRs (#661, #697) fixed a flash at the streaming TEXT
-// EDGE (MarkdownRenderer's `.ft-word` mount/opacity churn) — both scoped
-// entirely to the visible glyphs at the tail of the streaming message. That
-// mechanism cannot explain a flash reported while the user is SCROLLED UP,
-// with the streaming message below the fold and its edge off-screen.
+// CONTEXT: a separate flash at the streaming TEXT EDGE (MarkdownRenderer's
+// `.ft-word` mount/opacity churn) is scoped entirely to the visible glyphs at
+// the tail of the streaming message. That mechanism cannot explain a flash
+// reported while the user is SCROLLED UP, with the streaming message below the
+// fold and its edge off-screen.
 //
 // ROOT CAUSE (confirmed below): useVirtualChat's height→offset sync is
 // debounced (HEIGHT_SYNC_DEBOUNCE_MS = 120ms, see scheduleHeightSync). While
@@ -26,7 +26,7 @@
 // then jumping. Every other row keeps the debounced path — the render-storm
 // protection it exists for is untouched.
 //
-// The first `describe` block below is unchanged regression coverage for the
+// The first `describe` block below is regression coverage for the
 // DEFAULT (no `streamingIndex` supplied) behavior — every row not named by
 // the caller must still get debounced, coalescing protection. The second
 // `describe` block proves the fix: naming the streaming row makes its growth

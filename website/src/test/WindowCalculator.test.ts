@@ -1,5 +1,3 @@
-// Feature: chat-virtualizer
-//
 // Property tests for WindowCalculator covering:
 // - Property 1: Window Correctness Invariant
 // - Property 5: Jump Navigation Window Placement
@@ -20,8 +18,6 @@ import {
 // Arbitrary: an item heights array of plausible chat message sizes.
 const heightsArb = fc.array(fc.integer({ min: 20, max: 800 }), { minLength: 1, maxLength: 200 })
 
-// Feature: chat-virtualizer, Property 1: Window Correctness Invariant
-// **Validates: Requirements 2.1, 2.2, 2.3**
 describe('Property 1: Window Correctness Invariant', () => {
   it('every item overlapping the viewport is inside [start, end)', () => {
     fc.assert(
@@ -65,8 +61,6 @@ describe('Property 1: Window Correctness Invariant', () => {
   })
 })
 
-// Feature: chat-virtualizer, Property 5: Jump Navigation Window Placement
-// **Validates: Requirements 4.1, 5.1**
 describe('Property 5: Jump Navigation Window Placement', () => {
   it('computeJumpWindow always contains the target index', () => {
     fc.assert(
@@ -181,7 +175,7 @@ describe('getOffset / getIndexAtOffset', () => {
 // ── OffsetIndex (Fenwick/prefix-sum tree) ───────────────────────────────────
 // Correctness contract: OffsetIndex must answer offsetOf / indexAt /
 // totalHeight IDENTICALLY to the O(N) free functions for every input, while
-// scaling sub-linearly (fix #2).
+// scaling sub-linearly.
 
 // Mixed height distribution incl. zero-height rows (tool pills → widgets).
 const mixedHeightsArb = fc.array(fc.integer({ min: 0, max: 3000 }), {

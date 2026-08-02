@@ -7,9 +7,9 @@
  *
  *  1. NO STARVATION: during a short gap in the incoming stream (shorter than the
  *     standing lag) the reveal keeps flowing instead of freezing at the live
- *     edge. The old EMA + fast-catch-up design revealed straight to the edge,
- *     froze, then surged on the next burst — the freeze→surge cycle users saw
- *     as "text showing up in chunks".
+ *     edge. A design that reveals straight to the edge freezes, then surges on
+ *     the next burst — the freeze→surge cycle users perceive as "text showing
+ *     up in chunks".
  *
  *  2. NO SNAPPING: a large single burst mounts over multiple frames as a smooth
  *     ramp (slew-limited rate), never as one giant frame delta.
@@ -58,9 +58,9 @@ describe('useSmoothStream constant-latency dynamics', () => {
 
     // Steady feed for 60 frames (~1s) to reach equilibrium: standing backlog of
     // ~LAG_SECS worth of text, reveal rate tracking the input rate. 250 cps is
-    // deliberately BELOW the old design's 400 cps ceiling: under the old
-    // dynamics the reveal converged onto the live edge and froze during gaps
-    // (this test fails there); the controller instead holds a standing lag.
+    // deliberately low: a design with a fixed reveal ceiling (~400 cps)
+    // converges onto the live edge and freezes during gaps (this test fails
+    // there); the controller instead holds a standing lag.
     for (let i = 0; i < 60; i++) {
       content += 'x'.repeat(CHARS_PER_FRAME)
       rerender({ c: content, s: true })
@@ -84,10 +84,10 @@ describe('useSmoothStream constant-latency dynamics', () => {
   })
 
   it('tracks a fast model with bounded, non-growing lag (no runaway backlog)', () => {
-    // 500 cps is ABOVE the old design's 400 cps reveal ceiling at speed 1 — the
-    // old hook fell behind at ~100 chars/sec forever (the defect the hardcoded
-    // speed=4 override papered over). The controller has no ceiling: the rate
-    // tracks any input rate and the lag settles at ~LAG_SECS worth of text.
+    // 500 cps is above a fixed 400 cps reveal ceiling at speed 1 — a hook with
+    // that ceiling falls behind at ~100 chars/sec forever. The controller has
+    // no ceiling: the rate tracks any input rate and the lag settles at
+    // ~LAG_SECS worth of text.
     const fast = 8 // chars per 16ms frame ≈ 500 cps
     let content = ''
     const { result, rerender } = renderHook(
@@ -138,7 +138,7 @@ describe('useSmoothStream constant-latency dynamics', () => {
   })
 
   it('caps the reveal speed on a fat cold-start first chunk (no perceptual blur)', () => {
-    // A large FIRST chunk (typical after a long thinking/tool phase) used to
+    // A large FIRST chunk (typical after a long thinking/tool phase) would
     // demand backlog/lag = thousands of cps with no ceiling — smooth in the
     // math, a blur to the eye. MAX_CPS bounds the cascade: 600 cps ≈ 10
     // chars/frame at 60fps (a 1000-char burst is under the bounded-drain

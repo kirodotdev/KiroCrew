@@ -83,9 +83,8 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
     if (c) onSelect(c.name + ' ')
   }, [onSelect])
 
-  // Consolidated onto the SAME nav hook as the $skill / @file pickers — this is
-  // what gives the slash menu arrow-scroll and consistent Enter/Tab/Escape (it
-  // previously rolled its own selection state with no scroll-into-view).
+  // Uses the SAME nav hook as the $skill / @file pickers, which gives the slash
+  // menu arrow-scroll and consistent Enter/Tab/Escape.
   const { selected, setSelected, selectedRef, itemRefs } = useListKeyboardNav({
     open: visible,
     count: displayed.length,

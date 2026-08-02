@@ -128,9 +128,8 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
 
       <div className="min-w-0 flex-1">
         <span className="block font-medium text-[12px] leading-tight" style={{ color: 'var(--text)' }}>{tip.title}</span>
-        {/* Full multi-line body — no truncation (maintainer feedback: "it can
-            be multiple lines, don't cut off"). A viewport-relative max-height
-            with scroll (Codex round-23) keeps a very long body from pushing
+        {/* Full multi-line body — no truncation. A viewport-relative max-height
+            with scroll keeps a very long body from pushing
             the bottom-anchored card past the viewport on narrow screens —
             every character stays reachable, nothing is clipped away.
             Rendered through the sanitized markdown pipeline so inline
@@ -221,7 +220,7 @@ export function useTipTrigger(isRunning: boolean, suppressed = false, slotKey: s
   const [enabled, setEnabled] = useState(false)
   const queryClient = useQueryClient()
 
-  // Reset ALL per-turn state when the active slot changes (Codex round-8):
+  // Reset ALL per-turn state when the active slot changes:
   // switching between two running slots keeps isRunning=true, so without this
   // the visible strip, the armed 10s gate, and shownThisTurnRef would leak
   // into the newly selected slot and a tip could appear there instantly.
@@ -248,7 +247,7 @@ export function useTipTrigger(isRunning: boolean, suppressed = false, slotKey: s
     if (suppressed) setVisible(false)
   }, [suppressed])
 
-  // Temporary sessions forbid memory reads (Codex round-22): tips are
+  // Temporary sessions forbid memory reads: tips are
   // memory-personalized, so fetching or displaying one would leak persistent
   // memory into a blank-slate session. Hard-block everything while blocked.
   useEffect(() => {
@@ -262,7 +261,7 @@ export function useTipTrigger(isRunning: boolean, suppressed = false, slotKey: s
   // Client polling gate: min(20min UI floor, configured server cadence).
   // Default posture (cadence 6h) keeps the 20-minute floor; explicitly
   // configuring tips_cadence_hours below 20 minutes makes the client follow
-  // it so valid low-cadence settings actually take effect (Codex round-10).
+  // it so valid low-cadence settings actually take effect.
   const { data: tipsStatus } = useQuery({
     queryKey: ['tipsStatus'],
     queryFn: api.tipsStatus,
@@ -325,6 +324,6 @@ export function useTipTrigger(isRunning: boolean, suppressed = false, slotKey: s
   // `blocked` is checked synchronously here (not only via the reset effect):
   // effects run after render, so on the first frame after switching from a
   // running persistent slot to a running temporary slot the stale tip would
-  // otherwise flash before the reset effect fires (Codex round-24).
+  // otherwise flash before the reset effect fires.
   return { tip: visible && !suppressed && !blocked ? tip ?? null : null, dismiss }
 }

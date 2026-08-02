@@ -68,9 +68,4 @@ describe('MarkdownPanel OverflowMenu', () => {
     fireEvent.click(screen.getByText('Copy content'))
     expect(writeText).toHaveBeenCalledExactlyOnceWith('')
   })
-
-  // ── Phase 6: Add to artifacts (no-modal flow) ─────────────
-
-  // ── Coverage push for new hook paths ────────────────────────────────────
-
 })

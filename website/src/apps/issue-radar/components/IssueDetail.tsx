@@ -725,8 +725,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               <StatePill state={state} reason={stateReason} />
               {/* Copy-link + issue number, sitting right after the state pill.
                   The copy button writes the URL to the clipboard; the #number
-                  itself links out to the provider (this pair replaces the old
-                  standalone GitHub button). */}
+                  itself links out to the provider. */}
               <span className="inline-flex items-center gap-1">
                 <button
                   onClick={copyLink}

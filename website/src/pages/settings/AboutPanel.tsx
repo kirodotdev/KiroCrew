@@ -45,15 +45,15 @@ function formatRate(bps: number): string {
 /**
  * Failure class → catalog key, written out in full.
  *
- * These keys used to be assembled as `i18nT(ap + 'update_error_offline')`. A
- * concatenated key is invisible to static analysis: no extractor, linter or
- * unused-key tool can see it, so the keys look dead and a pruning pass would
- * delete them. That is not hypothetical here — the `server` branch below carries
- * a comment about a missing key taking the whole panel down through the error
- * boundary.
+ * Each key is a plain string literal rather than a concatenation like
+ * `i18nT(ap + 'update_error_offline')`: a concatenated key is invisible to
+ * static analysis, so no extractor, linter or unused-key tool can see it — the
+ * keys would look dead and a pruning pass would delete them. A missing key then
+ * takes the whole panel down through the error boundary (see the `server`
+ * branch below).
  *
- * `as const` on a literal map is the standard fix: the keys become plain string
- * literals that tooling can find, and the lookup stays a single expression.
+ * `as const` on the literal map keeps the keys findable by tooling while the
+ * lookup stays a single expression.
  */
 const UPDATE_ERROR_KEYS = {
   offline: 'pages.settings.aboutPanel.update_error_offline',
@@ -70,9 +70,9 @@ function updateErrorText(st: UpdateState | null | undefined): string {
     case 'offline': return i18nT(UPDATE_ERROR_KEYS.offline)
     case 'server': {
       // Guard the interpolation: i18nT returns undefined for a key missing from
-      // every catalog, and calling .replace() on that took the whole panel down
-      // via the error boundary. A status-less fallback is strictly better than a
-      // blank Settings page.
+      // every catalog, and calling .replace() on that would take the whole panel
+      // down via the error boundary. A status-less fallback is strictly better
+      // than a blank Settings page.
       const template = i18nT(UPDATE_ERROR_KEYS.serverStatus)
       return st.httpStatus && typeof template === 'string'
         ? template.replace('{{status}}', String(st.httpStatus))
@@ -84,8 +84,7 @@ function updateErrorText(st: UpdateState | null | undefined): string {
     // Unclassified failure. The localized generic WINS over st.message: the raw
     // value is electron-updater's exception text, written for a developer reading
     // logs ("ShipIt could not replace the application bundle") and always English.
-    // Preferring it was the exact defect #736 was filed for, just on the fallback
-    // branch. The detail still reaches the log via the main process; only fall
+    // The detail still reaches the log via the main process; only fall
     // back to it if the catalog key is somehow missing, since a raw string beats
     // an empty error line.
     default: return i18nT(UPDATE_ERROR_KEYS.unknown) || st?.message || ''
@@ -181,8 +180,8 @@ export function AboutPanel() {
   // again. Note isSuccess, not just isPending: `update:install` resolves as soon
   // as the install is DISPATCHED, and on macOS the platform installer then works
   // for several more seconds before the app quits. Keying `disabled` on
-  // isPending alone let the button re-arm during that window, so the user saw a
-  // clickable "Restart & Update" followed by an unexplained quit -- which reads
+  // isPending alone lets the button re-arm during that window, so the user sees
+  // a clickable "Restart & Update" followed by an unexplained quit -- which reads
   // as a crash.
   const installDispatched = installMutation.isPending || installMutation.isSuccess
   // Channel switcher (stable ⇄ insider opt-in). Switching persists the
@@ -208,7 +207,7 @@ export function AboutPanel() {
     status = <span className="text-ok flex items-center gap-1.5"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_are_on_the_latest_version')}</span>
   } else if (updateState?.state === 'error' && updateState.phase !== 'download' && updateState.phase !== 'install') {
     // Download failures are NOT rendered here: they render inside the update
-    // card so the found version stays on screen and can be retried (#735).
+    // card so the found version stays on screen and can be retried.
     status = <span className="text-danger flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates')}: {updateErrorText(updateState)}</span>
   }
 
@@ -216,7 +215,7 @@ export function AboutPanel() {
   const cardState = updateState?.state
   // A download-phase failure keeps the card: the user consented to this
   // version, so losing it on a transient error would strand them with a check
-  // complaint and no way back (#735).
+  // complaint and no way back.
   // Both post-consent phases keep the card mounted: they are the states where a
   // Retry and the manual-reinstall link are the user's only way forward. A
   // CHECK failure has no card to keep (nothing was ever offered) and stays in
@@ -341,10 +340,10 @@ export function AboutPanel() {
   const [applyError, setApplyError] = useState('')
   const [restarting, setRestarting] = useState(false)
   const [autoUpdate, setAutoUpdate] = useState(true)
-  // Full changelog viewer (collapsible) — restores the changelog view that the
-  // removed top-bar version pill used to provide; now lives in Settings > About.
-  // Full changelog is open by default — this is a full page now, not a cramped
-  // dropdown, so the changelog is primary content (bounded to a scroll box below).
+  // Full changelog viewer (collapsible), in Settings > About. Shared across
+  // desktop + web.
+  // Full changelog is open by default — it is primary content on this page
+  // (bounded to a scroll box below).
   const [showFull, setShowFull] = useState(true)
   // Fetch via useQuery: dedups concurrent requests, caches, and gives proper
   // loading/error states (avoids the empty-content infinite-spinner and the
@@ -394,8 +393,7 @@ export function AboutPanel() {
   // response says so.
   const showUpdate = updateAvailable || gwFound
 
-  // Escape closes the confirm dialog (unless an apply/restart is in flight),
-  // matching the keyboard affordance of the settings dropdown it replaces.
+  // Escape closes the confirm dialog (unless an apply/restart is in flight).
   useEffect(() => {
     if (!showConfirm) return
     const onKey = (e: KeyboardEvent) => {
@@ -554,8 +552,7 @@ export function AboutPanel() {
           </div>
         )}
 
-        {/* Full changelog — collapsible; restores the changelog view removed with
-            the top-bar pill. Shared across desktop + web. */}
+        {/* Full changelog — collapsible. Shared across desktop + web. */}
         <div className="mt-3 pt-3 border-t border-border">
           <button
             type="button"

@@ -98,8 +98,8 @@ _DIR_SLUG_STRIP_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # the checkout could create it and put `post-checkout` inside — the suppression
 # became the execution vector. A gateway-owned `mkdtemp` directory moved the path
 # out of the repo but left a same-uid, process-lifetime directory that a
-# compromised agent could chmod and populate between calls (GPT review, PR #461
-# rounds 5-8). `os.devnull` has no such window and needs no bookkeeping.
+# compromised agent could chmod and populate between calls. `os.devnull` has
+# no such window and needs no bookkeeping.
 _HOOKS_SINK = os.devnull
 
 
@@ -148,7 +148,7 @@ _SANDBOX_LAUNCHER_PREFIX = "sandbox: "
 # --includes`, and `include.path` is repo-controlled: a hostile checkout can point
 # it at `~/.aws/credentials` (or `~/.netrc`, `~/.git-credentials`) and have git
 # READ that file as config. "standard" leaves those visible; "strict" bind-mounts
-# them away, along with `~/.ssh` (GPT review, PR #461 round 11). Nothing here
+# them away, along with `~/.ssh`. Nothing here
 # needs a credential: the base ref is resolved from local refs and no remote is
 # contacted, so strict costs the operation nothing.
 _SANDBOX_MODE = "strict"
@@ -188,8 +188,7 @@ def _run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     ``git_coord.py``'s treatment of agent-influenced git: the repository is
     agent-selected and the branch is LLM-authored, so this spawn takes the OS
     isolation layer plus the credential-scrubbed environment rather than relying
-    on argument hygiene alone (GPT review, PR #461 round 9 — the earlier
-    ``BENIGN_SPAWNS`` classification is withdrawn).
+    on argument hygiene alone.
 
     :exc:`SandboxUnavailable` is raised when the host has no sandbox backend and
     ``agent.sandbox_allow_unsandboxed_exec`` is unset; the endpoint turns that
@@ -304,7 +303,7 @@ def _worktree_branches(root: str) -> dict[str, str] | None:
     Returns ``None`` when the git query itself FAILS, which is deliberately
     distinct from an empty mapping: "git could not tell us" must never be read as
     "nothing is registered", because cleanup keys destructive decisions off this
-    answer (GPT review round 4).
+    answer.
 
     Parsed from ``worktree list --porcelain``, whose per-tree block carries a
     ``branch refs/heads/<name>`` line (absent when detached, which maps to "").
@@ -315,8 +314,8 @@ def _worktree_branches(root: str) -> dict[str, str] | None:
     """
     # `-z` because a worktree path may itself contain a newline: with the
     # line-oriented form such a path splits across records, never matches its
-    # registered entry, and a retry 409s instead of reporting `reused`
-    # (GPT review, PR #461 round 9). In `-z` mode git NUL-terminates every
+    # registered entry, and a retry 409s instead of reporting `reused`.
+    # In `-z` mode git NUL-terminates every
     # attribute and emits an extra NUL between entries, so empty fields are
     # simply skipped.
     listing = _run_git(["worktree", "list", "--porcelain", "-z"], root)
@@ -344,7 +343,7 @@ def _worktree_config_active(root: str) -> bool:
     dir for the main worktree, but ``$GIT_COMMON_DIR/worktrees/<id>`` for a linked
     one — so ``--git-common-dir`` misses a linked worktree's own file entirely
     (verified: a filter declared there executed during checkout while the common
-    dir had no ``config.worktree`` at all; PR #461 round 7). ``--absolute-git-dir``
+    dir had no ``config.worktree`` at all). ``--absolute-git-dir``
     resolves the right directory in both cases.
 
     Both conditions matter: without the extension git ignores the file, and with
@@ -381,13 +380,12 @@ def _checkout_filter(root: str) -> str:
     hole: ``git config --local --name-only --list`` does NOT report
     worktree-scoped keys, so a repo with ``extensions.worktreeConfig=true`` and
     ``filter.evil.smudge`` in ``config.worktree`` passed the check and the driver
-    executed during checkout (verified empirically; PR #461 round 6).
+    executed during checkout (verified empirically).
 
     ``--includes`` is mandatory on both probes. For a *specific* scope query
     (``--local``/``--worktree``) git defaults include-following OFF, so a driver
     reached through ``include.path = hostile.cfg`` was invisible to the probe yet
-    still resolved — and executed — during checkout (verified empirically; GPT
-    review, PR #461 round 8).
+    still resolved — and executed — during checkout (verified empirically).
 
     Rather than try to neutralize an unbounded set of ``filter.<name>.*`` keys
     with ``-c``, refuse the operation and tell the user to create the worktree
@@ -502,7 +500,7 @@ def _cleanup_partial(
     # was dropped with rmtree, git still lists the worktree as checked out on this
     # branch and refuses `branch -D` ("used by worktree"). Pruning afterwards left
     # the claimed branch behind, so the retry the docstring promises hit "branch
-    # already exists" (GPT review, PR #461 round 7). Delete is retried once after a
+    # already exists". Delete is retried once after a
     # second prune, and a branch that survives both is logged rather than ignored.
     _run_git(["worktree", "prune"], root)
     if claimed:
@@ -514,7 +512,7 @@ def _cleanup_partial(
         # the branch when any surviving worktree other than our own destination
         # holds it. An unreadable listing cannot PROVE nobody adopted it, so it
         # keeps the branch too: a retry reporting "already exists" is recoverable,
-        # breaking someone else's worktree is not (GPT review, PR #461 round 13).
+        # breaking someone else's worktree is not.
         registered = _worktree_branches(root)
         if registered is None or any(
             held == branch and path != _norm_path(dest) for path, held in registered.items()
@@ -529,8 +527,7 @@ def _cleanup_partial(
         # advance the ref between our claim and this cleanup (a commit, a push
         # into it), and a force delete would leave those commits unreferenced.
         # `update-ref -d <ref> <old>` deletes ONLY while the ref still points at
-        # the value we claimed, so an advanced branch is left alone (GPT review,
-        # PR #461 round 10).
+        # the value we claimed, so an advanced branch is left alone.
         elif _delete_ref_if_unchanged(root, branch, base_sha) is False:
             _run_git(["worktree", "prune"], root)
             if _delete_ref_if_unchanged(root, branch, base_sha) is False:
@@ -676,7 +673,7 @@ async def api_worktree_create(request: web.Request) -> web.Response:
     caller = str(request.get("user") or "dashboard")
     # Dashboard users only. The allow-list below is built from EVERY slot's
     # project, so an app caller reaching here could create a worktree inside a
-    # repository belonging to another app's session (GPT review, round 8).
+    # repository belonging to another app's session.
     denied = deny_non_dashboard_caller(request, "worktree_create")
     if denied is not None:
         return denied
@@ -712,7 +709,7 @@ async def api_worktree_create(request: web.Request) -> web.Response:
     # checks below stat again. A project on stalled network storage would block
     # the event loop — and with it every session — for as long as the filesystem
     # takes to answer, so all of it runs on a worker thread, per the repo's
-    # no-blocking-calls-on-the-loop rule (GPT review, round 8).
+    # no-blocking-calls-on-the-loop rule.
     roots = await asyncio.to_thread(_allowed_repo_roots, request.app.get("state"))
     submitted = os.path.normpath(os.path.expanduser(repo))
     repo_root = _match_allowed_root(submitted, roots)

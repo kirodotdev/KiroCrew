@@ -29,11 +29,9 @@ export default function RemindersSection({ rem, remError, onAdd, onSkip, onRemov
       return
     }
     /*
-      Clear the draft ONLY once the write landed. It used to clear unconditionally,
-      so with the desktop app closed the typed reminder vanished and the only trace
-      was a muted line at the far end of the page. Same rule as the failure notice
-      and the custom-interval field: never discard the user's input on an
-      unconfirmed write.
+      Clear the draft ONLY once the write landed: never discard the user's input
+      on an unconfirmed write. Same rule as the failure notice and the
+      custom-interval field.
     */
     const ok = await onAdd(parsed.text, parsed.fireAt, parsed.recurrence?.everyMinutes)
     if (!ok) return

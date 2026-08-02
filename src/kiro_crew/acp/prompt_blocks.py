@@ -10,8 +10,9 @@ conversion so both prompt paths share one implementation:
   ``AcpSessionProvider``, so this is what actually reaches kiro-cli).
 * :meth:`kiro_crew.acp.client.AcpClient._send_prompt` -- the direct-client path.
 
-Keeping one builder matters: the same logic previously existed only on the
-direct path, so every channel silently shipped a filesystem path as text.
+Keeping one builder matters: both paths need the same path-to-image
+conversion, so a single implementation stops any channel from shipping a
+filesystem path to the model as text.
 
 Wire shape (per docs/kiro-cli/acp.md):
 
@@ -37,9 +38,7 @@ logger = logging.getLogger(__name__)
 
 #: Raster formats kiro-cli accepts as inline vision input. SVG is deliberately
 #: absent: it is scriptable XML rather than a raster image, and a vision model
-#: gains nothing from it. The direct client's constant listed ``.svg`` while its
-#: regex omitted it, so that mapping was already unreachable -- excluding it here
-#: makes the intent explicit rather than accidental.
+#: gains nothing from it.
 IMAGE_MEDIA_TYPES: dict[str, str] = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -62,7 +61,7 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 # 1. The quantifier is non-greedy. A greedy `+` swallows the separator between
 #    two paths, so "/tmp/a.png and /tmp/b.png" matched as ONE span ending at the
 #    final ".png" -- not a file, so every image in a multi-image message was
-#    dropped. That was the original direct-client behaviour.
+#    dropped.
 #
 # 2. The character class holds HORIZONTAL whitespace only, and a lookbehind
 #    forbids starting inside a URL or another path. With `\s` (which includes

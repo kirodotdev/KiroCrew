@@ -6,7 +6,7 @@ import ChatInput from '../components/ChatInput'
 
 // Pins the resize-notice contract: downscale details render as an accent
 // RESIZED pill ON the attachment chip, with a styled hover tooltip showing
-// the dimensions — not as a banner pinned above the transcript. See PR #240.
+// the dimensions — not as a banner pinned above the transcript.
 
 const defaultProps = {
   value: '',

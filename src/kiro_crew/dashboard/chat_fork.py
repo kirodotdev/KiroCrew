@@ -19,7 +19,7 @@ _MAX_SLOTS_FOR_FORK = 500
 _FORK_TITLE_MARKER = "↳ "
 
 # Fork direction: "head" copies messages up to and including the fork point
-# (legacy default behavior); "tail" copies only the messages after it.
+# (the default); "tail" copies only the messages after it.
 _FORK_DIRECTION_HEAD = "head"
 _FORK_DIRECTION_TAIL = "tail"
 _FORK_DIRECTIONS = (_FORK_DIRECTION_HEAD, _FORK_DIRECTION_TAIL)
@@ -29,7 +29,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/fork — fork session into a new tab.
 
     With ``direction="head"`` (default) copies messages up to and including
-    ``at_message_index`` (the legacy behavior). With ``direction="tail"`` copies
+    ``at_message_index``. With ``direction="tail"`` copies
     only the messages after ``at_message_index``; the head is dropped.
     An optional ``prompt`` is returned so the frontend can send it.
 
@@ -105,7 +105,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             {"error": f"direction must be one of {list(_FORK_DIRECTIONS)}"}, status=400,
         )
     if direction == _FORK_DIRECTION_TAIL and not KiroCrewConfig.load().dashboard.tail_fork_enabled:
-        # B1 server-side gate (D1): tail-fork requested but disabled in config —
+        # Server-side gate: tail-fork requested but disabled in config —
         # fall back to a normal head-fork rather than reject the request outright.
         # outcome="allowed" (not "denied"): the request still succeeds, just as a
         # head-fork instead of the requested tail-fork; "denied" would misleadingly

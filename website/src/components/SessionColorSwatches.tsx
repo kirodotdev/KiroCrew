@@ -16,7 +16,7 @@ import { i18nT } from '../i18n/t'
  * The colour write goes through `useMutation` (the package's standard
  * server-write pattern, cf. `pinMutation` in useSessionActions): `onMutate`
  * applies the optimistic `sseSlotColor` and captures the prior index, `onError`
- * rolls back — so a failed `api.setSlotColor` no longer silently strands the UI
+ * rolls back — so a failed `api.setSlotColor` does not silently strand the UI
  * on the wrong colour.
  *
  * `onPicked` lets a caller that controls its own menu close it after a pick (the

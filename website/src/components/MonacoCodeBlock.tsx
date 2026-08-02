@@ -51,7 +51,7 @@ const MonacoCodeBlock = memo(function MonacoCodeBlock(
   const dark = useIsDark()
   const timerRef = useRef<ReturnType<typeof setTimeout>>()
 
-  // #1 Critical: sync value via useEffect instead of during render to avoid cascade
+  // Sync value via useEffect instead of during render to avoid a render cascade.
   useEffect(() => {
     if (!editing) setValue(code)
   }, [code, editing])

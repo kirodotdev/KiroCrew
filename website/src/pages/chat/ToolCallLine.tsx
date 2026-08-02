@@ -31,8 +31,7 @@ import { fmtDateFields } from '../../i18n/format'
 const revealedToolIds = new Set<string>()
 
 /** Inline tool call pill. Click toggles an expanded panel below the pill that
- *  shows purpose / input / output (the same details that previously lived in
- *  the Activity sidebar's deprecated "Tools" tab). */
+ *  shows purpose / input / output. */
 export default memo(function ToolCallLine({ message, running: _running, slot, onFileOpen, disclosure, disclosureKey, onDisclosureChange }: { message: ChatMessage; running: boolean; slot?: string; onFileOpen?: (path: string) => void; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void }) {
   const dispatch = useAppDispatch()
   const label = message.content.replace(/^🔧\s*/, '')
@@ -53,7 +52,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const { effectiveId, isDone, isRejected, purpose, input, output, auto, ts, hasEntry } = useAppSelector(s => {
     // Slot-aware: for a non-active slot (split-view pane) read that slot's
     // per-slot tool log / messages / running state; `slot` undefined or equal to
-    // the active slot → active-slot globals (behavior identical to before).
+    // the active slot → active-slot globals.
     const bg = slot && slot !== s.chat.activeSlot ? slot : null
     const log = bg ? (s.chat.slotActivity[bg]?.toolLog ?? []) : s.chat.toolLog
     const slotRunning = bg ? ((s.chat.slotRun[bg]?.state ?? 'idle') !== 'idle') : s.chat.slotRunning
@@ -316,13 +315,13 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const [animateEntrance] = useState(() => !revealId || !revealedToolIds.has(revealId))
   useEffect(() => { if (revealId) revealedToolIds.add(revealId) }, [revealId])
 
-  // Drop the class once the fade has played. It is a ONE-SHOT animation, but the
-  // class used to persist for the row's whole life, and `ft-fade` animates
-  // opacity — so the element kept a compositing/stacking context long after the
-  // 0.6s was over. That traps a `position: fixed` DESCENDANT (an MCP app's
-  // full-screen sheet) inside this row's stacking context instead of the
-  // viewport's, leaving it painted beneath shell navigation. Removing the class
-  // when it finishes is both tidier and what keeps that escape hatch working.
+  // Drop the class once the fade has played. It is a ONE-SHOT animation, and
+  // `ft-fade` animates opacity — so leaving the class on keeps a
+  // compositing/stacking context alive long after the 0.6s is over. That traps
+  // a `position: fixed` DESCENDANT (an MCP app's full-screen sheet) inside this
+  // row's stacking context instead of the viewport's, leaving it painted
+  // beneath shell navigation. Removing the class when it finishes is both tidier
+  // and what keeps that escape hatch working.
   //
   // Guarded on the event target so a nested element's animation cannot end the
   // parent's, and only armed while the class is present. Under

@@ -111,7 +111,7 @@ describe('McpAppFrame', () => {
   })
 
   it('forwards the ORIGINATING tool arguments and result content when present', () => {
-    // GPT 5.6 finding: apps that initialize from their inputs must get the
+    // Apps that initialize from their inputs must get the
     // real tools/call state, not empty placeholders.
     const { container } = renderWithProviders(
       <McpAppFrame
@@ -192,7 +192,7 @@ describe('McpAppFrame', () => {
   })
 
   it('ignores a duplicate initialized so no partial can land after the result', () => {
-    // Both local reviewers found this: without the guard, the second
+    // Without the guard, the second
     // `initialized` sees the spool already marked revealed, takes the no-plan
     // branch and posts complete-input + result immediately, while chain 1's
     // timer keeps firing partials afterwards — a partial-aware app would repaint
@@ -324,7 +324,7 @@ describe('McpAppFrame', () => {
       expect(fetchMock).toHaveBeenCalledWith('/api/mcp-apps/call', expect.objectContaining({ method: 'POST' }))
       const relayCall = fetchMock.mock.calls.find((c) => c[0] === '/api/mcp-apps/call')!
       const sent = JSON.parse((relayCall[1] as { body: string }).body)
-      // #418: the callback capability the gateway authorizes on is forwarded,
+      // The callback capability the gateway authorizes on is forwarded,
       // NOT just the model-visible spool_id.
       expect(sent).toEqual({ spool_id: 'a'.repeat(32), callback_secret: 'sekret-cap', tool: 'save_state', arguments: { x: 1 } })
       // Session-ownership binding: the endpoint verifies the caller's session
@@ -418,7 +418,7 @@ describe('McpAppFrame', () => {
   })
 
   it('retires the bridge on a navigation-start signal (pre-load window)', async () => {
-    // GPT 5.6 finding: a navigated-to page's <head> script can post tools/call
+    // A navigated-to page's <head> script can post tools/call
     // BEFORE the iframe `load` event fires. The bridge-guard bootstrap posts
     // {__kirocrew_nav__:1} on the original document's pagehide/beforeunload
     // (which precede the new document's scripts), so the host must retire the
@@ -449,11 +449,11 @@ describe('McpAppFrame', () => {
 })
 
 /**
- * Display-mode negotiation (SEP-1865 `ui/request-display-mode`). Before this was
- * implemented the request fell through to the method-not-found default, so an app
- * that gates its INTERACTIVE surface on `fullscreen` (excalidraw only mounts its
- * editable canvas there) could never leave its static preview — the rendered
- * diagram looked inert and the app's own fullscreen button was dead.
+ * Display-mode negotiation (SEP-1865 `ui/request-display-mode`). Without it the
+ * request falls through to the method-not-found default, so an app that gates
+ * its INTERACTIVE surface on `fullscreen` (excalidraw only mounts its editable
+ * canvas there) can never leave its static preview — the rendered diagram looks
+ * inert and the app's own fullscreen button is dead.
  */
 describe('McpAppFrame — display mode', () => {
   it('grants an app-requested fullscreen and reports the mode actually set', () => {
@@ -581,9 +581,9 @@ describe('McpAppFrame — display mode', () => {
 
 /**
  * ui/open-link. The app's "Open in Excalidraw" button uploads the diagram via
- * tools/call and THEN calls openLink. That second call used to hit the -32601
- * default, so the export succeeded and the tab never opened — a silent dead end.
- * The URL comes from sandboxed app content, so it is untrusted input.
+ * tools/call and THEN calls openLink. Without a handler that second call hits the
+ * -32601 default, so the export succeeds and the tab never opens — a silent dead
+ * end. The URL comes from sandboxed app content, so it is untrusted input.
  */
 describe('McpAppFrame — ui/open-link', () => {
   function setup() {

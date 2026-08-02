@@ -10,7 +10,7 @@ vi.mock('../api/client', () => ({ api: new Proxy({}, { get: () => vi.fn() }) }))
 
 import ChatInput from '../components/ChatInput'
 
-// Screenshot now lives inside the "+" drop-up menu ("Add files & options"),
+// Screenshot lives inside the "+" drop-up menu ("Add files & options"),
 // which renders only when onUploadFiles is provided (ChatPage always passes both).
 const base = { value: '', onChange: vi.fn(), onSend: vi.fn(), onUploadFiles: vi.fn() }
 const openPlusMenu = () => fireEvent.click(screen.getByTitle('Add files & options'))

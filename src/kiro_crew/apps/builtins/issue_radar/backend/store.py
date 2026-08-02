@@ -82,18 +82,17 @@ def repo_slug_dir_name(owner: str, repo: str) -> str:
 
 # ── provider-scoped storage ─────────────────────────────────────────────────
 #
-# Issue Radar was GitHub-only, so a repo's data lived at
-# ``<data>/repos/{owner}/{repo}``. GitLab adds two dimensions to a repo's
-# identity -- the provider and, for self-managed instances, the HOST -- and both
-# must be part of the storage path, because ``group/project`` names an entirely
-# different project on gitlab.com than on a private instance, and a GitLab group
-# can share a name with a GitHub owner.
+# A GitHub repo's data lives at ``<data>/repos/{owner}/{repo}``. GitLab adds two
+# dimensions to a repo's identity -- the provider and, for self-managed
+# instances, the HOST -- and both must be part of the storage path, because
+# ``group/project`` names an entirely different project on gitlab.com than on a
+# private instance, and a GitLab group can share a name with a GitHub owner.
 #
-# Public GitHub keeps its ORIGINAL path. That is what makes this change
-# migration-free: an install that has been triaging GitHub issues keeps every
-# cache, setting, and investigation note exactly where it already is, and a bug
-# in the new layout cannot corrupt existing data because the new layout is only
-# ever entered by a non-GitHub key.
+# Public GitHub keeps its ORIGINAL path, which keeps the layout migration-free:
+# an install that has been triaging GitHub issues keeps every cache, setting, and
+# investigation note exactly where it already is, and a bug in the GitLab layout
+# cannot corrupt existing data because that layout is only ever entered by a
+# non-GitHub key.
 #
 # Everything else is rooted under a reserved segment that a GitHub owner can
 # never produce: ``parse_github_repo_url`` constrains owners to
@@ -521,8 +520,8 @@ def add_connected_repo(
 
     Identity is CASE-INSENSITIVE for the owner/repo pair. GitHub names are
     case-preserving but not case-sensitive, so ``acme/widget`` and ``Acme/Widget``
-    are one repo -- a case-sensitive match appended a second entry for it, and that
-    duplicate then carried its own independent caches and triage settings. The
+    are one repo -- a case-sensitive match would append a second entry for it, and
+    that duplicate would carry its own independent caches and triage settings. The
     first spelling connected stays the stored one, so existing entries are never
     rewritten.
 

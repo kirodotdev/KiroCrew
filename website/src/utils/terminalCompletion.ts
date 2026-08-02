@@ -329,9 +329,9 @@ function lastSeparator(word: string): number {
  *   `host:path` as a REMOTE target, so completing a local file called
  *   `attacker.example:drop` would upload the other argument off the machine.
  *
- * Listed as a class rather than patched per report: each is a case of the
- * program, not the shell, reinterpreting the word, and the guard costs a
- * two-character prefix while the failure costs command execution or exfiltration.
+ * Handled as a class: each is a case of the program, not the shell,
+ * reinterpreting the word, and the guard costs a two-character prefix while the
+ * failure costs command execution or exfiltration.
  */
 const NOT_A_PLAIN_PATH = /^[-+]|:/
 

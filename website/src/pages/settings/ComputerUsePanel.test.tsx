@@ -203,8 +203,8 @@ describe('ComputerUsePanel', () => {
     it('discards an empty field instead of resolving to the floor', () => {
       // `Number('')` is 0, and clamping 0 to the published range yields the FLOOR
       // (1 node / 320px). A user who selects-all-and-retypes passes through the
-      // empty state, so the old code transiently saved a 1-node accessibility
-      // tree. `null` means "discard", which keeps the persisted value.
+      // empty state, so saving there would transiently persist a 1-node
+      // accessibility tree. `null` means "discard", which keeps the persisted value.
       expect(commitNumericDraft('', 1200, NODE_BOUNDS)).toBeNull()
       expect(commitNumericDraft('   ', 1200, NODE_BOUNDS)).toBeNull()
       expect(commitNumericDraft('', 1280, [320, 4096])).toBeNull()
@@ -250,10 +250,11 @@ describe('ComputerUsePanel', () => {
     const t0 = 1_000_000
 
     it('stops for every state the backend documents as terminal', () => {
-      // The panel used to re-poll while accessibility !== 'granted', which never
-      // terminates on the shapes the backend itself returns as normal: `unknown`
-      // (the probe could not run) and `unsupported` (no TCC on this platform).
-      // Each tick shells out to a `kirocrew computer doctor --json` child.
+      // The panel must stop polling on the shapes the backend itself returns as
+      // normal: `unknown` (the probe could not run) and `unsupported` (no TCC on
+      // this platform). Re-polling while accessibility !== 'granted' never
+      // terminates on those. Each tick shells out to a `kirocrew computer
+      // doctor --json` child.
       expect(permissionPollInterval('granted', t0, t0)).toBe(false)
       expect(permissionPollInterval('unknown', t0, t0)).toBe(false)
       expect(permissionPollInterval('unsupported', t0, t0)).toBe(false)
@@ -262,8 +263,7 @@ describe('ComputerUsePanel', () => {
     })
 
     it('polls while a grant is genuinely outstanding', () => {
-      // The behaviour the poll was added for: granting in System Settings flips
-      // the row without a reload.
+      // Granting in System Settings flips the row without a reload.
       expect(permissionPollInterval('missing', t0, t0)).toBe(5000)
       expect(permissionPollInterval('missing', t0, t0 + 60_000)).toBe(5000)
     })

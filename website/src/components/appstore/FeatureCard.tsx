@@ -1,6 +1,6 @@
 /**
- * FeatureCard — secondary feature slots under the spotlight (the "duo" row of
- * the locked hybrid design). Compact art-left / text-right card using the
+ * FeatureCard — secondary feature slots under the spotlight. Compact
+ * art-left / text-right card using the
  * app's own theme-appropriate hero art, with a gradient + icon fallback.
  */
 import { Check, Package, Power, Monitor } from 'lucide-react'

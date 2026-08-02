@@ -19,9 +19,9 @@ describe('parseTs epoch-unit normalization', () => {
     expect(parseTs(String(REF_MS / 1000)).getTime()).toBe(REF_MS)
   })
 
-  // Regression: a millisecond epoch passed as a STRING used to render as
-  // year ~58527 (new Date("<13-digit>") is Invalid in V8, then the old
-  // fallback multiplied ms by 1000 as if it were seconds).
+  // A millisecond epoch passed as a STRING must not inflate the year (e.g.
+  // ~58527): new Date("<13-digit>") is Invalid in V8, and treating the ms value
+  // as seconds would multiply it by 1000.
   it('parses epoch milliseconds as string without inflating the year', () => {
     const d = parseTs(String(REF_MS))
     expect(d.getFullYear()).toBe(2026)
@@ -32,7 +32,7 @@ describe('parseTs epoch-unit normalization', () => {
     expect(parseTs(REF_MS).getTime()).toBe(REF_MS)
   })
 
-  // Regression: a microsecond epoch as a number used to render as ~58527.
+  // A microsecond epoch as a number must not inflate the year to ~58527.
   it('parses epoch microseconds (string and number)', () => {
     expect(parseTs(String(REF_MS * 1000)).getFullYear()).toBe(2026)
     expect(parseTs(REF_MS * 1000).getFullYear()).toBe(2026)

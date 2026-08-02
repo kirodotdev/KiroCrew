@@ -132,7 +132,7 @@ def _governance_posture_permits_workspace(enterprise_id: str, team_id: str) -> b
         raise
     except Exception:
         # Fail CLOSED: a governance evaluation error must DENY the
-        # workspace, not silently permit it (previously returned True).  session
+        # workspace, not silently permit it.  session
         # key=_host so the degrade SEL records the honest "host" surface (this
         # in-process admission check is not driven by a Slack session).
         try:

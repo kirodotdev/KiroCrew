@@ -57,10 +57,10 @@ export interface PapyrusEditorProps {
    *
    * `path` changes the moment the user picks a file, but `value` only catches up
    * when the fetch lands — so between the two the editor shows the PREVIOUS
-   * file's text under the NEW path. A keystroke in that window made the old
-   * content dirty against the new file, which then rejected the fetched content
-   * as "dirty" and saved the wrong text over the selected file. Read-only is the
-   * fix that removes the window rather than trying to reconcile afterwards.
+   * file's text under the NEW path. A keystroke in that window would make the old
+   * content dirty against the new file, which then rejects the fetched content
+   * as "dirty" and saves the wrong text over the selected file. Read-only removes
+   * the window rather than trying to reconcile afterwards.
    */
   readOnly?: boolean
 }

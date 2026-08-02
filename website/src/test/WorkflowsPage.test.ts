@@ -1,5 +1,5 @@
 /**
- * Unit tests for the Workflows-tab event-stream view-model helpers (M3).
+ * Unit tests for the Workflows-tab event-stream view-model helpers.
  *
  * These cover the pure folding logic that turns the run event stream into the
  * live phase tree + budget gauge the Workflows page renders. The full

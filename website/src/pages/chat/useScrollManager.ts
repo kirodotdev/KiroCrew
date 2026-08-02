@@ -29,8 +29,8 @@ export function useScrollManager() {
    * the time this runs the element is in the DOM and — for near targets, where
    * mountIndex unions the window — everything between the current view and the
    * target is mounted too, so the smooth glide doesn't shift mid-scroll. A
-   * single smooth scroll keeps it buttery; no settle-correction (the old
-   * correction caused a visible "scroll past then snap back"). */
+   * single smooth scroll keeps it buttery; no settle-correction, which would
+   * cause a visible "scroll past then snap back". */
   const scrollToDisplayIndex = useCallback((
     index: number,
     options: { behavior?: ScrollBehavior; align?: ScrollLogicalPosition; offset?: number } = {}
@@ -44,8 +44,8 @@ export function useScrollManager() {
       // retry on a later frame, and do NOTHING here. We deliberately do NOT
       // teleport to top:0 — for a FAR jump the virtualizer REPLACES its window
       // via a React state update, which takes more than one frame to commit and
-      // paint the target row; scrolling to top while we wait was the
-      // "far jump jumps to the top, second click works" bug.
+      // paint the target row; scrolling to top while we wait would make a far
+      // jump visibly jump to the top before the target row commits.
       return false
     }
     // getBoundingClientRect (not el.offsetTop, which is relative to the

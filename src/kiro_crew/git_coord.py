@@ -118,7 +118,7 @@ async def finalize(run: Project) -> str:
 async def _is_git_repo(path: str) -> bool:
     # git runs against an agent-selected repo whose local hooks and config can
     # execute code, so route through the sandbox chokepoint (OS isolation +
-    # credential-scrubbed env). See Talos finding 92e24570.
+    # credential-scrubbed env).
     argv, env, cleanup = sandboxed_spawn_argv(["git", "rev-parse", "--is-inside-work-tree"])
     try:
         proc = await create_subprocess_limited(
@@ -142,7 +142,7 @@ async def _is_git_repo(path: str) -> bool:
 
 
 async def _git(work_dir: str, *args: str) -> str:
-    # Agent-influenced git invocation: sandbox + scrubbed env (Talos 92e24570).
+    # Agent-influenced git invocation: sandbox + scrubbed env.
     argv, env, cleanup = sandboxed_spawn_argv(["git", *args])
     try:
         proc = await create_subprocess_limited(

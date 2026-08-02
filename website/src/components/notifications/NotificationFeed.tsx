@@ -31,10 +31,8 @@ function loadSeenChannels(): Set<string> {
 
 /** macOS Notification Center-style relative timestamp ("now", "35m ago", "2h ago").
  *
- * Delegated to the locale-aware seam: the hand-rolled ladder this replaces
- * rendered English in every language and encoded its own "yesterday" special
- * case, which CLDR already knows for all 10 locales. English output is
- * unchanged.
+ * Delegated to the locale-aware seam so relative times render in the app
+ * language for all 10 locales, with the "yesterday" literal from CLDR.
  *
  * Minute granularity is preserved deliberately — a notification feed that
  * counted seconds would rewrite every row on every tick. Anything under a
@@ -47,8 +45,8 @@ function fmtRelative(ts: string): string {
 }
 
 /**
- * Notification activity feed. Extracted verbatim from NotificationsPage so the
- * full page and the topbar bell popover share one implementation: multi-select
+ * Notification activity feed. Shared by the full page and the topbar bell
+ * popover as one implementation: multi-select
  * kind filter (persisted to localStorage), search, ack-all/clear, and a
  * date-grouped list whose rows disintegrate on delete. Selection state is owned
  * by the host (passed via selectedTs/onSelect) so the host renders the matching
@@ -151,9 +149,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   }, [filtered])
 
   const navigate = useNavigate()
-  // RFC Phase 4: group_key stacking -- notes sharing a group_key within a
-  // date group collapse into one stack (newest is the visible head), macOS
-  // Notification Center style. Expansion is per stack key, session-local.
+  // group_key stacking -- notes sharing a group_key within a date group
+  // collapse into one stack (newest is the visible head), macOS Notification
+  // Center style. Expansion is per stack key, session-local.
   const [expandedStacks, setExpandedStacks] = useState<Set<string>>(new Set())
   const toggleStack = useCallback((key: string) => {
     setExpandedStacks(prev => {
@@ -193,7 +191,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     return out
   }, [groups, expandedStacks])
 
-  // One-click approval resolution from the feed (RFC Phase 4 exit criteria).
+  // One-click approval resolution from the feed.
   const resolveApprovalNote = useCallback((n: Notification, action: 'approve' | 'reject') => {
     api.resolveApproval(n.approval_id || n.ts, action)
       .then(() => { dispatch(deleteNotification(n.ts)) })
@@ -298,8 +296,8 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 const active = selectedTs === n.ts
                 const prio = notePriority(n)
                 const silenced = !!n.silenced
-                // Priority tiers (RFC Phase 3): critical gets a danger edge,
-                // passive dims, silenced renders as a dashed-border ghost.
+                // Priority tiers: critical gets a danger edge, passive dims,
+                // silenced renders as a dashed-border ghost.
                 const macCard = silenced
                   ? 'bg-[color-mix(in_srgb,var(--card)_35%,transparent)] backdrop-blur-xl border border-dashed border-[color-mix(in_srgb,var(--border)_70%,transparent)]'
                   : `bg-[color-mix(in_srgb,var(--card)_55%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] ${active ? 'border border-accent bg-accent-subtle' : 'border border-[color-mix(in_srgb,var(--border)_55%,transparent)] hover:bg-[color-mix(in_srgb,var(--card)_70%,transparent)]'}`
@@ -308,9 +306,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 const promptChannel = promptTs === n.ts && n.channel && n.source
                   ? { channel: n.channel, label: `${n.source} / ${n.channel.startsWith(`${n.source}.`) ? n.channel.slice(n.source.length + 1) : n.channel}` }
                   : null
-                // RFC Phase 4: inline actions. Approval approve/reject is
-                // wired first; generic actions render only with a safe
-                // dashboard-internal url (never executable content).
+                // Inline actions: approval approve/reject, plus generic
+                // actions that render only with a safe dashboard-internal url
+                // (never executable content).
                 const isApproval = n.kind === 'approval' && !n.acked
                 // Defense-in-depth for legacy/corrupted persisted rows: the
                 // actions field must be a real array (a truthy non-array like

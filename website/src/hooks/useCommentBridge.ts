@@ -17,7 +17,7 @@ export interface IframeSelection {
 }
 
 /**
- * Parent-side half of the in-iframe comment bridge (items #4/#5).
+ * Parent-side half of the in-iframe comment bridge.
  *
  * Pairs with the `COMMENT_BRIDGE_BODY` script injected into the sandboxed
  * widget/HTML iframe by `buildSrcdoc({ enableComments: true })`. It:
@@ -58,7 +58,7 @@ export function useCommentBridge(opts: {
   const anchorPayload = useMemo(
     () =>
       comments
-        // Resolved threads show no anchor highlight/bubble (feedback).
+        // Resolved threads show no anchor highlight/bubble.
         .filter(c => c.anchor && c.anchor.quote && c.status !== 'resolved')
         .map(c => ({
           id: c.id,

@@ -11,7 +11,7 @@ interface FollowUpBarProps {
   /** Double-click sends with this option's text directly (bypasses setInput race). */
   onSend?: (text?: string) => void
   quickSend?: boolean
-  /** 'multiline' (default) wraps onto multiple rows; 'scroll' is the original single-line horizontally-scrollable view. */
+  /** 'multiline' (default) wraps onto multiple rows; 'scroll' is a single-line horizontally-scrollable view. */
   layout?: FollowUpLayout
 }
 

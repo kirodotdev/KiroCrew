@@ -818,7 +818,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
 const GridCard: ItemContent<GridEntry, LibCtx> = ({ data: entry, context }) => {
   // VirtuosoMasonry can pass an out-of-range (undefined) entry for one tick
   // while its internal list catches up to a shrunk data array; bail before any
-  // field access (this is the black-screen bug guard the local card had).
+  // field access (guards against the black-screen crash on an out-of-range entry).
   if (!entry) return null
   return <LocalCardBody a={entry.art} context={context} />
 }
@@ -1058,7 +1058,7 @@ function SessionDocRow({ d, busy, onMaterialize }: { d: SessionDoc; busy: boolea
   )
 }
 
-/** The original compact table view of the local artifact library (flat —
+/** The compact table view of the local artifact library (flat —
  * rendered while any filter is active, when folder scoping is bypassed). */
 function LibraryTable({
   items,

@@ -58,11 +58,9 @@ class _NoAliasSafeLoader(yaml.SafeLoader):
     Foreign-agent config files are untrusted. Plain ``yaml.safe_load`` still
     expands ``*alias`` references into a shared-reference graph, so a tiny
     "billion-laughs" config would explode when the downstream secret/leaf
-    traversal re-walks it — a DoS the previous line-based parser was immune to
-    (it stored ``&a``/``*a`` as literal strings). Rejecting aliases at compose
-    time keeps the amplification vector closed while preserving full
-    indentation support. A lone anchor with no alias is harmless (nothing to
-    amplify) and is allowed.
+    traversal re-walks it. Rejecting aliases at compose time keeps the
+    amplification vector closed while preserving full indentation support. A
+    lone anchor with no alias is harmless (nothing to amplify) and is allowed.
     """
 
     def compose_node(self, parent: Any, index: Any) -> Any:
@@ -1443,10 +1441,9 @@ def _add_db_directive(scan: _Scan, key: str, value: Any) -> None:
     """Project a foreign memory row typed as a DIRECTIVE onto the lesson tier.
 
     A directive is a rule the user taught the agent, not a fact, so semantic
-    memory (key/value, confidence-gated) is the wrong destination — the lesson
-    tier is. These rows were previously dropped as
-    ``directive_memory_unsupported``, which discarded exactly the least
-    replaceable thing in a foreign store.
+    memory (key/value, confidence-gated) is the wrong destination -- the lesson
+    tier is. Dropping such a row (as ``directive_memory_unsupported``) would
+    discard exactly the least replaceable thing in a foreign store.
 
     Passes the same gates as a file-sourced directive, and re-runs the content
     screens on the DECODED rule. The caller screened ``value_json`` — the raw JSON
@@ -2019,9 +2016,8 @@ def _scan_claude(scan: _Scan) -> None:
     root = scan.root
     # Workspaces come from explicit configuration ONLY. Session transcripts are
     # not imported (see docs/system-specs/modules/onboarding-import.md), so the
-    # former "reverse the workspace list out of session records" path is gone.
-    # That means the root configs must be parsed FIRST to learn the workspaces,
-    # then each workspace's own config files are parsed in a second pass.
+    # root configs are parsed FIRST to learn the workspaces, then each
+    # workspace's own config files are parsed in a second pass.
     root_configs = _parse_configs(
         scan,
         [
@@ -2602,8 +2598,8 @@ def _scan_meshclaw_memory_db(scan: _Scan) -> bool:
                             )
                             continue
                         # A directive is a RULE, not a fact, so semantic memory is
-                        # the wrong tier — but dropping it discarded exactly the
-                        # least replaceable rows (MeshClaw stores every learned
+                        # the wrong tier -- but dropping it would discard exactly
+                        # the least replaceable rows (MeshClaw stores every learned
                         # lesson this way). Route it to the instruction tier, which
                         # is where an imported rule belongs, instead.
                         is_directive = str(values.get("kind", "")).casefold() == "directive"

@@ -806,10 +806,11 @@ describe('ActivityViewer — Artifacts tab', () => {
 
   // ── Row click routes into the side panel, not a full-page navigation ───────
   //
-  // The whole point of the panel tab: clicking an artifact used to hard-navigate
-  // to /artifacts/<slug>, tearing down the chat to show a document the panel can
-  // render inline. Files never did that, so artifacts were the only
-  // panel-capable content you could not flip between like a file.
+  // The whole point of the panel tab: clicking an artifact opens it inline in
+  // the side panel instead of hard-navigating to /artifacts/<slug>, which would
+  // tear down the chat to show a document the panel can render inline. Files
+  // never did that, so without this artifacts would be the only panel-capable
+  // content you could not flip between like a file.
   it('opens an artifact row through onArtifactOpen instead of navigating', async () => {
     const onArtifactOpen = vi.fn()
     vi.mocked(api.artifacts).mockResolvedValue({
@@ -878,11 +879,11 @@ describe('ActivityViewer — Artifacts tab', () => {
     })
   })
 
-  // Layout regression: in the narrow activity rail every header item used to be
-  // shrinkable, so "Subagent Running Tool", the elapsed clock and the Cancel
-  // button all wrapped onto two lines and blew the card's header height up.
-  // The status label is the last thing to give way (the agent chip yields
-  // first); the clock and Cancel button must hold their single line.
+  // Layout: in the narrow activity rail, if every header item were shrinkable
+  // "Subagent Running Tool", the elapsed clock and the Cancel button would all
+  // wrap onto two lines and blow the card's header height up. The status label
+  // is the last thing to give way (the agent chip yields first); the clock and
+  // Cancel button must hold their single line.
   it('keeps the subagent card header on one line in a narrow rail', () => {
     const store = configureStore({
       reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
@@ -936,9 +937,8 @@ describe('ActivityViewer — Artifacts tab', () => {
 /**
  * Queued-wave visibility. A spawn_run wave accepted but still behind the
  * concurrency cap / stagger gate emits `subagent_queued` and NOTHING else — no
- * per-agent entry exists yet. The panel used to render "No subagents running"
- * for that entire window, which is flatly false and was the single most
- * misleading state it had.
+ * per-agent entry exists yet. Rendering "No subagents running" for that entire
+ * window is flatly false — the single most misleading state the panel can show.
  */
 describe('ActivityViewer — queued subagents', () => {
   const SLOT = 'test-slot'

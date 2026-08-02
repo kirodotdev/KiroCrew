@@ -224,12 +224,12 @@ class TestParseRepoUrlDispatch(unittest.TestCase):
     def test_dispatch_matches_the_host_exactly_not_as_a_substring(self):
         """A URL merely CONTAINING "://github.com/" is not a GitHub URL.
 
-        The dispatch used a substring test, so that text anywhere in the URL -- a
-        path segment, a query parameter, userinfo -- routed to the GitHub parser.
-        The GitHub parser re-validates the host and would reject it, so this was
-        never an SSRF; the visible bug was that a legitimate GitLab URL carrying
-        that text was refused with a GitHub-specific error. Flagged by CodeQL as
-        py/incomplete-url-substring-sanitization.
+        A substring test would route any URL merely CONTAINING that text -- in a
+        path segment, a query parameter, userinfo -- to the GitHub parser. The
+        GitHub parser re-validates the host and rejects it, so this is not an
+        SSRF; the failure it prevents is a legitimate GitLab URL carrying that
+        text being refused with a GitHub-specific error. Matching the parsed host
+        exactly is what keeps that from happening.
         """
         with mock.patch.object(
             gitlab_client, "allowed_hosts", return_value=frozenset({"gitlab.example"})
@@ -571,9 +571,9 @@ class TestNormalization(unittest.TestCase):
 class TestOpenListProbe(unittest.TestCase):
     """The cheap poll probe.
 
-    Upstream added ``probe_open_list`` to gate list polling. A GitHub-only
-    implementation would have meant a GitLab project probing GitHub, so the
-    contract is pinned on both sides here.
+    ``probe_open_list`` gates list polling. A GitHub-only implementation would
+    mean a GitLab project probing GitHub, so the contract is pinned on both
+    sides here.
     """
 
     def test_issue_probe_uses_the_exact_open_count(self):
@@ -629,9 +629,9 @@ class TestOpenListProbe(unittest.TestCase):
 class TestRefSummary(unittest.TestCase):
     """The cross-reference hover/sheet summary.
 
-    Upstream added ``get_ref_summary`` (and the ``/ref`` route) for the in-app
-    reference UI. A GitHub-only implementation would have meant a GitLab project's
-    references resolving against GitHub, so the contract is pinned on both sides.
+    ``get_ref_summary`` (and the ``/ref`` route) backs the in-app reference UI. A
+    GitHub-only implementation would mean a GitLab project's references resolving
+    against GitHub, so the contract is pinned on both sides.
     """
 
     RAW = {
@@ -814,8 +814,8 @@ class TestListPagination(unittest.TestCase):
     """Single-page listings must ask for a full page.
 
     GitLab defaults to 20 rows; github_client's equivalent path asks for 100. The
-    closed lists are deliberately one page, so the default silently made them a
-    fifth of the promised size -- older items simply absent, with no error.
+    closed lists are deliberately one page, so the default would silently make
+    them a fifth of the promised size -- older items simply absent, with no error.
     """
 
     def _path_for(self, fn) -> str:
@@ -865,8 +865,8 @@ class TestMergeRequestSearchState(unittest.TestCase):
 
     def test_search_keeps_the_callers_sentinel_row(self):
         # The route asks for PR_SEARCH_MAX + 1 and reports "truncated" when it gets
-        # the extra row. Clamping to the display cap made every over-cap result set
-        # claim to be complete.
+        # the extra row. Clamping to the display cap would make every over-cap
+        # result set claim to be complete.
         rows = [
             {"iid": n, "state": "opened", "updated_at": "2026-01-01T00:00:00Z"}
             for n in range(gitlab_client.PR_SEARCH_MAX + 5)
@@ -983,11 +983,10 @@ class TestClientParity(unittest.TestCase):
     def test_caller_supplied_keyword_arguments_agree(self):
         """The kwargs a route passes must exist on BOTH clients.
 
-        Positional parity alone is not enough, and this test exists because that
-        gap shipped a real defect: ``search_pulls`` was reached with
-        ``assignee=`` / ``review_requested=`` / ``limit=``, which only the GitHub
-        client accepted -- so the merge-request person filter raised a
-        ``TypeError`` and surfaced as an unhandled 500 for every GitLab project.
+        Positional parity alone is not enough: if ``search_pulls`` is reached with
+        ``assignee=`` / ``review_requested=`` / ``limit=`` that only the GitHub
+        client accepts, the merge-request person filter raises a ``TypeError`` and
+        surfaces as an unhandled 500 for every GitLab project.
         A keyword mismatch cannot be caught by types here (the dispatch is a
         module cast), so it is caught here instead.
         """
@@ -1061,8 +1060,8 @@ class TestRoutesScopeEveryStoreCall(unittest.TestCase):
 class TestRefSummaryRoute(unittest.IsolatedAsyncioTestCase):
     """The ``/ref`` route end-to-end through the dispatch.
 
-    The GitLab work changed this route's store call to the scoped ``_st`` helper,
-    which supplies ``root=`` itself. Passing ``root`` positionally as well raised
+    This route's store call goes through the scoped ``_st`` helper, which supplies
+    ``root=`` itself. Passing ``root`` positionally as well would raise
     ``TypeError`` on EVERY request -- an unconditional 500 no client-side or
     client-module test could see, because nothing exercised the handler.
     """

@@ -83,8 +83,8 @@ describe('DisplayPanel — language picker Auto row', () => {
   it('names the BROWSER language, not the selected one', () => {
     // Explicit English on a Chinese browser: the annotation answers "what does
     // Auto give me?", so it must say 简体中文. Reading the ACTIVE language here
-    // instead made it echo the selection ("— English") on every browser, which
-    // is both uninformative and wrong.
+    // instead would echo the selection ("— English") on every browser, which is
+    // both uninformative and wrong.
     localStorage.setItem(LANG_STORAGE_KEY, 'en')
     vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['zh-CN', 'en'])
 
@@ -96,8 +96,7 @@ describe('DisplayPanel — language picker Auto row', () => {
   it('falls back to the default language when the browser matches nothing', () => {
     localStorage.setItem(LANG_STORAGE_KEY, 'zh-CN')
     // `ja-JP` is deliberately a language we do NOT ship — a shippable tag makes
-    // this assert the opposite of its name once that language lands (it was
-    // `fr-FR`, which broke when French shipped).
+    // this assert the opposite of its name once that language lands.
     vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['ja-JP'])
 
     renderWithProviders(<DisplayPanel />)

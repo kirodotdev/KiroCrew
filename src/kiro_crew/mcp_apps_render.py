@@ -1,7 +1,6 @@
 """Dashboard-side interception of MCP Apps render markers.
 
-Milestone 1, step 3 of the MCP Apps integration. The gateway daemon
-(``src/kiro_crew/mcp_gateway/``, built in parallel) writes a UI payload to a
+The gateway daemon (``src/kiro_crew/mcp_gateway/``) writes a UI payload to a
 spool file at ``$KIROCREW_HOME/mcp-apps/<uuid4hex>.json`` and injects an opaque
 marker ``[kirocrew-mcp-app:<uuid4hex>]`` into the tool result *text* that flows
 back to kiro-cli. That text reaches the dashboard backend as an
@@ -280,7 +279,7 @@ async def handle_tool_result(
         data = await asyncio.to_thread(_claim_render, spool_id, binding_key)
         if data is not None:
             # OWNER-scoped delivery: the frame carries the ``callback_secret``
-            # (#418) — the capability that authorizes app→gateway callbacks —
+            # — the capability that authorizes app→gateway callbacks —
             # so a non-owner/guest WebSocket must never receive it. Falls back
             # to broadcast_ws only if the state predates the owner channel
             # (tests with minimal fakes).
@@ -305,7 +304,7 @@ async def handle_tool_result(
                     "csp": data.get("csp", ""),
                     "permissions": data.get("permissions", []),
                     "spool_id": spool_id,
-                    # #418 callback capability — owner-WS ONLY. The iframe
+                    # Callback capability — owner-WS ONLY. The iframe
                     # replays this on every callback; the model-visible marker
                     # (spool_id) authorizes nothing without it.
                     "callback_secret": data.get("callback_secret", ""),

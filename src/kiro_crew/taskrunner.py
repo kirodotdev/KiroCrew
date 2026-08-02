@@ -206,7 +206,7 @@ class TaskRunner:
         self._on_notify = on_notify
         self._auto_test = auto_test
         self._auto_commit = auto_commit
-        # Configured target folder for all executions (item 4). When set, every
+        # Configured target folder for all executions. When set, every
         # run operates directly in this folder instead of a per-run scratch dir,
         # so the workflow works on the intended location rather than a path it
         # creates for itself. Empty = legacy per-run workspace behavior.

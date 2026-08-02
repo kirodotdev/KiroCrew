@@ -70,7 +70,7 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
       const prev = queryClient.getQueriesData({ queryKey: ['knowledge-items'] })
-      // The 'knowledge-items' prefix now also covers the source-counts cache,
+      // The 'knowledge-items' prefix also covers the source-counts cache,
       // whose payload has no `items` array. Only rewrite item-shaped entries.
       queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old => {
         if (!old || !Array.isArray(old.items)) return old
@@ -98,7 +98,7 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
       const prev = queryClient.getQueriesData({ queryKey: ['knowledge-items'] })
-      // The 'knowledge-items' prefix now also covers the source-counts cache,
+      // The 'knowledge-items' prefix also covers the source-counts cache,
       // whose payload has no `items` array. Only rewrite item-shaped entries.
       queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old => {
         if (!old || !Array.isArray(old.items)) return old
@@ -402,14 +402,12 @@ export default function KnowledgePage() {
   }, [])
 
   // "The user has not narrowed anything" — every filter is still at its initial
-  // value. statusFilter starts at DEFAULT_STATUS_FILTER, so the earlier
-  // `!statusFilter` test could never be true and the onboarding block below was
-  // unreachable for every user since it was written.
+  // value. statusFilter starts at DEFAULT_STATUS_FILTER, so it must be compared
+  // against that default rather than tested for falsiness.
   //
-  // namespaceFilter is part of this test because fixing statusFilter exposes it:
-  // selecting a namespace that holds 0 items would otherwise render onboarding,
-  // and that branch replaces the filter bar, leaving no control to clear the
-  // filter with.
+  // namespaceFilter is part of this test because selecting a namespace that
+  // holds 0 items would otherwise render onboarding, and that branch replaces
+  // the filter bar, leaving no control to clear the filter with.
   //
   // Known gap: a library whose every item is archived also reports 0 active
   // items, and both the list query and /namespaces are active-scoped, so it is

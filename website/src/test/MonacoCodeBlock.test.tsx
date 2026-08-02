@@ -15,12 +15,10 @@ vi.mock('@monaco-editor/react', () => ({
 // Mock monaco-editor to avoid loading the real editor in jsdom.
 vi.mock('monaco-editor', () => ({}))
 
-// Mock the local Monaco setup utility.
 vi.mock('../utils/monacoLocal', () => ({
   ensureMonacoLocal: async () => {},
 }))
 
-// Mock clipboard
 vi.mock('../utils/clipboard', () => ({
   copyToClipboard: vi.fn(),
   copyCode: vi.fn(),
@@ -130,10 +128,8 @@ describe('MonacoCodeBlock', () => {
     fireEvent.click(screen.getByLabelText('Edit code block'))
     const editor = await screen.findByTestId('monaco-editor')
 
-    // Edit the code
     fireEvent.change(editor, { target: { value: 'modified code' } })
 
-    // Close editor
     fireEvent.click(screen.getByTitle('Close editor'))
 
     // Re-open — should show original code, not modified

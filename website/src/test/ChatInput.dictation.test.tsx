@@ -125,9 +125,9 @@ describe('ChatInput — Escape while recording', () => {
   })
 
   it('stops recording when focus is NOT in the composer', () => {
-    // The regression this guards: starting a recording means clicking the mic
-    // BUTTON, so focus sits there, not in the textarea. A textarea-scoped
-    // handler never fires, and the panel's "Esc to stop" hint would be a lie.
+    // Starting a recording means clicking the mic BUTTON, so focus sits there,
+    // not in the textarea. A textarea-scoped handler never fires, and the
+    // panel's "Esc to stop" hint would be a lie.
     const onVoiceToggle = vi.fn()
     renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)
     fireEvent.keyDown(document.body, { key: 'Escape' })
@@ -211,10 +211,9 @@ describe('ChatInput — Escape while recording', () => {
   })
 
   it('defers to an open dialog — Modal, CommandPalette and SnipOverlay all bind window Escape', () => {
-    // Escape belongs to the topmost dismissible surface. Before this feature
-    // existed Escape reached those overlays normally, so claiming it here would
-    // be a regression rather than a trade. All three carry role="dialog", so one
-    // presence probe defers to every one of them.
+    // Escape belongs to the topmost dismissible surface. Those overlays own it,
+    // so recording defers to them rather than claiming it. All three carry
+    // role="dialog", so one presence probe defers to every one of them.
     const onVoiceToggle = vi.fn()
     const dialogHandler = vi.fn()
     renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)

@@ -49,8 +49,8 @@ function SplitContainer({
   // instance serves every divider in this split: pointerdown records which
   // divider (data-divider-index) plus the split's extent and start position;
   // onMove applies the fractional delta to that divider. setPointerCapture keeps
-  // the drag glued to the handle even over iframe/canvas children, so the old
-  // full-screen overlay is no longer needed.
+  // the drag glued to the handle even over iframe/canvas children, so no
+  // full-screen overlay is needed.
   const dragState = useRef<{ index: number; extent: number; last: number } | null>(null)
   const gridResize = usePointerDrag({
     threshold: 0,

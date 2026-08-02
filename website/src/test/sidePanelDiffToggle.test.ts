@@ -2,10 +2,10 @@
  * The side panel's diff view controls: the split-view button's ACTIVE styling
  * must track the state it toggles.
  *
- * The button was styled active (`text-accent bg-accent-subtle`) on
- * `!diffSideBySide`, so the highlight read backwards: it lit up in unified
- * mode and went dim in split mode — the opposite of the line-numbers button
- * sitting next to it, which is gated on the plain state.
+ * The active class (`text-accent bg-accent-subtle`) is gated on `diffSideBySide`,
+ * not `!diffSideBySide`, so the button lights up in split mode and dims in
+ * unified mode — matching the line-numbers button beside it, which is gated on
+ * the plain state. Gating on the negation would invert the highlight.
  *
  * This is a class-string inversion, so neither tsc nor a render assertion on
  * the toggle's behaviour would catch a regression. Assert on the source.

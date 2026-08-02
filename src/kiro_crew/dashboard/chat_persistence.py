@@ -34,7 +34,7 @@ _MAX_HISTORY_CHARS = 8000
 
 # Bounded retries for taking a consistent (window, _disk_older_count) snapshot
 # when _save_slot_to_history runs in the flush executor thread concurrently with
-# event-loop mutations (#4). A handful suffices — the only racing mutation is the
+# event-loop mutations. A handful suffices — the only racing mutation is the
 # rare >10000-message trim; retries just re-read until the two reads agree.
 _FLUSH_SNAPSHOT_RETRIES = 4
 
@@ -48,9 +48,8 @@ _REASONING_EFFORT_FALLBACK = EFFORT_VALUES
 
 # Runtime state: validation set + ordered list (ACP order preserved).
 # Persisted JSON is untrusted input — values flow into a subprocess CLI arg
-# (the removed standalone provider's --effort flag) and the ACP /effort slash
-# command, so BSC1
-# set-membership validation applies on the read path too, not just the API.
+# and the ACP /effort slash command, so set-membership validation applies on
+# the read path too, not just the API.
 _reasoning_effort_values: set[str] = set(_REASONING_EFFORT_FALLBACK)
 _reasoning_effort_ordered: list[str] = list(_REASONING_EFFORT_FALLBACK_ORDER)
 
@@ -95,7 +94,7 @@ def update_reasoning_effort_values(acp_levels: list[str]) -> None:
         level for level in acp_levels if isinstance(level, str) and _SAFE_EFFORT_RE.match(level)
     ]
     level_set = set(safe_levels)
-    # Union-only: never drop a previously-valid level (BSC1 persistence safety).
+    # Union-only: never drop a previously-valid level (persistence safety).
     merged = _reasoning_effort_values | set(_REASONING_EFFORT_FALLBACK) | level_set | {""}
     ordered = [level for level in safe_levels if level]
     if merged != _reasoning_effort_values or ordered != _reasoning_effort_ordered:
@@ -291,7 +290,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
     slot broadcasts via ``asyncio.Queue.put_nowait`` / ``asyncio.Event.set``,
     neither of which is thread-safe.
 
-    Because we now yield, the 5s periodic flush (already running by this point)
+    Because this yields, the 5s periodic flush (already running by this point)
     can interleave — so ``restoring_open_slots`` is held for the duration to stop
     it snapshotting a half-restored slot set over open_slots.json.
     """
@@ -505,10 +504,10 @@ def _rehydrate_slot_from_history(
         # ~204 readers across the dashboard, so "every reader must remember to
         # redact" is not an invariant anyone can hold. Three separate egress paths
         # (the side-chat prompt, the orchestrator stage-result file, and the
-        # title-model prompt) were each found leaking restored content one review
-        # round at a time. Paying 0.4s here restores the single chokepoint — any
-        # present or FUTURE reader of `m["content"]` gets clean bytes — instead of
-        # relying on an enumeration that already failed three times.
+        # title-model prompt) can each leak restored content if a reader forgets.
+        # Paying 0.4s here restores the single chokepoint — any present or FUTURE
+        # reader of `m["content"]` gets clean bytes — instead of relying on an
+        # enumeration of every reader.
         # `role != "user"`, never `not in ("user", "system")`: user-authored text
         # stays raw because its author is its only reader, but `system` MUST be
         # redacted — the write path excludes it, so system bytes reach disk raw.
@@ -796,11 +795,9 @@ def _build_message_entry(m: dict) -> dict | None:
     content = m.get("content", "")
     # Gate is `!= "user"`, NOT `not in ("user", "system")`. _save_slot_to_history
     # re-serializes the WHOLE in-memory window on every flush, so this is the
-    # write-back boundary. It used to exclude `system`, which was survivable only
-    # because the load path redacted `system` on the way in and this rewrite then
-    # laundered the file. With load-time redaction removed, excluding `system`
-    # here would let unredacted bytes from a legacy or foreign writer survive the
-    # rewrite indefinitely.
+    # write-back boundary. `system` must be included: the load path does not
+    # redact `system` on the way in, so excluding it here would let unredacted
+    # bytes from a legacy or foreign writer survive the rewrite indefinitely.
     if role != "user":
         content, _ = redact_exfiltration_urls(content)
         content, _ = redact_credentials(content)
@@ -850,8 +847,7 @@ def _frozen_prefix_and_foreign_appends(
     message lines — the turns OLDER than the in-memory window. They are never
     rewritten, so older history survives a restart that only loaded a recent
     window. The bytes are cached on the slot keyed by ``(mtime, size,
-    disk_older)`` so a steady 5s flush is O(window) rather than O(file size)
-    (#5).
+    disk_older)`` so a steady 5s flush is O(window) rather than O(file size).
 
     ``foreign_lines`` are on-disk message lines in the WINDOW region (the bytes
     after the frozen prefix) that this slot's in-memory *window_entries* do NOT
@@ -861,7 +857,7 @@ def _frozen_prefix_and_foreign_appends(
     fully append + release between the snapshot and this save acquiring the lock;
     a bare ``meta + frozen + window`` replace would then silently delete that
     acknowledged message. Carrying these lines into the payload makes the save
-    non-destructive against cross-process appends (the data-loss finding). A
+    non-destructive against cross-process appends. A
     disk line is treated as ours (dropped; the window re-serializes it) when its
     ``ts`` matches a window entry (covers in-place edits, which keep ``ts`` but
     change content) OR — as a COUNT-BOUNDED tiebreak — its ``(role, content)``
@@ -873,19 +869,18 @@ def _frozen_prefix_and_foreign_appends(
     window's own persisted copy PLUS a genuinely distinct event from another
     process (e.g. a repeated identical cron / workflow result) — only the first
     is folded into the window and the second is preserved as a foreign append.
-    A plain ``(role, content)`` set collapsed those two real events into one
-    (the GPT 5.6 HIGH data-loss finding); the bounded, timestamp-first identity
+    A plain ``(role, content)`` set collapsed those two real events into one;
+    the bounded, timestamp-first identity
     fixes it. Timestamp is the closest thing to a stable per-message id today;
     the intended successor is a creation-time per-message uuid that demotes this
-    heuristic to a legacy fallback for un-stamped lines — tracked as a committed
-    follow-up in https://github.com/kirodotdev/KiroCrew/issues/381 (see also
+    heuristic to a legacy fallback for un-stamped lines (see also
     ``docs/system-specs/modules/history.md``). ``dedup_dropped`` returns any
     fresh-``ts`` content-tiebreak drops so the caller can route them through the
     archive — even the residual ambiguous case (a distinct message
     indistinguishable from an ``append_if_absent`` copy without a stable id)
     then loses no data permanently.
 
-    Fast path (#5): when BOTH the on-disk mtime AND size match the frozen-prefix
+    Fast path: when BOTH the on-disk mtime AND size match the frozen-prefix
     cache, THIS slot was the last writer and nothing has landed since, so the
     prefix is served from cache and the foreign lines preserved by the previous
     save are re-emitted verbatim from cache — the O(file) read/scan runs ONLY
@@ -1110,7 +1105,7 @@ def _save_slot_to_history(
     fork): the file is rebuilt as ``meta + frozen_prefix + serialize(snapshot)``
     and the dropped window tail is archived first via ``_archive_dropped_lines``.
 
-    Concurrency (#4): ``_flush_dirty_slots`` runs this in an executor thread
+    Concurrency: ``_flush_dirty_slots`` runs this in an executor thread
     while ``_run_chat`` mutates ``slot.messages`` on the event loop. We snapshot
     ``list(slot.messages)`` (a single GIL-atomic attribute read) and the matching
     ``slot._disk_older_count`` up front, then operate only on that snapshot, so a
@@ -1126,11 +1121,11 @@ def _save_slot_to_history(
         return
     # An explicit message snapshot always means "this is the full authoritative
     # window state" → rewrite. Edit paths (rewind/regenerate/fork) pass a snapshot.
-    # A slot left in _pending_rewrite by a failed inline rewrite (#3) also takes
+    # A slot left in _pending_rewrite by a failed inline rewrite also takes
     # the archive-safe rewrite path until it succeeds.
     if messages is not None or slot._pending_rewrite:
         rewrite = True
-    # Snapshot the window and its disk-older count CONSISTENTLY (#4). The save
+    # Snapshot the window and its disk-older count CONSISTENTLY. The save
     # may run in the flush executor thread while _flush_segment (reassigns
     # slot.messages) or append (trims the front AND bumps _disk_older_count)
     # run on the event loop. A trim is the only mutation that changes the
@@ -1158,7 +1153,7 @@ def _save_slot_to_history(
     # (update_message / _resolve_stop_event / file-change + mcp_oauth patches),
     # so a dirty slot whose length merely equals the resumed count still falls
     # through and re-serializes the window — otherwise an in-place edit after
-    # resume would never reach disk (#2). closed/force/rewrite always proceed.
+    # resume would never reach disk. closed/force/rewrite always proceed.
     if (
         slot._resumed_count > 0
         and len(window) <= slot._resumed_count
@@ -1282,7 +1277,7 @@ def _save_slot_to_history(
             # payload does not carry it. It is nonetheless the genuinely ambiguous
             # case (indistinguishable from a distinct same-content message without
             # a stable per-message id), so archive it before the atomic replace so
-            # the trade-off loses no data permanently (arbiter long-term item 2b).
+            # the trade-off loses no data permanently.
             if dedup_dropped:
                 try:
                     base = (
@@ -1308,7 +1303,7 @@ def _save_slot_to_history(
             # recoverable. The default save is a superset of what's on disk
             # (frozen prefix unchanged + same-or-grown window), so it drops
             # nothing — and we skip the O(file) archive-diff read there to keep a
-            # steady flush O(window) (#5). Both sides are passed as proper
+            # steady flush O(window). Both sides are passed as proper
             # per-line lists so the normalized-JSON diff matches the
             # frozen-prefix lines (never archived).
             if rewrite and path.exists():
@@ -1323,11 +1318,11 @@ def _save_slot_to_history(
 
             atomic_write(path, payload, fsync=True)
             # A rewrite (archive-safe) save succeeded → clear the pending-rewrite
-            # flag so later saves return to the cheap default path (#3).
+            # flag so later saves return to the cheap default path.
             if rewrite:
                 slot._pending_rewrite = False
             # Record how many window messages are now on disk so memory trimming
-            # can safely fold leading window messages into the frozen prefix (#8).
+            # can safely fold leading window messages into the frozen prefix.
             slot._disk_window_len = len(window)
             # Record the post-write mtime in the frozen-prefix cache (even when
             # there is no frozen prefix, ``disk_older == 0``). The cache doubles
@@ -1335,12 +1330,12 @@ def _save_slot_to_history(
             # it?" signal: a matching mtime on the next save proves THIS slot was
             # the last writer, so the frozen prefix is reusable and no NEW
             # cross-process append can have landed — letting the foreign-append
-            # scan take the O(window) fast path (#5) instead of re-reading the
+            # scan take the O(window) fast path instead of re-reading the
             # whole file. The foreign lines this save just preserved are cached
             # alongside so the fast path re-emits them verbatim: they now live in
             # the on-disk window region (after the frozen prefix), and because
             # ``disk_older`` is unchanged a bare frozen+window rebuild on the next
-            # save would otherwise silently delete them (data-loss finding).
+            # save would otherwise silently delete them.
             try:
                 _st = path.stat()
                 slot._frozen_prefix_cache = (
@@ -1372,9 +1367,9 @@ async def save_slot_off_loop(
 ) -> None:
     """Persist a slot from the event loop without blocking or dropping the save.
 
-    :func:`_save_slot_to_history` now holds the per-session cross-process
-    ``_locked`` across its read-modify-``atomic_write`` (see the finding it
-    fixes). That lock, invoked on the gateway event loop, makes a single
+    :func:`_save_slot_to_history` holds the per-session cross-process
+    ``_locked`` across its read-modify-``atomic_write``. That lock, invoked on
+    the gateway event loop, makes a single
     non-blocking acquire and raises :class:`~kiro_crew.history.HistoryLockTimeout`
     under any concurrent holder (e.g. a workflow/cron result appending via
     :func:`~kiro_crew.history.append_off_loop`) — so calling the save inline on

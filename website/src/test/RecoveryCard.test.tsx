@@ -102,8 +102,8 @@ describe('parseRecoveryMessage', () => {
 
   it('labels a transient-backend interruption and an empty generation', () => {
     // Verbatim bodies from chat_utils._POSTTOKEN_RECOVER_MSG /
-    // _EMPTY_AUTO_CONTINUE_MSG. Before this coverage both rendered as a
-    // full-width bubble of machine prose — the regression under test.
+    // _EMPTY_AUTO_CONTINUE_MSG. Without the recovery card both render as a
+    // full-width bubble of machine prose.
     const interrupted = parseRecoveryMessage(
       `${POSTTOKEN}\nThe previous response was interrupted partway through by a transient backend error.`,
     )
@@ -229,7 +229,7 @@ describe('ChatPage – recovery card wiring', () => {
   it('checks for a recovery row BEFORE the generic inject bubble renders', () => {
     // The generic `isInject` branch paints any injected text as a full-width
     // warning bubble. If the recovery check lands after it, the card is dead
-    // code and the raw prompt reappears — the exact regression this fixes.
+    // code and the raw prompt reappears.
     const card = src.indexOf('parseRecoveryMessage(m.content)')
     const generic = src.indexOf("const isInject = m.role === 'inject'")
     expect(card).toBeGreaterThanOrEqual(0)

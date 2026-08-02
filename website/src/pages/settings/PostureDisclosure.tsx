@@ -8,9 +8,8 @@ import type { PostureControl, PostureItem } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 /* ── Expandable security-posture row ──
  *
- * Every posture count used to be a dead pill ("5 output paths") with no way to
- * see what it covered. These rows make the count a disclosure: click it and the
- * concrete list expands inline, filterable once it gets long.
+ * Each posture count is a disclosure rather than a dead pill: click it and the
+ * concrete list it covers expands inline, filterable once it gets long.
  *
  * Counts come from the server as `items.length`, so the pill and the list can
  * never disagree. A `count` of null means the control was temporarily
@@ -36,10 +35,9 @@ const INITIAL_VISIBLE = 25
  *  rule's description, "AWS access keys", "Slack handler"). Mono + `break-all`
  *  is right for the former and wrong for the latter (it hyphenates mid-word).
  *
- *  Requires a code SHAPE, not merely brevity: an earlier length-only rule
- *  ("short ⇒ code") put ~70 of 359 real items in the wrong font, because most
- *  short labels are short *English phrases*, not identifiers. So: no spaces at
- *  all, or a path/glob/shell/extension marker. */
+ *  Requires a code SHAPE, not merely brevity: a length-only rule
+ *  ("short ⇒ code") mis-fonts short *English phrases*, which are not
+ *  identifiers. So: no spaces at all, or a path/glob/shell/extension marker. */
 function isCodeLabel(label: string): boolean {
   return !label.includes(' ') || /[~/|*$\\]|^-|\.\w+$/.test(label)
 }
@@ -100,12 +98,12 @@ export function PostureDisclosureRow({
     )
   }, [control.items, filter])
 
-  // "Show all" is scoped to the filter it was granted under. Storing a bare
-  // boolean let an expansion of a NARROW filtered subset survive clearing that
-  // filter, dumping every row and defeating the INITIAL_VISIBLE DOM cap; keying
-  // it to the query instead resets the cap whenever the set changes, while still
-  // letting the user reach the tail of a filtered list (which a plain
-  // `expanded && !filter` guard would make unreachable).
+  // "Show all" is scoped to the filter it was granted under. Keying it to the
+  // query (not a bare boolean) resets the INITIAL_VISIBLE DOM cap whenever the
+  // set changes, so an expansion of a NARROW filtered subset cannot survive
+  // clearing that filter and dump every row — while still letting the user
+  // reach the tail of a filtered list (which a plain `expanded && !filter`
+  // guard would make unreachable).
   const query = filter.trim()
   const showAll = expandedFor !== null && expandedFor === query
   const visible = showAll ? filtered : filtered.slice(0, INITIAL_VISIBLE)

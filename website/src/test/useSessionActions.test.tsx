@@ -2,13 +2,13 @@
  * useSessionActions — the single hook backing the surface-agnostic session
  * actions (duplicate / mark-read / pin / copy-link / move / close) shared by all
  * four session-menu surfaces AND the sidebar row's non-menu Duplicate/Close
- * buttons. It is the highest-fan-in unit added by the menu-unification CR, so it
- * gets its own test (its siblings collapseGroups / orderFoldersWithPaths /
- * useMoveSlotToFolder already have theirs).
+ * buttons. It is the highest-fan-in unit, so it gets its own test (its siblings
+ * collapseGroups / orderFoldersWithPaths / useMoveSlotToFolder already have
+ * theirs).
  *
- * Priority: the two behaviors whose STATE SOURCE changed in the consolidation —
- *   - toggleRead now reads store.getState().dashboard.unreadSlots (was a prop Set)
- *   - pin rollback now reads store.getState().dashboard.slots[].pinned (was a Set)
+ * Priority: the two behaviors whose state source matters —
+ *   - toggleRead reads store.getState().dashboard.unreadSlots
+ *   - pin rollback reads store.getState().dashboard.slots[].pinned
  *
  * Pattern mirrors ChatSidebar.moveToFolder.test.tsx: renderHook wrapped in a
  * Provider over the app's singleton store (so the hook's store.getState() reads

@@ -3,7 +3,7 @@
  * instances reachable over SSH tunnels (add / edit / connect / disconnect /
  * diagnose). This panel is the *control plane* only — it does not
  * embed remote dashboards. Once an instance is connected here, switch into it
- * from the tab strip in the top header (see InstanceTabBar / Stage 3).
+ * from the tab strip in the top header (see InstanceTabBar).
  *
  * Self-contained on purpose: `connect` is idempotent server-side (re-connecting
  * an already-connected instance returns its live status + token), so the header

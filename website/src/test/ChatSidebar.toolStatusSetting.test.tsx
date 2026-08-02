@@ -2,8 +2,7 @@
  * Chat sidebar row status honors the `simplifiedToolNames` preference:
  * the running-session subtitle is the same tool label the inline pill shows
  * in the transcript — the agent's purpose when simplified names are on, the
- * raw tool title when they're off. Before this, the row always showed the
- * purpose, so turning the setting off left the two surfaces disagreeing.
+ * raw tool title when they're off, so the two surfaces agree.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render } from '@testing-library/react'

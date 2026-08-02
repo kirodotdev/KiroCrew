@@ -6,9 +6,8 @@
 //
 // - Property 6: Bidirectional Window Expansion
 //
-// (The follow-output decision — formerly a standalone shouldPinToBottom gate —
-// now lives in FollowController.evaluateAutoPin and is covered against live
-// scroll geometry in FollowController.test.ts.)
+// (The follow-output decision lives in FollowController.evaluateAutoPin and is
+// covered against live scroll geometry in FollowController.test.ts.)
 
 import { describe, it, expect } from 'vitest'
 import * as fc from 'fast-check'
@@ -89,10 +88,9 @@ describe('Property 6: Bidirectional Window Expansion', () => {
   })
 })
 
-// Feature: chat-virtualizer, Property 7 (Follow Output Correctness) used to
-// test a standalone shouldPinToBottom gate here. That logic now lives in
-// FollowController.evaluateAutoPin and is covered against live scroll geometry
-// in FollowController.test.ts, so the duplicate gate + its tests were removed.
+// Feature: chat-virtualizer, Property 7 (Follow Output Correctness): the
+// follow-output decision lives in FollowController.evaluateAutoPin and is
+// covered against live scroll geometry in FollowController.test.ts.
 
 describe('expandWindow targeted edges', () => {
   it('expandWindowUp with start=1, overscan=10 clamps to 0', () => {

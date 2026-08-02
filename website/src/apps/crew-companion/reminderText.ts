@@ -20,9 +20,7 @@
  *    `İlaç at 3pm` saved as `İlaç a`.
  *
  * Both bugs corrupt text the user typed and already saved. This module is the single
- * place that gets it right; the parsers must not hand-roll either operation. Four
- * separate defects of this exact shape were fixed one at a time before it was made
- * structural — fixing the instance left sibling code paths still wrong each time.
+ * place that gets it right; the parsers must not hand-roll either operation.
  */
 
 /**

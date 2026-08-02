@@ -1,5 +1,5 @@
 /**
- * Tests for tips API calls using jNullable (Finding 2: auth recovery + ApiError).
+ * Tests for tips API calls using jNullable.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'

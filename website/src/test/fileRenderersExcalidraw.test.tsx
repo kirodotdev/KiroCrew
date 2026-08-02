@@ -16,8 +16,8 @@ const SCENE = JSON.stringify({
 
 describe('detectFileType for Excalidraw scenes', () => {
   it('routes .excalidraw to the diagram viewer', () => {
-    // Regression: the extension used to fall through to `code`, so opening a
-    // diagram showed a wall of raw element JSON in Monaco.
+    // A .excalidraw file must route to the diagram viewer, not `code` — routing
+    // it as code would show a wall of raw element JSON in Monaco.
     expect(detectFileType('/tmp/architecture.excalidraw')).toBe('excalidraw')
     expect(detectFileType('/tmp/UPPER.EXCALIDRAW')).toBe('excalidraw')
   })

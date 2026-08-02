@@ -4,11 +4,11 @@
  * refresh). Thin instance of `createSlotDraftStore`.
  *
  * WHY THIS EXISTS: the textarea text (incl. the paste token string) is persisted
- * per-slot by `chatDrafts`. The `PasteBlock[]` backing each token used to be
- * plain React state, cleared on slot switch, so switching away and back left the
- * token text without its block: the chip went dead and on send the literal
- * `[ Paste #N · M lines ]` string was sent instead of the content. Persisting
- * the blocks alongside the text draft keeps the two in sync.
+ * per-slot by `chatDrafts`. Persisting each token's backing `PasteBlock[]`
+ * alongside that text draft keeps the two in sync; without it, switching slots
+ * away and back would leave the token text without its block — the chip goes
+ * dead and on send the literal `[ Paste #N · M lines ]` string is sent instead
+ * of the content.
  *
  * Storage: localStorage with the SAME 30-day TTL as `chatDrafts` (NOT
  * sessionStorage like `chatFileDrafts`). The backing text draft already survives
@@ -22,11 +22,10 @@
  * inventing its own; revisit retention for ALL chat-content stores together if
  * ever (note `mc-paste-store-v1`, for already-SENT content, still has no TTL).
  *
- * BYTE BUDGET: the old per-slot 512 KB hard cap is gone. The factory's
- * store-level byte-aware LRU evicts OLDEST slots until the blob fits, never the
- * newest — so a large recent paste survives whether collapsed (here) or expanded
- * (into the `chatDrafts` text draft). That symmetry is the fix for the
- * collapsed-vs-expanded asymmetry surfaced in the review.
+ * BYTE BUDGET: the factory's store-level byte-aware LRU evicts OLDEST slots
+ * until the blob fits, never the newest — so a large recent paste survives
+ * whether collapsed (here) or expanded (into the `chatDrafts` text draft). That
+ * symmetry keeps collapsed and expanded pastes consistent.
  */
 import type { PasteBlock } from './pasteTokens'
 import { createSlotDraftStore } from './slotDraftStore'

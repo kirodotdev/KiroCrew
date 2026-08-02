@@ -3,17 +3,13 @@ import { render, screen } from '@testing-library/react'
 import VoiceDisabledModal from '../components/VoiceDisabledModal'
 
 /**
- * Regression cover for the "Transcription request failed." dead end.
+ * Covers the two voice-unavailable causes the modal must distinguish.
  *
  * With stt.enabled=true but the provider binary absent, the backend answers
  * GET /api/config/stt with available:false and POST /api/stt/transcribe with
- * 503 {"error":"STT not available"}. Nothing consulted `available`, so the mic
- * recorded a full take and only the upload failed — surfacing a transport-shaped
- * message for a configuration problem.
- *
- * The gate now fires before recording (ChatPage's toggleVoice) and this modal
- * must explain the RIGHT thing: an "enable it" instruction is wrong for a user
- * who already has it enabled.
+ * 503 {"error":"STT not available"}. The gate fires before recording
+ * (ChatPage's toggleVoice), so this modal must explain the RIGHT thing: an
+ * "enable it" instruction is wrong for a user who already has it enabled.
  */
 describe('VoiceDisabledModal reason variants', () => {
   const noop = () => {}

@@ -699,9 +699,9 @@ export interface Artifact {
   slug: string
   name: string
   kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp'
-  /** Provenance/origin bucket. Historically chat|cron|subagent|manual|import;
-   * now also carries the actual session origin (dashboard|slack|cli|task-runner|
-   * unknown), so treated as an open string. */
+  /** Provenance/origin bucket. Carries either a legacy bucket
+   * (chat|cron|subagent|manual|import) or the actual session origin
+   * (dashboard|slack|cli|task-runner|unknown), so treated as an open string. */
   source: string
   /** Originating chat session key (for the Source column's title resolution). */
   session_key?: string
@@ -718,8 +718,7 @@ export interface Artifact {
   source_path?: string
   /** True when the live state differs from the latest numbered snapshot.
    * Computed at GET time — accounts for both silent saves and external
-   * file edits to source_path. Drives the "Snapshot Live" button
-   * (round 6). */
+   * file edits to source_path. Drives the "Snapshot Live" button. */
   live_dirty?: boolean
   /** Publication state. Absent/null until the artifact has been
    * published to a sharing provider. */

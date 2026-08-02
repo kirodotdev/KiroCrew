@@ -1,8 +1,7 @@
 /**
  * AppHost — dynamically loads and renders a KiroCrew app via ESM import.
  *
- * Replaces the old AppLoader (iframe) and AppPage (backend status) with a
- * single component that:
+ * A single component that:
  * 1. Reads the app manifest to get permissions
  * 2. Creates a permission-scoped API context via AppApiProvider
  * 3. Dynamically imports the app's ESM bundle

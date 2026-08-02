@@ -838,7 +838,7 @@ def _refusal(
 ) -> str:
     """The single exit for a refusal whose text can quote the operator's desktop.
 
-    Also the single place a PRE-GATE refusal is audited (reviewer finding). The gate
+    Also the single place a PRE-GATE refusal is audited. The gate
     audits its own denials and ``_audit_allowed`` records permitted calls, which left
     a hole between them: a schema ``ValidationError``, an unknown tool, a bad
     ``click_method``, a stale index, an unparseable key or the paste refusal all
@@ -1154,8 +1154,8 @@ def _static_refusal(detail: str, *, session_key: str, agent: str, tool_name: str
     ceiling, a malformed pointer request, a governance denial — so shaping them would
     be pointless work on a string that contains nothing to shape.
 
-    What they DID share with ``_refusal`` and were missing is the audit (reviewer
-    finding, second instance): six sites returned ``f"{ERROR_PREFIX}{…}"`` inline, so
+    What they DID share with ``_refusal`` and were missing is the audit: six sites
+    returned ``f"{ERROR_PREFIX}{…}"`` inline, so
     a malformed CLI click produced no SEL record at all. Routing them through one
     helper is what makes that structural rather than a rule to remember — a future
     seventh refusal cannot be added without either using this or being obviously

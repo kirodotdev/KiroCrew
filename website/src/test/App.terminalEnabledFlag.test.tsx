@@ -10,17 +10,11 @@
  *   const terminalEnabled = terminalConfig?.enabled !== false
  *   useEffect(() => { setTerminalEnabledFlag(terminalEnabled) }, [terminalEnabled])
  *
- * This wiring has been silently dropped once already: the original feature
- * shipped it correctly, but ("workspace sync")
- * rewrote App.tsx and accidentally reverted both the import and the effect --
- * the same clobber that took out the nav/embed features later restored in
- * d3daac1 / dfbc99c. The terminal line was never restored, so the button
- * vanished from every build for ~5 weeks until re-added it.
- *
- * Existing MonacoCodeBlock / terminalRegistry tests exercise the gate GIVEN
- * the flag -- none assert that App actually sets it, which is exactly why the
- * regression slipped through green tests. These tests pin the App-to-registry
- * contract directly so a future App.tsx refactor can't silently drop it again:
+ * This wiring is easy to drop silently in an App.tsx rewrite: existing
+ * MonacoCodeBlock / terminalRegistry tests exercise the gate GIVEN the flag --
+ * none assert that App actually sets it, so such a regression slips through
+ * green tests. These tests pin the App-to-registry contract directly so a
+ * future App.tsx refactor can't silently drop it:
  *   1. server reports enabled -> isTerminalEnabled() becomes true
  *   2. server reports enabled:false (explicit opt-out) -> App drives the flag
  *      to false, even if a prior enabled session had left it true

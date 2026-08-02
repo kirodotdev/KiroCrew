@@ -20,8 +20,7 @@ function logError(msg: string, err: unknown): void {
 }
 
 /**
- * Notification detail view. Extracted verbatim from NotificationsPage's
- * DetailPanel; dispatch/navigate now come from hooks (instead of props) so it
+ * Notification detail view. Takes dispatch/navigate from hooks (not props) so it
  * renders identically whether hosted in the full page (right column) or the
  * topbar bell popover (slide-out).
  */

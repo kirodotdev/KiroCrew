@@ -127,7 +127,7 @@ export function createKnowledgeProvider(deps: KnowledgeProviderDeps): ResourcePr
           icon: knowledgeIcon(),
           score: match ? match.score : 0,
           indices: match ? match.indices : [],
-          // Declarative Enter contract (§2 / task 26). The central
+          // Declarative Enter contract (§2). The central
           // `dispatchEnter` in CommandPalette routes on this: primary Enter
           // opens / navigates to the entry; ⌘Enter attaches it as context to
           // the active chat. The `entryId` is the knowledge entry id from this
@@ -141,7 +141,7 @@ export function createKnowledgeProvider(deps: KnowledgeProviderDeps): ResourcePr
       })
 
       // Title matches first, then deterministic name order. Skip the re-rank on
-      // an empty query so the backend's ordering is preserved (a review finding).
+      // an empty query so the backend's ordering is preserved.
       if (q.length > 0) {
         results.sort(compareResults)
       }

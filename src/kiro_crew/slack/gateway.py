@@ -2077,7 +2077,7 @@ class GatewayOrchestrator:
                             result_text = "_No response._"
                         logger.info("Cron '%s': agent '%s' completed", job.name, agent)
 
-                        # ── Per-turn usage row (issue #647): background spend. ──
+                        # ── Per-turn usage row: background spend. ──
                         try:
 
                             _used, _window = read_context_tokens(client)
@@ -2170,7 +2170,7 @@ class GatewayOrchestrator:
 
                 job.last_result = result_text
 
-                # ── Per-turn usage row (issue #647): attribute background spend. ──
+                # ── Per-turn usage row: attribute background spend. ──
                 # Best-effort; must never fail the cron turn.
                 try:
 
@@ -2665,7 +2665,7 @@ class GatewayOrchestrator:
                 if not result_text:
                     result_text = "_No response._"
 
-                # ── Per-turn usage row (issue #647): attribute heartbeat spend. ──
+                # ── Per-turn usage row: attribute heartbeat spend. ──
                 await _persist_turn_row(
                     client,
                     session_key,
@@ -2840,7 +2840,7 @@ class GatewayOrchestrator:
                 timeout=_NUDGE_TURN_TIMEOUT,
             )
 
-            # ── Per-turn usage row (issue #647): attribute monitor spend. ──
+            # ── Per-turn usage row: attribute monitor spend. ──
             await _persist_turn_row(
                 client,
                 key,

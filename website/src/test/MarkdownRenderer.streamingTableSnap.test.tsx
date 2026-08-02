@@ -3,7 +3,7 @@ import { render } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 
 /**
- * REGRESSION GUARD (was a failing repro) — gap #2: TABLES.
+ * REGRESSION GUARD — gap #2: TABLES.
  *
  * Tables are NOT a first-class block in `useBlockAssembler` (only code / diff /
  * mermaid / widget are); they render inline inside the markdown block, so they
@@ -16,16 +16,16 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
  *      <table> (padding, borders, overflow-x wrapper, different margins)
  *
  * Step 2 is a structural reflow of already-visible content — a snap/flash that
- * neither the `.ft-word` opacity fix (#661/#697, text-edge only) nor #824
- * (virtualizer spacer only) addresses. The desired behavior while streaming is
+ * neither the `.ft-word` opacity fix (text-edge only) nor the virtualizer spacer
+ * smoothing addresses. The desired behavior while streaming is
  * that an incomplete trailing table region is NOT shown as raw pipe-delimited
  * paragraph text that will later restructure — either withhold it until the
  * delimiter arrives (mirroring how incomplete fences are held) or render it as a
  * provisional table. Both fixes share one observable property: the literal
  * "| Col A | Col B |" pipe row is never painted as visible paragraph text.
  *
- * The GAP test asserts that property and FAILS on current `main`. The PREMISE
- * test documents the current paragraph→table snap and stays true after the fix.
+ * The GAP test asserts that property. The PREMISE tests document the
+ * paragraph→table snap that the desired behavior hides.
  */
 
 const STREAM = { streaming: true, glow: true, smooth: true } as const
@@ -37,7 +37,7 @@ function visibleText(container: HTMLElement): string {
 
 describe('streaming table structural-snap regression (gap #2)', () => {
   it('PREMISE: without a delimiter row there is no <table> yet (table needs header + |---|)', () => {
-    // Survives the fix — establishes that a lone header line is genuinely
+    // Establishes that a lone header line is genuinely
     // pre-table, so the GAP below is about HOW that pre-table state is shown.
     const { container } = render(
       <MarkdownRenderer content={'| Col A | Col B |'} {...STREAM} />,
@@ -46,7 +46,7 @@ describe('streaming table structural-snap regression (gap #2)', () => {
   })
 
   it('PREMISE: once the delimiter row arrives the same content becomes a <table>', () => {
-    // Survives the fix — documents that a real structural transition happens
+    // Documents that a real structural transition happens
     // (paragraph text → table), which is exactly the reflow we want to hide.
     const { container } = render(
       <MarkdownRenderer content={'| Col A | Col B |\n| --- | --- |\n| 1 | 2 |'} {...STREAM} />,

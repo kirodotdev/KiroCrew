@@ -148,12 +148,11 @@ describe('ChatSidebar – offline guards', () => {
   })
 
   it('clicking the ACTIVE session row when offline does NOT dispatch switchSlot', () => {
-    // Re-clicking the active row while offline used to dispatch switchSlot,
-    // fetchSlotDetail would fail with the gateway down, switchSlot.rejected
-    // cleared messages to [], and the ChatPage WelcomeView fallback kicked
-    // in (activeSlot truthy + messages empty → "What can I do for you?").
-    // Guard against regressions to "if (!connected && !isActive) return" by
-    // covering the active row explicitly.
+    // Without the guard, re-clicking the active row while offline dispatches
+    // switchSlot, fetchSlotDetail fails with the gateway down, switchSlot.rejected
+    // clears messages to [], and the ChatPage WelcomeView fallback kicks in
+    // (activeSlot truthy + messages empty → "What can I do for you?"). The
+    // "if (!connected && !isActive) return" guard covers the active row explicitly.
     renderSidebar(false)
     const wrapper = screen.getByText('Session 1').closest('[data-slot-key]') as HTMLElement | null
     expect(wrapper).not.toBeNull()

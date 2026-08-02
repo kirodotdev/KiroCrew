@@ -96,8 +96,8 @@ describe('FollowUpCard', () => {
   })
 
   it('ignores a worktree failure that lands after the items changed', async () => {
-    // Round 9: the rejection would otherwise write its error against the NEW
-    // list's index, misattributing it to a different suggestion.
+    // The rejection would otherwise write its error against the NEW list's
+    // index, misattributing it to a different suggestion.
     let reject: ((e: Error) => void) | undefined
     const onStartInWorktree = vi.fn(() => new Promise<void>((_res, rej) => { reject = rej }))
     const a = item({ title: 'A' })
@@ -202,7 +202,7 @@ describe('followup card reducers', () => {
   })
 
   it('a stale dismiss does not delete an index from a newer card', () => {
-    // Round 9: a replacement card can land between render and Skip click; an
+    // A replacement card can land between render and Skip click; an
     // unqualified dismiss would drop that index from a card never seen.
     const withCard = reducer(initial, setFollowupCard({ slot: 'chat-1', items: [item({ title: 'A' }), item({ title: 'B' })], ts: 10 }))
     const replaced = reducer(withCard, setFollowupCard({ slot: 'chat-1', items: [item({ title: 'C' })], ts: 20 }))

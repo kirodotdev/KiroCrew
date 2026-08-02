@@ -7,8 +7,7 @@ import { useAppDispatch, useAppSelector } from '../../store'
 import { createSlot, setPendingInput } from '../../store/chatSlice'
 
 /**
- * Shared §2 Enter-matrix engine for the Search Everywhere command palette
- * (step 17).
+ * Shared §2 Enter-matrix engine for the Search Everywhere command palette.
  *
  * The palette has two classes of result. **Invokable** results (Skills,
  * Prompts) drop a `$skill` / `@prompt` *token* into a chat. **Navigable**

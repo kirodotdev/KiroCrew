@@ -273,9 +273,7 @@ def _ancestor_pids() -> list[int]:
     Uses :func:`kiro_crew.mcp_caller._parent_pid`, which delegates to
     ``platform_compat.get_ppid``: ``/proc`` on Linux, libproc on macOS,
     ``CreateToolhelp32Snapshot`` on Windows -- none of which spawns a
-    subprocess. (This docstring previously claimed the same, but the
-    implementation it named forked ``ps`` per ancestor on every non-Linux
-    platform; the claim is true now that it delegates.) Stops at PID 1, a
+    subprocess. Stops at PID 1, a
     lookup failure, or the depth cap. Always contains at least
     ``os.getppid()`` when resolvable.
     """
@@ -781,8 +779,8 @@ _RECALLER_POLL_INTERVAL_SECS = 1.5
 # is now the primary identity-repair path; this poll is the FALLBACK for
 # claim-frame loss / gatewayd restarts, so it must never strand a connection
 # by expiring — a warm-pool runtime is routinely claimed far later than any
-# fixed budget (the old 180s cap stranded exactly that case; see the
-# claim-push Mesh ticket). Instead of a deadline, the interval decays from
+# fixed budget, so a fixed deadline would strand exactly that case.
+# Instead of a deadline, the interval decays from
 # 1.5s to this cap, so a long-idle pool stub costs one identity probe every
 # 30s instead of leaking an aggressive poll forever.
 _RECALLER_POLL_MAX_INTERVAL_SECS = 30.0

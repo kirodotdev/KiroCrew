@@ -1,4 +1,4 @@
-"""Per-channel notification settings (RFC local notification bus, Phase 3).
+"""Per-channel notification settings.
 
 User preferences for each notification channel: mute and priority override.
 Stored in ``~/.kiro/crew/notification_settings.json`` as::
@@ -15,8 +15,8 @@ Semantics (applied at the delivery sink, keeping the bus pure):
 - **priority**: user override wins over the producer-requested priority and
   the channel default.
 - ``system.approval`` is protected: it cannot be muted and its priority
-  cannot be lowered (RFC exit criteria: approval still interrupts while
-  heartbeat can be silenced everywhere).
+  cannot be lowered (approval still interrupts while heartbeat can be
+  silenced everywhere).
 """
 
 from __future__ import annotations

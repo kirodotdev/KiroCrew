@@ -41,8 +41,8 @@ export default function CrewCompanionPage() {
   /** Transient message for a failed write, announced politely to assistive tech. */
   const [notice, setNotice] = useState<string | null>(null)
   /**
-   * Clear the failure notice on the next success. Without this the message was
-   * permanent: a user who retried and succeeded still read that it had failed.
+   * Clear the failure notice on the next success — otherwise a user who retries
+   * and succeeds still reads that it had failed.
    */
   const clearNotice = () => setNotice(null)
 
@@ -99,8 +99,7 @@ export default function CrewCompanionPage() {
 
   /**
    * Resolves TRUE only when the reminder actually reached the desktop app, so the
-   * add box knows whether it may clear what the user typed. Returning void here
-   * meant a failed write still emptied the field and the text was gone.
+   * add box knows whether it may clear what the user typed.
    */
   const addReminder = useCallback(async (
     text: string, fireAt: string, everyMinutes?: number,

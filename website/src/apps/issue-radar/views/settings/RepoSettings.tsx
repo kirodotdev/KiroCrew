@@ -92,9 +92,10 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
 
   /** Saves are SERIALIZED and the newest draft always wins.
    *
-   * Every toggle autosaves, so two quick clicks used to send two writes built on
-   * the same revision: the first succeeded, the second 409'd, and clearing the
-   * draft threw away the newer edit — the user's last click silently undone.
+   * Every toggle autosaves, so two quick clicks could otherwise send two writes
+   * built on the same revision: the first succeeds, the second 409s, and clearing
+   * the draft would throw away the newer edit — silently undoing the user's last
+   * click.
    *
    * So: one save at a time through `saveChain`, each one sending the LATEST draft
    * with the LATEST known revision at send time. A 409 can then only come from
@@ -112,8 +113,8 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
   const serverSettings = useRef<RepoSettings | null>(null)
   /** Monotonic edit counter. A save carries the sequence it was queued at, so a
    * response that lands while a NEWER edit is already waiting does not overwrite
-   * it — adopting unconditionally made edit A's success replace the pending draft
-   * B, so B then re-sent A and the user's latest change vanished. */
+   * it — adopting unconditionally would let edit A's success replace pending draft
+   * B, so B would re-send A and the user's latest change would vanish. */
   const editSeq = useRef(0)
 
   const applySaved = ({ res, seq }: { res: { settings: RepoSettings }; seq: number }) => {
@@ -123,10 +124,10 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
     serverSettings.current = res.settings
     qc.setQueryData(['issue-radar', 'settings', scopeKey], res)
     // Retire each dirty key the server now AGREES with, rather than clearing the
-    // whole set on the last edit. Blanket-clearing was wrong in one direction and
-    // never clearing in the other: if save A landed while B was queued, B failed,
-    // another tab then changed A's field and C conflicted, A stayed dirty and the
-    // retry restored this tab's stale value over theirs.
+    // whole set on the last edit. Blanket-clearing loses edits in one direction and
+    // never clearing in the other: if save A lands while B is queued, B fails,
+    // another tab changes A's field and C conflicts, A stays dirty and the retry
+    // would restore this tab's stale value over theirs.
     const current = latestDraft.current ?? res.settings
     for (const k of [...dirtyKeys.current]) {
       if (JSON.stringify(current[k]) === JSON.stringify(res.settings[k])) {
@@ -280,8 +281,8 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
     },
   })
 
-  // ── AI label recommendations moved to the Tagging dashboard ──
-  // The taxonomy proposals ("what labels is this repo missing?") now live next to
+  // ── AI label recommendations live on the Tagging dashboard ──
+  // The taxonomy proposals ("what labels is this repo missing?") sit next to
   // the untagged issues they get applied to; this page keeps only the LOCAL
   // definitions above. See views/tagging/LabelsPanel.tsx.
 
@@ -410,7 +411,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <button
           onClick={() => {
             // Switch first: the settings page can be open for a repo that is NOT
-            // the active one, and navigating without this showed the Tagging
+            // the active one, and navigating without this would show the Tagging
             // dashboard for a different repository than the page you came from.
             // Only when it actually differs, though — switchRepo resets the saved
             // issue and PR filters, which would be a surprising side effect of

@@ -66,10 +66,9 @@ def _acp_server_entry(
     prepended: the overlay entry runs the interpreter, so ``args`` opens with
     ``-m kiro_crew.mcp_gateway.stub`` and anything inserted ahead of that would
     be eaten by the interpreter instead of the stub. argparse does not care
-    about order. This is the channel the stub used to recover by walking its
-    ancestors' ``/proc/<pid>/environ`` from a bash launcher, which is why that
-    launcher no longer exists: the value is known here, at the one place that
-    runs per session.
+    about order. The channel value is known here, at the one place that runs
+    per session, so the stub does not need to recover it by walking its
+    ancestors' ``/proc/<pid>/environ`` from a bash launcher.
     """
     command = entry.get("command")
     if not isinstance(command, str) or not command:

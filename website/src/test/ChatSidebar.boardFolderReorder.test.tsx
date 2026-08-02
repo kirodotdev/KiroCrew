@@ -1,17 +1,14 @@
 /**
- * Board view (tag-columns) had NO folder drag-to-reorder: renderColumnFolder
- * rendered each folder without a useSortable wrapper or a DndContext, so a user
- * in board view could not grab a folder to reorder it (it only worked after
- * switching back to list view). This wires per-column DndContext +
- * SortableContext around the root folders and makes the folder header the drag
- * handle, routing reorders through the same global reorderFolders() path as
- * list view.
+ * Board view (tag-columns) folder drag-to-reorder: renderColumnFolder wraps
+ * each root folder in a per-column DndContext + SortableContext and makes the
+ * folder header the drag handle, routing reorders through the same global
+ * reorderFolders() path as list view.
  *
  * dnd-kit's pointer-drag lifecycle can't be faithfully simulated in jsdom (it
  * needs real PointerEvents + layout measurement), so this test asserts the
- * load-bearing WIRING that was missing: every root folder is wrapped in the
- * sortable (data-col-folder-sortable) and the header carries the grab-cursor
- * drag-handle affordance. That is exactly what did not exist before the fix.
+ * load-bearing WIRING: every root folder is wrapped in the sortable
+ * (data-col-folder-sortable) and the header carries the grab-cursor
+ * drag-handle affordance.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, within } from '@testing-library/react'

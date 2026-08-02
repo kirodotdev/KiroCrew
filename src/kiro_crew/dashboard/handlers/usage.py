@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ``~/.kirocrew`` -> ``~/.kiro/crew`` migration (deliberately lazy), and test
 # isolation -- the autouse ``_isolate_kirocrew_home`` fixture runs *after*
 # collection has already imported this module, so it silently cannot reach a
-# frozen constant. See issue #874.
+# frozen constant.
 #
 # The module-level name is kept as an explicit ``None`` override hook so callers
 # that already patch it (tests, tooling) keep working; ``None`` means "resolve
@@ -52,9 +52,8 @@ _CACHE_LOCK = asyncio.Lock()
 # claude_code/bedrock branch (api_kiro_usage has its own _CACHE of the full
 # response). _parse_sessions does a full iterdir + per-file stat + line-by-line
 # json.loads of every in-window shard, so it is both TTL-cached (120s) and run
-# off the event loop. Previously the cc/bedrock branch parsed inline on the loop
-# on every poll. _SESSIONS_CACHE_LOCK collapses concurrent cold-cache requests
-# into a single parse (mirrors api_kiro_usage's _CACHE_LOCK).
+# off the event loop. _SESSIONS_CACHE_LOCK collapses concurrent cold-cache
+# requests into a single parse (mirrors api_kiro_usage's _CACHE_LOCK).
 # None = unpopulated. A sentinel (not truthiness) so a valid-but-empty parse
 # result ({}) is still cached and served from the fast path, rather than
 # re-parsing on every call.
@@ -130,9 +129,8 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
     """Aggregate per-turn context-window occupancy from the token row store.
 
     ``persist_token_record`` writes ``context_used`` / ``context_window`` on
-    every turn across all nine dispatch surfaces, but nothing read them — the
-    fields were write-only, so the session-death early warning they exist for
-    was invisible. This is their read side.
+    every turn across all nine dispatch surfaces; this is their read side,
+    surfacing the session-death early warning those fields exist for.
 
     Occupancy is a per-turn ratio, so it is aggregated here rather than in the
     OTEL pipeline: the useful question is "which SESSION is close to its
@@ -431,9 +429,9 @@ def _build_token_record(
     is the FALLBACK for ``duration_ms``: the provider-reported value wins when
     non-zero, otherwise the local measurement is recorded. Both are needed
     because the acp provider always reports ``TurnUsage.duration_ms == 0``
-    (nothing assigns it — only claude_code filled it in, and that provider is
-    gone), so a provider-only read wrote a literal 0 into every real row and
-    left the row store unable to answer "how long did this turn take".
+    (nothing assigns it), so a provider-only read would record a literal 0 for
+    every real turn and leave the row store unable to answer "how long did this
+    turn take".
 
     This mirrors the precedence the OTEL emit path already uses
     (``chat_runner._attach_turn_stats``: ``value = duration_ms or elapsed_ms``),
@@ -462,9 +460,9 @@ def _build_token_record(
         "credits": credits,
         "turns": getattr(u, "num_turns", 0),
         "duration_ms": getattr(u, "duration_ms", 0) or _coerce_int(elapsed_ms),
-        # Additive per-turn fields (issue #647): context occupancy + dispatch
-        # origin. Old shards lack these keys; readers must tolerate their
-        # absence. context_* are int-coerced so a bad value can't break json.dumps.
+        # Additive per-turn fields: context occupancy + dispatch origin. Old
+        # shards lack these keys; readers must tolerate their absence.
+        # context_* are int-coerced so a bad value can't break json.dumps.
         "surface": surface or "",
         "agent": agent or "",
         "context_used": _coerce_int(context_used),
@@ -555,7 +553,7 @@ async def persist_token_record_async(
     """Async variant: builds the record on-loop, offloads the file write.
 
     Called per agent turn (EVENT_COMPLETE) from the chat runner, which runs on
-    the aiohttp event loop — the synchronous open/append previously blocked all
+    the aiohttp event loop, where a synchronous open/append would block all
     co-resident coroutines for the IO window. These are best-effort analytics
     (no fsync, exceptions swallowed), so off-loop write loses no durability.
     See :func:`persist_token_record` for the ``surface`` / ``agent`` /

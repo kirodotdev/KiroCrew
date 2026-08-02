@@ -17,7 +17,7 @@ describe('MarkdownRenderer mermaid config', () => {
     // temp <div id="dmermaid-*"> into document.body that render() never cleans up
     // (cleanup only runs on success), accumulating orphaned error graphics.
     //
-    // Awaited because mermaid is now loaded by `import()` inside MermaidBlock
+    // Awaited because mermaid is loaded by `import()` inside MermaidBlock
     // (it is ~90-130 KB gzip and must stay off the critical path), so
     // initialize() lands a microtask after render rather than during it.
     render(<MarkdownRenderer content={'```mermaid\ngraph TD;A-->B\n```'} />)

@@ -2,9 +2,9 @@
  * Test: the sidebar chip row splits by the `kind` discriminator.
  *
  * An issue chip renders as `#123` with NO ci/state decoration (the chip-status
- * cache is pull-request-only in this phase, so an issue has nothing truthful to
- * colour). A PR chip keeps its exact prior appearance — including when `kind` is
- * ABSENT, which is what every pre-existing payload and fixture looks like.
+ * cache is pull-request-only, so an issue has nothing truthful to colour). A PR
+ * chip keeps its full ci/state decoration — including when `kind` is ABSENT,
+ * which is what a payload without the discriminator looks like.
  *
  * Harness mirrors ChatSidebar.sourceLinkChip.test.tsx.
  */

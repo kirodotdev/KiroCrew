@@ -22,8 +22,8 @@ import type { Result, ResourceProvider } from '../types'
  *  - `onAltActivate` (⌥Enter) — **preview** the prompt (defaults to opening the
  *    skills/prompts catalog; host-overridable).
  *
- * Matching is a client-side {@link fuzzyMatch} over the prompt **name** (per
- * the task spec). The server returns the full prompt list, cached under the
+ * Matching is a client-side {@link fuzzyMatch} over the prompt **name**. The
+ * server returns the full prompt list, cached under the
  * React-Query key `['prompts']` (shared with `PromptsTab` and the inline
  * `@`-picker) so reopening the palette is free. Highlight `indices` index into
  * the rendered `title` and are emitted as React `<mark>` nodes by the palette,
@@ -70,7 +70,7 @@ export interface PromptsProviderDeps {
   insertPrompt: (ref: PromptRef) => void
   /** Start a new session seeded with the prompt (⌘Enter). Optional. */
   newSessionWithPrompt?: (ref: PromptRef) => void
-  /** Preview the prompt (⌥Enter). Optional; placeholder until the matrix step. */
+  /** Preview the prompt (⌥Enter). Optional. */
   previewPrompt?: (ref: PromptRef) => void
 }
 
@@ -104,7 +104,7 @@ export function createPromptsProvider(deps: PromptsProviderDeps): ResourceProvid
       const results: Result[] = []
       for (const p of prompts) {
         const title = p.name
-        // Fuzzy-match over the prompt name (task spec); indices align with title.
+        // Fuzzy-match over the prompt name; indices align with title.
         const match = fuzzyMatch(query, title)
         if (!match) continue
         const ref: PromptRef = { name: p.name, fullName: p.fullName, path: p.path }

@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Toast } from './types'
 
-// U18: honour prefers-reduced-motion — no sweep/spin animation for people who ask
-// for less. Mirrors the original media-query listener.
+// Honour prefers-reduced-motion — no sweep/spin animation for people who ask
+// for less.
 export function useReduceMotion(): boolean {
   const [reduce, setReduce] = useState(false)
   useEffect(() => {

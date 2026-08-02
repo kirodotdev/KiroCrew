@@ -16,10 +16,9 @@ import { i18nT } from '../../i18n/t'
  * (sensitive paths, denied commands, suspicious patterns, tool schemas,
  * redaction paths, credential families, exfil heuristics, audit surfaces, token
  * auth) is rendered from the live `GET /api/security/posture` registry instead —
- * see `PostureDisclosureRow`. Hardcoded counts here had silently gone stale by
- * several-fold — sensitive paths, bash patterns, redaction paths, and tool
- * schemas were ALL understated — so this list must stay count-free: if a description
- * needs a number, the control belongs in the posture registry.
+ * see `PostureDisclosureRow`. This list must stay count-free: a hardcoded count
+ * here silently goes stale, so if a description needs a number, the control
+ * belongs in the posture registry.
  */
 
 interface SecurityFeature {

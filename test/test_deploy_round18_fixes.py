@@ -98,7 +98,7 @@ class TestF6ScanBlockBindings:
         assert '"profile": profile' in window
 
     def test_frontend_stores_bindings_from_scan_block(self):
-        idx = PUBLISHHUB.index("R18 F6")
+        idx = PUBLISHHUB.index("setContentDigest(")
         window = PUBLISHHUB[idx: idx + 600]
         assert "setContentDigest" in window
         assert "setPreviewIdentity" in window

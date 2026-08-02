@@ -366,12 +366,11 @@ def click_recipe(click_count: int, button: str = _LEFT_BUTTON) -> tuple[SkyClick
     move-before-down, produces a click on the FRONT window instead of the target —
     a silent mis-delivery rather than a failure.
 
-    *button* is accepted only to be REFUSED when it is not the left one. It is a
-    parameter rather than an unstated assumption because the previous signature took
-    no button at all and built the recipe with the left-button codes regardless of
-    what the caller had asked for — so a right-click request became a left click
-    silently, on a background window the operator cannot see. Naming the argument is
-    what makes the constraint checkable instead of implicit; see
+    *button* is accepted only to be REFUSED when it is not the left one. Making it
+    an explicit parameter keeps the constraint checkable instead of implicit:
+    without a named button the recipe builds with the left-button codes regardless
+    of what the caller asked for, silently turning a right-click request into a
+    left click on a background window the operator cannot see. See
     ``ERR_SKY_CLICK_BUTTON`` for why refusing beats downgrading.
 
     Raises :class:`ComputerUseError` for an unsupported count OR button; the

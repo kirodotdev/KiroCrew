@@ -79,9 +79,8 @@ export interface ThemeBranding {
 
 /**
  * Registry mapping a color-theme slug to its branding. The core ships no
- * seeded registrations (the built-in Lumon theme was removed with the
- * theme-packs PR — installed packs carry their own branding); downstream
- * bundles extend it via `registerThemeBranding()`.
+ * seeded registrations (installed theme packs carry their own branding);
+ * downstream bundles extend it via `registerThemeBranding()`.
  */
 const THEME_BRANDING: Record<string, ThemeBranding> = {}
 

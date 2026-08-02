@@ -596,9 +596,9 @@ class AcpRuntime:
                 init_resp.get("agentCapabilities", {}).get("loadSession", False)
             )
             # Retain promptCapabilities so the prompt path can gate non-text
-            # blocks. Previously only loadSession was kept, so an image block was
-            # sent regardless of whether the agent accepted one -- and a refusal
-            # surfaced as a generic error with no fallback.
+            # blocks -- without them an image block would be sent regardless of
+            # whether the agent accepts one, and a refusal would surface as a
+            # generic error with no fallback.
             _prompt_caps = init_resp.get("agentCapabilities", {}).get("promptCapabilities", {})
             self._prompt_capabilities = _prompt_caps if isinstance(_prompt_caps, dict) else {}
             self._initialized = True

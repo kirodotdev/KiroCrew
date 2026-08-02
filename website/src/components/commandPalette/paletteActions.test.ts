@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { resolveInvokableEnter } from './paletteActions'
 
 /**
- * Unit tests for the pure §2 Enter-matrix primitive {@link resolveInvokableEnter}
- * (Search Everywhere, step 17). The `usePaletteActions` hook is a thin
+ * Unit tests for the pure §2 Enter-matrix primitive {@link resolveInvokableEnter}.
+ * The `usePaletteActions` hook is a thin
  * store/router wrapper exercised via the provider tests + the palette component
  * tests; the security-relevant decision (insert vs new-session) lives here and
  * is tested in isolation.

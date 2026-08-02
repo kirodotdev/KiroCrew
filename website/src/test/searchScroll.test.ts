@@ -98,7 +98,7 @@ describe('pollRowSettled: nested scroll ownership (GPT MEDIUM round 13)', () => 
 
   // The row poll's first step is what MOUNTS the nested target. Retiring it
   // before that step would mean the mark never appears and NEITHER scroll
-  // happens — the far-jump no-op this PR exists to fix.
+  // happens — a far-jump no-op.
   it('defers retirement until the superseded poll has stepped once', () => {
     const d = makeDriver()
     let rowPresent = false
@@ -207,7 +207,7 @@ describe('glideOnceStep (GPT MEDIUM round 3)', () => {
 describe('pollRowSettled: user scroll aborts convergence (GPT MEDIUM round 2)', () => {
   // The poll re-scrolls every frame for up to ~2s. If the user wheels during
   // that window, continuing to step drags the viewport back to the target and
-  // fights their input. navToDisplayIndex now cancels on wheel/touchmove and
+  // fights their input. navToDisplayIndex cancels on wheel/touchmove and
   // detaches the listeners when the poll ends; these assertions pin the
   // contract that makes that wiring correct.
   it('cancel() stops all further step() calls mid-flight', () => {
@@ -340,7 +340,7 @@ describe('pollRowSettled', () => {
   it('waits for a target that mounts AFTER the old 30-frame ceiling, then settles', () => {
     const d = makeDriver()
     let frame = 0
-    const mountAt = 40 // well past the retired MAX_FRAMES = 30 ceiling
+    const mountAt = 40 // well past a 30-frame ceiling
     const step = vi.fn()
     let reason = ''
     // Row is absent (null) until frame 40, then a stable measured height.
@@ -364,7 +364,7 @@ describe('pollRowSettled', () => {
   it('re-reads/re-scrolls while a widget target keeps growing, settling once stable', () => {
     const d = makeDriver()
     // Height climbs (widget iframe building) then holds — mimics the ~450ms
-    // PROGRAMMATIC_BUILD_DELAY_MS growth the frame-count cap used to miss.
+    // PROGRAMMATIC_BUILD_DELAY_MS growth that a frame-count cap would miss.
     const heights = [50, 60, 90, 140, 140, 140]
     let i = 0
     const step = vi.fn()
@@ -465,10 +465,10 @@ describe('scrollCurrentMatchIntoView', () => {
   })
 })
 
-// Regression: the abort listened only for wheel/touchmove, so dragging the
-// scrollbar or scrolling with the keyboard did not stop convergence and the
-// user was recentered for up to CONVERGE_MAX_MS. The same gap existed
-// independently in ChatPage, which is why this now lives in one shared helper.
+// The abort must catch scrollbar drags and keyboard scrolling too, not just
+// wheel/touchmove — otherwise convergence keeps recentering the user for up to
+// CONVERGE_MAX_MS. This lives in one shared helper so ChatPage gets the same
+// coverage.
 describe('attachUserScrollIntent', () => {
   function harness() {
     const el = document.createElement('div')

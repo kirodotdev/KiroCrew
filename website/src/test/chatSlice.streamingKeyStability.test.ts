@@ -11,7 +11,7 @@
  * phase 0 (widget-placeholder dots flashing in unison instead of breathing on
  * their stagger).
  *
- * The fix stamps a durable `meta.clientTs` in the reducer at append. These
+ * The reducer stamps a durable `meta.clientTs` at append. These
  * tests deliberately drive the REAL reducer and mirror ChatPage's real resolver
  * (including the WeakMap fallback), so they FAIL if the reducer stops stamping
  * the birth identity — they cannot be satisfied by the test's own resolver.

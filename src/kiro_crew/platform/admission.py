@@ -6,15 +6,14 @@ fleet **reject or ban** a plugin before its code is ever imported, using a
 defense-in-depth model:
 
 1. **Kill-switch (`banned`)** — a fleet can ban a plugin by name; the ban always
-   wins, even in an otherwise-open policy. This is the R-08 / M-09 remote-disable
-   control.
+   wins, even in an otherwise-open policy. This is the remote-disable control.
 2. **Marketplace allowlist (`approved`)** — when the policy carries a non-empty
    allowlist, only listed plugins are admitted. This is the marketplace review
    gate: a plugin is admitted only after it has been reviewed and added.
 3. **Verify-before-run signature (`require_signature`)** — the plugin ships a
    signed manifest; admission verifies the signature against a trust key the
-   *policy* (not the plugin) carries, before `ep.load()`. This is the R-11 /
-   M-12 supply-chain control.
+   *policy* (not the plugin) carries, before `ep.load()`. This is the
+   supply-chain control.
 4. **Capability ceiling** — the manifest declares the capabilities the plugin
    requests (tools, network egress, credential paths). Admission rejects a
    plugin whose declared capabilities exceed the policy ceiling.

@@ -227,9 +227,8 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
         # and ~200 modules) and this enum is the module's ONLY use of it, on one
         # error branch. The enum itself belongs in ``vector_memory_constants``
         # (the dependency-free split-out this module's other constants already
-        # live in), but relocating it edits ``vector_memory.py``, which is owned
-        # by another change in flight — deferring the import keeps the cost off
-        # the import path without touching that file.
+        # live in), but relocating it would edit ``vector_memory.py``; deferring
+        # the import keeps the cost off the import path without that change.
         from kiro_crew.vector_memory import SemanticRejectCode
 
         sk = request.headers.get("X-Session-Key", "")
@@ -948,13 +947,13 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
         pass
 
     # --- Auto-detect edges by project-name mention ---
-    # The original rule matched the FULL project header (e.g. "KiroCrew
-    # (Public)") verbatim inside node titles, which almost never occurs —
-    # measured ~0 edges across thousands of nodes, so the graph had no structure
-    # to lay out. Match the project's SHORT name instead (leading token with any
+    # Match the project's SHORT name, not the FULL project header (e.g.
+    # "KiroCrew (Public)"): the full header almost never occurs verbatim inside
+    # node titles (~0 edges across thousands of nodes, leaving the graph with no
+    # structure to lay out). The short name (leading token with any
     # parenthetical qualifier stripped: "KiroCrew (Public)" -> "kirocrew",
-    # "kiro-cli (Rust)" -> "kiro-cli"), which is what actually shows up in
-    # semantic keys, lessons, and history lines.
+    # "kiro-cli (Rust)" -> "kiro-cli") is what actually shows up in semantic
+    # keys, lessons, and history lines.
     def _project_short_name(full: str) -> str:
         base = re.sub(r"\(.*?\)", "", full).strip()
         parts = base.split()

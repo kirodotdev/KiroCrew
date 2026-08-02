@@ -1,10 +1,8 @@
-// Provider identity marks for a repo ref.
-//
-// Issue Radar used to hard-code a GitHub logo everywhere, which was honest while
-// GitHub was the only provider. On a mixed install it is actively misleading: a
-// GitLab project rendered under a GitHub mark, and — worse — `group/project` on
-// gitlab.com looks identical to the same path on a self-managed instance, so
-// there was no way to tell which server a row belonged to.
+// Provider identity marks for a repo ref. On a mixed install a hard-coded
+// GitHub logo is misleading: a GitLab project would render under a GitHub mark,
+// and — worse — `group/project` on gitlab.com looks identical to the same path
+// on a self-managed instance, so there would be no way to tell which server a
+// row belongs to.
 //
 // Two pieces, deliberately separate:
 //   ProviderLogo — the brand mark, wherever a repo is identified.

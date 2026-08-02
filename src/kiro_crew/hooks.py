@@ -508,8 +508,7 @@ class HookManager:
         # file-EDIT tool from modifying config.json / config.local.json so a
         # prompt-injected agent cannot rewrite its own resource ceilings
         # (concurrent subagents, turn budget, warm-pool size) to drive host
-        # resource exhaustion — pentest: config-loader bound bypass,
-        # recommendation to block agent tools from modifying config files. Gated
+        # resource exhaustion. Gated
         # on the ACP ``edit`` kind (the fs_write/code tool) so a plain read of
         # config is unaffected — the dashboard file viewer, ``cat``, and knowledge
         # indexing legitimately read config.json. Bash writes (``tee``/``>``/
@@ -940,7 +939,7 @@ def safe_read_file(path: str) -> str:
     target against ``is_sensitive_path`` — so a symlink pointing into ``~/.aws``
     etc. is refused through the link — then opens the canonical path with
     ``O_NOFOLLOW`` as defense-in-depth against a TOCTOU swap of the final
-    component into a symlink after the check (AWS-33 / AWS-62).  Opening the
+    component into a symlink after the check.  Opening the
     already-resolved canonical path never rejects a legitimate file (its final
     component is not a symlink by construction), so this only closes the race.
 
@@ -981,7 +980,7 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
     symlinks) and rejects sensitive resolved targets, so a workspace symlink
     into ``~/.aws`` etc. is refused before any read.  The final open uses
     ``O_NOFOLLOW`` on the canonical path as defense-in-depth against a TOCTOU
-    swap of the final component into a symlink after the check (AWS-33).
+    swap of the final component into a symlink after the check.
 
     Returns file content as bytes, or None if path is rejected or unreadable.
     """
@@ -1017,7 +1016,7 @@ def safe_read_file_bytes_with_identity(
     returned. Because authorization and read share one descriptor, a symlink- or
     directory-swap slipped in between ``realpath`` and ``open`` cannot substitute
     an unauthorized file — its inode is not in the allowlist. ``validate_file_path``
-    still rejects sensitive resolved targets (``~/.aws`` …) up front (AWS-33), so
+    still rejects sensitive resolved targets (``~/.aws`` …) up front, so
     all filesystem reads stay funnelled through this centralized chokepoint.
 
     Returns bytes on success. Raises :class:`PermissionError` when the opened
@@ -1139,7 +1138,7 @@ def safe_read_file_bytes_nolink(
 ) -> bytes | None:
     """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
 
-    R30 F1: staging must pin its hardlink check to the SAME inode it reads.
+    Staging must pin its hardlink check to the SAME inode it reads.
     A caller that lstat()s the path and then opens it by name leaves a race
     window where the file is swapped for a hardlink to a sensitive file
     (e.g. ``~/.aws/config``) between the check and the open. Here the open
@@ -1147,7 +1146,7 @@ def safe_read_file_bytes_nolink(
     the inode that is validated is exactly the inode that is read:
     ``st_nlink > 1`` or a non-regular file type is rejected.
 
-    R33 F1: when ``within_root`` is given, the OPENED descriptor's real path
+    When ``within_root`` is given, the OPENED descriptor's real path
     (via ``/proc/self/fd`` on Linux, ``fcntl.F_GETPATH`` on macOS) must resolve
     inside that root and must not be sensitive. ``O_NOFOLLOW`` only guards the
     FINAL path component — a nested directory swapped for a symlink between

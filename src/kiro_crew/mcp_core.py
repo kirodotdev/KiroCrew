@@ -2341,7 +2341,7 @@ def _resolve_session_key_strict() -> str:
     shared backend serving many sessions. This is what keeps
     ``send_notification`` working for warm-pool sessions on platforms
     without the sandbox launcher (macOS/Windows), where neither env
-    source exists in the backend process (GPT 5.6 round 17).
+    source exists in the backend process.
     """
     ctx = current_caller()
     if ctx is not None and ctx.session_key:
@@ -2368,8 +2368,8 @@ def _deny_channel_agent_messaging(caller_session: str, tool_name: str) -> str | 
     ``channel.py`` rejects these tools at the permission-request event, but
     an AUTO-APPROVED call (kirocrew-core is in the default ``allowedTools``)
     never emits that event — so the containment boundary must also hold
-    here at MCP dispatch, keyed on the verified caller identity (GPT 5.6
-    round 17 HIGH). Best-effort SEL audit mirrors channel.py's
+    here at MCP dispatch, keyed on the verified caller identity.
+    Best-effort SEL audit mirrors channel.py's
     ``rejected_blocked_tool`` outcome; audit failure never unblocks the
     deny.
     """
@@ -3026,8 +3026,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
         _call_tool_inner,
         # Real caller identity when resolvable (per-call caller context in
         # pooled backends, env/PID otherwise) — a hardcoded "mcp_core" lost
-        # attribution for every standard tool audit in shared backends
-        # (GPT 5.6 round 20).
+        # attribution for every standard tool audit in shared backends.
         session_key=_resolve_session_key() or "mcp_core",
         downstream_service="kirocrew-core",
     )
@@ -3289,8 +3288,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     transport_errors.append(error_line)
                     continue
                 errors.append(error_line)
-                # Wave-liveness reconcile (Opus MEDIUM + Design Review
-                # CONCERN 1): every sibling's batch_total counts THIS member,
+                # Wave-liveness reconcile: every sibling's batch_total counts
+                # THIS member,
                 # but an explicit pre-spawn rejection never reached mgr.spawn
                 # unless the response says "counted". Un-reconciled, the
                 # wave's submitted < expected forever — the digest never
@@ -3318,7 +3317,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # Orphan alert: without a parent session key the subagents cannot
             # deliver completion events back to this conversation and will
             # not appear in the Subagents panel for this session. This has
-            # historically failed silently (Mesh ticket 8abcd9fe) — say it
+            # historically failed silently — say it
             # loudly so the agent/user can fall back to spawn_list +
             # result.txt polling instead of waiting forever.
             spawn_lines.append(
@@ -3992,7 +3991,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # "cron → Slack DM by default" routing and report where the message
         # actually landed.
         caller_session = _resolve_session_key()
-        # Channel-agent containment (GPT 5.6 round 17 HIGH): channel agents
+        # Channel-agent containment: channel agents
         # communicate exclusively through channel posts. The channel.py
         # permission-request guard only fires when kiro-cli ASKS — an
         # auto-approved kirocrew-core call (default allowedTools) emits no
@@ -4079,7 +4078,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 "(no gateway-injected session key or HMAC-verified pid). "
                 "Refusing to publish without a trusted governance identity."
             )
-        # Channel-agent containment (GPT 5.6 round 17 HIGH): same boundary
+        # Channel-agent containment: same boundary
         # as send_message — an auto-approved call emits no permission event,
         # so channel.py's guard alone cannot hold it.
         _chan_deny = _deny_channel_agent_messaging(caller_session, "send_notification")
@@ -4103,7 +4102,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # "Error:" prefix (not "Failed:"): call_tool_with_logging
             # classifies only "Error:"-prefixed strings as failures, so a
             # "Failed:" return would be SEL-recorded as completed and hide
-            # the error from the audit trail (GPT 5.6 round 12).
+            # the error from the audit trail.
             return f"Error: {resp}"
         note = resp.get("note") or {}
         return (
@@ -4342,7 +4341,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # mode observed in session logs (agent created
         # ``rules-of-fight-club`` even though ``a07ece9a8c3309aa`` named
         # "The Rules of Fight Club" already existed).
-        # Resolve the kind the same way the store will (CR-1 kind inference):
+        # Resolve the kind the same way the store will (kind inference):
         # an explicit kind wins, else infer from the inline content. The MCP
         # save path never forwards a source_path, so content sniff is the only
         # signal. This keeps the widget-only duplicate probe below from firing
@@ -4422,7 +4421,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         version = d.get("version", 1)
         name = d.get("name", args.get("name", ""))
         kind = d.get("kind", args.get("kind", "widget"))
-        # FU-3: the artifact-deploy skill requires webapp producers to fill
+        # The artifact-deploy skill requires webapp producers to fill
         # projected cost estimates at save time, but nothing enforced it —
         # field-tested agents skipped it and the card's cost area rendered
         # blank until deploy. Attach a soft warning hint (never a hard
@@ -4879,7 +4878,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if args.get("ttl_hours") is not None:
             deploy_body["ttl_hours"] = args["ttl_hours"]
         d = _post("/api/deploy/deploy", deploy_body)
-        # R18 F4: everything textual returned to the LLM goes through the
+        # Everything textual returned to the LLM goes through the
         # canonical credential redaction -- error/scan/message fields can
         # carry file content.
         from kiro_crew.deploy.handlers import _redact_text as _deploy_redact
@@ -4891,10 +4890,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 # Credential-class findings are a HARD block — never pending.
                 return (f"Deploy BLOCKED by scan ({d.get('count', '?')} finding(s)):\n"
                         f"{findings}")
-            # R24: non-credential findings are documented as human-overridable.
+            # Non-credential findings are documented as human-overridable.
             # Persist a pending entry flagged override_scan_required so the
-            # dashboard can present the explicit "deploy anyway" action —
-            # previously these previews silently never reached the pending list.
+            # dashboard can present the explicit "deploy anyway" action for
+            # these previews.
             from kiro_crew.deploy.pending import add_pending
             add_pending({
                 "site_id": args["site_id"],
@@ -4951,7 +4950,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # the parent slot's process tree — a PID-walk would let it silently
         # stop the PARENT session's loop (matches set_project's rule).
         sk = _resolve_session_key_strict()
-        # Stateless (#755): emit a directive; the session-aware consumer
+        # Stateless: emit a directive; the session-aware consumer
         # (chat_runner) resolves the loop by ITS OWN session and stops it. The
         # tool carries no session identity — sk is used only to short-circuit a
         # context where a directive can never be applied (cron/hook/subagent).
@@ -4969,7 +4968,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "ask_question":
         args = validate_tool_args(args, ASK_QUESTION_SCHEMA)
-        # Stateless (#755): return a directive. The session-aware consumer
+        # Stateless: return a directive. The session-aware consumer
         # (chat_runner) broadcasts a NON-BLOCKING question card (no ask_id) to
         # ITS OWN slot and the agent ends its turn; the user's answer arrives as
         # an ordinary next message that resumes the session with full context.
@@ -5005,7 +5004,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # to PID-walk into the parent's identity and mint a loop the parent
         # user never asked for (crosses the session authorization boundary).
         sk = _resolve_session_key_strict()
-        # Stateless (#755): only short-circuit contexts where a directive can
+        # Stateless: only short-circuit contexts where a directive can
         # never be applied (cron/hook/subagent). The session-aware consumer
         # (chat_runner) supplies the binding key and arms the loop.
         if _autonudge_binding_key(sk) is None and sk:
@@ -5052,7 +5051,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # subagent must not PID-walk into the parent's identity and rewrite the
         # parent session's instruction.
         sk = _resolve_session_key_strict()
-        # Stateless (#755): short-circuit only un-appliable contexts; the
+        # Stateless: short-circuit only un-appliable contexts; the
         # consumer resolves the loop by its own session and patches it.
         if _autonudge_binding_key(sk) is None and sk:
             return (
@@ -5589,7 +5588,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "set_project":
         args = validate_tool_args(args, SET_PROJECT_SCHEMA)
-        # Stateless (#755): the session-aware consumer (chat_runner) applies the
+        # Stateless: the session-aware consumer (chat_runner) applies the
         # project change to ITS OWN slot — no session identity resolved here.
         return session_directive.encode(
             "set_project",
@@ -5603,7 +5602,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     if name == "suggest_followup":
         args = validate_tool_args(args, SUGGEST_FOLLOWUP_SCHEMA)
         items = args.get("items") or []
-        # Stateless (#755): the session-aware consumer (chat_runner) broadcasts
+        # Stateless: the session-aware consumer (chat_runner) broadcasts
         # the card to ITS OWN slot; no session identity resolved here. The card
         # is broadcast-only (dropped if no client attached), so the confirmation
         # stays cautious — restate the follow-ups in reply text if they matter.

@@ -3,7 +3,7 @@
  * the Redux store. Used by `App.tsx` to surface macOS notification-center
  * toasts.
  *
- * Extracted into a shared hook so the regression tests in
+ * A shared hook so the regression tests in
  * `integration/AppNotification.integration.test.tsx` exercise *this* code —
  * if the effect regresses, tests and production break together.
  */

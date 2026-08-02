@@ -1,6 +1,6 @@
-// KiroCrew is KiroACP-only — kiro-cli over ACP is the sole provider. The
-// ClaudeCode/Bedrock providers were deleted; this stays a single-member union
-// so the adapter interface below still type-checks for its many consumers.
+// KiroCrew is KiroACP-only — kiro-cli over ACP is the sole provider. This is a
+// single-member union so the adapter interface below still type-checks for its
+// many consumers.
 export type ProviderId = 'acp'
 
 export interface ProviderCapabilities {

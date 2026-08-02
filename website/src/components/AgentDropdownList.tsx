@@ -19,7 +19,6 @@ function AgentButton({ a, active, isDefault, activeRef, onSelect, onSetDefault, 
   onSetDefault?: (name: string) => void
   filter?: string
 }) {
-  // Highlight filter matches in text
   const highlight = (text: string) => {
     if (!filter || !text) return text
     const idx = text.toLowerCase().indexOf(filter.toLowerCase())

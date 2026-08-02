@@ -7,9 +7,7 @@ import { changeApprovalMode } from '../store/dashboardSlice'
 import { safeSetItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
-/** Single source of truth for approval-mode presentation. Previously this
- *  lived three times: APPROVAL_DISPLAY in ChatInput plus duplicated
- *  APPROVAL_SEGMENTS in ChatPage and ChatPane (which had drifted apart).
+/** Single source of truth for approval-mode presentation.
  *
  *  Only the language-INDEPENDENT metadata (key, icon, colour) lives at module
  *  scope. Human-readable strings are resolved through `i18nT` at RENDER time via
@@ -62,9 +60,7 @@ function segmentText(key: ApprovalModeKey): { label: string; tooltip: string; de
  *  Self-contained Radix DropdownMenu using the standard shadcn panel and item
  *  styling: renders its own trigger pill and dispatches changeApprovalMode
  *  itself. Radix supplies positioning, outside-click + Escape dismiss,
- *  arrow-key roving and focus return — replacing the hand-rolled
- *  createPortal + viewport-clamp + outside-click copies that lived in
- *  ChatPage and ChatPane.
+ *  arrow-key roving and focus return.
  *
  *  The app-wide YOLO confirm gate is preserved: switching to YOLO without a
  *  stored `mc-yolo-ack` keeps the menu open (onSelect preventDefault) and

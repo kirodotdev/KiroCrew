@@ -64,8 +64,8 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
 }
 
 /**
- * Speech-to-Text settings in the standard settings style. Replaces the older
- * raw-card SlackTab so the Voice page reads consistently. Covers enable, status,
+ * Speech-to-Text settings in the standard settings style, so the Voice page
+ * reads consistently. Covers enable, status,
  * provider, model/MLX model, streaming, language, Transcribe AWS creds, runtime,
  * and the local-install flow (Whisper / MLX / Docker image).
  */

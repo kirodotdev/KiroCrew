@@ -222,8 +222,8 @@ describe('SubagentProgressBar — chrome follows the Font Family setting', () =>
 
   it('monospaces the tool name on the STALLED path too, matching the running path', () => {
     // Regression guard: the stalled line interpolates the same `lastTool` value
-    // as the running line. Both used to inherit mono from the row; when the row
-    // stopped supplying it, only the running path had it re-added.
+    // as the running line. Each path must monospace it itself, since the row
+    // does not supply mono.
     const store = makeStore(['a1'])
     store.dispatch(sseSubagentTool({ slot: SLOT, id: 'a1', tool: 'npx vitest run', tool_count: 3 }))
     store.dispatch(sseSubagentStalled({ slot: SLOT, id: 'a1', stalled: true }))

@@ -3,8 +3,7 @@
 // When the dashboard is served through Builder Tunnels (API Gateway), request
 // bursts (e.g. opening Settings→Usage) can trip the edge throttle, which
 // returns 429 {"message":"Rate exceeded","throttlingReasons":null} before the
-// request reaches the gateway. Pre-fix the raw JSON body rendered in the
-// Usage tab's error card after a single retry. These tests pin:
+// request reaches the gateway. These tests pin:
 //   1. isThrottleError / retryPolicy / retryDelayPolicy (api/queryClient.ts)
 //   2. the friendly 429 message thrown by the `j` helper (api/client.ts)
 import { describe, it, expect, vi, afterEach } from 'vitest'

@@ -1,22 +1,23 @@
 /**
- * Regression test for the session-resurrection thinking-indicator bug.
+ * Regression test for the session-resurrection thinking-indicator wiring.
  *
- * Symptom: after sending the first message to a resurrected (history) session,
- * the agent processes the turn but the chat-area "thinking" footer never
- * appears (the sidebar shows it). Navigating away and back fixes it.
+ * Behaviour guarded: after sending the first message to a resurrected (history)
+ * session, the agent processes the turn and the chat-area "thinking" footer
+ * must appear (not only the sidebar).
  *
- * Root cause: send() optimistically sets slotRunning=true, but the slots-sync
- * useEffect in ChatPage mirrored dashboard slots[].running unconditionally. A
- * WS 'slots' broadcast that predates the send (server hasn't started the agent
- * yet, so running=false) clobbered the optimistic true, hiding ChatFooter.
+ * The hazard: send() optimistically sets slotRunning=true, but the slots-sync
+ * useEffect in ChatPage must not mirror dashboard slots[].running
+ * unconditionally. A WS 'slots' broadcast that predates the send (server hasn't
+ * started the agent yet, so running=false) would otherwise clobber the
+ * optimistic true and hide ChatFooter.
  *
- * Fix: send() dispatches startLocalTurn(slot) (records pendingTurnSlot) and the
+ * So send() dispatches startLocalTurn(slot) (records pendingTurnSlot) and the
  * effect dispatches syncSlotRunningFromServer, which ignores running=false while
  * a turn is pending confirmation for the active slot.
  *
  * These tests pin the *wiring*: reverting the effect to setSlotRunning(s.running)
- * (the old, broken behaviour) makes them fail even though the reducer-level unit
- * tests in chatSlice.test.ts still pass.
+ * makes them fail even though the reducer-level unit tests in chatSlice.test.ts
+ * still pass.
  */
 import type { ReactNode } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'

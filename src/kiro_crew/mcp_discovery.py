@@ -117,7 +117,7 @@ def reset_unresolvable_warnings() -> None:
 SCOPE_KIROCREW = "kirocrew"
 SCOPE_KIRO_GLOBAL = "kiroGlobal"
 # Well-known label for a provider global (e.g. Claude Code's ~/.claude.json).
-# The core no longer scans it directly — a companion edition contributes it
+# The core does not scan it directly — a companion edition contributes it
 # via the extra_mcp_scopes() CPP seam (see :func:`_extra_scope_sources`), so
 # discovery scans exactly what apply/uninstall manage.
 SCOPE_CC_GLOBAL = "ccGlobal"
@@ -133,8 +133,8 @@ SCOPE_CC_GLOBAL = "ccGlobal"
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home" and
-# issue #874; dashboard/handlers/usage.py is the reference implementation.
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
 _MCP_SOURCES: tuple[tuple[Path, str], ...] | None = None
 
 

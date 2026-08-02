@@ -185,10 +185,10 @@ describe('App routing', () => {
     expect(screen.getByText('Sessions')).toBeInTheDocument()
     expect(screen.getByText('Agent Capabilities')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
-    // The App Store now rides the Apps section header as an accent link.
+    // The App Store rides the Apps section header as an accent link.
     expect(screen.getByText('Explore')).toBeInTheDocument()
     // The bottom-pinned community row: two stacked GitHub links under one mark,
-    // plus the icon-only Discord link. The kiro.dev link was removed.
+    // plus the icon-only Discord link.
     expect(screen.getByText('Star us')).toBeInTheDocument()
     expect(screen.getByText('Report issue')).toBeInTheDocument()
     expect(screen.getByLabelText('Star KiroCrew on GitHub')).toBeInTheDocument()
@@ -198,24 +198,23 @@ describe('App routing', () => {
   })
 
   it('renders the registry-derived Artifacts and Knowledge nav items', () => {
-    // Regression guard for the aaf7cfe stale-branch merge, which reverted the
-    // registry-driven rail (`NAV_ITEMS = getBuiltinSurfaces().map(...)`) back
-    // to a hardcoded array that omitted Artifacts and Knowledge. Both are
-    // registered unconditionally in `surfaces/builtins.tsx`, so they must
-    // always appear in the rail. Asserting them by label catches a future
-    // hardcoded-array regression that the isolated surfaces.test.tsx cannot.
+    // Both Artifacts and Knowledge are registered unconditionally in
+    // `surfaces/builtins.tsx`, so they must always appear in the
+    // registry-driven rail (`NAV_ITEMS = getBuiltinSurfaces().map(...)`).
+    // Asserting them by label catches a hardcoded-array regression (an array
+    // that omits Artifacts and Knowledge) that the isolated surfaces.test.tsx
+    // cannot.
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByText('Artifacts')).toBeInTheDocument()
     expect(screen.getByText('Knowledge')).toBeInTheDocument()
   })
 
   it('does not double-render Secretary when the builtin Secretary app is enabled', async () => {
-    // Regression for the Surface registry refactor: Secretary registers a
-    // surface (so its attention badge wires through `selectSurfaceBadgeCount`)
-    // but is rendered as a nav item by `appNavItems` from `api.listApps()`,
-    // not by NAV_ITEMS. With `appOnly: true` on the Secretary surface,
-    // `getBuiltinSurfaces()` excludes it from NAV_ITEMS so it should appear
-    // exactly once even when api.listApps() returns it.
+    // Secretary registers a surface (so its attention badge wires through
+    // `selectSurfaceBadgeCount`) but is rendered as a nav item by `appNavItems`
+    // from `api.listApps()`, not by NAV_ITEMS. With `appOnly: true` on the
+    // Secretary surface, `getBuiltinSurfaces()` excludes it from NAV_ITEMS so it
+    // appears exactly once even when api.listApps() returns it.
     const { api } = await import('../api/client')
     ;(api.listApps as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       {
@@ -236,9 +235,9 @@ describe('App routing', () => {
   })
 
   it('collapses a long Apps list behind a "more" toggle so the nav cannot grow unbounded', async () => {
-    // Regression for the nav-overflow bug: with many enabled apps the rail used
-    // to grow past the viewport. The Apps group now shows up to APPS_NAV_LIMIT
-    // (6) and hides the rest behind a "show more" toggle.
+    // With many enabled apps the rail would grow past the viewport, so the Apps
+    // group shows up to APPS_NAV_LIMIT (6) and hides the rest behind a
+    // "show more" toggle.
     const { api } = await import('../api/client')
     const manyApps = Array.from({ length: 10 }, (_, i) => ({
       name: `app${i}`,
@@ -284,12 +283,12 @@ describe('App routing', () => {
   })
 
   it('refetches the Apps nav when the gateway reconnects (post-update recovery)', async () => {
-    // Regression for the empty-rail-after-update bug: the dashboard fetches
-    // /api/apps once on mount, and right after a `kirocrew update` restart that
-    // first fetch can come back empty while the gateway is still warming. When
-    // the WebSocket reconnects, the Apps nav must refetch and self-heal —
-    // previously it stayed empty until a manual reload (Browse, lazy-fetched,
-    // kept working, which is why apps still showed in the App Store).
+    // The empty-rail-after-update case: the dashboard fetches /api/apps once on
+    // mount, and right after a `kirocrew update` restart that first fetch can
+    // come back empty while the gateway is still warming. When the WebSocket
+    // reconnects, the Apps nav must refetch and self-heal — otherwise it stays
+    // empty until a manual reload (Browse, lazy-fetched, keeps working, which is
+    // why apps still show in the App Store).
     const { api } = await import('../api/client')
     const lateApp = {
       name: 'late', displayName: 'Late App', enabled: true, origin: 'installed',
@@ -313,8 +312,8 @@ describe('App routing', () => {
   })
 
   it('retries the initial Apps-nav fetch after a transient failure', async () => {
-    // The mount fetch can reject while the gateway is mid-restart; the failure
-    // used to be swallowed (empty rail). refreshAppNav now retries with bounded
+    // The mount fetch can reject while the gateway is mid-restart; that failure
+    // must not be swallowed (empty rail). refreshAppNav retries with bounded
     // backoff so the apps appear without a manual reload.
     vi.useFakeTimers()
     try {
@@ -416,11 +415,11 @@ describe('App routing', () => {
   })
 
   it('dismisses the collapsed overflow-toggle hover label when the toggle is pressed', async () => {
-    // Regression: pressing the Apps overflow toggle in the collapsed rail left
-    // its portaled "N more" / "Show less" flyout on screen until the user
-    // clicked elsewhere. Two causes: expanding re-flows the list so the row
-    // moves out from under a stationary cursor (no mouseleave is dispatched),
-    // and the click's own focus re-armed the label. Activation must dismiss it.
+    // Pressing the Apps overflow toggle in the collapsed rail must dismiss its
+    // portaled "N more" / "Show less" flyout. Two causes would otherwise leave
+    // it on screen: expanding re-flows the list so the row moves out from under
+    // a stationary cursor (no mouseleave is dispatched), and the click's own
+    // focus re-arms the label. Activation must dismiss it.
     const { fireEvent } = await import('@testing-library/react')
     const { api } = await import('../api/client')
     const manyApps = Array.from({ length: 10 }, (_, i) => ({
@@ -458,7 +457,7 @@ describe('App routing', () => {
   it('renders Kiro Crew branding', () => {
     localStorage.removeItem('mc-nav') // expanded sidebar shows the brand text
     renderWithProviders(<App />, { route: '/chat' })
-    // Brand (logo + name) moved from the top bar into the sidebar menu row.
+    // Brand (logo + name) lives in the sidebar menu row.
     expect(screen.getAllByText('Kiro Crew').length).toBeGreaterThan(0)
     localStorage.removeItem('mc-nav')
   })
@@ -480,10 +479,10 @@ describe('App routing', () => {
 
   it('resizes the sidebar and main body together with a quick shell transition', () => {
     localStorage.removeItem('mc-nav')
-    // Regression (PR #94): the width transition was gated on a 180ms pulse AND
-    // the Activity panel being closed, so the sidebar snapped instead of
-    // animating whenever Activity was open (or a slow frame ate the pulse).
-    // The transition must now be unconditional — including with Activity open.
+    // The width transition must be unconditional — including with Activity open.
+    // Gating it on a 180ms pulse AND the Activity panel being closed makes the
+    // sidebar snap instead of animate whenever Activity is open (or a slow frame
+    // eats the pulse).
     const store = createTestStore()
     store.dispatch(openActivityPanel())
     renderWithProviders(<App />, { route: '/chat', store })
@@ -507,8 +506,8 @@ describe('App routing', () => {
     renderWithProviders(<App />, { route: '/chat' })
 
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    // Brand (logo + name) now lives in the rail's menu row, replacing the old
-    // hamburger; the collapse control is an arrow-left-to-line button.
+    // Brand (logo + name) lives in the rail's menu row; the collapse control is
+    // an arrow-left-to-line button.
     expect(within(nav).getByText('Kiro Crew')).toBeInTheDocument()
     const collapse = within(nav).getByRole('button', { name: 'Collapse sidebar' })
     expect(within(nav).queryByRole('button', { name: 'Toggle sidebar' })).not.toBeInTheDocument()
@@ -541,9 +540,9 @@ describe('App routing', () => {
     safeSetItem('mc-nav', '1')
     renderWithProviders(<App />, { route: '/chat' })
 
-    // Request a Feature moved out of the brand region into its own pill in the
-    // header's right-side actions cluster; it stays visible regardless of the
-    // sidebar's collapsed/expanded state.
+    // Request a Feature is its own pill in the header's right-side actions
+    // cluster; it stays visible regardless of the sidebar's collapsed/expanded
+    // state.
     expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
 
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
@@ -556,8 +555,8 @@ describe('App routing', () => {
 
   it('renders connection status', () => {
     renderWithProviders(<App />, { route: '/chat' })
-    // Connection is a colored dot in the unified readout capsule ("Offline"
-    // text was removed -- the capsule's red tint is the disconnected signal).
+    // Connection is a colored dot in the unified readout capsule (no "Offline"
+    // text -- the capsule's red tint is the disconnected signal).
     expect(screen.getByLabelText('Gateway offline')).toBeInTheDocument()
   })
 

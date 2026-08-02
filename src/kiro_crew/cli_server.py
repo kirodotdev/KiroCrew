@@ -410,7 +410,7 @@ def _stop(cli_port: int | None = None) -> None:
         # Distinguish "lookup tool absent" from "genuinely no listener":
         # find_listening_pids folds a missing lsof into an empty list, so without
         # this a running gateway would be mis-reported as stopped (and _restart
-        # would then double-spawn). Restores the pre-shim dedicated diagnostic.
+        # would then double-spawn).
         if not platform_compat.listening_pid_tool_available():
             _tool = platform_compat.listening_pid_tool()
             sel().log_api_access(
@@ -1344,8 +1344,7 @@ async def _gateway(
 
     # Resolve the dashboard's React build. Skipped in slack-only mode since no
     # dashboard will be served. When the prebuilt dist/ is missing the gateway
-    # has no dashboard shell to serve and returns the "not found" guidance page
-    # (the legacy dashboard.html fallback was removed — Talos V2285871874);
+    # has no dashboard shell to serve and returns the "not found" guidance page;
     # build the frontend to restore the full dashboard.
     if not no_dashboard and ensure_dev_dist_symlink() is None:
         logging.getLogger(__name__).warning(

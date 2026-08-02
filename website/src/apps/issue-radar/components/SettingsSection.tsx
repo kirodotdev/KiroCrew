@@ -66,8 +66,8 @@ export default function SettingsSection() {
 }
 
 function NavItem({ icon: Icon, repoRef, label, active, onClick }: {
-  // `repoRef` replaces the old `github` boolean: a repo row now shows ITS OWN
-  // provider mark, which a boolean could not express once there were two.
+  // `repoRef` carries each row's provider so it shows ITS OWN provider mark;
+  // a plain boolean cannot express the provider when there is more than one.
   icon?: LucideIcon; repoRef?: Pick<RepoRef, 'provider'>; label: string
   active: boolean; onClick: () => void
 }) {

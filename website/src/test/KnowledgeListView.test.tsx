@@ -20,10 +20,9 @@ const Wrapper = ({ children }: { children: React.ReactNode }) => (
   </MemoryRouter>
 )
 
-// Reproduces the reported bug shape: three sources of wildly different sizes.
-// Under the old shared item pager, `Artifacts` (11 items) only appeared on
-// whichever page its items happened to land on -- page 5 of 10 -- so it was
-// invisible from page 1.
+// Three sources of wildly different sizes. Under a shared item pager, `Artifacts`
+// (11 items) would only appear on whichever page its items happened to land on --
+// page 5 of 10 -- so it was invisible from page 1. Source-first rows show it up front.
 const SOURCES = [
   { id: 's1', name: 'PersonalKnowledgeBase', source_type: 'local_folder', uri: '/pkb', sync_status: 'synced', item_count: 378 },
   { id: 's2', name: 'WorkforceEmploymentKnowledgeBase', source_type: 'local_folder', uri: '/wfe', sync_status: 'synced', item_count: 542 },
@@ -73,7 +72,7 @@ describe('Knowledge List View — source-first rows', () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
     expect(await screen.findByText('PersonalKnowledgeBase')).toBeInTheDocument()
     expect(await screen.findByText('WorkforceEmploymentKnowledgeBase')).toBeInTheDocument()
-    // The 11-item source used to be stranded on page 5. It is now on the first screen.
+    // The 11-item source appears on the first screen instead of being stranded on page 5.
     expect(await screen.findByText('Artifacts')).toBeInTheDocument()
   })
 
@@ -93,7 +92,7 @@ describe('Knowledge List View — source-first rows', () => {
   it('does not render a top-level pager in source-first mode', async () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
     await screen.findByText('PersonalKnowledgeBase')
-    // 953 items / 100 would have been "Page 1 of 10" under the old shared pager.
+    // 953 items / 100 would be "Page 1 of 10" under a shared pager.
     expect(screen.queryByText(/^Page 1 of 10$/)).not.toBeInTheDocument()
   })
 

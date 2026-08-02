@@ -7,7 +7,7 @@ the default agent (``--agent <name>`` resolves to default with only a stderr
 per-agent bookkeeping OUT of the kiro spec and in this sidecar, so every spec
 stays schema-valid for kiro-cli.
 
-Two values are tracked, both formerly written as top-level kiro-spec keys:
+Two values are tracked, both kept in this sidecar rather than the kiro spec:
 
 - ``model_managed`` (bool): whether an agent's ``model`` should track the
   shipped ``defaults.json`` (so a default bump propagates) or is an explicit

@@ -93,10 +93,10 @@ async def _get_channel_body(request: web.Request):
 
 
 #: Cached ``channel_presets`` value, keyed on config.json's
-#: ``(path, st_mtime_ns, st_size)``. The handler used to read, decode and
-#: JSON-parse the whole config file on the event loop on every call so that an
-#: edit lands without a gateway restart. The stat signature preserves that
-#: contract exactly while making the repeat calls (the channel UI refetches on
+#: ``(path, st_mtime_ns, st_size)``. Reading, decoding and JSON-parsing the
+#: whole config file on the event loop on every call is what lets an edit land
+#: without a gateway restart; the stat signature preserves that contract
+#: exactly while making the repeat calls (the channel UI refetches on
 #: every panel open) free.
 _presets_cache: tuple[tuple[str, int, int], object] | None = None
 

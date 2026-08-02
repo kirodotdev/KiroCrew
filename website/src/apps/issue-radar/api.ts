@@ -612,8 +612,8 @@ export type TaggingSuggestions = Record<string, SuggestedLabel[]>
 
 /** One row of the untagged queue. Carried in the response rather than resolved
  * client-side against the shared issue list, which follows the user's
- * open/closed filter — entering Tagging from a Closed filter used to show an
- * empty queue even with untagged issues waiting. */
+ * open/closed filter — resolving it client-side would show an empty queue when
+ * entering Tagging from a Closed filter even with untagged issues waiting. */
 export interface UntaggedIssue {
   number: number
   title: string
@@ -810,11 +810,10 @@ async function parseErrorBody(r: Response): Promise<string> {
 
 /** The full identity of a connected repository.
  *
- * Issue Radar was GitHub-only, so `owner`/`repo` used to be the whole identity.
- * GitLab adds the provider and — for self-managed instances — the HOST, because
- * `group/project` names an entirely different project on gitlab.com than on a
- * private instance. Every API call therefore takes a ref rather than two loose
- * strings, so a call cannot be made without saying WHICH repo it means.
+ * A ref is `owner`/`repo` plus the provider and — for self-managed instances —
+ * the HOST, because `group/project` names an entirely different project on
+ * gitlab.com than on a private instance. Every API call takes a ref rather than
+ * two loose strings, so a call cannot be made without saying WHICH repo it means.
  *
  * `provider`/`host` are optional and default to public GitHub server-side, so a
  * legacy `ConnectedRepo` record (written before GitLab support) is a valid ref.

@@ -547,10 +547,9 @@ describe('appendSlotMessage steer reconcile', () => {
   })
 
   it('does not consume a non-steer optimistic message even when content matches the echo exactly', () => {
-    // Code-review finding: the exact-content-match path must also
-    // require meta.steer — a plain optimistic user message that happens to
-    // have identical text to the steer echo is a different message and must
-    // keep its own bubble.
+    // The exact-content-match path must also require meta.steer — a plain
+    // optimistic user message that happens to have identical text to the steer
+    // echo is a different message and must keep its own bubble.
     let state = { ...initial, activeSlot: 'A', messages: [] as any[] }
     state = reducer(state, appendMessage({ role: 'user', content: 'same text', cls: 'msg msg-u', ts: 't1', meta: { optimistic: true } }))
     state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'same text', cls: 'msg msg-u', ts: 't2', meta: { steer: true } } }))
@@ -1437,9 +1436,8 @@ describe('sseChatMessagePatchByTs', () => {
   })
 
   it('patches a slot the user is NOT currently viewing (slotMessages cache only)', () => {
-    // The active slot is "other", but the update is for "slot-1".  The fix
-    // for issue #1 in the review is that we still patch slotMessages so the
-    // user sees the right state after switching back.
+    // The active slot is "other", but the update is for "slot-1". We still
+    // patch slotMessages so the user sees the right state after switching back.
     const { state, ts } = withMcpOauthBanner('other')
     const out = reducer(state, {
       type: 'chat/sseChatMessagePatchByTs',
@@ -1871,7 +1869,7 @@ describe('selectComposerBusy', () => {
   })
 
   it('is busy on the live WS sub-agent signal even when the main turn is idle', () => {
-    // The regression this CR fixes: main idle but sub-agents running must queue.
+    // Main idle but sub-agents running must still queue.
     const state = reducer(withSlot, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 't', agent: '' }))
     expect(selectComposerBusy(wrap(state), 'slot-1')).toBe(true)
   })

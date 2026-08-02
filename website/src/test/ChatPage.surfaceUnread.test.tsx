@@ -1,14 +1,15 @@
 /**
  * Regression test: ChatPage scopes the sidebar's unread list to its surface.
  *
- * The bug this pins: ChatPage used to pass the full `state.dashboard.unreadSlots`
- * straight to `<ChatSidebar unreadSlots={...}>`. When an orchestrator-mode slot
- * became unread while the user was on /chat, that orchestrator key inflated the
- * sidebar's "show only unread" toggle count (and prevented its auto-drain
- * effect from disabling the filter when the same-surface inbox actually
- * drained). This test asserts the prop ChatSidebar receives is already scoped
- * to the page's surface — i.e. the wiring of `surfaceUnreadSlots` (built from
- * `filterUnreadKeysBySurface`) is what's passed in, not the raw store value.
+ * ChatPage must pass a surface-scoped unread list to
+ * `<ChatSidebar unreadSlots={...}>`, not the full `state.dashboard.unreadSlots`.
+ * If the raw list were passed, an orchestrator-mode slot that became unread
+ * while the user was on /chat would inflate the sidebar's "show only unread"
+ * toggle count (and prevent its auto-drain effect from disabling the filter when
+ * the same-surface inbox actually drained). This test asserts the prop
+ * ChatSidebar receives is already scoped to the page's surface — i.e. the wiring
+ * of `surfaceUnreadSlots` (built from `filterUnreadKeysBySurface`) is what's
+ * passed in, not the raw store value.
  *
  * Helper-level unit coverage of `filterUnreadKeysBySurface` lives in
  * `surfaces.test.tsx`. This file pins the wiring step so a regression that
@@ -147,8 +148,8 @@ const renderChatPage = (mode: '' | 'orchestrator', slots: Array<{ key: string; m
 
 describe('ChatPage – ChatSidebar unreadSlots wiring', () => {
   it('passes all chat-like unread keys in the unified view', () => {
-    // After the Autopilot-into-Chat unification, both default and orchestrator
-    // slots appear in the same sidebar. The unread list includes both.
+    // In the unified sidebar, both default and orchestrator slots appear
+    // together, so the unread list includes both.
     sidebarHistory.length = 0
     renderChatPage(
       '',

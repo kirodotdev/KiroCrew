@@ -4,7 +4,7 @@ import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 
-// Pins the project-chip branch contract (issue #673): the active project button
+// Pins the project-chip branch contract: the active project button
 // shows "<folder> · <branch>" so the session's git context is visible without
 // opening a picker, and degrades to the folder name alone when there is no
 // branch to show (not a repo, git unavailable, path gone).

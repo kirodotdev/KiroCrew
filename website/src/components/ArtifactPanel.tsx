@@ -148,7 +148,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
   const handleCopyAction = useCallback((text: string) => { if (text) copyToClipboard(text) }, [])
   const selectionActions: SelectionAction[] = useMemo(() => [
     { id: 'comment', icon: <MessageSquarePlus size={12} />, label: 'Comment', onClick: handleCommentAction },
-    // Icon (not a text "Copy" span, which rendered as "Copy Copy" beside the label).
+    // Icon only — a text "Copy" label would render as "Copy Copy" beside the label.
     { id: 'copy', icon: <Copy size={12} />, label: 'Copy', onClick: handleCopyAction },
   ], [handleCommentAction, handleCopyAction])
 

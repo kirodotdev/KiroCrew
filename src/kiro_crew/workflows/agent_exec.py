@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 AgentFn = Callable[[str, dict], Any]
 
 # Per-step tool-call ceiling. Generous enough for any realistic agent step,
-# but prevents infinite tool loops from prompt injection (Issue #4).
+# but prevents infinite tool loops from prompt injection.
 _MAX_TURNS_PER_STEP = 200
 
 
@@ -88,12 +88,13 @@ def build_agent_fn(
                 approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
                 max_turns=_MAX_TURNS_PER_STEP,
             )
-            # ── Per-turn usage row (issue #647): attribute workflow spend. ──
+            # ── Per-turn usage row: attribute workflow spend. ──
             # Best-effort analytics that must never break the workflow run — but
             # the guards are deliberately NARROW. A single wide try around the
-            # import + context read + persist used to swallow ANY of them at
-            # debug, so one import failure or a context-read failure silently
-            # dropped the ENTIRE row (the workflow surface wrote zero rows).
+            # import + context read + persist would swallow ANY of them at
+            # debug, so one import failure or a context-read failure would
+            # silently drop the ENTIRE row (the workflow surface writing zero
+            # rows).
             #
             # The import stays function-local on purpose: kiro_crew.dashboard.
             # handlers.usage pulls in the slack handler chain, so a module-scope
@@ -137,7 +138,7 @@ def build_agent_fn(
                     )
                 except Exception:
                     logger.debug("workflow usage row persist failed", exc_info=True)
-            # Issue #2: Apply output redaction to prevent credential leakage
+            # Apply output redaction to prevent credential leakage
             # in workflow results stored in history or injected into parent chat.
             text, _ = redact_credentials(text)
             text, _ = redact_exfiltration_urls(text)

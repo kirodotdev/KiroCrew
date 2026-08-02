@@ -79,7 +79,7 @@ class DefaultAgentRuntime:
         # Delegating to the real ``agent.run_first_run_setup`` makes the routing
         # behavior-preserving for the standalone edition — byte-for-byte the same
         # first-run wiring (PATH shim + admission-policy seed + one-time stale
-        # managed-MCP purge) the gateway used to invoke directly.  A companion
+        # managed-MCP purge) the gateway would otherwise invoke directly.  A companion
         # overrides this to add its own one-time provisioning on top (and should
         # call the same underlying function, or super(), to keep the core steps).
         from kiro_crew import agent  # circular import: agent imports platform

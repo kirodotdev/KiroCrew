@@ -120,8 +120,8 @@ export default function Composer(p: Props) {
         </p>
         {err ? <div style={{ fontSize: '12.5px', color: 'var(--error, #e5484d)', textAlign: 'center' }}>{err}</div> : null}
         {middle}
-        {/* Decorative separator between the drop zone and the link field. It used
-            to read "OR", but a lone connector cannot be translated in isolation
+        {/* Decorative separator between the drop zone and the link field. A lone
+            connector word ("OR") cannot be translated in isolation
             (check-source-strings bare-morpheme), and both sides already say what
             they take, so the rule is carrying the meaning. */}
         <div style={S.orRow} role="separator" aria-hidden="true"><span style={S.orLine} /></div>

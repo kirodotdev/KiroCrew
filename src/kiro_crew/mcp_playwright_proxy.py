@@ -90,11 +90,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Max width (px) for relayed/saved frames. Raised from the old hard 1200 so a
-# resized mirror panel shows real pixels instead of an upscaled blur; set
-# KIROCREW_BROWSE_MAX_WIDTH=0 to disable downscaling entirely (send native
-# resolution). JPEG quality is likewise tunable. Both apply to the on-disk
-# screenshot and the live mirror frame, which share one encode.
+# Max width (px) for relayed/saved frames — 1920 so a resized mirror panel
+# shows real pixels instead of an upscaled blur; set KIROCREW_BROWSE_MAX_WIDTH=0
+# to disable downscaling entirely (send native resolution). JPEG quality is
+# likewise tunable. Both apply to the on-disk screenshot and the live mirror
+# frame, which share one encode.
 _MAX_FRAME_WIDTH = _env_int("KIROCREW_BROWSE_MAX_WIDTH", 1920)
 _FRAME_JPEG_QUALITY = _env_int("KIROCREW_BROWSE_JPEG_QUALITY", 70)
 
@@ -134,8 +134,8 @@ _SCREENSHOT_KEEP = 200
 def _prune_screenshot_dir() -> None:
     """Keep at most ``_SCREENSHOT_KEEP`` newest screenshots; best-effort.
 
-    The dir grows one file per agent screenshot and was previously never pruned
-    (a latent unbounded-disk leak). Ring-trim the oldest on each save.
+    The dir grows one file per agent screenshot, so ring-trim the oldest on
+    each save to bound disk use.
     """
     try:
         entries = [

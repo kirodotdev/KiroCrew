@@ -216,7 +216,7 @@ describe('isPlainWord', () => {
   })
 
   it('rejects a token that is only the tail of an escaped word', () => {
-    // `extractToken` no longer produces this, but the backstop must hold if a
+    // `extractToken` does not produce this, but the backstop must hold if a
     // caller hands in a start position that splits an escaped break.
     expect(isPlainWord('cd My\\ D', 0, 7, 'D')).toBe(false)
   })

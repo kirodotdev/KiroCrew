@@ -40,11 +40,11 @@ const HEARTBEAT_FIELDS = [
   'first-run flag',
 ] as const
 
-// Fields the payload once carried and no longer does. Asserted ABSENT, not just
-// omitted from the list above: this text is the product's transparency
-// commitment, so a re-added wire field that nobody documented — or documentation
-// that outlives the field — is the failure this pins. Mirrors the key-set
-// assertion on `beacon._fields` in test/test_beacon.py.
+// Fields the payload excludes. Asserted ABSENT, not just omitted from the list
+// above: this text is the product's transparency commitment, so a re-added wire
+// field that nobody documented — or documentation that outlives the field — is
+// the failure this pins. Mirrors the key-set assertion on `beacon._fields` in
+// test/test_beacon.py.
 const REMOVED_FIELDS = [
   'release channel',
   'operating system',

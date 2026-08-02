@@ -79,9 +79,7 @@ describe('LanguageProvider', () => {
 
   it('falls back to the default language when the browser matches nothing', async () => {
     // `ja-JP` is deliberately a language we do NOT ship. Using a shippable tag
-    // here silently inverts the test the moment that language lands — this was
-    // originally `fr-FR`, which stopped exercising the fallback once French
-    // shipped.
+    // here silently inverts the test the moment that language lands.
     vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['ja-JP'])
     wrap(<Probe />)
     await waitFor(() => expect(screen.getByTestId('detected')).toHaveTextContent('en'))
@@ -214,12 +212,11 @@ describe('LanguageProvider — a failed config write is reported', () => {
 
 describe('LanguageProvider — an empty server value must not erase a local choice', () => {
   /**
-   * Regression caught by driving the real dashboard: a browser with an explicit
-   * `mc-lang` came back English because the boot payload's `language: ''` (the
-   * workspace default) was adopted over it. `''` means "nothing recorded", not
-   * "the workspace chose Auto", so it must not clobber the more specific local
-   * signal — otherwise a user whose PUT never landed is reset on every load and
-   * can never make the choice stick.
+   * Regression: a browser with an explicit `mc-lang` came back English because
+   * the boot payload's `language: ''` (the workspace default) was adopted over
+   * it. `''` means "nothing recorded", not "the workspace chose Auto", so it
+   * must not clobber the more specific local signal — otherwise a user whose PUT
+   * never landed is reset on every load and can never make the choice stick.
    */
   it('keeps the local choice when the server reports no language', async () => {
     localStorage.setItem(LANG_STORAGE_KEY, 'zh-CN')

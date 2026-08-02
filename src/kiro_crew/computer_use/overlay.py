@@ -443,14 +443,14 @@ def get_shared_overlay() -> CursorOverlay:
     """Process-wide :class:`CursorOverlay` singleton.
 
     A ``threading.Lock``, like every sibling singleton in this package
-    (``backend``, ``index``, ``macos_ffi``, ``apps_macos``) — an earlier revision
-    skipped it on the premise that "the gateway's callers all live on the one event
-    loop", and they do not. The only caller is :func:`show_pointer_motion`, which is
-    SYNC and is invoked from ``tools._perform`` inside ``dispatch_tool``, offloaded
-    onto ``subprocess_executor()`` — an 8-worker pool. Nothing upstream serializes
-    the pointer path, so two concurrent ``click_method: "global"`` clicks both saw
-    ``None`` here, each constructed a ``CursorOverlay``, and one was handed out while
-    the other was orphaned. The orphan is unreachable afterwards (``stop`` and
+    (``backend``, ``index``, ``macos_ffi``, ``apps_macos``). The lock is required
+    because the callers do NOT all live on the one event loop: the only caller is
+    :func:`show_pointer_motion`, which is SYNC and is invoked from ``tools._perform``
+    inside ``dispatch_tool``, offloaded onto ``subprocess_executor()`` — an 8-worker
+    pool. Nothing upstream serializes the pointer path, so without this lock two
+    concurrent ``click_method: "global"`` clicks both see ``None`` here, each
+    construct a ``CursorOverlay``, and one is handed out while the other is
+    orphaned. The orphan is unreachable afterwards (``stop`` and
     ``reset_shared_overlay`` both go through this global) so its ``overlay_proc``
     child leaks for the gateway's lifetime — and each instance's own
     ``asyncio.Lock`` cannot serialize across instances, so the two fake cursors

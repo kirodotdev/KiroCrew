@@ -125,11 +125,10 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   const { cleaned: steerCleaned, acks: steerAcks } = useMemo(() => extractSteeringAcks(text), [text])
   const [smooth] = useState(() => loadChatConfig().streamMode !== 'immediate')
   // 1x = ~0.4s constant lag behind the live edge (see useSmoothStream's
-  // LAG_SECS). The old 4x override existed to stop the reveal lagging fast
-  // models under the previous catch-up design; the constant-latency controller
-  // bounds the lag for ANY model speed, and 4x only shrank the smoothing
-  // window to ~0.1s — smaller than typical inter-burst gaps, so the reveal
-  // starved between bursts and read as chunky.
+  // LAG_SECS). The constant-latency controller bounds the lag for ANY model
+  // speed; a higher multiplier only shrinks the smoothing window — 4x cuts it
+  // to ~0.1s, smaller than typical inter-burst gaps, so the reveal starves
+  // between bursts and reads as chunky.
   const speed = 1
   const smoothedText = useSmoothStream(steerCleaned, isStreaming, smooth, speed)
   // The smooth buffer keeps draining for ~LAG_SECS AFTER isStreaming flips false

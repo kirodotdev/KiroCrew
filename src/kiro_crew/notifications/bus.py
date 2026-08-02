@@ -155,7 +155,7 @@ class NotificationPayload:
             not isinstance(self.ttl, int)
             # bool is an int subclass: the sweeper deliberately excludes it,
             # so accepting "ttl": true here would 200 a passive note that
-            # never expires (GPT 5.6 round 11) -- reject at the contract.
+            # never expires -- reject at the contract.
             or isinstance(self.ttl, bool)
             or self.ttl <= 0
         ):
@@ -180,7 +180,7 @@ class NotificationPayload:
                     raise NotificationValidationError(
                         "each action requires non-empty string 'id' and 'label' fields"
                     )
-                # Closed key set (GPT 5.6 round 21): _redact_note_value scrubs
+                # Closed key set: _redact_note_value scrubs
                 # VALUES, not dict KEYS -- an extra property whose NAME carries
                 # a credential would sail past redaction into JSONL and every
                 # dashboard response. The contract is {id, label, url?}; reject

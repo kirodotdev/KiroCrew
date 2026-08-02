@@ -1,13 +1,16 @@
 /**
- * `splitPaneMessages` — the one-pass replacement for four render-body filters.
+ * `splitPaneMessages` — a single pass that partitions messages into transcript,
+ * interactive queue, and system-delivery count, in place of four render-body
+ * filters.
  *
  * ChatPane owns the composer `input` state, so it re-renders on every keystroke.
- * Deriving the transcript with `allMessages.filter(...)` in the render body gave
- * it a fresh array identity per character, which permanently defeated the memo()
- * on ChatMessageList and re-ran its O(N) turn grouping while the user typed.
+ * Deriving the transcript with `allMessages.filter(...)` in the render body
+ * hands it a fresh array identity per character, defeating the memo() on
+ * ChatMessageList and re-running its O(N) turn grouping while the user types —
+ * so callers memoize this instead.
  *
- * These tests pin the split's SEMANTICS (the refactor's real risk is a logic
- * slip, not a perf regression) and the identity contract callers rely on.
+ * These tests pin the split's SEMANTICS (the real risk is a logic slip, not a
+ * perf regression) and the identity contract callers rely on.
  */
 import { describe, it, expect } from 'vitest'
 import { splitPaneMessages } from '../components/QueueStack'
@@ -55,8 +58,7 @@ describe('splitPaneMessages', () => {
 
   it('applies the two queue predicates independently, not as else-if', () => {
     // A delivery satisfies BOTH isNonInteractiveQueued and isSystemDelivery.
-    // Collapsing them into a single if/else would drop the count — the exact
-    // slip this one-pass rewrite could have introduced.
+    // Collapsing them into a single if/else would drop the count.
     const { queuedMessages, systemDeliveryCount } = splitPaneMessages([msg('queued', DELIVERY)])
     expect(queuedMessages).toEqual([])
     expect(systemDeliveryCount).toBe(1)
@@ -85,8 +87,8 @@ describe('splitPaneMessages', () => {
     ]
     const got = splitPaneMessages(all)
 
-    // The exact expressions this replaced, kept here as the oracle so a future
-    // edit to the one-pass loop cannot silently drift from the old semantics.
+    // The equivalent chain of filters, kept here as the oracle so a future
+    // edit to the one-pass loop cannot silently drift from these semantics.
     const expectedMessages = all.filter(m => m.role !== 'queued')
     const allQueued = all.filter(m => m.role === 'queued')
     const expectedQueued = allQueued.filter(m => !(
@@ -105,8 +107,8 @@ describe('splitPaneMessages', () => {
 
   it('returns fresh arrays per call, so callers MUST memoize', () => {
     // Documents why ChatPane wraps this in useMemo keyed on allMessages: the
-    // function is pure but not memoizing, so calling it in a render body is
-    // exactly the bug that was fixed.
+    // function is pure but allocates fresh arrays, so calling it in a render
+    // body would re-render on every keystroke.
     const all = [msg('user', 'a')]
     expect(splitPaneMessages(all).messages).not.toBe(splitPaneMessages(all).messages)
   })

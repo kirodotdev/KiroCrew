@@ -1,14 +1,11 @@
 /**
- * Board view (tag-columns) folder rename was dead: renderColumnFolder rendered
- * the folder name as a static <span> with no editingId branch, so the ⋯-menu
- * "Rename" item flipped editingId but no input ever appeared, and there was no
- * double-click affordance either. The list-view header (renderFolderHeader)
- * has both. This adds the inline edit input + double-click-to-rename to board
- * view for parity.
+ * Board view (tag-columns) folder rename: renderColumnFolder renders the folder
+ * name with an editingId branch so both the ⋯-menu "Rename" item and a
+ * double-click reveal an inline edit input, matching the list-view header
+ * (renderFolderHeader).
  *
  * Radix DropdownMenu can't be opened in jsdom (needs PointerEvent), so the
- * load-bearing path here is double-click → inline input → Enter commit, which
- * exercises the exact branch that was missing.
+ * load-bearing path here is double-click → inline input → Enter commit.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, fireEvent, waitFor, within } from '@testing-library/react'
@@ -173,7 +170,7 @@ describe('board view: folder rename', () => {
   // Regression: every root folder renders in EVERY column, so an edit gated only
   // by folder.id opened the rename input in all columns at once and the shared
   // ref bound to the last one — the caret landed in the wrong column. The edit
-  // is now scoped to the clicked column (editScope === columnId), so exactly one
+  // is scoped to the clicked column (editScope === columnId), so exactly one
   // input mounts, in the column that was clicked.
   it('scopes the rename input to the clicked column, not every column', () => {
     const { container } = renderMultiColumn()

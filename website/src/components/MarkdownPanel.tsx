@@ -244,7 +244,7 @@ function ArtifactToggleIconButton({ state }: { state: ReturnType<typeof useFileA
 }
 
 /**
- * Round 8 row-2 icon: knowledge library toggle. Hidden by the caller
+ * Row-2 icon: knowledge library toggle. Hidden by the caller
  * when the file's extension isn't supported (or the library is
  * unconfigured). When already added, renders as a static badge.
  */
@@ -279,8 +279,8 @@ const barLabelBtn = (on: boolean) =>
 
 export function OverflowMenu({ filePath, content, revealOrCopy, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting }: {
   filePath: string; content: string; revealOrCopy: (path: string, action: 'open' | 'reveal') => void
-  /** View actions folded in from the old header row (side-panel revamp): the
-   *  ⋯ menu is the single home for everything that isn't a mode toggle. */
+  /** View actions live in the ⋯ menu: the single home for everything that
+   *  isn't a mode toggle. */
   onRefresh?: () => void; refreshDisabled?: boolean; refreshTitle?: string
   onFullscreen?: () => void; fullscreen?: boolean
   /** Snapshot the file's artifact (saves first when dirty — parent owns that
@@ -318,8 +318,8 @@ export function OverflowMenu({ filePath, content, revealOrCopy, onRefresh, refre
   // Reset the per-mutation success flags whenever the menu closes so the
   // i18nT('components.markdownPanel.added') / 'Snapshotted!' acknowledgement doesn't bleed into the next
   // open if the user closed quickly. Destructure the callbacks so the dep
-  // array stays stable across renders (review round 13: object refs from
-  // hooks change every render, causing the effect to re-fire constantly).
+  // array stays stable across renders (object refs from hooks change every
+  // render, causing the effect to re-fire constantly).
   const knowledgeReset = knowledge.reset
   const artifactResetAdd = artifact.resetAdd
   useEffect(() => {
@@ -460,7 +460,7 @@ function useFileKnowledgeState(filePath: string) {
 
 /**
  * File-level artifact state: existing artifact for this source_path,
- * adding/snapshotting mutations. Round 8: live_dirty flows through so
+ * adding/snapshotting mutations. `live_dirty` flows through so
  * the inline Snapshot button can gate visibility/enable correctly.
  */
 function useFileArtifactState(filePath: string, content: string) {
@@ -665,9 +665,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const [lineNums, setLineNums] = usePersistedBool('mc-file-linenums', true)
   const [wordWrap, setWordWrap] = usePersistedBool('mc-file-wordwrap', true)
   const [autocomplete, setAutocomplete] = usePersistedBool('mc-file-autocomplete', true)
-  // Reading-width toggle removed — the side panel renders markdown at a fixed
-  // default width (centered, capped at --mc-content-width), matching the
-  // artifact detail page. No M/F toggle.
+  // The side panel renders markdown at a fixed default width (centered, capped
+  // at --mc-content-width), matching the artifact detail page. No reading-width
+  // (M/F) toggle.
   const mdPreviewStyle: React.CSSProperties = { maxWidth: 'var(--mc-content-width, 900px)', margin: '0 auto' }
   // Hydrate pending draft comments for this file from localStorage so they
   // survive panel close, refresh, and crash. Submitting clears them.
@@ -963,11 +963,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     } finally { setRefreshing(false) }
   }, [filePath, onContentChange, onRefresh, refreshing, dirty])
 
-  // Discard pending edits (round 8: matches the artifact detail page's
-  // Cancel button). Re-reads the file from disk into the buffer,
-  // clearing dirty. Confirms first because edits are gone for good.
-  // Only markdown-ish files have a preview to return to; code files stay in
-  // source mode (Cancel just discards edits).
+  // Discard pending edits (matches the artifact detail page's Cancel button).
+  // Re-reads the file from disk into the buffer, clearing dirty. Confirms first
+  // because edits are gone for good. Only markdown-ish files have a preview to
+  // return to; code files stay in source mode (Cancel just discards edits).
   const canPreview = isMarkdown
   const handleCancel = useCallback(async () => {
     if (!dirty) { if (canPreview) setEditing(false); return }
@@ -1335,7 +1334,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       reserveWidth={reserveWidth}
       storageKey="mc-panel-width"
       customHeader={
-        /* Single-bar toolbar (side-panel revamp): the tab chip owns
+        /* Single-bar toolbar: the tab chip owns
            identity + close, so this bar carries a static breadcrumb + dirty
            dot + diff stats on the left, and library actions (star /
            knowledge), View Source/Preview toggle, diff toggle, and the ⋯

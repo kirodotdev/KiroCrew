@@ -12,16 +12,16 @@ things, **neither** a static built-in pattern list:
 * governance ``commands``-scope **pins** — loaded from ``security_policy.json``
   and applied tightest-wins in ``governance.py`` (not visible to this module).
 
-The built-in ``security.BUILTIN_DENY_PATTERNS`` are **no longer** part of the
+The built-in ``security.BUILTIN_DENY_PATTERNS`` are **not** part of the
 un-weakenable baseline: they are the DEFAULT-ON but USER-DISABLEABLE tier,
 filtered per-call via the ``denied_regexes`` regex tier and enforced at
-``hooks.py``'s PreToolUse gate.  ``BASELINE_DENY`` is therefore now the empty
+``hooks.py``'s PreToolUse gate.  ``BASELINE_DENY`` is therefore the empty
 tuple — the static OSS floor carries no pattern.
 
 :func:`assert_security_floor` (called at boot) consequently guarantees only the
 ADD-only overlay contract: that the authority is a :class:`PolicyAuthority` and
-has not overridden the ``@final`` decision methods.  It no longer asserts a
-built-in superset or probes git-publish, because those rules are now
+has not overridden the ``@final`` decision methods.  It does not assert a
+built-in superset or probe git-publish, because those rules are
 user-disableable.
 
 The actual deny evaluation (two-pass, git-publish verb anchoring, SEL audit)
@@ -39,14 +39,14 @@ from typing import Protocol, Tuple, final, runtime_checkable
 from kiro_crew import security
 from kiro_crew.platform.context import PlatformCompositionError
 
-# The static, un-weakenable OSS deny floor — now EMPTY.
+# The static, un-weakenable OSS deny floor — EMPTY.
 #
-# The built-in deny patterns moved to the disableable tier
+# The built-in deny patterns live in the disableable tier
 # (``security.BUILTIN_DENY_PATTERNS``, filtered per-call via ``denied_regexes``
 # and enforced at ``hooks.py``'s PreToolUse gate).  The un-opt-out-able floor is
 # supplied dynamically by (a) the companion :class:`SecurityOverlay` and
 # (b) governance ``commands``-scope pins, so there is no static pattern list to
-# assert here.  The name is preserved because ``platform/__init__.py`` re-exports
+# assert here.  The name is kept because ``platform/__init__.py`` re-exports
 # it and tests import it.
 BASELINE_DENY: Tuple[str, ...] = ()
 
@@ -84,7 +84,7 @@ class PolicyAuthority:
     def effective_patterns(self, extra: Tuple[str, ...] = ()) -> Tuple[str, ...]:
         """Return the un-weakenable floor patterns: overlay ∪ per-call extra.
 
-        Since ``BASELINE_DENY`` is now ``()`` this reports the companion
+        Since ``BASELINE_DENY`` is ``()`` this reports the companion
         overlay's ADD-only patterns unioned with any per-call extra — i.e. the
         floor patterns only.  It deliberately does NOT include the disableable
         built-in tier (those are applied inside ``security.is_denied`` and may be
@@ -128,8 +128,8 @@ def assert_security_floor(authority: object) -> None:
     """Boot-time guard: verify the ADD-only overlay contract is intact.
 
     Under the user-configurable-denied-commands model the built-in patterns are
-    user-disableable, so this guard no longer asserts a built-in superset or
-    probes git-publish.  It verifies only the structural ADD-only guarantee: the
+    user-disableable, so this guard does not assert a built-in superset or
+    probe git-publish.  It verifies only the structural ADD-only guarantee: the
     authority is a :class:`PolicyAuthority` and has not overridden its ``@final``
     decision methods at runtime.  This is now the PRIMARY (and only structural)
     protection of the overlay — it MUST stay verbatim, or a companion could

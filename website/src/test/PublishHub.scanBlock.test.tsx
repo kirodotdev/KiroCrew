@@ -51,12 +51,10 @@ describe('PublishHub 409 scan-blocked flow', () => {
 
     render(<PublishHub artifact={fakeArtifact} />, { wrapper })
 
-    // Wait for provider to appear
     await waitFor(() => {
       expect(screen.getByText('Public Web')).toBeDefined()
     })
 
-    // Select the provider
     fireEvent.click(screen.getByText('Public Web'))
 
     // Mock the first publish call → 409 scan-blocked
@@ -75,7 +73,6 @@ describe('PublishHub 409 scan-blocked flow', () => {
     expect(publishBtn).toBeDefined()
     fireEvent.click(publishBtn!)
 
-    // Wait for scan-blocked panel to render with findings
     await waitFor(() => {
       expect(screen.getByText(/Scan blocked/)).toBeDefined()
       expect(screen.getByText(/AKIA1234567890123456/)).toBeDefined()
@@ -84,7 +81,6 @@ describe('PublishHub 409 scan-blocked flow', () => {
     // Mock the override call → success
     fetchSpy.mockImplementationOnce(async (_url, init) => {
       const body = JSON.parse((init as RequestInit).body as string)
-      // Verify override_scan is true
       expect(body.override_scan).toBe(true)
       expect(body.confirm).toBe(true)
       return new Response(JSON.stringify({
@@ -92,10 +88,8 @@ describe('PublishHub 409 scan-blocked flow', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     })
 
-    // Click override button
     fireEvent.click(screen.getByText('Override & Publish Anyway'))
 
-    // Wait for success
     await waitFor(() => {
       expect(screen.getByText('Published!')).toBeDefined()
     })
@@ -233,12 +227,10 @@ describe('PublishHub ttl_hours payload (F3 R11)', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     )
 
-    // Click Publish
     const publishBtns = screen.getAllByRole('button')
     const publishBtn = publishBtns.find(b => b.textContent?.includes('Publish') && !b.textContent?.includes('Close'))
     fireEvent.click(publishBtn!)
 
-    // Wait for preview
     await waitFor(() => {
       expect(screen.getByText(/Ready to publish/)).toBeDefined()
     })

@@ -240,8 +240,8 @@ class HybridRetriever:
 
         Each token is individually double-quoted (with internal quotes doubled)
         so it is treated as a literal FTS5 string -- the user's input never
-        contributes FTS5 operators (parameterized quoting; BSC1 Input
-        Validation). Stopwords are dropped and the remaining tokens OR-joined
+        contributes FTS5 operators (parameterized quoting). Stopwords are dropped
+        and the remaining tokens OR-joined
         so natural-language queries no longer require every
         literal token to appear in a matching document.
         """
@@ -346,7 +346,7 @@ class HybridRetriever:
         ``ranked_lists``) let a leg contribute more to the fused score. The
         vector leg is weighted higher so semantic matches dominate when keyword
         matches are weak. When ``weights`` is None every
-        leg is weighted 1.0 (original behaviour).
+        leg is weighted 1.0.
         """
         scores: dict[str, float] = defaultdict(float)
         for i, rlist in enumerate(ranked_lists):

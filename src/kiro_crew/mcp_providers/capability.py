@@ -1,8 +1,8 @@
 """Edition-capability registry provider — wraps the CPP ``CapabilityManager`` seam.
 
-The public core carries no package-manager CLI of its own (PR #286 removed the
-last internal-CLI residue): an *edition* may install a ``CapabilityManager``
-that owns its registry grammar, output parsing, and error translation. This
+The public core carries no package-manager CLI of its own: an *edition* may
+install a ``CapabilityManager`` that owns its registry grammar, output parsing,
+and error translation. This
 provider surfaces that seam inside MCP discovery so a companion edition's
 registry shows up next to the official MCP registry with a provider badge.
 

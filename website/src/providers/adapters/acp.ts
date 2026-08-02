@@ -199,10 +199,10 @@ export class AcpAdapter implements ProviderAdapter {
     // This deliberately does NOT re-derive the precedence client-side. The
     // chain is four tiers deep (the KiroCrew agent's own model, the bound kiro
     // agent's pin, the global agent.model default, the installed agent file)
-    // and a second copy of it here drifted from the backend's: a fresh slot
-    // displayed the kiro agent file's model while the turn actually ran on the
-    // configured default, and the mismatch only self-corrected once the first
-    // turn backfilled slot.model from the live session.
+    // and a second copy of it here would drift from the backend's: a fresh slot
+    // would display the kiro agent file's model while the turn actually ran on
+    // the configured default, and the mismatch would only self-correct once the
+    // first turn backfilled slot.model from the live session.
     //
     // `agentName` is a KiroCrew agent name (a "crew"), not a kiro agent
     // template — the per-agent default is stored per crew, and several crews can
@@ -305,9 +305,9 @@ export class AcpAdapter implements ProviderAdapter {
 
   async installPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp') {
     // The edition capability manager owns any version/source resolution — no
-    // version_set is sent. Agent packages are now installable too (the seam
-    // gained install_agent/uninstall_agent); on an edition without a capability
-    // manager the backend answers 503 and this surfaces as a normal error.
+    // version_set is sent. Agent packages are installable via install_agent/
+    // uninstall_agent; on an edition without a capability manager the backend
+    // answers 503 and this surfaces as a normal error.
     if (type === 'skill') return api.capabilitySkillsInstall(pkg)
     if (type === 'mcp') return api.capabilityMcpInstall(pkg)
     return api.capabilityAgentsInstall(pkg)
@@ -320,7 +320,7 @@ export class AcpAdapter implements ProviderAdapter {
   }
 
   async updatePlugins(_type: 'agent' | 'skill' | 'mcp') {
-    // Bulk update route was removed.
+    // No bulk-update route exists.
     return { ok: false as const, error: 'plugin update is not supported' }
   }
 
@@ -363,8 +363,8 @@ export class AcpAdapter implements ProviderAdapter {
    *  kiro-cli cold-start timeout / auth race on /api/models). Exposes ONLY the
    *  "auto" sentinel — never the canonical registry keys (opus-4.8-1m,
    *  fable-5-1m, …). Those keys are DISPLAY identifiers the ACP CLI rejects as
-   *  model ids: selecting one during the cold-start window wrote it verbatim
-   *  into slot.model and kiro-cli failed the turn with -32603 "model not
+   *  model ids: selecting one during the cold-start window writes it verbatim
+   *  into slot.model and kiro-cli fails the turn with -32603 "model not
    *  available". "auto" always resolves server-side, so it is the only safe
    *  offering until the real list loads. */
   private _defaultModels(): ModelInfo[] {

@@ -194,7 +194,7 @@ describe('OnboardingFlow — About You step', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Developer' }))
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     // In-flight: every input frozen — changing a chip now would advance the
-    // flow with a stale value persisted (GPT round-3 race).
+    // flow with a stale value persisted.
     await screen.findByRole('button', { name: 'Saving…' })
     const designerChip = screen.getByRole('button', { name: 'UX Designer' })
     expect(designerChip).toBeDisabled()
@@ -339,8 +339,9 @@ describe('OnboardingFlow — About You step', () => {
 
   it('keeps the caret in the field while typing (focus-trap regression)', () => {
     // The dialog's focus trap re-runs whenever `finish` changes identity, which
-    // now happens on every keystroke in this field. Before initial focus was
-    // keyed to the step, the second character went to "Skip all".
+    // happens on every keystroke in this field. Initial focus is keyed to the
+    // step so the caret stays in the field instead of the second character
+    // going to "Skip all".
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     advanceToStep2()
     fireEvent.click(screen.getByRole('button', { name: 'Other' }))

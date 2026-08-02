@@ -89,8 +89,8 @@ describe('dedupResourceLinks', () => {
   }
 
   it('collapses the same PR referenced by different sub-paths / fragments', () => {
-    // Regression: two distinct URLs for pull/274 previously rendered as two
-    // identical "Perf observability readiness telemetry PR" resource rows.
+    // Two distinct URLs for pull/274 collapse to a single resource row, not two
+    // identical "Perf observability readiness telemetry PR" rows.
     const links = [
       link('https://github.com/acme/repo/pull/274', 'cr', 'Perf observability readiness telemetry PR'),
       link('https://github.com/acme/repo/pull/274/files', 'cr', 'Perf observability readiness telemetry PR'),
@@ -137,7 +137,8 @@ describe('dedupResourceLinks', () => {
   })
 
   it('does NOT collapse non-CR paths that differ only by case (path is case-sensitive)', () => {
-    // Regression: identity previously lowercased the whole URL, dropping /docs.
+    // Path case is significant: identity must not lowercase the whole URL, or
+    // /Docs and /docs would collapse.
     const links = [
       link('https://example.com/Docs', 'other', 'Docs (caps)'),
       link('https://example.com/docs', 'other', 'docs (lower)'),

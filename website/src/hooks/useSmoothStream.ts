@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 /**
- * Smoothing buffer for streamed text — Layer 1 of the streaming-feel rework.
+ * Smoothing buffer for streamed text.
  *
  * Raw streaming jitter comes from welding render cadence to network cadence:
  * `chatSlice` appends each WS delta straight into the message content, so the
@@ -14,8 +14,7 @@ import { useEffect, useRef, useState } from 'react'
  *
  *     rate = backlog / LAG_SECS
  *
- * which self-regulates against every failure mode the previous EMA + catch-up
- * design fought piecemeal:
+ * which self-regulates against every failure mode:
  *   - a steady model at R chars/sec settles a standing backlog of R·LAG chars
  *     and reveals at exactly R — smooth, with a constant ~LAG_SECS delay;
  *   - a network burst raises the backlog, so the rate ramps up (slew-limited,
@@ -24,9 +23,9 @@ import { useEffect, useRef, useState } from 'react'
  *     speed the eye can follow — see the constants below);
  *   - a gap between bursts is absorbed by the standing backlog: the reveal
  *     keeps flowing (decaying gently, never freezing) for up to ~LAG_SECS
- *     before it can starve. The old design revealed straight to the live edge,
- *     froze there, then surged on the next burst — the freeze→surge cycle the
- *     eye reads as "chunks".
+ *     before it can starve — so the reveal never freezes at the live edge and
+ *     then surges on the next burst, the freeze→surge cycle the eye reads as
+ *     "chunks".
  *
  * The applied rate is additionally slew-limited (low-pass filtered), so burst
  * arrivals read as smooth accelerations rather than step changes, and a MIN
@@ -66,7 +65,7 @@ const MAX_CPS = 600
  *  8+ seconds — while ordinary bursts (≤ MAX_CPS × MAX_DRAIN_SECS ≈ 1.5K
  *  chars) never engage it and stay under the smoothness ceiling. This bounded
  *  drain is also what makes a hard cap safe against runaway lag on very fast
- *  models (the failure the old design papered over with a 4x speed override). */
+ *  models. */
 const MAX_DRAIN_SECS = 2.5
 /** Slew time constant (seconds) for the APPLIED reveal rate. The desired rate
  *  steps discontinuously when a burst lands; low-pass filtering the applied
@@ -108,7 +107,7 @@ export function useSmoothStream(content: string, streaming: boolean, enabled: bo
   // finishes, the rAF loop stops itself (raf = 0 when !streaming && caughtUp)
   // and never restarts (its deps are [enabled, speed]), so a later content
   // change — a variant switch to a longer answer, or a post-completion patch —
-  // was permanently truncated to the old emitLen by the slice at the bottom.
+  // would otherwise be truncated to the old emitLen by the slice at the bottom.
   // A non-streaming content change is not an incremental token reveal; render
   // it instantly (matching the "already-complete messages render instantly"
   // intent of the emitLen initializer). Genuine streaming growth is still
@@ -118,9 +117,9 @@ export function useSmoothStream(content: string, streaming: boolean, enabled: bo
   // under the constant-latency controller the reveal deliberately trails the
   // live edge by ~LAG_SECS of text, so at stream end there is ALWAYS unrevealed
   // residue — snapping here would flash the last half-second of every message
-  // in as a block (the end-of-stream snap the old speed=4 override existed to
-  // hide). While `wasStreamingRef` is up the residue belongs to the drain loop,
-  // which reveals it at the slewed rate and lowers the flag when caught up.
+  // in as a block. While `wasStreamingRef` is up the residue belongs to the
+  // drain loop, which reveals it at the slewed rate and lowers the flag when
+  // caught up.
   useEffect(() => {
     if (!enabled || streaming) return
     if (wasStreamingRef.current) return

@@ -16,12 +16,12 @@ import tempfile
 
 def aws(profile, region, *args):
     cmd = ["aws"] + (["--profile", profile] if profile else []) + ["--region", region, *args]
-    # R34 F2: every AWS spawn from these LLM-facing helpers MUST route through
-    # the sandbox chokepoint — the previous ImportError fallback ran completely
-    # unsandboxed when kiro_crew wasn't importable, which is exactly the
-    # environment an attacker would arrange. Fail closed instead: standalone
-    # operators must run via the package venv (pip install -e / the skill's
-    # documented invocation), never bare python3 without kiro_crew on sys.path.
+    # Every AWS spawn from these LLM-facing helpers MUST route through the
+    # sandbox chokepoint. An ImportError fallback that ran unsandboxed when
+    # kiro_crew wasn't importable is exactly the environment an attacker would
+    # arrange, so fail closed instead: standalone operators must run via the
+    # package venv (pip install -e / the skill's documented invocation), never
+    # bare python3 without kiro_crew on sys.path.
     try:
         from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
     except ImportError:

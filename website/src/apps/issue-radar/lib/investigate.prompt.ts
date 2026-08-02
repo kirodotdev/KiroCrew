@@ -14,7 +14,7 @@
 // hidden behind a shape rule and pretended to be invisible: the boundary is the
 // honest form of the claim.
 //
-// A `words.exclude` shape rule was tried first and cannot do this job. The
+// A `words.exclude` shape rule cannot do this job. The
 // exclusion IS consulted for a template literal — eslint-plugin-i18next
 // validates each quasi's trimmed text (`no-literal-string.js` → `isValidLiteral`
 // → `shouldSkip(options.words, …)`) and only reports at the whole node — but the
@@ -31,14 +31,14 @@ import { issueViewCommand, providerTerms, recordIdentityJson } from './links'
  *
  * Everything provider-specific is derived from the ref: which CLI to read the
  * issue with, what to call the forge, and the identity the record write must
- * carry. Hard-coding `gh` here sent the agent to GitHub for a GitLab issue, and
- * omitting provider/host wrote the findings into the GitHub ledger.
+ * carry. Hard-coding `gh` here would send the agent to GitHub for a GitLab issue,
+ * and omitting provider/host would write the findings into the GitHub ledger.
  *
  * The findings write goes through the `issue_radar_record_investigation` MCP
  * tool, NOT a raw PUT. An agent session has no dashboard credential (httpOnly
  * cookie, internal secret stripped from its env, `.local_secret` on the
- * sensitive-path denylist), so the PUT this prompt used to ask for was refused
- * with 403 every single time and no investigation ever stored its findings. */
+ * sensitive-path denylist), so a raw PUT is refused with 403 and no
+ * investigation could store its findings. */
 export function buildInvestigationPrompt(
   repoRef: RepoRef,
   owner: string,

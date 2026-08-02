@@ -3,8 +3,7 @@
  *
  * Decides whether the unread-only filter should be auto-disabled based on the
  * current and previous unread counts and load state. Extracted from the effect
- * so it can be unit-tested without the full component render (per
- * review feedback on the 3-case state machine).
+ * so it can be unit-tested without the full component render.
  *
  * The null-sentinel on `prev` distinguishes "data not yet loaded" from "data
  * loaded and genuinely empty", so the persisted-true + data-loads-empty case

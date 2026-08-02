@@ -1,14 +1,14 @@
 /**
  * Tests for the surface registry (`src/surfaces/registry.ts`).
  *
- * The registry replaces the prior hardcoded NAV_ITEMS + per-id badge
- * if-chain in App.tsx. These tests pin down:
+ * The registry provides nav-item registration and per-id badge counts.
+ * These tests pin down:
  * - registration & lookup semantics
  * - badge count derivation for slot-bearing surfaces (read from
  *   `slot.surface ?? slot.mode`) and non-slot surfaces (delegated to a
  *   surface-supplied selector)
- * - cross-surface attribution (regression for the bug that originally
- *   motivated this refactor: orchestrator slots leaking into the Chat badge)
+ * - cross-surface attribution (orchestrator slots must not leak into the
+ *   Chat badge)
  * - the orphan-key fallback to the chat bucket so `totalAttention` doesn't
  *   transiently drop while `fetchSlots` reconciliation is in flight
  */
@@ -137,8 +137,7 @@ describe('surfaces registry', () => {
       })
       const state = buildState([slot('chat-1', '')], ['chat-1'])
       // 1 chat + 5 secretary = 6 — appOnly surfaces must still be summed
-      // into the browser tab attention count, otherwise removing the
-      // separate `secretaryCount` addition in App.tsx silently drops them.
+      // into the browser tab attention count.
       expect(selectAllSurfacesAttention({ ...state, dashboard: { ...state.dashboard, enabledAppIds: ['secretary'] } })).toBe(6)
     })
 
@@ -251,10 +250,10 @@ describe('surfaces registry', () => {
     })
 
     it('regression: cross-mode unreads do NOT leak into the toggle count', () => {
-      // The bug this fix addresses: an autopilot slot becoming unread while
-      // the user is on /chat used to inflate the sidebar's "Show only unread
-      // sessions (N)" tooltip and prevent the auto-drain effect from
-      // disabling the filter when the same-surface inbox actually drained.
+      // An autopilot slot becoming unread while the user is on /chat must not
+      // inflate the sidebar's "Show only unread sessions (N)" tooltip or
+      // prevent the auto-drain effect from disabling the filter when the
+      // same-surface inbox actually drains.
       const unread = ['orch-1']
       expect(filterUnreadKeysBySurface(unread, slots, '')).toEqual([])
       expect(filterUnreadKeysBySurface(unread, slots, 'orchestrator')).toEqual(['orch-1'])

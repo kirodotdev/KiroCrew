@@ -501,8 +501,7 @@ def safe_context_call(
     so a best-effort lookup never breaks the caller.
 
     Centralizing the idiom here means a call site cannot accidentally swallow
-    ``PlatformCompositionError`` by writing a bare ``except Exception`` (the bug
-    that previously recurred in several hand-written shims).
+    ``PlatformCompositionError`` by writing a bare ``except Exception``.
 
     The fallback is supplied EITHER eagerly via ``fallback`` OR lazily via
     ``fallback_factory`` (at least one is REQUIRED — passing neither raises
@@ -557,7 +556,7 @@ def redact_via_context(text: str) -> str:
     The single, canonical credential-redaction shim every egress site should
     import — instead of hand-writing the ``try current_context().credentials
     .redact / except PlatformCompositionError: raise / except Exception:
-    fallback`` idiom (the bug that previously recurred in several copies).
+    fallback`` idiom.
 
     Routes through ``current_context().credentials.redact`` so a loaded Amazon
     companion's extra credential/cookie regexes apply.  The Default

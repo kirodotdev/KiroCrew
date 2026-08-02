@@ -2,9 +2,9 @@
 //
 // The pure pieces (FollowController, WindowCalculator, HeightCache) are unit-
 // tested in isolation. This suite covers the WIRING that those unit tests
-// can't reach — the effects/refs that historically caused the follow/yank
-// regressions: append-pin while followed, a user scroll-up releasing follow so
-// a later append does NOT yank, and a slot switch force-pinning to the bottom.
+// can't reach — the effects/refs that drive follow/yank behavior: append-pin
+// while followed, a user scroll-up releasing follow so a later append does NOT
+// yank, and a slot switch force-pinning to the bottom.
 //
 // jsdom has no layout engine, so scrollTop/scrollHeight/clientHeight are faked
 // on a controlled detached scroller element passed via `externalScrollerRef`.
@@ -353,12 +353,11 @@ describe('useVirtualChat integration: follow / pin wiring', () => {
 // scrollTop, keeping the visible top row's screen position stable.
 // ---------------------------------------------------------------------------
 describe('useVirtualChat: every scroll write goes through the one chokepoint', () => {
-  // Design finding: follow-release correctness rested on a comment-enforced
-  // invariant ("every programmatic scrollTop write must record itself in
-  // lastWriteTopRef") that had already failed once in this codebase. It is now
-  // structural: all writes funnel through `writeScrollTop`, whose `accounting`
-  // argument is REQUIRED, so tsc rejects a write that does not state how the
-  // follow guard should treat it.
+  // Follow-release correctness requires every programmatic scrollTop write to
+  // record itself in lastWriteTopRef. That invariant is structural rather than
+  // comment-enforced: all writes funnel through `writeScrollTop`, whose
+  // `accounting` argument is REQUIRED, so tsc rejects a write that does not
+  // state how the follow guard should treat it.
   //
   // This is a SOURCE guard rather than a behavioural one, deliberately. The
   // failure it prevents is a future contributor adding a raw `el.scrollTop = x`
@@ -414,12 +413,10 @@ describe('useVirtualChat: smooth-pin guard (GPT MEDIUM round 4)', () => {
   // NOTE: the positive case (a smooth pin's intermediate animation frames must
   // not be read as user input) is verified in a REAL BROWSER, not here. jsdom has
   // no scroll animation, so reproducing it requires hand-faking the frame
-  // sequence AND the append-pin path; two attempts at that produced a test that
-  // failed for reasons unrelated to the guard. Rather than ship an assertion I
-  // do not trust, the behaviour is measured with the Chromium harness (see the
-  // PR disposition). What IS asserted here is the inverse, which jsdom models
-  // faithfully: an instant pin must not leave the guard armed and swallow real
-  // user input.
+  // sequence AND the append-pin path, which does not discriminate the guard
+  // reliably. The behaviour is measured with the Chromium harness instead. What
+  // IS asserted here is the inverse, which jsdom models faithfully: an instant
+  // pin must not leave the guard armed and swallow real user input.
   it('an INSTANT pin does not arm the smooth guard', () => {
     const { el, state } = makeScroller({ scrollTop: 2500, scrollHeight: 3000, clientHeight: 500 })
     const ref = { current: el } as RefObject<HTMLDivElement>
@@ -500,10 +497,10 @@ describe('useVirtualChat: smooth-pin guard (GPT MEDIUM round 4)', () => {
     expect(h.wheelAborts()).toBe(true)
   })
 
-  // Regression for the arrival condition. It used to be `atBottom`, i.e. the
-  // 100px bottomThreshold: the glide entered that band while the native
-  // animation still had up to 100px to run, the guard disarmed early, and a user
-  // grabbing the page inside the band was carried to the bottom anyway.
+  // The arrival condition is the value actually written, NOT `atBottom` (the
+  // 100px bottomThreshold): if it disarmed on entering that band while the
+  // native animation still had up to 100px to run, a user grabbing the page
+  // inside the band would be carried to the bottom anyway.
   it('does NOT disarm merely because the glide entered the 100px bottom band', () => {
     const h = smoothPinHarness('smooth-band')
     // 3000 - (2450 + 500) = 50px from the bottom → inside the 100px UI band,
@@ -551,9 +548,9 @@ describe('useVirtualChat: smooth-pin guard (GPT MEDIUM round 4)', () => {
     expect(h.result.current.isAtBottom).toBe(false)
   })
 
-  // GPT MEDIUM round 13: the abort listened for `wheel`/`touchmove` only, so a
-  // scrollbar drag or a keyboard scroll during the glide was overridden by the
-  // continuing animation. attachUserScrollIntent is the shared input set.
+  // The abort must also catch a scrollbar drag or keyboard scroll during the
+  // glide, not just `wheel`/`touchmove` — otherwise the continuing animation
+  // overrides them. attachUserScrollIntent is the shared input set.
   it('a scrollbar drag (pointerdown) aborts the glide', () => {
     const h = smoothPinHarness('smooth-pointer')
     h.scrollTo(1400)
@@ -574,12 +571,12 @@ describe('useVirtualChat: smooth-pin guard (GPT MEDIUM round 4)', () => {
     expect(h.result.current.isAtBottom).toBe(false)
   })
 
-  // GPT MEDIUM round 13: pinAuto (RO tick / append layout effect) read the
-  // glide's own mid-flight scrollTop as a user scroll-up — scrollTop sits below
-  // the recorded target AND meaningfully away from the bottom, which is exactly
+  // pinAuto (RO tick / append layout effect) must not read the glide's own
+  // mid-flight scrollTop as a user scroll-up — scrollTop sits below the recorded
+  // target AND meaningfully away from the bottom, which is exactly
   // evaluateAutoPin's release signature. Streaming output resizes constantly, so
-  // an append during an explicit jump-to-latest killed follow for the rest of
-  // the response.
+  // an append during an explicit jump-to-latest would otherwise kill follow for
+  // the rest of the response.
   function appendDuringGlide(sessionId: string) {
     const { el, state } = makeScroller({ scrollTop: 1000, scrollHeight: 3000, clientHeight: 500 })
     const behaviors: (string | undefined)[] = []
@@ -628,18 +625,18 @@ describe('useVirtualChat: smooth-pin guard (GPT MEDIUM round 4)', () => {
   it('does not re-issue a smooth write for a mid-glide append (no animation restart)', () => {
     const h = appendDuringGlide('smooth-append-norestart')
     // Re-targeting mid-animation would cancel and restart the glide every resize
-    // tick — the restart trap fix #4 removed from the streaming pin.
+    // tick.
     expect(h.behaviors.length).toBe(h.writesBeforeAppend)
   })
 })
 
 describe('useVirtualChat: adaptive height estimate is wired into the offsets (GPT HIGH round 13)', () => {
-  // HeightCache.averageHeight() is unit-tested in isolation, but reverting the
-  // hook's `getH` back to the flat `estimatedHeight` left every one of those
-  // tests green while restoring the original bug: a long transcript's unmeasured
-  // rows are sized by a fixed 80px guess, so total height and the spacer offsets
-  // are wildly short and scrolling up lands in the wrong place. This asserts the
-  // WIRING — that measured heights feed the estimate for UNMEASURED rows.
+  // HeightCache.averageHeight() is unit-tested in isolation, but that passes
+  // even if the hook's `getH` uses the flat `estimatedHeight` — which sizes a
+  // long transcript's unmeasured rows by a fixed 80px guess, so total height and
+  // the spacer offsets are wildly short and scrolling up lands in the wrong
+  // place. This asserts the WIRING — that measured heights feed the estimate for
+  // UNMEASURED rows.
   beforeEach(() => localStorage.clear())
 
   const seed = (sid: string, keys: string[], h: number) => {
@@ -685,10 +682,10 @@ describe('useVirtualChat: adaptive height estimate is wired into the offsets (GP
 })
 
 describe('useVirtualChat: OffsetIndex is rebuilt on session switch (GPT MEDIUM)', () => {
-  // Regression: the offsetIndex memo depended only on [itemCount, getH]. getH's
-  // identity is stable across a session change (deps: [estimatedHeight]), so
-  // switching to a DIFFERENT session with the SAME item count rebuilt nothing —
-  // the Fenwick tree kept serving the previous transcript's heights and rendered
+  // The offsetIndex memo must rebuild on a session switch even when the item
+  // count is unchanged: getH's identity is stable across a session change
+  // (deps: [estimatedHeight]), so keying only on [itemCount, getH] would leave
+  // the Fenwick tree serving the previous transcript's heights and rendering
   // wrong spacers until a measurement tick corrected it.
   const seedHeights = (sessionId: string, n: number, h: number) => {
     const blob: Record<string, number> = {}
@@ -727,12 +724,11 @@ describe('useVirtualChat: OffsetIndex is rebuilt on session switch (GPT MEDIUM)'
 })
 
 describe('useVirtualChat: height-cache eviction cap is wired to the row count', () => {
-  // Regression: HeightCache grew a session-size-aware eviction cap, and
-  // HeightCache.test.ts proved the cap arithmetic correct — but the hook
-  // constructed `new HeightCache(sessionId)` without ever supplying rowCount,
-  // so the cap stayed pinned at the 2000 floor and long sessions still evicted
-  // their oldest heights. Every unit test passed; only a browser run at 3000
-  // rows exposed it. These assertions cover the WIRING, not the arithmetic.
+  // The hook must construct HeightCache WITH rowCount: HeightCache.test.ts
+  // proves the cap arithmetic, but if the hook builds `new HeightCache(sessionId)`
+  // without supplying rowCount, the cap stays pinned at the 2000 floor and long
+  // sessions evict their oldest heights while every unit test still passes.
+  // These assertions cover the WIRING, not the arithmetic.
   //
   // Public surface used: HeightCache enforces the cap when it LOADS a persisted
   // blob, so a pre-seeded localStorage entry of n > 2000 heights survives mount
@@ -980,10 +976,10 @@ describe('useVirtualChat: scroll-anchor preservation (T4/#5)', () => {
     }
   })
 
-  // GPT MEDIUM round 13: at start === 0 expandWindowUp is a NO-OP, but the
-  // anchor was captured anyway. Nothing upward ever consumed it, so it sat
-  // pending until the next unrelated commit — which then "corrected" scrollTop
-  // back to where the anchored row used to be, yanking the user toward the top.
+  // At start === 0 expandWindowUp is a NO-OP, so a top anchor captured anyway is
+  // never consumed upward — it sits pending until the next unrelated commit,
+  // which then "corrects" scrollTop back to where the anchored row was, yanking
+  // the user toward the top.
   it('does not capture a top anchor when the window is already at index 0', () => {
     const frames: FrameRequestCallback[] = []
     const origRaf = globalThis.requestAnimationFrame

@@ -1,10 +1,10 @@
 // Cross-reference links inside an issue/PR body or comment.
 //
-// A GitHub markdown body routinely links to OTHER issues and PRs. Every such
-// link used to leave the app (target=_blank → browser), which breaks the triage
-// loop: you lose the list, the filters, and the pane you were reading. When the
-// link points at the repo Issue Radar already has connected, the app can render
-// the target itself in a bottom sheet instead (see components/RefSheet.tsx).
+// A GitHub markdown body routinely links to OTHER issues and PRs. A plain
+// external link (target=_blank → browser) breaks the triage loop: you lose the
+// list, the filters, and the pane you were reading. When the link points at the
+// repo Issue Radar already has connected, the app renders the target itself in a
+// bottom sheet instead (see components/RefSheet.tsx).
 //
 // This module is the pure half of that: URL → { kind, number }, plus the
 // placeholder list rows the sheet passes to the detail panes while their real
@@ -60,7 +60,7 @@ function sameHost(hrefHost: string, repoHost: string, repo: RepoIdentity): boole
  * non-numeric path).
  *
  * Matching is anchored on the repo's OWN web URL rather than on a hard-coded
- * github.com set, because a repo's host is now part of its identity: the same
+ * github.com set, because a repo's host is part of its identity: the same
  * `group/project` path exists on gitlab.com and on every self-managed instance,
  * and opening one in a pane bound to the other would show the wrong item's
  * labels, roster and permissions. An Enterprise/self-managed host therefore

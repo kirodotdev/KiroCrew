@@ -1,9 +1,9 @@
 /**
  * Tests for measureSidePanelReservedW — the live minimum space the activity
- * panel must leave to its left. Fixes the overlap miscalc where a wide
- * readout capsule (expanded metrics + usage) slid under the panel before the
- * static 560px reserve engaged: the reserve is now
- * max(static, header clusters + padding + 24px gap).
+ * panel must leave to its left. The reserve is
+ * max(static 560px, header clusters + padding + 24px gap), so a wide readout
+ * capsule (expanded metrics + usage) cannot slide under the panel before the
+ * static reserve engages.
  */
 import { describe, it, expect, afterEach } from 'vitest'
 import { SIDE_PANEL_RESERVED_W, measureSidePanelReservedW } from '../pages/chat/SidePanel'

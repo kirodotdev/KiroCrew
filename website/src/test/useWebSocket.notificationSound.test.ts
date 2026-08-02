@@ -1,10 +1,9 @@
 /**
- * useWebSocket `notification` event -> MC_NOTIFICATION_EVENT relay (round-2 bugfix).
+ * useWebSocket `notification` event -> MC_NOTIFICATION_EVENT relay.
  *
- * The WS transport dispatched addNotification (toast/badge) for a `notification`
- * frame but never fired MC_NOTIFICATION_EVENT, so useNotificationSound never
- * played a sound — only the now-unmounted useSSE dispatched that window event.
- * This locks the relay so the WS path plays sounds like the SSE path did.
+ * The WS transport must fire MC_NOTIFICATION_EVENT — not merely dispatch
+ * addNotification (toast/badge) — for a `notification` frame, so
+ * useNotificationSound plays a sound. This pins that relay.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'

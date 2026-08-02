@@ -70,7 +70,7 @@ export function ChatPanel() {
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['tipsStatus'] })
       // Drop any cached/in-flight tip so a running Chat view can't display a
-      // tip fetched before the preference changed (Codex round-6).
+      // tip fetched before the preference changed.
       qc.removeQueries({ queryKey: ['tips-next'] })
     },
   })

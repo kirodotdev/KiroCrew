@@ -803,7 +803,6 @@ class SessionManager:
                 self._pool_size = min(_MAX_POOL, max(0, cfg.session.pool_size))
                 self._pool_agent = cfg.session.pool_agent or getattr(cfg.agent, "default_agent", "")
                 self._pool_cwd = default_project_dir()
-                # Drain warm pool
                 while not self._warm_pool.empty():
                     try:
                         provider, _ = self._warm_pool.get_nowait()
@@ -1890,13 +1889,11 @@ class SessionManager:
         reason = f"context at {pct:.0f}%" if pct > 0 else f"blind ({session.prompt_count} prompts)"
         logger.info("Recycling background session — %s", reason)
 
-        # Kill old session
         async with self._lock:
             old = self._sessions.pop(BACKGROUND_KEY, None)
         if old:
             await old.provider.shutdown()
 
-        # Create fresh replacement
         await self._ensure_background()
 
     async def recycle_heartbeat(self) -> None:
@@ -2886,9 +2883,8 @@ class SessionManager:
         open — leaving the native-session lock (``~/.kiro/sessions/cli/<uuid>.json``)
         held. When the new gateway resumes that slot via ``session/load`` kiro-cli
         rejects with "active in another process" and the slot returns EMPTY
-        completions until the stale lock times out. This was the confirmed root
-        cause of the Make-Live empty-response incident (slot chat-1, native
-        session 31f36326, after the 04:26 cutover).
+        completions until the stale lock times out. This is the root cause of
+        the Make-Live empty-response failure this drain prevents.
 
         For each registered session with an active turn, issue a graceful ACP
         ``session/cancel`` and wait (bounded) for the turn-done ack, so the

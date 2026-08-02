@@ -90,12 +90,12 @@ describe('themeConsent util', () => {
   })
 })
 
-// ── Regression pin (Codex HIGH / content-binding) ──
-// The chat wire now transmits the RAW stored grant as `theme_consent_sha`
-// (the sha256 the user granted); the backend verifies it against sha256 of the
-// persona it reads. The legacy `theme_consent` boolean is no longer sent —
-// gating is content-bound server-side, closing the reinstall-swap hole where a
-// relaxed boolean stayed true after persona.md changed.
+// ── Regression pin (content-binding) ──
+// The chat wire transmits the RAW stored grant as `theme_consent_sha` (the
+// sha256 the user granted); the backend verifies it against sha256 of the
+// persona it reads. No boolean `theme_consent` is sent — gating is
+// content-bound server-side, closing the reinstall-swap hole where a relaxed
+// boolean would stay true after persona.md changed.
 describe('sendChat theme_consent_sha wire token', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 

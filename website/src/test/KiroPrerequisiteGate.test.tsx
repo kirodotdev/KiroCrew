@@ -123,11 +123,9 @@ describe('KiroPrerequisiteGate', () => {
   it('offers sign-in for an already-installed CLI regardless of install source', async () => {
     // A user-owned / self-updated / toolbox Kiro CLI that runs is installed and
     // sign-in ready — no "unverified executable" dead end, no repair prompt.
-    // The mock reproduces the exact OLD rejected-provenance status
-    // (can_login:false + repair_required:true): under the pre-change gate this
-    // rendered a button-less "Reinstall" dead end; the new "runs" contract must
-    // ignore both fields and still offer an enabled Sign-in — so this fails on
-    // revert of the can_login/repair_required gate removals.
+    // The mock sets a rejected-provenance status (can_login:false +
+    // repair_required:true); the "runs" contract ignores both fields and still
+    // offers an enabled Sign-in rather than a button-less "Reinstall" dead end.
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
       installed: true,
       authenticated: false,
@@ -322,10 +320,10 @@ describe('KiroPrerequisiteGate', () => {
   })
 
   it('mounts the dashboard immediately while the first check is pending', async () => {
-    // The bug: the pending state rendered the full-screen SETUP shell ("Your
-    // crew is almost ready.") for the whole first round trip — which is slow
-    // because the gateway probe shells out to kiro-cli twice. A returning user
-    // saw the first-run setup screen flash and vanish.
+    // The pending state must not render the full-screen SETUP shell ("Your
+    // crew is almost ready.") for the whole first round trip — that round trip
+    // is slow because the gateway probe shells out to kiro-cli twice, so a
+    // returning user would see the first-run setup screen flash and vanish.
     //
     // Kiro readiness gates nothing in the dashboard, so an unresolved check must
     // not withhold OR degrade the app: mount it fully usable and let only a
@@ -437,7 +435,7 @@ describe('KiroPrerequisiteGate', () => {
   it('remembers a returning user across a cold start with an erroring gateway', async () => {
     // Second flash path, independent of the pending one: on a cold load (empty
     // React Query cache) a gateway error has no `prerequisite` to fall back on,
-    // so the gate rendered full-screen setup-branded chrome at a user who has
+    // so the gate would render full-screen setup-branded chrome at a user who has
     // completed setup. The client remembers first-run completion locally, so a
     // returning user gets the dashboard plus a reauth banner instead.
     localStorage.setItem('kirocrew:kiro-setup-complete', '1')
@@ -518,9 +516,9 @@ describe('KiroPrerequisiteGate', () => {
 
   it('reports an unbuildable sandbox as its own state, not a missing CLI', async () => {
     // Verification runs the CLI INSIDE the sandbox, so a host that cannot build
-    // one fails verification with the binary present and signed in. The old
-    // behavior rendered "Install Kiro CLI" — false, and its button could not
-    // help. This must name the real cause and offer only a retry.
+    // one fails verification with the binary present and signed in. Rendering
+    // "Install Kiro CLI" here would be false and its button could not help, so
+    // this names the real cause and offers only a retry.
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
       installed: true,
       sandbox_unavailable: true,
@@ -571,7 +569,7 @@ describe('KiroPrerequisiteGate', () => {
 
   it('never withholds the dashboard from a ready install over a sandbox flag', async () => {
     // Precedence guard: `ready` wins. A working install must never be hijacked
-    // by this screen, which is the failure mode #638 objected to.
+    // by this screen.
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
       installed: true,
       authenticated: true,

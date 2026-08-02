@@ -20,7 +20,7 @@ describe('CollapsibleMessage', () => {
     expect(pre!.className).toContain('whitespace-pre-wrap')
   })
 
-  // review comment #1: test collapse round-trip
+  // collapse round-trip
   it('collapses back to preview on second click', () => {
     const msg = 'a'.repeat(120)
     const { container } = render(<CollapsibleMessage message={msg} />)
@@ -32,7 +32,7 @@ describe('CollapsibleMessage', () => {
     expect(screen.getByText(/a+…$/)).toBeInTheDocument()
   })
 
-  // review comment #2: test short messages (≤80 chars, else branch)
+  // short messages (≤80 chars, else branch)
   it('collapses whitespace for short messages without ellipsis', () => {
     const { container } = render(<CollapsibleMessage message={'line one\n  line two'} />)
     expect(container.textContent).toContain('line one line two')

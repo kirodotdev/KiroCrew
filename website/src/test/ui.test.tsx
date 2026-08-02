@@ -112,15 +112,15 @@ describe('PageHeader', () => {
 //
 //  - no `uppercase`: text-transform is a no-op on CJK, so an uppercased
 //    micro-header carries hierarchy in English and none at all in zh-CN.
-//  - no opacity modifier on the text: the idiom this replaced dimmed the label
-//    to text-muted/40 (~1.7:1 on both default themes) and the count to
-//    text-muted/50 (~1.9:1), both under WCAG 1.4.3's 4.5:1 for text this size.
-//    Hierarchy has to come from weight and size instead.
+//  - no opacity modifier on the text: dimming the label to text-muted/40
+//    (~1.7:1 on both default themes) and the count to text-muted/50 (~1.9:1)
+//    both fall under WCAG 1.4.3's 4.5:1 for text this size. Hierarchy has to
+//    come from weight and size instead.
 describe('PanelSectionHeader', () => {
   it('renders the label and the count as separate nodes', () => {
     render(<PanelSectionHeader label="Changed files" count={3} />)
     // Not `getByText('Changed files 3')` — the count must NOT be interpolated
-    // into the translated label, which was a concatenation seam.
+    // into the translated label, which is a concatenation seam.
     expect(screen.getByText('Changed files')).toBeInTheDocument()
     expect(screen.getByText('3')).toBeInTheDocument()
   })

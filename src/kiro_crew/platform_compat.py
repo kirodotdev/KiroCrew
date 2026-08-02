@@ -493,7 +493,7 @@ def get_process_start_id(pid: int) -> str | None:
 
     Implementation is deliberately **in-process and non-blocking** on every
     platform — no ``subprocess``/fork — so it is safe to call directly from the
-    asyncio event loop (``AUTOSDE: no-blocking-call-on-event-loop``):
+    asyncio event loop:
 
     - Linux: ``/proc/<pid>/stat`` field 22 (starttime in clock ticks since boot).
     - macOS: ``libproc.proc_pidinfo`` ``pbi_start_tvsec``/``pbi_start_tvusec``
@@ -2094,7 +2094,7 @@ def find_python_interpreter(reject: Optional[Callable[[str], bool]] = None) -> s
     Single source of truth for "where is a usable system python" on every
     platform. Prefers versioned names (3.12/3.11), then bare ``python``/
     ``python3``, with free-threaded-prone ``python3.13`` LAST so a usable
-    3.12/3.11/3.10 wins first (matching the pre-shim caller loop order). Rejects
+    3.12/3.11/3.10 wins first. Rejects
     Brazil-path/build interpreters and — critically on Windows — the Microsoft
     Store alias stub (see :func:`_is_windows_store_python_stub`): running that
     stub is what emits the "Python was not found" nag, so we must never spawn it.
@@ -2103,8 +2103,7 @@ def find_python_interpreter(reject: Optional[Callable[[str], bool]] = None) -> s
     return True to skip it and FALL THROUGH to the next candidate (not abort).
     Callers with extra constraints the shared resolver can't express — e.g. the
     STT prereq probe needs pip and a non-free-threaded build — pass it here so a
-    single unusable interpreter no longer short-circuits the whole search (the
-    behavior the old per-caller loop had and a single-result helper had lost).
+    single unusable interpreter does not short-circuit the whole search.
 
     Returns the interpreter path, or None when none is usable. Callers that just
     need *an* interpreter to re-exec KiroCrew itself should prefer

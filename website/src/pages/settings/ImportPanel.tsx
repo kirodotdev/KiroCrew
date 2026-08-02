@@ -33,8 +33,8 @@ export function ImportPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      {/* Configuration backup (moved from Settings > Overview > Import/Export
-          — this tab is the one home for getting data in and out). */}
+      {/* Configuration backup — this tab is the one home for getting data in
+          and out. */}
       <SettingsSection title={i18nT('pages.settings.importPanel.back_up_restore_configuration')}>
         <PortabilityTab />
       </SettingsSection>

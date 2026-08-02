@@ -24,7 +24,7 @@ class Stats:
                     # let a second thread on the lock-free fast path above
                     # observe a non-None but half-built instance (no ``_mu`` /
                     # ``_c`` yet) and raise AttributeError on the next
-                    # ``.inc()`` / ``.snapshot()``. (#427)
+                    # ``.inc()`` / ``.snapshot()``.
                     inst = super().__new__(cls)
                     inst._init_counters()
                     cls._instance = inst

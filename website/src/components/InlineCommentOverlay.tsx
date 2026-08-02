@@ -10,7 +10,7 @@ import { i18nT } from '../i18n/t'
  * support box-shadow + a persistent active state — neither of which the CSS
  * Custom Highlight API could do in the dashboard.
  *
- * Per feedback:
+ * Rendering rules:
  *  - one document-comment-style gutter bubble PER anchored thread (not per line); its count
  *    is the thread size (1 root + its replies);
  *  - same-line rect fragments (e.g. split at a comma / inline-element boundary)
@@ -66,7 +66,7 @@ export function InlineCommentOverlay({
   const [contentH, setContentH] = useState<number | string>('100%')
 
   // Anchored roots (replies have no anchor); resolved threads show no anchor
-  // (feedback — their highlight + bubble are hidden, like the sidebar).
+  // (their highlight + bubble are hidden, like the sidebar).
   const anchored = useMemo(
     () => comments.filter(c => c.anchor?.quote && c.status !== 'resolved'),
     [comments],

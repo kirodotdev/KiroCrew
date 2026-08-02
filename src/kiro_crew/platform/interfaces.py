@@ -445,8 +445,8 @@ class McpToolingProvider(Protocol):
 class AgentCatalogProvider(Protocol):
     """Extra agent-catalog rows the edition contributes.
 
-    A distinct concern split out of ``McpToolingProvider`` (was
-    ``builtin_agents()`` there) so each edition hook lands on its own interface.
+    A distinct edition concern with its own interface (not folded into
+    ``McpToolingProvider``) so each edition hook lands on its own interface.
     """
 
     def builtin_agents(self) -> List[Dict[str, Any]]:
@@ -477,8 +477,8 @@ class AgentCatalogProvider(Protocol):
 class PromptSourceProvider(Protocol):
     """Edition-contributed prompt/SOP source roots the dashboard lists.
 
-    A distinct concern split out of ``McpToolingProvider`` (was
-    ``prompt_source_roots()`` there).
+    A distinct edition concern with its own interface (not folded into
+    ``McpToolingProvider``).
     """
 
     def prompt_source_roots(self) -> List[Path]:
@@ -511,10 +511,10 @@ class CapabilityResult:
 class CapabilityManager(Protocol):
     """Operations-based external package/capability manager (CPP seam).
 
-    Replaces the former ``external_capability_bin()`` binary-name seam: rather
-    than naming a binary whose exact CLI grammar the core then hardcodes, the
-    edition implements these OPERATIONS and OWNS its own invocation grammar,
-    output parsing, and error translation. The core calls an operation and only
+    An operations-based seam rather than a binary-name one: rather than naming a
+    binary whose exact CLI grammar the core then hardcodes, the edition
+    implements these OPERATIONS and OWNS its own invocation grammar, output
+    parsing, and error translation. The core calls an operation and only
     serializes the result / applies side effects (config sync, agent rebuild).
 
     The public Default is unavailable (``available()`` → ``False``), so the

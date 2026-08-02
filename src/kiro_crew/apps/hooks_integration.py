@@ -1,4 +1,4 @@
-"""Hooks Integration — wires the new hooks system into the existing gateway lifecycle.
+"""Hooks Integration — wires the hooks system into the gateway lifecycle.
 
 This module provides the glue functions that connect:
 - RouteRegistry into the enable/disable flow
@@ -6,8 +6,7 @@ This module provides the glue functions that connect:
 - CronSDK cleanup into disable/uninstall
 
 These functions are called from routes.py and server.py at the appropriate
-lifecycle points. They are designed to be non-breaking — if no hooks are
-declared, behavior is identical to before.
+lifecycle points. An app that declares no hooks is a no-op.
 """
 
 from __future__ import annotations

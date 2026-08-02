@@ -14,8 +14,8 @@ describe('ChatFooter', () => {
     expect(container.innerHTML).toBe('')
   })
 
-  // The indicator must survive the WHOLE turn. It previously fell through the
-  // guards in the gap after a tool completed, so it blinked out mid-turn.
+  // The indicator must survive the WHOLE turn, including the gap after a tool
+  // completes — it must not blink out mid-turn.
   it('stays visible while a tool is running', () => {
     const { container } = render(<ChatFooter {...base} running={true} state="tool_running" lastRole="user" />)
     expect(container.querySelector('.csb4')).toBeInTheDocument()
@@ -35,8 +35,8 @@ describe('ChatFooter', () => {
 
   // The gap the user actually sees: the text block finished, the model is
   // generating a tool call, and NOTHING streams back. `lastRole` is still
-  // 'streaming' (chat_segment is withheld until the tool ordering is settled), so
-  // the loader used to stay hidden for the whole quiet window.
+  // 'streaming' (chat_segment is withheld until the tool ordering is settled),
+  // so the loader must take over instead of staying hidden for the quiet window.
   it('takes over once the text stream goes quiet mid-turn', () => {
     vi.useFakeTimers()
     try {

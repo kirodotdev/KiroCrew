@@ -318,7 +318,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   // framer-motion element, and framer-motion owns the `transform` property for
   // its mount animation (scale/y) — it silently drops any `translate(-50%)` we
   // set, which left the toolbar's left edge (not its center) at the anchor and
-  // clipped it by half its width near the right edge (the reported bug).
+  // clipped it by half its width near the right edge.
   // `pos.x` is the desired horizontal center, so convert to a left edge
   // (`pos.x - w/2`) and clamp into [margin, viewportWidth - w - margin].
   // `offsetWidth/Height` report the layout footprint independent of the in-flight

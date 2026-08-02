@@ -106,8 +106,7 @@ describe('DiffBlock', () => {
       const twoHunks = `--- a/f.ts\n+++ b/f.ts\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -150,3 +150,3 @@\n d\n-e\n+E\n f`
       const { container } = render(<DiffBlock code={twoHunks} complete={true} />)
       const label = screen.getByText('146 unchanged lines')
-      // Pill bubble around the label, tinted with the theme's hunk colors
-      // (the same tokens the old raw @@ header row used)…
+      // Pill bubble around the label, tinted with the theme's hunk colors…
       expect(label.className).toContain('rounded-full')
       expect(label.className).toContain('bg-diff-hunk')
       expect(label.className).toContain('text-diff-hunk-text')
@@ -237,10 +236,9 @@ describe('DiffBlock', () => {
   })
 
   it('Open button is text-only and hover-gated like the other diff actions (round 10)', async () => {
-    // Round 10: revert the round-7 always-visible variant — users found
-    // it asymmetric with the side-by-side / copy buttons. Now all three
-    // are hover-gated together, and Open drops the icon for a plain
-    // text label since the diff header already prefixes the file name.
+    // All three actions (side-by-side / copy / Open) are hover-gated together.
+    // Open uses a plain text label rather than an icon since the diff header
+    // already prefixes the file name.
     globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, status: 200 })) as unknown as typeof fetch
     render(<DiffBlock code={simpleDiff} complete={true} onFileOpen={() => {}} />)
     await waitFor(() => expect(screen.getByText('Open')).toBeInTheDocument())

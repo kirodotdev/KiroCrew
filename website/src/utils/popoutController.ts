@@ -275,7 +275,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
 
   /**
    * Pause the interval while the tab is hidden, and on return to visible re-ping
-   * BEFORE the next prune could run. Two reasons (both from review): a perpetual
+   * BEFORE the next prune could run. Two reasons: a perpetual
    * 5s timer in every dashboard tab is wasted work for an opt-in feature, and a
    * backgrounded tab's throttled timers (~1/min) exceed STALE_MS, so without the
    * refresh a still-live popout would be pruned → its indicator flickers off/on.

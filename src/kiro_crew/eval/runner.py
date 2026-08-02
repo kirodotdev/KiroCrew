@@ -255,7 +255,7 @@ class EvalRunner:
                 provider = self.provider_factory(session_key, **kwargs)
                 if isinstance(provider, AcpProvider):
                     # Access private attribute directly to avoid modifying core provider
-                    # files in this CR. TODO: add set_workspace() to AcpProvider.
+                    # files. TODO: add set_workspace() to AcpProvider.
                     if not (hasattr(provider, "_client") and hasattr(provider._client, "_work_dir")):
                         raise RuntimeError(
                             "AcpProvider internals changed — eval workspace override broken"

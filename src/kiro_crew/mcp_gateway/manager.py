@@ -465,9 +465,9 @@ class GatewayManager:
     async def _run_watchdog(self) -> None:
         """Supervise the daemon: respawn on exit or on liveness failure.
 
-        The old implementation only watched for ``proc.wait()`` and so
-        missed the silent-zombie mode (accept loop dead, Python process
-        still alive). We now race two signals: (1) process exit, and
+        Watches TWO signals so it also catches the silent-zombie mode
+        (accept loop dead, Python process still alive), which watching
+        ``proc.wait()`` alone would miss: (1) process exit, and
         (2) a periodic ping round-trip. Whichever fires first wins,
         after which we respawn with exponential backoff.
         """
@@ -516,10 +516,9 @@ class GatewayManager:
                     continue
                 # proc is None and we are NOT adopting: we are the owner but
                 # our last _spawn_once() raised (e.g. a transient fork()/open()
-                # error) and left _process None. Retry the spawn here — this
-                # branch previously only slept + continued, so a single spawn
-                # failure left the watchdog idling forever with no daemon and
-                # no retry (permanent wedge).
+                # error) and left _process None. Retry the spawn here — without
+                # this retry a single spawn failure would leave the watchdog
+                # idling forever with no daemon and no retry (permanent wedge).
                 try:
                     await self._clear_stale_socket()
                     await self._spawn_once()

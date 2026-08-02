@@ -524,8 +524,8 @@ def migrate_home(*, legacy: Path, new_home: Path, marker: Path) -> Path:
         # still exists (matching _maybe_migrate_legacy_home): a winner that
         # migrated + wrote the marker but could not delete legacy (permission,
         # a still-open handle) must NOT let a blocked second starter recopy the
-        # now-debris legacy over the authoritative new home (GPT 5.6 HIGH — the
-        # concurrent-starter race). A legacy dir alongside the marker is debris,
+        # now-debris legacy over the authoritative new home (the concurrent-
+        # starter race). A legacy dir alongside the marker is debris,
         # never authoritative; it is left in place, never promoted.
         if marker.exists():
             return new_home
@@ -564,7 +564,7 @@ def _do_migrate(*, legacy: Path, new_home: Path, marker: Path) -> Path:
     # making the split-brain permanent. Copy still retries on next cold start.
     if new_home.exists() and _gateway_is_live(new_home):
         # Join the live gateway's home for IPC coherence, but do NOT stamp the
-        # completion marker here (GPT 5.6 HIGH): `_gateway_is_live` fails SAFE —
+        # completion marker here: `_gateway_is_live` fails SAFE —
         # any locking OSError (stale/unreadable lock, unsupported-locking FS)
         # returns True, so a spurious entry to this branch must not brand a
         # possibly-partial new home as fully migrated. The marker is reserved
@@ -575,15 +575,14 @@ def _do_migrate(*, legacy: Path, new_home: Path, marker: Path) -> Path:
         # UNMARKED new home cannot exist — migration marks before the gateway
         # binds — and a KIROCREW_HOME override bypasses this resolver entirely.)
         #
-        # INVARIANT — join-don't-mark on a liveness skip (please do NOT "fix"
-        # this by writing the marker here, nor by "distinguish confirmed
-        # contention from a probe error and retain legacy on error"): both were
-        # implemented and REVERTED. `_gateway_is_live` fails SAFE on purpose, so
-        # stamping the marker (or otherwise treating this branch as a verified
-        # migration) could brand a partial/empty new home as authoritative off a
-        # stale/unreadable lock — strictly worse than the near-unreachable
-        # next-cold-start overwrite it would prevent. The marker is written in
-        # exactly one place: after `_verify_copy` succeeds.
+        # INVARIANT — join-don't-mark on a liveness skip: do NOT write the
+        # marker here, and do NOT distinguish confirmed contention from a probe
+        # error to retain legacy on error. `_gateway_is_live` fails SAFE on
+        # purpose, so stamping the marker (or otherwise treating this branch as
+        # a verified migration) could brand a partial/empty new home as
+        # authoritative off a stale/unreadable lock — strictly worse than the
+        # near-unreachable next-cold-start overwrite it would prevent. The
+        # marker is written in exactly one place: after `_verify_copy` succeeds.
         logger.info(
             "skipping data-home migration: a gateway is live on %s; joining it "
             "(migration retries on next cold start)",
@@ -600,7 +599,7 @@ def _do_migrate(*, legacy: Path, new_home: Path, marker: Path) -> Path:
     # legacy is inconvenient; destroying the install is not recoverable without a
     # reinstall.
     #
-    # The second condition is CONTAINMENT, not existence (GPT 5.6 BLOCKING):
+    # The second condition is CONTAINMENT, not existence:
     # asking merely whether any preserved dir exists let an unrelated helper venv
     # at ``<legacy>/venv`` vouch for an interpreter at ``<legacy>/runtime``,
     # re-opening the exact deletion this guard is here to stop.

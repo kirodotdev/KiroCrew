@@ -10,10 +10,9 @@ import { updateSlotFolder } from '../store/dashboardSlice'
  * Both the sidebar row menus and the session-header dropdown — plus the
  * sidebar's drag-to-folder — assign a slot to a folder with the same optimistic
  * semantics: update Redux immediately (`onMutate`), fire `api.setSlotFolder`,
- * and roll back to the prior `folder_id` if the request fails (`onError`). This
- * hook collapses what were two near-identical implementations (`assignToFolder`
- * in ChatSidebar and `moveToFolder` in ChatHeaderMenu) into one, removing the
- * desync risk.
+ * and roll back to the prior `folder_id` if the request fails (`onError`). One
+ * shared hook for `assignToFolder` (ChatSidebar) and `moveToFolder`
+ * (ChatHeaderMenu) keeps the two call sites from desyncing.
  *
  * Uses `useMutation` (the package's standard server-write pattern, cf.
  * `pinMutation` in useSessionActions) so it gets proper pending/error state.

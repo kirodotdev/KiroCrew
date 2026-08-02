@@ -11,9 +11,9 @@ import type { FileType } from './FileRenderers'
 import type { Artifact, ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'
-// Extracted from ArtifactDetailPage so the full-page route and the chat
-// side-panel Artifacts tab share one renderer (markdown/text/json/svg natively
-// via ContentRenderer; widget/html via the sandboxed iframe).
+// Shared renderer for the full-page route and the chat side-panel Artifacts
+// tab (markdown/text/json/svg natively via ContentRenderer; widget/html via
+// the sandboxed iframe).
 
 function readThemeVars(): Record<string, string> {
   if (typeof window === 'undefined' || typeof document === 'undefined') return {}
@@ -79,7 +79,7 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   scrollNonce?: number
   onActivateComment?: (id: string) => void
   unreadRootIds?: Set<string>
-  /** Override the body height/min-height (CR-B: the side panel fills its
+  /** Override the body height/min-height (the side panel fills its
    *  flex container instead of the full-page `calc(100vh - 240px)`). */
   heightStyle?: React.CSSProperties
   /** Drop the card chrome (border + rounding + reading padding) and render
@@ -166,7 +166,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   scrollToCommentId?: { id: string; nonce: number } | null
   activeId?: string | null
   unreadRootIds?: Set<string>
-  /** Override the iframe height (CR-B side-panel fit). */
+  /** Override the iframe height (side-panel fit). */
   heightStyle?: React.CSSProperties
 }) {
   const { theme, colorTheme, themeVersion } = useTheme()

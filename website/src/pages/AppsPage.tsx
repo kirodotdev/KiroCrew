@@ -43,7 +43,7 @@ type UserInstalledDep = UninstallPreview['dependencies']['userInstalled'][number
 
 type Tab = 'discover' | 'library'
 
-/** Read the persisted tab, migrating pre-revamp values (installed/browse). */
+/** Read the persisted tab, mapping legacy stored values (installed/browse) onto current tabs. */
 function initialTab(): Tab {
   const stored = sessionStorage.getItem('appstore-tab')
   if (stored === 'library' || stored === 'installed') return 'library'
@@ -171,7 +171,7 @@ export default function AppsPage() {
 
   const sources: SourceRow[] = useMemo(() => {
     // Count built-ins from browseApps so the SOURCES totals describe the same
-    // population as the "All apps" count (built-ins are always browsable now,
+    // population as the "All apps" count (built-ins are always browsable,
     // enabled or not).
     const builtinCount = browseApps.filter(a => a.origin === 'builtin').length
     const counts = new Map<string, number>()
@@ -242,8 +242,7 @@ export default function AppsPage() {
     window.dispatchEvent(new Event('mc:apps-changed'))
   }
 
-  // Cmd/Ctrl-click opens the detail page in a new tab (preserved from the
-  // pre-revamp Browse card behavior).
+  // Cmd/Ctrl-click opens the detail page in a new tab.
   const openDetail = (name: string, e?: React.MouseEvent | React.KeyboardEvent) => {
     if (e && (e.metaKey || e.ctrlKey)) { window.open(`/apps/detail/${name}`, '_blank', 'noopener,noreferrer'); return }
     navigate(`/apps/detail/${name}`)

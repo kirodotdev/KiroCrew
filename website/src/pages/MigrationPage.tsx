@@ -1,5 +1,5 @@
 /**
- * MigrationPage — Full page component for Phase 2 orphaned builtin apps.
+ * MigrationPage — Full page component for orphaned builtin apps.
  *
  * Route: /apps/migrate/:name
  * Shows migration guidance, install button, or cleanup option depending on state.

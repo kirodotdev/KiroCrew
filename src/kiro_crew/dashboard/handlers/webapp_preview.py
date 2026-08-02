@@ -76,9 +76,9 @@ _CORS_OK_TYPES = frozenset({
     "text/javascript",
     "application/wasm",
 })
-# Round-7 F1: mirror the ArtifactStore slug grammar EXACTLY (strict
-# lowercase). The previous, looser pattern ([A-Za-z0-9_-]) admitted slugs
-# like "A" past this gate that the store's own validator then rejected by
+# Mirror the ArtifactStore slug grammar EXACTLY (strict
+# lowercase). A looser pattern ([A-Za-z0-9_-]) would admit slugs
+# like "A" past this gate that the store's own validator then rejects by
 # RAISING — an uncaught ArtifactValidationError on an auth-bypassed route
 # is an unauthenticated 500 an attacker can drive repeatedly.
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$")
@@ -90,7 +90,7 @@ _MAX_FILE_BYTES = 32 * 1024 * 1024  # single-file cap; previews are static build
 # re-mints on its next query).
 _TOKEN_SECRET = _secrets.token_bytes(32)
 
-# Round-2 F3: safe_read_file_bytes_nolink's fd-realpath containment check is
+# safe_read_file_bytes_nolink's fd-realpath containment check is
 # implemented for Linux (/proc/self/fd) and macOS (F_GETPATH) only; elsewhere
 # it fails closed and every serve would 404 while the mint endpoint kept
 # claiming the preview is available — suppressing the working remote
@@ -99,7 +99,7 @@ _PLATFORM_SUPPORTED = sys.platform.startswith(("linux", "darwin"))
 
 
 def _mac(slug: str, webroot: str, exp: int, client: str) -> str:
-    # Round-5 F1: the bearer token rides in the iframe's own location, so
+    # The bearer token rides in the iframe's own location, so
     # previewed (LLM-authored) script can read it and self-navigate it to an
     # attacker. Binding the MAC to the requesting client address makes an
     # exfiltrated token useless from anywhere but the minting browser's
@@ -114,7 +114,7 @@ def _make_token(slug: str, webroot: str, client: str = "") -> str:
 
 
 def _check_token(slug: str, webroot: str, token: str, client: str = "") -> bool:
-    # Round-3 F2: bound the token before parsing — a multi-thousand-digit
+    # Bound the token before parsing — a multi-thousand-digit
     # expiry passes isdigit() but blows past the int conversion digit limit
     # (ValueError → 500). Real tokens are ~55 chars.
     if len(token) > 128:
@@ -141,7 +141,7 @@ def _resolve_webroot(slug: str) -> Path | None:
     try:
         art = store.get(slug)
     except (ArtifactNotFoundError, ArtifactValidationError):
-        # Round-7 F1 defense-in-depth: even if the route regex and the
+        # Defense-in-depth: even if the route regex and the
         # store grammar ever drift again, a store-side validation reject
         # must fail closed (404), never propagate as a 500.
         return None
@@ -154,7 +154,7 @@ def _resolve_webroot(slug: str) -> Path | None:
     try:
         app_dir = Path(os.path.expanduser(raw)).resolve()
     except (OSError, ValueError):
-        # ValueError: embedded NUL in a crafted app_dir (round-3 F1) — the
+        # ValueError: embedded NUL in a crafted app_dir — the
         # write path rejects control chars, but legacy metadata predating
         # that validation must still fail closed, never 500.
         return None
@@ -168,7 +168,7 @@ def _resolve_webroot(slug: str) -> Path | None:
             continue
     else:
         return None
-    # Round-2 F1: the web root is REQUIRED to be `app_dir/public` — the
+    # The web root is REQUIRED to be `app_dir/public` — the
     # deploy-contract layout. Serving app_dir itself as a fallback would turn
     # any workspace directory that happens to contain an index.html into a
     # fully-listable web root (source files, config JSON, ...), reachable by
@@ -179,7 +179,7 @@ def _resolve_webroot(slug: str) -> Path | None:
         if not public.is_dir():
             return None
         resolved = public.resolve()
-        # Round-1 F1: `public` itself may be a symlink planted by a crafted
+        # `public` itself may be a symlink planted by a crafted
         # app_dir tree. The resolved web root must stay INSIDE the validated
         # app_dir.
         resolved.relative_to(app_dir)
@@ -188,14 +188,13 @@ def _resolve_webroot(slug: str) -> Path | None:
         return None
 
 
-# ── Round-7 F2: remote framability probe ─────────────────────────────────
-# Pre-existing base stacks were created with the OLD ResponseHeadersPolicy
-# (X-Frame-Options: SAMEORIGIN), which browsers enforce by silently blanking
-# the dashboard's live-site iframe. The frontend cannot read those headers
-# cross-origin, but the gateway can: probe the (strictly validated) public
-# CloudFront URL once and tell the card whether a remote iframe would render.
-# Any uncertainty answers "not framable" — the card then shows its status
-# hero with the plain link instead of a blank frame.
+# ── Remote framability probe ─────────────────────────────────
+# Some deployed base stacks send an X-Frame-Options: SAMEORIGIN header, which
+# browsers enforce by silently blanking the dashboard's live-site iframe. The
+# frontend cannot read those headers cross-origin, but the gateway can: probe
+# the (strictly validated) public CloudFront URL once and tell the card whether
+# a remote iframe would render. Any uncertainty answers "not framable" — the
+# card then shows its status hero with the plain link instead of a blank frame.
 _CF_HOST_RE = re.compile(r"^[a-z0-9]+\.cloudfront\.net$")
 _FRAMABLE_CACHE: dict[str, tuple[float, bool]] = {}
 _FRAMABLE_CACHE_TTL = 300.0
@@ -264,7 +263,7 @@ async def api_artifact_app_preview(request: web.Request) -> web.Response:
     if not is_direct_local_request(request):
         _audit("webapp_preview.mint", "denied_remote", slug)
         return web.json_response({"available": False})
-    # Round-1 F2: store lookup + path resolution are blocking filesystem
+    # Store lookup + path resolution are blocking filesystem
     # work — keep them off the event loop.
 
     def _resolve() -> Path | None:
@@ -304,13 +303,13 @@ async def serve_artifact_app_file(request: web.Request) -> web.Response:
     rel = request.match_info.get("path", "")
     if not _SLUG_RE.match(slug) or not _PLATFORM_SUPPORTED:
         raise web.HTTPNotFound()
-    # Round-1 F2: the whole resolve→validate→read pipeline is blocking
+    # The whole resolve→validate→read pipeline is blocking
     # filesystem I/O — run it in a worker thread and keep the event loop
     # free (a slow disk or large file must never freeze the gateway).
     body, ctype = await asyncio.to_thread(
         _resolve_and_read, slug, token, rel, request.remote or "")
     if body is None or ctype is None:
-        # Round-5 F3: this route bypasses session auth (the path token IS the
+        # This route bypasses session auth (the path token IS the
         # credential), so every authorization decision must leave an SEL
         # record — rejected probing included. The token itself is never
         # logged.
@@ -318,7 +317,7 @@ async def serve_artifact_app_file(request: web.Request) -> web.Response:
         raise web.HTTPNotFound()
     _audit("webapp_preview.serve", "allowed", f"{slug}:{rel}")
     resp = web.Response(body=body, content_type=ctype)
-    # Round-2 F1 (egress): beyond the opaque-origin sandbox, pin every fetch
+    # Egress: beyond the opaque-origin sandbox, pin every fetch
     # destination to the serving origin — a malicious app tree can render,
     # but its scripts cannot exfiltrate file contents to an external host
     # (connect/img/script/style all fall under default-src 'self').
@@ -327,11 +326,11 @@ async def serve_artifact_app_file(request: web.Request) -> web.Response:
         "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
         "frame-ancestors 'self'"
     )
-    # Round-2 F2 + Round-4 F1: the sandboxed document runs with an OPAQUE
+    # The sandboxed document runs with an OPAQUE
     # origin, so its module-script loads are cross-origin and need CORS —
-    # but a wildcard ACAO on EVERY response also let a malicious app script
-    # fetch() sibling data files (config.json, index.html) and read them for
-    # exfil via self-navigation. Scope CORS to the content types that
+    # but a wildcard ACAO on EVERY response would also let a malicious app
+    # script fetch() sibling data files (config.json, index.html) and read
+    # them for exfil via self-navigation. Scope CORS to the content types that
     # actually require it to execute (module JS, wasm, fonts); data-bearing
     # types stay opaque to cross-origin readers, closing the read channel.
     if ctype in _CORS_OK_TYPES or ctype.startswith("font/"):
@@ -386,7 +385,7 @@ def _resolve_and_read(
         target = target / "index.html"
     if not target.is_file():
         return None, None
-    # Round-1 F1: never serve sensitive paths even inside the web root, and
+    # Never serve sensitive paths even inside the web root, and
     # read through the inode-pinned nolink helper (O_NOFOLLOW + fstat +
     # fd-realpath containment) so a hardlink/symlink swapped in after the
     # containment check above cannot exfiltrate anything.

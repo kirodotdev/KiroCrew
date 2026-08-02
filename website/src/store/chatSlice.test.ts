@@ -54,9 +54,9 @@ describe('sseToolResult — prefer exact tool_call_id match (bug chatSlice.ts:12
     store.dispatch(sseToolActivity({ slot: 'active', tool: 'toolA', kind: 'tool', purpose: '', input_preview: '', tool_call_id: 'call-A' }))
     store.dispatch(sseToolActivity({ slot: 'active', tool: 'toolB', kind: 'tool', purpose: '', input_preview: '' }))
 
-    // Failure scenario: a result for call-A. The old trailing
-    // `|| !log[i].tool_call_id` clause matched the most-recent id-less entry
-    // (toolB) first, painting the output onto the wrong tool.
+    // A result for call-A must attach to toolA. A trailing
+    // `|| !log[i].tool_call_id` fallback would match the most-recent id-less
+    // entry (toolB) first, painting the output onto the wrong tool.
     store.dispatch(sseToolResult({ slot: 'active', output: 'RESULT-A', tool_call_id: 'call-A' }))
 
     const log = store.getState().chat.toolLog
@@ -91,9 +91,9 @@ describe('sseToolResult — prefer exact tool_call_id match (bug chatSlice.ts:12
 
 describe('sseToolResult — tool output also lands on the tool MESSAGE meta', () => {
   // The inline SubagentRunCard detects a spawn_run launch by parsing
-  // "Spawned N subagent(s)." out of message.meta.output. Before this fix only
-  // the server-side message carried that field, so the card appeared solely
-  // after a slot refetch — never during the live turn that spawned the agents.
+  // "Spawned N subagent(s)." out of message.meta.output. That field must be
+  // patched onto the client message too, or the card would appear only after a
+  // slot refetch — never during the live turn that spawned the agents.
   const SPAWN_OUTPUT = 'Spawned 2 subagent(s). Results will arrive as completion events:\n  a1b2c3d4 (kirocrew): map the picker\n  e5f6a7b8 (kirocrew): map the desktop shell\n'
 
   it('patches meta.output on the matching tool message so the launch is detectable live', () => {
@@ -211,12 +211,10 @@ describe('warmSlotCache.fulfilled — hydrate queued bubbles (bug chatSlice.ts:1
   })
 })
 
-// The queue-drop bug existed because switchSlot.fulfilled and
-// warmSlotCache.fulfilled hand-mirrored the same slot-detail hydration and
-// drifted apart. All three slot-detail reducers (switchSlot, warmSlotCache,
-// refreshSlot) now route queued-bubble hydration through the single shared
-// `hydrateQueuedBubbles` helper, so a new payload field can't silently diverge
-// between them. These tests lock in that every consumer hydrates identically.
+// All three slot-detail reducers (switchSlot, warmSlotCache, refreshSlot) route
+// queued-bubble hydration through the single shared `hydrateQueuedBubbles`
+// helper, so a new payload field can't silently diverge between them and drop
+// queued bubbles. These tests lock in that every consumer hydrates identically.
 describe('slot-detail hydration is centralized (shared hydrateQueuedBubbles path)', () => {
   const detail = (key: string, queue: Array<{ content: string; queueId: string; ts: string }>) => ({
     key,
@@ -271,9 +269,10 @@ describe('slot-detail hydration is centralized (shared hydrateQueuedBubbles path
       ),
     )
     const queued = store.getState().chat.messages.filter((m) => m.role === 'queued')
-    // Failure scenario before the fix: refreshSlot rebuilt messages from server
-    // history + preserved perms/thinking and dropped ALL queued bubbles.
-    // Regression scenario: the stale 'qOld' bubble duplicated alongside 'qNew'.
+    // refreshSlot must re-hydrate from the server queue field: rebuilding
+    // messages from server history + preserved perms/thinking alone would drop
+    // ALL queued bubbles, and re-adding without replacing would duplicate the
+    // stale 'qOld' bubble alongside 'qNew'.
     expect(queued.map((m) => m.content)).toEqual(['fresh'])
     expect(queued[0].meta?.queueId).toBe('qNew')
   })

@@ -18,7 +18,7 @@ kiro-cli does not have:
 Plus :meth:`SnapshotIndex.end_turn` for an explicit early release.
 
 **Entries are keyed by ``(session_key, window_key)``** — session, then the specific
-WINDOW, and both halves came from a review finding.
+WINDOW.
 
 The WINDOW half: element indices address one window's accessibility tree, so keying
 by application alone aliased distinct windows of the same app. Snapshot document A,
@@ -29,7 +29,7 @@ index matches and the action mutates the wrong document. ``AppRef.window_key``
 carries the pid as well as the window id, since a window id is only unique within a
 session and a relaunched app can reuse one.
 
-The SESSION half (reviewer finding). The gateway runs one
+The SESSION half. The gateway runs one
 process serving every surface — dashboard tabs, Slack threads, cron jobs — so a
 cache keyed by application ALONE is shared mutable state across concurrent
 sessions: session A walks Preview and is shown indices, session B then walks

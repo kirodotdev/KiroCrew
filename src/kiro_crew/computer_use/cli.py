@@ -88,10 +88,9 @@ _EXIT_PROBLEM = 1
 # (rather than minting a private key) is what keeps the audit trail readable and lets
 # an operator profile bound to the CLI surface govern this command too.
 #
-# It is NOT an authorization input: there is no unattended-surface refusal left to
-# avoid. ``gate.UNATTENDED_SURFACES`` / ``UNATTENDED_KEY_PREFIXES`` (which an earlier
-# revision of this comment cited) never existed in ``computer_use.gate`` after the
-# governance model was removed — the only ``_UNATTENDED_SURFACES`` in the tree is
+# It is NOT an authorization input: there is no unattended-surface refusal to
+# avoid. ``computer_use.gate`` has no ``UNATTENDED_SURFACES`` /
+# ``UNATTENDED_KEY_PREFIXES`` — the only ``_UNATTENDED_SURFACES`` in the tree is
 # ``platform/governance_profiles.py``'s, which selects a PROFILE and carries no
 # computer-use rule.
 _CLI_SESSION_KEY = "cli_chat"
@@ -289,7 +288,7 @@ def _state_path() -> object:
 def _cmd_apps() -> None:
     """Print the on-screen application list, through the SAME gate as ``call``.
 
-    Reviewer finding: this used to call ``service.list_apps()`` directly, on the
+    This used to call ``service.list_apps()`` directly, on the
     reasoning that a diagnostic in the operator's own terminal is not the agent.
     That reasoning does not hold, because the agent can run this command with
     bash — so the direct call was an ungated read of every window TITLE (document

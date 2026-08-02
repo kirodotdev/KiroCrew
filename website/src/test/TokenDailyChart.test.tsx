@@ -54,7 +54,7 @@ describe('filterDay', () => {
   })
 
   it('returns empty bucket for invalid provider+model pair', () => {
-    // opencode never produced opus tokens → bug case from the screenshot.
+    // opencode never produced opus tokens → invalid provider+model pair.
     const r = filterDay(sampleDay, 'opencode', 'opus')
     expect(r).toEqual({ input: 0, output: 0, cacheCreate: 0, cacheRead: 0, costUsd: 0 })
   })

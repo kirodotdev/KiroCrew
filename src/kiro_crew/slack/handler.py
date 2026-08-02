@@ -1299,8 +1299,7 @@ def is_tracked_channel(channel_id: str) -> bool:
 class MessageContext:
     """Service references needed to process a Slack message.
 
-    Groups the 8 service/config parameters that were previously passed
-    individually to ``handle_message``.
+    Groups the 8 service/config parameters that ``handle_message`` needs.
     """
 
     sessions: SessionManager
@@ -2120,8 +2119,8 @@ async def _handle_compact_command(
     # Slack dispatches each message as its own task (asyncio.create_task), so a
     # bare get_provider() + compact() would race a normal turn that holds the
     # session and interleave two prompts on one stdio channel — corrupting
-    # session state (the reason Discord/Telegram guard the same way). Since
-    # #276 routes /compact through session/prompt, that collision now surfaces
+    # session state (the reason Discord/Telegram guard the same way). Because
+    # /compact routes through session/prompt, that collision surfaces
     # as "turn already active" and the except path would destroy a healthy
     # session; try_acquire() serializes against the in-flight turn and the
     # finally always releases.
@@ -2168,10 +2167,10 @@ async def _handle_compact_command(
         result_text: str | None = None
         outcome = "unknown"
         try:
-            # Compaction runs over the prompt transport (#276):
+            # Compaction runs over the prompt transport:
             # provider.compact() drives /compact via session/prompt (the
             # commands/execute path does NOT run compaction — it returns with
-            # no status, the pre-#276 bug). Bound compact()'s prompt turn here,
+            # no status). Bound compact()'s prompt turn here,
             # then let wait_for_compaction() own its OWN deadline for a status
             # emitted async after end_turn — it must NOT be nested inside
             # another timeout, or the graceful "timed out" branch is
@@ -2510,8 +2509,8 @@ async def handle_message(
     # dashboard _slack_to_slot). session_key is the namespaced form used for
     # everything session-scoped (registry, conversation log, thread overrides).
     # Deriving the canonical form HERE keeps the key stable across messages:
-    # previously the first message ran under the bare thread_ts while the
-    # second was rewritten to ``slack:<ts>`` by the linked-thread routing below
+    # otherwise the first message would run under the bare thread_ts while the
+    # second is rewritten to ``slack:<ts>`` by the linked-thread routing below
     # (the self-link canonicalizes), splitting the live session, the
     # conversation log, and the per-thread override maps across two keys.
     reply_ts = thread_ts or msg_ts
@@ -2947,7 +2946,7 @@ async def handle_message(
         )
 
         # Publish this turn's session identity so managed MCP tools resolve
-        # X-Session-Key; one shared writer lives in messaging.identity. (#232)
+        # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(sessions, session_key)
 
         # Build message with context injection
@@ -3074,7 +3073,7 @@ async def handle_message(
             await slack.set_thread_status(channel, reply_ts, "")
             return
 
-        # Lease-dispatch race gate (Codex HIGH): the session lease was taken by
+        # Lease-dispatch race gate: the session lease was taken by
         # get_or_create above, but the turn only opens on the first stream
         # iteration below. If a gateway restart moved the SessionManager into the
         # closing state during the async prep between, dispatching now would open

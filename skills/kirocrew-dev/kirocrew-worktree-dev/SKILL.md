@@ -322,6 +322,27 @@ If you genuinely need a new ignored scratch pattern, add it to the root
 `.gitignore` (the agent-workflow scratch section) rather than leaving it to
 dirty every tree.
 
+## Rule 10 — Comment style: explain why, don't restate code
+
+Comments and docstrings describe **behavior and rationale** — the non-obvious
+*why*, invariants, edge cases, units, security constraints. They are NOT a task
+log and NOT a paraphrase of the code.
+
+- **No process/task-log citations** in code: PR/CR numbers, review-round or
+  finding markers (`GPT review round 4`, `R16 F3`, `Codex HIGH`), incident
+  dates, milestone tags (`M1`, `v0.6.0`), commit SHAs. That history lives in git.
+- **No historical narration** ("previously…", "used to…", "we now…"). State the
+  CURRENT behavior in present tense; keep the reason if it explains the code's shape.
+- **Don't restate the code.** Cut comments that only repeat the adjacent line
+  (`i += 1  # increment i`, `# return result`). Keep it concise: if a comment
+  adds nothing a reader wouldn't see at a glance, drop it — but keep any
+  non-obvious *why*.
+- **Exempt:** the `_vendor/` tree and semantic pragmas (`# type: ignore`,
+  `# noqa`, `# pragma`, `// @ts-…`, `// eslint-…`) — never touch them.
+
+Applies to any code you write or edit here, and to doc prose too: describe what
+the system does, not a changelog of how it got there.
+
 ## Why these rules exist (gotchas they prevent)
 
 - Editing the live checkout → the running gateway picks up partial changes →

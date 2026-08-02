@@ -158,8 +158,8 @@ describe('chat sidebar — "N agents running" subtitle', () => {
 
 /**
  * Queued waves. An accepted-but-not-started wave has NO entry in the per-slot
- * subagents map (subagent_spawn hasn't fired), so counting the map alone left
- * the row silent — showing a stale last message — for the whole ramp.
+ * subagents map (subagent_spawn hasn't fired), so counting the map alone would
+ * leave the row silent — showing a stale last message — for the whole ramp.
  */
 describe('chat sidebar — queued subagents', () => {
   it('surfaces a wave that is entirely queued, and says queued (not running)', () => {

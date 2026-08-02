@@ -5,8 +5,7 @@
 // Layout, in two states:
 //
 //   1. Collapsed — a vertical stack of provider ROWS (horizontal bars), one per
-//      source. Replaced the single large GitHub square: a row list scales to N
-//      providers, a square does not.
+//      source. A row list scales to N providers, a single large square does not.
 //
 //   2. Expanded (after picking a source) — the host card GROWS (see
 //      `EXPANDED_CARD` / how ConnectRepoModal and WelcomeCarousel apply it) and
@@ -22,8 +21,8 @@
 // Both listed sources are wired to a backend (Issue Radar reads each one through
 // the user's own `gh` / `glab` CLI). Unwired sources are NOT listed: a row that
 // only carries a "Soon" badge costs the same vertical space as a usable one and
-// gives the user nothing to do, so Jira/Linear were dropped from the list rather
-// than rendered disabled.
+// gives the user nothing to do, so unwired sources like Jira/Linear are left out
+// of the list rather than rendered disabled.
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Check, RefreshCw } from 'lucide-react'
@@ -82,10 +81,10 @@ const STACK_BELOW_PX = 640
  * Both hosts grow the card with a CSS width transition (`duration-200`), so for
  * ~200ms after a provider is picked the measured width is the COLLAPSED one —
  * far below STACK_BELOW_PX even on a wide window. Committing those intermediate
- * measurements laid the repo picker out UNDER the provider list (and, since the
- * stacked body scrolls, mid-animation the card showed a scrolled column list),
- * then snapped it to the right the moment the animation finished. The user reads
- * that as the panel opening downwards and jumping sideways.
+ * measurements would lay the repo picker out UNDER the provider list (and, since
+ * the stacked body scrolls, mid-animation the card would show a scrolled column
+ * list), then snap it to the right the moment the animation finished. The user
+ * reads that as the panel opening downwards and jumping sideways.
  *
  * Waiting past the transition means the layout is decided from the card's REAL
  * width once, and the previous (settled) answer stays on screen meanwhile — for
@@ -106,10 +105,10 @@ const URL_TARGET_PREFIX = 'url:'
 /** Case-folded `owner/repo` identity for a GitHub repo URL, or null when the
  * text isn't one. Used to dedupe a typed URL against the ticked repos.
  *
- * A literal string compare missed every spelling that resolves to the SAME
+ * A literal string compare misses every spelling that resolves to the SAME
  * repo — `WWW.`/`www.` host, a `.git` suffix, a trailing slash, or different
  * casing (GitHub names are case-preserving but not case-sensitive). Each miss
- * submitted a second connect for a repo already in the list, which the server
+ * submits a second connect for a repo already in the list, which the server
  * then rejects as already connected — or, worse, stores under a second casing. */
 export function repoIdentity(text: string): string | null {
   const parsed = parseRepoRef(text)
@@ -174,13 +173,12 @@ export function parseRepoRef(
 /** Whether picking `provider` puts the panel into its two-column body — and so
  * whether the host must grow its card to `EXPANDED_CARD`.
  *
- * Exported and shared because the panel and BOTH hosts each need the answer, and
- * when they held their own copies they drifted: the hosts still asked
- * `provider === 'github'` after GitLab was wired up, so selecting GitLab
- * switched the panel to two columns inside a card that stayed at its collapsed
- * 480px. The columns then measured under STACK_BELOW_PX and re-stacked, i.e. the
- * repo picker appeared BELOW the provider list and the body scrolled. One
- * predicate makes that particular drift impossible. */
+ * Exported and shared because the panel and BOTH hosts each need the answer.
+ * Separate copies drift: a host asking `provider === 'github'` after GitLab is
+ * wired up would switch the panel to two columns inside a card still at its
+ * collapsed 480px, the columns would measure under STACK_BELOW_PX and re-stack
+ * (repo picker BELOW the provider list, body scrolling). One predicate makes
+ * that drift impossible. */
 export function expandsCard(provider: ProviderId | null): boolean {
   return provider === 'github' || provider === 'gitlab'
 }
@@ -247,9 +245,9 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
   const cancelledRef = useRef(false)
   useEffect(() => {
     // Reset on SETUP, not just on teardown: React StrictMode runs
-    // mount→cleanup→mount in development, so a teardown-only version left the
-    // flag latched true and every subsequent connect bailed before its first
-    // request.
+    // mount→cleanup→mount in development, so a teardown-only version would leave
+    // the flag latched true and every subsequent connect would bail before its
+    // first request.
     cancelledRef.current = false
     return () => { cancelledRef.current = true }
   }, [])
@@ -328,8 +326,8 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
       setErrors(failures)
       // Drop EVERY target that made it — ticked repos and the typed URL alike —
       // so the leftover selection is exactly what still needs attention. The
-      // typed URL used to survive its own success and be resubmitted on the
-      // next click, failing the second time as "already connected".
+      // typed URL would otherwise survive its own success and be resubmitted on
+      // the next click, failing the second time as "already connected".
       if (succeeded.length) {
         const succeededKeys = new Set(succeeded)
         setPicked((prev) => {
@@ -407,11 +405,11 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
   const expanded = expandsCard(flow.provider)
   const scopeProvider = flow.provider === 'gitlab' ? ('gitlab' as const) : ('github' as const)
 
-  // One example for the SELECTED provider, never both in one string. The
-  // combined "https://github.com/<owner>/<repo> or https://gitlab.com/…"
-  // placeholder was ~70 characters in a ~330px monospace input, so it clipped
-  // mid-URL ("…or https://gitl"): the GitHub half read as the only accepted
-  // form, and the GitLab half — the part a GitLab user needs — was never
+  // One example for the SELECTED provider, never both in one string. A combined
+  // "https://github.com/<owner>/<repo> or https://gitlab.com/…"
+  // placeholder is ~70 characters in a ~330px monospace input, so it clips
+  // mid-URL ("…or https://gitl"): the GitHub half reads as the only accepted
+  // form, and the GitLab half — the part a GitLab user needs — is never
   // legible. Each provider also has its own path shape (GitHub is
   // `owner/repo`; a GitLab project lives under a possibly nested group), so a
   // shared example is wrong for one of them however it is worded.

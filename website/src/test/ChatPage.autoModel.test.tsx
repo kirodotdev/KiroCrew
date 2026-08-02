@@ -1,18 +1,18 @@
 /**
  * Regression test: "Auto" must be selectable as the session model.
  *
- * `switchModel` used to collapse the Auto pick to '' before sending it:
+ * Collapsing the Auto pick to '' before sending it is wrong:
  *   const val = modelName === 'auto' ? '' : modelName
- * But '' is ALSO the "no model chosen yet" state, and every reader of an empty
+ * '' is ALSO the "no model chosen yet" state, and every reader of an empty
  * model re-resolves it to the agent template's model — ChatPage's
  * `resolvedModel` query for existing slots, its `_initResolvedModel` effect for
  * the not-yet-created slot, and the backend's `slot.model` backfill in
- * chat_runner. So picking Auto snapped straight back to the agent's model (e.g.
- * claude-opus-5) and Auto could never be selected.
+ * chat_runner. That would snap Auto straight back to the agent's model (e.g.
+ * claude-opus-5) so Auto could never be selected.
  *
- * The fix sends 'auto' verbatim — the id kiro-cli actually advertises (and
+ * Instead the picker sends 'auto' verbatim — the id kiro-cli advertises (and
  * reports as its `default_model`), and the value the ChatPane and Alt+Shift
- * model-cycle paths already used.
+ * model-cycle paths already use.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
@@ -28,7 +28,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 
 // The agent template pins a concrete model — this is what an empty slot.model
-// resolves to, and what used to clobber an explicit Auto pick. Repeated as a
+// resolves to, and what would clobber an explicit Auto pick. Repeated as a
 // literal inside the vi.mock factory below, which is hoisted above this const.
 const AGENT_MODEL = 'claude-opus-5'
 
@@ -49,7 +49,7 @@ vi.mock('../api/client', () => ({
     ]),
     agents: vi.fn().mockResolvedValue([]),
     agentDetail: vi.fn().mockResolvedValue({ model: 'claude-opus-5' }),
-    // The backend resolver now owns the default-model precedence; the composer
+    // The backend resolver owns the default-model precedence; the composer
     // asks it what an un-pinned slot would run on.
     agentResolvedModel: vi.fn().mockResolvedValue({ model: 'claude-opus-5' }),
     chatSlotModel: vi.fn().mockResolvedValue({ ok: true }),
@@ -142,7 +142,7 @@ describe('ChatPage — Auto model selection', { timeout: 15_000 }, () => {
     await act(async () => { fireEvent.click(autoOption) })
 
     expect(api.chatSlotModel).toHaveBeenCalledWith('slot-a', 'auto')
-    // '' is the "never chosen" state; sending it made the pick un-stick.
+    // '' is the "never chosen" state; sending it un-sticks the pick.
     expect(api.chatSlotModel).not.toHaveBeenCalledWith('slot-a', '')
   })
 
@@ -156,8 +156,8 @@ describe('ChatPage — Auto model selection', { timeout: 15_000 }, () => {
   })
 
   it('still inherits the resolved default when no model was ever chosen', async () => {
-    // Unchanged behaviour for the legacy/never-chosen slot: an absent model
-    // shows what the backend resolver reports for the agent rather than Auto.
+    // Legacy/never-chosen slot: an absent model shows what the backend resolver
+    // reports for the agent rather than Auto.
     await renderChat(undefined)
     expect(await waitFor(() => screen.getByTitle(`Model: ${AGENT_MODEL}`))).toBeTruthy()
   })

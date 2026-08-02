@@ -630,7 +630,7 @@ def _serialize_ruleset(value: object) -> dict:
     deny patterns is precisely what lets an agent craft an evasion. The human
     operator reads the authoritative contents from the files directly (outside the
     agent sandbox); the viewer shows POSTURE (which scopes are governed, their
-    shape and strictness), not the secret contents. (security-review HIGH.)
+    shape and strictness), not the secret contents.
     """
     if isinstance(value, ScopedRuleset):
         return {

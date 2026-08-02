@@ -83,7 +83,7 @@ export default function CodeReviewSagePage() {
 
   // React Query owns the fetch/loading/error/poll lifecycle. refetchInterval is
   // evaluated from the cached data, so a run that is already running on mount
-  // resumes polling automatically (the old manual-interval version did not).
+  // resumes polling automatically.
   const { data: runsData } = useQuery({
     queryKey: ['code-review-sage-runs'],
     queryFn: () => getJSON<{ runs: Run[] }>(`${API}/runs`),

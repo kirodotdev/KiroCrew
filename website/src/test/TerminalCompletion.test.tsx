@@ -324,9 +324,9 @@ describe('TerminalCompletion', () => {
       expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
     })
 
-    // Regression: Escape used to leave the debounce timer running, so the pending
-    // run re-opened the menu for whatever word was on screen by the time it
-    // fired — the dismissal only ever applied to the word it was pressed on.
+    // Regression: Escape must also cancel the pending debounce timer. Otherwise
+    // the pending run re-opens the menu for whatever word is on screen by the
+    // time it fires, so the dismissal only applies to the word it was pressed on.
     it('does not re-open for an edited word after Escape', async () => {
       const h = await open()
       const edited = `${PROMPT}cd docs`
@@ -400,7 +400,7 @@ describe('TerminalCompletion', () => {
 
     // Regression: `acceptSuffix` appends a space after a file, leaving an empty
     // next word — which for a path command means "list the cwd", so the menu
-    // used to re-open immediately for the next argument.
+    // would otherwise re-open immediately for the next argument.
     it('stays closed after a file completion ends the word', async () => {
       vi.stubGlobal('fetch', mockComplete([{ name: 'app.json', dir: false }], 'app'))
       const line = `${PROMPT}ls app`

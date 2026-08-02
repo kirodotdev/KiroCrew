@@ -209,8 +209,8 @@ _CLONE_NEWNS = 0x00020000
 # Errnos that indicate a TRANSIENT resource failure (fork/CDLL under momentary
 # pressure) — the kernel supports user namespaces, we just couldn't verify it
 # right now. These must never be treated as "this host has no sandbox backend"
-# (incident 2026-07-18: one EAGAIN during a cron spawn burst fail-closed every
-# subsequent spawn for an hour because the failed probe result was cached).
+# (one EAGAIN during a cron spawn burst would otherwise fail-close every
+# subsequent spawn because the failed probe result was cached).
 _TRANSIENT_PROBE_ERRNOS = frozenset(
     {errno.EAGAIN, errno.ENOMEM, errno.EMFILE, errno.ENFILE, errno.ENOSPC}
 )
@@ -1434,9 +1434,8 @@ def _build_seatbelt_profile(
 # kiro-cli >= 2.13 ships its own internal agent sandbox, toggled by the
 # "sandbox" key in this settings file. On macOS its in-process seatbelt init
 # cannot nest inside KiroCrew's sandbox-exec wrap — the kernel returns EPERM
-# even under an (allow default) outer profile (verified 2026-07-20 on
-# macOS 26.5.2 / kiro-cli 2.13.0). Exactly one sandbox layer can be active per
-# spawn, so on macOS the layers are mutually exclusive:
+# even under an (allow default) outer profile. Exactly one sandbox layer can be
+# active per spawn, so on macOS the layers are mutually exclusive:
 # kiro's internal sandbox ON  -> KiroCrew's seatbelt OFF for kiro-cli spawns
 # kiro's internal sandbox OFF -> KiroCrew's seatbelt ON (unchanged default)
 # (``~/.kiro/settings`` is the kiro-cli backend's own directory, distinct from
@@ -1905,7 +1904,7 @@ def _inside_macos_sandbox() -> bool:
 
 def _warn_no_isolation(mode: str) -> None:
     """Loudly surface that the agent subprocess is running WITHOUT OS-level
-    isolation, so the fallback is never silent (CSE SEC-009).
+    isolation, so the fallback is never silent.
 
     When no sandbox backend is available the credential paths (``~/.aws``,
     ``~/.ssh``, ...) are visible to the (untrusted) agent subprocess and only
@@ -1940,8 +1939,8 @@ def _warn_no_isolation(mode: str) -> None:
 def detect_backend(config_mode: str = "auto") -> str:
     """Detect the best available sandbox backend.
 
-    Cache policy (incident 2026-07-18 — one transient fork failure poisoned
-    the cache and fail-closed every spawn for an hour until restart):
+    Cache policy (a single transient fork failure must not poison the cache and
+    fail-close every spawn until restart):
 
     - A positive result (``"namespace"``/``"sandbox-exec"``) is cached for the
       process lifetime — kernel capability does not change while running.

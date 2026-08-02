@@ -63,8 +63,8 @@ logger = logging.getLogger(__name__)
 _MIN_NODE_VERSION = 16
 
 
-# ``KIRO_AGENTS_DIR`` is an import-time override hook, NOT a frozen path (issue
-# #874). ``None`` means "resolve from the live data home"; tests patch this
+# ``KIRO_AGENTS_DIR`` is an import-time override hook, NOT a frozen path.
+# ``None`` means "resolve from the live data home"; tests patch this
 # attribute directly (``patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp)``),
 # so the name is kept and read through ``_agents_dir()``.
 KIRO_AGENTS_DIR: Path | None = None
@@ -265,8 +265,8 @@ def _doctor_data_home() -> None:
                 points_at_legacy = override_home == legacy
             if points_at_legacy:
                 # The override points AT the legacy dir, so legacy IS the active
-                # data home — not ignored debris (GPT 5.6 MEDIUM: don't mislabel
-                # the home the process is actually using).
+                # data home — not ignored debris (don't mislabel the home the
+                # process is actually using).
                 print(
                     f"  legacy:      ✅ {legacy} is the ACTIVE data home "
                     f"(KIROCREW_HOME override points to it)"

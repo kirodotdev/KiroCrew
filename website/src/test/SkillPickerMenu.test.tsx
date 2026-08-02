@@ -18,7 +18,7 @@ const SKILLS = [
 ]
 
 /** Harness: gives the menu a real anchored element (it reads getBoundingClientRect)
- *  and a QueryClientProvider (the menu now reads the shared ['skills'] cache). */
+ *  and a QueryClientProvider (the menu reads the shared ['skills'] cache). */
 function Harness({ query, open, onSelect = vi.fn(), onClose = vi.fn() }: {
   query: string; open: boolean; onSelect?: (i: { leaf: string; key: string }) => void; onClose?: () => void
 }) {

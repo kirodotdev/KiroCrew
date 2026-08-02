@@ -95,8 +95,8 @@ describe('chatPasteDrafts', () => {
     const drafts: Record<string, PasteBlock[]> = {}
     setPasteDraft(drafts, 'newest', [block(1, 'y'.repeat(DRAFT_MAX_STORE_BYTES + 5000))])
     savePasteDrafts(drafts)
-    // Pre-fix this slot would have been dropped (over the 512 KB hard cap) and
-    // the chip would rehydrate as a dead literal token. Now it persists.
+    // This slot persists even though it alone exceeds the budget, so its chip
+    // stays an expandable token instead of rehydrating as a dead literal.
     expect(loadPasteDrafts()['newest']).toBeDefined()
   })
 

@@ -1,10 +1,7 @@
 """Shared channel turn pipeline — one copy of the dispatch skeleton.
 
-Every non-Slack channel dispatcher repeated the same sequence around
-:class:`TurnDriver`. Measured on main before this extraction: 7
-``transport_dispatch.py`` files totalling 3,796 lines, of which roughly
-two-thirds was identical after normalizing channel names (weixin vs wecom
-differed on 248 of ~760 combined lines). This module owns that skeleton:
+This module owns the sequence every non-Slack channel dispatcher runs around
+:class:`TurnDriver`:
 
     governance gate
     -> renderer.on_turn_start()          (typing indicator before cold start)

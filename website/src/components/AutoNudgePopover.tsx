@@ -34,9 +34,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const [message, setMessage] = useState(() => loop?.message || DEFAULT_MSG)
   // Idle-seconds and max-cycles are held as RAW STRINGS while the popover is
   // open so every edit (including a fully-cleared field or a transient "") is
-  // allowed as-typed. A previous controlled-number binding re-coerced on each
-  // keystroke, so backspacing to empty snapped the field straight back to its
-  // default and the leading digit could never be removed. The string is parsed
+  // allowed as-typed. Coercing to a number on each keystroke would snap a
+  // backspaced-to-empty field straight back to its default and prevent removing
+  // the leading digit. The string is parsed
   // into a number only when the field commits (blur / save); an empty or
   // unparseable value falls back to the field default — 60 idle, 0 cycles.
   const [idleInput, setIdleInput] = useState(() => String(loop?.idle_secs || 60))

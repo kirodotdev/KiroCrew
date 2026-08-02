@@ -19,7 +19,7 @@ export function useLogSSE(onMessage: (data: { level: string; msg: string }) => v
       // Store the reconnect handle so stop()/unmount can cancel it. Without
       // this, a reconnect scheduled during the 3s error window fires after
       // unmount, opens a new EventSource on the orphaned ref, and leaks — with
-      // an unbounded reconnect loop that no one can close. (#423)
+      // an unbounded reconnect loop that no one can close.
       timer.current = setTimeout(start, 3000)
     }
   }, [])

@@ -161,7 +161,7 @@ def _clean(text: str) -> str:
     ``POST /projects/clone`` and can emit anything through ``\\message{}`` or an
     error path, and a failed push makes ``git`` echo the remote URL, which is
     where a personal access token embedded in a remote lives. ``redact()`` runs
-    both required passes (``backend-security-controls``).
+    both required passes.
 
     Fails CLOSED: if the security module cannot be imported, the text is dropped
     rather than forwarded unscanned.

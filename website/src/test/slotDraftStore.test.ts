@@ -179,7 +179,7 @@ describe('slotDraftStore', () => {
       s.save(d)
       const persisted = s.load()
       // Older slot evicted, but the newest large draft survives intact — this is
-      // the collapsed-vs-expanded symmetry guarantee from.
+      // the collapsed-vs-expanded symmetry guarantee.
       expect(persisted['old']).toBeUndefined()
       expect(persisted['newest']).toBe('y'.repeat(5000))
     })

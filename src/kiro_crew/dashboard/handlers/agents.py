@@ -779,8 +779,8 @@ async def api_models(request: web.Request) -> web.Response:
                 await proc.communicate()
                 # A cold CLI spawn exceeded the timeout. This is the common
                 # cause of the "picker is empty until I refresh" symptom: a
-                # slow first `--list-models` spawn used to return [] (HTTP 200),
-                # which the client cached as a successful empty result. Return
+                # slow first `--list-models` spawn returning [] (HTTP 200) would
+                # be cached by the client as a successful empty result. Return
                 # 503 instead so React Query retries with backoff and the
                 # picker self-heals without a manual refresh.
                 logger.warning("api_models: --list-models timed out; returning 503")
@@ -828,15 +828,14 @@ async def api_models(request: web.Request) -> web.Response:
         # persist is offloaded to an executor so the event loop never blocks on
         # filesystem I/O (no blocking call on the event loop).
         #
-        # NOTE: this fork keeps kiro's bare-dotted ids as the picker WIRE FORMAT
+        # This fork keeps kiro's bare-dotted ids as the picker WIRE FORMAT
         # (guarded by _model_rejected_reason / api_chat_slot_model, which rejects
-        # canonical registry keys the ACP CLI can't accept). Upstream instead
-        # canonicalizes the dropdown to registry keys + translates back at the
-        # factory; that is an INCOMPATIBLE alternative to this fork's guard, so
-        # the model_name-canonicalization / dedup half of the upstream change is
-        # deliberately NOT ported here. The window seeding above IS ported — it
-        # is the load-bearing benefit (real GPT/DeepSeek/Qwen windows for the
-        # backfill) and is independent of the wire-format choice.
+        # canonical registry keys the ACP CLI can't accept). The upstream
+        # registry-key canonicalization is deliberately NOT ported — it is
+        # incompatible with this fork's _model_rejected_reason guard. The window
+        # seeding above uses kiro's authoritative context_window_tokens to give
+        # the backfill real GPT/DeepSeek/Qwen windows, independent of the
+        # wire-format choice.
         if model_registry.refresh_kiro_windows(models):
             await asyncio.get_running_loop().run_in_executor(
                 maintenance_executor(), model_registry.persist_kiro_windows
@@ -1193,7 +1192,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
         # Only prune package-installed agents (never user-created or kirocrew-owned).
         # Skip pruning if scan returned nothing -- likely a transient issue.
         # Invariant: for package-sourced entries, kiro_agent == dict key == agent name.
-        # ("aim" retained for backward-compat with configs written before the rename.)
+        # ("aim" is also accepted for backward-compat with older configs.)
         if discovered_names:
             for name, agent_cfg in list(cfg.agents.items()):
                 if agent_cfg.source in ("package", "aim") and (

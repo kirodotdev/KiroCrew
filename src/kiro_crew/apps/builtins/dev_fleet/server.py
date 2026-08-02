@@ -196,8 +196,8 @@ def _build_pending() -> bool:
     a completed Pull+Build has artifacts waiting to be applied on the next restart."""
     try:
         # parents[3] == the kiro_crew package root (dev_fleet -> builtins ->
-        # apps -> kiro_crew). A relative parent-chain broke once already when
-        # this module moved from dashboard/handlers/ — the test pins the shape.
+        # apps -> kiro_crew). The relative parent-chain is location-sensitive,
+        # so a test pins the shape.
         dist = Path(__file__).resolve().parents[3] / "static" / "dist"
         if not dist.exists():
             return False
@@ -997,7 +997,7 @@ def _is_pr_merged(pr: dict | None) -> bool:
     return (pr or {}).get("state") == "MERGED"
 
 
-# --- per-worktree context: issue/ticket links + purpose one-liner (issue #147) ---
+# --- per-worktree context: issue/ticket links + purpose one-liner ---
 #
 # Best-effort and TTL-cached per branch exactly like the PR-state cache. Every
 # field degrades to empty/None on any git/gh failure so context resolution can
@@ -1008,7 +1008,7 @@ def _is_pr_merged(pr: dict | None) -> bool:
 # trailing non-alphanumeric lookahead that rejects colour hexes (#1a2b, #fff)
 # and version-ish tokens — covers both; dedup collapses the keyworded overlap.
 _ISSUE_REF_RE = re.compile(r"#(\d{1,7})(?![0-9A-Za-z])")
-# Ticket IDs (JIRA / Taskei style): PROJECT-1234. Pattern fixed by issue #147.
+# Ticket IDs (JIRA / Taskei style): PROJECT-1234.
 _TICKET_ID_RE = re.compile(r"\b[A-Z][A-Za-z]{1,15}-\d{1,6}\b")
 # Subjects that are pure version bumps — skipped when picking the one-liner.
 _VERSION_BUMP_RE = re.compile(
@@ -1248,10 +1248,9 @@ async def _discover_worktrees() -> list[dict]:
             # Do NOT clip to the generic git-error length here. The sandbox layer
             # puts the *remedy* (which opt-in to set, or that an EPERM is a
             # Seatbelt nesting artifact rather than a missing backend) AFTER a
-            # ~180-char preamble, so the old 200-char cap surfaced the diagnosis
-            # and swallowed the fix — the Discovery Error banner ended mid-word at
-            # "Probe". Keep a generous bound purely to stop an unbounded stderr
-            # reaching the UI.
+            # ~180-char preamble, so a tight cap would surface the diagnosis and
+            # swallow the fix. Keep a generous bound purely to stop an unbounded
+            # stderr reaching the UI.
             raise RuntimeError(raw[:_SANDBOX_ERR_MAX])  # already prefixed by _run_cmd
         return []
     entries = _parse_worktree_porcelain(stdout)
@@ -1735,8 +1734,8 @@ async def _pod_up(name: str) -> dict:
         return {"ok": False, "error": _redact(stderr or stdout)}
     # Post-start verification (symmetry with _pod_down): rc==0 is not proof the
     # pod is up. Confirm the unit is actually active, else fail closed rather
-    # than flash a false "started" — the same false-success class this fix kills,
-    # in the opposite direction.
+    # than flash a false "started" — the same false-success class as a false
+    # "stopped", in the opposite direction.
     cfg = _load_cfg()
     if _POD_AVAILABLE and cfg:
         try:
@@ -1766,7 +1765,7 @@ async def _pod_down(name: str) -> dict:
     if rc != 0:
         return {"ok": False, "error": _redact(stderr or stdout)}
     # Post-stop verification: a CLI exit 0 is NOT proof the unit stopped (a
-    # broken `-m` entry point historically no-op'd with rc 0, and a real stop
+    # broken `-m` entry point can no-op with rc 0, and a real stop
     # can still fail or time out). Re-check the live unit state and fail CLOSED
     # if the pod is still active — mirrors the post-shutdown recheck in
     # _worktree_remove so "Stopped" is never reported for a pod still running.
@@ -3068,8 +3067,7 @@ def _in_pod() -> bool | None:
     gateway. The ambiguous ``None`` case is fail-CLOSED by the caller
     (``_make_live`` refuses with ``pod_indeterminate``) — an unresolvable
     home must NEVER be treated as "not a pod", which would let a pod cut the
-    operator's live gateway (the previous fail-OPEN ``False`` did exactly
-    that)."""
+    operator's live gateway."""
     try:
         from kiro_crew.config.loader import config_dir
 
@@ -3457,7 +3455,7 @@ def create_app() -> web.Application:
     # (handle_app_api_proxy). The bare /health above is reachable only by the
     # gateway's own in-process liveness poll (127.0.0.1:<port>/health, and it is
     # the one path the HMAC middleware exempts). So the restart-identity
-    # handshake (issue #639) MUST poll a PROXIED path -- expose the same handler
+    # handshake MUST poll a PROXIED path -- expose the same handler
     # under /api/health, which the browser reaches at /apps/dev-fleet/api/health.
     app.router.add_get("/api/health", api_health)
     app.router.add_get("/api/fleet", api_dev_fleet_fleet)

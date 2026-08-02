@@ -1,9 +1,7 @@
 """Security-posture detail registry — the data behind Settings → Security.
 
-The Live Security Posture card and the Defense-in-Depth list used to render
-hardcoded numbers ("5 output paths", "42 patterns", "13 credential directories")
-with no way for the operator to see what those numbers actually cover. Every
-count in this module is DERIVED from the live control it describes, and each
+Every count in this module is DERIVED from the live control it describes — never
+a hardcoded number that can drift out of sync with what it covers — and each
 control also resolves its concrete ``items`` so the dashboard can expand a row
 into the real list instead of asking the reader to trust a pill.
 
@@ -24,8 +22,8 @@ Design contract:
   **omission-detecting** test: the redaction registry is checked against every
   redactor call site in the package (with an explicit
   ``NON_EGRESS_REDACTION_MODULES`` allowlist), and the family/heuristic lists are
-  checked against the live scanners. An omission is the failure mode that shipped
-  "5 output paths" when there were several times that many — only a test that
+  checked against the live scanners. An omission — a curated list silently
+  missing an entry — is the failure mode here, and only a test that
   detects an omission
   catches it, and a `len()` assertion never will.
 - **Posture, not secrets.** Every item here is either a *public* control
@@ -314,8 +312,8 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
 # implicit) because the drift guard in ``test_security_posture`` walks every
 # redactor call site and requires each module to be either a registered sink or
 # listed here — so a NEW egress path cannot be added without someone deciding
-# which bucket it belongs in. That inverse check is the whole point: the original
-# "5 output paths" bug was an omission, and only an omission-detecting test
+# which bucket it belongs in. That inverse check is the whole point: the failure
+# mode is a silently omitted egress path, and only an omission-detecting test
 # catches an omission.
 NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
     {
@@ -631,20 +629,16 @@ def _tool_schema_items() -> list[PostureItem]:
     plus the module-level ``*_SCHEMA`` objects that gate dashboard handlers rather
     than MCP tools.
 
-    An earlier version walked only ``dir(validation)`` for the ``*_SCHEMA``
-    naming convention. That made the *convention*, not the registry, the source
-    of truth, and it had a measurable blind spot: several registered MCP tools
-    (e.g. ``cron_trigger``) are defined as inline or shared ``ToolSchema``
-    objects with no module-level name of their own, so they were validated but
-    invisible here — a new tool registered that way would have added zero to the
-    count.
+    Deriving from the registries (not the ``*_SCHEMA`` naming convention) makes
+    the registry, not the convention, the source of truth. Several registered MCP
+    tools (e.g. ``cron_trigger``) are defined as inline or shared ``ToolSchema``
+    objects with no module-level name of their own, so a convention-only walk
+    validates them but cannot see them here — a tool registered that way would add
+    zero to the count.
 
     ``_SCHEMA_REGISTRY_NAMES`` is enumerated rather than discovered, but the drift
     test derives its expectation from the same module attributes, so a NEW registry
-    that is not listed here fails that test instead of silently under-reporting: the
-    ten ``MCP_COMPUTER_SCHEMAS`` entries were missing from this view for exactly that
-    reason, and the drift test could not catch it because it hardcoded the same two
-    registry names this function did.
+    that is not listed here fails that test instead of silently under-reporting.
     """
     seen: dict[str, str] = {}
     for registry_name in _SCHEMA_REGISTRY_NAMES:
@@ -701,9 +695,7 @@ def _audit_surface_items() -> list[PostureItem]:
 
     ``_infer_source`` maps a session key to a surface, so its return vocabulary is
     the set of surfaces SEL can infer — deriving from it means adding one moves
-    this count automatically. The previous hand-typed 8-tuple was a copy of a
-    stale doc sentence and had already drifted (it named modules, not surfaces,
-    and omitted several).
+    this count automatically.
 
     SCOPE (deliberate): a caller may pass an explicit ``source=`` that bypasses
     inference entirely (``channel``, ``token_auth``, ``migration``, …; ~70 such

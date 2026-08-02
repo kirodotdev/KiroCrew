@@ -3,9 +3,8 @@
  *
  * The connection indicator lives in the unified readout capsule as a small
  * colored dot (green = connected, red = disconnected); when disconnected the
- * whole capsule tints danger. There is no "Offline" text pill anymore, so the
- * old suppression logic (hiding a loud pulsing pill to avoid competing with
- * the session-expired banner) reduces to a tooltip swap: when
+ * whole capsule tints danger. There is no "Offline" text pill, so the
+ * suppression logic is just a tooltip swap: when
  * `mc-auth-required` fires (or `isAuthBannerShown()` on mount), the dot's
  * tooltip defers to the banner as the canonical signal.
  */
@@ -80,7 +79,7 @@ describe('App offline capsule — auth-required tooltip', () => {
   it('shows the red connection dot when WS is disconnected AND no auth banner', () => {
     renderWithProviders(<App />, { route: '/chat', preloadedState: offlineState })
     // The unified readout capsule renders a red dot with
-    // aria-label="Gateway offline"; there is no "Offline" text pill anymore
+    // aria-label="Gateway offline"; there is no "Offline" text pill
     // (the capsule's danger tint is the disconnected signal).
     const dot = screen.getByLabelText('Gateway offline')
     expect(dot).toBeTruthy()

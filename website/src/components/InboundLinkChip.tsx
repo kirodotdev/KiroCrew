@@ -17,8 +17,7 @@ import { ChannelBrandIcon } from './ChannelBrandIcon'
  * chip rather than living only in a menu the user has to open. `origin` and
  * one-way `out` links deliberately render nothing here: they carry no surprise.
  *
- * Release is the dashboard-side equivalent of the channel's `!unlink`, which
- * until now was the only way out of a resumed session.
+ * Release is the dashboard-side equivalent of the channel's `!unlink`.
  */
 export default function InboundLinkChip({ slotKey }: { slotKey?: string }) {
   const dispatch = useAppDispatch()

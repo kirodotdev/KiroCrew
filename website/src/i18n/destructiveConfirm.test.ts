@@ -4,8 +4,8 @@
  * A mistranslated count badge is cosmetic. A mistranslated *confirmation* is
  * not: it either blocks a user from completing an action they intend, or
  * describes a destructive action inaccurately enough that they consent to
- * something they did not mean. Both happened during this conversion, so both
- * are asserted here rather than left to review.
+ * something they did not mean. Both are real failure modes, so both are
+ * asserted here.
  */
 
 import { describe, it, expect } from 'vitest'

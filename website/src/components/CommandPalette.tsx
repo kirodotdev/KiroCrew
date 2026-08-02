@@ -39,7 +39,7 @@ import { i18nT } from '../i18n/t'
  *  - Arrow Up / Down       — move the selection.
  *  - Enter                 — `dispatchEnter(result, false)` (then close).
  *  - ⌘/Ctrl + Enter        — `dispatchEnter(result, true)` — the modifier
- *                            branch of the §2 Enter matrix (always-new-session /
+ *                            branch of the Enter matrix (always-new-session /
  *                            attach-as-context); then close.
  *  - ⌥/Alt + Enter         — `result.onAltActivate()` (read / preview, e.g.
  *                            open SKILL.md); does not close the palette.
@@ -130,7 +130,7 @@ export default function CommandPalette({
   const pages = usePagesProvider()
   const actions = useActionsProvider({ openShortcuts: openShortcuts ?? NOOP })
 
-  // Live chat-store/router actions backing the §2 Enter matrix. `usePaletteActions`
+  // Live chat-store/router actions backing the Enter matrix. `usePaletteActions`
   // exposes the same composer-insert (`setPendingInput`) and new-session
   // (`createSlot` + `setPendingInput`) paths the inline `$`/`@` pickers use, plus
   // the context-aware `enterInsertOrNewSession` helper (insert into the active
@@ -140,8 +140,8 @@ export default function CommandPalette({
   // of {@link dispatchEnter}.
   const { enterInsertOrNewSession, newSessionWithToken, navigate } = usePaletteActions()
 
-  // ⌘Enter on a Knowledge row attaches the entry as context to the active chat
-  // (§2 / task 26). There is no global attach-by-id API — the shipped
+  // ⌘Enter on a Knowledge row attaches the entry as context to the active chat.
+  // There is no global attach-by-id API — the shipped
   // path is the `@knowledge <query>` composer prefix the chat surface intercepts
   // (`useKnowledgeFetch.extractKnowledgeQuery`) to pull entries in as context.
   // So we reuse that entry-point: seed the active chat (else a new session) with
@@ -154,7 +154,7 @@ export default function CommandPalette({
 
   // P1 providers (Knowledge · Skills · Prompts). Each is memoized inside its
   // hook, so identities are stable across renders. Knowledge gets the
-  // attach-as-context callback so its ⌘Enter is bound (task 26).
+  // attach-as-context callback so its ⌘Enter is bound.
   const knowledge = useKnowledgeProvider({ attachAsContext: attachKnowledgeAsContext })
   const skills = useSkillsProvider()
   const prompts = usePromptsProvider()
@@ -231,17 +231,16 @@ export default function CommandPalette({
   queryRef.current = query
 
   /**
-   * Central Enter dispatcher (§2, {@link OnEnter}). Switches on the
+   * Central Enter dispatcher ({@link OnEnter}). Switches on the
    * result's declarative {@link EnterAction} (`result.enter`) and routes to the
    * per-type branch; `withModifier` is `true` for ⌘/Ctrl+Enter (the
    * always-new-session / attach-as-context branch of the matrix).
    *
    * Migration-safe: providers that have not yet been ported to populate
    * `result.enter` fall through to the legacy `onActivate` / `onCmdActivate`
-   * closures, so current behavior is unchanged. The typed branches start as
-   * stubs (no-op + `console.warn`) and are implemented one per type by
-   * tasks 23–27. ⌥/Alt+Enter (preview) is intentionally NOT handled here — it
-   * stays a separate, non-closing path in the window-capture listener below.
+   * closures, so current behavior is unchanged. ⌥/Alt+Enter (preview) is
+   * intentionally NOT handled here — it stays a separate, non-closing path in
+   * the window-capture listener below.
    *
    * Always closes the palette after dispatching (Enter / ⌘Enter both close;
    * only preview keeps it open).
@@ -268,7 +267,7 @@ export default function CommandPalette({
             }
             break
           case 'insert-token': {
-            // Skills / Prompts (§2 / task 24). Primary Enter is
+            // Skills / Prompts. Primary Enter is
             // context-aware: insert the token (`$<skill>` / `@<prompt>`, from
             // the result payload) into the active chat composer, or — when no
             // chat is active — open a new session seeded with it.
@@ -284,7 +283,7 @@ export default function CommandPalette({
             break
           }
           case 'open-knowledge':
-            // Knowledge (§2 / task 26). Primary Enter opens /
+            // Knowledge. Primary Enter opens /
             // navigates to the entry; ⌘Enter attaches it as context to the
             // active chat. Both reuse the provider-bound closures
             // (`onActivate` → openEntry, `onCmdActivate` → attachAsContext);
@@ -298,7 +297,7 @@ export default function CommandPalette({
             }
             break
           case 'navigate':
-            // Pages (§2 / task 27): navigate to the page route. Pages
+            // Pages: navigate to the page route. Pages
             // are pure navigation targets — ⌘Enter takes NO distinct action, so
             // `withModifier` is intentionally ignored (⌘Enter == Enter). The
             // provider bound `navigate(action.route)` into `onActivate`; reuse
@@ -307,7 +306,7 @@ export default function CommandPalette({
             result.onActivate()
             break
           case 'invoke':
-            // Actions (§2 / task 27): run the free action callback.
+            // Actions: run the free action callback.
             // Actions are pure command-invocations — ⌘Enter takes NO distinct
             // action, so `withModifier` is intentionally ignored
             // (⌘Enter == Enter). The callback rides on the declarative payload,
@@ -430,7 +429,7 @@ export default function CommandPalette({
         e.preventDefault()
         e.stopImmediatePropagation()
         // Prefix + Tab adopts the hinted scope (clearing the query); Shift+Tab
-        // while scoped pops it. Replaces the old tab-cycle behavior.
+        // while scoped pops it.
         if (!scopeRef.current && scopeHintRef.current) {
           setScope(scopeHintRef.current.id)
           setQuery('')

@@ -47,8 +47,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 /* ─── Sync phase stepper model (marker protocol) ─── */
 // Rough progress mapping for the 5 backend sync steps (fetch/merge/pip/npm ci/
-// build), weighted by typical duration. Shown as a single coarse percentage --
-// per-step labels were dropped (they implied more precision than we have).
+// build), weighted by typical duration. Shown as a single coarse percentage
+// with no per-step labels, which would imply more precision than we have.
 const SYNC_STEP_CUM = [0, 5, 8, 25, 55, 100] as const
 const SYNC_TOTAL_STEPS = 5
 const STEP_MARKER_RE = /^::step::(\d+)::(.+)$/
@@ -69,14 +69,14 @@ function filterStepMarkers(lines: string[]): string[] {
   return lines.filter((l) => !STEP_MARKER_RE.test(l))
 }
 
-/* ─── Restart identity handshake (issue #639) ─── */
+/* ─── Restart identity handshake ─── */
 // POST /restart-gateway and /make-live return the unit's start identity
 // captured BEFORE the bounce; GET /apps/dev-fleet/api/health reports the CURRENT
 // one. (It must be the /api/ path: the gateway only proxies /apps/dev-fleet/api/*
 // to the backend -- the bare /health is the gateway's own internal liveness
 // poll and never reaches the browser.) The UI holds "Restarting — reconnecting"
 // until it observes a DIFFERENT identity, so a 200 from the OLD process still
-// winding down never counts as recovered (the re-click trap issue #639 describes).
+// winding down never counts as recovered (the re-click trap this prevents).
 const RESTART_TIMEOUT_MS = 60000
 
 // Recovered iff we captured an identity AND the gateway now reports a different
@@ -90,7 +90,7 @@ export function gatewayRecovered(
   return String(currentId) !== String(capturedId)
 }
 
-/* ─── Provision progress model (issue #231) ─── */
+/* ─── Provision progress model ─── */
 // The last non-blank output line — the "current activity" shown inline.
 function lastLine(lines: string[] | undefined): string {
   if (!lines) return ''
@@ -215,8 +215,8 @@ function iconLabel(icon: ReactNode, label: string) {
 /* ─── Sub-components ─── */
 interface MenuItemDef { label: string; icon?: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; title?: string }
 // Row-actions dropdown geometry. The menu is portaled to <body> so a row's
-// <Card overflow> can't clip it (issue #146); these drive fixed positioning.
-const MENU_GAP = 6        // gap between trigger and menu (was `calc(100% + 6px)`)
+// <Card overflow> can't clip it; these drive fixed positioning.
+const MENU_GAP = 6        // gap between trigger and menu
 const MENU_MARGIN = 8     // min gap from the viewport edge
 const MENU_ITEM_H = 32    // estimated per-item height for the flip decision
 const MENU_PAD = 8        // container vertical padding (4px top + 4px bottom)
@@ -230,7 +230,7 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
 
   useEffect(() => {
     if (!open) return
-    // The menu is portaled to <body>, so it is no longer a DOM descendant of
+    // The menu is portaled to <body>, so it is not a DOM descendant of
     // the trigger — the outside-click guard must exclude BOTH the trigger and
     // the menu (a plain trigger.contains() check would close on every menu
     // click). Escape closes and returns focus to the trigger.
@@ -346,7 +346,7 @@ interface Worktree {
 }
 interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; pods_available?: boolean; pods_unavailable_reason?: string | null }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; phase: number; phaseAt?: number; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
-// Provision run state (issue #231): the FULL output is kept (not just the last
+// Provision run state: the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
 // persists (failed=true) until the user dismisses it rather than vanishing.
 interface ProvRun { status: 'starting' | 'running' | 'done' | 'failed'; lines: string[]; startedAt: number; exit?: number | null; failed?: boolean; done?: boolean }
@@ -554,7 +554,7 @@ export default function DevFleetPage() {
   }
   function dismissRebaseResult(name: string) { clearTimeout(rebaseTimersRef.current[name]); setRebaseResult((m) => { const n = { ...m }; delete n[name]; return n }) }
 
-  /* ─── Sync reattach on page load (v0.6.0) ─── */
+  /* ─── Sync reattach on page load ─── */
   useEffect(() => {
     if (!fleet?.sync_run_id || syncAttachedRef.current) return
     syncAttachedRef.current = true
@@ -687,7 +687,7 @@ export default function DevFleetPage() {
         const ok = run.exit_code === 0
         notify(ok ? i18nT('pages.devFleetPage.provisioned') : i18nT('pages.devFleetPage.provision_failed_exit_code', { code: run.exit_code }), { type: ok ? 'success' : 'error' })
         if (ok) {
-          // Flash a brief green "Provisioned", then clear (as before). The
+          // Flash a brief green "Provisioned", then clear. The
           // fleet refetch flips the row to its built state in the meantime.
           setProv((p) => ({ ...p, [name]: { status: 'done', done: true, lines, startedAt, exit: 0 } }))
           invalidateFleet()
@@ -698,7 +698,7 @@ export default function DevFleetPage() {
         } else {
           // FAILURE PERSISTENCE: keep the run, auto-expand the log, hold until
           // the user dismisses it — a multi-minute failed provision must not
-          // vanish into an empty row (issue #231).
+          // vanish into an empty row.
           setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines, startedAt, exit: run.exit_code } }))
           setProvLogOpen((o) => ({ ...o, [name]: true }))
           invalidateFleet()
@@ -733,7 +733,7 @@ export default function DevFleetPage() {
       // a provision for this checkout is already running — that is NOT a
       // failure. Reattach to the existing run instead of rendering a false red
       // "Provision failed" state. Only a response with no run id to attach to
-      // is a genuine failure (issue #231 / PR #320).
+      // is a genuine failure.
       if (!r?.run_id) {
         notify(i18nT('pages.devFleetPage.provision_failed_to_start'), { type: 'error' })
         setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: ['Provision failed to start'], startedAt, exit: null } }))
@@ -908,7 +908,7 @@ export default function DevFleetPage() {
       const r = await api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
       if (!r?.ok) { notify(r?.error || i18nT('pages.devFleetPage.restart_failed'), { type: 'error' }); setRestarting(false); return }
       // Wait for the NEW process (a different start identity), not "a 200 came
-      // back" — see gatewayRecovered / issue #639.
+      // back" — see gatewayRecovered.
       await awaitGatewayBack(r.start_id ?? null)
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }); setRestarting(false) }
   }
@@ -1099,7 +1099,7 @@ export default function DevFleetPage() {
     )
   }
 
-  /* ─── Provision stepper (inline at a worktree row, issue #231) ─── */
+  /* ─── Provision stepper (inline at a worktree row) ─── */
   function renderProvStepper(w: Worktree) {
     const pr = prov[w.name]
     if (!pr) return null

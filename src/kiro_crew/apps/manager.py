@@ -247,7 +247,6 @@ def _validate_source_path(source: Path) -> list[str]:
         errors.append(f"invalid {APP_MANIFEST_FILENAME}: {exc}")
         return errors
     errors.extend(manifest.validate(app_root=source))
-    # Check minKiroCrewVersion
     if manifest.minKiroCrewVersion:
         ver_err = _check_min_version(manifest.minKiroCrewVersion)
         if ver_err:
@@ -406,7 +405,6 @@ def install_app(source: str | Path) -> AppResult:
         )
         return AppResult(ok=False, error=f"source is not a directory: {source}")
 
-    # Validate
     errors = _validate_source_path(source)
     if errors:
         sel().log_api_access(
@@ -463,7 +461,6 @@ def install_app(source: str | Path) -> AppResult:
             f"Uninstall first or use the update endpoint.",
         )
 
-    # Copy app files to install directory
     # Preserve existing data/ directory (left behind by a prior default uninstall)
     existing_data = dest / "data" if dest.exists() else None
     # Use same temp name as uninstall_app/update_app so data stranded by a
@@ -1607,7 +1604,7 @@ def register_builtin_apps() -> int:
         # unrelated local/registry/external app that merely shares the name
         # must never be deleted (it may hold user code and secrets).
         #
-        # PIN-FIRST (Codex R36): the app directory descriptor is pinned
+        # PIN-FIRST: the app directory descriptor is pinned
         # BEFORE any validation, and installed.json / data/ are inspected
         # RELATIVE to that pinned descriptor. A rename swapping the directory
         # between validation and deletion can therefore never redirect the

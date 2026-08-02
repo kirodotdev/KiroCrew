@@ -1,11 +1,11 @@
 /**
- * Tests for the top-bar surfaces added in the electron shell redesign commits:
+ * Tests for the electron-shell top-bar surfaces:
  * - readout capsule collapse/expand via the connection dot (persisted)
  * - macOS fullscreen: 'mac-fullscreen' class driven by the electron
  *   fullscreen-changed bridge (drops the 84px traffic-light inset via CSS)
  *
- * (The activity-panel open toggle moved out of the top bar into the ChatPage
- * session header — see ChatPage.responsivePanel.test.tsx for its coverage.)
+ * (The activity-panel open toggle lives in the ChatPage session header, not
+ * the top bar — see ChatPage.responsivePanel.test.tsx for its coverage.)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen, fireEvent } from '@testing-library/react'

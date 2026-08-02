@@ -401,9 +401,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
 
     // Ctrl+G: open the agent monitor — the Subagents activity tab ("Live agent
     // activity & transcripts"). This is the chord the kiro-cli backend advertises
-    // in its crew-pipeline tool result ("Press ctrl+g to monitor progress"), which
-    // until now was unbound on every non-TUI surface. Handled BEFORE the Alt gate
-    // because the chord carries no Alt.
+    // in its crew-pipeline tool result ("Press ctrl+g to monitor progress").
+    // Handled BEFORE the Alt gate because the chord carries no Alt.
     //
     // Deliberately fires INSIDE text fields: the hint is read while a crew runs
     // and focus is normally in the composer, so an isInput bail-out would make it

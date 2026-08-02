@@ -1,7 +1,7 @@
 """Layer 3 -- namespaced channel linkage.
 
 Session keys are namespaced as ``f"{channel_type}:{conversation_id}"`` so
-keys never collide across channels. Legacy native-Slack sessions were keyed
+keys never collide across channels. Legacy native-Slack sessions are keyed
 by the bare ``thread_ts``; the helpers here provide the bidirectional
 ``bare <-> slack:`` shim used by ``SessionMap``.
 
@@ -184,10 +184,10 @@ def build_dm_session_key(
 
     The ``agent`` is part of the durable bucket by design: a different agent is a
     different assistant/context, so switching the configured agent intentionally
-    starts a fresh session rather than replaying another agent's history. This
-    key shape is new for the recently added DM channels (Telegram, WeCom), which
-    carry no prior persisted history to migrate; the legacy bare-thread Slack
-    keys keep their existing compatibility shim (see ``canonical_key``) untouched.
+    starts a fresh session rather than replaying another agent's history. The
+    Telegram/WeCom DM channels carry no prior persisted history to migrate, so
+    this key shape applies to them directly; the legacy bare-thread Slack keys
+    keep their compatibility shim (see ``canonical_key``) untouched.
     """
     if dm_scope == DM_SCOPE_UNIFIED and chat_type == CHAT_TYPE_DIRECT:
         bucket = f"{DM_SCOPE_UNIFIED}:{agent}"

@@ -600,7 +600,7 @@ def _markdown_misclassification_reason(content: str, source_path: str) -> str | 
     """Return why a ``widget``-kind artifact actually looks like ``markdown``.
 
     Returns a short human-readable reason string, or ``None`` if the artifact
-    is a genuine widget. Used by the CR-1 corrective migration
+    is a genuine widget. Used by the corrective migration
     (:meth:`ArtifactStore.migrate_kinds`) to find artifacts saved as ``widget``
     before ``kind`` inference existed. Deliberately conservative — it triggers
     only on a ``.md`` / ``.markdown`` ``source_path`` or content with **no HTML
@@ -939,8 +939,8 @@ class ArtifactStore:
             # Compute live_dirty by comparing the live content to the
             # latest numbered snapshot. Catches both silent saves AND
             # external file edits to source_path that we never saw —
-            # which is the whole point of round 6's "snapshot anytime"
-            # request. If versions/vN.html is missing (legacy artifact
+            # which is the whole point of the "snapshot anytime" behavior.
+            # If versions/vN.html is missing (legacy artifact
             # before snapshots existed), default to not-dirty.
             latest_vfile = self._artifact_dir(slug) / "versions" / f"v{meta.version}.html"
             if latest_vfile.exists():
@@ -994,12 +994,10 @@ class ArtifactStore:
                 return None
             # Bound the read at the FILE level, not after-the-fact: read
             # MAX_CONTENT_BYTES+1 bytes from disk, decode (errors='replace'
-            # for invalid sequences). Previously called
-            # p.read_text() which loads the entire file into memory before
-            # the size check — a multi-GB file pointed to by source_path
-            # would exhaust memory before truncation triggered. Bounding
-            # the read caps memory at MAX_CONTENT_BYTES+1 regardless of
-            # file size.
+            # for invalid sequences). Reading the whole file before the size
+            # check would let a multi-GB file pointed to by source_path exhaust
+            # memory before truncation; bounding the read caps memory at
+            # MAX_CONTENT_BYTES+1 regardless of file size.
             with p.open("rb") as f:
                 raw = f.read(MAX_CONTENT_BYTES + 1)
             oversize = len(raw) > MAX_CONTENT_BYTES
@@ -1700,7 +1698,7 @@ class ArtifactStore:
 
     def migrate_kinds(self, *, apply: bool = False) -> _List[dict[str, Any]]:
         """Corrective one-time migration: reclassify markdown artifacts that
-        were mis-saved as ``widget`` before ``kind`` inference existed (CR-1).
+        were mis-saved as ``widget`` before ``kind`` inference existed.
 
         A ``widget`` artifact is treated as mis-saved markdown when
         :func:`_markdown_misclassification_reason` returns a reason — its
@@ -2187,8 +2185,8 @@ class ArtifactStore:
             #   * the remote retains the deleted ROOT as a tombstone in *every*
             #     fetch, so seed the drop-set from the INCOMING tombstones (the
             #     authoritative, always-present signal), not only the local mirror
-            #     — that mirror is gone after the first cascade, which is exactly
-            #     why the orphans used to come back on the next fetch.
+            #     — that mirror is gone after the first cascade, so relying on it
+            #     would let the orphans come back on the next fetch.
             # Replies share the root's thread_id (provider: thread_id =
             # parentCommentId or commentId), so this drops the subtree on every
             # fetch — self-healing, no persistent local tombstone needed. Local

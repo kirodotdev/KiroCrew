@@ -161,8 +161,8 @@ COMPONENT_HELP = {
 def _mc_dir() -> Path:
     # Use the shared resolver so snapshot/restore honor the documented
     # KIROCREW_HOME override (and the same ~/.kiro/crew default) as every other
-    # module. Previously this read an undocumented KIROCREW_DIR, which made
-    # snapshots silently target the real home even when state was relocated.
+    # module — not an undocumented KIROCREW_DIR, which would make snapshots
+    # silently target the real home even when state was relocated.
     from kiro_crew.config.loader import config_dir
 
     return config_dir()
@@ -357,8 +357,7 @@ def snapshot_main(
     # would let the snapshot land group/world-readable while still printing
     # success. Fail loudly instead — better to abort than ship a
     # secret-bearing archive under-protected. POSIX applies chmod 0o600;
-    # Windows applies an owner-only DACL via icacls (previously an
-    # IS_POSIX-gated no-op that left the archive readable by other users).
+    # Windows applies an owner-only DACL via icacls.
     # Unlink+reraise on failure so the "abort" the comment promises actually
     # removes the exposed artifact — otherwise the tarball would sit on disk
     # with the destination's inherited DACL after a Python traceback.
@@ -548,8 +547,8 @@ def _backup_and_copy(mc: Path, backup: Path, snap: Path, component: str) -> None
                 # security files include sel_hmac.key. Mirrors the create path's
                 # deliberate fail-loud lockdown — better to abort than silently
                 # land a restored secret group/world-readable. POSIX applies
-                # chmod 0o600; Windows applies an owner-only DACL via icacls
-                # (previously an IS_POSIX-gated no-op). Unlink the freshly
+                # chmod 0o600; Windows applies an owner-only DACL via icacls.
+                # Unlink the freshly
                 # copied file on failure so the "abort" the comment promises
                 # actually removes the exposed artifact — otherwise the
                 # restored secret would sit under the destination-inherited
@@ -650,8 +649,8 @@ def _do_merge(snap: Path, mc: Path, components: list[str] | None) -> None:
                 shutil.copy2(str(s), str(d))
                 # restrict_to_owner (fail-loud), NOT chmod_safe — security
                 # files include sel_hmac.key; mirror the create path. Windows
-                # applies an owner-only DACL via icacls (previously an
-                # IS_POSIX-gated no-op). Unlink the freshly copied file on
+                # applies an owner-only DACL via icacls. Unlink the freshly
+                # copied file on
                 # failure so an icacls error doesn't leave a restored secret
                 # under the destination-inherited DACL.
                 try:

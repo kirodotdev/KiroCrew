@@ -54,9 +54,9 @@ CHAT_TURN_TIMEOUT = 7200.0
 # The agent emits a trailing ``[OPTIONS: choice1 | choice2 | ...]`` marker that
 # every surface renders as tappable choices. Two variants exist because the
 # surfaces scan differently, but their GRAMMAR must stay identical — so both are
-# defined here ONCE and imported everywhere (was five hand-mirrored copies kept
-# in sync only by a "keep in lockstep" comment; a one-character slip flips the
-# flag semantics or reintroduces the ReDoS class below on a single surface).
+# defined here ONCE and imported everywhere: a hand-mirrored copy risks a
+# one-character slip that flips the flag semantics or reintroduces the ReDoS
+# class below on a single surface.
 #
 # Body: a TEMPERED greedy repetition that allows every bracket EXCEPT a ``[``
 # that begins a fresh ``[OPTIONS:``. This matters for ReDoS (py/polynomial-redos):
@@ -127,11 +127,11 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     return text[:suffix_start], text[suffix_start:]
 
 
-# The product wordmark, figlet `small`. ONE definition on purpose: it used to be
-# copy-pasted into cli.py and cli_chat.py, and a rename left both spelling a
-# stale product name in the two most-seen surfaces (bare `kirocrew`, the chat
-# REPL). Import it; never re-inline it. `cloud/ui.py` keeps its own art because
-# it renders a different wordmark ("Kiro Crew Cloud") with ANSI color.
+# The product wordmark, figlet `small`. ONE definition on purpose: copy-pasting
+# it into cli.py and cli_chat.py risks a rename leaving a stale product name in
+# the two most-seen surfaces (bare `kirocrew`, the chat REPL). Import it; never
+# re-inline it. `cloud/ui.py` keeps its own art because it renders a different
+# wordmark ("Kiro Crew Cloud") with ANSI color.
 BANNER = r"""
    _  ___            ___
   | |/ (_)_ _ ___   / __|_ _ _____ __ __

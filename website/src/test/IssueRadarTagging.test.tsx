@@ -771,7 +771,7 @@ describe('TaggingView', () => {
 
     await waitFor(() =>
       expect(api.addSettingLabel).toHaveBeenCalledWith(expect.objectContaining({ owner: 'o', repo: 'r' }), 'triage_labels', 'needs-triage'))
-    // The whole-document write must NOT be used for this any more.
+    // The whole-document write must NOT be used for this.
     expect(api.putSettings).not.toHaveBeenCalled()
   })
 

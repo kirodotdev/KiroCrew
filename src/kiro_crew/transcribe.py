@@ -74,8 +74,7 @@ def ensure_ffmpeg_in_path() -> None:
 
     Probes each candidate dir with ``shutil.which("ffmpeg", path=d)`` — that
     honours ``PATHEXT`` on Windows (so ``ffmpeg.exe`` resolves) while still
-    matching a plain ``ffmpeg`` on POSIX. The prior ``os.path.isfile(<d>/ffmpeg)``
-    check missed the ``.exe`` suffix on Windows and never prepended the dir.
+    matching a plain ``ffmpeg`` on POSIX.
     """
     path_parts = os.environ.get("PATH", "").split(os.pathsep)
     for d in reversed(_FFMPEG_CANDIDATE_DIRS):

@@ -3,8 +3,7 @@
 Two ``kirocrew gateway`` processes bound to the same home each open the same
 ``sessions/*.jsonl`` as ``ConversationLog`` writers. The steady-save fast path
 assumes a single writer per file, so the stale process's shutdown flush rolls
-back newer on-disk content -- the dual-writer clobber that lost transcripts on
-2026-06-23.
+back newer on-disk content -- the dual-writer clobber that loses transcripts.
 
 This module enforces the single-writer invariant at the source: the gateway
 acquires an exclusive advisory ``flock`` on ``<home>/gateway.lock`` at startup
@@ -26,12 +25,12 @@ The cost of that choice is the other half of the same property. ``fork()`` share
 one description between parent and child, so a forked child that inherits this fd
 keeps the lock alive after the parent dies. A child that wedges before ``exec``
 therefore pins the home: every later start is refused, and the pid recorded in
-the file names a process that no longer exists. That happened three times in two
-days, caused by ``preexec_fn`` forcing a plain ``fork()`` of the multi-threaded
-gateway in :mod:`kiro_crew.kiro_prerequisite`.
+the file names a process that no longer exists. This occurs when ``preexec_fn``
+forces a plain ``fork()`` of the multi-threaded gateway in
+:mod:`kiro_crew.kiro_prerequisite`.
 
-The fix for that failure is to stop creating such children, not to weaken this
-guard -- see the removal of ``preexec_fn`` from ``_run_process``. What this
+The remedy is to stop creating such children, not to weaken this guard;
+``_run_process`` therefore does not use ``preexec_fn``. What this
 module owes the operator meanwhile is an honest refusal: it resolves the process
 that ACTUALLY holds the lock from ``/proc/*/fd`` rather than quoting the pid in
 the file, reports what that process looks like, and names the reclaim command
@@ -199,7 +198,7 @@ class GatewayLock:
     def _describe_orphaned_lock(self, dead_owner: int, openers: list[int] | None) -> str:
         """The wedge: the acquirer is gone but its flock lives on in an inheritor.
 
-        This is the state that cost three manual recoveries. It is worth naming
+        This is the state that leaves an orphaned lock. It is worth naming
         precisely, because the pid the operator would otherwise reach for -- the
         one in the lock file, and the one ``/proc/locks`` reports -- is the dead
         parent, and killing it does nothing.

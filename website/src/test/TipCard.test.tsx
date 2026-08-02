@@ -57,12 +57,12 @@ describe('TipCard (single-line strip)', () => {
     const title = screen.getByText('Schedule recurring tasks')
     expect(title).toBeInTheDocument()
     expect(screen.getByText(/Use cron_add/)).toBeInTheDocument()
-    // Maintainer feedback: body may wrap to multiple lines, never cut off
+    // body may wrap to multiple lines, never cut off
     const body = screen.getByTestId('tip-body')
     expect(body.className).not.toContain('line-clamp')
     expect(body.className).not.toContain('truncate')
     // Long bodies scroll within a viewport-relative cap instead of pushing
-    // the bottom-anchored card off-screen (Codex round-23) — scroll keeps the
+    // the bottom-anchored card off-screen — scroll keeps the
     // full text reachable, so the no-truncation contract still holds.
     expect(body.className).toContain('max-h-[30vh]')
     expect(body.className).toContain('overflow-y-auto')
@@ -384,7 +384,7 @@ describe('useTipTrigger', () => {
   })
 
   it('pre-cached tip does not display before the 10s enabled gate (remount case)', async () => {
-    // Codex round-6: a tip cached from a previous mount must not bypass the
+    // A tip cached from a previous mount must not bypass the
     // enabled gate — the display effect requires `enabled`, not just data.
     const { api: mockApi } = await import('../api/client')
     ;(mockApi.tipsNext as ReturnType<typeof vi.fn>).mockResolvedValue({ tip: mockTip, glow: true })

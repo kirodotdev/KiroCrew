@@ -2188,8 +2188,6 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     (same-origin), avoiding CORS issues. The gateway authenticates the
     request and forwards it to the app's backend.
     """
-    # (moved to top-level)
-
     name = request.match_info["name"]
     path = request.match_info.get("path", "")
 
@@ -2535,9 +2533,8 @@ async def handle_registries_refresh(request: web.Request) -> web.Response:
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
         # A non-empty body MUST decode to an object. A valid-but-non-object
-        # payload (e.g. ``[]`` or ``"foo"``) previously slipped past the
-        # ``isinstance(body, dict)`` guard leaving ``repo=None``, which then
-        # refreshed EVERY configured registry — an unintended fan-out of git
+        # payload (e.g. ``[]`` or ``"foo"``) would otherwise leave ``repo=None``
+        # and refresh EVERY configured registry — an unintended fan-out of git
         # clones / cache writes from a malformed request. Reject it as a 400.
         if not isinstance(body, dict):
             return web.json_response({"error": "request body must be a JSON object"}, status=400)
@@ -2580,7 +2577,6 @@ async def handle_registries_refresh(request: web.Request) -> web.Response:
 
 def register_app_routes(app: web.Application) -> None:
     """Register all app management routes on an aiohttp Application."""
-    # (moved to top-level)
 
     async def _start_proxy_session(app: web.Application) -> None:
         app["_proxy_session"] = aiohttp.ClientSession()

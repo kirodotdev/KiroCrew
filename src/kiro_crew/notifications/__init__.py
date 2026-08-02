@@ -1,10 +1,9 @@
-"""Local notification bus (RFC: docs/request-for-change/rfc-local-notification-bus.md).
+"""Local notification bus.
 
-Phase 1: payload schema v2 + bus core behind the existing ``DashboardState.notify()``
-API. Producers push structured :class:`NotificationPayload` objects through
-:class:`NotificationBus`; the bus validates, resolves the channel, applies the
-channel's default priority, and hands the enriched note dict to a delivery sink
-(owned by ``DashboardState``).
+Producers push structured :class:`NotificationPayload` objects through
+:class:`NotificationBus` behind the ``DashboardState.notify()`` API; the bus
+validates, resolves the channel, applies the channel's default priority, and
+hands the enriched note dict to a delivery sink (owned by ``DashboardState``).
 """
 
 from kiro_crew.notifications.bus import (

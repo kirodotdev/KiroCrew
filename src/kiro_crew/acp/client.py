@@ -708,9 +708,9 @@ _NOT_LOGGED_IN_MESSAGE = (
 # Single source of truth for "is this ACP backend error a momentary,
 # retry-worthy hiccup?". The user-facing message formatter AND the
 # retry-eligibility classifier both key off these patterns, so the two can
-# never drift again. That drift is exactly the bug this guards against: the
-# formatter rewrote a generic 5xx into a friendly string that the marker-based retry
-# classifier no longer recognised, so the retry never fired.
+# never drift again: otherwise the formatter could rewrite a generic 5xx into a
+# friendly string the marker-based retry classifier does not recognise, silently
+# preventing the retry from firing.
 #
 # Scopes mirror _format_acp_error's if/elif chain: model-unavailable matches
 # the provider `data` field only (it extracts the model name from a structured
@@ -1141,7 +1141,7 @@ def _capture_child_records(pids: list[int]) -> dict[int, ChildRecord]:
     ``_get_child_pids`` to ``pgrep``), which can block during the subprocess
     spawn (fork/exec). Callers running on the event loop MUST invoke this via
     ``run_in_executor(subprocess_executor(), ...)`` so the spawns happen on a
-    worker thread and never wedge the loop (the macOS wedge captured 2026-06-26).
+    worker thread and never wedge the loop.
     """
     return {p: (_get_start_time(p), _read_basename(p)) for p in pids}
 
@@ -1165,8 +1165,8 @@ def _is_our_child(
             logger.debug("PID %d start time mismatch (recycled)", pid)
             return False
         # Basename check: catches recycling to a different binary with same start slot.
-        # Deny-by-default: if no basename was recorded (legacy record from before
-        # this change), we deny rather than skip the check. Returning False here
+        # Deny-by-default: if no basename was recorded (a legacy record predating
+        # basename recording), we deny rather than skip the check. Returning False here
         # causes the caller (_kill_escaped_children) to SKIP the kill — we won't
         # SIGKILL a process we can't positively confirm is ours. This is the safe
         # direction: avoids killing a recycled PID that belongs to another user.
@@ -3641,9 +3641,7 @@ class AcpClient:
 
     async def _send_prompt(self, message: str) -> int:
         # Shared with AcpSessionHandle.prompt via prompt_blocks so the two paths
-        # cannot drift. This path historically owned the ONLY image encoder,
-        # which is why images silently stopped working once AcpProvider began
-        # replacing AcpClient with AcpSessionProvider.
+        # cannot drift.
         return await self._send_request(
             METHOD_PROMPT,
             {
@@ -4345,7 +4343,7 @@ class AcpClient:
         # the agent-influenced permission payload. Missing/empty stays "".
         tool_kind = tool_call.get("kind", "")
         # ACP spec uses optionId/name + kind ("allow_once"|"allow_always"|
-        # "reject_once"|"reject_always"); kiro-cli historically uses id/label
+        # "reject_once"|"reject_always"); kiro-cli uses id/label
         # with id values "allow_once"/"allow_always". Accept both shapes and
         # remember the actual optionIds keyed by kind so approve_tool/
         # reject_tool can echo the exact id the agent advertised.

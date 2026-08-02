@@ -3,8 +3,7 @@
 Single source of truth for the request shapes that BOTH ``AcpClient`` (legacy,
 process-per-session) and ``AcpRuntime``/``AcpSessionHandle`` (shared runtime,
 single-reader demux) must send identically. Keeping these here prevents the
-two parallel implementations from drifting — the class of bug that produced
-the dropped-``mcpServers`` clean-exit and the dropped-``meteringUsage`` credits.
+two parallel implementations from drifting.
 
 These are pure, stateless functions: they take primitives and return dicts, so
 each class keeps its own I/O model (``_turn_lock`` reader vs per-session queue)
@@ -99,8 +98,7 @@ def parse_metadata(params: dict[str, Any]) -> tuple[float | None, float]:
     billing as ``meteringUsage`` entries with ``unit=="credit"``; token fields
     are 0 for the acp provider, so credits are the real cost signal. Both
     ``AcpClient`` and ``AcpSessionHandle`` call this so the credit-capture
-    logic (which previously drifted — runtime.py once dropped it entirely)
-    has a single source of truth. The caller applies the values to its own
+    logic has a single source of truth. The caller applies the values to its own
     ``last_prompt_stats`` (credits are accumulated across the turn).
     """
     pct = params.get("contextUsagePercentage")
@@ -179,16 +177,15 @@ def classify_notification(msg: JsonRpcMessage) -> str:
 #
 # Single source of truth for turning one ``session/update`` notification's inner
 # ``update`` dict into ``AcpEvent``s. BOTH ``AcpClient`` and ``AcpRuntime`` route
-# through this so they cannot drift on frame shape again — the class of bug that
-# produced the empty-title regression (kiro-cli 2.10.0 moved chunk text from a
-# flat ``text`` field into nested ``content.text``; only one parser was updated).
+# through this so they cannot drift on frame shape (kiro-cli 2.10.0 nests chunk
+# text under ``content.text`` rather than a flat ``text`` field).
 #
 # The parser is PURE except for the optional caller-owned ``tool_input_cache``
 # dict it may write (the ``toolCallId -> redacted input`` map each class keeps so
 # a later tool result can recover the originating input). All redaction of
-# LLM-influenced fields (titles, inputs, purposes, outputs) happens HERE, closing
-# the security drift where ``runtime.py`` surfaced tool data unredacted. Stats and
-# stale/stall bookkeeping stay per-class: the caller walks the returned events.
+# LLM-influenced fields (titles, inputs, purposes, outputs) happens HERE so tool
+# data is never surfaced unredacted. Stats and stale/stall bookkeeping stay
+# per-class: the caller walks the returned events.
 
 
 def make_unified_diff(old: str, new: str, path: str, max_len: int = 6000) -> str:
@@ -306,10 +303,10 @@ def build_permission_event(
     """Build an ``EVENT_PERMISSION_REQUEST`` from a ``session/request_permission``.
 
     Single source of truth shared by ``AcpClient`` and ``AcpSessionHandle`` so
-    the two transports cannot drift on the kiro/claude permission payload shape
-    — the class of bug where the runtime read a flat ``params["title"]`` while
-    kiro nests the tool info under ``params["toolCall"]``, leaving ``title`` /
-    ``is_shell`` empty and tripping the host trust-mode gate.
+    the two transports cannot drift on the kiro/claude permission payload shape:
+    kiro nests the tool info under ``params["toolCall"]`` (not a flat
+    ``params["title"]``), so reading the flat field leaves ``title`` /
+    ``is_shell`` empty and trips the host trust-mode gate.
 
     Returns ``(event, recorded_options)`` where ``recorded_options`` is the
     ``{"once","always","reject"}`` optionId map the caller stores on the request
@@ -549,9 +546,9 @@ def _mcp_content_text(payload: dict[str, Any]) -> str | None:
     Serialising it with ``json.dumps`` escapes the payload — quotes become ``\\"``
     and non-ASCII becomes ``\\uXXXX`` — so any structured marker carried INSIDE the
     text is destroyed while still LOOKING intact to a human reading the transcript.
-    That silently broke every session-directive tool (#755): the directive's
-    sentinel survived visually but no longer matched, so the effect was dropped
-    with no error. Extracting the inner text keeps the payload byte-exact.
+    That breaks session-directive tools: the directive's sentinel survives
+    visually but stops matching, so the effect is dropped with no error.
+    Extracting the inner text keeps the payload byte-exact.
 
     Returns None for anything that is not a pure text envelope, so genuinely
     structured payloads still fall back to ``json.dumps``.
@@ -890,10 +887,9 @@ def _token_count(value: Any) -> int | float | None:
 def parse_usage_update(update: dict[str, Any]) -> tuple[int | float | None, int | float | None]:
     """Parse a ``usage_update`` into validated ``(used, size)`` token counts.
 
-    kiro-cli's working path (``AcpClient``) reads a FLAT shape (``update.used`` /
-    ``update.size``); ``runtime.py`` had drifted to a nested ``update.usage.*``
-    read. This reconciles to flat-primary with a nested fallback so both classes
-    read identically regardless of which shape kiro emits.
+    kiro-cli emits a FLAT shape (``update.used`` / ``update.size``); this reads
+    flat-primary with a nested ``update.usage.*`` fallback so both classes read
+    identically regardless of which shape kiro emits.
 
     Values are validated via ``_token_count`` so BOTH consumers
     (``AcpClient._track_usage_update`` and ``AcpSessionHandle._handle_update``)

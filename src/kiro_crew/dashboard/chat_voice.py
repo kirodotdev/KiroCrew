@@ -298,7 +298,6 @@ async def api_voice_voices(request: web.Request) -> web.Response:
     if _voices_cache is not None and (now - _voices_cache_ts) < _VOICES_CACHE_TTL:
         return web.json_response({"voices": _voices_cache})
 
-    # Call aws polly describe-voices
     cmd = ["aws", "polly", "describe-voices", "--output", "json"]
     if _vc.aws_profile:
         cmd += ["--profile", _vc.aws_profile]

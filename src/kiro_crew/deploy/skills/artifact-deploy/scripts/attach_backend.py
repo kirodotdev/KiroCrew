@@ -28,12 +28,12 @@ OAC_NAME = "kirocrew-deploy-lambda-oac"
 
 def aws(profile, region, *args):
     cmd = ["aws"] + (["--profile", profile] if profile else []) + ["--region", region, *args]
-    # R34 F2: every AWS spawn from these LLM-facing helpers MUST route through
-    # the sandbox chokepoint — the previous ImportError fallback ran completely
-    # unsandboxed when kiro_crew wasn't importable, which is exactly the
-    # environment an attacker would arrange. Fail closed instead: standalone
-    # operators must run via the package venv (pip install -e / the skill's
-    # documented invocation), never bare python3 without kiro_crew on sys.path.
+    # Every AWS spawn from these LLM-facing helpers MUST route through
+    # the sandbox chokepoint. Failing open when kiro_crew is not importable
+    # would run completely unsandboxed, which is exactly the environment an
+    # attacker would arrange. Fail closed instead: standalone operators must
+    # run via the package venv (pip install -e / the skill's documented
+    # invocation), never bare python3 without kiro_crew on sys.path.
     try:
         from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
     except ImportError:
@@ -119,8 +119,8 @@ def _validate_args(profile: str, region: str, dist_id: str, slug: str) -> None:
 # Sensitive paths that must never be read via --origin-verify-secret-file.
 # Standalone list (duplicated here for standalone execution where kiro_crew
 # may not be importable) — covers both the current KiroCrew data home
-# (~/.kiro/crew, since the ~/.kirocrew -> ~/.kiro/crew move) and the pre-move
-# legacy home, so a not-yet-migrated box is covered too.
+# (~/.kiro/crew) and the legacy ~/.kirocrew home, so a not-yet-migrated box
+# is covered too.
 _SENSITIVE_PREFIXES: tuple[str, ...] = (
     ".aws",
     ".ssh",
@@ -200,7 +200,7 @@ def _validate_secret_file_path(path: Path) -> None:
 
 
 def _validate_origin_domain(domain: str, region: str) -> None:
-    """R19 F3: Validate origin_domain is a genuine API Gateway execute-api endpoint.
+    """Validate origin_domain is a genuine API Gateway execute-api endpoint.
 
     The origin-verify secret header is sent to this domain — an attacker-controlled
     domain would exfiltrate the secret and open direct API GW access. Only allow
@@ -246,10 +246,9 @@ def main():
     origin_verify_secret = a.origin_verify_secret
     if a.origin_verify_secret_file:
         secret_path = Path(a.origin_verify_secret_file)
-        # R13 F1: validate the path shape FIRST (absolute, regular file, owned
-        # by us, mode 0600, not a sensitive path) — R10's fail-closed refactor
-        # removed the fallback that was this validator's only caller, orphaning
-        # it. safe_read_file below adds the atomic O_NOFOLLOW read on top.
+        # Validate the path shape FIRST (absolute, regular file, owned
+        # by us, mode 0600, not a sensitive path). safe_read_file below adds
+        # the atomic O_NOFOLLOW read on top.
         _validate_secret_file_path(secret_path)
         # Security: read the secret file atomically.
         # Preferred path: kiro_crew.hooks.safe_read_file does is_sensitive_path +
@@ -268,7 +267,7 @@ def main():
                 sys.stderr.write(f"error: cannot read --origin-verify-secret-file: {e}\n")
                 sys.exit(2)
         except ImportError:
-            # R10 F2 (fail-closed): the shared sensitive-path gate lives in
+            # Fail-closed: the shared sensitive-path gate lives in
             # kiro_crew.hooks.safe_read_file. Reading a user-controlled secret
             # path WITHOUT that gate (standalone local validation only) violates
             # the blocking sensitive-read rule — refuse rather than approximate.
@@ -282,12 +281,12 @@ def main():
     # standalone operator execution where kiro_crew is not on sys.path.
     _validate_args(profile, a.region, a.dist_id, a.slug)
 
-    # R19 F3: validate origin_domain is a genuine execute-api domain in the
+    # Validate origin_domain is a genuine execute-api domain in the
     # expected region — prevents exfiltration of the origin-verify secret to
     # attacker-controlled endpoints.
     _validate_origin_domain(a.origin_domain, a.region)
 
-    # R13 F1: bounded format check — the secret is generated as secrets.token_hex(32)
+    # Bounded format check — the secret is generated as secrets.token_hex(32)
     # (64 hex chars). Anything else is a wrong file / corruption — refuse rather
     # than uploading arbitrary file contents to AWS as an origin secret.
     if origin_verify_secret and not re.fullmatch(r"[0-9a-f]{64}", origin_verify_secret):

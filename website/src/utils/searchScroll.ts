@@ -19,8 +19,8 @@ export const CONVERGE_MAX_MS = 2000
  *
  * Calibrated above `MAX_WIDGET_BUILD_WAIT_MS` in WidgetFrame — the worst case
  * for a jump, which is the base build delay PLUS the capped per-widget stagger
- * (an earlier value only cleared the base delay, so a widget in a later stagger
- * slot still settled early). `searchScroll.coupling.test.ts` asserts the
+ * (clearing only the base delay would let a widget in a later stagger slot
+ * settle early). `searchScroll.coupling.test.ts` asserts the
  * relationship, so raising either constant fails CI rather than silently
  * regressing the first-click jump. Still comfortably inside CONVERGE_MAX_MS.
  *
@@ -209,7 +209,7 @@ export function pollRowSettled(deps: SettlePollDeps): () => void {
  * Convergence polls call `step()` once per frame. Re-issuing a smooth scroll
  * cancels the in-flight animation and restarts it from the current position, so
  * a repeatedly-stepped smooth scroll stutters or stalls instead of gliding —
- * the same restart trap that was removed from the streaming follow pin. The
+ * the same restart trap the streaming follow pin avoids. The
  * later corrections are sub-pixel-to-few-pixel adjustments as the target row
  * measures in, so making them instant is visually invisible while keeping the
  * initial user-visible movement smooth.
@@ -267,8 +267,9 @@ const SCROLLING_KEYS = new Set([
  * convergence was silently recentered for up to CONVERGE_MAX_MS.
  *
  * Shared so every scroll-abort site (this module's convergence poll and
- * ChatPage's navigation settle) reacts to the same input set — the previous
- * per-site duplication is exactly how the gap survived in two places at once.
+ * ChatPage's navigation settle) reacts to the same input set, rather than
+ * duplicating the logic per site where the gap can reappear in two places at
+ * once.
  */
 export function attachUserScrollIntent(
   target: EventTarget | undefined,

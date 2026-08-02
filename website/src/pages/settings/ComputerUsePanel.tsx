@@ -62,8 +62,8 @@ export function permissionPollInterval(
 /** Resolve a numeric draft to the value to PUT, or `null` for "discard the edit".
  *
  *  Exported and pure so the discard rules are asserted directly rather than
- *  through a blur + async-mutation race, which is what let the empty-field bug
- *  hide: an EMPTY (or whitespace-only) field is a no-op, not a value —
+ *  through a blur + async-mutation race: an EMPTY (or whitespace-only) field is
+ *  a no-op, not a value —
  *  `Number('')` is 0, and clamping 0 to the published range yields the FLOOR, so
  *  select-all-and-retype would transiently save 1 node / 320px.
  */
@@ -109,7 +109,7 @@ const POLICY_UNREADABLE = 'The app lists in computer_use.json could not be read,
  *
  *  Exported so the delivery mechanism is asserted directly — a regression back
  *  to `location.href` would otherwise only show up as a dead button in a
- *  packaged build, which is exactly how this shipped broken.
+ *  packaged build.
  */
 export function openSystemSettings(pane: string): void {
   // `noopener` keeps the opened context from retaining a handle on the

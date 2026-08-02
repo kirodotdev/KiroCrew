@@ -14,8 +14,8 @@
  *   then fails with 401, the loop just keeps retrying forever, and the user
  *   has no in-tab signal that they need to re-auth.
  *
- *   A prior change addressed this for the Electron desktop app via
- *   `did-navigate`. Web browser users (e.g. via SSH tunnel) get nothing.
+ *   The Electron desktop app recovers via `did-navigate`; web browser users
+ *   (e.g. via SSH tunnel) do not, which is what this hook handles.
  *
  * Recovery mechanism:
  *   While `dashboard.connected === false`, poll a lightweight HTTP endpoint

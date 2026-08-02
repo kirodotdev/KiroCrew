@@ -67,8 +67,8 @@ describe('selectSubagentActivityCount', () => {
   })
 
   it('counts queued agents that have not started yet', () => {
-    // The regression: a wave behind the concurrency cap produces subagent_queued
-    // and nothing else, so a started-only count reads 0 for the entire ramp.
+    // A wave behind the concurrency cap produces subagent_queued and nothing
+    // else, so a started-only count reads 0 for the entire ramp.
     const store = makeStore()
     store.dispatch(setActiveSlot('a'))
     store.dispatch(sseSubagentQueued({ slot: 'a', queued: 3 }))
@@ -101,9 +101,9 @@ describe('selectSubagentActivityCount', () => {
 
 describe('sseSubagentQueued on partial preloaded state', () => {
   it('does not throw when subagentQueued is absent from the store', () => {
-    // Pre-existing hardening (the reducer landed in #553): a store built from
-    // partial preloaded state has no `subagentQueued` map, and indexing it threw
-    // — dropping the queue update that the new queued-visibility surfaces read.
+    // A store built from partial preloaded state has no `subagentQueued` map;
+    // indexing it must not throw, or the queue update that the queued-visibility
+    // surfaces read is dropped.
     const store = configureStore({
       reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
       preloadedState: {

@@ -1,15 +1,14 @@
-// PhasedView theming. The board used to reference three CSS custom properties
-// that are not defined in ANY of index.css's theme blocks
-// (--bg-secondary, --bg-tertiary, --text-muted), each with a dark-navy literal
-// fallback. The fallback therefore always won, and the columns and cards stayed
-// dark regardless of the active theme — visible as a navy board on a light page.
+// PhasedView theming. The board must not reference CSS custom properties that are
+// not defined in ANY of index.css's theme blocks (e.g. --bg-secondary,
+// --bg-tertiary, --text-muted) behind a dark-navy literal fallback: the fallback
+// would always win, leaving the columns and cards dark regardless of the active
+// theme — a navy board on a light page.
 //
 // Two layers of guard here:
 //   1. behavioural — the rendered surfaces use tokens that exist, and carry no
 //      hex literal;
 //   2. structural — every custom property these two views reference is actually
-//      defined in index.css, which is the check that would have caught the
-//      original bug and catches the next one of its kind.
+//      defined in index.css, which catches this class of bug.
 import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
@@ -58,8 +57,7 @@ describe('PhasedView theming', () => {
     const cards = styled.filter((el) => el.style.background.includes('--bg-hover'))
     expect(cards.length).toBeGreaterThan(0)
 
-    // No element may bake in a colour: a literal survives a theme switch and is
-    // exactly how the original bug presented.
+    // No element may bake in a colour: a literal survives a theme switch.
     for (const el of styled) {
       expect(el.getAttribute('style')).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
     }
@@ -70,7 +68,7 @@ describe('PhasedView theming', () => {
     const tinted = Array.from(container.querySelectorAll<HTMLElement>('[style]'))
       .filter((el) => el.getAttribute('style')?.includes('--danger'))
     expect(tinted.length).toBeGreaterThan(0)
-    // The old form was rgba(239,68,68,0.08) — a fixed red with no theme input.
+    // A raw rgba(239,68,68,0.08) would be a fixed red with no theme input.
     const html = container.innerHTML
     expect(html).not.toMatch(/rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+/)
   })

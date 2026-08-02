@@ -206,11 +206,11 @@ def _pin_attributes_sync(cwd: Path) -> None:
     delete this file, so a once-at-clone-time pin would be removable by the very actor it
     defends against.
 
-    **Appended, never written over.** The first version of this used
-    ``write_text(_ATTRIBUTES_PIN)``, which silently destroyed a user's own
-    ``.git/info/attributes`` — their ``text eol=lf`` and ``binary`` rules were replaced by
-    our one line on the next status poll, and nothing said so. This file is
-    checkout-local, so git never restores it: the loss is permanent and invisible.
+    **Appended, never written over.** Overwriting with
+    ``write_text(_ATTRIBUTES_PIN)`` would silently destroy a user's own
+    ``.git/info/attributes`` — their ``text eol=lf`` and ``binary`` rules replaced by
+    our one line on the next status poll, with nothing to say so. This file is
+    checkout-local, so git never restores it: the loss would be permanent and invisible.
 
     Appending keeps the guarantee, because git resolves attributes per NAME with the LAST
     match winning — not per line. So a user rule for ``eol``/``text``/``binary`` survives
@@ -304,9 +304,8 @@ async def _git(
         "-c",
         "core.hooksPath=/dev/null",
         # `core.fsmonitor` holds the PATHNAME OF A HOOK that `git status`/`add` run on
-        # every invocation — the same class as `sshCommand`, and the one this list first
-        # missed. `false` is the documented "no monitor" value; an empty string would be
-        # read as a path.
+        # every invocation — the same class as `sshCommand`. `false` is the documented
+        # "no monitor" value; an empty string would be read as a path.
         "-c",
         "core.fsmonitor=false",
         "-c",
@@ -355,7 +354,7 @@ async def _git(
     # It is fixed HERE, in the env, and not with a `-c` override, because `core.gitProxy`
     # is MULTI-VALUED: `-c` APPENDS a value rather than replacing, git uses the first
     # match, and the repo's own value is read first. Tested — `-c core.gitProxy=none`
-    # (the obvious remedy, and the one suggested in review), `=` and `=true` ALL still
+    # (the obvious remedy), `=` and `=true` ALL still
     # executed the script, and `git -c core.gitProxy=none config --get-all core.gitProxy`
     # prints the repo's value *and* ours, which is why. `GIT_PROXY_COMMAND` is the
     # documented env equivalent and takes precedence over every config scope; verified it

@@ -35,8 +35,6 @@ const SPEED_OPTIONS = ['80%', '90%', '95%', '100%', '110%', '120%', '130%', '150
  *  - Text-to-Speech: spoken replies. Provider is Piper (local, offline, the
  *    default) or AWS Polly (cloud). The field set switches with the provider.
  *  - Speech-to-Text (Whisper / MLX / Transcribe): dictation + install flow.
- * Previously split between the Chat tab (TTS + some STT) and the Slack tab
- * (STT install/model). Consolidated here so there is one place to look.
  */
 export function VoicePanel() {
   const qc = useQueryClient()

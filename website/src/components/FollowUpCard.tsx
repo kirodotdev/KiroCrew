@@ -55,7 +55,7 @@ function FollowUpCard({
   // `itemsGen` closes the other half of the same hazard: a worktree request that
   // REJECTS after `items` changed would otherwise write its error against the new
   // list's index. Each request captures the generation it started in and its
-  // completion is ignored if that no longer matches (GPT review, round 9).
+  // completion is ignored if that no longer matches.
   const itemsGen = useRef(0)
   useEffect(() => { itemsGen.current += 1; setErrors({}) }, [items])
 

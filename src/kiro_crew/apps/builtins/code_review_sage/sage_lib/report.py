@@ -151,10 +151,6 @@ def build_report(records: list[dict], config: dict | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# HTML rendering (theme-aware, for the artifact)
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
 # HTML rendering (theme-aware base + Apple "system" accent palette)
 # ---------------------------------------------------------------------------
 # Base surface/text stay on the dashboard theme vars (so the report adapts to

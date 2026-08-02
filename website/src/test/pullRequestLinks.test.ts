@@ -89,7 +89,7 @@ describe('extractPullRequestLinks', () => {
     })
 
     it('treats an explicit :443 entry and URL as the bare host', () => {
-      // The URL API drops the default HTTPS port, and the backend now does too.
+      // The URL API drops the default HTTPS port, and the backend does too.
       expect(extractPullRequestLinks(
         messages('https://gitlab.acme.internal:443/team/api/-/merge_requests/7'),
         ['gitlab.acme.internal'],
@@ -724,9 +724,9 @@ describe('CJK / fullwidth punctuation after a PR URL (issue #507)', () => {
   it('separates two PRs joined only by fullwidth punctuation', () => {
     const a = 'https://github.com/acme/widgets/pull/436'
     const b = 'https://github.com/acme/widgets/pull/9'
-    // No ASCII space anywhere: the old denylist scan swallowed both URLs into a
-    // single un-parseable candidate, so BOTH were lost. The allowlist stops at
-    // each fullwidth mark, recovering each URL independently.
+    // No ASCII space anywhere: the allowlist stops at each fullwidth mark,
+    // recovering each URL independently. A denylist scan would swallow both
+    // URLs into a single un-parseable candidate and lose them.
     expect(extractPullRequestLinks(messages(`${a}，${b}。`)).map(link => link.url)).toEqual([a, b])
   })
 

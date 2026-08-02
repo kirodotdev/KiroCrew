@@ -141,11 +141,8 @@ describe('ProjectsPage', () => {
       .mockResolvedValueOnce({ running: false, available: true, runs: [completedRun] })
       .mockResolvedValue({ running: false, available: true, runs: [] })
     renderWithProviders(<ProjectsPage />)
-    // Wait for project to appear in sidebar
     await screen.findByText('Test')
-    // Select the project
     fireEvent.click(screen.getByText('Test'))
-    // Should show detail view
     expect(screen.getByTestId('project-detail')).toBeInTheDocument()
     // Click delete (X icon button in sidebar)
     const deleteBtn = screen.getAllByLabelText('Delete')[0]
@@ -210,7 +207,6 @@ describe('ProjectsPage', () => {
     expect(toggle.checked).toBe(false)
     fireEvent.click(toggle)
     expect(toggle.checked).toBe(true)
-    // Click Execute
     fireEvent.click(screen.getByRole('button', { name: /Execute/ }))
     expect(mockApi.executePlan).toHaveBeenCalledWith('run-plan', '', true)
   })

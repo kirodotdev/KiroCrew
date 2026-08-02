@@ -520,10 +520,9 @@ describe('Alt+Shift+X previous model', () => {
 })
 
 /**
- * Ctrl+G — agent monitor. Regression coverage for the dead-end hint: the
- * kiro-cli backend prints "Press ctrl+g to monitor progress." into its
- * crew-pipeline tool result, and the dashboard bound no Ctrl+G at all, so the
- * advice did nothing on every non-TUI surface.
+ * Ctrl+G — agent monitor. The kiro-cli backend prints "Press ctrl+g to monitor
+ * progress." into its crew-pipeline tool result, so the dashboard binds Ctrl+G
+ * to honor that hint on every non-TUI surface.
  */
 describe('isAgentMonitorChord', () => {
   const chord = (o: Partial<Record<'code' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey', unknown>> = {}) =>

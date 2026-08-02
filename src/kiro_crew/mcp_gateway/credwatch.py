@@ -32,7 +32,7 @@ skip the re-hash and **permanently** miss that rotation (baseline_mtime
 never advances, so every later poll short-circuits identically). Hashing
 a small credential file each poll is cheap and is already off-loaded to a
 worker thread; the storm suppression comes entirely from the digest
-comparison, not from the (now removed) mtime gate.
+comparison rather than from any mtime gate.
 
 Loop shape mirrors :func:`kiro_crew.mcp_gateway.gatewayd._idle_sweeper`:
 ``wait_for(stop_event.wait(), timeout=interval)`` so the watcher reacts

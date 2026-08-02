@@ -117,9 +117,8 @@ MIGRATION_MARKER_NAME = ".data-home-ready"
 # anywhere to recover from. This tiny, non-secret pointer survives such a
 # wipe (it lives beside ``~/.kiro``, not inside it) and records where the data
 # home is, so a user/support script can find any surviving data or understand
-# what was lost. It is NOT a backup — just a durable signpost (the reviewer's
-# "cheap technical hedge" for the one-way-door). Only written on the default
-# (non-override) path; a ``KIROCREW_HOME`` override is the user's own chosen
+# what was lost. It is NOT a backup — just a durable signpost. Only written on
+# the default (non-override) path; a ``KIROCREW_HOME`` override is the user's own chosen
 # location and carries no ``~/.kiro/`` wipe risk.
 RECOVERY_BREADCRUMB_NAME = ".kirocrew.breadcrumb"
 
@@ -222,8 +221,8 @@ def _maybe_migrate_legacy_home() -> Path:
     # or legacy-pinned process wrote back after the migration completed. It is
     # NEVER authoritative, so we must NOT re-migrate it over the new home —
     # doing so would revert same-named files (``sel_hmac.key``, logs,
-    # ``workspace/``) to stale versions (the split-brain data-loss GPT 5.6
-    # flagged). marker present (with or without a legacy dir) => trust the new
+    # ``workspace/``) to stale versions (a split-brain data loss). marker present
+    # (with or without a legacy dir) => trust the new
     # home. The debris is left in place and RETAINED (not auto-swept — the
     # leftover sweep only removes ``.kirocrew.archived`` / ``.kiro/crew.pre-
     # migration``, not ``.kirocrew`` itself); it stays under the ``.kirocrew``
@@ -243,7 +242,7 @@ def _maybe_migrate_legacy_home() -> Path:
     # themselves; the conflict is surfaced (WARNING + `kirocrew doctor`), never
     # silently reconciled.
     if marker.exists():
-        # Observability (GPT 5.6): the new home is authoritative, but a
+        # Observability: the new home is authoritative, but a
         # non-empty legacy dir alongside the marker is a conflicted state
         # (resurrection debris / a recreated legacy) that we proceed past
         # silently. Surface it loudly ONCE so an operator can investigate /
@@ -459,8 +458,8 @@ def _valid_override_home() -> Path | None:
     ``config_dir()`` ignores it and falls back to the default home, so the
     migration/conflict logic still applies. Shared by ``config_dir()`` and
     ``detect_data_home_conflict()`` so both agree on when an override is
-    actually selected (GPT 5.6 MEDIUM: an invalid override must NOT suppress
-    conflict detection).
+    actually selected (an invalid override must NOT suppress conflict
+    detection).
     """
     override = os.environ.get("KIROCREW_HOME")
     if not override:
@@ -510,7 +509,7 @@ def data_home() -> Path:
     a leftover archive. That work belongs to process start --
     :func:`ensure_data_home` is the startup hook -- not to every caller that
     merely needs a path. While callers bound the result to a module constant at
-    import the distinction did not matter; resolving per call (issue #874) makes
+    import the distinction did not matter; resolving per call makes
     it load-bearing, because a request handler would otherwise perform a
     destructive sweep on the event loop as a side effect of asking where a
     directory is.
@@ -519,7 +518,7 @@ def data_home() -> Path:
 
     1. A **valid** ``KIROCREW_HOME`` override -> delegate to :func:`config_dir`
        on every call, so an override set *after* this module was imported is
-       still honoured (that is the whole point of #874). That branch does
+       still honoured. That branch does
        neither the breadcrumb refresh nor the sweep -- only a cheap ``mkdir`` --
        so it is already safe.
 

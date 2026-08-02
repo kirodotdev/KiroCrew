@@ -21,7 +21,7 @@
  * blank / whitespace-only message drops the slot, so an unedited popup never
  * pins a stale copy of the default template. Safe against corrupt / missing /
  * quota-exhausted storage: worst case the slot's draft is dropped and the
- * popover shows the default — i.e. the pre-fix behavior, never worse.
+ * popover shows the default — i.e. the default behavior, never worse.
  */
 import { createSlotDraftStore } from './slotDraftStore'
 import { DRAFT_MAX_ENTRIES, DRAFT_TTL_MS } from './draftConstants'

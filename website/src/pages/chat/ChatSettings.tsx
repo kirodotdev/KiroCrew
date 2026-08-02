@@ -67,10 +67,10 @@ export function loadChatConfig(): ChatConfig {
     const stored = JSON.parse(localStorage.getItem(LS_KEY) || '{}')
     const cfg = { ...DEFAULTS, ...stored, sendOnEnter: migrateSendMode(stored.sendOnEnter) }
     if (!(cfg.contentWidth in CONTENT_WIDTH)) cfg.contentWidth = 'compact'
-    // Migrate legacy fileChipStyle values:
-    //   'tooltip'                                 → 'minimal'  (renamed)
-    //   'pebble' / 'full' / 'compact'             → 'expanded' (Pebble renamed; Full/Compact removed)
-    //   'expanded-aurora' / 'expanded-domed'      → 'expanded' (Aurora & Domed previewed then dropped)
+    // Map legacy fileChipStyle values onto the current set:
+    //   'tooltip'                                 → 'minimal'
+    //   'pebble' / 'full' / 'compact'             → 'expanded'
+    //   'expanded-aurora' / 'expanded-domed'      → 'expanded'
     const legacy = cfg.fileChipStyle as string
     if (legacy === 'tooltip') cfg.fileChipStyle = 'minimal'
     else if (legacy === 'pebble' || legacy === 'full' || legacy === 'compact'

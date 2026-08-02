@@ -19,8 +19,8 @@ won't be killed (the watchdog detects "assets vanished", not "assets never
 existed").
 
 The presence check mirrors ``handlers/core.py:index()``'s serve criterion
-exactly (``dist/index.html`` is a file — the legacy ``dashboard.html`` fallback
-was removed), so a partial-prune state where an empty
+exactly (``dist/index.html`` is a file — there is no ``dashboard.html``
+fallback), so a partial-prune state where an empty
 ``dist/`` directory node remains cannot mask a genuine vanish.
 """
 
@@ -73,8 +73,8 @@ def assets_present() -> bool:
     """Return True if the dashboard can serve a real page (not the fallback).
 
     Mirrors the criterion used by ``handlers/core.py:index()``: the React
-    bundle's ``dist/index.html`` must be present (the legacy ``dashboard.html``
-    fallback was removed). Checking ``_DIST_INDEX.is_file()``
+    bundle's ``dist/index.html`` must be present (there is no ``dashboard.html``
+    fallback). Checking ``_DIST_INDEX.is_file()``
     (not ``_DIST_DIR.is_dir()``) is critical: an empty ``dist/`` directory node
     is a valid partial-prune state where the handler serves the guidance page,
     and the watchdog must recognise that as "assets vanished."
@@ -122,8 +122,8 @@ async def run_stale_asset_watchdog(
         Optional callable returning the number of in-flight backend tasks
         (active provider turns, Slack session turns). When provided, the
         watchdog waits for it to reach zero — bounded by ``drain_timeout`` —
-        before triggering shutdown. ``None`` disables draining (legacy
-        behaviour: shut down immediately on vanish).
+        before triggering shutdown. ``None`` disables draining (shut down
+        immediately on vanish).
     drain_timeout:
         Max seconds to wait for in-flight work to finish. Default 120s.
     drain_poll:

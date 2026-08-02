@@ -86,7 +86,7 @@ const MAX_PERSISTED_SLOT_LENGTH = 512
 // no longer swallows the trailing text and fails the numeric-tail check.
 // extractChatLinks.ts uses the same allowlist approach for its bare-URL scan.
 // Still a single greedy character class (no lazy quantifier), preserving the
-// linear, no-backtracking shape CodeQL flagged on the old backend parser.
+// linear, no-backtracking shape.
 const URL_CANDIDATE_RE = /https:\/\/[A-Za-z0-9!#$%&*+,.\/:;=?@_~-]+/g
 
 /** Normalize the configured self-hosted GitLab hosts to a lookup set.

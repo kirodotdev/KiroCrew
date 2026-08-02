@@ -479,12 +479,15 @@ def store_embedding_space_is_stale(store: "_ReconcilableStore") -> bool:
 def reconcile_store_embedding_space(store: "_ReconcilableStore") -> int:
     """Reconcile *store* against the active embedding space. Returns rows invalidated.
 
-    THE single chokepoint for this. Reconciliation used to live inline in the
-    gateway's boot sweep, which meant every other process that opens a vector
-    store — ``kirocrew run`` (``cli_server``), the onboarding importer — loaded a
-    FAISS index built under the previous model and scored it against new-model
-    query vectors. Routing all of them through one named function is what keeps a
-    future entry point from silently reintroducing that.
+    THE single chokepoint for destructive reconciliation. Startup paths that
+    open a vector store either reconcile through this one function (the gateway
+    boot sweep, the onboarding importer) or, where clearing is unsafe, use the
+    non-mutating ``store_embedding_space_is_stale`` probe instead — ``kirocrew
+    run`` (``cli_server``) takes the latter path, disabling embedding for the
+    run and deferring reconciliation to the gateway. Concentrating the
+    destructive path here keeps a future entry point from loading a FAISS index
+    built under the previous model and scoring it against new-model query
+    vectors.
 
     Refuses to clear when the active backend is not ready and is not the bundled
     model: clearing is destructive, and a backend that cannot load — a rejected
@@ -591,13 +594,13 @@ class LlamaCppEmbedder(EmbeddingBackend):
     thread pool (``n_threads_batch``, which defaults to the CPU count) the
     first time a GIVEN thread runs inference, and that pool lives as long as
     its calling thread does. Embed calls arrive on long-lived executor threads
-    (``mc-embed``, asyncio's default executor, cron, maintenance), so calling
-    inference inline accumulated one CPU-count-sized pool per caller thread —
-    measured at 31 pools / ~1,460 threads in one gateway after an hour, still
-    climbing. Every call is therefore forwarded to ONE owned daemon thread
-    (``kc-embed-infer``), so the process holds exactly one compute pool no
-    matter how many threads embed. ``_lock`` already serialized inference, so
-    the hand-off adds no queueing that was not there before.
+    (``mc-embed``, asyncio's default executor, cron, maintenance), so running
+    inference inline would accumulate one CPU-count-sized pool per caller
+    thread (a busy gateway can reach dozens of pools and well over a thousand
+    threads within an hour). Every call is therefore forwarded to ONE owned
+    daemon thread (``kc-embed-infer``), so the process holds exactly one
+    compute pool no matter how many threads embed. ``_lock`` already serializes
+    inference, so the hand-off adds no extra queueing.
     """
 
     def __init__(

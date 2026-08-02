@@ -506,11 +506,11 @@ def collect_skills_blocking(
 
     This is the synchronous core behind ``GET /api/skills``. It performs
     every filesystem-heavy step in one call so the caller can offload the
-    whole thing to a thread via ``run_in_executor`` — previously only the
-    agent annotation was offloaded while ``list_skills()`` (os.walk +
+    whole thing to a thread via ``run_in_executor``. ``list_skills()`` (os.walk +
     per-file frontmatter reads) and ``list_kiro_skills()`` (per-skill resolve +
-    read) still ran on the event loop and could stall it past the loop-stall
-    watchdog on large catalogs.
+    read) are filesystem-heavy enough to stall the event loop past the
+    loop-stall watchdog on large catalogs, so they run in the thread too rather
+    than inline.
 
     Steps, in the same order the handler used inline:
 

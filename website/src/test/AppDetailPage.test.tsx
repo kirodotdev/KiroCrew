@@ -66,8 +66,9 @@ describe('AppDetailPage — built-in icon/hero resolution', () => {
     listRegistry.mockReset()
     system.mockReset()
     system.mockResolvedValue({ hostname: '' })
-    // Registry feed never contains built-ins — this is the condition that
-    // previously left the detail page with a generic Package icon and no hero.
+    // Registry feed never contains built-ins — the condition under which the
+    // detail page must resolve the icon/hero from the manifest instead of
+    // falling back to a generic Package icon and no hero.
     listRegistry.mockResolvedValue({ apps: [], serverPlatform: { os: 'linux', arch: 'x86_64' } })
   })
 

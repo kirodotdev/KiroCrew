@@ -57,9 +57,9 @@ describe('parseBlocks', () => {
   })
 
   it('assigns correct startLine to an empty code block (no stale carry-over)', () => {
-    // Regression: previously `codeStart` was only set when content was pushed
-    // to `codeBuf`, so an empty fence inherited the prior block's start line.
-    // Now `codeStart` is set at opening-fence detection.
+    // `codeStart` is set at opening-fence detection, so an empty fence gets the
+    // line after its own opening fence rather than inheriting the prior block's
+    // start line.
     // Input lines (1-based):
     //   1: ```
     //   2: code
@@ -229,11 +229,9 @@ describe('parseBlocks', () => {
       expect(widget?.content).toBe('<div>body</div>')
     })
 
-    // Streaming regressions — addresses revert reason
-    // ("The fix broke the streaming that contain `"). On the trailing line
-    // of a streaming buffer, an unmatched opening backtick must be treated
-    // as inline-code-still-arriving so a tag inside it doesn't transition
-    // the parser to widget state mid-stream.
+    // On the trailing line of a streaming buffer, an unmatched opening
+    // backtick must be treated as inline-code-still-arriving so a tag inside
+    // it doesn't transition the parser to widget state mid-stream.
     describe('streaming with unmatched backticks on the trailing line', () => {
       it('does not produce a widget while a backtick-quoted tag is being streamed', () => {
         // Snapshots from a single streaming session of:
@@ -244,7 +242,7 @@ describe('parseBlocks', () => {
           'Use the `<',
           'Use the `<mcw',
           'Use the `<mcwidget',
-          'Use the `<mcwidget>',          // <-- the broken snapshot pre-fix
+          'Use the `<mcwidget>',          // <-- the snapshot that must not flip to widget state
           'Use the `<mcwidget>`',
           'Use the `<mcwidget>` tag',
           'Use the `<mcwidget>` tag here.',

@@ -1,10 +1,9 @@
 /**
  * Deterministic gradient art for apps without hero/icon imagery.
  *
- * The Discover mock uses a fixed 10-swatch gradient palette; each app hashes
+ * The gradient palette is a fixed 10 swatches; each app hashes
  * its name to a stable swatch so cards keep the same art across reloads and
- * installs. Swatch hex pairs are part of the locked visual spec (mockup
- * ``appstore-directions.html``) — intentionally NOT theme variables, the art
+ * installs. Swatch hex pairs are intentionally NOT theme variables — the art
  * reads as content (like a hero image), not chrome.
  */
 

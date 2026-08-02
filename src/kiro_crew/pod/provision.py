@@ -105,8 +105,8 @@ def ensure_venv(checkout: Path) -> bool:
     # fresh `python -m venv` ships an older pip on many hosts.
     _run([str(pip), "install", "--quiet", "--upgrade", "pip"], checkout)
     # Install runtime deps AND the PEP 735 `dev` dependency-group (pytest, flake8,
-    # isort, mypy, …) so the documented build gate can run inside the pod venv
-    # (issue #230). If `--group` is unsupported (pip < 25.1) the command exits
+    # isort, mypy, …) so the documented build gate can run inside the pod venv.
+    # If `--group` is unsupported (pip < 25.1) the command exits
     # nonzero, so fall back to a runtime-only editable install and warn — never
     # hard-fail provisioning just because the dev extras could not be installed.
     if _run(
@@ -131,7 +131,7 @@ def _has_node_modules(website: Path) -> bool:
 
 
 def ensure_node_modules(website: Path) -> bool:
-    """Install ``website/`` npm dependencies if missing (issue #229).
+    """Install ``website/`` npm dependencies if missing.
 
     A fresh worktree has no ``website/node_modules`` (gitignored), so ``npm run
     build`` dies with ``tsc: command not found``. Install deps first: prefer

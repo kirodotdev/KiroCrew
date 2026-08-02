@@ -219,9 +219,9 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   const streamingText = lastRole === 'streaming' && state === 'streaming'
   const streamQuiet = useStreamIdle(streamTick, streamingText)
   // Hidden once the turn is inactive. While the turn RUNS the indicator shows for
-  // thinking, tool calls, AND the gaps between steps — the post-tool gap used to
-  // fall through every guard, so the indicator vanished mid-turn even though the
-  // backend keeps slot.running true for the whole turn.
+  // thinking, tool calls, AND the gaps between steps: the backend keeps
+  // slot.running true for the whole turn, so the post-tool gap stays covered
+  // rather than letting the indicator vanish mid-turn.
   if (!regenerating && !running && stopState !== 'soft_pending' && stopState !== 'killing') return null
   // ...but never while text is actively arriving: MarkdownRenderer already renders
   // the real blinking caret (.streaming-caret) there, and a second indicator
