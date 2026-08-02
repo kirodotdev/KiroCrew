@@ -229,7 +229,13 @@ interface ChatState {
   // Real token counts behind the context ring (from the adapter usage_update),
   // keyed by slot. Used for the ring tooltip so "44%" shows its absolute
   // "used / window" tokens and can't be misread (e.g. 44% of 200k, not 1M).
-  slotContextTokens: Record<string, { used: number; window: number }>
+  /** Per-slot absolute context token counts from the adapter's usage_update, so
+   *  the ring tooltip can show "used / window" rather than a bare percentage.
+   *  `used` is OPTIONAL: a reading seeded from a cold session's stored snapshot
+   *  knows the window but not a measured used-count, and both consumers render
+   *  an absent `used` as an approximation (a `~` prefix, derived from pct)
+   *  rather than asserting a precise figure. */
+  slotContextTokens: Record<string, { used?: number; window: number }>
   voicePlaying: boolean
   voiceAudio: string | null  // base64 stitched MP3 for replay
   subagents: Record<string, SubagentActivity>
@@ -537,7 +543,43 @@ async function fetchSlotDetail(key: string) {
   // No limit → backend returns all chained history (across gateway restarts).
   const d = await api.chatSlotDetail(key)
   type QueueItem = string | { content: string; id: string }
-  return { key, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }) }
+  return { key, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
+}
+
+/** SINGLE hydration path for the slot-detail context-meter fields — the one
+ *  place that seeds `slotContextPct`/`slotContextTokens` from HTTP. Every
+ *  reducer consuming a `fetchSlotDetail` payload routes through here, for the
+ *  same reason `hydrateQueuedBubbles` exists: three near-identical reducers
+ *  hand-copying the same literal is how a field gets added to one and forgotten
+ *  in the others.
+ *
+ *  Why it exists at all: `context_usage` WS frames are turn-scoped, so a
+ *  session reopened in a fresh tab has no entry and the bar renders empty until
+ *  the user sends a message.
+ *
+ *  A stale reading (recovered from the snapshot file because the session's ACP
+ *  process is gone) arrives with `used` absent, because no process measured a
+ *  count for it — the server omits it rather than relying on this client to
+ *  drop it. The tooltip's existing `~` path is how that gets said out loud. The
+ *  window is likewise often absent — kiro-cli reports a percentage far more
+ *  often than absolute token counts — in which case no token entry is written
+ *  at all and the meter keeps using its model-derived window.
+ *
+ *  Seeds ONLY when the slot has no entry yet. The backend broadcasts over WS
+ *  before the HTTP response lands, so a turn's frame can arrive mid-fetch —
+ *  an unconditional write would clobber measured live numbers with the older
+ *  snapshot this request was built from. Absent-only is monotonic: it can fill
+ *  a gap, never overwrite. */
+function seedContextUsage(
+  state: ChatState,
+  key: string,
+  context: { pct: number; used?: number; window?: number } | undefined,
+): void {
+  if (!context) return
+  const k = safeKey(key)
+  if (state.slotContextPct[k] !== undefined || state.slotContextTokens[k] !== undefined) return
+  state.slotContextPct[k] = context.pct
+  if (context.window) state.slotContextTokens[k] = { used: context.used, window: context.window }
 }
 
 export const switchSlot = createAsyncThunk(
@@ -2084,6 +2126,7 @@ const chatSlice = createSlice({
         // Update cache and clear loading state
         state.slotMessages[safeKey(key)] = state.messages
         state.slotLoading = false
+        seedContextUsage(state, key, action.payload.context)
       })
       .addCase(switchSlot.rejected, (state, action) => {
         if (state.activeSlot !== action.meta.arg) return
@@ -2140,6 +2183,7 @@ const chatSlice = createSlice({
         state.pendingTurnSlot = null
         state.slotHasMore = hasMore
         state.slotOldestIndex = hasMore ? total - messages.length : 0
+        seedContextUsage(state, key, action.payload.context)
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
         if (!action.payload) return
@@ -2178,6 +2222,7 @@ const chatSlice = createSlice({
         const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
         run.state = 'idle'
         run.lastChunkSeq = undefined
+        seedContextUsage(state, key, action.payload.context)
       })
       .addCase(createSlot.pending, (state) => { state.creatingSlot = true })
       .addCase(createSlot.rejected, (state) => { state.creatingSlot = false })

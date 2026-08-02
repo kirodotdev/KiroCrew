@@ -11,6 +11,7 @@ import math
 import os
 import re
 import tempfile
+import threading
 import time
 import traceback
 import uuid
@@ -1758,6 +1759,28 @@ class DashboardState:
         self._slots: dict[str, _ChatSlot] = {}
         self._slack_to_slot: dict[str, str] = {}  # Slack session_key → slot name
         self._slot_counter = 0
+        # slot key → last context-meter reading, for seeding the bar when a
+        # session is reopened after its ACP session is gone. Readings this
+        # process took live here immediately; `_loaded` tracks whether the
+        # file written by an earlier process has been merged in yet, and
+        # `_dirty` whether the off-loop flush still owes a write. The map is
+        # touched from the event loop (broadcast/read), the flush executor,
+        # and the shutdown thread, so EVERY access — including the flags —
+        # holds `_context_snapshots_lock`. File IO happens outside the lock:
+        # the flush serializes under it, writes without it.
+        self._context_snapshots: dict[str, dict] = {}
+        self._context_snapshots_loaded = False
+        self._context_snapshots_dirty = False
+        self._context_snapshots_lock = threading.Lock()
+        # Serializes whole flushes (dirty-check through file write). Two flush
+        # paths exist — the periodic executor pass and the shutdown save — and
+        # the data lock above deliberately excludes the file write, so without
+        # this an overlapping pair can land writes out of order: the slower
+        # flush writes an OLDER serialization last, rolling the file back, and
+        # the already-cleared dirty flag means nothing corrects it until a new
+        # reading arrives. Only flush threads contend here; the event loop
+        # never acquires it.
+        self._context_snapshots_flush_lock = threading.Lock()
         self._folders: list[dict[str, Any]] = []  # project folder definitions
         # Tag vocabulary: list of {id, name, color, order}. User-managed.
         self._tags: list[dict[str, Any]] = []
@@ -1872,8 +1895,8 @@ class DashboardState:
                 # (the "X / Y tokens" tooltip), which no longer describe the
                 # compacted session.
                 try:
-                    self.broadcast_ws(
-                        "context_usage", {"slot": slot_key, "pct": 0.0, "reset": True}
+                    self.broadcast_context_usage(
+                        slot_key, {"slot": slot_key, "pct": 0.0, "reset": True}
                     )
                 except Exception:
                     logging.getLogger(__name__).exception(
@@ -2328,6 +2351,9 @@ class DashboardState:
         # would silently drop to History on every restart. This file is
         # cheap (~one short string per tab) and overwritten on every flush.
         self._persist_open_slots()
+        # Same off-loop flush, same reason: a context-meter reading is recorded
+        # on the loop (pure dict write) and the file IO happens here.
+        self._persist_context_snapshots()
 
     def _persist_open_slots(self) -> None:
         """Atomically write the current open-slot keys to <config_dir>/open_slots.json.
@@ -3474,6 +3500,165 @@ class DashboardState:
             return
         msg = json.dumps({"type": msg_type, "data": data})
         self._send_ws_all(msg)
+
+    def broadcast_context_usage(self, slot_key: str, payload: dict) -> None:
+        """Broadcast one ``context_usage`` frame AND record it as the slot's snapshot.
+
+        The SINGLE writer for context-meter state. Every producer of a
+        ``context_usage`` frame routes through here so the broadcast and the
+        stored snapshot cannot drift: the meter is otherwise turn-scoped only,
+        and reopening a session whose ACP process has expired (idle timeout or a
+        gateway restart) leaves the bar at 0% until the next turn because
+        nothing on the open path carries usage.
+
+        ``payload`` is the frame as broadcast (``{slot, pct, used_tokens?,
+        window_tokens?, reset?}``). The snapshot mirrors it plus the slot's
+        model, which the read side compares to decide whether the reading still
+        describes the session (see ``_context_snapshot_fields``). ``pct`` is
+        the load-bearing field and is stored on its own when that is all the
+        frame carries: kiro-cli commonly reports a percentage with no
+        ``usage_update``, so requiring token counts here would leave the
+        majority of sessions with nothing to restore. A post-compaction frame
+        legitimately stores ``pct: 0`` — that IS the new truth, not an absence.
+
+        Storage is a small sidecar map, NOT the session's metadata line:
+        ``ConversationLog.update_metadata`` reads and rewrites the WHOLE
+        transcript to edit its first line, so paying that per turn would scale
+        a turn's I/O with transcript size (tens of MB on a long session) while
+        holding the cross-process lock. The sidecar is O(open slots).
+        """
+        self.broadcast_ws("context_usage", payload)
+        slot = self.get_slot(slot_key)
+        if slot is None:
+            return
+        # Ephemeral tabs (incognito/temporary) leave no memory behind by
+        # contract — same filter as _persist_open_slots.
+        if getattr(slot, "memory_mode", "persistent") != "persistent":
+            return
+        pct = payload.get("pct")
+        if not isinstance(pct, (int, float)) or isinstance(pct, bool):
+            return
+        snapshot: dict[str, Any] = {"pct": pct, "model": slot.model}
+        window = payload.get("window_tokens") or 0
+        if window:
+            snapshot["window_tokens"] = window
+            snapshot["used_tokens"] = payload.get("used_tokens", 0)
+        with self._context_snapshots_lock:
+            if self._context_snapshots.get(slot_key) == snapshot:
+                return  # unchanged — nothing for the next flush to write
+            self._context_snapshots[slot_key] = snapshot
+            self._context_snapshots_dirty = True
+
+    def ensure_context_snapshots_loaded(self) -> None:
+        """Merge the on-disk snapshot file into the in-memory map. BLOCKING.
+
+        Only readings taken by an EARLIER process need the file; anything this
+        process recorded is already in memory. So the merge never overwrites a
+        live entry — disk fills gaps, memory wins ties.
+
+        The loaded flag flips only AFTER the merge is in the map, under the
+        lock, so a concurrent flush can never observe ``loaded`` while the
+        disk entries are still in flight — that ordering is what stops the
+        flush from writing a memory-only view over readings it has not merged
+        yet. Two concurrent loaders may both read the file; the second merge
+        is a no-op because ties keep the in-memory value.
+
+        Blocking by design and therefore never called from the event loop: the
+        async slot-detail handler reaches it through ``asyncio.to_thread`` and
+        the flush paths reach it from their executors. A missing or corrupt
+        file leaves the map as-is; a lost snapshot only degrades the reopen case
+        back to an empty bar.
+        """
+        with self._context_snapshots_lock:
+            if self._context_snapshots_loaded:
+                return
+        try:
+            raw = json.loads((config_dir() / "context_snapshots.json").read_text())
+        except FileNotFoundError:
+            raw = {}
+        except Exception:
+            logger.debug("context_snapshots.json unreadable; starting empty", exc_info=True)
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        with self._context_snapshots_lock:
+            if self._context_snapshots_loaded:
+                return
+            for key, value in raw.items():
+                if isinstance(key, str) and isinstance(value, dict):
+                    self._context_snapshots.setdefault(key, value)
+            self._context_snapshots_loaded = True
+
+    def context_snapshot_for(self, slot_key: str) -> dict | None:
+        """Return a copy of the recorded reading for ``slot_key``, or ``None``.
+
+        The read seam for the slot-detail handler: hands out a copy under the
+        lock so the caller never holds a reference into the shared map.
+        """
+        with self._context_snapshots_lock:
+            snapshot = self._context_snapshots.get(slot_key)
+            return dict(snapshot) if isinstance(snapshot, dict) else None
+
+    def _persist_context_snapshots(self) -> None:
+        """Write the snapshot map to ``<config_dir>/context_snapshots.json``. BLOCKING.
+
+        Called from ``_flush_dirty_slots`` (the flush loop's executor pass) and
+        from the shutdown save in ``chat_persistence`` — the same off-loop
+        paths ``_persist_open_slots`` uses, and for the same reason: a home
+        directory on slow or network-backed storage can stall the write, and
+        one stalled write on the event loop freezes every chat turn and the
+        liveness heartbeat.
+
+        The data lock is held for the in-memory work only — the dirty check,
+        the disk merge, the prune, and serialization — never across the file
+        write, so a stalled disk cannot block the event loop's writers. The
+        flush lock then serializes whole flushes against each other: without
+        it, the periodic and shutdown flushes can overlap and the slower one
+        lands an OLDER serialization last, rolling the file back with the
+        dirty flag already cleared. ANY
+        failure re-arms the dirty flag and is swallowed: the flush loop treats
+        a raising callee as fatal, and losing every future flush over one
+        failed write would be a far worse trade than retrying in 5s. The prune
+        reads ``self._slots`` from a worker thread the way
+        ``_flush_dirty_slots`` and ``_persist_open_slots`` already do; if the
+        loop resizes it mid-iteration the raise lands in the same retry path.
+
+        Entries for slots that no longer exist are dropped on the way out, so a
+        deleted session cannot leave its usage behind and the file stays bounded
+        by the number of open slots.
+
+        NO-OP while ``restoring_open_slots`` is set — the same guard
+        ``_persist_open_slots`` carries, for the same reason: the startup
+        restore yields to the event loop between tabs, so mid-restore
+        ``self._slots`` holds only the tabs restored so far, and the prune
+        would read that partial set as "deleted sessions" and permanently drop
+        the readings of every tab still waiting to be restored. Skipping is
+        always safe: the dirty flag stays set, so the first flush after the
+        restore completes writes everything.
+        """
+        if self.restoring_open_slots:
+            logger.debug("context snapshot flush skipped: restore in progress")
+            return
+        with self._context_snapshots_lock:
+            if not self._context_snapshots_dirty:
+                return
+        self.ensure_context_snapshots_loaded()
+        # _context_snapshots_flush_lock makes the serialize→write pair atomic
+        # against the OTHER flush path, so a slower flush cannot land an older
+        # serialization after a newer one and roll the file back.
+        with self._context_snapshots_flush_lock:
+            try:
+                with self._context_snapshots_lock:
+                    self._context_snapshots_dirty = False
+                    live_keys = set(self._slots)
+                    for key in [k for k in self._context_snapshots if k not in live_keys]:
+                        del self._context_snapshots[key]
+                    payload = json.dumps(self._context_snapshots)
+                atomic_write(config_dir() / "context_snapshots.json", payload, mode=0o600)
+            except Exception:
+                logger.debug("Failed to persist context_snapshots.json", exc_info=True)
+                with self._context_snapshots_lock:
+                    self._context_snapshots_dirty = True
 
     async def deliver_ws_owners(self, msg_type: str, data: object) -> int:
         """Send a typed message ONLY to owner clients; return how many sends COMPLETED.

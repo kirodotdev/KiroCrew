@@ -133,6 +133,13 @@ def save_all_slots_to_history(state: DashboardState) -> None:
         state._persist_open_slots()
     except Exception:
         logger.debug("Shutdown: open_slots snapshot failed", exc_info=True)
+    # Same reasoning for the context-meter readings: a graceful restart is the
+    # case the reopen seed exists to serve, so the last reading must reach disk
+    # rather than waiting for a periodic flush that will not come.
+    try:
+        state._persist_context_snapshots()
+    except Exception:
+        logger.debug("Shutdown: context snapshot flush failed", exc_info=True)
 
 
 def _build_kiro_model_map() -> dict[str, str]:

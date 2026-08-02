@@ -4554,7 +4554,9 @@ async def _run_chat(
             if is_claude_backend(client):
                 msg = "✅ Conversation compacted."
                 _append_compaction_notice(state, slot, msg)
-                state.broadcast_ws("context_usage", _context_usage_payload(slot.key, client))
+                state.broadcast_context_usage(
+                    slot.key, _context_usage_payload(slot.key, client)
+                )
             else:
                 # Tell frontend to show compacting state and disable input
                 logger.info("Deferred compaction: waiting for compaction result")
@@ -4594,14 +4596,14 @@ async def _run_chat(
                 if compaction_result["type"] == "completed":
                     _payload = _context_usage_payload(slot.key, client)
                     if _payload.get("used_tokens"):
-                        state.broadcast_ws("context_usage", _payload)
+                        state.broadcast_context_usage(slot.key, _payload)
                     else:
-                        state.broadcast_ws(
-                            "context_usage", {"slot": slot.key, "pct": 0.0, "reset": True}
+                        state.broadcast_context_usage(
+                            slot.key, {"slot": slot.key, "pct": 0.0, "reset": True}
                         )
                 else:
-                    state.broadcast_ws(
-                        "context_usage", _context_usage_payload(slot.key, client)
+                    state.broadcast_context_usage(
+                        slot.key, _context_usage_payload(slot.key, client)
                     )
 
         if assistant_text:
@@ -4789,7 +4791,7 @@ async def _run_chat(
             _maybe_consolidate(state, slot)
         state.sessions.check_context_usage(session_key, client)
         pct = client.context_usage_pct()
-        state.broadcast_ws("context_usage", _context_usage_payload(slot.key, client))
+        state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
         if _stop_reason != STOP_REASON_CANCELLED and not _retrying_empty:
             state.sessions.record_success(session_key)
             # Per-interaction telemetry (PlatformContext seam) — shared helper so

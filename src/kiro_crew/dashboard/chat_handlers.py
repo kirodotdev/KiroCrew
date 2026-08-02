@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import tempfile
 import time
@@ -587,6 +588,126 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     return web.json_response(payloads)
 
 
+def _finite_number(value: Any) -> float | None:
+    """Return *value* as a float when it is a real, finite number, else None.
+
+    The context fields are cosmetic, but they ride on the response that carries
+    the whole conversation, so anything unserializable reaching `json_response`
+    would turn a display nicety into a 500 that blanks the transcript. A
+    provider is free to return whatever its accessors return; this is the gate
+    that keeps a non-numeric one from ever being emitted.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
+def _context_reading(
+    pct: Any, used: Any, window: Any, *, stale: bool
+) -> dict[str, Any]:
+    """Assemble the context fields from a (pct, used, window) triple.
+
+    ``pct`` is the PRIMARY signal and the only one the bar needs: kiro-cli
+    commonly reports ``contextUsagePercentage`` with no ``usage_update``, so a
+    resident session routinely knows it is 11% full while knowing neither token
+    count. Gating on the window would no-op the whole feature in that case.
+    Token counts are optional enrichment for the tooltip's absolute numbers,
+    and the frontend already falls back to a model-derived window without them.
+
+    A ``stale`` reading omits ``used`` entirely rather than shipping a count no
+    process measured. The tooltip renders an absent ``used`` as a ``~``
+    approximation derived from pct, so honesty costs nothing — and leaving the
+    count on the wire would make every other consumer of this endpoint render a
+    never-measured figure as measured unless it knew to drop it.
+
+    Returns ``{}`` when there is nothing worth showing — no usable pct, and no
+    window either. A 0% reading with no tokens is indistinguishable from a
+    fresh session that has never had a turn, and both render an empty bar
+    anyway, so it is reported as "no reading" rather than as a measurement.
+    """
+    pct_num = _finite_number(pct)
+    window_num = _finite_number(window)
+    used_num = _finite_number(used)
+    if pct_num is None:
+        return {}
+    fields: dict[str, Any] = {"context_pct": pct_num, "context_stale": stale}
+    if window_num:
+        fields["context_window_tokens"] = int(window_num)
+        if used_num and not stale:
+            fields["context_used_tokens"] = int(used_num)
+    if not pct_num and "context_window_tokens" not in fields:
+        return {}
+    return fields
+
+
+async def _context_snapshot_fields(state: "DashboardState", slot: "_ChatSlot") -> dict[str, Any]:
+    """Context-meter fields for a slot-detail response, or ``{}`` when unknown.
+
+    The meter is fed by turn-scoped ``context_usage`` WS frames, so opening a
+    session that has not had a turn *in this tab's lifetime* renders an empty
+    bar. This is the open-path source that seeds it.
+
+    Two tiers, in order:
+
+    1. **Live session** — the provider is still resident in the pool, so its
+       ``last_prompt_stats`` are authoritative.
+    2. **Cold session** — the ACP process expired (idle timeout) or the gateway
+       restarted, so the stats are gone. Falls back to the snapshot recorded by
+       ``DashboardState.broadcast_context_usage`` and marks it
+       ``context_stale``. Resume replays the same transcript via ACP
+       ``session/load``, so the pre-shutdown reading approximates the next
+       turn's — and that turn overwrites it with measured truth.
+
+    A snapshot taken under a DIFFERENT model is discarded rather than shown:
+    its pct and counts are denominated in the old model's window, so rendering
+    them against the new one would misreport usage. Dropping them lets the
+    frontend fall back to its model-derived window at 0%.
+
+    Never raises: every failure degrades to ``{}`` (an empty bar) rather than
+    failing the request the transcript arrives on.
+    """
+    try:
+        return await _context_snapshot_fields_inner(state, slot)
+    except Exception:
+        logger.debug("context snapshot fields failed for slot %s", slot.key, exc_info=True)
+        return {}
+
+
+async def _context_snapshot_fields_inner(
+    state: "DashboardState", slot: "_ChatSlot"
+) -> dict[str, Any]:
+    provider = state.sessions.get_provider(_history_key_for(slot.key))
+    if provider is not None:
+        return _context_reading(
+            provider.context_usage_pct(),
+            (
+                provider.context_used_tokens()
+                if hasattr(provider, "context_used_tokens")
+                else 0
+            ),
+            (
+                provider.context_window_tokens()
+                if hasattr(provider, "context_window_tokens")
+                else 0
+            ),
+            stale=False,
+        )
+    # Readings from a previous process live in a file, so the first read is
+    # disk IO — off the event loop, since this handler serves every chat open.
+    await asyncio.to_thread(state.ensure_context_snapshots_loaded)
+    snapshot = state.context_snapshot_for(slot.key)
+    if snapshot is None:
+        return {}
+    if snapshot.get("model", "") != slot.model:
+        return {}
+    return _context_reading(
+        snapshot.get("pct"),
+        snapshot.get("used_tokens"),
+        snapshot.get("window_tokens"),
+        stale=True,
+    )
+
+
 async def api_chat_slot_detail(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot} — message history for a slot.
 
@@ -674,6 +795,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             ],
             "total": total,
             "has_more": has_more,
+            # Seeds the context meter on open. Turn-scoped WS frames alone leave
+            # it empty for a session reopened in a new tab; omitted entirely
+            # (not zeroed) when genuinely unknown, so the frontend can tell
+            # "no reading" from "0% used".
+            **(await _context_snapshot_fields(state, slot)),
         }
     )
 
@@ -1848,7 +1974,7 @@ def _broadcast_context_reset(state: "DashboardState", slot_key: str, provider: A
         else:
             payload = {"slot": slot_key, "pct": 0.0}
         payload["reset"] = True
-        state.broadcast_ws("context_usage", payload)
+        state.broadcast_context_usage(slot_key, payload)
     except Exception:
         logger.exception("Failed to broadcast context_usage reset for slot %s", slot_key)
 

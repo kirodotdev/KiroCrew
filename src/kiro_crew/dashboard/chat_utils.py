@@ -309,7 +309,7 @@ def _broadcast_compaction_result(
         # (same contract as the threshold auto-compact path in
         # DashboardState.wire_session_compact_callback). Without this the bar
         # kept showing the pre-compaction usage until the next turn.
-        state.broadcast_ws("context_usage", {"slot": slot.key, "pct": 0.0, "reset": True})
+        state.broadcast_context_usage(slot.key, {"slot": slot.key, "pct": 0.0, "reset": True})
     elif status_type == "failed":
         now = time.monotonic()
         slot._compaction_fail_streak += 1
