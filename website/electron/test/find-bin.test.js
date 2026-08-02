@@ -100,6 +100,58 @@ describe("findKirocrewBin", () => {
     assert.equal(result, bundledExe);
   });
 
+  // A real Windows bundle contains BOTH launchers: build-desktop.sh writes
+  // bin\kirocrew.cmd, and the `pip install` that populates the tree also drops
+  // a console-script Scripts\kirocrew.exe. Every Windows case above uses
+  // only() -- a one-candidate world -- so none of them could express which of
+  // the two wins. That gap let the two swap places and reach a nightly, where
+  // the build-time resolver gate failed with "the builder output layout and
+  // find-bin.js candidate list have drifted apart".
+  const present = (...targets) => {
+    const set = new Set(targets.map((t) => path.resolve(t)));
+    return {
+      accessSync: (p) => {
+        if (set.has(path.resolve(p))) return;
+        const e = new Error("ENOENT");
+        e.code = "ENOENT";
+        throw e;
+      },
+      constants: { X_OK: fs.constants.X_OK },
+    };
+  };
+
+  it("prefers the relocatable bin\\kirocrew.cmd over the bundle's Scripts\\kirocrew.exe", () => {
+    // THE REGRESSION. pip's console-script .exe embeds the ABSOLUTE interpreter
+    // path of the machine that built it (distlib), so inside a shipped bundle it
+    // points at a build-agent path like D:\a\KiroCrew\... that does not exist on
+    // the user's machine. The .cmd shim resolves the interpreter through %~dp0
+    // and is the only relocatable launcher of the two -- so it must win whenever
+    // both are present, which in a real bundle is always.
+    const cmd = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "bin", "kirocrew.cmd");
+    const exe = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "Scripts", "kirocrew.exe");
+    const result = findKirocrewBin(present(cmd, exe), fakeOs, path, RESOURCES, DIRNAME, "x64", true);
+    assert.equal(result, cmd);
+  });
+
+  it("prefers the bundle's Scripts\\kirocrew.exe over a user-level install", () => {
+    // A packaged app must run the backend it shipped with, never whatever
+    // happens to be installed on the machine.
+    const exe = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "Scripts", "kirocrew.exe");
+    const userLocal = path.join(HOME, ".local", "bin", "kirocrew.exe");
+    const result = findKirocrewBin(
+      present(exe, userLocal), fakeOs, path, RESOURCES, DIRNAME, "x64", true
+    );
+    assert.equal(result, exe);
+  });
+
+  it("still finds a user-level kirocrew.exe when nothing is bundled", () => {
+    const userLocal = path.join(HOME, ".local", "bin", "kirocrew.exe");
+    const result = findKirocrewBin(
+      present(userLocal), fakeOs, path, RESOURCES, DIRNAME, "x64", true
+    );
+    assert.equal(result, userLocal);
+  });
+
   it("does not probe Windows .exe candidates on POSIX", () => {
     const probed = [];
     const fakeFs = {
