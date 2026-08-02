@@ -1878,7 +1878,20 @@ class ConversationLog:
         _restore_mtime(path, prev_mtime)
         self._invalidate_cache(key)
 
-    def clear_closed(self, key: str) -> None:
+    def mtime_of(self, key: str) -> float | None:
+        """Return the session file's mtime for *key*, or ``None`` when absent.
+
+        Cheap stat-only accessor for callers that need a file's last-write
+        instant without reading it — e.g. the channel-slot reconciler, which
+        uses it as the fallback close instant for a ``closed`` flag written
+        before ``closed_at`` stamps existed.
+        """
+        try:
+            return self._path(key).stat().st_mtime
+        except OSError:
+            return None
+
+    def clear_closed(self, key: str, *, only_if_closed_before: float | None = None) -> None:
         """Remove the ``closed`` flag from a session's metadata line.
 
         Serialized behind the cross-process ``_locked`` so a concurrent append /
@@ -1888,6 +1901,14 @@ class ConversationLog:
         No-op when the file is absent, unparsable, not flagged, or its first line
         isn't a metadata line. Housekeeping: the pre-write mtime is preserved so
         resuming doesn't reorder ``list_sessions``.
+
+        *only_if_closed_before* makes the removal a compare-and-clear: the flag
+        is dropped only when its close instant (``closed_at`` stamp, else the
+        file's current mtime) is strictly older than the given epoch. Callers
+        acting on a metadata snapshot (the channel-slot reconciler) use this so
+        a ``closed`` written AFTER their snapshot — the user dismissing a tab
+        mid-pass, or a racing reconcile — survives: the check runs under the
+        same lock as the write, so there is no window between them.
         """
         path = self._path(key)
         with self._locked(key):
@@ -1903,7 +1924,21 @@ class ConversationLog:
                 return
             if meta.get("_type") != "metadata" or "closed" not in meta:
                 return
+            if only_if_closed_before is not None:
+                raw = meta.get("closed_at")
+                close_time: float | None
+                try:
+                    close_time = float(raw) if raw is not None else None
+                except (TypeError, ValueError):
+                    close_time = None
+                if close_time is None:
+                    # Pre-stamp flag: the closing save is what last wrote the
+                    # file, so its mtime approximates the close instant.
+                    close_time = prev_mtime
+                if close_time is not None and close_time >= only_if_closed_before:
+                    return
             meta.pop("closed", None)
+            meta.pop("closed_at", None)
             lines[0] = json.dumps(meta) + "\n"
             atomic_write(path, "".join(lines), fsync=False)
             _restore_mtime(path, prev_mtime)

@@ -126,7 +126,11 @@ class TestEligibility:
         assert len(out) == 1
 
     def test_closed_on_the_channel_key_is_never_resurfaced(self) -> None:
-        """Closing the tab must stick — otherwise the next pass undoes it."""
+        """A close with no known instant must stick — fail toward the dismissal.
+
+        (With a ``closed_at`` stamp or a file mtime the close can be outrun by
+        newer channel activity — see ``TestCloseReactivation``.)
+        """
         sessions = [_session("slack:1.1")]
         out = channel_slots.eligible_channel_sessions(
             sessions, metadata={"slack:1.1": {"closed": True}}, cutoff=NOW - 1800
@@ -191,6 +195,96 @@ class TestEligibility:
         """The listing carries memory_mode as well; either source disqualifies."""
         sessions = [_session("slack:1.1", memory_mode=mode)]
         out = channel_slots.eligible_channel_sessions(sessions, metadata={}, cutoff=None)
+        assert out == []
+
+
+class TestCloseReactivation:
+    """A close stands only until channel-side activity outruns it."""
+
+    def test_activity_after_close_resurfaces(self) -> None:
+        """The person kept talking on the channel after the tab was closed."""
+        sessions = [_session("slack:1.1", modified=NOW)]
+        out = channel_slots.eligible_channel_sessions(
+            sessions,
+            metadata={"dashboard:slack_1.1": {"closed": True, "closed_at": NOW - 600}},
+            cutoff=None,
+        )
+        assert [s["key"] for s in out] == ["slack:1.1"]
+
+    def test_close_newer_than_activity_stands(self) -> None:
+        """No channel activity since the close — the dismissal holds."""
+        sessions = [_session("slack:1.1", modified=NOW - 600)]
+        out = channel_slots.eligible_channel_sessions(
+            sessions,
+            metadata={"dashboard:slack_1.1": {"closed": True, "closed_at": NOW}},
+            cutoff=None,
+        )
+        assert out == []
+
+    def test_close_at_exactly_the_activity_instant_stands(self) -> None:
+        """Strictly-newer comparison: a tie is not new activity."""
+        sessions = [_session("slack:1.1", modified=NOW)]
+        out = channel_slots.eligible_channel_sessions(
+            sessions,
+            metadata={"dashboard:slack_1.1": {"closed": True, "closed_at": NOW}},
+            cutoff=None,
+        )
+        assert out == []
+
+    def test_legacy_close_falls_back_to_file_mtime(self) -> None:
+        """A pre-stamp `closed` flag uses the slot file's mtime as the close
+        instant — the closing save is what last wrote that file."""
+        sessions = [_session("slack:1.1", modified=NOW)]
+        out = channel_slots.eligible_channel_sessions(
+            sessions,
+            metadata={"dashboard:slack_1.1": {"closed": True}},
+            cutoff=None,
+            mtimes={"dashboard:slack_1.1": NOW - 600},
+        )
+        assert [s["key"] for s in out] == ["slack:1.1"]
+
+    def test_legacy_close_with_stale_mtime_stands(self) -> None:
+        sessions = [_session("slack:1.1", modified=NOW - 600)]
+        out = channel_slots.eligible_channel_sessions(
+            sessions,
+            metadata={"dashboard:slack_1.1": {"closed": True}},
+            cutoff=None,
+            mtimes={"dashboard:slack_1.1": NOW},
+        )
+        assert out == []
+
+    def test_garbage_closed_at_falls_back_to_mtime(self) -> None:
+        sessions = [_session("slack:1.1", modified=NOW)]
+        out = channel_slots.eligible_channel_sessions(
+            sessions,
+            metadata={"dashboard:slack_1.1": {"closed": True, "closed_at": "not-a-number"}},
+            cutoff=None,
+            mtimes={"dashboard:slack_1.1": NOW - 600},
+        )
+        assert len(out) == 1
+
+    def test_every_closed_side_must_be_outrun(self) -> None:
+        """Slot-side close is outdated, but the channel-side close instant is
+        unknown — the unknown side keeps the dismissal standing."""
+        sessions = [_session("slack:1.1", modified=NOW)]
+        out = channel_slots.eligible_channel_sessions(
+            sessions,
+            metadata={
+                "slack:1.1": {"closed": True},
+                "dashboard:slack_1.1": {"closed": True, "closed_at": NOW - 600},
+            },
+            cutoff=None,
+        )
+        assert out == []
+
+    def test_reactivated_session_still_respects_the_recency_window(self) -> None:
+        """Outrunning the close does not exempt a session from the cutoff."""
+        sessions = [_session("slack:1.1", modified=NOW - 7200)]
+        out = channel_slots.eligible_channel_sessions(
+            sessions,
+            metadata={"dashboard:slack_1.1": {"closed": True, "closed_at": NOW - 99999}},
+            cutoff=NOW - 1800,
+        )
         assert out == []
 
 
@@ -302,6 +396,13 @@ class _FakeLog:
         self._sessions = sessions
         self._meta = meta
         self.message_reads: list[str] = []
+        #: key -> file mtime, consulted as the fallback close instant. Unset
+        #: keys report None (file absent), which keeps a legacy close standing.
+        self.mtimes: dict[str, float] = {}
+        #: keys clear_closed was invoked for, in order.
+        self.cleared: list[str] = []
+        #: every clear_closed invocation: (key, only_if_closed_before, outcome).
+        self.clear_calls: list[tuple[str, float | None, str]] = []
         #: key -> transcript. Unset keys read empty, so the reconciler's
         #: slot-key-then-channel-key preference order is observable.
         self.transcripts: dict[str, list[dict[str, Any]]] = {
@@ -313,6 +414,27 @@ class _FakeLog:
 
     def get_metadata(self, key: str) -> dict[str, Any]:
         return dict(self._meta.get(key, {}))
+
+    def mtime_of(self, key: str) -> float | None:
+        return self.mtimes.get(key)
+
+    def clear_closed(self, key: str, *, only_if_closed_before: float | None = None) -> None:
+        meta = self._meta.get(key, {})
+        if only_if_closed_before is not None and "closed" in meta:
+            raw = meta.get("closed_at")
+            try:
+                close_time = float(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                close_time = None
+            if close_time is None:
+                close_time = self.mtimes.get(key)
+            if close_time is not None and close_time >= only_if_closed_before:
+                self.clear_calls.append((key, only_if_closed_before, "spared"))
+                return
+        self.cleared.append(key)
+        self.clear_calls.append((key, only_if_closed_before, "cleared"))
+        meta.pop("closed", None)
+        meta.pop("closed_at", None)
 
     def read_messages(self, key: str) -> list[dict[str, Any]]:
         self.message_reads.append(key)
@@ -342,12 +464,217 @@ class TestReconcilePass:
 
     def test_a_closed_tab_is_not_reopened_by_the_next_pass(self, dashboard_state: Any) -> None:
         """End-to-end guard for the reopen defect: `closed` lives on the SLOT key."""
-        dashboard_state.conversation_log = _FakeLog(
-            [_session("slack:1.1")], {"dashboard:slack_1.1": {"closed": True}}
-        )
+        log = _FakeLog([_session("slack:1.1")], {"dashboard:slack_1.1": {"closed": True}})
+        # The close instant equals the last channel activity — no new activity.
+        log.mtimes["dashboard:slack_1.1"] = NOW
+        dashboard_state.conversation_log = log
         dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
         assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
         assert dashboard_state._slots == {}
+        assert log.cleared == []
+
+    def test_channel_activity_after_close_reopens_and_clears_flags(
+        self, dashboard_state: Any
+    ) -> None:
+        """New channel activity outruns the close: the tab comes back, and the
+        stale `closed`/`closed_at` flags are dropped from BOTH keys so restore
+        paths and future passes agree the conversation is open."""
+        log = _FakeLog(
+            [_session("slack:1.1", modified=NOW)],
+            {"dashboard:slack_1.1": {"closed": True, "closed_at": NOW - 600}},
+        )
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        assert "slack_1.1" in dashboard_state._slots
+        assert set(log.cleared) == {"slack:1.1", "dashboard:slack_1.1"}
+        assert "closed" not in log._meta["dashboard:slack_1.1"]
+
+    def test_legacy_close_reopens_via_file_mtime_fallback(self, dashboard_state: Any) -> None:
+        """A pre-stamp `closed` flag (no closed_at) reactivates off the slot
+        file's mtime — the real-world shape of sessions closed before this fix."""
+        log = _FakeLog(
+            [_session("slack:1.1", modified=NOW)],
+            {"dashboard:slack_1.1": {"closed": True}},
+        )
+        log.mtimes["dashboard:slack_1.1"] = NOW - 600
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        assert "slack_1.1" in dashboard_state._slots
+        assert set(log.cleared) == {"slack:1.1", "dashboard:slack_1.1"}
+
+    def test_stale_flags_cleared_before_the_slot_is_visible(self, dashboard_state: Any) -> None:
+        """Regression (GPT round 1): clearing AFTER the slot broadcast races a
+        user closing the just-reactivated tab — the deferred clear would erase
+        the fresh `closed` and the next pass would reopen a tab the user just
+        dismissed. The clear must complete before the slot exists."""
+        log = _FakeLog(
+            [_session("slack:1.1", modified=NOW)],
+            {"dashboard:slack_1.1": {"closed": True, "closed_at": NOW - 600}},
+        )
+        slot_present_at_clear: list[bool] = []
+        orig_clear = log.clear_closed
+
+        def _recording_clear(key: str, **kwargs: Any) -> None:
+            slot_present_at_clear.append("slack_1.1" in dashboard_state._slots)
+            orig_clear(key, **kwargs)
+
+        log.clear_closed = _recording_clear  # type: ignore[method-assign]
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        assert slot_present_at_clear, "clear_closed must have been invoked"
+        assert not any(slot_present_at_clear), "flags must be cleared before the slot is surfaced"
+
+    def test_clears_are_scoped_to_the_snapshot_instant(self, dashboard_state: Any) -> None:
+        """Regression (GPT round 2): the reconciler must pass its snapshot
+        instant as a compare-and-clear cutoff, so a `closed` written after the
+        snapshot (user dismissal mid-pass, racing writer) survives the clear."""
+        log = _FakeLog(
+            [_session("slack:1.1", modified=NOW)],
+            {"dashboard:slack_1.1": {"closed": True, "closed_at": NOW - 600}},
+        )
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        before = time.time()
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        after = time.time()
+        assert log.clear_calls, "clear_closed must have been invoked"
+        for _key, cutoff_arg, _outcome in log.clear_calls:
+            assert cutoff_arg is not None, "clear must carry the snapshot cutoff"
+            assert before <= cutoff_arg <= after
+
+    def test_a_close_fresher_than_the_snapshot_survives_the_clear(
+        self, dashboard_state: Any
+    ) -> None:
+        """A dismissal recorded after the pass's snapshot is not erased: the
+        compare-and-clear spares it, and the fresh close keeps standing."""
+        log = _FakeLog(
+            [_session("slack:1.1", modified=NOW)],
+            # Stale in the snapshot the reconciler reads...
+            {"dashboard:slack_1.1": {"closed": True, "closed_at": NOW - 600}},
+        )
+        # ...but by clear time the user has re-closed: simulate the racing
+        # write by bumping closed_at to the future before delegating.
+        orig_clear = log.clear_closed
+
+        def _racing_clear(key: str, **kwargs: Any) -> None:
+            meta = log._meta.get(key)
+            if meta and "closed" in meta:
+                meta["closed_at"] = time.time() + 3600
+            orig_clear(key, **kwargs)
+
+        log.clear_closed = _racing_clear  # type: ignore[method-assign]
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+        assert log._meta["dashboard:slack_1.1"].get("closed") is True, (
+            "a close written after the snapshot must survive the stale clear"
+        )
+
+    def test_overlapping_reconciles_are_serialized(self, dashboard_state: Any) -> None:
+        """The periodic loop and a dispatcher-triggered immediate pass must not
+        interleave — overlapping passes could clear flags from stale snapshots."""
+        log = _FakeLog([_session("slack:1.1")], {})
+        active = {"n": 0, "max": 0}
+        orig_list = log.list_sessions
+
+        def _tracking_list() -> list[dict[str, Any]]:
+            active["n"] += 1
+            active["max"] = max(active["max"], active["n"])
+            try:
+                time.sleep(0.02)
+                return orig_list()
+            finally:
+                active["n"] -= 1
+
+        log.list_sessions = _tracking_list  # type: ignore[method-assign]
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        async def _run_two() -> None:
+            await asyncio.gather(
+                channel_slots.reconcile_channel_slots(dashboard_state, 30),
+                channel_slots.reconcile_channel_slots(dashboard_state, 30),
+            )
+
+        asyncio.run(_run_two())
+        assert active["max"] == 1, "reconcile passes must not overlap"
+
+    def test_a_tab_closed_mid_pass_is_not_resurrected(self, dashboard_state: Any) -> None:
+        """Regression (GPT round 3): a tab resumed from History and closed
+        while this pass's executor work is in flight pops the slot, so the
+        stale `pending` verdict would recreate it. The close path's synchronous
+        tombstone must be honored after the pass's last await."""
+        log = _FakeLog([_session("slack:1.1", modified=NOW)], {})
+        orig_read = log.read_messages
+
+        def _close_during_pass(key: str) -> list[dict[str, Any]]:
+            # Runs in the _load_messages executor — after the snapshot, before
+            # the surface loop. Simulates the user closing the tab right here.
+            channel_slots.note_slot_closed(dashboard_state, "slack_1.1")
+            return orig_read(key)
+
+        log.read_messages = _close_during_pass  # type: ignore[method-assign]
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
+        assert "slack_1.1" not in dashboard_state._slots
+
+    def test_a_close_just_before_the_snapshot_still_blocks(self, dashboard_state: Any) -> None:
+        """Regression (GPT round 4): the close handler pops the slot and writes
+        the tombstone BEFORE its awaits (task cancellation, file lock), so a
+        pass can snapshot still-open metadata after the tombstone exists. The
+        tombstone must suppress by the disk flag's own rule (activity vs close
+        instant), not by comparing against the pass's snapshot time."""
+        # Channel activity is OLDER than the close — the dismissal stands.
+        log = _FakeLog([_session("slack:1.1", modified=NOW - 60)], {})
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        # Tombstone written before the pass even starts (close save in flight,
+        # disk metadata still open).
+        channel_slots.note_slot_closed(dashboard_state, "slack_1.1")
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
+        assert "slack_1.1" not in dashboard_state._slots
+
+    def test_channel_activity_newer_than_the_tombstone_resurfaces(
+        self, dashboard_state: Any
+    ) -> None:
+        """A tombstone follows the same outrun rule as the disk flag: channel
+        activity strictly newer than the close re-surfaces the conversation."""
+        channel_slots.note_slot_closed(dashboard_state, "slack_1.1")
+        time.sleep(0.01)
+        # Activity AFTER the close: the person kept talking on the channel.
+        log = _FakeLog([_session("slack:1.1", modified=time.time() + 1)], {})
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        assert "slack_1.1" in dashboard_state._slots
+
+    def test_close_tombstones_are_pruned(self, dashboard_state: Any) -> None:
+        closes = channel_slots._RECENT_CLOSES.setdefault(dashboard_state, {})
+        closes["ancient"] = time.time() - channel_slots._CLOSE_TOMBSTONE_TTL_SECS - 1
+        channel_slots.note_slot_closed(dashboard_state, "fresh")
+        assert "ancient" not in channel_slots._RECENT_CLOSES[dashboard_state]
+        assert "fresh" in channel_slots._RECENT_CLOSES[dashboard_state]
+
+    def test_surfacing_an_open_session_clears_nothing(self, dashboard_state: Any) -> None:
+        """The clear path only runs for sessions that were closed — an ordinary
+        first surface must not touch metadata."""
+        log = _FakeLog([_session("slack:1.1")], {})
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        assert log.cleared == []
 
     def test_seeds_from_both_transcripts_merged(self, dashboard_state: Any) -> None:
         """Neither side is a superset: the slot holds dashboard replies, the channel
@@ -393,6 +720,146 @@ def _tz(name: str) -> Iterator[None]:
 
 #: ``time.tzset`` is Unix-only, and CI also runs the backend suite on Windows.
 _needs_tzset = pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset() is Unix-only")
+
+
+class TestMtimeOf:
+    def test_reports_the_session_file_mtime(self, dashboard_state: Any) -> None:
+        log = dashboard_state.conversation_log
+        assert log.mtime_of("slack:9.9") is None
+        log.append("slack:9.9", "user", "hi")
+        stamp = log.mtime_of("slack:9.9")
+        assert stamp is not None and abs(stamp - time.time()) < 60
+
+
+class TestCompareAndClear:
+    """ConversationLog.clear_closed(only_if_closed_before=...) semantics."""
+
+    def _write_closed(self, log: Any, key: str, closed_at: float | None) -> None:
+        log.append(key, "user", "hi")
+        meta: dict[str, Any] = {"closed": True}
+        if closed_at is not None:
+            meta["closed_at"] = closed_at
+        log.update_metadata(key, meta)
+
+    def test_stale_close_is_cleared(self, dashboard_state: Any) -> None:
+        log = dashboard_state.conversation_log
+        self._write_closed(log, "dashboard:slack_1.1", time.time() - 600)
+        log.clear_closed("dashboard:slack_1.1", only_if_closed_before=time.time())
+        meta = log.get_metadata("dashboard:slack_1.1")
+        assert "closed" not in meta and "closed_at" not in meta
+
+    def test_fresh_close_survives(self, dashboard_state: Any) -> None:
+        """A close at/after the cutoff is spared — the caller's snapshot is
+        stale with respect to it."""
+        log = dashboard_state.conversation_log
+        stamp = time.time() + 600
+        self._write_closed(log, "dashboard:slack_1.1", stamp)
+        log.clear_closed("dashboard:slack_1.1", only_if_closed_before=time.time())
+        assert log.get_metadata("dashboard:slack_1.1").get("closed") is True
+
+    def test_unconditional_clear_still_clears(self, dashboard_state: Any) -> None:
+        """The resume path clears without a cutoff — unchanged behaviour."""
+        log = dashboard_state.conversation_log
+        self._write_closed(log, "dashboard:slack_1.1", time.time() + 600)
+        log.clear_closed("dashboard:slack_1.1")
+        assert "closed" not in log.get_metadata("dashboard:slack_1.1")
+
+    def test_legacy_flag_compares_against_file_mtime(self, dashboard_state: Any) -> None:
+        """A pre-stamp flag falls back to the file's mtime as its close instant."""
+        log = dashboard_state.conversation_log
+        self._write_closed(log, "dashboard:slack_1.1", None)
+        # The write just happened, so mtime ~= now: a past cutoff spares it...
+        log.clear_closed("dashboard:slack_1.1", only_if_closed_before=time.time() - 600)
+        assert log.get_metadata("dashboard:slack_1.1").get("closed") is True
+        # ...and a future cutoff clears it.
+        log.clear_closed("dashboard:slack_1.1", only_if_closed_before=time.time() + 600)
+        assert "closed" not in log.get_metadata("dashboard:slack_1.1")
+
+
+class TestClosedAtStamp:
+    def test_closing_save_stamps_closed_at(self, tmp_path: Any, monkeypatch: Any) -> None:
+        """Closing a tab records WHEN — the instant _close_stands compares
+        channel activity against. With no caller-supplied instant, the save
+        falls back to save time (callers with no user gesture to anchor to)."""
+        import json
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("slack_1.1")
+        slot.append("user", "hello")
+        slot.drain()
+
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        before = time.time()
+        _save_slot_to_history(state, slot, closed=True)
+        after = time.time()
+
+        meta = json.loads(
+            (tmp_path / "dashboard_slack_1.1.jsonl").read_text(encoding="utf-8").split("\n")[0]
+        )
+        assert meta["closed"] is True
+        assert before <= float(meta["closed_at"]) <= after
+
+    def test_caller_supplied_close_instant_is_persisted_verbatim(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """Regression (GPT round 5): the close handler's save runs only after
+        its awaits (task cancellation, patient lock acquire). Stamping save
+        time would make channel activity that landed during that teardown
+        window compare as OLDER than the close, hiding a conversation the
+        reactivation rule should surface. The persisted closed_at must be the
+        instant the user acted — the value note_slot_closed returned — not the
+        (later) save time."""
+        import json
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("slack_1.1")
+        slot.append("user", "hello")
+        slot.drain()
+
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        click_instant = time.time() - 30.0  # user acted well before the save
+        _save_slot_to_history(state, slot, closed=True, closed_at=click_instant)
+
+        meta = json.loads(
+            (tmp_path / "dashboard_slack_1.1.jsonl").read_text(encoding="utf-8").split("\n")[0]
+        )
+        assert meta["closed"] is True
+        assert float(meta["closed_at"]) == click_instant
+
+    def test_note_slot_closed_returns_the_recorded_instant(self, dashboard_state: Any) -> None:
+        """The tombstone and the persisted closed_at must be the SAME instant —
+        callers persist the return value, so the in-memory and on-disk close
+        records cannot disagree about when the user acted."""
+        before = time.time()
+        returned = channel_slots.note_slot_closed(dashboard_state, "slack_1.1")
+        after = time.time()
+        assert before <= returned <= after
+        assert channel_slots._RECENT_CLOSES[dashboard_state]["slack_1.1"] == returned
+
+    def test_open_save_carries_no_close_fields(self, tmp_path: Any, monkeypatch: Any) -> None:
+        import json
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("slack_1.1")
+        slot.append("user", "hello")
+        slot.drain()
+
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        _save_slot_to_history(state, slot, closed=True)
+        # A later save of the (reopened) slot drops both fields.
+        _save_slot_to_history(state, slot)
+
+        meta = json.loads(
+            (tmp_path / "dashboard_slack_1.1.jsonl").read_text(encoding="utf-8").split("\n")[0]
+        )
+        assert "closed" not in meta
+        assert "closed_at" not in meta
 
 
 class TestMergeTranscriptTimezones:
