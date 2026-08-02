@@ -1261,8 +1261,8 @@ class TestAutonudgeUpdateConcurrency:
             timer = svc._timers[loop_obj.id]
             await asyncio.sleep(0.15)  # delivered; parked inside the persist
             assert loop_obj.id in svc._firing
-            svc.notify_turn_complete("chat-9-7")   # queues a deferred re-arm
-            svc.notify_user_input("chat-9-7")      # user takes priority
+            svc.notify_turn_complete("chat-9-7")  # queues a deferred re-arm
+            svc.notify_user_input("chat-9-7")  # user takes priority
             assert not timer.cancelled(), "user input cancelled the firing task"
             gate.set()
             await asyncio.wait_for(asyncio.shield(timer), timeout=5)
@@ -1315,9 +1315,7 @@ class TestAutonudgeUpdateConcurrency:
         svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
         await svc.start()
         try:
-            loop_obj = await svc.add(
-                slot_key="slack:1700000000.1", message="go", idle_secs=15
-            )
+            loop_obj = await svc.add(slot_key="slack:1700000000.1", message="go", idle_secs=15)
             # Re-arm with a zero delay so exactly ONE fire starts promptly; the
             # channel self-re-arm afterwards uses the real 15s idle gap, so the
             # test observes a single, deterministic fire window.
@@ -1553,10 +1551,18 @@ class TestSentinelPathRepair:
                 {
                     "version": 1,
                     "loops": [
-                        {"id": "bad", "slot_key": "chat-1-1", "message": "m",
-                         "stop_sentinel_path": 12345},
-                        {"id": "good", "slot_key": "chat-2-2", "message": "m",
-                         "stop_sentinel_path": str(current / "workspace" / ".stop-ok")},
+                        {
+                            "id": "bad",
+                            "slot_key": "chat-1-1",
+                            "message": "m",
+                            "stop_sentinel_path": 12345,
+                        },
+                        {
+                            "id": "good",
+                            "slot_key": "chat-2-2",
+                            "message": "m",
+                            "stop_sentinel_path": str(current / "workspace" / ".stop-ok"),
+                        },
                     ],
                 }
             ),
@@ -1728,5 +1734,51 @@ class TestSentinelPathRepair:
             await svc._timers["abc123"]
             assert fired == [], "loop fired despite the sentinel being present"
             assert "abc123" not in svc._loops, "sentinel did not remove the loop"
+        finally:
+            svc.stop()
+
+
+class TestRemoveOffloadsIO:
+    """remove() must not block the event loop with a synchronous _save()."""
+
+    @pytest.mark.asyncio
+    async def test_remove_persists_off_the_event_loop(self, tmp_path, monkeypatch):
+        """_save() fsyncs on the loop thread; remove() must offload like update()."""
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        try:
+            loop_obj = await svc.add(slot_key="chat-1-rm", message="go", idle_secs=15)
+            svc._cancel_timer(loop_obj.id)
+            loop_thread = threading.get_ident()
+            seen: list[int] = []
+            real_write = svc._write_state
+
+            def _spy(payload):
+                seen.append(threading.get_ident())
+                return real_write(payload)
+
+            monkeypatch.setattr(svc, "_write_state", _spy)
+            monkeypatch.setattr(
+                svc, "_save", lambda: pytest.fail("blocking _save called on the loop")
+            )
+            await svc.remove(loop_obj.id)
+            assert seen, "remove() never persisted"
+            assert seen[-1] != loop_thread, "_write_state ran on the event loop thread"
+            assert loop_obj.id not in svc._loops, "loop was not removed"
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_remove_persists_removal_to_disk(self, tmp_path):
+        """After remove(), the on-disk store should no longer contain the loop."""
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        try:
+            loop_obj = await svc.add(slot_key="chat-1-rm2", message="go", idle_secs=15)
+            svc._cancel_timer(loop_obj.id)
+            await svc.remove(loop_obj.id)
+            on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
+            ids = [lp["id"] for lp in on_disk["loops"]]
+            assert loop_obj.id not in ids, "removed loop still on disk"
         finally:
             svc.stop()

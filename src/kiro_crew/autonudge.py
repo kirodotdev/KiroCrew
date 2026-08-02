@@ -508,9 +508,7 @@ class AutoNudgeService:
             # worker thread, and await it so a persistence failure still
             # propagates to the caller before the loop is reported armed.
             payload = self._serialize_state()
-            await asyncio.get_running_loop().run_in_executor(
-                None, self._write_state, payload
-            )
+            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
             self._arm_timer(loop)
         self._emit("added", loop)
         logger.info("AutoNudge: added loop %s on slot %s (idle=%ds)", loop.id, slot_key, idle_secs)
@@ -633,7 +631,9 @@ class AutoNudgeService:
 
     async def remove(self, loop_id: str) -> None:
         async with self._lock:
-            self.remove_sync(loop_id)
+            self.remove_sync(loop_id, persist=False)
+            payload = self._serialize_state()
+            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
 
     def get_by_slot(self, slot_key: str) -> NudgeLoop | None:
         return self._find_by_slot(slot_key)
