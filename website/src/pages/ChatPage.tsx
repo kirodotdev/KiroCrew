@@ -1325,25 +1325,81 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // never be transcribed.
   const [voiceSetupOpen, setVoiceSetupOpen] = useState(false)
   const frozenInputRef = useRef<string | null>(null)
-  // Drops late-arriving partials/finals from a previous slot or stopped
-  // session. `stop()` is async (up to 5s for backend close) — without
-  // this guard, a delayed onFinal would overwrite text the user has
-  // already typed in the new slot.
+  // Drops late-arriving partials/finals for the CURRENT slot after a send.
+  // `stop()` is async (up to 5s for backend close) — without this guard, a
+  // delayed onFinal would repopulate the composer with text the user already
+  // sent. Cross-SLOT safety is handled separately by session-scoped routing
+  // (see applyVoiceText + voice.sessionOwner).
   const sttDisarmedRef = useRef(false)
+  // The hook's EFFECTIVE streaming mode: streaming is only truly active when the
+  // config asks for it AND the browser supports it (AudioWorklet/WS). Mirrored
+  // from voice.streamEnabled (set by the effect below, once `voice` exists) so
+  // the disarm + cross-slot-routing decisions gate on what the hook ACTUALLY
+  // runs, not the raw config. Keying those on the config alone would, in a
+  // browser without AudioWorklet, treat a batch-fallback session as streaming
+  // and disarm/drop its (only) transcript.
+  const streamEnabledRef = useRef(false)
   // Forward ref to send() (defined far below) so the streaming endpointer's
   // auto-submit callback — wired into the voice hook here, above send — can
   // fire it. Kept fresh by an effect after send is declared.
   const sendRef = useRef<((optionText?: string, targetSlot?: string) => void) | null>(null)
+  // Deliver a finished transcript to the slot that INITIATED the recording,
+  // using the session id useVoiceInput snapshotted at record-start (falling back
+  // to the active slot for the ordinary same-slot case). Same-slot splices into
+  // the live composer; a background slot gets it appended to its persisted draft
+  // (recoverable, shown on return) instead of leaking into the active session or
+  // being dropped. Mirrors handleOptimizeResult's cross-slot routing.
+  const applyVoiceText = useCallback((text: string, sessionId: string | null) => {
+    // Disarmed after a send (streaming) — the transcript was already sent, so
+    // drop it for EVERY route. Checked FIRST (before the cross-slot branch) so a
+    // late final can't slip the already-sent text back into the originating
+    // slot's draft.
+    if (sttDisarmedRef.current) return
+    const target = sessionId ?? activeSlotRef.current
+    const append = (base: string) => (base ? (base.endsWith(' ') ? base + text : base + ' ' + text) : text)
+    // Splice into the LIVE composer only when the target slot is both the active
+    // slot AND the slot the composer's `input` currently belongs to. On a slot
+    // switch, activeSlotRef updates synchronously in render, but the composer's
+    // draft-restore + composerSlotRef advance run in LATER effects — splicing in
+    // that unsettled window would let the pending draft restore overwrite the
+    // transcript. Otherwise route to the target slot's persisted draft.
+    const onScreen = target === activeSlotRef.current && composerSlotRef.current === target
+    if (!onScreen) {
+      // Off-screen (or not-yet-settled) delivery is BATCH ONLY. Streaming splices
+      // its live hypothesis into `input`, which is flushed into the draft on
+      // switch, so a cross-slot append would double it — a streaming final that
+      // lands off its slot is dropped (pre-existing behaviour). Batch has no
+      // partial, so appending to the slot's draft is unambiguous.
+      if (!target || streamEnabledRef.current) return
+      const next = append(drafts.current[target] ?? '')
+      setDraft(drafts.current, target, next)
+      // Mid-switch guard: if the composer still belongs to `target` (activeSlot
+      // has advanced in render but the outgoing-slot persist effect hasn't run
+      // yet), that effect will flush inputRef.current into drafts[target] and
+      // would overwrite this transcript with the pre-transcript input. Carry the
+      // appended value into inputRef too so the flush preserves the transcript.
+      if (composerSlotRef.current === target) inputRef.current = next
+      saveDrafts()
+      return
+    }
+    // Foreground: streaming seeds frozenInputRef in onPartial (the pre-dictation
+    // snapshot); the batch path never fires onPartial so it's null — fall back
+    // to the live composer text so the transcript APPENDS to what the user typed
+    // instead of overwriting it.
+    setInput(append(frozenInputRef.current ?? inputRef.current ?? ''))
+    frozenInputRef.current = null
+  }, [saveDrafts])
   const voice = useVoiceInput(
-    useCallback((text: string) => {
-      if (sttDisarmedRef.current) return
-      const base = frozenInputRef.current ?? ''
-      setInput(base ? (base.endsWith(' ') ? base + text : base + ' ' + text) : text)
-      frozenInputRef.current = null
-    }, []),
+    applyVoiceText,
     {
       streaming: sttStreaming,
-      onPartial: useCallback((text: string) => {
+      sessionId: activeSlot,
+      onPartial: useCallback((text: string, sessionId: string | null) => {
+        // Streaming partials only fire while the originating slot is on screen
+        // (switching slots stops the stream), so a partial attributed to any
+        // other slot is a late straggler — drop it rather than smear a
+        // half-word into the wrong session.
+        if (sessionId && sessionId !== activeSlotRef.current) return
         if (sttDisarmedRef.current) return
         // Snapshot BEFORE setInput so the updater stays pure (no ref
         // mutation inside a function React may invoke twice).
@@ -1371,8 +1427,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Same reason as voiceRef: send() deliberately keeps a minimal dep array (with
   // an exhaustive-deps suppression), so reading `sttStreaming` directly there
   // would close over the value from the render that created that send().
-  const sttStreamingRef = useRef(sttStreaming)
-  useEffect(() => { sttStreamingRef.current = sttStreaming }, [sttStreaming])
+  // Keep streamEnabledRef in sync with the hook's EFFECTIVE streaming mode (see
+  // its declaration above). send()/the slot-switch effect/toggleVoice read it to
+  // decide whether a draining final should be disarmed — which must reflect what
+  // the hook actually runs, not the raw config.
+  useEffect(() => { streamEnabledRef.current = voice.streamEnabled }, [voice.streamEnabled])
   // Re-arm when the user explicitly (re)starts recording — wrap toggle.
   // Depend on the individual stable members actually read so this callback
   // is only re-created when they change. `[voice]` would recreate every
@@ -1388,27 +1447,59 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       return
     }
     if (!voice.recording) {
+      // Exclusive sessions: the mic is a single shared device, so refuse to
+      // START a new recording while another session's transcription is still
+      // in flight (voice.transcribing). This is what keeps voice single-session
+      // — no two recordings/transcriptions ever overlap — so the busy state
+      // needs only a single owner and can never be misattributed. Stopping an
+      // in-progress recording (the else path) is always allowed.
+      if (voice.transcribing) return
       sttDisarmedRef.current = false
       // Reset stale snapshot from a prior session that ended without
       // finals — otherwise onPartial sees a non-null ref, skips
       // re-snapshotting, and text typed between sessions is dropped.
       frozenInputRef.current = null
+    } else if (streamEnabledRef.current) {
+      // Manual stop of a STREAMING recording: streamStop() drains the socket
+      // asynchronously and a final can still arrive. The dictated text is
+      // already in the composer (onPartial writes each hypothesis into `input`),
+      // so disarm to drop that draining final — otherwise it rebuilds from the
+      // stale pre-dictation frozenInputRef and clobbers any text typed while the
+      // socket drains. (Batch is untouched: its onstop transcript is the ONLY
+      // copy and must land, so it is never disarmed here.)
+      sttDisarmedRef.current = true
     }
     voice.toggle()
     // Depend on the individual stable members actually read, not the whole
     // `voice` object — `[voice]` would recreate this callback every render and
     // re-render every child that receives `toggleVoice` (see comment above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voice.recording, voice.toggle, sttEnabled, sttConfigLoaded, sttAvailable])
-  // Stop any in-flight recording and drop the frozen prefix when the user
-  // switches slots so a late-arriving transcript can't leak into the wrong
-  // session. Disarm first so any in-flight final from the previous slot is
-  // silently dropped when it eventually arrives.
+  }, [voice.recording, voice.transcribing, voice.toggle, sttEnabled, sttConfigLoaded, sttAvailable])
+  // Stop any in-flight recording and clear the streaming prefix when the user
+  // switches slots. The mic is a single shared device, so a recording can't
+  // follow the user to another session; a BATCH transcript is still delivered
+  // to the originating slot via applyVoiceText's session-scoped routing (which
+  // prevents cross-slot leakage precisely — no blanket disarm needed here).
+  // Clearing frozenInputRef here means a streaming final that lands after a
+  // switch-and-return rebases on the LIVE input, so edits made after returning
+  // are preserved rather than clobbered by a stale snapshot.
   useEffect(() => {
     frozenInputRef.current = null
-    sttDisarmedRef.current = true
+    // Streaming ONLY: disarm so a delayed streaming final arriving after this
+    // switch is dropped instead of appended. Its live partial was already
+    // flushed into the outgoing slot's draft, so appending the full final on
+    // return would duplicate the dictated text ("hello hello"). Batch is NOT
+    // disarmed — its single final is routed to the originating slot's draft by
+    // applyVoiceText. (Cross-slot streaming delivery is a follow-up; streaming
+    // is opt-in and off by default.)
+    if (streamEnabledRef.current) sttDisarmedRef.current = true
     if (voiceRef.current.recording) voiceRef.current.toggle()
   }, [activeSlot])
+  // True when the current voice session (owned by the slot where recording
+  // actually started — see useVoiceInput's sessionOwner) is the slot on screen.
+  // Gates the recording/transcribing UI so a session transcribing in the
+  // background never shows a busy/locked mic in the session the user switched to.
+  const voiceOwned = voice.sessionOwner === activeSlot
   // (Streaming-off teardown now lives in useVoiceInput — see its effect on
   // [streamEnabled, streamRecording, streamStop]. Routing through voice.toggle
   // here is racy because `useVoiceInput` flips its returned `recording` to the
@@ -2669,7 +2760,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // would throw away the entire recording, which is the opposite of the bug
     // being fixed. Batch therefore keeps its pre-existing behaviour untouched:
     // capture continues, and the transcript lands when the user stops.
-    if (voiceRef.current.recording && sttStreamingRef.current) {
+    if (voiceRef.current.recording && streamEnabledRef.current) {
       sttDisarmedRef.current = true
       frozenInputRef.current = null
       voiceRef.current.toggle()
@@ -4867,15 +4958,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               dragOver={dragOver}
               onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOver(true) }}
               onDragLeave={e => { if (e.currentTarget === e.target) setDragOver(false) }}
-              voiceRecording={voice.recording}
-              voiceTranscribing={voice.transcribing}
+              voiceRecording={voiceOwned && voice.recording}
+              voiceTranscribing={voiceOwned && voice.transcribing}
               voiceError={voice.error}
-              voiceLevel={voice.level}
-              voiceDeviceLabel={voice.deviceLabel}
+              voiceLevel={voiceOwned ? voice.level : 0}
+              voiceDeviceLabel={voiceOwned ? voice.deviceLabel : ''}
               onClearVoiceError={voice.clearError}
               voiceDictationPanel={sttDictationPanel}
               voiceSampleRef={voice.sampleRef}
-              voicePartial={voice.partial}
+              voicePartial={voiceOwned ? voice.partial : ''}
               onVoiceToggle={voiceInputSupported ? toggleVoice : undefined}
               onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
               agentName={currentSlot?.agent || 'default'}

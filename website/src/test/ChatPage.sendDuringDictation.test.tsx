@@ -46,12 +46,14 @@ const voice = vi.hoisted(() => {
 })
 voice.toggle = vi.fn(() => { voice.recording = !voice.recording })
 vi.mock('../hooks/useVoiceInput', () => ({
-  useVoiceInput: (onText: (t: string) => void, opts?: { onPartial?: (t: string) => void }) => {
+  useVoiceInput: (onText: (t: string) => void, opts?: { onPartial?: (t: string) => void; streaming?: boolean }) => {
     voice.onPartial = opts?.onPartial ?? null
     voice.onText = onText
     return ({
     recording: voice.recording,
     transcribing: false,
+    sessionOwner: null,
+    streamEnabled: !!opts?.streaming,
     toggle: voice.toggle,
     prewarm: vi.fn(),
     error: null,

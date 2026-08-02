@@ -24,14 +24,27 @@ const WARM_IDLE_MS = 15000
 
 interface Opts {
   streaming?: boolean
-  onPartial?: (text: string) => void
+  onPartial?: (text: string, sessionId: string | null) => void
   /** Fired when streaming semantic endpointing judges the utterance complete. */
   onEndpoint?: () => void
+  /** Id of the session/slot that currently owns the mic. Snapshotted the
+   *  instant a recording starts so the resulting transcript can be attributed
+   *  to the slot that initiated it — even if the user switches sessions before
+   *  the (async) transcription finishes. */
+  sessionId?: string | null
 }
 
-export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
+export function useVoiceInput(onText: (text: string, sessionId: string | null) => void, opts: Opts = {}) {
   const [recording, setRecording] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
+  // The slot that owns the current voice session — set when a recording
+  // actually starts (not optimistically on click) and held through its
+  // transcription, then cleared when the session ends. Recording/transcribing
+  // UI is scoped to this slot so a session's busy state never shows in another
+  // session. Sessions are exclusive (one shared mic, and the caller blocks a
+  // new start while one is in flight), so a single owner is sufficient — no
+  // per-session map or request token is needed. Null when idle.
+  const [sessionOwner, setSessionOwner] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [level, setLevel] = useState(0)
   const [deviceLabel, setDeviceLabel] = useState('')
@@ -56,14 +69,23 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
   const warmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clearError = useCallback(() => setError(null), [])
 
+  // Live active-session id, mirrored every render so start() can snapshot the
+  // slot that owns a recording at the exact moment capture begins.
+  const sessionIdRef = useRef<string | null>(opts.sessionId ?? null)
+  sessionIdRef.current = opts.sessionId ?? null
+  // The session captured when the CURRENT streaming run started, so its
+  // partials + final are attributed to the originating slot. (The batch path
+  // snapshots a plain local in start() instead — see below.)
+  const streamSessionRef = useRef<string | null>(null)
+
   const streamEnabled = !!opts.streaming && streamingSupported
   const optsPartial = opts.onPartial
   const streamOnPartial = useCallback(
-    (text: string) => { setPartial(text); optsPartial?.(text) },
+    (text: string) => { setPartial(text); optsPartial?.(text, streamSessionRef.current) },
     [optsPartial],
   )
   const streamOnFinal = useCallback(
-    (text: string) => { setPartial(''); if (text) onText(text) },
+    (text: string) => { setPartial(''); if (text) onText(text, streamSessionRef.current) },
     [onText],
   )
   const optsEndpoint = opts.onEndpoint
@@ -170,9 +192,35 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
 
   const start = useCallback(async () => {
     setError(null)
-    if (streamEnabled) { await streamStart(); return }
+    if (streamEnabled) {
+      // Re-entrancy guard for the async startup window (mirrors the batch path
+      // below): a second slot's click during streamStart() must not open a
+      // second stream or reassign ownership. Capture the session at click time
+      // for partial/final attribution, and assign sessionOwner only AFTER the
+      // stream actually starts — so a mid-startup slot switch can't misattribute
+      // this stream to the slot now on screen.
+      if (startingRef.current) return
+      startingRef.current = true
+      const streamSession = sessionIdRef.current
+      streamSessionRef.current = streamSession
+      try {
+        await streamStart()
+        // Aborted by a slot switch during startup — stop the stream rather than
+        // capture invisibly for a slot that is no longer on screen.
+        if (streamSession !== sessionIdRef.current) { streamStop(); return }
+        setSessionOwner(streamSession)
+      } finally {
+        startingRef.current = false
+      }
+      return
+    }
     if (!voiceInputSupported || startingRef.current) return
     startingRef.current = true
+    // Attribute this recording's transcript to the slot that owns the mic RIGHT
+    // NOW. Captured as a local (not the ref) so a second recording started in
+    // another slot before this one's async transcription returns can't reassign
+    // the attribution out from under it.
+    const sessionAtStart = sessionIdRef.current
     if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
     let stream: MediaStream | null = null
     try {
@@ -181,6 +229,20 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
       // meter + device label exactly once.
       stream = await acquireWarm()
       warmRef.current = null // ownership transfers to the recorder; releaseWarm now no-ops
+      // The user switched slots while the mic was being acquired. Abort instead
+      // of starting a recording the now-active slot can neither see nor stop —
+      // it would capture invisibly until the user returned to the originating
+      // slot. (sessionAtStart is this recording's slot; sessionIdRef.current is
+      // the live active slot.)
+      if (sessionAtStart !== sessionIdRef.current) {
+        stream.getTracks().forEach(t => t.stop())
+        levelStopRef.current?.()
+        levelStopRef.current = null
+        setLevel(0)
+        setDeviceLabel('')
+        startingRef.current = false
+        return
+      }
       const mimeType = pickMimeType()
       const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
       chunksRef.current = []
@@ -193,7 +255,7 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
         stream?.getTracks().forEach(t => t.stop())
         const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm'
         const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' })
-        if (blob.size < 100) return
+        if (blob.size < 100) { setSessionOwner(null); return }
         setTranscribing(true)
         try {
           const res = await api.sttTranscribe(blob, ext)
@@ -201,17 +263,28 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
             // eslint-disable-next-line no-console -- surface STT failures for debugging
             console.error('[voice] STT error:', res.error)
             setError(`Transcription failed: ${res.error}`)
-          } else if (res.text) onText(res.text)
+          } else if (res.text) onText(res.text, sessionAtStart)
         } catch (err) {
           // eslint-disable-next-line no-console -- surface transcription failures for debugging
           console.error('[voice] transcription failed:', err)
           setError(i18nT('hooks.useVoiceInput.transcription_request_failed'))
         }
+        // Session over (recording ended, transcription done) — release ownership
+        // so another slot can start. Exclusivity (one session at a time) is
+        // enforced by the caller, so there is never a second in-flight request
+        // whose state this could clobber.
         setTranscribing(false)
+        setSessionOwner(null)
       }
       mr.start()
       mediaRef.current = mr
       setRecording(true)
+      // Ownership is assigned HERE — when capture actually begins — not
+      // optimistically on click. If the user switched slots during the
+      // getUserMedia await, sessionAtStart still points at the slot that
+      // initiated this recording, so its audio/transcript can never be
+      // misattributed to the slot now on screen.
+      setSessionOwner(sessionAtStart)
     } catch (e) {
       if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
       levelStopRef.current?.()
@@ -221,13 +294,14 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
       stream?.getTracks().forEach(t => t.stop())
       warmRef.current = null
       warmPromiseRef.current = null
+      setSessionOwner(null)
       setError(humanizeMicError(e))
     }
     startingRef.current = false
   }, [onText, streamEnabled, streamStart, acquireWarm])
 
   const stop = useCallback(() => {
-    if (streamEnabled) { streamStop(); return }
+    if (streamEnabled) { streamStop(); setSessionOwner(null); return }
     setPartial('')
     levelStopRef.current?.()
     levelStopRef.current = null
@@ -241,5 +315,5 @@ export function useVoiceInput(onText: (text: string) => void, opts: Opts = {}) {
   const isRecording = streamEnabled ? streamRecording : recording
   const toggle = useCallback(() => { if (isRecording) stop(); else start() }, [isRecording, start, stop])
 
-  return { recording: isRecording, transcribing, toggle, prewarm, error, level, deviceLabel, clearError, partial, sampleRef }
+  return { recording: isRecording, transcribing, sessionOwner, streamEnabled, toggle, prewarm, error, level, deviceLabel, clearError, partial, sampleRef }
 }
