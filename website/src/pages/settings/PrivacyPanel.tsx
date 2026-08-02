@@ -7,17 +7,27 @@ const COMMANDS = [
   'kirocrew telemetry disable',
 ] as const
 
+// Keys held in an indexed `as const` map of full literals rather than inline on each
+// SHELL_COMMANDS entry: check-i18n-keys.mjs resolves a map access to the map's value
+// set, but cannot follow a key destructured out of an array of objects, which would
+// exempt the call site from key-existence verification.
+const SHELL_LABEL_KEY = {
+  macos: 'privacyDisclosure.shellMacOSLinuxLabel',
+  powershell: 'privacyDisclosure.shellPowerShellLabel',
+  cmd: 'privacyDisclosure.shellWindowsCmdLabel',
+} as const
+
 const SHELL_COMMANDS = [
   {
-    labelKey: 'privacyDisclosure.shellMacOSLinuxLabel',
+    shell: 'macos',
     command: 'export KIROCREW_TELEMETRY_DISABLED=1',
   },
   {
-    labelKey: 'privacyDisclosure.shellPowerShellLabel',
+    shell: 'powershell',
     command: "$env:KIROCREW_TELEMETRY_DISABLED = '1'",
   },
   {
-    labelKey: 'privacyDisclosure.shellWindowsCmdLabel',
+    shell: 'cmd',
     command: 'set KIROCREW_TELEMETRY_DISABLED=1',
   },
 ] as const
@@ -71,9 +81,11 @@ export function PrivacyPanel() {
               {command}
             </code>
           ))}
-          {SHELL_COMMANDS.map(({ labelKey, command }) => (
+          {SHELL_COMMANDS.map(({ shell, command }) => (
             <div key={command} className="flex max-w-full flex-col items-start gap-1">
-              <span className="text-[12px] font-medium text-muted">{i18nT(labelKey)}</span>
+              <span className="text-[12px] font-medium text-muted">
+                {i18nT(SHELL_LABEL_KEY[shell])}
+              </span>
               <code className="max-w-full overflow-x-auto text-[13px] text-text bg-bg border border-border rounded-md px-2.5 py-1.5 select-all">
                 {command}
               </code>
