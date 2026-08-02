@@ -742,6 +742,18 @@ export interface KiroPrerequisiteStatus {
   repair_required: boolean
   docs_url: string
   setup_allowed: boolean
+  /**
+   * True when the CLI binary is present and executable but could not be
+   * VERIFIED because this host cannot build a sandbox (verification runs the
+   * binary inside it). A categorically different condition from a missing
+   * binary — a failed sandbox build carries no information about whether the
+   * CLI is installed.
+   */
+  sandbox_unavailable: boolean
+  /** Machine-readable: 'transient' | 'foreign_sandbox' | 'no_backend' | ''. */
+  sandbox_failure_kind: string
+  /** Technical probe reason, e.g. 'unshare(CLONE_NEWNS) failed with errno 1 (EPERM)'. */
+  sandbox_detail: string
   operation: KiroPrerequisiteOperation
 }
 

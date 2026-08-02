@@ -82,9 +82,17 @@ export function asSentence(message: string): string {
 function SetupShell({
   children,
   cardLabel,
+  asideHeadline,
+  asideBody,
 }: {
   children: ReactNode
   cardLabel?: string
+  // The default aside says "Install Kiro CLI, sign in once…", which contradicts
+  // a state whose headline is "already installed" and which deliberately offers
+  // no install action. States like that pass their own copy so the two columns
+  // of the same screen do not disagree.
+  asideHeadline?: string
+  asideBody?: string
 }) {
   const label = cardLabel || i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready')
   return (
@@ -93,10 +101,11 @@ function SetupShell({
         <ShellAside
           copy={{
             ariaLabel: label,
-            panelHeadline: i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready'),
-            panelBody: i18nT(
-              'components.kiroPrerequisiteGate.install_kiro_cli_sign_in_once_and_kiro_crew_will',
-            ),
+            panelHeadline:
+              asideHeadline || i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready'),
+            panelBody:
+              asideBody
+              || i18nT('components.kiroPrerequisiteGate.install_kiro_cli_sign_in_once_and_kiro_crew_will'),
             panelFootnote: i18nT(
               'components.kiroPrerequisiteGate.secure_setup_on_your_gateway_host',
             ),
@@ -249,6 +258,70 @@ function SetupStatusError({
   )
 }
 
+function SandboxUnavailable({
+  failureKind,
+  detail,
+  retrying,
+  onRetry,
+}: {
+  failureKind: string
+  detail: string
+  retrying: boolean
+  onRetry: () => void
+}) {
+  // One honest title for every kind — the CLI is installed, verification is
+  // what failed — with the body carrying the mechanism, because the remedies
+  // diverge sharply. A transient failure clears on retry and must NOT push the
+  // user toward disabling their own isolation; a foreign outer sandbox means
+  // this host's sandbox is fine; only 'no_backend' is a host-level verdict.
+  const body =
+    failureKind === 'transient'
+      ? i18nT('components.kiroPrerequisiteGate.the_check_hit_a_temporary_limit_and_was_not_cach')
+      : failureKind === 'foreign_sandbox'
+        ? i18nT('components.kiroPrerequisiteGate.another_sandbox_already_confines_kiro_crew_so_it')
+        : i18nT('components.kiroPrerequisiteGate.this_host_provides_no_os_level_sandbox_so_kiro_c')
+  // A momentary failure that clears on retry should not be dressed in the same
+  // alarm red as a host-level verdict — the body immediately walks that back.
+  const transient = failureKind === 'transient'
+  const tone = transient ? 'bg-accent-subtle text-accent' : 'bg-danger/10 text-danger'
+  const eyebrowTone = transient ? 'text-accent' : 'text-danger'
+  return (
+    <SetupShell
+      asideHeadline={i18nT('components.kiroPrerequisiteGate.sandbox_unavailable')}
+      asideBody={i18nT('components.kiroPrerequisiteGate.kiro_crew_isolates_the_agent_in_an_os_level_sand')}
+    >
+      <>
+        <div className={`flex h-11 w-11 items-center justify-center rounded-xl ${tone}`}>
+          <AlertTriangle className="lucide-inline" />
+        </div>
+        <p className={`mt-6 text-[12px] font-bold uppercase tracking-[0.16em] ${eyebrowTone}`}>
+          {i18nT('components.kiroPrerequisiteGate.sandbox_unavailable')}
+        </p>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+          {i18nT('components.kiroPrerequisiteGate.kiro_cli_is_installed_but_could_not_be_verified')}
+        </h1>
+        <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">{body}</p>
+        {detail ? (
+          <div className="mt-5 w-full max-w-lg text-left">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
+              {i18nT('components.kiroPrerequisiteGate.technical_detail')}
+            </p>
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-surface-2 p-3 text-xs text-muted">
+              {detail}
+            </pre>
+          </div>
+        ) : null}
+        <div className="mt-6">
+          <Btn type="button" disabled={retrying} onClick={onRetry}>
+            <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
+            {i18nT('components.kiroPrerequisiteGate.check_again')}
+          </Btn>
+        </div>
+      </>
+    </SetupShell>
+  )
+}
+
 export default function KiroPrerequisiteGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   // The gateway probes kiro-cli at boot and on explicit request only, so the
@@ -352,6 +425,24 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   }
   if (prerequisite.setup_allowed === false) {
     return <OwnerSetupRequired retrying={retrying} onRetry={retryStatus} />
+  }
+  // The CLI is present and executable, but verification runs it INSIDE the
+  // sandbox, so a host that cannot build one fails verification. Reporting that
+  // as "Install Kiro CLI" is false on a host whose CLI is installed and signed
+  // in, and it offers a button that cannot possibly help. Placed after
+  // `initial_setup_complete` deliberately: an established install is not
+  // hijacked by a full-screen gate (the chat error card carries it in context,
+  // and since the probe now names the failing step that message is specific) —
+  // this branch only replaces the first-run screen that would otherwise lie.
+  if (status.sandbox_unavailable) {
+    return (
+      <SandboxUnavailable
+        failureKind={status.sandbox_failure_kind}
+        detail={status.sandbox_detail}
+        retrying={retrying}
+        onRetry={retryStatus}
+      />
+    )
   }
 
   return (

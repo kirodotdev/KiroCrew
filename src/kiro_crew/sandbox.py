@@ -1953,6 +1953,38 @@ def detect_backend(config_mode: str = "auto") -> str:
     return _backend
 
 
+class SandboxUnavailableError(RuntimeError):
+    """``wrap_argv`` fail-closed because this host could not build a sandbox.
+
+    A typed error so a caller can tell "the sandbox refused this spawn" apart
+    from any other spawn failure **structurally**, instead of inferring it from
+    host capability or pattern-matching English prose. That distinction matters:
+    verification is not sandboxed on every platform (``_run_process`` skips the
+    wrap on Windows) and the ``sandbox_allow_unsandboxed_exec`` opt-in bypasses
+    it entirely, so "this host has no backend" does NOT imply "the sandbox is
+    why this particular spawn failed". Reporting it that way would recreate the
+    misdiagnosis class of #613 on a different platform.
+
+    Subclasses ``RuntimeError`` so existing ``except RuntimeError`` handlers keep
+    working unchanged.
+
+    ``kind`` is machine-readable so a presentation layer can select its own
+    translated remedy copy: ``"transient"`` (momentary resource pressure — not
+    cached, retrying works, and callers must NOT advise disabling the sandbox),
+    ``"foreign_sandbox"`` (an outer Seatbelt sandbox KiroCrew did not create
+    already confines this process and Seatbelt cannot nest — this host's sandbox
+    is fine), or ``"no_backend"`` (the host genuinely offers no mechanism).
+
+    ``detail`` is the technical probe reason, which names the failing step (e.g.
+    ``"unshare(CLONE_NEWNS) failed with errno 1 (EPERM)"``).
+    """
+
+    def __init__(self, message: str, kind: str, detail: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.detail = detail
+
+
 def reset_backend() -> None:
     """Reset cached backend (for testing or config change)."""
     global _backend, _last_unshare_failure
@@ -2278,11 +2310,17 @@ def wrap_argv(
                 )
             except Exception:
                 logger.warning("Failed to emit SEL audit event for sandbox denial", exc_info=True)
-            raise RuntimeError(
+            raise SandboxUnavailableError(
                 "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
                 "No OS-level sandbox backend is available on this host, and the "
                 "agent subprocess cannot be safely isolated. "
-                f"Probe detail: {probe_reason}. " + guidance
+                f"Probe detail: {probe_reason}. " + guidance,
+                kind=(
+                    "transient"
+                    if transient
+                    else ("foreign_sandbox" if _inside_macos_sandbox() else "no_backend")
+                ),
+                detail=probe_reason,
             )
         # Opted in: warn (or info) and return unmodified argv
         _warn_no_isolation(mode)

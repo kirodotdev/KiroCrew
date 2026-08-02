@@ -161,6 +161,14 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "repair_required": False,
             "docs_url": OFFICIAL_INSTALL_DOCS_URL,
             "setup_allowed": False,
+            # Redacted like the rest of this block: the failure kind and probe
+            # detail describe the HOST's sandbox posture (kernel knobs, errnos),
+            # which is exactly the candidate/host state a non-owner must not see.
+            # Kept present so the payload shape never varies by caller — a
+            # non-owner already routes to the "owner must finish setup" screen.
+            "sandbox_unavailable": False,
+            "sandbox_failure_kind": "",
+            "sandbox_detail": "",
             "operation": {
                 "kind": "",
                 "status": "idle",

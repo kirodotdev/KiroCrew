@@ -627,11 +627,18 @@
       "failed_to_load_history": "Failed to load history"
     },
     "kiroPrerequisiteGate": {
+      "another_sandbox_already_confines_kiro_crew_so_it": "Another sandbox already confines Kiro Crew, so its own sandbox cannot nest inside it. This host's sandbox is not broken.",
+      "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI is installed but could not be verified",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI is installed. Finish signing in to continue.",
+      "kiro_crew_isolates_the_agent_in_an_os_level_sand": "Kiro Crew isolates the agent in an OS-level sandbox before it runs anything.",
       "kiro_setup_could_not_start": "Kiro setup could not start.",
       "required": "Required",
+      "sandbox_unavailable": "Sandbox unavailable",
+      "technical_detail": "Technical detail",
+      "the_check_hit_a_temporary_limit_and_was_not_cach": "The check hit a temporary resource limit. Try again — do not disable the sandbox.",
       "the_gateway_returned_an_unexpected_error": "The gateway returned an unexpected error.",
       "the_gateway_returned_no_prerequisite_status": "The gateway returned no prerequisite status.",
+      "this_host_provides_no_os_level_sandbox_so_kiro_c": "This host provides no OS-level sandbox, so Kiro Crew cannot isolate the agent. It refuses to run the agent unsandboxed rather than expose your credentials.",
       "waiting": "Waiting"
     },
     "linkedSurfacesSection": {

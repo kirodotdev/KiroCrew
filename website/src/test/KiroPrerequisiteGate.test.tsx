@@ -39,6 +39,9 @@ function status(overrides: Partial<KiroPrerequisiteStatus> = {}): KiroPrerequisi
     repair_required: false,
     docs_url: 'https://kiro.dev/docs/cli/installation/',
     setup_allowed: true,
+    sandbox_unavailable: false,
+    sandbox_failure_kind: '',
+    sandbox_detail: '',
     operation: {
       kind: '',
       status: 'idle',
@@ -511,5 +514,98 @@ describe('KiroPrerequisiteGate', () => {
 
     expect(await screen.findByText('Set up Kiro')).toBeInTheDocument()
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
+  it('reports an unbuildable sandbox as its own state, not a missing CLI', async () => {
+    // Verification runs the CLI INSIDE the sandbox, so a host that cannot build
+    // one fails verification with the binary present and signed in. The old
+    // behavior rendered "Install Kiro CLI" — false, and its button could not
+    // help. This must name the real cause and offer only a retry.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+      sandbox_detail: 'unshare(CLONE_NEWNS) failed with errno 1 (EPERM)',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(
+      await screen.findByText('Kiro CLI is installed but could not be verified'),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/provides no OS-level sandbox/)).toBeInTheDocument()
+    // The technical reason names the failing step, so it is shown verbatim.
+    expect(
+      screen.getByText('unshare(CLONE_NEWNS) failed with errno 1 (EPERM)'),
+    ).toBeInTheDocument()
+    // No install/sign-in dead ends, and the dashboard stays withheld.
+    expect(screen.queryByRole('button', { name: 'Install Kiro CLI' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Sign in to Kiro' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
+  it('tells a transient sandbox failure apart from a host verdict', async () => {
+    // The remedies diverge: retry versus change the host. Advising someone to
+    // disable their own isolation over a momentary EAGAIN is the outcome this
+    // wording exists to prevent.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'transient',
+      sandbox_detail: 'fork failed with errno 11 (EAGAIN)',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText(/temporary resource limit/)).toBeInTheDocument()
+    expect(screen.getByText(/do not disable the sandbox/)).toBeInTheDocument()
+    // The aside must not contradict the headline by still saying "Install Kiro CLI".
+    expect(screen.queryByText(/Install Kiro CLI, sign in once/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/provides no OS-level sandbox/)).not.toBeInTheDocument()
+  })
+
+  it('never withholds the dashboard from a ready install over a sandbox flag', async () => {
+    // Precedence guard: `ready` wins. A working install must never be hijacked
+    // by this screen, which is the failure mode #638 objected to.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: true,
+      ready: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Kiro CLI is installed but could not be verified'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('leaves an established install alone rather than hijacking it', async () => {
+    // Deliberate scope: this screen replaces the first-run screen that would
+    // otherwise lie. A returning user keeps their dashboard, and the per-turn
+    // error card carries the sandbox failure in context — which is specific now
+    // that the probe names the failing step.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      initial_setup_complete: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
   })
 })
