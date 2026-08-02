@@ -20,18 +20,25 @@ Platform     Peer principal                        Peer PID
 ===========  ====================================  =========================
 Linux        ``SO_PEERCRED`` uid                   ``SO_PEERCRED`` pid
 Windows      owning-process token SID              ``GetNamedPipeClientProcessId``
-macOS        not implemented -> UNVERIFIABLE       ``LOCAL_PEERPID``
+macOS        ``LOCAL_PEERCRED`` xucred uid          ``LOCAL_PEERPID``
 ===========  ====================================  =========================
 
-macOS is deliberately asymmetric. ``LOCAL_PEERPID`` is additive -- a failure
-returns ``None``, exactly today's behaviour -- so wiring it can only add the
-identity-resolution channel, never take one away. A macOS *principal* check
-would gate connection admission, and there is no macOS CI job here to verify it
-against; a wrong implementation would return ``MISMATCH`` and lock every macOS
-user out of their own gateway. So macOS keeps reporting ``UNVERIFIABLE`` and
-falls through to :func:`socket_owner_only`, the filesystem gate that already
-works there. Implementing ``LOCAL_PEERCRED`` is follow-on work that needs a
-real Mac to sign off.
+macOS remains deliberately asymmetric, but for a narrower reason than before.
+The principal check now exists (``LOCAL_PEERCRED``, Darwin's analogue of
+``SO_PEERCRED``), so a peer that is positively confirmed to be a DIFFERENT uid is
+refused. What macOS still does not do is treat a *failed* check as grounds for
+refusal: it is absent from :data:`PEER_IDENTITY_SUPPORTED`, so ``UNVERIFIABLE``
+falls through to :func:`socket_owner_only` instead of rejecting.
+
+That asymmetry is the lesson from the Windows port, where an admission gate that
+turned every unverifiable lookup into a refusal denied 100% of connections while
+presenting as merely strict. Until the macOS CI job has shown ``MATCH`` on real
+hardware over time, a getsockopt failure or an unrecognised ``cr_version`` must
+degrade to the filesystem gate that already
+works there. Promoting macOS into :data:`PEER_IDENTITY_SUPPORTED` -- so that
+``UNVERIFIABLE`` refuses too -- is a one-line follow-up whose evidence is
+``test_macos_check_matches_a_socket_we_connected_to_ourselves`` passing on the
+macOS CI job.
 
 Stdlib-only (``socket``, ``struct``, ``ctypes``, ``os``, ``logging``) plus the
 ``platform_compat`` leaf; no asyncio imports, so this module is safe to call
@@ -75,6 +82,27 @@ _SO_PEERCRED: int | None = getattr(_socket, "SO_PEERCRED", None)
 # by a darwin check at every use, and any failure degrades to ``None``.
 _SOL_LOCAL = 0
 _LOCAL_PEERPID = 2
+
+#: ``LOCAL_PEERCRED`` from Darwin's ``bsd/sys/un.h`` (``0x001``). Python's
+#: ``socket`` module exposes none of the ``SOL_LOCAL`` options, hence the
+#: literal -- same reason ``_LOCAL_PEERPID`` above is a literal.
+_LOCAL_PEERCRED = 1
+
+#: ``struct xucred`` from Darwin's ``bsd/sys/ucred.h``::
+#:
+#:     u_int cr_version; uid_t cr_uid; short cr_ngroups; gid_t cr_groups[16]
+#:
+#: ``uid_t``/``gid_t`` are ``__uint32_t`` on Darwin irrespective of pointer
+#: width, so the layout is identical on arm64 and x86_64. The ``@`` prefix keeps
+#: native alignment, which supplies the two padding bytes between the ``short``
+#: and the ``gid_t`` array -- do not "simplify" it to ``=``, which would drop the
+#: padding and mis-size the struct.
+_XUCRED_FMT = "@IIh16I"
+_XUCRED_SIZE = struct.calcsize(_XUCRED_FMT)  # 76
+
+#: ``XUCRED_VERSION``. A different value means the kernel handed back a layout
+#: this parser does not understand, which must degrade rather than be guessed at.
+_XUCRED_VERSION = 0
 
 # Windows token constants.
 _TOKEN_QUERY = 0x0008  # noqa: N806 - Windows API constant
@@ -230,6 +258,64 @@ def _windows_peer_pid(pipe_handle: int) -> int | None:
 # --- Peer principal ----------------------------------------------------------
 
 
+def _macos_check_peer_is_self(sock: _socket.socket) -> PeerCredResult:
+    """macOS peer-principal check via ``getsockopt(SOL_LOCAL, LOCAL_PEERCRED)``.
+
+    Darwin's analogue of Linux ``SO_PEERCRED``: the kernel captures the peer's
+    credentials at ``connect()`` time and hands back a ``struct xucred`` whose
+    ``cr_uid`` is the peer's effective uid. Comparing that against our own uid
+    answers the only question the admission gate asks -- is the peer the same
+    principal as this process?
+
+    Stream sockets only: the kernel returns ``EINVAL`` for ``SOCK_DGRAM``. The
+    gateway endpoint is ``SOCK_STREAM``, and a non-``AF_UNIX`` socket is rejected
+    by the caller before reaching here.
+
+    IMPORTANT -- every failure path returns ``UNVERIFIABLE``, never ``MISMATCH``.
+    ``MISMATCH`` is reserved for a *positively parsed* xucred naming a different
+    uid, because the caller treats ``MISMATCH`` as a hard refusal and a
+    misparsed struct must not be able to lock a user out of their own gateway.
+    An unexpected ``cr_version`` or a short buffer therefore degrades rather
+    than being guessed at.
+    """
+    try:
+        raw = sock.getsockopt(_SOL_LOCAL, _LOCAL_PEERCRED, _XUCRED_SIZE)
+    except OSError as exc:
+        logger.debug(
+            "check_peer_is_self: getsockopt(LOCAL_PEERCRED) failed: %s", exc
+        )
+        return PeerCredResult.UNVERIFIABLE
+    if len(raw) < _XUCRED_SIZE:
+        logger.debug(
+            "check_peer_is_self: LOCAL_PEERCRED returned %d bytes, want %d",
+            len(raw),
+            _XUCRED_SIZE,
+        )
+        return PeerCredResult.UNVERIFIABLE
+    try:
+        version, peer_uid = struct.unpack(_XUCRED_FMT, raw[:_XUCRED_SIZE])[:2]
+    except struct.error as exc:  # pragma: no cover - guarded by the length check
+        logger.debug("check_peer_is_self: xucred unpack failed: %s", exc)
+        return PeerCredResult.UNVERIFIABLE
+    if version != _XUCRED_VERSION:
+        logger.debug(
+            "check_peer_is_self: xucred cr_version=%d, expected %d -- refusing to "
+            "interpret an unknown layout",
+            version,
+            _XUCRED_VERSION,
+        )
+        return PeerCredResult.UNVERIFIABLE
+    own_uid = os.getuid()
+    if peer_uid == own_uid:
+        return PeerCredResult.MATCH
+    logger.warning(
+        "check_peer_is_self: peer uid %d is not this process's uid %d",
+        peer_uid,
+        own_uid,
+    )
+    return PeerCredResult.MISMATCH
+
+
 def check_peer_is_self(transport_or_sock: Any) -> PeerCredResult:
     """Positively verify the peer runs as the same principal as this process.
 
@@ -262,8 +348,8 @@ def check_peer_is_self(transport_or_sock: Any) -> PeerCredResult:
         )
         return PeerCredResult.UNVERIFIABLE
     if _SO_PEERCRED is None:
-        # macOS: no principal mechanism wired. The caller falls back to
-        # socket_owner_only; see the module docstring.
+        if platform_compat.IS_MACOS:
+            return _macos_check_peer_is_self(sock)
         logger.debug("check_peer_is_self: no peer-principal mechanism on this platform")
         return PeerCredResult.UNVERIFIABLE
     if sock.family != _socket.AF_UNIX:

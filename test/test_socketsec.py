@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import socket
 import struct
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -182,19 +183,33 @@ def test_check_peer_is_self_is_unverifiable_for_a_non_unix_socket() -> None:
 
 
 @pytest.mark.skipif(pc.IS_WINDOWS, reason="patches the POSIX dispatch")
-def test_check_peer_is_self_is_unverifiable_on_macos(
+def test_check_peer_is_self_dispatches_to_the_macos_mechanism(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """macOS deliberately has no principal check.
+    """With SO_PEERCRED absent, macOS now has a mechanism and other POSIX does not.
 
-    A wrong one would return MISMATCH and lock every macOS user out of their own
-    gateway, and there is no macOS CI job to catch that. UNVERIFIABLE routes
-    admission to the filesystem gate, which does work there.
+    This test previously asserted UNVERIFIABLE unconditionally, with the
+    rationale "there is no macOS CI job to catch a wrong implementation". The
+    macOS job added in this change removes that premise, and LOCAL_PEERCRED is
+    now wired -- so on a Mac this socketpair peer IS us and the answer is MATCH.
+    That is not a relaxation: MISMATCH still refuses, and UNVERIFIABLE still
+    routes to the filesystem gate because macOS stays out of
+    PEER_IDENTITY_SUPPORTED.
+
+    On any other POSIX platform without SO_PEERCRED there genuinely is no
+    mechanism, so UNVERIFIABLE remains correct there.
     """
     monkeypatch.setattr(socketsec, "_SO_PEERCRED", None)
     a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        assert socketsec.check_peer_is_self(a) is PeerCredResult.UNVERIFIABLE
+        result = socketsec.check_peer_is_self(a)
+        if pc.IS_MACOS:
+            assert result is PeerCredResult.MATCH, (
+                "LOCAL_PEERCRED should positively confirm a socketpair peer that "
+                "is this very process"
+            )
+        else:
+            assert result is PeerCredResult.UNVERIFIABLE
     finally:
         a.close()
         b.close()
@@ -506,3 +521,141 @@ def test_server_check_never_matches_on_an_incomplete_lookup(
         )
         is PeerCredResult.UNVERIFIABLE
     )
+
+
+# --- macOS LOCAL_PEERCRED principal check -------------------------------------
+#
+# The parse tests below run on ANY platform by handing _macos_check_peer_is_self a
+# fake socket. That matters: the real call only works on Darwin, and this repo has
+# been bitten three times by tests that guarded platform behaviour while never
+# executing on that platform. The degradation paths are the security-relevant part
+# and they are verified on the Linux matrix that runs every PR.
+
+
+class _FakeCredSock:
+    """Minimal stand-in returning a caller-supplied getsockopt payload.
+
+    Implements only ``getsockopt`` -- the sole method the checker calls -- so
+    ``_fake_sock`` hands it back as ``Any`` rather than pretending to be a full
+    ``socket.socket``.
+    """
+
+    def __init__(self, payload: object) -> None:
+        self._payload = payload
+
+    def getsockopt(self, level: int, opt: int, size: int) -> bytes:
+        if isinstance(self._payload, OSError):
+            raise self._payload
+        assert isinstance(self._payload, bytes)
+        return self._payload[:size]
+
+
+def _fake_sock(payload: object) -> Any:
+    """Type-erase the fake at the socket-typed call boundary."""
+    return _FakeCredSock(payload)
+
+
+def _xucred(uid: int, *, version: int = 0, ngroups: int = 1) -> bytes:
+    return struct.pack(socketsec._XUCRED_FMT, version, uid, ngroups, *([0] * 16))
+
+
+@pytest.mark.skipif(
+    pc.IS_WINDOWS, reason="os.getuid() is POSIX-only; the checker under test is macOS-only"
+)
+def test_macos_peercred_matches_our_own_uid() -> None:
+    sock = _fake_sock(_xucred(os.getuid()))
+    assert socketsec._macos_check_peer_is_self(sock) is PeerCredResult.MATCH
+
+
+@pytest.mark.skipif(
+    pc.IS_WINDOWS, reason="os.getuid() is POSIX-only; the checker under test is macOS-only"
+)
+def test_macos_peercred_reports_mismatch_for_another_uid() -> None:
+    """A positively parsed xucred naming a different uid is a real intruder."""
+    sock = _fake_sock(_xucred(os.getuid() + 1))
+    assert socketsec._macos_check_peer_is_self(sock) is PeerCredResult.MISMATCH
+
+
+@pytest.mark.skipif(
+    pc.IS_WINDOWS, reason="os.getuid() is POSIX-only; the checker under test is macOS-only"
+)
+def test_macos_peercred_unknown_version_degrades_rather_than_mismatching() -> None:
+    """An unrecognised cr_version must NOT be guessed at, and must NOT refuse.
+
+    MISMATCH is a hard refusal at the caller. A layout this parser does not
+    understand is not evidence of an intruder, so it degrades to UNVERIFIABLE and
+    the filesystem gate decides -- otherwise a future macOS bumping the struct
+    version would lock every Mac user out of their own gateway.
+    """
+    sock = _fake_sock(_xucred(os.getuid(), version=1))
+    assert socketsec._macos_check_peer_is_self(sock) is PeerCredResult.UNVERIFIABLE
+
+
+@pytest.mark.skipif(
+    pc.IS_WINDOWS, reason="os.getuid() is POSIX-only; the checker under test is macOS-only"
+)
+def test_macos_peercred_short_buffer_degrades() -> None:
+    sock = _fake_sock(_xucred(os.getuid())[: socketsec._XUCRED_SIZE - 4])
+    assert socketsec._macos_check_peer_is_self(sock) is PeerCredResult.UNVERIFIABLE
+
+
+def test_macos_peercred_getsockopt_failure_degrades() -> None:
+    """ENOTCONN / EINVAL from the kernel is a failure to verify, not a refusal."""
+    sock = _fake_sock(OSError(57, "Socket is not connected"))
+    assert socketsec._macos_check_peer_is_self(sock) is PeerCredResult.UNVERIFIABLE
+
+
+def test_macos_stays_out_of_peer_identity_supported() -> None:
+    """The caller must NOT fail closed on UNVERIFIABLE for macOS.
+
+    Pins the deliberate asymmetry: gatewayd refuses anything that is not MATCH
+    when PEER_IDENTITY_SUPPORTED is true, so admitting macOS to that set would
+    turn every failed lookup into a rejection -- the exact shape of the Windows
+    impersonation defect that denied 100% of connections. Promotion is a
+    follow-up gated on real-hardware evidence, so this test should be UPDATED
+    deliberately, never deleted casually.
+    """
+    if not pc.IS_MACOS:
+        pytest.skip("asserts the macOS value of a platform-resolved constant")
+    assert socketsec.PEER_IDENTITY_SUPPORTED is False
+
+
+@pytest.mark.skipif(not pc.IS_MACOS, reason="exercises the real Darwin getsockopt")
+def test_macos_check_matches_a_socket_we_connected_to_ourselves(
+    tmp_path: Path,
+) -> None:
+    """CANARY: the real LOCAL_PEERCRED call must land on MATCH for our own peer.
+
+    Asserts MATCH rather than 'not MISMATCH' on purpose -- the Windows equivalent
+    of this test is the only thing that caught an admission gate which returned
+    UNVERIFIABLE for every connection while every unit test passed. This is also
+    the evidence required before macOS is promoted into PEER_IDENTITY_SUPPORTED.
+    """
+    import asyncio
+
+    from kiro_crew.mcp_gateway import transport
+
+    sock = Path(tempfile.mkdtemp(dir="/tmp")) / "gw.sock"
+    transport.prepare_dir(sock)
+    outcome: list[PeerCredResult] = []
+    done = asyncio.Event()
+
+    async def run() -> None:
+        def on_connect(_r: Any, w: Any) -> None:
+            outcome.append(socketsec.check_peer_is_self(w))
+            w.close()
+            done.set()
+
+        server = await transport.serve(sock, on_connect, limit=1 << 16)
+        try:
+            _reader, writer = await transport.connect(sock)
+            try:
+                await asyncio.wait_for(done.wait(), timeout=30)
+            finally:
+                writer.close()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(run())
+    assert outcome == [PeerCredResult.MATCH]

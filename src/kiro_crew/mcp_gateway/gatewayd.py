@@ -1597,6 +1597,30 @@ async def _handle_connection(
             _audit_peer_denied(f"peer principal not confirmed ({peer_result.value})")
             return
     else:
+        # macOS: the principal check is advisory-plus-MISMATCH-enforcing, NOT
+        # UNVERIFIABLE-enforcing, and the asymmetry is deliberate. A positively
+        # parsed xucred naming a different uid is a real intruder and is refused.
+        # A check that merely FAILED (getsockopt error, unexpected cr_version,
+        # short buffer) must not refuse: folding macOS into
+        # PEER_IDENTITY_SUPPORTED would make every such failure a rejection, and
+        # that is exactly how the Windows port shipped a gate that denied 100% of
+        # connections while looking merely strict. So UNVERIFIABLE keeps falling
+        # through to the filesystem gate below -- byte-identical to the behaviour
+        # before this check existed. Strictly more protection, no new lockout.
+        #
+        # Promote macOS into PEER_IDENTITY_SUPPORTED only once the macOS CI job
+        # has demonstrated MATCH on real hardware over time; that flip is one
+        # line and test_macos_check_matches_a_socket_we_connected_to_ourselves is
+        # the evidence it depends on.
+        peer_result = socketsec.check_peer_is_self(writer)
+        if peer_result is socketsec.PeerCredResult.MISMATCH:
+            logger.warning(
+                "rejecting gateway connection: peer principal is a different "
+                "user (%s)",
+                peer_result.value,
+            )
+            _audit_peer_denied(f"peer principal mismatch ({peer_result.value})")
+            return
         if not socketsec.socket_owner_only(socket_path):
             logger.warning(
                 "rejecting gateway connection: peer principal unverifiable on "
@@ -1778,6 +1802,7 @@ async def _handle_connection(
     # verified — deny-by-default preserved).
     stub_pids = _register_pids(register)
     indexed_pids = stub_pids + [p for p in peer_host_pids if p not in stub_pids]
+
     conn = _StubConn(stub_uuid, indexed_pids, pool_key.human_readable(), caller)
     _conn_index_add(conn)
 

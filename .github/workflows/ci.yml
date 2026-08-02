@@ -208,6 +208,52 @@ jobs:
         # Same deselects as backend-test (the Linux-namespace sandbox tests are
         # unavailable here too).
 
+  # macOS gateway line. Until this job existed macOS had ZERO pytest coverage in
+  # CI -- the macos-14 runners appear only in build.yml, build-desktop.yml and
+  # sign-and-notarize.yml, all of which merely build and notarize the desktop
+  # app. That left the macOS-only identity primitives (LOCAL_PEERPID for the
+  # peer pid, libproc for the process start id) verified by nothing, on the
+  # platform several maintainers develop on.
+  #
+  # Deliberately SCOPED, not the full suite: a full macOS run would need its own
+  # exclusion burn-down first (the Windows line needed 23 file exclusions plus
+  # ~237 node skips before it held), and shipping a job that is red on arrival
+  # trains people to ignore it. The glob keeps the scope from going stale -- a
+  # new test_mcp_gateway_* suite is picked up without editing this file, which a
+  # hand-maintained list would not do.
+  #
+  # Cheap enough to need no sharding: these suites are ~230 tests and run in
+  # about 4 seconds, so the job's wall time is essentially dependency install.
+  backend-test-macos:
+    name: Gateway Tests (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          # Same no-uv.lock caveat as backend-test: key the cache on the files
+          # that define the dependency set.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Run gateway + platform suites
+        run: |
+          pytest -q --timeout=180 --no-cov \
+            test/test_mcp_gateway_*.py \
+            test/test_socketsec.py \
+            test/test_platform_compat.py \
+            test/test_mcp_apps_e2e.py
+
   # Runs the tests the sharded matrix deselects. They need unprivileged user
   # namespaces (unshare NEWNS), which ubuntu-24.04 restricts via AppArmor --
   # the same restriction codex-review.yml clears for its bwrap sandbox. Without

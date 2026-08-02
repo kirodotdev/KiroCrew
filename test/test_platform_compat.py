@@ -471,12 +471,34 @@ class TestProcessIdentityPosix:
             except subprocess.TimeoutExpired:
                 pass
 
-    def test_process_matches_true_for_self_python(self):
-        # The test interpreter's /proc/<pid>/cmdline contains "python", so the
-        # needle matches -> True. Exercises the Linux read_bytes() + any() path.
-        result = pc.process_matches(os.getpid(), ("python",))
-        if pc.IS_POSIX:
-            assert result is True
+    def test_process_matches_true_for_a_child_with_a_known_token(self):
+        # Asserts against a token we KNOW is in the child's command line,
+        # instead of assuming the running interpreter's own command line
+        # contains "python". That assumption held on Linux (/proc/<pid>/cmdline
+        # names the interpreter) and failed on the first macOS run: there
+        # process_matches shells out to `ps -o command=`, the hosted runner
+        # launches the suite as `.../hostedtoolcache/Python/3.12/x64/bin/pytest`,
+        # and the needle comparison is case-sensitive -- "python" is not in
+        # "Python". Production needles ("kiro-cli", "claude") appear verbatim in
+        # the argv they guard, so only the test's choice of needle was fragile.
+        token = "kirocrew-procmatch-probe"
+        child = subprocess.Popen(
+            [sys.executable, "-c", f"import time; time.sleep(30)  # {token}"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            assert child.poll() is None  # alive
+            result = pc.process_matches(child.pid, (token,))
+            if pc.IS_POSIX:
+                assert result is True
+        finally:
+            child.kill()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
 
     def test_process_matches_false_for_self_with_absent_needle(self):
         # Same /proc read as the True case, but a needle that cannot occur in a

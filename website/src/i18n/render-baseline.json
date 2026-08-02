@@ -3,7 +3,7 @@
   "_total": {
     "text": 2108,
     "layout": 3,
-    "latent": 544
+    "latent": 552
   },
   "surfaces": {
     "chat": {
@@ -74,7 +74,7 @@
     "projects": {
       "text": 14,
       "layout": 0,
-      "latent": 16
+      "latent": 24
     },
     "knowledge": {
       "text": 62,

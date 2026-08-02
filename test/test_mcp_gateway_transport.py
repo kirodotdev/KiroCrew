@@ -33,6 +33,34 @@ from kiro_crew.mcp_gateway import transport
 # --- Address resolution ------------------------------------------------------
 
 
+#: Conservative ``sun_path`` capacity. The real limit is 108 bytes on Linux and
+#: 104 on macOS/BSD, both including the NUL terminator; 100 leaves headroom for
+#: the longest filename these tests append.
+_SUN_PATH_BUDGET = 100
+
+
+@pytest.mark.skipif(pc.IS_WINDOWS, reason="sun_path limit is a POSIX constraint")
+def test_sock_dir_stays_within_the_af_unix_limit(sock_dir: Path) -> None:
+    """Guard the ``sock_dir`` fixture, on a platform where it can be checked.
+
+    ``sock_dir`` exists because a long endpoint path fails ``bind`` with
+    ``OSError: AF_UNIX path too long`` -- six binds in this module failed that way
+    the first time the suite ran on macOS. But nothing asserts the property the
+    fixture is supposed to deliver, and a regression would NOT fail on Linux:
+    pytest's temp root there already fits inside ``sun_path``, which is exactly why
+    the original defect stayed invisible until a macOS runner existed.
+
+    Asserting the length rather than the platform means a regression is caught on
+    the matrix that runs every PR, instead of waiting for the macOS job.
+    """
+    sock = sock_dir / "gateway.sock"
+    assert len(str(sock).encode()) < _SUN_PATH_BUDGET, (
+        f"sock_dir yields a {len(str(sock).encode())}-byte endpoint path, over the "
+        f"{_SUN_PATH_BUDGET}-byte budget -- AF_UNIX bind fails with 'path too long' "
+        "on runners with a long temp root (macOS TMPDIR is /var/folders/...)"
+    )
+
+
 @pytest.mark.skipif(pc.IS_WINDOWS, reason="the pass-through is the POSIX branch")
 def test_posix_address_is_the_socket_path(tmp_path: Path) -> None:
     sock = tmp_path / "gateway.sock"
