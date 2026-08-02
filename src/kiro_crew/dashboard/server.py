@@ -1846,6 +1846,7 @@ async def start_dashboard(
     app.router.add_get("/api/memory/events", handlers.api_memory_events)
     app.router.add_get("/api/memory/embedding-status", handlers.api_memory_embedding_status)
     app.router.add_post("/api/memory/enable-embeddings", handlers.api_memory_enable_embeddings)
+    app.router.add_post("/api/memory/embedding-model", handlers.api_memory_embedding_model)
     app.router.add_post("/api/memory/disable-embeddings", handlers.api_memory_disable_embeddings)
     app.router.add_get("/api/memory/episodic/search", handlers.api_memory_episodic_search)
     app.router.add_get("/api/memory/episodic", handlers.api_memory_episodic_list)

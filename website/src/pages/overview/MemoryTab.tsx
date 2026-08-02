@@ -5,6 +5,7 @@ import { Card, CardTitle, Btn, SendBtn, Input, Badge } from '../../components/ui
 import InfoTip from '../../components/InfoTip'
 import { esc } from '../../api/helpers'
 import VectorMemoryCard from './VectorMemoryCard'
+import EmbeddingModelCard from './EmbeddingModelCard'
 import type { Lesson, SessionInfo } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
@@ -93,6 +94,7 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
       </div>
     </Card>
     <VectorMemoryCard onActiveChange={setVectorActive} onMigratedChange={setMigrated} />
+    <EmbeddingModelCard />
     {!vectorActive && (<>
       <Card><CardTitle>{i18nT('pages.overview.memoryTab.preferences')} <InfoTip text={i18nT('pages.overview.memoryTab.learned_user_preferences_coding_style_tools_work')} /> <Btn onClick={async () => { await api.saveMemoryPreferences(pref); setPrefSaved(true); scheduleClear(() => setPrefSaved(false), 2000) }}>{prefSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn></CardTitle>
         <textarea aria-label={i18nT('pages.overview.memoryTab.preferences')} className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm font-body outline-none resize-y leading-relaxed transition-colors focus-ring" rows={8} value={pref} onChange={e => setPref(e.target.value)} placeholder={i18nT('pages.overview.memoryTab.loading')} /></Card>

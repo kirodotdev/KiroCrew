@@ -191,6 +191,7 @@ from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
     api_memory_consolidate,
     api_memory_context_preview,
     api_memory_disable_embeddings,
+    api_memory_embedding_model,
     api_memory_embedding_status,
     api_memory_enable_embeddings,
     api_memory_episodic_delete,

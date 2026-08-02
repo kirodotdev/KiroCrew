@@ -938,6 +938,10 @@ export const api = {
   vectorEvents: (limit = 50, offset = 0) => fetch('/api/memory/events?limit=' + limit + '&offset=' + offset).then(j),
   vectorEmbeddingStatus: () => fetch('/api/memory/embedding-status').then(j),
   vectorEnableEmbeddings: () => post('/api/memory/enable-embeddings').then(j),
+  vectorValidateEmbedModel: (path: string) =>
+    post('/api/memory/embedding-model', { path, validate_only: true }).then(j),
+  vectorApplyEmbedModel: (path: string) =>
+    post('/api/memory/embedding-model', { path }).then(j),
   vectorDisableEmbeddings: () => post('/api/memory/disable-embeddings').then(j),
   vectorImport: (data: object) => post('/api/memory/import', data).then(j),
   vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
