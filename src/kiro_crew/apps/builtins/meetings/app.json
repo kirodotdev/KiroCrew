@@ -1,0 +1,57 @@
+{
+  "name": "meetings",
+  "version": "0.1.0",
+  "displayName": "Meetings",
+  "description": "An AI meeting assistant. Transcribes a live meeting, keeps structured notes and diagrams as it goes, extracts action items, and lets you review them before filing.",
+  "author": "adunuthu",
+  "tags": [
+    "meetings",
+    "transcription",
+    "notes",
+    "tasks",
+    "productivity"
+  ],
+  "highlights": [
+    "Live transcription through KiroCrew's own speech-to-text — no extra daemon, no cloud account beyond what you already use",
+    "A crew of agents works the meeting in parallel: structured notes, an HTML/Mermaid diagram, and an action-item list",
+    "Correct recurring speech-to-text mistakes once with a domain dictionary and every later meeting gets them right",
+    "Review extracted action items before anything is filed — archive the noise, file the rest",
+    "Pluggable task and calendar providers: ships a local task ledger and an iCalendar (.ics) reader, and an organization can register its own"
+  ],
+  "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux"
+    ]
+  },
+  "agents": [
+    "agents/meetings-note-taker.json",
+    "agents/meetings-sketch-artist.json",
+    "agents/meetings-task-extractor.json"
+  ],
+  "permissions": {
+    "api": [
+      "/api/apps/meetings",
+      "/api/apps/meetings/*",
+      "/api/ws/stt"
+    ],
+    "network": true,
+    "storage": true
+  },
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/meetings",
+        "label": "Meetings",
+        "icon": "CalendarClock"
+      }
+    ]
+  },
+  "iconUrl": "/app-assets/meetings/icon.svg",
+  "heroImage": "/app-assets/meetings/hero-light.svg",
+  "heroImageDark": "/app-assets/meetings/hero-dark.svg"
+}

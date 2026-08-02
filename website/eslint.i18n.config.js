@@ -77,6 +77,22 @@ export default [
       'src/apps/*/companionPrompt.ts',
       'src/prompts/**',
       'src/apps/*/prompts.ts',
+      // The Meetings sketch-frame srcdoc builder. Same rationale as the prompt
+      // modules above, one step further from the user: every literal in it is
+      // handed to a PARSER, never to a person — CSP directives, a DOCTYPE, the
+      // frame's own CSS, and a fixed JS bootstrap. Translating any of them would
+      // not change a word anyone reads, it would break the policy or the diagram.
+      // The file carries no user-visible copy at all (its only strings shown to
+      // anyone are the i18nT keys in AgentPanel.tsx, which stays fully gated).
+      //
+      // Deliberately ONE exact path rather than a `*Srcdoc.ts` glob or a
+      // CSP-shaped content regex. A content regex was measured and rejected: a
+      // `^(default|script|img|…)-src\b` exclusion retroactively drops
+      // lib/mcpAppSrcdoc.ts 16 -> 8 and lib/widgetSrcdoc.ts 21 -> 17, and a
+      // ratchet that silently hands back other files' debt is worse than the
+      // false positive it fixes. A path this narrow cannot exempt a future file
+      // that does hold copy.
+      'src/apps/meetings/lib/sketchSrcdoc.ts',
     ],
     linterOptions: {
       // Every `eslint-disable` comment in this codebase targets the MAIN config's

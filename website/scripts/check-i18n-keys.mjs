@@ -339,7 +339,92 @@ function collectFileScopeConsts(sourceFile) {
   ts.forEachChild(sourceFile, (child) => collectNested(child, 0))
 
   for (const name of shadowedNames) consts.delete(name)
+
+  // Named imports of an EXPORTED const, resolved from the defining module.
+  //
+  // Without this, a key map shared by several components is unresolvable at every
+  // consumer even though it is exactly the `as const` map shape this gate asks
+  // for — `PRIORITY_LABEL_KEY` in apps/meetings/api.ts is read by three views.
+  // The only way to satisfy the gate would have been to copy the map into each
+  // consumer, i.e. duplicate the data to please the checker, which is worse code
+  // AND worse i18n (three places to update a key).
+  //
+  // Narrow on purpose, so it cannot resolve the WRONG value:
+  //  - only a bare named import (`import { X } from './m'`) — no default, no
+  //    namespace, no aliasing to a different local name;
+  //  - only a relative specifier, resolved on disk, so a bare-module import
+  //    cannot be confused for a local file;
+  //  - only a name the importing file does not already bind (a local wins, and a
+  //    shadowed name stays deleted above);
+  //  - one hop, no transitive re-export chase: a file that re-exports someone
+  //    else's map stays unresolvable and therefore counted.
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue
+    const clause = statement.importClause
+    if (!clause?.namedBindings || !ts.isNamedImports(clause.namedBindings)) continue
+    const spec = statement.moduleSpecifier
+    if (!ts.isStringLiteral(spec) || !spec.text.startsWith('.')) continue
+
+    const from = resolveRelativeModule(sourceFile.fileName, spec.text)
+    if (!from) continue
+    const exported = exportedConstsOf(from)
+    if (!exported) continue
+
+    for (const element of clause.namedBindings.elements) {
+      // `import { A as B }` — skip: the local name is B, and honouring it would
+      // mean tracking a rename for no benefit these maps need.
+      if (element.propertyName) continue
+      const name = element.name.text
+      if (consts.has(name) || shadowedNames.has(name)) continue
+      const init = exported.get(name)
+      if (init) consts.set(name, init)
+    }
+  }
+
   return consts
+}
+
+/** Absolute path of a relative import, trying the extensions this repo uses. */
+function resolveRelativeModule(fromFile, specifier) {
+  const base = path.resolve(path.dirname(path.resolve(SRC, fromFile)), specifier)
+  for (const candidate of [
+    `${base}.ts`, `${base}.tsx`,
+    path.join(base, 'index.ts'), path.join(base, 'index.tsx'),
+  ]) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return null
+}
+
+/** `export const NAME = <init>` of one module, memoized. Never recurses. */
+const exportedConstsCache = new Map()
+function exportedConstsOf(file) {
+  if (exportedConstsCache.has(file)) return exportedConstsCache.get(file)
+  let out = null
+  try {
+    const text = fs.readFileSync(file, 'utf-8')
+    const sf = ts.createSourceFile(
+      file, text, ts.ScriptTarget.Latest, /* setParentNodes */ true,
+      /\.tsx$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    )
+    out = new Map()
+    for (const statement of sf.statements) {
+      if (!ts.isVariableStatement(statement)) continue
+      const isExported = statement.modifiers?.some(
+        (m) => m.kind === ts.SyntaxKind.ExportKeyword,
+      )
+      if (!isExported) continue
+      for (const decl of statement.declarationList.declarations) {
+        if (ts.isIdentifier(decl.name) && decl.initializer) {
+          out.set(decl.name.text, decl.initializer)
+        }
+      }
+    }
+  } catch {
+    out = null
+  }
+  exportedConstsCache.set(file, out)
+  return out
 }
 
 /**

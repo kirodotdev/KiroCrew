@@ -457,6 +457,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/code_review_sage/sage_lib/review_driver.py",
         "apps/builtins/dev_fleet/server.py",
         "apps/builtins/issue_radar/backend/routes.py",
+        "apps/builtins/meetings/backend/domain/session.py",
+        "apps/builtins/meetings/backend/providers/calendar.py",
+        "apps/builtins/meetings/backend/providers/tasks.py",
+        "apps/builtins/meetings/backend/routes/agents.py",
+        "apps/builtins/meetings/backend/routes/meeting_lifecycle.py",
+        "apps/builtins/meetings/backend/routes/tasks.py",
         "apps/builtins/papyrus/backend/routes.py",
         "apps/builtins/workflows/server.py",
         # Bundled dev-skill script: prints CI/review findings to a

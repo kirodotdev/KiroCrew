@@ -13,7 +13,12 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs'
 import { execSync } from 'child_process'
 import http from 'http'
 import path from 'path'
-import { TAILWIND_RUNTIME_PATH, TAILWIND_RUNTIME_SRC } from './src/lib/vendorPaths'
+import {
+  MERMAID_RUNTIME_PATH,
+  MERMAID_RUNTIME_SRC,
+  TAILWIND_RUNTIME_PATH,
+  TAILWIND_RUNTIME_SRC,
+} from './src/lib/vendorPaths'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 const backendPort = process.env.KIROCREW_PORT || 5476
@@ -89,37 +94,48 @@ function appImportMapPlugin(): Plugin {
 }
 
 /**
- * Serve the Tailwind v4 browser runtime from the dashboard's own origin at
- * `/vendor/tailwindcss-browser.js`. The sandboxed widget iframe (a null-origin
- * blob) loads Tailwind from here instead of the public cdn.tailwindcss.com,
- * which restricted network environments block — crashing the whole page on
- * artifact render. The file is copied from the tracked @tailwindcss/browser
- * npm dependency at build time (NOT a committed blob), satisfying
- * software-supply-chain policy.
+ * Serve third-party browser runtimes from the dashboard's own origin under
+ * `/vendor/`. Each is copied from its tracked npm dependency at build time (NOT
+ * a committed blob), satisfying software-supply-chain policy.
+ *
+ * Both entries exist for the same reason: a sandboxed null-origin iframe cannot
+ * be allowed to reach a public CDN.
+ *   - Tailwind v4 replaces cdn.tailwindcss.com, which restricted network
+ *     environments block — crashing the whole page on artifact render.
+ *   - Mermaid backs the Meetings sketch artist, whose frame is served with
+ *     `connect-src 'none'`; same-origin is the only way that frame can draw a
+ *     diagram, so the app renders offline and a prompt-injected document has no
+ *     network egress to exfiltrate meeting content through.
+ *
+ * One table-driven plugin rather than one plugin per runtime: the dev-serve and
+ * build-emit halves are identical apart from the paths.
  */
-function tailwindRuntimePlugin(): Plugin {
-  const RUNTIME_SRC = TAILWIND_RUNTIME_SRC
-  const SERVE_PATH = TAILWIND_RUNTIME_PATH
+function vendorRuntimePlugin(): Plugin {
+  const RUNTIMES: ReadonlyArray<{ servePath: string; src: string }> = [
+    { servePath: TAILWIND_RUNTIME_PATH, src: TAILWIND_RUNTIME_SRC },
+    { servePath: MERMAID_RUNTIME_PATH, src: MERMAID_RUNTIME_SRC },
+  ]
   return {
-    name: 'kirocrew-tailwind-runtime',
+    name: 'kirocrew-vendor-runtimes',
     // Dev: the build output doesn't exist, so serve straight from node_modules.
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        if ((req.url || '').split('?')[0] === SERVE_PATH) {
-          res.setHeader('Content-Type', 'text/javascript; charset=utf-8')
-          res.end(readFileSync(RUNTIME_SRC))
-          return
-        }
-        next()
+        const url = (req.url || '').split('?')[0]
+        const hit = RUNTIMES.find((r) => r.servePath === url)
+        if (!hit) return next()
+        res.setHeader('Content-Type', 'text/javascript; charset=utf-8')
+        res.end(readFileSync(hit.src))
       })
     },
     // Build: emit into dist/vendor/, served same-origin like the /vendor/*.mjs stubs.
     generateBundle() {
-      this.emitFile({
-        type: 'asset',
-        fileName: TAILWIND_RUNTIME_PATH.replace(/^\//, ''),
-        source: readFileSync(RUNTIME_SRC),
-      })
+      for (const runtime of RUNTIMES) {
+        this.emitFile({
+          type: 'asset',
+          fileName: runtime.servePath.replace(/^\//, ''),
+          source: readFileSync(runtime.src),
+        })
+      }
     },
   }
 }
@@ -376,7 +392,7 @@ function appWindowUrls(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), tailwindRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls()],
+  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

@@ -336,6 +336,9 @@ async def stream_and_collect(
     on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None,
     retry_transient: bool = True,
     max_turns: int | None = None,
+    session_key: str = "",
+    agent: str = "",
+    app: str = "",
 ) -> str:
     """Stream a message through an LLM provider and collect the full response.
 
@@ -356,6 +359,19 @@ async def stream_and_collect(
         max_turns: Optional cap on tool-call iterations per prompt. When reached,
             the event loop breaks and returns whatever text has been collected.
             None (default) means no limit.
+        session_key: Calling surface's session key, forwarded to the PreToolUse
+            gate. Empty (default) preserves every existing caller's behavior.
+        agent: Calling agent name, forwarded to the gate alongside *session_key*.
+        app: Owning app name, forwarded to the gate so the app's governance
+            PROFILE is resolved — not just the enterprise ceiling.
+
+            All three matter for ``HOOK_BASED`` callers specifically. The gate
+            resolves ``ceiling ∩ profile``, and it can only look up a profile it
+            has been told the name of; with all three empty it applied the
+            ceiling alone, so an app profile narrowing (say) ``filesystem.write``
+            was silently not enforced for tools this helper approved. Callers
+            using ``REJECT_ALL`` or ``AUTO_APPROVE`` are unaffected — the first
+            runs no tools, the second never consults the gate.
 
     Returns:
         The complete response text.
@@ -373,7 +389,14 @@ async def stream_and_collect(
                         on_chunk(event.text)
                 elif event.kind == EVENT_PERMISSION_REQUEST:
                     approved = await _resolve_permission(
-                        provider, event, approval_policy, hooks, on_tool_approval
+                        provider,
+                        event,
+                        approval_policy,
+                        hooks,
+                        on_tool_approval,
+                        session_key=session_key,
+                        agent=agent,
+                        app=app,
                     )
                     if not approved:
                         continue
@@ -500,6 +523,7 @@ async def _resolve_permission(
     on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None,
     session_key: str = "",
     agent: str = "",
+    app: str = "",
 ) -> bool:
     """Resolve a tool permission request. Returns True if approved."""
     from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
@@ -588,6 +612,7 @@ async def _resolve_permission(
             event.title,
             session_key=session_key,
             agent=agent,
+            app=app,
             tool_kind=event.tool_kind,
             raw_params=event.raw_tool_params,
             command=event.shell_command,
