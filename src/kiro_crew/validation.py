@@ -999,6 +999,7 @@ SPAWN_STATUS_SCHEMA = ToolSchema(
 )
 
 SPAWN_LIST_SCHEMA = ToolSchema(tool_name="spawn_list")
+RESOURCE_STATUS_SCHEMA = ToolSchema(tool_name="resource_status")
 
 TASK_RUN_SCHEMA = ToolSchema(
     tool_name="task_run",
@@ -2009,6 +2010,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "spawn_run": SPAWN_RUN_SCHEMA,
     "spawn_sub_agents": SPAWN_SUB_AGENTS_SCHEMA,
     "spawn_list": SPAWN_LIST_SCHEMA,
+    "resource_status": RESOURCE_STATUS_SCHEMA,
     "spawn_status": SPAWN_STATUS_SCHEMA,
     "learn_add": LEARN_ADD_SCHEMA,
     "learn_remove": LEARN_REMOVE_SCHEMA,

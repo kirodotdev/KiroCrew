@@ -2107,6 +2107,29 @@ class ContextBuilder:
                 "when answering questions.\n\n"
             )
 
+        # Resource pressure — inject a compact advisory ONLY when host memory is
+        # tight/critical, so the model can choose the lighter path for heavy work
+        # (targeted tests, smaller sub-agent waves, deferred builds). Silent (zero
+        # token cost) when memory is ample or unreadable. Agent-agnostic: rides
+        # the gateway context rail, so it survives agent switches (a tool grant
+        # cannot). Skipped for minimal contexts. Best-effort — never let a probe
+        # failure break message assembly.
+        if not minimal_context:
+            try:
+                from kiro_crew.resource_status import probe as _probe_resources
+
+                _rstatus = _probe_resources()
+                _rline = _rstatus.context_line()
+                if _rline:
+                    parts.append(_rline + "\n\n")
+                    logger.info(
+                        "🔍 Injected resource pressure line (posture=%s, avail=%.1fGB)",
+                        _rstatus.posture,
+                        _rstatus.available_gb,
+                    )
+            except Exception:
+                logger.debug("resource pressure probe failed", exc_info=True)
+
         # Folder breadcrumb — the session's sidebar folder ancestry (root→leaf).
         # Injected when the caller supplies folder_path (once per session, and
         # again after a folder move). Kept lightweight — not re-sent every turn.

@@ -863,6 +863,27 @@ class AgentConfig:
             "Minimum available memory (GB) required to spawn a subagent. 0 disables the check.",
         ),
     )
+    resource_pressure_gb: float = field(
+        default=4.0,
+        metadata=_meta(
+            "Resource Pressure Threshold (GB)",
+            "Available memory (GB) at or below which the agent is told host memory "
+            "is 'tight' via a compact [RESOURCES] context line, so it can prefer "
+            "the lighter path for heavy work (targeted tests, smaller sub-agent "
+            "waves). Advisory only — not enforced. 0 disables the context line. "
+            "Lower this on small-memory hosts / memory-limited containers (e.g. a "
+            "2-4 GB pod) so the advisory only fires under genuine pressure.",
+        ),
+    )
+    resource_critical_gb: float = field(
+        default=2.0,
+        metadata=_meta(
+            "Resource Critical Threshold (GB)",
+            "Available memory (GB) at or below which the [RESOURCES] context line "
+            "escalates to 'critically low' and advises against starting heavy work "
+            "at all. Should be <= resource_pressure_gb. 0 disables the critical tier.",
+        ),
+    )
     workflow_run_timeout_secs: int = field(
         default=3600,
         metadata=_meta(
@@ -4126,6 +4147,12 @@ class KiroCrewConfig:
                 subagent_auto_max=_safe_int(agent_data.get("subagent_auto_max", 32), 32),
                 subagent_spawn_stagger_secs=_safe_float(
                     agent_data.get("subagent_spawn_stagger_secs", 2.0), 2.0
+                ),
+                resource_pressure_gb=_safe_float(
+                    agent_data.get("resource_pressure_gb", 4.0), 4.0
+                ),
+                resource_critical_gb=_safe_float(
+                    agent_data.get("resource_critical_gb", 2.0), 2.0
                 ),
                 subagent_max_turns=agent_data.get("subagent_max_turns", 100),
                 subagent_timeout_secs=agent_data.get("subagent_timeout_secs", 1800),
