@@ -6603,15 +6603,70 @@ class TestFolderCRUD:
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/chat/folders",
-                json={"name": "Payments", "icon": "🚀", "default_agent": "kirocrew-dev"},
+                json={"name": "Payments", "icon": "lucide:rocket", "default_agent": "kirocrew-dev"},
             )
             assert resp.status == 201
             data = await resp.json()
-            assert data["icon"] == "🚀"
+            assert data["icon"] == "lucide:rocket"
             assert data["default_agent"] == "kirocrew-dev"
 
     @pytest.mark.asyncio
-    async def test_create_folder_rejects_multi_emoji_icon(self, tmp_path, monkeypatch):
+    async def test_create_folder_long_icon_name_not_truncated(self, tmp_path, monkeypatch):
+        """Create must persist long catalog names intact (regression).
+
+        The create path kept the emoji-era [:16] cap after PATCH moved to
+        _FOLDER_ICON_MAX_LEN — "lucide:graduation-cap" (21 chars) was stored
+        as "lucide:graduatio": no badge renders, and boot migration skips it
+        (already lucide-prefixed), making the corruption permanent.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/folders",
+                json={"name": "School", "icon": "lucide:graduation-cap"},
+            )
+            assert resp.status == 201
+            assert (await resp.json())["icon"] == "lucide:graduation-cap"
+            assert state._folders[0]["icon"] == "lucide:graduation-cap"
+
+    @pytest.mark.asyncio
+    async def test_create_folder_accepts_palette_color(self, tmp_path, monkeypatch):
+        """Create persists an allowlisted palette color and rejects others."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/folders", json={"name": "Redteam", "color": "#ef4444"}
+            )
+            assert resp.status == 201
+            assert (await resp.json())["color"] == "#ef4444"
+            bad = await client.post(
+                "/api/chat/folders", json={"name": "Bad", "color": "#123456"}
+            )
+            assert bad.status == 400
+            assert (await bad.json())["code"] == "color_invalid"
+
+    @pytest.mark.asyncio
+    async def test_patch_color_set_and_clear(self, tmp_path, monkeypatch):
+        """PATCH color: allowlisted value sets, empty string clears the key."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/folders", json={"name": "Blue"})
+            fid = (await resp.json())["id"]
+            resp = await client.patch(f"/api/chat/folders/{fid}", json={"color": "#3b82f6"})
+            assert resp.status == 200
+            assert state._folders[0]["color"] == "#3b82f6"
+            resp = await client.patch(f"/api/chat/folders/{fid}", json={"color": ""})
+            assert resp.status == 200
+            assert "color" not in state._folders[0]
+
+    @pytest.mark.asyncio
+    async def test_create_folder_rejects_non_lucide_icon(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
@@ -6620,15 +6675,13 @@ class TestFolderCRUD:
                 "/api/chat/folders", json={"name": "Bad", "icon": "🚀🔥"}
             )
             assert resp.status == 400
-            assert "single emoji" in (await resp.json())["error"]
+            assert "lucide icon name" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
-    async def test_create_folder_with_icon_skips_auto_generation(self, tmp_path, monkeypatch):
-        """An explicit icon must not be clobbered by the background LLM generator.
-
-        _generate_folder_icon writes unconditionally on success, so the task has
-        to be skipped rather than merely raced.
-        """
+    async def test_create_folder_never_schedules_generation(self, tmp_path, monkeypatch):
+        """Creation spends no LLM call: a folder's identity mark is its
+        user-picked palette color, so the background icon generator must not
+        be scheduled — with or without an explicit icon in the request."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         calls: list[str] = []
 
@@ -6639,14 +6692,12 @@ class TestFolderCRUD:
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.post("/api/chat/folders", json={"name": "Chosen", "icon": "🎯"})
+            resp = await client.post("/api/chat/folders", json={"name": "Chosen", "icon": "lucide:target"})
             assert resp.status == 201
-            assert calls == []
-            # ...but a folder with no icon still gets one generated.
             resp = await client.post("/api/chat/folders", json={"name": "Auto"})
             assert resp.status == 201
             await asyncio.sleep(0)
-            assert len(calls) == 1
+            assert calls == []
 
     @pytest.mark.asyncio
     async def test_create_folder_invalid_parent_rejected(self, tmp_path, monkeypatch):
@@ -7199,7 +7250,7 @@ class TestFolderPersistence:
 
 class TestGenerateFolderIcon:
     @pytest.mark.asyncio
-    async def test_valid_emoji_stored(self, tmp_path, monkeypatch):
+    async def test_valid_lucide_name_stored(self, tmp_path, monkeypatch):
         from unittest.mock import AsyncMock, MagicMock
 
         from kiro_crew.dashboard.chat_folders import _generate_folder_icon
@@ -7210,7 +7261,7 @@ class TestGenerateFolderIcon:
         # Mock LLM session
         mock_event = MagicMock()
         mock_event.kind = "text_chunk"
-        mock_event.text = "🚀"
+        mock_event.text = "rocket"
         done_event = MagicMock()
         done_event.kind = "complete"
         monkeypatch.setattr("kiro_crew.providers.base.EVENT_TEXT_CHUNK", "text_chunk")
@@ -7227,9 +7278,40 @@ class TestGenerateFolderIcon:
         state._folders = [folder]
         await _generate_folder_icon(state, folder)
 
-        assert folder["icon"] == "🚀"
+        assert folder["icon"] == "lucide:rocket"
         state.save_folders.assert_called_once()
         state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_emoji_reply_rejected_for_chat_folders(self, tmp_path, monkeypatch):
+        """Chat-folder auto-gen is lucide-only — an emoji reply is dropped."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.dashboard.chat_folders import _generate_folder_icon
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+
+        mock_event = MagicMock()
+        mock_event.kind = "text_chunk"
+        mock_event.text = "🚀"
+        done_event = MagicMock()
+        done_event.kind = "complete"
+        monkeypatch.setattr("kiro_crew.providers.base.EVENT_TEXT_CHUNK", "text_chunk")
+        monkeypatch.setattr("kiro_crew.providers.base.EVENT_COMPLETE", "complete")
+        monkeypatch.setattr("kiro_crew.providers.base.EVENT_PERMISSION_REQUEST", "permission")
+
+        mock_client = AsyncMock()
+        mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
+        state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
+        state.save_folders = MagicMock()
+
+        folder = {"id": "f1", "name": "Deploy"}
+        state._folders = [folder]
+        await _generate_folder_icon(state, folder)
+
+        assert "icon" not in folder
+        state.save_folders.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_long_output_rejected(self, tmp_path, monkeypatch):
@@ -7294,9 +7376,10 @@ class TestGenerateFolderIcon:
 
     @pytest.mark.asyncio
     async def test_redaction_applied(self, tmp_path, monkeypatch):
+        """generate_emoji_for_name (artifact-folder path) still redacts replies."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from kiro_crew.dashboard.chat_folders import _generate_folder_icon
+        from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -7318,18 +7401,18 @@ class TestGenerateFolderIcon:
 
         with patch("kiro_crew.dashboard.chat_folders.redact_exfiltration_urls", return_value=("🔥", False)) as mock_url, \
              patch("kiro_crew.dashboard.chat_folders.redact_credentials", return_value=("🔥", False)) as mock_cred:
-            folder = {"id": "f1", "name": "Oncall"}
-            state._folders = [folder]
-            await _generate_folder_icon(state, folder)
+            icon = await generate_emoji_for_name(state, "Oncall")
+            assert icon == "🔥"
             mock_url.assert_called_once()
             mock_cred.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_variation_selector_emoji_accepted(self, tmp_path, monkeypatch):
-        """Emoji with U+FE0F variation selector (e.g. ❤️) should be accepted."""
+        """Emoji with U+FE0F variation selector (e.g. ❤️) accepted by the
+        emoji generator (still used for artifact-library folders)."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from kiro_crew.dashboard.chat_folders import _generate_folder_icon
+        from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -7346,15 +7429,9 @@ class TestGenerateFolderIcon:
         mock_client = AsyncMock()
         mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
         state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
-        state.save_folders = MagicMock()
-        state.push_slots_update = MagicMock()
 
-        folder = {"id": "f1", "name": "Love"}
-        state._folders = [folder]
-        await _generate_folder_icon(state, folder)
-
-        assert folder["icon"] == "\u2764\uFE0F"
-        state.save_folders.assert_called_once()
+        icon = await generate_emoji_for_name(state, "Love")
+        assert icon == "\u2764\uFE0F"
 
     @pytest.mark.asyncio
     async def test_uses_background_session(self, tmp_path, monkeypatch):
@@ -7388,6 +7465,192 @@ class TestGenerateFolderIcon:
         # Each caller gets its own ephemeral session, used then destroyed.
         state.sessions.get_bg_session.assert_called_once()
         mock_client.destroy.assert_awaited_once()
+
+
+class TestMigrateEmojiFolderIcons:
+    def test_emoji_map_targets_are_allowlisted(self):
+        """Every deterministic mapping target must be a valid catalog name."""
+        from kiro_crew.dashboard.chat_folders import _EMOJI_TO_LUCIDE, _FOLDER_LUCIDE_NAMES
+
+        for emoji, name in _EMOJI_TO_LUCIDE.items():
+            assert name == "" or name in _FOLDER_LUCIDE_NAMES, f"{emoji} -> {name}"
+
+    @pytest.mark.asyncio
+    async def test_corrupt_non_dict_entries_skipped(self, tmp_path, monkeypatch):
+        """A corrupt folders.json with scalar entries must not abort boot."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.dashboard import chat_folders
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.save_folders = MagicMock()
+        state.push_slots_update = MagicMock()
+        regen = AsyncMock()
+        monkeypatch.setattr(chat_folders, "_generate_folder_icon", regen)
+
+        # A folders.json holding a bare `null` parses to None — load_folders
+        # assigns it verbatim, so the migration must tolerate a non-list too.
+        state._folders = None
+        chat_folders.migrate_emoji_folder_icons(state)
+        state.save_folders.assert_not_called()
+
+        state._folders = [
+            "corrupt-string",
+            42,
+            None,
+            {"name": "no-id", "icon": "🦄"},  # would KeyError the exists-check
+            {"id": "f0", "icon": "🦄"},  # would KeyError folder["name"] in the task
+            {"id": "f1", "name": "ok", "icon": "🚀"},
+        ]
+        chat_folders.migrate_emoji_folder_icons(state)  # must not raise
+        await asyncio.gather(*state._background_tasks)
+
+        assert state._folders[5]["icon"] == "lucide:rocket"
+        regen.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_generate_task_tolerates_malformed_folders(self, tmp_path, monkeypatch):
+        """_generate_folder_icon: a folder missing id/name returns silently, and
+        the still-exists check tolerates corrupt SIBLING entries in _folders."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.dashboard import chat_folders
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.save_folders = MagicMock()
+        state.push_slots_update = MagicMock()
+        monkeypatch.setattr(
+            chat_folders, "generate_lucide_for_name", AsyncMock(return_value="lucide:rocket")
+        )
+
+        # Malformed folder passed directly (regenerate_icon path) — no raise, no write.
+        await chat_folders._generate_folder_icon(state, {"id": "f0"})  # no name
+        await chat_folders._generate_folder_icon(state, {"name": "no-id"})
+        state.save_folders.assert_not_called()
+
+        # Valid folder, but _folders contains corrupt siblings — exists-check survives.
+        folder = {"id": "f1", "name": "deploys"}
+        state._folders = ["corrupt", 42, {"name": "no-id"}, folder]
+        await chat_folders._generate_folder_icon(state, folder)
+        assert folder["icon"] == "lucide:rocket"
+        state.save_folders.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_clear_during_create_generation_not_overwritten(self, tmp_path, monkeypatch):
+        """A user Clear (icon="") landing while CREATE-path generation is in
+        flight must win: key-absent-before vs explicit-empty-after both
+        stringify to "", so the guard must compare key presence too."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.dashboard import chat_folders
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.save_folders = MagicMock()
+
+        folder = {"id": "f1", "name": "Deploy"}  # fresh folder: no icon key yet
+        state._folders = [folder]
+
+        async def _gen_with_concurrent_clear(_state, _name):
+            folder["icon"] = ""  # user hits Clear while the LLM call is pending
+            return "lucide:rocket"
+
+        monkeypatch.setattr(
+            chat_folders, "generate_lucide_for_name", AsyncMock(side_effect=_gen_with_concurrent_clear)
+        )
+        await chat_folders._generate_folder_icon(state, folder)
+
+        assert folder["icon"] == ""  # the clear survives
+        state.save_folders.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_user_choice_not_overwritten(self, tmp_path, monkeypatch):
+        """A user pick/clear that lands while generation is pending wins."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.dashboard import chat_folders
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.save_folders = MagicMock()
+
+        folder = {"id": "f1", "name": "Deploy", "icon": "🚀"}
+        state._folders = [folder]
+
+        async def _gen_with_concurrent_pick(_state, _name):
+            # Simulate the user picking an icon while the LLM call is in flight.
+            folder["icon"] = "lucide:star"
+            return "lucide:rocket"
+
+        monkeypatch.setattr(
+            chat_folders, "generate_lucide_for_name", AsyncMock(side_effect=_gen_with_concurrent_pick)
+        )
+        await chat_folders._generate_folder_icon(state, folder)
+
+        assert folder["icon"] == "lucide:star"  # user's pick survives
+        state.save_folders.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_two_tier_migration(self, tmp_path, monkeypatch):
+        """Curated emojis map deterministically; free-input emoji go to the LLM."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.dashboard import chat_folders
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.save_folders = MagicMock()
+        state.push_slots_update = MagicMock()
+
+        regen = AsyncMock()
+        monkeypatch.setattr(chat_folders, "_generate_folder_icon", regen)
+
+        state._folders = [
+            {"id": "f1", "name": "deploys", "icon": "🚀"},  # curated — deterministic
+            {"id": "f2", "name": "files", "icon": "🗂️"},  # folder emoji (with FE0F) — clears
+            {"id": "f3", "name": "pets", "icon": "🦄"},  # free-input — LLM fallback
+            {"id": "f4", "name": "web", "icon": "lucide:globe"},  # already lucide
+            {"id": "f5", "name": "bare"},  # no icon key
+            {"id": "f6", "name": "cleared", "icon": ""},  # explicitly no icon
+        ]
+        chat_folders.migrate_emoji_folder_icons(state)
+        await asyncio.gather(*state._background_tasks)
+
+        assert state._folders[0]["icon"] == "lucide:rocket"
+        assert state._folders[1]["icon"] == ""
+        regen.assert_awaited_once_with(state, state._folders[2])
+        assert state._folders[3]["icon"] == "lucide:globe"
+        state.save_folders.assert_called_once()
+        state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_only_legacy_emoji_folders_regenerated(self, tmp_path, monkeypatch):
+        """Boot migration targets folders with non-lucide icons only."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from kiro_crew.dashboard import chat_folders
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+
+        regen = AsyncMock()
+        monkeypatch.setattr(chat_folders, "_generate_folder_icon", regen)
+
+        state._folders = [
+            {"id": "f1", "name": "pets", "icon": "🦄"},  # unmapped legacy — LLM migrate
+            {"id": "f2", "name": "web", "icon": "lucide:globe"},  # already lucide
+            {"id": "f3", "name": "bare"},  # no icon key
+            {"id": "f4", "name": "cleared", "icon": ""},  # explicitly no icon
+        ]
+        chat_folders.migrate_emoji_folder_icons(state)
+        await asyncio.gather(*state._background_tasks)
+
+        regen.assert_awaited_once_with(state, state._folders[0])
 
 
 class TestFolderAssignmentPersistence:

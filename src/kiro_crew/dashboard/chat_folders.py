@@ -70,6 +70,169 @@ def _is_single_emoji(s: str) -> bool:
 
 _FOLDER_ICON_MODEL = "claude-haiku-4.5"
 
+# Curated lucide icon names pickable as chat-folder badges, stored in the
+# folder's ``icon`` field as ``lucide:<name>``. KEEP IN SYNC with
+# ``FOLDER_LUCIDE_ICONS`` in website/src/components/folderIconCatalog.tsx —
+# the frontend picker grid and glyph renderer.
+_FOLDER_LUCIDE_NAMES = frozenset(
+    {
+        "rocket", "globe", "briefcase", "house", "star", "flame",
+        "target", "lightbulb", "sparkles", "zap", "trophy", "heart",
+        "bug", "wrench", "flask-conical", "terminal", "code", "cpu",
+        "database", "cloud", "shield", "key-round", "package", "layers",
+        "settings", "search", "chart-column", "book-open", "graduation-cap",
+        "pen-line", "palette", "music", "gamepad-2", "map", "calendar",
+        "users", "clipboard-list", "circle-check", "microscope", "brain",
+        "hammer", "lock", "rainbow", "party-popper", "bot", "puzzle", "pin",
+    }  # noqa: E231
+)
+_LUCIDE_ICON_PREFIX = "lucide:"
+# Fits "lucide:graduation-cap" (21 chars); the emoji-era cap was 16.
+_FOLDER_ICON_MAX_LEN = 32
+
+# Folder color palette — the identity mark a user picks for a folder in the
+# config modal. Mirrors the Artifacts page's FOLDER_COLORS so the two folder
+# systems speak one visual language. KEEP IN SYNC with FOLDER_COLOR_PALETTE in
+# website/src/components/folderIconCatalog.tsx.
+_FOLDER_COLOR_PALETTE = frozenset(
+    {
+        "#ef4444", "#f97316", "#f59e0b", "#84cc16", "#22c55e", "#14b8a6",
+        "#06b6d4", "#3b82f6", "#6366f1", "#8b5cf6", "#ec4899", "#94a3b8",
+    }
+)
+
+
+def _is_valid_folder_color(s: str) -> bool:
+    """True for a palette color value (lowercase hex, allowlisted)."""
+    return s in _FOLDER_COLOR_PALETTE
+
+
+# Deterministic migration map for the retired curated emoji picker grid
+# (FOLDER_EMOJIS): preserves the user's actual choice instead of an LLM guess
+# from the folder NAME, works offline, and costs nothing at boot. Keys are
+# stored WITHOUT the U+FE0F variation selector — normalize before lookup.
+# "" means "clear": a folder badge on a folder glyph is noise. Free-input
+# emoji outside this map still fall back to the LLM generator.
+_EMOJI_TO_LUCIDE = {
+    "\U0001F4C1": "",  # 📁
+    "\U0001F4C2": "",  # 📂
+    "\U0001F5C2": "",  # 🗂
+    "\U0001F4CB": "clipboard-list",  # 📋
+    "\U0001F4DD": "pen-line",  # 📝
+    "\U0001F4BC": "briefcase",  # 💼
+    "\U0001F680": "rocket",  # 🚀
+    "\u2B50": "star",  # ⭐
+    "\U0001F525": "flame",  # 🔥
+    "\U0001F4A1": "lightbulb",  # 💡
+    "\U0001F3AF": "target",  # 🎯
+    "\u2705": "circle-check",  # ✅
+    "\U0001F41B": "bug",  # 🐛
+    "\U0001F527": "wrench",  # 🔧
+    "\U0001F9EA": "flask-conical",  # 🧪
+    "\U0001F4E6": "package",  # 📦
+    "\U0001F3A8": "palette",  # 🎨
+    "\U0001F52C": "microscope",  # 🔬
+    "\U0001F31F": "sparkles",  # 🌟
+    "\U0001F9E0": "brain",  # 🧠
+    "\u2699": "settings",  # ⚙
+    "\U0001F6E0": "hammer",  # 🛠
+    "\U0001F4CA": "chart-column",  # 📊
+    "\U0001F512": "lock",  # 🔒
+    "\U0001F308": "rainbow",  # 🌈
+    "\U0001F389": "party-popper",  # 🎉
+    "\U0001F916": "bot",  # 🤖
+    "\u2601": "cloud",  # ☁
+    "\U0001F9E9": "puzzle",  # 🧩
+    "\U0001F4CC": "pin",  # 📌
+}
+
+
+def _is_valid_folder_icon(s: str) -> bool:
+    """True for a curated lucide icon value (``lucide:<name>``).
+
+    Chat-folder icons are lucide-only: legacy emoji values are migrated at
+    boot by :func:`migrate_emoji_folder_icons` and are not accepted back.
+    """
+    if not s.startswith(_LUCIDE_ICON_PREFIX):
+        return False
+    return s[len(_LUCIDE_ICON_PREFIX) :] in _FOLDER_LUCIDE_NAMES
+
+
+def migrate_emoji_folder_icons(state: DashboardState) -> None:
+    """Boot-time migration: convert legacy emoji folder icons to lucide.
+
+    Two tiers: emojis from the retired curated picker grid map DETERMINISTICALLY
+    via ``_EMOJI_TO_LUCIDE`` (preserving the user's actual choice, offline-safe,
+    zero LLM spend; the folder emojis map to "no icon"). Free-input emoji fall
+    back to the LLM generator, fire-and-forget per folder and serialized by the
+    shared lock; on generator failure the emoji value stays on disk and the next
+    boot retries — the presence of a non-``lucide:`` icon IS the migration
+    marker, so no flag file is needed. The frontend renders unknown (emoji)
+    values as no badge in the meantime.
+    """
+    mapped_any = False
+    # load_folders() assigns whatever JSON parses, so a corrupt folders.json
+    # holding null (or any non-list) makes state._folders non-iterable —
+    # tolerate it here like every other malformed shape instead of
+    # TypeError-ing gateway boot.
+    if not isinstance(state._folders, list):
+        return
+    for folder in state._folders:
+        # load_folders() does no shape-filtering, so a corrupt folders.json can
+        # contain non-dict entries or dicts missing id/name — skip them instead
+        # of AttributeError/KeyError-ing gateway boot or the background task
+        # (same tolerance as state.folder_breadcrumb). id and name are both
+        # required downstream: _generate_folder_icon reads folder["name"] for
+        # the prompt and folder["id"] for the still-exists check.
+        if not isinstance(folder, dict) or not folder.get("id") or not folder.get("name"):
+            continue
+        icon = str(folder.get("icon") or "")
+        if not icon or icon.startswith(_LUCIDE_ICON_PREFIX):
+            continue
+        mapped = _EMOJI_TO_LUCIDE.get(icon.replace("\ufe0f", ""))
+        if mapped is not None:
+            folder["icon"] = _LUCIDE_ICON_PREFIX + mapped if mapped else ""
+            mapped_any = True
+        else:
+            task = asyncio.create_task(_generate_folder_icon(state, folder))
+            state._background_tasks.add(task)
+            task.add_done_callback(state._background_tasks.discard)
+    if mapped_any:
+        state.save_folders()
+        state.push_slots_update()
+
+
+async def generate_lucide_for_name(state: DashboardState, name: str) -> str:
+    """Ask the cheapest model to pick ONE curated lucide icon for ``name``.
+
+    Chat-folder counterpart of :func:`generate_emoji_for_name` (which the
+    artifact library still uses). Serialized via the shared module-level lock.
+    Returns ``"lucide:<name>"`` or ``""`` on any failure or when the reply is
+    not exactly one allowlisted name.
+    """
+
+    choices = ", ".join(sorted(_FOLDER_LUCIDE_NAMES))
+    prompt = (
+        f"Reply with exactly ONE word from this list that best represents a project folder "
+        f'named "{name}": {choices}. No other text, no punctuation, just the single word.'
+    )
+
+    async with _folder_icon_lock:
+        try:
+            text = await run_bg_oneliner(
+                state.sessions,
+                prompt,
+                model=_FOLDER_ICON_MODEL,
+                sel_source="chat_folders",
+                timeout=30,
+            )
+        except Exception:  # noqa: BLE001 — best-effort background task
+            text = ""
+    icon = text.strip().strip("\"'`.").lower()
+    # Membership in the allowlist is the whole validation — anything else
+    # (stray prose, an emoji, an unknown name) falls back to no icon.
+    return _LUCIDE_ICON_PREFIX + icon if icon in _FOLDER_LUCIDE_NAMES else ""
+
 
 async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
     """Ask the cheapest model for ONE emoji representing a folder ``name``.
@@ -107,10 +270,28 @@ async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
 
 
 async def _generate_folder_icon(state: DashboardState, folder: dict) -> None:
-    """Background task: ask LLM for a single emoji for the folder name."""
-    icon = await generate_emoji_for_name(state, folder["name"])
+    """Background task: ask LLM for a curated lucide icon for the folder name."""
+    # Defensive at the chokepoint: callers include the boot migration and the
+    # regenerate_icon PATCH path, and folders trace back to an unvalidated
+    # folders.json — a malformed entry must not KeyError the task, and the
+    # exists-check below must tolerate corrupt SIBLING entries in _folders.
+    fid = folder.get("id")
+    name = str(folder.get("name") or "")
+    if not fid or not name:
+        return
+    # Snapshot BOTH key presence and value: a user "Clear" writes icon="" (key
+    # present), which must stay distinguishable from "never had an icon" (key
+    # absent, the folder-create path) — both stringify to "", so a value-only
+    # compare would let the generated icon overwrite an explicit clear that
+    # landed while generation was in flight.
+    icon_before = ("icon" in folder, str(folder.get("icon") or ""))
+    icon = await generate_lucide_for_name(state, name)
     if icon:
-        if any(f["id"] == folder["id"] for f in state._folders):
+        if any(isinstance(f, dict) and f.get("id") == fid for f in state._folders):
+            # Don't stomp a concurrent user choice: if the user picked or
+            # cleared an icon while generation was pending, keep theirs.
+            if ("icon" in folder, str(folder.get("icon") or "")) != icon_before:
+                return
             folder["icon"] = icon
             state.save_folders()
             state.push_slots_update()
@@ -231,12 +412,18 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     # flash of the auto-generated emoji before the user's choice lands.
     default_agent = str(body.get("default_agent") or "").strip()
     icon = str(body.get("icon") or "").strip()
-    if icon and not _is_single_emoji(icon):
+    if icon and not _is_valid_folder_icon(icon):
         # `code` is the contract, `error` is advisory prose (RFC 9457 3.1.3) —
         # the dashboard renders `error` verbatim into a localized UI, so a new
         # error response without an id is untranslatable by construction.
         return web.json_response(
-            {"error": "icon must be a single emoji", "code": "icon_not_single_emoji"},
+            {"error": "icon must be a supported lucide icon name", "code": "icon_invalid"},
+            status=400,
+        )
+    color = str(body.get("color") or "").strip().lower()
+    if color and not _is_valid_folder_color(color):
+        return web.json_response(
+            {"error": "color must be one of the folder palette values", "code": "color_invalid"},
             status=400,
         )
     folder = {
@@ -250,18 +437,19 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         "default_agent": default_agent,
     }
     if icon:
-        folder["icon"] = icon[:16]
+        # Same cap as PATCH: _FOLDER_ICON_MAX_LEN fits every curated
+        # "lucide:<name>" value — the emoji-era [:16] would corrupt the 7
+        # catalog names longer than 9 chars (e.g. "lucide:graduation-cap").
+        folder["icon"] = icon[:_FOLDER_ICON_MAX_LEN]
+    if color:
+        folder["color"] = color
     state._folders.append(folder)
     state.save_folders()
     state.push_slots_update()
-    # Generate icon in background — don't block the response. Skipped when the
-    # caller chose an icon: _generate_folder_icon writes unconditionally on
-    # success, so running it anyway would silently clobber that choice a few
-    # seconds after creation (the same conflict PATCH rejects outright).
-    if not icon:
-        task = asyncio.ensure_future(_generate_folder_icon(state, folder))
-        state._background_tasks.add(task)
-        task.add_done_callback(state._background_tasks.discard)
+    # Creation schedules no background icon generation — a folder's identity
+    # mark is its user-picked palette color, so no LLM call is spent here.
+    # _generate_folder_icon serves the PATCH regenerate_icon path and the
+    # boot migration for pre-existing emoji data.
     sel().log_api_access(
         caller="dashboard", operation="chat.folder_create",
         outcome="allowed", source="dashboard", resources=str(folder["id"]),
@@ -329,15 +517,31 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             status=400,
         )
     if "icon" in body:
-        # User-chosen emoji. None or empty string clears to the default;
-        # otherwise it must be exactly one emoji (no text / multiple emoji).
+        # User-chosen icon: a curated lucide name (``lucide:<name>``).
+        # None or empty string clears to no icon.
         raw_icon = body["icon"]
         icon_val = str(raw_icon).strip() if raw_icon is not None else ""
-        if icon_val and not _is_single_emoji(icon_val):
-            return web.json_response({"error": "icon must be a single emoji"}, status=400)
-        changes["icon"] = icon_val[:16]
+        if icon_val and not _is_valid_folder_icon(icon_val):
+            return web.json_response(
+                {"error": "icon must be a supported lucide icon name"},
+                status=400,
+            )
+        changes["icon"] = icon_val[:_FOLDER_ICON_MAX_LEN]
+    if "color" in body:
+        # Palette color for the folder glyph. None or empty string clears back
+        # to the default gray; anything else must be an allowlisted value.
+        raw_color = body["color"]
+        color_val = str(raw_color).strip().lower() if raw_color is not None else ""
+        if color_val and not _is_valid_folder_color(color_val):
+            return web.json_response(
+                {"error": "color must be one of the folder palette values", "code": "color_invalid"},
+                status=400,
+            )
+        changes["color"] = color_val
     # All fields validated — apply atomically.
     folder.update(changes)
+    if not folder.get("color"):
+        folder.pop("color", None)
     if body.get("regenerate_icon"):
         # "Reset to auto" — re-run the LLM emoji generator in the background.
         # _generate_folder_icon saves + pushes a slots update on success.

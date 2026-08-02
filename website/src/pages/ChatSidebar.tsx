@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, FolderOpen, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
+import FolderGlyph from '../components/FolderGlyph'
 import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy, useSortable, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -239,7 +240,7 @@ function SortableColumnFolder({ folder, columnId, colSlotKeys, renderColumnFolde
 function FolderDragGhost({ folder }: { folder?: ChatFolder }) {
   return (
     <div className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-[13px] text-text shadow-lg max-w-[240px] truncate pointer-events-none flex items-center gap-2">
-      <FolderGlyph icon={folder?.icon} size={14} />{folder?.name ?? i18nT('pages.chatSidebar.folder')}
+      <FolderGlyph icon={folder?.icon} color={folder?.color} size={14} />{folder?.name ?? i18nT('pages.chatSidebar.folder')}
     </div>
   )
 }
@@ -476,30 +477,12 @@ function dateSegment(ts: number | string | undefined): string {
   return fmtDateFields(d, { year: 'numeric', month: 'long' })
 }
 
-/** A folder's icon AND its collapse affordance: a Lucide folder glyph that is
- *  the sole open/closed state carrier (the separate chevron was retired — the
- *  open-vs-closed shape now stands alone). When collapsed (resting) it shows the
- *  closed Folder glyph with the folder's custom emoji (if any) overlaid on its
- *  flat face. When expanded it swaps to FolderOpen and drops the emoji, since
- *  FolderOpen's angled flap has no flat face for the emoji to sit on cleanly.
- *  Every folder keeps the same fixed footprint so the sidebar stays aligned, and
- *  the board view shows the emoji too (it previously rendered only the bare glyph).
- *  `testId` lets a caller tag the glyph as the folder-collapse target for tests. */
-function FolderGlyph({ icon, size = 14, open = false, className = 'text-muted shrink-0', testId }: { icon?: string; size?: number; open?: boolean; className?: string; testId?: string }) {
-  const Glyph = open ? FolderOpen : Folder
-  return (
-    <span data-testid={testId} className="relative inline-flex shrink-0 items-center justify-center" style={{ width: size, height: size }}>
-      <Glyph size={size} className={className} />
-      {icon && !open && (
-        <span
-          aria-hidden
-          className="absolute inset-x-0 bottom-0 flex items-center justify-center leading-none pointer-events-none"
-          style={{ top: Math.round(size * 0.42), fontSize: Math.max(7, Math.round(size * 0.52)) }}
-        >{icon}</span>
-      )}
-    </span>
-  )
-}
+// Folder icon badges are curated lucide icons (see folderIconCatalog.tsx),
+// stored as `lucide:<name>` in the folder's icon field. Legacy single-emoji
+// values are migrated to lucide icons by the backend at boot
+// (migrate_emoji_folder_icons) and render as no badge until then — bitmap
+// color-emoji fonts can't shear under the open-folder tilt, so they are
+// deliberately not drawn.
 
 /** Animated collapsible for unknown-height content (folder bodies).
  *  Uses CSS grid `1fr`/`0fr` trick so we can animate to intrinsic height
@@ -678,8 +661,7 @@ function ChatSidebar({
   // `parentId` is the fixed destination for 'create' ('' = top level).
   const [folderModal, setFolderModal] = useState<
     { mode: 'create'; parentId: string } | { mode: 'edit'; folderId: string } | null
-  >(null)
-  // The rename menus are Radix (ContextMenu/DropdownMenu). On close, Radix's
+  >(null)  // The rename menus are Radix (ContextMenu/DropdownMenu). On close, Radix's
   // FocusScope restores focus to its trigger (the card) AFTER the input mounts.
   // That restore blurs the freshly-mounted input, firing its onBlur, which
   // cancels the edit before you can type — so the box flickers open and reverts.
@@ -1583,11 +1565,12 @@ function ChatSidebar({
 
   // Folder mutations
   const createFolderMutation = useMutation({
-    mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; icon?: string }) =>
+    mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; icon?: string; color?: string }) =>
       api.createChatFolder(v.name.trim(), v.parentId, {
         project_dir: v.projectDir || undefined,
         default_agent: v.defaultAgent || undefined,
         icon: v.icon || undefined,
+        color: v.color || undefined,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
   })
@@ -1916,7 +1899,7 @@ function ChatSidebar({
           onClick={() => toggleCollapse(folder.id)}
           onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCollapse(folder.id) } }}
         >
-          <FolderGlyph icon={folder.icon} size={11} open={!folder.collapsed} className="shrink-0 text-muted" />
+          <FolderGlyph icon={folder.icon} color={folder.color} size={15} open={!folder.collapsed} />
           {editingId === folder.id && editScope === columnId ? (
             /* Inline rename input — board-view parity with renderFolderHeader.
              *  Without this branch the ⋯-menu "Rename" set editingId but no
@@ -1964,18 +1947,14 @@ function ChatSidebar({
         </div>
         <FolderBody open={!folder.collapsed && !forceCollapsed}>
           <div className="border-l border-border ml-2 pl-1">
-            {/* Inline "New chat" affordance at the top of the column folder's
-             *  body, mirroring the list-view folder body. */}
-            <button key={`col-${columnId}-newchat-${folder.id}`} type="button"
-              
-              onClick={() => createChatInFolder(folder.id, columnId)}
-              title={i18nT('pages.chatSidebar.new_chat_in_folder')} aria-label={`New chat in ${folder.name}`}
-              className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[11px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
-              {/* Trailing glyph — list-view parity (see renderFolderBlock). */}
-              <span>{i18nT('pages.chatSidebar.new_chat_in_folder')}</span><MessageSquarePlus size={11} className="shrink-0 ml-auto" />
-            </button>
-            {(deepChildren.length > 0 || childSlots.length > 0) && (
-              <div className="mx-3 border-b border-border" />
+            {/* Empty-folder affordance — list-view parity (see renderFolderBlock). */}
+            {deepChildren.length === 0 && childSlots.length === 0 && (
+              <button key={`col-${columnId}-newchat-${folder.id}`} type="button"
+                onClick={() => createChatInFolder(folder.id, columnId)}
+                title={i18nT('pages.chatSidebar.new_chat_in_folder')} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}
+                className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[11px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
+                <span>{i18nT('pages.chatSidebar.new_chat_in_folder')}</span><MessageSquarePlus size={11} className="shrink-0 ml-auto" />
+              </button>
             )}
             {deepChildren.map(cf => renderColumnFolder(cf, columnId, colSlotKeys))}
             {childSlots.map((s, i) => {
@@ -2478,17 +2457,14 @@ function ChatSidebar({
         // and action buttons clickable; drag is off while renaming.
         {...(draggable ? dragHandleProps : {})}
         className={`group relative flex items-center gap-2 pr-2 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
-        // 16px left pad puts the folder GLYPH on the same x as the text of the
-        // session rows at the folder's OWN level (both `px-4`), so a folder and
-        // its siblings start the same column. The 5px glyph→name gap is chosen
-        // (not cosmetic) so glyph 14px + 5px == the 19px indent step of the
-        // nested body, which lands the folder NAME on the text x of the sessions
-        // INSIDE it. Both guides hold at once; changing either breaks one.
-        // Measured: glyph == sibling session text, name == child session text.
-        style={{ paddingLeft: '16px' }}>
+        // 9px left pad + 19px glyph + 7px gap lands the folder NAME on the
+        // 35px text x of the sessions INSIDE it (the 19px indent step guide).
+        // The glyph box outdents 7px left of sibling session text
+        // (Finder-style: bigger icons hang left, text stays on the guide).
+        style={{ paddingLeft: '9px' }}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
-            <FolderGlyph icon={folder.icon} size={14} open={!folder.collapsed} />
+            <FolderGlyph icon={folder.icon} color={folder.color} size={17} open={!folder.collapsed} />
             <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
@@ -2498,11 +2474,11 @@ function ChatSidebar({
              *  <button> (keyboard-operable for free), filling the row so clicking
              *  the folder glyph/name still toggles.  Double-click the name renames. */}
             <button type="button"
-              className="flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
+              className="flex items-center gap-[7px] flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
               aria-expanded={!folder.collapsed}
               aria-label={folder.collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
               onClick={() => toggleCollapse(folder.id)}>
-              <FolderGlyph icon={folder.icon} size={14} open={!folder.collapsed} testId={`folder-collapse-${folder.id}`} />
+              <FolderGlyph icon={folder.icon} color={folder.color} size={17} open={!folder.collapsed} testId={`folder-collapse-${folder.id}`} />
               {/* Double-click rename is a mouse-only power shortcut; the accessible
                *  path is the ⋯-menu Rename item, so scope-disable the interaction rule. */}
               {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
@@ -2636,35 +2612,21 @@ function ChatSidebar({
     // Wrap children in a bordered container so the folder's extent is visually
     // clear when multiple folders are open. Only wrap when there's content,
     // otherwise the FolderBody would render an empty 1px-tall strip with a line.
-    // Inline "New chat" affordance at the end of the slot list when the folder
-    // is expanded — a discoverable, always-visible way to start a session in
-    // this folder (complements the hover ⊕ on the header, which also works when
-    // the folder is collapsed). Hidden while searching/filtering to keep results
-    // clean; always present otherwise, so an empty folder is no longer a dead-end.
-    const showInlineNewChat = !(slotFilter || activeFilters.size > 0)
-    const inlineNewChatBtn = (
-      <button key={`folder-newchat-${folder.id}`} type="button"
-        
-        onClick={() => createChatInFolder(folder.id)}
-        title={i18nT('pages.chatSidebar.new_chat_in_folder')} aria-label={`New chat in ${folder.name}`}
-        className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
-        {/* Label first, glyph trailing: a leading icon pushed this row's text
-         *  ~23px right of the session titles below it, breaking the single left
-         *  text guide the folder-header padding establishes. The ⊕ lands in the
-         *  same right-hand gutter as a session row's relative timestamp. */}
-        <span>{i18nT('pages.chatSidebar.new_chat_in_folder')}</span><MessageSquarePlus size={13} className="shrink-0 ml-auto" />
-      </button>
-    )
-    const bodyNodes: React.ReactNode[] = showInlineNewChat
-      ? (childNodes.length > 0
-          ? [inlineNewChatBtn,
-             <div key={`folder-newchat-sep-${folder.id}`} className="mx-3 border-b border-border" />,
-             ...childNodes]
-          : [inlineNewChatBtn])
-      : childNodes
-    const wrapped = bodyNodes.length > 0 ? (
+    const wrapped = childNodes.length > 0 ? (
       <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-3 pl-1 rounded-bl-md">
-        {bodyNodes}
+        {childNodes}
+      </div>
+    ) : !(slotFilter || activeFilters.size > 0) ? (
+      // Empty-folder affordance: a newly created (or emptied) expanded folder
+      // would otherwise render nothing, leaving the hover ⊕ on the header as
+      // the only (invisible-at-rest) way to start a session in it.
+      <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-3 pl-1 rounded-bl-md">
+        <button key={`folder-newchat-${folder.id}`} type="button"
+          onClick={() => createChatInFolder(folder.id)}
+          title={i18nT('pages.chatSidebar.new_chat_in_folder')} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}
+          className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
+          <span>{i18nT('pages.chatSidebar.new_chat_in_folder')}</span><MessageSquarePlus size={13} className="shrink-0 ml-auto" />
+        </button>
       </div>
     ) : null
     // Outer container wraps header + body so the entire folder block is a
@@ -3159,7 +3121,7 @@ function ChatSidebar({
                         >
                           {!hidden && !hiddenByAncestor && <Check size={10} className="text-accent-fg" strokeWidth={3} />}
                         </span>
-                        <FolderGlyph icon={f.icon} size={12} className="shrink-0 text-muted" />
+                        <FolderGlyph icon={f.icon} color={f.color} size={12} className="shrink-0 text-muted" />
                         <span className={`flex-1 truncate${hiddenByAncestor ? ' opacity-50' : ''}`}>{f.name}</span>
                         {count > 0 && <span className="text-muted text-[11px] shrink-0">{count}</span>}
                       </DropdownMenuItem>
@@ -3244,15 +3206,6 @@ function ChatSidebar({
             {/* Flat view has no containers to anchor to — every hide, top-level
              *  or nested, collapses into this one row at the bottom of the lane. */}
             {renderHiddenReveal('flat', allHiddenFolders, 0)}
-            {!historyOpen && (
-              <button
-                type="button"
-                onClick={() => { setHistoryOpen(true); dispatch(fetchHistory(false)) }}
-                className="mt-1 mx-1 px-2 py-1.5 text-left text-[12px] text-muted hover:text-accent hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
-              >
-                {i18nT('pages.chatSidebar.show_all_older_sessions')}
-              </button>
-            )}
           </motion.div>
         ) : orderedColumns.length === 0 ? (
           // Legacy single-lane layout (identical to pre-columns behavior)
@@ -3311,18 +3264,6 @@ function ChatSidebar({
                               const showDivider = i < ungroupedSlots.length - 1 && !isActive && !nextIsActive
                               return renderSessionRow(s, 0, showDivider)
                             })}
-                            {/* In-flow discovery affordance: a text button just below the
-                                last session that expands the Older Sessions pane. Hidden
-                                once open. */}
-                            {!historyOpen && (
-                              <button
-                                type="button"
-                                onClick={() => { setHistoryOpen(true); dispatch(fetchHistory(false)) }}
-                                className="mt-1 mx-1 px-2 py-1.5 text-left text-[12px] text-muted hover:text-accent hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
-                              >
-                                {i18nT('pages.chatSidebar.show_all_older_sessions')}
-                              </button>
-                            )}
                             {ungroupedSlots.length === 0 && draggingFolderedSession && <RootDropHint />}
                           </div>
                         )}
@@ -3562,9 +3503,8 @@ function ChatSidebar({
         <div className="border-t border-border" />
       )}
       {/* Older Sessions footer — the persistent collapse/expand header for the
-          history pane. The inline "Show all older sessions" button (above, below
-          the last session) is the in-flow discovery affordance. Whole row is the
-          click target; the Clear button stops propagation. */}
+          history pane. Whole row is the click target; the Clear button stops
+          propagation. */}
       <div
         role="button"
         tabIndex={0}
@@ -3706,7 +3646,7 @@ function ChatSidebar({
                       <Fragment key={gid}>
                         <button type="button" aria-expanded={!collapsed} aria-label={collapsed ? i18nT('pages.chatSidebar.expand_group_results', { group: groupName }) : i18nT('pages.chatSidebar.collapse_group_results', { group: groupName })} className="w-full flex items-center gap-1.5 px-2 pt-3 pb-1 text-[11px] font-semibold text-muted select-none bg-transparent border-none cursor-pointer hover:text-text first:pt-1" onClick={() => setCollapsedHistoryGroups(prev => { const next = new Set(prev); if (next.has(gid)) next.delete(gid); else next.add(gid); return next })}>
                           {collapsed ? <ChevronRight size={12} className="shrink-0" /> : <ChevronDown size={12} className="shrink-0" />}
-                          {folder ? <FolderGlyph icon={folder.icon} size={12} open={!collapsed} /> : <Folder size={12} className="text-muted shrink-0" />}
+                          {folder ? <FolderGlyph icon={folder.icon} color={folder.color} size={12} open={!collapsed} /> : <Folder size={12} className="text-muted shrink-0" />}
                           <span className="truncate">{folder ? folder.name : i18nT('pages.chatSidebar.unfiled')}</span>
                           <span className="ml-0.5 text-muted font-normal tabular-nums">· {rows.length}</span>
                         </button>
@@ -3776,6 +3716,7 @@ function ChatSidebar({
                 projectDir: draft.projectDir,
                 defaultAgent: draft.defaultAgent,
                 icon: draft.icon,
+                color: draft.color,
               })
             } else {
               // Build the PATCH from what the USER edited (draft.touched, measured
@@ -3796,6 +3737,8 @@ function ChatSidebar({
               // legitimate instruction, so refuse to send one even if asked.
               if (draft.regenerateIcon) body.regenerate_icon = true
               else if (touched.has('icon') && draft.icon) body.icon = draft.icon
+              // '' is a legitimate color instruction: it clears back to gray.
+              if (touched.has('color')) body.color = draft.color
               if (Object.keys(body).length > 0) {
                 await updateFolderMutation.mutateAsync({ id: folderModal.folderId, body })
               }
