@@ -32,10 +32,11 @@ _pyver() {
     "$1" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null
 }
 
-# First usable system python >= 3.9, preferring newer explicit minors.
+# First usable system python >= 3.10, preferring the supported/tested version
+# (3.12) over newer minors that may lack dep wheels or have API changes.
 _find_system_python() {
     local c resolved
-    for c in python3.13 python3.12 python3.11 python3.10 python3 python; do
+    for c in python3.12 python3.11 python3.10 python3.13 python3 python; do
         resolved="$(command -v "$c" 2>/dev/null)" || continue
         if _py_ok "$resolved"; then
             echo "$resolved"
