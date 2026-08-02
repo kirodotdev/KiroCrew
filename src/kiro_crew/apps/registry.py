@@ -2677,7 +2677,21 @@ async def _clone_build_app_locked(
             "error": f"blocked by admission policy: {denied}",
         }
 
-    result = await _run_app_build(pkg_dir, app_name, log_lines)
+    # Build in the directory that actually HOLDS the package, not the clone root.
+    #
+    # A monorepo registry entry declares `subdirectory`, and historically it was
+    # joined only AFTER this build ran — so `_run_app_build` looked for
+    # pyproject.toml/package.json at the clone root, found none, logged "No build
+    # step detected — using source as-is", and returned ok=True having installed
+    # nothing. The app's own pyproject.toml was never seen. A silent success is
+    # the worst shape for this: `setup.onInstall` does get `cwd=app_source`, so
+    # an app could paper over it with a script, which is exactly how a bug like
+    # this stays hidden.
+    #
+    # `app_source` is already the containment-checked join of `subdirectory`
+    # under the clone root (the identity gate above fails closed on an escaping
+    # value), so it is safe to run the build command there.
+    result = await _run_app_build(app_source, app_name, log_lines)
     if result["ok"]:
         result["pkg_dir"] = pkg_dir
         # Surface the pre-clone checkout state so the caller's LATER gates
@@ -2759,16 +2773,53 @@ async def _run_app_build(
         or (build_dir / "setup.py").is_file()
         or (build_dir / "requirements.txt").is_file()
     ):
-        pip = shutil.which("pip") or shutil.which("pip3")
-        if pip:
-            if (build_dir / "requirements.txt").is_file() and not (
-                (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
-            ):
-                build_cmds.append([pip, "install", "-r", "requirements.txt"])
-            else:
-                build_cmds.append([pip, "install", "."])
+        # `sys.executable -m pip`, NOT `shutil.which("pip")`.
+        #
+        # A Python app has to land in the interpreter that will IMPORT it — the one
+        # running this gateway. `which("pip")` resolves to whatever pip is first on
+        # PATH, which is routinely a different interpreter: `bin/kirocrew` execs
+        # `.venv/bin/kirocrew` WITHOUT putting the venv's `bin/` on PATH, and
+        # `service/common.py::service_path()` prepends `~/.local/bin` ahead of it. So the
+        # build pip was whatever the user happened to have.
+        #
+        # The failure is SILENT, which is why it survived. Measured on a host whose first
+        # pip was 3.7 and whose gateway venv was 3.12: with a version-incompatible pip the
+        # install failed loudly, but with a *compatible-but-different* pip (3.10) it
+        # reported "Successfully installed", the build step reported success, and the
+        # package landed in `~/.local/lib/python3.10/site-packages` — invisible to the
+        # gateway, with `ENABLE_USER_SITE = False` in a venv so there is no fallback. The
+        # app installs, the entry point never appears, and nothing anywhere says why.
+        #
+        # Our own packages only fail loudly because they declare `requires-python`; a
+        # third-party app without that constraint fails silently on EVERY mismatch.
+        #
+        # EXCEPTION: never run pip against the desktop app's bundled interpreter.
+        # The desktop build ships a python-build-standalone runtime inside the
+        # application bundle (`Resources/backend-dist/...`); on macOS that bundle is
+        # code-signed, so a pip install writing into its site-packages invalidates
+        # the signature and breaks subsequent launches/updates — and the write is
+        # discarded on every app update anyway. This is a LOUD failure, not a
+        # soft-skip: a Python app that declares a build step needs its packages
+        # importable by the gateway, and skipping the install while reporting
+        # success would recreate exactly the silent-broken-install shape this
+        # function is written to prevent.
+        if "backend-dist" in Path(sys.executable).resolve().parts:
+            return {
+                "ok": False,
+                "name": app_name,
+                "error": (
+                    "Python apps that require a build step are not supported in "
+                    "the desktop app: its bundled interpreter is inside the "
+                    "signed application bundle and cannot install packages"
+                ),
+            }
+        pip_cmd = [sys.executable, "-m", "pip"]
+        if (build_dir / "requirements.txt").is_file() and not (
+            (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
+        ):
+            build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
         else:
-            log_lines.append("pip not found on PATH — skipping Python build step")
+            build_cmds.append([*pip_cmd, "install", "."])
 
     if not build_cmds:
         log_lines.append("No build step detected — using source as-is")
@@ -3050,6 +3101,8 @@ async def install_from_registry(
             log_lines,
             branch=branch,
             index_originated=index_originated,
+            # Passed so the BUILD runs where the package is. The containment check
+            # below is still authoritative for choosing app.json's directory.
             subdirectory=subdirectory,
             entry_repo=repo,
         )

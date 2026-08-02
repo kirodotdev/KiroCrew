@@ -36,9 +36,7 @@ from kiro_crew.apps import registry
 @pytest.fixture(autouse=True)
 def _explicit_registry_execution_admission(monkeypatch):
     """These tests must reach admitted registry subprocess paths."""
-    monkeypatch.setattr(
-        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
-    )
+    monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
 
 
 # A portable long-lived child: sleeps well past any test timeout without
@@ -94,9 +92,7 @@ def _record_tree_kill(monkeypatch) -> list[int]:
         killed.append(pid)
         return True
 
-    monkeypatch.setattr(
-        registry.platform_compat, "kill_process_tree_async", _fake_tree_kill
-    )
+    monkeypatch.setattr(registry.platform_compat, "kill_process_tree_async", _fake_tree_kill)
     return killed
 
 
@@ -136,9 +132,7 @@ async def test_communicate_with_timeout_kills_whole_process_tree(monkeypatch):
         killed.append((pid, sig))
         return True
 
-    monkeypatch.setattr(
-        registry.platform_compat, "kill_process_tree_async", _fake_tree_kill
-    )
+    monkeypatch.setattr(registry.platform_compat, "kill_process_tree_async", _fake_tree_kill)
     with pytest.raises(asyncio.TimeoutError):
         await registry._communicate_with_timeout(proc, timeout=0.01)
 
@@ -158,9 +152,7 @@ async def test_communicate_with_timeout_falls_back_when_group_kill_fails(monkeyp
     async def _boom(pid, sig):
         raise ProcessLookupError  # subclass of OSError
 
-    monkeypatch.setattr(
-        registry.platform_compat, "kill_process_tree_async", _boom
-    )
+    monkeypatch.setattr(registry.platform_compat, "kill_process_tree_async", _boom)
     with pytest.raises(asyncio.TimeoutError):
         await registry._communicate_with_timeout(proc, timeout=0.01)
 
@@ -1337,3 +1329,155 @@ class TestApplyTrustFields:
         assert "featured" not in rows["ext-app"]
         # The internal snapshot key never leaks into the API payload.
         assert all("_index_author" not in r for r in rows.values())
+# ---------------------------------------------------------------------------
+# Git-install build step: the interpreter, and where the build runs.
+#
+# Both properties below were broken and NEITHER had a test, which is why they
+# survived — and both fail SILENTLY, reporting a successful install that installed
+# nothing the gateway can import.
+# ---------------------------------------------------------------------------
+
+
+def _build_cmds_for(tmp_path, monkeypatch, files: dict[str, str]) -> list[list[str]]:
+    """Run ``_run_app_build``'s command planning without executing anything.
+
+    Captures the argv list rather than asserting on side effects: the point of both
+    tests is WHICH command would run, and executing a real pip install in a unit test
+    would be both slow and environment-dependent.
+    """
+    for rel, body in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+
+    captured: list[list[str]] = []
+
+    class _EmptyStdout:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _Ok:
+        returncode = 0
+        stdout = _EmptyStdout()
+
+        async def wait(self):
+            return 0
+
+        async def communicate(self):
+            return (b"", b"")
+
+    async def _fake_exec(*argv, **_kwargs):
+        captured.append(list(argv))
+        return _Ok()
+
+    monkeypatch.setattr(registry, "create_subprocess_limited", _fake_exec)
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="standard": (list(cmd), None))
+    monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: list(cmd))
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_python_build_uses_the_running_interpreter_not_path_pip(tmp_path, monkeypatch):
+    """A Python app must install into the interpreter that will IMPORT it.
+
+    ``shutil.which("pip")`` resolves to whatever pip is first on PATH, which is
+    routinely NOT the gateway's: ``bin/kirocrew`` execs ``.venv/bin/kirocrew`` without
+    putting the venv's ``bin/`` on PATH, and ``service_path()`` prepends
+    ``~/.local/bin`` ahead of it.
+
+    The failure mode is silent, which is what made it survive. Measured on a host whose
+    first pip was 3.7 and whose gateway venv was 3.12: a *compatible-but-different* pip
+    (3.10) reported "Successfully installed", the build reported success, and the package
+    landed in ``~/.local/lib/python3.10/site-packages`` — invisible to the gateway, and
+    a venv sets ``ENABLE_USER_SITE = False`` so there is no fallback.
+
+    Asserting ``sys.executable`` rather than "not the string 'pip'" so the test states
+    the property (install into THIS interpreter) instead of banning one spelling.
+    """
+    captured = _build_cmds_for(
+        tmp_path, monkeypatch, {"pyproject.toml": "[project]\nname='x'\nversion='0'\n"}
+    )
+    # A PATH pip that is emphatically not us — the old code would have used it.
+    monkeypatch.setattr(registry.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    await registry._run_app_build(tmp_path, "x", [])
+
+    assert captured, "a pyproject.toml must produce a build command"
+    argv = captured[0]
+    assert argv[0] == sys.executable, f"build must use the running interpreter, got {argv[0]!r}"
+    assert argv[1:3] == ["-m", "pip"], f"expected `-m pip`, got {argv[1:3]!r}"
+
+
+@pytest.mark.asyncio
+async def test_a_monorepo_subdirectory_is_built_not_the_clone_root(tmp_path, monkeypatch):
+    """The build must run where the package IS, not at the clone root.
+
+    A monorepo registry entry declares ``subdirectory``, and that used to be joined
+    only AFTER the build — so the build looked for pyproject.toml at the clone root,
+    found none, logged "No build step detected — using source as-is" and returned
+    ok=True having installed nothing.
+    """
+    captured: list = []
+
+    async def _fake_build(build_dir, app_name, log_lines):
+        captured.append(build_dir)
+        return {"ok": True}
+
+    async def _fake_clone(git_url, branch, pkg_dir, log_lines, **kwargs):
+        sub = pkg_dir / "apps" / "my-tool"
+        sub.mkdir(parents=True, exist_ok=True)
+        (sub / "pyproject.toml").write_text("[project]\n", "utf-8")
+        # The identity gate reads app.json from the declared subdirectory and
+        # fails closed on a mismatch — the cloned repo must declare the name.
+        (sub / "app.json").write_text(json.dumps({"name": "my-tool"}), "utf-8")
+        return None
+
+    monkeypatch.setattr(registry, "_run_app_build", _fake_build)
+    monkeypatch.setattr(registry, "_git_clone_or_pull", _fake_clone)
+    monkeypatch.setattr(registry, "app_source_dir", lambda name: tmp_path / name)
+    monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
+    monkeypatch.setattr(registry, "sel", lambda: MagicMock())
+
+    await registry._clone_build_app_locked(
+        "https://example.invalid/r.git", "my-tool", [], subdirectory="apps/my-tool"
+    )
+
+    assert captured, "the build must be attempted"
+    assert (
+        captured[0].name == "my-tool" and captured[0].parent.name == "apps"
+    ), f"build ran in {captured[0]} — expected the declared subdirectory"
+
+
+@pytest.mark.asyncio
+async def test_a_traversing_subdirectory_does_not_choose_the_build_dir(tmp_path, monkeypatch):
+    """``subdirectory`` is untrusted index content, so it must not escape the clone.
+
+    The identity gate joins ``subdirectory`` under the clone root with a
+    containment check and FAILS CLOSED on an escaping value — no build command
+    may run in a directory chosen by a traversing path.
+    """
+    captured: list = []
+
+    async def _fake_build(build_dir, app_name, log_lines):
+        captured.append(build_dir)
+        return {"ok": True}
+
+    async def _fake_clone(git_url, branch, pkg_dir, log_lines, **kwargs):
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        return None
+
+    monkeypatch.setattr(registry, "_run_app_build", _fake_build)
+    monkeypatch.setattr(registry, "_git_clone_or_pull", _fake_clone)
+    monkeypatch.setattr(registry, "app_source_dir", lambda name: tmp_path / name)
+    monkeypatch.setattr(registry, "sel", lambda: MagicMock())
+
+    result = await registry._clone_build_app_locked(
+        "https://example.invalid/r.git", "evil", [], subdirectory="../../etc"
+    )
+
+    assert result["ok"] is False
+    assert "unsafe subdirectory" in result["error"]
+    assert captured == [], f"build ran despite a traversing subdirectory: {captured}"
