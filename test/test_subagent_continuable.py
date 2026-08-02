@@ -164,9 +164,7 @@ class TestKeepThreading:
         sessions = _mock_sessions(resumed=True)
         manager = _manager(sessions)
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
-            info = manager.spawn(
-                "follow-up", keep=True, conversation_key="subagent:origrun1"
-            )
+            info = manager.spawn("follow-up", keep=True, conversation_key="subagent:origrun1")
             assert info is not None and not info.error
             await manager._tasks[info.id]
         # get_or_create must be called with the ORIGINAL conversation key.
@@ -191,8 +189,10 @@ class TestContinueConversation:
         sessions = _mock_sessions()
         sessions.resumable_sid = MagicMock(return_value=None)
         manager = _manager(sessions)
-        with patch("kiro_crew.subagent.sel"), \
-                patch("kiro_crew.subagent.read_state", return_value=None):
+        with (
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.subagent.read_state", return_value=None),
+        ):
             info = manager.continue_conversation("deadbeef", "more work")
         assert info is not None and info.done
         assert info.error.startswith("conversation_gone")
@@ -205,9 +205,12 @@ class TestContinueConversation:
         sessions.resumable_sid = MagicMock(side_effect=[None, "sid-from-state"])
         manager = _manager(sessions)
         state = {"session_id": "sid-from-state", "provider": "acp", "cwd": "/tmp/x"}
-        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), \
-                patch("kiro_crew.subagent.read_state", return_value=state), \
-                patch("kiro_crew.subagent.update_state") as upd:
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.subagent.read_state", return_value=state),
+            patch("kiro_crew.subagent.update_state") as upd,
+        ):
             info = manager.continue_conversation("origrun2", "follow-up")
             assert info is not None and not info.error, info.error
             await manager._tasks[info.id]
@@ -223,8 +226,10 @@ class TestContinueConversation:
         sessions.resumable_sid = MagicMock(return_value=None)  # both checks fail
         manager = _manager(sessions)
         state = {"session_id": "sid-stale", "provider": "acp", "cwd": ""}
-        with patch("kiro_crew.subagent.sel"), \
-                patch("kiro_crew.subagent.read_state", return_value=state):
+        with (
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.subagent.read_state", return_value=state),
+        ):
             info = manager.continue_conversation("stalerun", "follow-up")
         assert info is not None and info.done
         assert info.error.startswith("conversation_gone")
@@ -358,9 +363,7 @@ class TestReleaseAndSweep:
         sessions = _mock_sessions()
         manager = _manager(sessions)
         manager._conversations["subagent:c1"] = time.time()
-        with patch(
-            "kiro_crew.subagent._cleanup_session_files_sync"
-        ) as cleanup:
+        with patch("kiro_crew.subagent._cleanup_session_files_sync") as cleanup:
             ok, detail = manager.release_conversation("c1")
         assert ok and detail == "released"
         cleanup.assert_called_once_with("sid-123", "acp")
@@ -380,9 +383,7 @@ class TestReleaseAndSweep:
         now = time.time()
         manager._conversations["subagent:old1"] = now - 7 * 3600  # expired
         manager._conversations["subagent:new1"] = now - 60  # fresh
-        with patch(
-            "kiro_crew.subagent._cleanup_session_files_sync"
-        ):
+        with patch("kiro_crew.subagent._cleanup_session_files_sync"):
             manager._sweep_conversations(now)
         assert "subagent:old1" not in manager._conversations
         assert "subagent:new1" in manager._conversations
@@ -490,3 +491,159 @@ class TestPersistenceGuards:
             pruned = sp.prune_stale_tombstones(max_age_days=0, delivered_ttl_secs=0)
         assert pruned >= 1
         cleanup.assert_called_once()
+
+
+# ── conversation TTL registry rebuild on restart ──
+
+
+class TestConversationTTLRegistryRebuild:
+    """Tests for rebuilding the conversation TTL registry on gateway restart.
+
+    The registry is in-memory only, so a restart loses it. Promoted
+    conversations (keep=True) would leak past TTL without rebuild.
+    """
+
+    def _write_state_with_timestamp(self, agent_id: str, keep: bool, updated_at: float) -> None:
+        """Write state.json with explicit timestamp (update_state overwrites it)."""
+        import json
+
+        import kiro_crew.subagent_persistence as sp
+
+        sp.create_agent_folder(agent_id, task="t")
+        d = sp._agent_dir(agent_id)
+        state = json.loads((d / "state.json").read_text())
+        state["keep"] = keep
+        state["updated_at"] = updated_at
+        (d / "state.json").write_text(json.dumps(state))
+
+    @pytest.mark.asyncio
+    async def test_rebuild_restores_fresh_conversations(self) -> None:
+        """Conversations still within TTL are restored with original timestamp."""
+        sessions = _mock_sessions()
+        manager = _manager(sessions)
+        now = time.time()
+        fresh_ts = now - 3600  # 1h ago - still within 6h TTL
+
+        self._write_state_with_timestamp("fresh1", keep=True, updated_at=fresh_ts)
+
+        await manager._rebuild_conversation_registry()
+
+        # Verify it was restored with original timestamp (not extended)
+        assert "subagent:fresh1" in manager._conversations
+        assert manager._conversations["subagent:fresh1"] == fresh_ts
+        sessions.mark_continuable.assert_called_once_with("subagent:fresh1")
+
+    @pytest.mark.asyncio
+    async def test_rebuild_expires_stale_conversations(self) -> None:
+        """Conversations past TTL are swept immediately, not given fresh TTL."""
+        sessions = _mock_sessions()
+        manager = _manager(sessions)
+        now = time.time()
+        stale_ts = now - 8 * 3600  # 8h ago - past 6h TTL
+
+        self._write_state_with_timestamp("stale1", keep=True, updated_at=stale_ts)
+
+        with patch.object(
+            manager, "release_conversation", return_value=(True, "released")
+        ) as release:
+            await manager._rebuild_conversation_registry()
+
+        # Verify it was released, not restored
+        release.assert_called_once_with("stale1")
+        assert "subagent:stale1" not in manager._conversations
+
+    @pytest.mark.asyncio
+    async def test_rebuild_handles_mixed_fresh_and_stale(self) -> None:
+        """A mix of fresh and stale entries are handled correctly."""
+        sessions = _mock_sessions()
+        manager = _manager(sessions)
+        now = time.time()
+
+        # One fresh (2h old), one stale (10h old)
+        self._write_state_with_timestamp("mix_fresh", keep=True, updated_at=now - 2 * 3600)
+        self._write_state_with_timestamp("mix_stale", keep=True, updated_at=now - 10 * 3600)
+
+        with patch.object(
+            manager, "release_conversation", return_value=(True, "released")
+        ) as release:
+            await manager._rebuild_conversation_registry()
+
+        # Fresh restored, stale released
+        assert "subagent:mix_fresh" in manager._conversations
+        release.assert_called_once_with("mix_stale")
+
+    @pytest.mark.asyncio
+    async def test_rebuild_ignores_non_keep_folders(self) -> None:
+        """Folders without keep=True are not restored."""
+        sessions = _mock_sessions()
+        manager = _manager(sessions)
+
+        self._write_state_with_timestamp("plain1", keep=False, updated_at=time.time())
+
+        await manager._rebuild_conversation_registry()
+
+        assert "subagent:plain1" not in manager._conversations
+        sessions.mark_continuable.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rebuild_handles_empty_subagents_dir(self) -> None:
+        """Empty or missing subagents directory is handled gracefully."""
+        sessions = _mock_sessions()
+        manager = _manager(sessions)
+
+        # Should not raise, just return
+        await manager._rebuild_conversation_registry()
+
+        assert len(manager._conversations) == 0
+
+
+class TestListContinuableConversations:
+    """Tests for list_continuable_conversations in subagent_persistence."""
+
+    def _write_state_with_timestamp(self, agent_id: str, keep: bool, updated_at: float) -> None:
+        """Write state.json with explicit timestamp."""
+        import json
+
+        import kiro_crew.subagent_persistence as sp
+
+        sp.create_agent_folder(agent_id, task="t")
+        d = sp._agent_dir(agent_id)
+        state = json.loads((d / "state.json").read_text())
+        state["keep"] = keep
+        state["updated_at"] = updated_at
+        (d / "state.json").write_text(json.dumps(state))
+
+    def test_returns_keep_true_entries(self) -> None:
+        import kiro_crew.subagent_persistence as sp
+
+        self._write_state_with_timestamp("keep1", keep=True, updated_at=1000.0)
+
+        entries = sp.list_continuable_conversations()
+        assert ("keep1", 1000.0) in entries
+
+    def test_ignores_keep_false_entries(self) -> None:
+        import kiro_crew.subagent_persistence as sp
+
+        self._write_state_with_timestamp("nokeep1", keep=False, updated_at=1000.0)
+
+        entries = sp.list_continuable_conversations()
+        ids = [e[0] for e in entries]
+        assert "nokeep1" not in ids
+
+    def test_falls_back_to_mtime_when_updated_at_missing(self) -> None:
+        import json
+
+        import kiro_crew.subagent_persistence as sp
+
+        sp.create_agent_folder("nomtime", task="t")
+        d = sp._agent_dir("nomtime")
+        state = json.loads((d / "state.json").read_text())
+        state["keep"] = True
+        state.pop("updated_at", None)
+        (d / "state.json").write_text(json.dumps(state))
+
+        entries = sp.list_continuable_conversations()
+        entry = next((e for e in entries if e[0] == "nomtime"), None)
+        assert entry is not None
+        # Should have a timestamp (from mtime fallback)
+        assert entry[1] > 0

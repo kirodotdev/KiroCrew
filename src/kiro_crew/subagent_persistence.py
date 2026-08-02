@@ -253,6 +253,41 @@ def list_orphans() -> list[dict]:
     return results
 
 
+def list_continuable_conversations() -> list[tuple[str, float]]:
+    """Return (conv_id, last_activity_ts) for all keep=True agent folders.
+
+    Scans ``~/.kiro/crew/subagents/`` for ``state.json`` with ``keep=True``.
+    Returns the agent id and the ``updated_at`` timestamp (falling back to
+    ``state.json`` mtime if missing). Used by ``SubagentManager`` to rebuild
+    the conversation TTL registry on gateway restart.
+    """
+    results: list[tuple[str, float]] = []
+    try:
+        dirs = sorted(_subagents_dir().iterdir())
+    except (FileNotFoundError, OSError):
+        return results
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        state_path = d / "state.json"
+        if not state_path.exists():
+            continue
+        state = read_state(d.name)
+        if state is None:
+            continue
+        if not state.get("keep"):
+            continue
+        # Use updated_at from state if available, else fall back to file mtime
+        last_activity = state.get("updated_at")
+        if last_activity is None:
+            try:
+                last_activity = state_path.stat().st_mtime
+            except OSError:
+                last_activity = time.time()
+        results.append((d.name, float(last_activity)))
+    return results
+
+
 # ── prune ────────────────────────────────────────────────────────────
 
 
@@ -285,8 +320,12 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
                 # Best-effort session cleanup — must not block folder removal
                 try:
                     state = read_state(d.name)
-                    session_id = ts.get("session_id") or (state.get("session_id", "") if state else "")
-                    provider = ts.get("provider") or (state.get("provider", "acp") if state else "acp")
+                    session_id = ts.get("session_id") or (
+                        state.get("session_id", "") if state else ""
+                    )
+                    provider = ts.get("provider") or (
+                        state.get("provider", "acp") if state else "acp"
+                    )
                     cwd = ts.get("cwd") or (state.get("cwd", "") if state else "")
                     # keep=True conversations retain their session files as
                     # resume material for spawn_continue; the conversation
@@ -306,9 +345,7 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
 # ── session file cleanup ──────────────────────────────────────────────
 
 
-def _cleanup_session_files_sync(
-    session_id: str, provider: str = "acp", *, cwd: str = ""
-) -> None:
+def _cleanup_session_files_sync(session_id: str, provider: str = "acp", *, cwd: str = "") -> None:
     """Delete LLM provider session files for a completed subagent.
 
     Synchronous — used during tombstone pruning (which runs in the reaper loop).

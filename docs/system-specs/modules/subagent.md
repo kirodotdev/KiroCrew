@@ -1,9 +1,9 @@
 # Subagent Module
 
-Last Updated: 2026-07-29 (post-fan-out synthesis no longer waits on Kiro
-readiness: readiness is latched at gateway boot, so the synthesis turn runs and a
-signed-out CLI surfaces as an `AcpAuthRequired` error card. Prior: synthesis
-survives temporary Kiro readiness loss)
+Last Updated: 2026-08-02 (conversation TTL registry rebuild on gateway restart:
+promoted conversations no longer leak past TTL after a restart - entries past TTL
+are swept immediately, not given a fresh clock. Prior: registry was memory-only
+and lost on restart)
 
 ## Overview
 
@@ -434,6 +434,22 @@ On startup, `SubagentManager` scans `~/.kiro/crew/subagents/` and reconciles:
 3. **PID dead + no result** → write tombstone with "orphaned" error
 
 **Orphan delivery is wired** (not a stub): the gateway registers `on_orphan_notify` (session injection — rides the parent slot's batched pending-failures drain) and `on_orphan_dm` (fallback). The DM fallback collects every undelivered orphan across the reconciliation scan and sends ONE digest message (`"N subagent(s)…"`) — never N pings; a lone orphan keeps the plain per-agent message.
+
+### Conversation TTL Registry Rebuild
+
+The conversation TTL registry (`_conversations` dict) is in-memory only. On
+gateway restart, `_rebuild_conversation_registry()` scans
+`~/.kiro/crew/subagents/` for `state.json` files with `keep=True` and re-seeds
+the registry with their `updated_at` timestamps (falling back to file mtime).
+
+**Expiry semantics on rebuild**: entries whose TTL has already elapsed while the
+gateway was down are swept immediately - they do NOT get a fresh full TTL. This
+prevents promoted conversations from leaking past the 6-hour TTL when the gateway
+restarts. For example, if a conversation was last active 8 hours before a restart,
+it is released on boot rather than being given another 6 hours.
+
+The rebuild runs file I/O in a thread pool (`asyncio.to_thread`) to avoid blocking
+the event loop, following the same pattern as other boot-path maintenance.
 
 ### Tombstone Lifecycle
 
