@@ -709,6 +709,75 @@ class TestRuntimeDisplayName:
         assert msg.index("[RUNTIME] Discord") < msg.index("[CURRENT USER REQUEST")
 
 
+class TestSessionIsolationDailyHistory:
+    """Session isolation for the daily-history activity log (issue #655).
+
+    The per-workspace ``## Recent History`` daily log aggregates the activity
+    of every session in the workspace with no per-session attribution. Injecting
+    it at session start let a fresh session recall a task that was given in a
+    different, separate chat session. It must be scoped out of a new session's
+    startup context, while the deliberately-global material (preferences and
+    lessons) must still be injected — that second assertion is what proves the
+    fix does not over-reach.
+    """
+
+    def _builder(self, tmp_path):
+        from kiro_crew.learn import Lesson
+
+        mem = MemoryStore(workspace=tmp_path / "ws")
+        mem.init()
+        # Session B recorded work -> consolidated into the workspace daily log.
+        mem.append_history("TASKB: user asked to deploy the payment-service to prod.")
+        # Global-by-design material.
+        mem.add_preference("Always use dark mode in the UI.")
+        lessons = LessonStore(base_dir=tmp_path / "ws")
+        lessons.save(
+            Lesson(ts="2026-01-01T00:00:00Z", rule="Always run pytest with -n0.", category="tool")
+        )
+        builder = ContextBuilder(
+            memory=mem,
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=lessons,
+        )
+        return builder
+
+    def test_fresh_session_does_not_recall_other_sessions_task(self, tmp_path):
+        """A fresh session A (built after session B recorded work) must NOT see
+        B's daily-history task, but MUST still see the global preferences and
+        lessons."""
+        builder = self._builder(tmp_path)
+        ctx = builder.build_session_context(session_key="dashboard:sessionA", agent="kirocrew")
+
+        # The leak is gone: no daily-history block, no session-B task content.
+        assert "## Recent History" not in ctx
+        assert "payment-service" not in ctx
+        assert "TASKB" not in ctx
+
+        # Deliberately-global material is preserved (not over-fixed).
+        assert "dark mode" in ctx, "global preference must still be injected"
+        assert "pytest with -n0" in ctx, "global lesson must still be injected"
+
+    def test_get_context_flag_scopes_only_daily_history(self, tmp_path):
+        """MemoryStore.get_context(include_daily_history=False) drops ONLY the
+        daily-history block; preferences (and the block wrapper) remain. Default
+        (True) keeps history for direct/API/suggestions callers."""
+        mem = MemoryStore(workspace=tmp_path / "ws")
+        mem.init()
+        mem.append_history("TASKB: deploy the payment-service to prod.")
+        mem.add_preference("Always use dark mode in the UI.")
+
+        with_history = mem.get_context()
+        assert "## Recent History" in with_history
+        assert "payment-service" in with_history
+        assert "dark mode" in with_history
+
+        without_history = mem.get_context(include_daily_history=False)
+        assert "## Recent History" not in without_history
+        assert "payment-service" not in without_history
+        # Preferences survive the scoping — the global material is untouched.
+        assert "dark mode" in without_history
+
+
 class TestMultibyteSanitization:
     """Tests for multi-byte UTF-8 sanitization (kiro-cli panic workaround)."""
 

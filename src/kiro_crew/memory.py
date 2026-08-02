@@ -349,6 +349,8 @@ class MemoryStore:
         semantic_cap: int = 12_000,
         episodic_cap: int = 12_000,
         query: str = "",
+        *,
+        include_daily_history: bool = True,
     ) -> str:
         """Build memory context block with source citations for prompt injection.
 
@@ -359,6 +361,18 @@ class MemoryStore:
             semantic_cap: Max chars for semantic memory.
             episodic_cap: Max chars for episodic memory.
             query: User message for episodic memory retrieval (optional).
+            include_daily_history: When False, the ``## Recent History`` daily
+                activity log is omitted. The daily history is a per-workspace
+                log that aggregates the activity of ALL sessions in the
+                workspace with no per-session attribution, so injecting it into
+                a fresh session lets that session recall tasks that were given
+                in a different, separate chat session (issue #655). Session
+                start (``build_session_context``) passes False so a new session
+                sees the durable profile (preferences, projects, semantic) and
+                lessons but not another session's activity; the daily history
+                stays on disk and remains available via the dashboard Memory
+                tab and memory search. Preferences and lessons are global BY
+                DESIGN and are unaffected. Defaults True for direct/API callers.
         """
         parts: list[str] = []
 
@@ -383,7 +397,7 @@ class MemoryStore:
                 f"{_cap(projects, projects_cap)}"
             )
 
-        history = self.read_recent_history(days=14)
+        history = self.read_recent_history(days=14) if include_daily_history else ""
         if history.strip():
             parts.append(
                 f"## Recent History\n"
