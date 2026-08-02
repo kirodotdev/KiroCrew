@@ -28,11 +28,14 @@ def _sandbox_can_spawn() -> bool:
 
     start_app_backend() fail-closes to None when the sandbox launcher can't
     start — e.g. GitHub hosted runners allow unshare(NEWUSER) but deny the
-    launcher's separate unshare(NEWNS) (errno 1). sandbox._probe_unshare() gives
-    a false positive there (it does NEWUSER|NEWNS in a SINGLE unshare call), so
-    gate the real-spawn tests on the production path itself: wrap a trivial
-    command exactly as the backend does and confirm it exits 0. Reusing
-    wrap_argv() means this probe can never drift from start_app_backend().
+    launcher's separate unshare(NEWNS) (errno 1). sandbox._probe_unshare() used
+    to give a false positive there because it issued NEWUSER|NEWNS in a SINGLE
+    unshare call, which the kernel satisfies atomically; the probe now mirrors
+    the launcher's split sequence, so detect_backend() reports such hosts
+    honestly. This gate still runs the production path rather than trusting any
+    probe: a spawn can fail for reasons a capability probe cannot see, and
+    reusing wrap_argv() means this check can never drift from
+    start_app_backend().
     """
     try:
         from kiro_crew import sandbox as _sb

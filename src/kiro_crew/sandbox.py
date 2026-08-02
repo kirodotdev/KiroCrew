@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -217,62 +218,314 @@ _TRANSIENT_PROBE_ERRNOS = frozenset(
 # Delay before the single in-probe retry on a transient failure.
 _PROBE_TRANSIENT_RETRY_DELAY_SECS = 0.05
 
+# Steps of the launcher's namespace handshake, named in probe failure reasons so
+# a caller can tell the host mechanisms apart instead of seeing a bare errno: a
+# NEWNS denial is Ubuntu's AppArmor userns restriction, while NEWUSER with
+# ENOSPC/EUSERS is a hardened user.max_user_namespaces=0.
+_PROBE_STEP_NEWUSER = "unshare(CLONE_NEWUSER)"
+_PROBE_STEP_NEWNS = "unshare(CLONE_NEWNS)"
+
+# A probe child that vanished mid-handshake is a harness failure, not a kernel
+# verdict, so it must not be cached as "this host has no sandbox". Kept separate
+# from _TRANSIENT_PROBE_ERRNOS so that set's cache semantics stay untouched.
+# ESRCH/ENOENT surface when opening /proc/<pid>/... for a dead child; EPIPE
+# surfaces when releasing a child that died after the maps were written.
+_PROBE_CHILD_GONE_ERRNOS = frozenset({errno.ESRCH, errno.ENOENT, errno.EPIPE})
+
+# Upper bound on the probe's pipe handshake. The real exchange is
+# sub-millisecond; this only stops a pathological child from wedging the
+# background warm thread forever.
+_PROBE_HANDSHAKE_TIMEOUT_SECS = 5.0
+
 # Detail of the most recent failed userns probe: (transient, reason).
 # ``None`` means the last probe succeeded (or none has run yet). Consumed by
 # detect_backend() for cache policy and by wrap_argv() for error reporting.
 _last_unshare_failure: tuple[bool, str] | None = None
 
 
-def _probe_unshare_once() -> tuple[bool, bool, str]:
-    """One unshare(CLONE_NEWUSER|CLONE_NEWNS) attempt: ``(ok, transient, reason)``.
+def _close_probe_fds(*fds: int) -> None:
+    """Close probe pipe fds, tolerating an already-closed one. Never raises.
 
-    The forked child exits with the unshare(2) errno so the parent can
-    distinguish a kernel that refuses user namespaces (EPERM/EINVAL/ENOSYS —
-    permanent) from momentary resource exhaustion (EAGAIN/ENOMEM/... —
-    transient).
+    ``os.close`` blocks, but every probe path runs off the event loop
+    (``_probe_unshare`` defers to the background warm thread when a loop is
+    running), so this does not breach the no-blocking-call-on-event-loop rule.
+    """
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _probe_failure(label: str, err: int) -> tuple[bool, bool, str]:
+    """Shape one failed probe step into ``(ok, transient, reason)``.
+
+    EPERM stays PERMANENT: an AppArmor userns denial, or a kernel built without
+    CONFIG_USER_NS, will not clear on a retry, and caching that verdict is what
+    makes ``detect_backend()`` honest. Only the momentary-resource errnos are
+    transient — widening that set caused incident 2026-07-18, where one EAGAIN
+    was cached as "this host has no sandbox" for an hour.
+    """
+    name = errno.errorcode.get(err, "?")
+    return (False, err in _TRANSIENT_PROBE_ERRNOS, f"{label} failed with errno {err} ({name})")
+
+
+def _probe_harness_failure(label: str, err: int) -> tuple[bool, bool, str]:
+    """Classify a probe-scaffolding failure, treating a vanished child as transient.
+
+    A child that dies mid-handshake reaches the parent as ESRCH/ENOENT on a
+    ``/proc`` map write, or EPIPE on the write that releases it. None of those is
+    a kernel verdict about user namespaces, so caching them permanently would
+    strand every later spawn until restart — the incident-2026-07-18 shape.
+    """
+    if err in _PROBE_CHILD_GONE_ERRNOS:
+        name = errno.errorcode.get(err, "?")
+        return (False, True, f"{label} failed with errno {err} ({name})")
+    return _probe_failure(label, err)
+
+
+def _probe_child_unshare(libc: ctypes.CDLL, flags: int) -> int:
+    """Run one ``unshare(2)`` in the probe child; return 0 or the errno.
+
+    A module-level seam so a test can simulate the Ubuntu >= 23.10 shape
+    ("NEWUSER ok, NEWNS EPERM") without needing a restricted kernel.
+    """
+    ctypes.set_errno(0)
+    if libc.unshare(flags) == 0:
+        return 0
+    return ctypes.get_errno() or errno.EPERM
+
+
+def _probe_write_identity_maps(pid: int, uid: int, gid: int) -> tuple[str, int] | None:
+    """Write the probe child's identity maps, exactly as the launcher's parent does.
+
+    Returns ``None`` on success, else ``(label, errno)`` for the first
+    ``/proc/<pid>/`` file that could not be written. A child that died between
+    the fork and this write surfaces here as ESRCH/ENOENT instead of raising.
+    """
+    for name, payload in (
+        ("setgroups", "deny"),
+        ("uid_map", f"{uid} {uid} 1\n"),
+        ("gid_map", f"{gid} {gid} 1\n"),
+    ):
+        try:
+            with open(f"/proc/{pid}/{name}", "w") as handle:
+                handle.write(payload)
+        except OSError as exc:
+            return (f"/proc/<pid>/{name} write", exc.errno or 0)
+    return None
+
+
+def _probe_read_step(fd: int) -> tuple[str, int] | None:
+    """Read one ``<step>:<errno>`` report from the probe child.
+
+    ``None`` means the child closed the pipe without reporting, sent junk, or
+    stayed silent past the handshake deadline — the deadline being what stops a
+    pathological child from wedging the background warm thread forever.
+
+    Uses ``poll`` rather than ``select``: ``select`` raises ``ValueError`` once a
+    descriptor reaches FD_SETSIZE (1024), and a long-lived gateway can easily
+    hand the probe a pipe fd past that. Raising there would kill the warm thread
+    and leave ``wrap_argv`` rejecting every sandboxed spawn.
+    """
+    poller = select.poll()
+    poller.register(fd, select.POLLIN)
+    deadline = time.monotonic() + _PROBE_HANDSHAKE_TIMEOUT_SECS
+    buf = b""
+    try:
+        while b"\n" not in buf:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                if not poller.poll(max(1, int(remaining * 1000))):
+                    return None
+                chunk = os.read(fd, 32)
+            except OSError:
+                return None
+            if not chunk:
+                return None  # writer closed (POLLHUP) without a full report
+            buf += chunk
+    finally:
+        try:
+            poller.unregister(fd)
+        except (KeyError, OSError):
+            pass
+    step, _, value = buf.split(b"\n", 1)[0].decode("ascii", "replace").partition(":")
+    try:
+        return (step, int(value))
+    except ValueError:
+        return None
+
+
+def _probe_child_death(pid: int) -> str:
+    """Describe how a silent probe child ended, for the failure reason.
+
+    A child killed by a signal (the OOM killer, a stray SIGKILL) is a momentary
+    environmental failure rather than a kernel verdict, so naming the signal
+    preserves the diagnostic the combined-call probe used to read out of the
+    child's exit status. Non-blocking, so a child wedged past the handshake
+    deadline is described instead of waited on.
     """
     try:
-        _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
-        _libc.unshare.argtypes = [ctypes.c_int]
-        _libc.unshare.restype = ctypes.c_int
+        reaped, status = os.waitpid(pid, os.WNOHANG)
+    except OSError:
+        return "exited without reporting"
+    if reaped != pid:
+        return f"stayed silent for {_PROBE_HANDSHAKE_TIMEOUT_SECS:g}s"
+    if os.WIFSIGNALED(status):
+        return f"killed by signal {os.WTERMSIG(status)}"
+    if os.WIFEXITED(status):
+        return f"exited with status {os.WEXITSTATUS(status)}"
+    return "exited without reporting"
+
+
+def _probe_reap(pid: int) -> None:
+    """Reap the probe child on every exit path so no zombie or stuck child leaks.
+
+    Reaps a child that already exited without signalling it — the common case,
+    and the one that must never send SIGKILL at a pid the kernel could have
+    recycled. Only a child still running after the handshake ended (it cannot
+    make progress: its pipes are closed) is killed, which bounds the reap
+    without spinning. ``platform_compat.kill_pid`` deliberately propagates
+    ``ProcessLookupError``, so an exit in that race is caught here.
+    """
+    try:
+        if os.waitpid(pid, os.WNOHANG)[0] == pid:
+            return
+    except OSError:
+        return  # not our child, or already reaped
+    try:
+        platform_compat.kill_pid(pid, platform_compat.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        os.waitpid(pid, 0)
+    except OSError:
+        pass
+
+
+def _probe_child_sequence(
+    libc: ctypes.CDLL, c2p_r: int, c2p_w: int, p2c_r: int, p2c_w: int
+) -> None:
+    """Probe child: run the launcher's two unshare steps, reporting each on the pipe.
+
+    Never returns. It reports raw errnos and classifies nothing, so the entire
+    verdict lives in the parent where a test can drive it without forking.
+    """
+    try:
+        _close_probe_fds(c2p_r, p2c_w)
+        err = _probe_child_unshare(libc, _CLONE_NEWUSER)
+        os.write(c2p_w, b"U:%d\n" % err)
+        if err:
+            os._exit(0)
+        # NEWNS needs a mapped UID, so wait for the parent's maps first. This
+        # ordering is the entire point of the probe.
+        if not os.read(p2c_r, 1):
+            os._exit(0)  # parent abandoned the handshake; it already has a verdict
+        os.write(c2p_w, b"N:%d\n" % _probe_child_unshare(libc, _CLONE_NEWNS))
+        os._exit(0)
+    except BaseException:
+        os._exit(1)
+
+
+def _probe_parent_sequence(
+    pid: int, c2p_r: int, p2c_w: int, uid: int, gid: int
+) -> tuple[bool, bool, str]:
+    """Parent half of the probe: drive the handshake and decide the verdict."""
+    report = _probe_read_step(c2p_r)
+    if report is None:
+        death = _probe_child_death(pid)
+        return (False, True, f"probe child {death}; no {_PROBE_STEP_NEWUSER} result")
+    step, err = report
+    if step != "U":
+        return (False, True, f"probe child sent unexpected step {step!r}")
+    if err:
+        return _probe_failure(_PROBE_STEP_NEWUSER, err)
+
+    failed_map = _probe_write_identity_maps(pid, uid, gid)
+    if failed_map is not None:
+        label, map_errno = failed_map
+        return _probe_harness_failure(label, map_errno)
+
+    try:
+        os.write(p2c_w, b"x")
+    except OSError as exc:
+        return _probe_harness_failure("probe handshake write", exc.errno or 0)
+
+    report = _probe_read_step(c2p_r)
+    if report is None:
+        death = _probe_child_death(pid)
+        return (False, True, f"probe child {death}; no {_PROBE_STEP_NEWNS} result")
+    step, err = report
+    if step != "N":
+        return (False, True, f"probe child sent unexpected step {step!r}")
+    if err:
+        return _probe_failure(_PROBE_STEP_NEWNS, err)
+    return (True, False, "ok")
+
+
+def _probe_unshare_once() -> tuple[bool, bool, str]:
+    """One launcher-shaped namespace probe: ``(ok, transient, reason)``.
+
+    Mirrors the sequence ``_build_launcher_script()`` actually performs — fork,
+    child ``unshare(CLONE_NEWUSER)``, parent writes the identity UID/GID map,
+    child ``unshare(CLONE_NEWNS)`` — because the two flags do NOT behave the
+    same way when combined. A single ``unshare(CLONE_NEWUSER | CLONE_NEWNS)`` is
+    satisfied atomically and therefore SUCCEEDS on hosts where the split
+    sequence fails: with Ubuntu's ``kernel.apparmor_restrict_unprivileged_userns
+    = 1`` (the default since 23.10), creating a user namespace moves the process
+    into a restricted AppArmor profile carrying no CAP_SYS_ADMIN, so the
+    *second* unshare returns EPERM. The previous combined probe reported those
+    hosts as sandbox-capable and every real spawn then died with
+    ``sandbox: unshare(NEWNS) failed: errno 1``.
+
+    ``reason`` names the failing step so a caller can tell the mechanisms apart
+    — a NEWNS denial is the AppArmor userns restriction, whereas NEWUSER with
+    ENOSPC/EUSERS is ``user.max_user_namespaces=0`` — rather than reporting a
+    bare errno that fits both.
+
+    Linux-only and off-loop only: ``_probe_unshare()`` guards the platform and
+    defers to the background warm thread when a loop is running, so the fork,
+    pipe reads and ``waitpid`` here never block the event loop.
+    """
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        libc.unshare.argtypes = [ctypes.c_int]
+        libc.unshare.restype = ctypes.c_int
     except OSError as exc:
         return (False, exc.errno in _TRANSIENT_PROBE_ERRNOS, f"libc load failed: {exc}")
     except Exception as exc:  # find_library returning junk, ABI issues, ...
         return (False, False, f"libc load failed: {exc}")
+
+    uid, gid = os.getuid(), os.getgid()
+    try:
+        c2p_r, c2p_w = os.pipe()
+    except OSError as exc:
+        return _probe_failure("probe pipe", exc.errno or 0)
+    try:
+        p2c_r, p2c_w = os.pipe()
+    except OSError as exc:
+        _close_probe_fds(c2p_r, c2p_w)
+        return _probe_failure("probe pipe", exc.errno or 0)
+
     try:
         pid = os.fork()
     except OSError as exc:
-        name = errno.errorcode.get(exc.errno or 0, "?")
-        transient = exc.errno in _TRANSIENT_PROBE_ERRNOS
-        return (False, transient, f"fork failed with errno {exc.errno} ({name})")
+        _close_probe_fds(c2p_r, c2p_w, p2c_r, p2c_w)
+        return _probe_failure("fork", exc.errno or 0)
+
     if pid == 0:
-        try:
-            ret = _libc.unshare(_CLONE_NEWUSER | _CLONE_NEWNS)
-            err = ctypes.get_errno() if ret != 0 else 0
-            os._exit(0 if ret == 0 else (err if 0 < err < 256 else 1))
-        except BaseException:
-            os._exit(1)
+        _probe_child_sequence(libc, c2p_r, c2p_w, p2c_r, p2c_w)  # never returns
+        os._exit(1)  # pragma: no cover - defensive
+
+    _close_probe_fds(c2p_w, p2c_r)
     try:
-        _, status = os.waitpid(pid, 0)
-    except OSError as exc:
-        return (False, True, f"waitpid failed: {exc}")
-    if os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0:
-        return (True, False, "ok")
-    if not os.WIFEXITED(status):
-        sig = os.WTERMSIG(status) if os.WIFSIGNALED(status) else 0
-        return (
-            False,
-            True,  # child killed by signal is always transient
-            f"probe child killed by signal {sig}",
-        )
-    child_errno = os.WEXITSTATUS(status)
-    name = errno.errorcode.get(child_errno, "?")
-    transient = child_errno in _TRANSIENT_PROBE_ERRNOS
-    return (
-        False,
-        transient,
-        f"unshare(CLONE_NEWUSER|CLONE_NEWNS) failed with errno {child_errno} ({name})",
-    )
+        return _probe_parent_sequence(pid, c2p_r, p2c_w, uid, gid)
+    finally:
+        # Closing p2c_w also releases a child still waiting on the maps.
+        _close_probe_fds(c2p_r, p2c_w)
+        _probe_reap(pid)
 
 
 # ── Background warm thread (never-block-on-loop policy) ──

@@ -7006,6 +7006,7 @@ class TestResolveKiroBinEnvOverride:
 
     @pytest.mark.asyncio
     async def test_spawn_launches_self_updated_override(self, tmp_path):
+        from kiro_crew import sandbox as sandbox_module
         from kiro_crew.acp import client as client_module
         from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
@@ -7015,6 +7016,12 @@ class TestResolveKiroBinEnvOverride:
         mock_exec = AsyncMock()
         with (
             patch.dict("os.environ", {"KIROCREW_KIRO_BIN": str(fake)}),
+            # This test asserts WHICH bytes get launched, not that the spawn is
+            # sandboxed (covered by test_sandbox_*.py). A CI runner with
+            # kernel.apparmor_restrict_unprivileged_userns=1 genuinely cannot
+            # build a namespace sandbox and wrap_argv fail-closes by design, so
+            # pin the decision instead of inheriting the host's capability.
+            patch.object(sandbox_module, "_allow_unsandboxed_exec", return_value=True),
             patch.object(
                 client_module,
                 "resolve_kiro_cli",

@@ -29,7 +29,10 @@ import pytest
 import kiro_crew.sandbox as sb
 
 _EAGAIN_REASON = "fork failed with errno 11 (EAGAIN)"
-_EPERM_REASON = "unshare(CLONE_NEWUSER|CLONE_NEWNS) failed with errno 1 (EPERM)"
+# The probe now mirrors the launcher's SPLIT sequence and names the failing
+# step, so a permanent denial reads as the NEWNS call rather than a combined
+# unshare — this is the exact string an Ubuntu >= 23.10 host produces.
+_EPERM_REASON = "unshare(CLONE_NEWNS) failed with errno 1 (EPERM)"
 
 
 @pytest.fixture(autouse=True)

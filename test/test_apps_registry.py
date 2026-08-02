@@ -168,6 +168,24 @@ async def test_communicate_with_timeout_falls_back_when_group_kill_fails(monkeyp
     assert proc.wait_calls == 1
 
 
+@pytest.fixture(autouse=True)
+def unsandboxed_spawn(monkeypatch):
+    """Decouple this module's timeout/reap tests from the host's sandbox capability.
+
+    Every test here asserts process-group signalling and reaping, and they mock
+    ``create_subprocess_exec``, so no child process ever actually runs. What they
+    must not depend on is whether THIS host can build a namespace sandbox: a CI
+    runner with ``kernel.apparmor_restrict_unprivileged_userns=1`` legitimately
+    cannot, and ``wrap_argv`` then fail-closes by design. These tests previously
+    passed only because the capability probe returned a false positive on such
+    hosts. Autouse because the coupling is a property of the whole module, not of
+    individual tests. Sandbox construction is covered by ``test_sandbox_*.py``.
+    """
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+
+
 # --------------------------------------------------------------------------
 # Bug 1 — git-clone manifest fetch reaps the clone tree on timeout
 # --------------------------------------------------------------------------
