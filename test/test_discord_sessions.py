@@ -90,6 +90,7 @@ class _Provider:
 class _Sessions:
     def __init__(self) -> None:
         self.mirror_links: dict[str, ChannelLink] = {}
+        self.origin_links: dict[str, ChannelLink] = {}
         self.inbound_keys: set[str] = set()
         self.last_key = ""
         self.provider = _Provider()
@@ -106,6 +107,12 @@ class _Sessions:
             self.inbound_keys.add(key)
         else:
             self.inbound_keys.discard(key)
+
+    def set_origin_link(self, key: str, link: ChannelLink) -> None:
+        self.origin_links[key] = link
+
+    def get_origin_link(self, key: str) -> ChannelLink | None:
+        return self.origin_links.get(key)
 
     def get_mirror_link(self, key: str) -> ChannelLink | None:
         return self.mirror_links.get(key)
@@ -777,6 +784,20 @@ async def test_own_session_still_gets_new_session_bookkeeping() -> None:
 
     assert [key for key, _ in getattr(sessions, "set_channel_calls", [])] == [sessions.last_key]
     assert [key for key, _ in getattr(log, "titles_set", [])] == [sessions.last_key]
+
+
+@pytest.mark.asyncio
+async def test_own_session_records_the_origin_conversation() -> None:
+    """The auto-compact notice needs the REAL channel, not the DM's user-id bucket."""
+    log = _log()
+    dispatcher, _, sessions = _dispatcher({"u1"}, log)
+    sessions.is_new_result = True
+
+    await dispatcher.handle_message(_message("hello there", channel_id="c1"))
+
+    link = sessions.get_origin_link(sessions.last_key)
+    assert link is not None
+    assert (link.channel_type, link.channel_id) == ("discord", "c1")
 
 
 @pytest.mark.asyncio

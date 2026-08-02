@@ -25,6 +25,7 @@ from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
@@ -1828,6 +1829,10 @@ class DashboardState:
 
         async def _on_compacted(key: str, pct: float, *, success: bool) -> None:
             if not key.startswith("dashboard:"):
+                # A Slack or Discord session has no slot to append to, so the
+                # notice used to be dropped and the user saw summarized history
+                # with no explanation. Route it to its own conversation instead.
+                await self._notify_channel_compaction(key, pct, success=success)
                 return
             slot_key = key[len("dashboard:") :]
             slot = self.get_slot(slot_key)
@@ -1864,6 +1869,20 @@ class DashboardState:
                     )
 
         self.sessions.set_compact_callback(_on_compacted)
+
+    async def _notify_channel_compaction(self, key: str, pct: float, *, success: bool) -> None:
+        """Deliver the auto-compact notice to a channel-originated session.
+
+        Isolated from the dashboard leg: a channel that is unreachable, ungoverned
+        or unregistered must not turn a successful compaction into an exception on
+        the session manager's background task.
+        """
+        try:
+            await deliver_channel_compaction_notice(self, key, pct, success=success)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Failed to deliver channel compact notice for %s", key
+            )
 
     def wire_session_recycle_callback(self) -> None:
         """Register the dashboard's recycle-notification callback.

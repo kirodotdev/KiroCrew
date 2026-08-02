@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -252,6 +252,44 @@ class TestCompactCallbackWiring:
         await cb("cron:daily-digest", 95.0, success=True)
 
         assert len(slot.messages) == baseline
+
+    @pytest.mark.asyncio
+    async def test_callback_routes_channel_keys_to_channel_notice(
+        self, state: DashboardState
+    ) -> None:
+        """A Slack/Discord session has no slot, so the notice goes to its channel."""
+        slot = state.get_or_create_slot("chat-1")
+        baseline = len(slot.messages)
+        cb = self._captured_callback(state)
+
+        with patch(
+            "kiro_crew.dashboard.state.deliver_channel_compaction_notice",
+            new_callable=AsyncMock,
+        ) as deliver:
+            await cb("slack:1785370133.085469", 92.0, success=True)
+            await cb("discord:kirocrew:direct:u1", 93.0, success=False)
+
+        assert [c.args[1] for c in deliver.await_args_list] == [
+            "slack:1785370133.085469",
+            "discord:kirocrew:direct:u1",
+        ]
+        assert deliver.await_args_list[1].kwargs["success"] is False
+        # The channel leg must not also write into an unrelated dashboard slot.
+        assert len(slot.messages) == baseline
+
+    @pytest.mark.asyncio
+    async def test_channel_notice_failure_does_not_propagate(
+        self, state: DashboardState
+    ) -> None:
+        """The compaction already succeeded; a broken channel must not raise."""
+        cb = self._captured_callback(state)
+
+        with patch(
+            "kiro_crew.dashboard.state.deliver_channel_compaction_notice",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("transport exploded"),
+        ):
+            await cb("slack:1785370133.085469", 92.0, success=True)
 
     @pytest.mark.asyncio
     async def test_callback_noop_when_slot_missing(self, state: DashboardState) -> None:

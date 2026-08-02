@@ -316,6 +316,10 @@ class _RecycleCallback(Protocol):
 # Circuit breaker: force-reset after this many consecutive failures
 _CIRCUIT_BREAKER_THRESHOLD = 5
 
+# Cap on remembered per-session channel notice targets. reset()/remove() evict
+# their own entries, so this only bounds sessions dropped by some other path.
+_MAX_ORIGIN_LINKS = 512
+
 # Background session recycle thresholds (more aggressive than chat compaction)
 _BG_RECYCLE_PCT = 70.0  # recycle at 70% — well before overflow
 _BG_BLIND_RECYCLE_PROMPTS = 40  # recycle after 40 prompts if no metadata
@@ -616,6 +620,9 @@ class SessionManager:
         # cold-start).
         self._recycling: dict[str, "_Session"] = {}
         self._compact_cooldown_until: dict[str, float] = {}
+        # Per-session channel conversation to send unattended output to (the
+        # auto-compact notice). In-memory on purpose: see set_origin_link.
+        self._origin_links: dict[str, ChannelLink] = {}
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         self._on_compacted: _CompactCallback | None = None
         self._on_recycled: _RecycleCallback | None = None
@@ -2408,6 +2415,7 @@ class SessionManager:
             # The new process is a fresh start — drop any stale failure
             # cooldown so it isn't inherited.
             self._compact_cooldown_until.pop(key, None)
+            self._origin_links.pop(key, None)
         if session:
             # Capture PID and child tree before shutdown clears them
             client = getattr(session.provider, "_client", None)
@@ -2793,6 +2801,7 @@ class SessionManager:
         async with self._lock:
             session = self._sessions.pop(key, None)
             self._compact_cooldown_until.pop(key, None)
+            self._origin_links.pop(key, None)
         if session:
             await session.provider.shutdown()
             # Reap any companion subagent runtime keyed by this parent (the
@@ -3398,6 +3407,33 @@ class SessionManager:
     def mirror_accepts_inbound(self, key: str) -> bool:
         """True iff this session's mirror is a session-resume (two-way) binding."""
         return self._session_map.mirror_accepts_inbound(key)
+
+    def set_origin_link(self, key: str, link: ChannelLink) -> None:
+        """Record the channel conversation this session was started from.
+
+        Called by a transport's inbound path with the conversation's real send
+        target, so unattended output about the session (the auto-compact notice)
+        can reach the user.
+
+        Held in memory, NOT persisted, and that is deliberate: the target is only
+        ever needed to talk about a LIVE session, and sessions themselves are
+        in-memory — a gateway restart takes the session with it, so there is
+        nothing left to compact or explain. Keeping it here also keeps the
+        recording free of disk I/O and of cross-thread mutation, both of which a
+        session-map field would have put on the transport's turn path.
+        """
+        key = self._fold_key(key)
+        self._origin_links[key] = link
+        # Bound the map for the pathological case where sessions are dropped
+        # without reset()/remove() (which evict their own entries). FIFO, since
+        # dict preserves insertion order and the oldest key is the least likely
+        # to still be live.
+        while len(self._origin_links) > _MAX_ORIGIN_LINKS:
+            self._origin_links.pop(next(iter(self._origin_links)), None)
+
+    def get_origin_link(self, key: str) -> ChannelLink | None:
+        """Return the channel conversation this session was started from, or None."""
+        return self._origin_links.get(self._fold_key(key))
 
     def find_mirror_sessions(
         self,

@@ -371,6 +371,21 @@ class DiscordDispatcher:
             is_new_own_session = is_new and resumed_key is None
             if is_new_own_session:
                 await self.sessions.set_channel(session_key, chan_id)
+            if resumed_key is None:
+                # Record the conversation's REAL send target so unattended
+                # output about the session — the auto-compact notice — can reach
+                # the user. `chan_id` above is the legacy namespaced bucket and
+                # carries the user id for a DM, which is not a postable channel.
+                # Skipped for a resumed dashboard session: its own surface owns
+                # the notice, and stamping it here would bind a dashboard entry
+                # to Discord.
+                # An in-memory dict assignment on the session manager, not a
+                # persisted field: the target is only needed while the session
+                # is live, so no disk I/O and no cross-thread state land on this
+                # turn path.
+                self.sessions.set_origin_link(
+                    session_key, ChannelLink("discord", channel_id=channel_id)
+                )
             # Publish this turn's session identity so managed MCP tools resolve
             # X-Session-Key; one shared writer lives in messaging.identity. (#232)
             await publish_turn_identity(self.sessions, session_key)

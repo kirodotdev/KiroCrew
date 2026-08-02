@@ -207,6 +207,7 @@ class FakeSessions:
         self.queued: list = []
         self._gp = FakeProvider()
         self.mirror_links: dict[str, Any] = {}
+        self.origin_links: dict[str, Any] = {}
         self.inbound_mirror_keys: set[str] = set()
 
     async def get_or_create(self, key: str, *, agent: Any = None, channel_id: Any = None) -> Any:
@@ -254,6 +255,12 @@ class FakeSessions:
 
     def get_mirror_link(self, key: str) -> Any:
         return self.mirror_links.get(key)
+
+    def set_origin_link(self, key: str, link: Any) -> None:
+        self.origin_links[key] = link
+
+    def get_origin_link(self, key: str) -> Any:
+        return self.origin_links.get(key)
 
     def find_mirror_sessions(self, link: Any, *, inbound_only: bool = False) -> list[str]:
         return [
