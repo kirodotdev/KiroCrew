@@ -6420,6 +6420,7 @@
       "session_startup": "सेशन स्टार्टअप",
       "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "वॉर्म MCP बैकएंड दोबारा उपयोग करने वाले सेशन बनाम कोल्ड स्पॉन",
       "shard_s_source": "शार्ड · स्रोत",
+      "showing_partial_window": "{{total}} में से {{shown}} नमूने दिखाए जा रहे हैं (विंडो के भीतर हिस्टोग्राम सीमाएँ बदल गईं)",
       "skill_load": "स्किल लोड",
       "startup_latency_distribution_from_otel_histogram": "स्टार्टअप लेटेंसी वितरण · OTEL हिस्टोग्राम बकेट से",
       "telemetry_enabled_true": "telemetry.enabled = true",

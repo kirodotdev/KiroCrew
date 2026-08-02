@@ -196,9 +196,27 @@ are grouped too** — accumulated inside `_Hist` rather than alongside it, becau
 scoping only the buckets and count would leave the outcome breakdown summing
 across generations: the page would show N turns beside an outcome bar totalling
 more than N, and a `fault_rate` computed over a different population than the
-latency next to it. Both the `startup` and `turn` blocks expose
-`other_generations` (0 = a clean window; >0 = the window straddles a boundary
-change and only the dominant generation is reported).
+latency next to it. `other_generations` (0 = a clean window; >0 = the window
+straddles a boundary change and only the dominant generation is reported) and
+`total_count` (samples across EVERY generation) are therefore returned by
+`_Hist.stats()` itself, so they travel with every set of numbers they qualify —
+the `startup` blocks, the `turn` block, each `other` histogram, and each
+per-attribute split.
+
+The dashboard renders the PAIR, not the generation count: it shows
+"showing 1,134 of 2,926 samples" beside the affected figure. A generation count
+is an internal unit a reader cannot convert into missing data, so "1 older
+generation" left a truncated `n=1134` unreconcilable against the `2837 hit`
+counter next to it, while the shown/total pair is directly comparable to both.
+`other_generations` remains the structural fact (how many incompatible groups the
+window holds) and stays in the response for diagnostics.
+
+They are deliberately NOT pasted on by the response builder per block. That is
+how it shipped, and the generic `other` instruments were never given the field:
+the MCP acquire card reported one generation's `n` (1,154 of 2,926 real samples)
+beside a full-window counter, with nothing anywhere saying a generation had been
+dropped. A statistic and the caveat that makes it readable are one value, not
+two.
 
 This is load-bearing, not defensive: the historical shared array and
 `_TURN_BUCKETS_MS` have the SAME bucket-count length, so a length-only check
@@ -258,6 +276,23 @@ user-configurable `telemetry.local_dir` and each shard pass `validate_file_path`
 (sensitive-path check) before any read. Cross-process: metrics are emitted by
 the ACP/gateway processes, so reading the durable shards is the only correct
 path (an in-memory reservoir in the dashboard process would never see them).
+
+**`other` histogram splits (`_OTHER_SPLIT_ATTRS`).** An `other` histogram also
+carries a `splits` map (`"attr=value"` -> the same stats shape) for a NAMED set
+of low-cardinality attributes — currently `warm` only. This exists so one side of
+a split can be reported alone: the dashboard's cold-spawn figure is
+`acquire.splits["warm=false"]`. Splitting on every attribute present was
+rejected because `gateway.request.duration` carries method+route, which would
+grow one sub-histogram per endpoint and force an arbitrary truncation cap on the
+payload; a named boolean keeps the split two entries wide with no cap.
+
+Note that `kirocrew.mcp.lazy_load.*` is NOT the cold-spawn signal even though its
+name suggests it. It is emitted only from the legacy pre-`ensure_backend` spawn
+path, which modern stubs never take, so it records nothing on a current
+deployment (0 data points across 47 shards / 12 days observed) while real cold
+spawns are recorded on the acquire histogram under `warm=false`. The instrument
+stays because that legacy path can still execute for an old stub; the dashboard
+does not read it.
 
 **Startup phase gating.** Only the end-to-end startup point (`phase` absent, as
 on the claude path, or `phase=total` from the kiro path) feeds the startup

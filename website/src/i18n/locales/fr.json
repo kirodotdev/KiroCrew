@@ -6486,6 +6486,7 @@
       "session_startup": "Démarrage de session",
       "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "Sessions réutilisant un backend MCP déjà chaud plutôt qu’un lancement à froid",
       "shard_s_source": "shard(s) · source",
+      "showing_partial_window": "Affichage de {{shown}} échantillons sur {{total}} (les bornes de l'histogramme ont changé dans la fenêtre)",
       "skill_load": "Chargement de compétence",
       "startup_latency_distribution_from_otel_histogram": "Distribution de la latence de démarrage · d'après les intervalles d'histogramme OTEL",
       "telemetry_enabled_true": "telemetry.enabled = true",

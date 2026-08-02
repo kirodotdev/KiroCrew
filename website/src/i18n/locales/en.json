@@ -4653,6 +4653,7 @@
       "ready_rate": "Ready rate",
       "session_startup": "Session startup",
       "shard_s_source": "shard(s) · source",
+      "showing_partial_window": "Showing {{shown}} of {{total}} samples (histogram boundaries changed mid-window)",
       "skill_load": "Skill load",
       "startup_latency_distribution_from_otel_histogram": "Startup latency distribution · from OTEL histogram buckets",
       "telemetry_enabled_true": "telemetry.enabled = true",

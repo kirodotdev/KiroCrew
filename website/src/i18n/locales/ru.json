@@ -6552,6 +6552,7 @@
       "session_startup": "Запуск сессии",
       "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "Сессии, переиспользующие горячий MCP-бэкенд, против холодного запуска",
       "shard_s_source": "шард(ов) · источник",
+      "showing_partial_window": "Показано {{shown}} из {{total}} замеров (границы гистограммы изменились внутри окна)",
       "skill_load": "Загрузка навыка",
       "startup_latency_distribution_from_otel_histogram": "Распределение задержки запуска · по бакетам гистограммы OTEL",
       "telemetry_enabled_true": "telemetry.enabled = true",

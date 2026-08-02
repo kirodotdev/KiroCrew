@@ -6420,6 +6420,7 @@
       "session_startup": "Sitzungsstart",
       "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "Sitzungen, die ein warmes MCP-Backend wiederverwenden, statt einen Kaltstart",
       "shard_s_source": "Shard(s) · Quelle",
+      "showing_partial_window": "Zeigt {{shown}} von {{total}} Messwerten (Histogrammgrenzen haben sich im Zeitfenster geändert)",
       "skill_load": "Skill-Ladevorgang",
       "startup_latency_distribution_from_otel_histogram": "Verteilung der Startlatenz · aus OTEL-Histogramm-Buckets",
       "telemetry_enabled_true": "telemetry.enabled = true",

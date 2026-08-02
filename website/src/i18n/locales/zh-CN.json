@@ -6354,6 +6354,7 @@
       "session_startup": "会话启动",
       "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "复用热 MCP 后端与冷启动的会话对比",
       "shard_s_source": "个分片 · 来源",
+      "showing_partial_window": "显示 {{total}} 个样本中的 {{shown}} 个（窗口内直方图边界已变化）",
       "skill_load": "技能加载",
       "startup_latency_distribution_from_otel_histogram": "启动延迟分布 · 来自 OTEL 直方图分桶",
       "telemetry_enabled_true": "telemetry.enabled = true",

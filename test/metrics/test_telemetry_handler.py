@@ -151,3 +151,155 @@ def test_aggregate_startup_turn_and_other(tmp_path: Path):
     assert warm_rows[0]["total"] == 4.0
     assert warm_rows[0]["by_attr"]["result=hit"] == 3.0
     assert warm_rows[0]["by_attr"]["result=miss"] == 1.0
+
+
+# ── Bucket-generation truthfulness + the acquire warm/cold split ──────────
+#
+# Two shipped defects are pinned here:
+#
+#   1. ``other_generations`` was pasted onto the turn and startup blocks by the
+#      response builder, so the generic ``other`` instruments never carried it.
+#      A window straddling a boundary change reported ONE generation's count and
+#      percentiles with nothing saying a generation had been dropped — the MCP
+#      acquire card showed that subset beside a full-window counter.
+#   2. The MCP cold-load card read ``kirocrew.mcp.lazy_load.duration``, emitted
+#      only by the legacy pre-ensure_backend spawn path, so it read "no data yet"
+#      forever while real cold spawns were being recorded on the acquire
+#      histogram under ``warm=false``.
+
+_OLD_BOUNDS = [1, 2, 3, 4, 5]  # a second, incompatible bounds generation
+
+
+def _hist_dp(
+    attrs: dict,
+    *,
+    count: int = 1,
+    bounds: list | None = None,
+    bucket: int = 1,
+    ns: int = 1,
+    each_ms: float = 15.0,
+) -> dict:
+    b = bounds if bounds is not None else _BOUNDS
+    counts = [0] * (len(b) + 1)
+    counts[bucket] = count
+    return {
+        "attributes": attrs,
+        "count": count,
+        "sum": float(count) * each_ms,
+        "min": each_ms,
+        "max": each_ms,
+        "bucket_counts": counts,
+        "explicit_bounds": b,
+        "time_unix_nano": ns,
+    }
+
+
+def test_stats_carries_other_generations_even_when_empty():
+    """The caveat travels with the numbers it qualifies, not beside them."""
+    empty = _Hist().stats()
+    assert empty["other_generations"] == 0
+    assert empty["total_count"] == 0
+
+    h = _Hist()
+    h.add(_hist_dp({}, ns=2))                      # newest generation
+    h.add(_hist_dp({}, bounds=_OLD_BOUNDS, ns=1))  # older, dropped
+    s = h.stats()
+    assert s["count"] == 1, "only the newest generation is reported"
+    assert s["other_generations"] == 1
+
+
+def test_total_count_is_the_full_population_not_the_group_count():
+    """A generation count cannot be reconciled against a full-window number.
+
+    Two dropped generations holding 7 and 5 samples are ONE "2 generations"
+    string but 12 missing samples; only the sample figure is comparable to the
+    reported ``count`` and to a counter shown beside it.
+    """
+    h = _Hist()
+    h.add(_hist_dp({}, count=3, ns=30))                              # reported
+    h.add(_hist_dp({}, count=7, bounds=_OLD_BOUNDS, ns=20))          # dropped
+    h.add(_hist_dp({}, count=5, bounds=[2, 4, 6, 8, 10], ns=10))     # dropped
+    s = h.stats()
+    assert s["count"] == 3
+    assert s["other_generations"] == 2
+    assert s["total_count"] == 15  # 3 reported + 7 + 5 dropped
+
+
+def test_other_histograms_report_dropped_generations(tmp_path: Path):
+    """Regression: the ``other`` surface used to omit other_generations."""
+    acquire = {"name": "kirocrew.mcp.backend.acquire.duration", "data": {
+        "data_points": [
+            _hist_dp({"warm": True}, count=4, ns=20),
+            _hist_dp({"warm": True}, count=7, bounds=_OLD_BOUNDS, ns=10),
+        ]}}
+
+    result = _aggregate([_write_shard(tmp_path, [acquire])])
+    row = next(o for o in result["other"]
+               if o["name"] == "kirocrew.mcp.backend.acquire.duration")
+
+    assert row["count"] == 4, "newest generation only"
+    assert row["other_generations"] == 1, "and it says so"
+    assert row["total_count"] == 11, "with the full-window population"
+
+
+def test_acquire_splits_expose_the_cold_side(tmp_path: Path):
+    """The cold-spawn card is fed by the ``warm=false`` half of acquire."""
+    acquire = {"name": "kirocrew.mcp.backend.acquire.duration", "data": {
+        "data_points": [
+            _hist_dp({"warm": True}, count=9, each_ms=15.0),
+            _hist_dp({"warm": False}, count=2, bucket=4, each_ms=45.0),
+        ]}}
+
+    result = _aggregate([_write_shard(tmp_path, [acquire])])
+    row = next(o for o in result["other"]
+               if o["name"] == "kirocrew.mcp.backend.acquire.duration")
+
+    assert row["count"] == 11
+    assert set(row["splits"]) == {"warm=true", "warm=false"}
+    assert row["splits"]["warm=false"]["count"] == 2
+    assert row["splits"]["warm=true"]["count"] == 9
+    # Each side keeps its own percentiles rather than the merged ones.
+    assert row["splits"]["warm=false"]["p50_ms"] > row["splits"]["warm=true"]["p50_ms"]
+    # And the caveat is per-split too.
+    assert row["splits"]["warm=false"]["other_generations"] == 0
+
+
+def test_splits_are_restricted_to_named_low_cardinality_attrs(tmp_path: Path):
+    """method/route must NOT spawn a sub-histogram per endpoint."""
+    req = {"name": "kirocrew.gateway.request.duration", "data": {
+        "data_points": [
+            _hist_dp({"method": "GET", "route": "/api/a"}),
+            _hist_dp({"method": "POST", "route": "/api/b"}),
+        ]}}
+    skill = {"name": "kirocrew.skill.lazy_load.duration", "data": {
+        "data_points": [_hist_dp({"transport": "stdio"})]}}
+
+    result = _aggregate([_write_shard(tmp_path, [req, skill])])
+    by_name = {o["name"]: o for o in result["other"]}
+
+    assert "splits" not in by_name["kirocrew.gateway.request.duration"]
+    assert "splits" not in by_name["kirocrew.skill.lazy_load.duration"]
+
+
+def test_turn_and_startup_generation_count_comes_from_stats(tmp_path: Path):
+    """Single source: the field arrives with the stats, not as a sibling."""
+    turn = {"name": "kirocrew.turn.duration", "data": {"data_points": [
+        _hist_dp({"outcome": "ok"}, count=3, ns=20),
+        _hist_dp({"outcome": "ok"}, count=5, bounds=_OLD_BOUNDS, ns=10),
+    ]}}
+    ready = {"outcome": "ready", "backend": "kiro", "spawned": True,
+             "phase": "total"}
+    startup = {"name": "kirocrew.session.startup.duration", "data": {
+        "data_points": [
+            _hist_dp(ready, count=2, ns=20),
+            _hist_dp(ready, count=6, bounds=_OLD_BOUNDS, ns=10),
+        ]}}
+
+    result = _aggregate([_write_shard(tmp_path, [turn, startup])])
+
+    assert result["turn"]["count"] == 3
+    assert result["turn"]["other_generations"] == 1
+    assert result["turn"]["total_count"] == 8
+    assert result["startup"]["overall"]["count"] == 2
+    assert result["startup"]["overall"]["other_generations"] == 1
+    assert result["startup"]["overall"]["total_count"] == 8

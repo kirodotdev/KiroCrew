@@ -6486,6 +6486,7 @@
       "session_startup": "Avvio della sessione",
       "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "Sessioni che riutilizzano un backend MCP caldo rispetto a un avvio a freddo",
       "shard_s_source": "shard · origine",
+      "showing_partial_window": "Mostrati {{shown}} campioni su {{total}} (i limiti dell'istogramma sono cambiati nella finestra)",
       "skill_load": "Caricamento della skill",
       "startup_latency_distribution_from_otel_histogram": "Distribuzione della latenza di avvio · dai bucket dell'istogramma OTEL",
       "telemetry_enabled_true": "telemetry.enabled = true",

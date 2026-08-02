@@ -6420,6 +6420,7 @@
       "session_startup": "সেশন শুরু",
       "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "ওয়ার্ম MCP ব্যাকএন্ড পুনরায় ব্যবহার করা সেশন বনাম কোল্ড স্পন",
       "shard_s_source": "শার্ড · সোর্স",
+      "showing_partial_window": "{{total}}-এর মধ্যে {{shown}}টি নমুনা দেখানো হচ্ছে (উইন্ডোর মধ্যে হিস্টোগ্রামের সীমা বদলেছে)",
       "skill_load": "স্কিল লোড",
       "startup_latency_distribution_from_otel_histogram": "স্টার্টআপ লেটেন্সির বিতরণ · OTEL হিস্টোগ্রাম বাকেট থেকে",
       "telemetry_enabled_true": "telemetry.enabled = true",
