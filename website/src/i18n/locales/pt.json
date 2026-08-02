@@ -96,7 +96,9 @@
     "gateway_offline_reconnecting": "Gateway offline — reconectando",
     "gateway_offline_session_expired_see_banner_above": "Gateway offline — sessão expirada, veja o banner acima",
     "signed_in_with": "Conectado com {{provider}}",
-    "updates": "atualizações"
+    "updates": "atualizações",
+    "kiro_credits_title": "Créditos Kiro: {{used}} / {{limit}} ({{pct}}) — clique para ver os detalhes",
+    "kiro_credits_title_with_bonus": "Créditos Kiro: {{used}} / {{limit}} usados — plano {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — clique para ver os detalhes"
   },
   "appSdk": {
     "chatEmbed": {
@@ -717,9 +719,6 @@
         "repoSwitcher": {
           "repositories": "Repositórios"
         },
-        "resizeHandle": {
-          "drag_to_resize": "Arraste para redimensionar"
-        },
         "reviewButton": {
           "review": "Revisar"
         },
@@ -1022,6 +1021,108 @@
         "these_settings_changed_elsewhere": "Estas configurações foram alteradas em outro lugar."
       }
     },
+    "papyrus": {
+      "coAuthor": {
+        "close_co_author_panel": "Fechar o painel de coautoria",
+        "close_panel": "Fechar o painel — a sessão continua aberta",
+        "co_author": "Coautor",
+        "co_author_chat": "Conversa de coautoria",
+        "no_co_author_session_for_this_paper_yet": "Ainda não há sessão de coautoria para este artigo.",
+        "open_in_chat_page": "Abrir na página de conversa",
+        "start_a_session": "Iniciar uma sessão",
+        "starting_session": "A iniciar a sessão…"
+      },
+      "diagnostics": {
+        "jump_to_line": "Ir para a linha {{line}}",
+        "line_short": "L{{line}}",
+        "no_messages": "O compilador não relatou nada.",
+        "typesetting_hints_many": "{{count}} avisos de composição",
+        "typesetting_hints_one": "{{count}} aviso de composição",
+        "typesetting_hints_other": "{{count}} avisos de composição"
+      },
+      "editor": {
+        "loading_editor": "A carregar o editor…"
+      },
+      "fileTree": {
+        "delete_file": "Eliminar {{file}}",
+        "files": "Arquivos",
+        "main": "Principal",
+        "new_file": "Novo arquivo",
+        "no_source_files": "Sem arquivos de origem."
+      },
+      "page": {
+        "actions": "Ações",
+        "clone": "Clonar",
+        "clone_url": "URL do repositório",
+        "clone_url_placeholder": "Clonar a partir de um URL git…",
+        "cloning": "A clonar…",
+        "compiled_count_label": "Compilados",
+        "compiler": "Compilador",
+        "compiler_tip": "O compilador LaTeX encontrado na máquina que executa o KiroCrew. O Papyrus prefere pdflatex e recorre ao tectonic.",
+        "create": "Criar",
+        "create_one_above_or_clone_an_existing_repository": "Crie um acima ou clone um repositório existente.",
+        "delete_paper_confirm": "Excluir {{name}} e todos os seus arquivos? Esta ação não pode ser desfeita.",
+        "delete_paper": "Eliminar {{name}}",
+        "dismiss_error": "Dispensar",
+        "install_compiler": "Instalar compilador",
+        "installing_compiler": "A instalar…",
+        "last_edited": "Última edição",
+        "latex_papers_with_a_live_pdf_preview": "Artigos em LaTeX com pré-visualização do PDF em tempo real",
+        "new_paper_name": "Nome do novo artigo",
+        "new_paper_name_placeholder": "Dê um nome ao seu artigo…",
+        "no_compiler_found_install_texlive_or_tectonic": "Não foi encontrado nenhum compilador LaTeX nesta máquina. Instale o TeX Live (pdflatex) ou o tectonic para compilar.",
+        "no_compiler_install_bundled_prompt": "Não foi encontrado nenhum compilador LaTeX nesta máquina. Instale o compilador Tectonic incluído: um único download verificado, guardado dentro da pasta do próprio Papyrus.",
+        "no_papers_yet": "Ainda sem artigos",
+        "none_found": "Nenhum",
+        "paper": "Artigo",
+        "papers": "Artigos",
+        "papyrus": "Papyrus",
+        "pdf": "PDF",
+        "pdf_missing_status": "Não compilado",
+        "pdf_ready_status": "Pronto",
+        "start_a_paper": "Começar um artigo",
+        "start_a_paper_tip": "Crie um artigo vazio a partir do modelo article padrão ou clone um de um remoto git — qualquer um com um arquivo .tex serve.",
+        "your_papers": "Os seus artigos"
+      },
+      "preview": {
+        "compile_to_see_the_pdf": "Compile para ver o PDF.",
+        "download_pdf": "Baixar o PDF",
+        "pdf_preview": "Pré-visualização do PDF",
+        "this_browser_cannot_display_a_pdf_inline": "Este navegador não consegue mostrar um PDF incorporado."
+      },
+      "workspace": {
+        "co_author": "Coautor",
+        "co_author_conflict": "O coautor alterou este arquivo",
+        "co_author_conflict_reload": "Recarregar",
+        "compile": "Compilar",
+        "compile_duration": "{{ms}} ms",
+        "compiling": "A compilar…",
+        "cursor_position": "Lin. {{line}}, col. {{column}}",
+        "default_commit_message": "Atualização a partir do Papyrus",
+        "delete_file_confirm": "Eliminar {{file}}?",
+        "editing": "A editar {{file}}",
+        "editing_unsaved": "A editar {{file}} — não guardado",
+        "error_count_many": "{{count}} erros",
+        "error_count_one": "{{count}} erro",
+        "error_count_other": "{{count}} erros",
+        "git_branch": "Ramo atual",
+        "log": "Registo",
+        "main_document": "Documento principal",
+        "new_file_prompt": "Dê um nome ao novo arquivo, por exemplo methods.tex",
+        "papers": "Artigos",
+        "pdf": "PDF",
+        "pull": "Obter",
+        "push": "Enviar",
+        "save_and_compile_hint": "Prima Cmd+S (Ctrl+S no Windows e Linux) para guardar e compilar.",
+        "session_title": "Papyrus: {{name}}",
+        "warning_count_many": "{{count}} avisos",
+        "warning_count_one": "{{count}} aviso",
+        "warning_count_other": "{{count}} avisos",
+        "word_count_many": "{{count}} palavras",
+        "word_count_one": "{{count}} palavra",
+        "word_count_other": "{{count}} palavras"
+      }
+    },
     "workflows": {
       "workflowRunTree": {
         "agent_many": "{{count}} agentes",
@@ -1077,7 +1178,13 @@
     "crewCompanion": {
       "header": {
         "title": "Crew Companion",
-        "subtitle": "Um mascote que vive na sua área de trabalho, incentiva você a fazer pausas, guarda os lembretes que você anota em linguagem simples e respira com você."
+        "subtitle": "Defina seu ritmo de pausas, adicione lembretes, escolha sobre o que seu companheiro te conta e relembre o tempo que passaram juntos."
+      },
+      "offline": {
+        "title": "O Crew Companion não está em execução",
+        "body": "Abra-o para alterar os lembretes de pausa e definir lembretes — eles ficam dentro do companheiro no seu Mac.",
+        "open": "Abrir o Crew Companion",
+        "quit_tip": "Clique no companheiro na sua área de trabalho para abrir o painel dele; clique com o botão direito para trocar o avatar ou sair."
       },
       "settings": {
         "title": "Configurações",
@@ -1120,6 +1227,7 @@
         "title": "Lembranças",
         "loading": "Relembrando…",
         "empty": "Nada para relembrar ainda.",
+        "from_last_session": "Da sua última vez juntos",
         "offline": "Abra o aplicativo de desktop para ver suas lembranças.",
         "days_together": "{{days}} dias juntos",
         "row_time": "Fez companhia a você por {{time}}",
@@ -1152,7 +1260,13 @@
   },
   "components": {
     "agentDropdownList": {
-      "no_matches": "Nenhum resultado"
+      "active_in_this_session": "Ativo nesta sessão",
+      "could_not_change_the_default_agent": "Não foi possível alterar o agente padrão",
+      "default": "Padrão",
+      "manage_agents": "Gerenciar agentes…",
+      "new_sessions_start_with_this_agent": "As novas sessões começam com este agente",
+      "no_matches": "Nenhum resultado",
+      "start_new_sessions_with_this_agent": "Iniciar novas sessões com este agente"
     },
     "agentImportFlow": {
       "back": "Voltar",
@@ -1316,7 +1430,6 @@
         "enabled": "Ativado",
         "expand_details": "Expandir detalhes",
         "external": "Externo",
-        "hide": "Ocultar",
         "installed": "Instalado:",
         "lifecycle": "| Ciclo de vida:",
         "local": "Local",
@@ -1334,7 +1447,6 @@
         "resources": "| Recursos:",
         "run_this_on_your_local_machine": "Execute isto na sua máquina local:",
         "self_managed": "Autogerenciado",
-        "show": "Mostrar",
         "skill_many": "{{count}} habilidades",
         "skill_one": "{{count}} habilidade",
         "skill_other": "{{count}} habilidades",
@@ -1744,10 +1856,7 @@
       "no_matches": "Nenhuma correspondência",
       "open_in_viewer": "Abrir no visualizador",
       "searching": "Pesquisando…",
-      "type_2_chars_to_search_files": "Digite 2+ caracteres para pesquisar arquivos…",
-      "n_d_ago": "{{n}}d atrás",
-      "n_h_ago": "{{n}}h atrás",
-      "n_m_ago": "{{n}}m atrás"
+      "type_2_chars_to_search_files": "Digite 2+ caracteres para pesquisar arquivos…"
     },
     "fileRenderers": {
       "empty_file": "Arquivo vazio",
@@ -1820,8 +1929,7 @@
       "local_dashboard": "Painel local",
       "tunnel_connected": "Túnel conectado.",
       "tunnel_connecting": "Conectando o túnel…",
-      "tunnel_error": "erro no túnel",
-      "1m": "<1m"
+      "tunnel_error": "erro no túnel"
     },
     "instancesViewport": {
       "connecting": "Conectando…",
@@ -1927,6 +2035,7 @@
       "s_elapsed": "s decorridos"
     },
     "kiroPrerequisiteGate": {
+      "another_sandbox_already_confines_kiro_crew_so_it": "Outro sandbox já restringe o Kiro Crew, portanto o sandbox dele não pode ser aninhado dentro. O sandbox deste host não está com defeito.",
       "ask_the_kiro_crew_owner_to_install_kiro_cli_and": "Peça ao proprietário do Kiro Crew para instalar o Kiro CLI e entrar neste gateway. Este painel\n          abrirá para você assim que o gateway estiver pronto.",
       "automatic_installation_is_unavailable_here_insta": "A instalação automática não está disponível aqui. Instale o Kiro CLI usando o guia\n                oficial no host do gateway e escolha Verificar novamente.",
       "check_again": "Verificar novamente",
@@ -1941,8 +2050,10 @@
       "installation_guide": "Guia de instalação",
       "installed": "Instalado",
       "installing": "Instalando…",
+      "kiro_cli_is_installed_but_could_not_be_verified": "O Kiro CLI está instalado, mas não foi possível verificá-lo",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "O Kiro CLI está instalado. Conclua o login para continuar.",
       "kiro_crew_downloads_the_official_kiro_installer": "O Kiro Crew baixa o instalador oficial do Kiro via HTTPS. A instalação começa\n                  somente quando você escolhe o botão abaixo.",
+      "kiro_crew_isolates_the_agent_in_an_os_level_sand": "O Kiro Crew isola o agente em um sandbox no nível do sistema operacional antes de executar qualquer coisa.",
       "kiro_crew_uses_kiro_cli_as_its_agent_engine_comp": "O Kiro Crew usa o Kiro CLI como motor de agentes. Conclua estes dois passos no",
       "kiro_setup_could_not_start": "Não foi possível iniciar a configuração do Kiro.",
       "open_kiro_sign_in_page": "Abrir a página de login do Kiro",
@@ -1950,6 +2061,7 @@
       "refresh": "Atualizar",
       "required": "Obrigatório",
       "retry_the_gateway_check_before_starting_a_sessio": "Tente a verificação do gateway novamente antes de iniciar uma sessão.",
+      "sandbox_unavailable": "Sandbox indisponível",
       "secure_setup_on_your_gateway_host": "Configuração segura no host do seu gateway",
       "sessions_are_paused_until_the_gateway_check_succ": "As sessões ficam pausadas até a verificação do gateway ser bem-sucedida. Seus artefatos, configurações e\n              histórico continuam disponíveis.",
       "set_up_kiro": "Configurar o Kiro",
@@ -1958,10 +2070,13 @@
       "sign_in_to_kiro": "Entrar no Kiro",
       "signed_in": "Conectado",
       "start_kiro_s_device_sign_in_open_the_secure_page": "Inicie o login por dispositivo do Kiro, abra a página segura e informe o código mostrado\n                  aqui. As credenciais continuam gerenciadas pelo Kiro CLI no host do gateway.",
+      "technical_detail": "Detalhe técnico",
+      "the_check_hit_a_temporary_limit_and_was_not_cach": "A verificação atingiu um limite temporário de recursos. Tente novamente — não desative o sandbox.",
       "the_gateway_owner_needs_to_finish_setup": "O proprietário do gateway precisa concluir a configuração.",
       "the_gateway_returned_an_unexpected_error": "O gateway retornou um erro inesperado.",
       "the_gateway_returned_no_prerequisite_status": "O gateway não retornou o status dos pré-requisitos.",
       "then_the_dashboard_will_open_automatically": ", e\n              o painel abrirá automaticamente.",
+      "this_host_provides_no_os_level_sandbox_so_kiro_c": "Este host não oferece um sandbox no nível do sistema operacional, portanto o Kiro Crew não consegue isolar o agente. Ele se recusa a executar o agente sem sandbox em vez de expor suas credenciais.",
       "try_again": "Tentar novamente",
       "waiting": "Aguardando",
       "waiting_for_sign_in": "Aguardando login…",
@@ -2267,18 +2382,6 @@
       "paste_lines_one": "[ Colado #{{seq}} · {{count}} linha ]",
       "paste_lines_other": "[ Colado #{{seq}} · {{count}} linhas ]"
     },
-    "pixelCanvas": {
-      "agent_activity_animation": "Animação de atividade do agente"
-    },
-    "pixelCanvasWidget": {
-      "agent_many": "{{count}} agentes",
-      "agent_one": "{{count}} agente",
-      "agent_other": "{{count}} agentes",
-      "close": "Fechar",
-      "open_workspace_animation": "Abrir animação do espaço de trabalho",
-      "project": "Projeto",
-      "workspace": "— Espaço de trabalho"
-    },
     "projectPicker": {
       "back": "Voltar",
       "browse": "Procurar",
@@ -2456,6 +2559,9 @@
       "fork_failed": "Falha ao criar o fork",
       "fork_into_your_local_artifacts_your_own_divergen": "Fork para os seus artefatos locais — sua própria cópia divergente",
       "v": "v"
+    },
+    "resizeHandle": {
+      "drag_to_resize": "Arraste para redimensionar"
     },
     "restartButton": {
       "apply_restart": "Aplicar e reiniciar",
@@ -2974,6 +3080,8 @@
       "context_window_usage": "Uso da janela de contexto",
       "could_not_load_this_agent_s_configuration_skills": "Não foi possível carregar a configuração deste agente — as habilidades estão ocultas para evitar\n                        sobrescrevê-las. Selecione o agente novamente para tentar de novo.",
       "critical": "Crítico",
+      "default": "Padrão",
+      "default_for_new_sessions": "Padrão para novas sessões",
       "denied_commands": "Comandos negados",
       "describe_when_to_use_this_agent": "Descreva quando usar este agente…",
       "done": "Concluído",
@@ -3007,6 +3115,7 @@
       "saving": "Salvando…",
       "select_an_agent_to_view_details": "Selecione um agente para ver os detalhes",
       "sessions": "Sessões",
+      "set_as_default": "Definir como padrão",
       "set_as_default_agent": "Definir como agente padrão",
       "skills": "Habilidades",
       "spawn_tasks_from_chat_or_cli": "Crie tarefas pelo chat ou pela CLI",
@@ -3080,7 +3189,6 @@
       "failed_to_uninstall": "Falha ao desinstalar",
       "features": "Funcionalidades",
       "fix_with_ai": "Corrigir com IA",
-      "hide": "Ocultar",
       "install": "Instalar",
       "install_complete": "Instalação concluída",
       "install_failed": "Falha na instalação",
@@ -3111,7 +3219,6 @@
       "resources_2": "| Recursos:",
       "screenshots": "Capturas de tela",
       "self_managed": "Autogerenciado",
-      "show": "Mostrar",
       "starting_install": "Iniciando a instalação…",
       "storage_yes": "Armazenamento: sim",
       "sync": "Sincronizar",
@@ -3155,7 +3262,7 @@
       "failed_to_load_apps": "Falha ao carregar os apps",
       "failed_to_load_registry": "Falha ao carregar o registro",
       "find_apps_in_the_discover_tab_or_install_from_a": "Encontre apps na aba Descobrir ou instale a partir de um caminho local pela engrenagem de fontes acima.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Oculto. Você pode reativá-lo na aba Descobrir.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Desativado. Você pode reativá-lo na aba Descobrir.",
       "keep_app_data": "Manter dados do app",
       "keep_this_dependency": "Manter esta dependência",
       "kept": "Mantido —",
@@ -3681,7 +3788,11 @@
         "steered": "Direcionado",
         "switch_to_raw_markdown_view": "Alternar para a visualização em Markdown bruto",
         "switch_to_rendered_view": "Alternar para a visualização renderizada",
-        "use_as_plan_count": "Usar como plano ({{count}} etapas)"
+        "use_as_plan_count": "Usar como plano ({{count}} etapas)",
+        "turn_took": "O turno levou {{elapsed}}",
+        "turn_took_cost": "O turno levou {{elapsed}} ({{cost}} de custo de API)",
+        "turn_took_credits": "O turno levou {{elapsed}} e consumiu {{credits}} créditos",
+        "turn_took_credits_cost": "O turno levou {{elapsed}} e consumiu {{credits}} créditos ({{cost}} de custo de API)"
       },
       "chatFooter": {
         "compacting": "Compactando…",
@@ -4641,7 +4752,6 @@
       }
     },
     "localStorageDebug": {
-      "5_mb": "/ ~5 MB",
       "all_keys": "Todas as chaves",
       "by_category": "Por categoria",
       "clear": "Limpar",
@@ -5250,7 +5360,6 @@
       "agent": "Agente:",
       "analyzing_task_and_building_step_by_step_plan": "Analisando a tarefa e criando o plano passo a passo",
       "auto_approve_tool_calls": "Aprovar automaticamente as chamadas de ferramentas",
-      "autonomous_multi_step_task_execution": "Execução autônoma de tarefas de várias etapas",
       "cancel": "Cancelar",
       "chat": "Chat",
       "compose": "Compor",
@@ -5262,12 +5371,14 @@
       "discard": "Descartar",
       "error": "Erro:",
       "execute": "Executar",
+      "expand_sidebar": "Expandir barra lateral",
       "failed_to_generate_plan": "Falha ao gerar o plano",
       "from_spec": "De spec",
       "from_yaml": "De YAML",
       "generating_execution_plan": "Gerando o plano de execução",
       "is_enforced_as_a_hard_dag_constraint": "é aplicado como uma restrição rígida do DAG.",
       "new_task": "Nova tarefa",
+      "no_runs_yet": "Ainda não há execuções",
       "no_spec_idea_to_schedule": "Nenhuma spec/ideia para agendar",
       "only_yaml_yml_files_are_accepted_here_use_the_fr": "Somente arquivos .yaml/.yml são aceitos aqui. Use a aba \"De spec\" para outros formatos.",
       "paste_spec_content_or_upload_a_file": "Cole o conteúdo da spec ou envie um arquivo...",
@@ -5284,6 +5395,7 @@
       "refined_spec": "Spec refinada",
       "refining": "Refinando…",
       "rename_project": "Renomear projeto",
+      "resize_sidebar": "Redimensionar barra lateral",
       "restart": "Reiniciar",
       "resume": "Retomar",
       "root_folder_for_a_new_plan_leave_blank_to_use_th": "Pasta raiz para um NOVO plano. Deixe em branco para usar o workspace padrão de cada execução; digite um caminho para direcionar a uma pasta específica. Definida no momento do planejamento — retomar uma execução existente mantém a pasta original.",

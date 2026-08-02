@@ -157,14 +157,17 @@ describe('App routing', () => {
     expect(screen.getByTestId('capabilities-page')).toBeInTheDocument()
   })
 
-  it('renders projects page at /projects', () => {
+  // /projects now resolves through BuiltinAppRoute -> BUILTIN_COMPONENT_REGISTRY
+  // like every other builtin app page, so the component arrives lazily behind a
+  // Suspense fallback. These two await it rather than querying synchronously.
+  it('renders projects page at /projects', async () => {
     renderWithProviders(<App />, { route: '/projects' })
-    expect(screen.getByTestId('projects-page')).toBeInTheDocument()
+    expect(await screen.findByTestId('projects-page')).toBeInTheDocument()
   })
 
-  it('redirects /tasks to /projects', () => {
+  it('redirects /tasks to /projects', async () => {
     renderWithProviders(<App />, { route: '/tasks' })
-    expect(screen.getByTestId('projects-page')).toBeInTheDocument()
+    expect(await screen.findByTestId('projects-page')).toBeInTheDocument()
   })
 
   it('renders logs page at /logs', () => {

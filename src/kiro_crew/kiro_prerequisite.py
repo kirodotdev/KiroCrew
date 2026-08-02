@@ -47,7 +47,11 @@ from kiro_crew.kiro_cli import (
     find_kiro_cli_candidates,
     known_kiro_cli_dirs,
 )
-from kiro_crew.sandbox import resource_limit_supervisor_argv, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    SandboxUnavailableError,
+    resource_limit_supervisor_argv,
+    sandboxed_spawn_argv,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -224,6 +228,11 @@ class ProcessResult:
     returncode: int | None = None
     timed_out: bool = False
     error: str = ""
+    # ``(kind, detail)`` when the spawn was refused because the sandbox could not
+    # be built — set ONLY from the typed SandboxUnavailableError, never inferred
+    # from host capability. A probe that failed for any other reason leaves this
+    # None, so an unrelated failure can never be misreported as a sandbox problem.
+    sandbox_failure: tuple[str, str] | None = None
 
 
 @dataclass
@@ -239,6 +248,20 @@ class PrerequisiteStatus:
     repair_required: bool = False
     initial_setup_complete: bool = False
     docs_url: str = OFFICIAL_INSTALL_DOCS_URL
+    # A Kiro CLI binary that is present and executable but could not be VERIFIED
+    # (verification runs the binary inside the sandbox) is a categorically
+    # different condition from a missing binary, and a failed sandbox build
+    # carries zero information about whether the CLI is installed. Without these
+    # fields the two collapse into ``installed=False`` and the dashboard tells
+    # the user to install a CLI that is already there and authenticated.
+    sandbox_unavailable: bool = False
+    # Machine-readable: "transient" | "foreign_sandbox" | "no_backend". The
+    # presentation layer maps this to its own translated remedy copy instead of
+    # parsing English prose out of ``sandbox_detail``.
+    sandbox_failure_kind: str = ""
+    # Technical probe reason, e.g. "unshare(CLONE_NEWNS) failed with errno 1
+    # (EPERM)". Names the failing step, so it is shown verbatim, untranslated.
+    sandbox_detail: str = ""
 
 
 @dataclass
@@ -1343,6 +1366,16 @@ async def _run_process(
             start_new_session=platform_compat.IS_POSIX,
             creationflags=creationflags,
         )
+    except SandboxUnavailableError as exc:
+        # The sandbox itself refused this spawn. Record it structurally so the
+        # caller can report "present but unverifiable" without guessing from
+        # host state — on Windows this wrap is skipped entirely, and the
+        # allow_unsandboxed_exec opt-in bypasses it, so host capability is not
+        # evidence about why THIS spawn failed.
+        await _unlink_off_loop(cleanup_path)
+        return ProcessResult(
+            ok=False, error=str(exc), sandbox_failure=(exc.kind, exc.detail)
+        )
     except (OSError, RuntimeError) as exc:
         await _unlink_off_loop(cleanup_path)
         return ProcessResult(ok=False, error=str(exc))
@@ -1896,12 +1929,14 @@ class KiroPrerequisiteService:
             # ACP resolves the first executable candidate. Probe that exact
             # candidate instead of skipping a broken entry and approving a
             # different binary than the session launcher will use.
+            version_probe: ProcessResult | None = None
             for executable in candidates[:1]:
                 result = await self._audited_probe(
                     "probe_version",
                     executable,
                     ["--version"],
                 )
+                version_probe = result
                 if result.ok:
                     # Keep the discovered path AS RESOLVED (not realpath'd): a
                     # multiplexer launcher like ``~/.toolbox/bin/kiro-cli``
@@ -1915,6 +1950,59 @@ class KiroPrerequisiteService:
 
             repair_required = not self._viable_binary and repair_hint
             if not self._viable_binary:
+                # Was the probe refused BY THE SANDBOX, as opposed to failing for
+                # any other reason? Verification runs the candidate inside the
+                # sandbox (see _UNVERIFIED_SANDBOX_MODE), so on a host that
+                # cannot build one a perfectly good, already-authenticated CLI
+                # fails verification and must not be reported as missing.
+                #
+                # This keys on the typed failure the spawn actually raised, NOT
+                # on whether the host has a backend. Host capability is not
+                # evidence: _run_process skips the wrap on Windows, and the
+                # allow_unsandboxed_exec opt-in bypasses it, so a broken CLI on
+                # either would otherwise be blamed on the sandbox and lose the
+                # repair actions that would genuinely help.
+                sandbox_failure = version_probe.sandbox_failure if version_probe else None
+                first_candidate = candidates[0] if candidates else ""
+                # Off-loop: _is_runnable_executable realpath()s and stat()s the
+                # candidate, and a stalled NFS/autofs mount would block those
+                # syscalls indefinitely — on the event loop that freezes the whole
+                # gateway, not just this probe.
+                candidate_runnable = bool(first_candidate) and await asyncio.to_thread(
+                    _is_runnable_executable, first_candidate, self._platform
+                )
+                if sandbox_failure is not None and candidate_runnable:
+                    kind, detail = sandbox_failure
+                    logger.warning(
+                        "Kiro CLI at %s is present and executable but could not be "
+                        "verified: the sandbox refused the probe (%s: %s)",
+                        first_candidate,
+                        kind,
+                        detail,
+                    )
+                    self._status = PrerequisiteStatus(
+                        platform=_platform_label(self._platform),
+                        # Present and executable on disk. Verification is what
+                        # failed, and it failed for an unrelated reason.
+                        installed=True,
+                        # Unknown, not false: whoami also runs through the probe
+                        # path, so we cannot claim either way.
+                        authenticated=False,
+                        ready=False,
+                        # Reinstalling and signing in both fix nothing here, so
+                        # offer neither — a button that cannot help is the
+                        # dead-end this change exists to remove.
+                        can_auto_install=False,
+                        can_login=False,
+                        repair_required=False,
+                        initial_setup_complete=self._initial_setup_complete,
+                        sandbox_unavailable=True,
+                        sandbox_failure_kind=kind,
+                        sandbox_detail=detail,
+                    )
+                    self._last_probe_at = self._clock()
+                    self._has_probed = True
+                    return self._status
                 self._status = PrerequisiteStatus(
                     platform=_platform_label(self._platform),
                     can_auto_install=self._installer_plan is not None and not repair_required,

@@ -435,6 +435,309 @@ export function loadSeenPullRequestLinks(): Map<string, Set<string>> {
   return new Map(restored)
 }
 
+/* ── Per-slot selected source tab (which Change / Issue tab is focused) ────
+ * The Changes and Issues panels each render one tab per detected url, and the
+ * focused one is per chat slot. Kept HERE (persisted, keyed by slot) rather than
+ * as a single component-local value so that leaving a session and returning —
+ * including across a reload, where the panel tab strip itself rehydrates from
+ * mc-panel-tabs:<slot> — restores the tab the user was reading instead of
+ * snapping back to the first pull request in the transcript. Not stored on the
+ * PanelTab itself: the selection must survive while the Changes tab does not yet
+ * exist (the strip is created by SidePanel.syncPinned, which only runs while the
+ * panel subtree is mounted), and patchTab silently no-ops on an absent tab.
+ *
+ * ONE KEY PER (slot, kind), never a shared blob. The dashboard can run several
+ * chat windows against one origin (a popped-out session is a second document
+ * sharing this localStorage), and localStorage offers no cross-document
+ * atomicity: with a single blob, two windows reconciling at the same moment both
+ * read it and the later write silently drops whatever the other had just added.
+ * A one-field key makes every write a single scalar setItem with nothing to
+ * merge, so two windows can only ever collide on the exact same field — which is
+ * last-writer-wins by nature rather than collateral loss. usePanelTabs stores the
+ * tab strip the same way, for the same reason ("Per-slot writes mean a GC'd slot
+ * key is never resurrected by an unrelated slot's mutation").
+ *
+ * Recency for the slot cap therefore cannot come from key insertion order, so
+ * each value carries the epoch millis it was written and the cap is applied on
+ * read (and pruned after a write). */
+
+const SOURCE_SELECTION_PREFIX = 'mc-pr-source-sel:'
+
+/** True for a `storage` event key belonging to this store, so a window can tell
+ *  a sibling's selection write from every other key on the origin. */
+export function isSourceSelectionKey(key: string): boolean {
+  return key.startsWith(SOURCE_SELECTION_PREFIX)
+}
+
+/** `mc-pr-source-sel:<kind>:<slot>` — kind first so the slot is the whole
+ *  remainder and needs no escaping, whatever characters a slot key contains. */
+function selectionStorageKey(slot: string, kind: SourceLinkKind): string {
+  return `${SOURCE_SELECTION_PREFIX}${kind}:${slot}`
+}
+
+function parseSelectionStorageKey(key: string): { slot: string; kind: SourceLinkKind } | null {
+  if (!isSourceSelectionKey(key)) return null
+  const rest = key.slice(SOURCE_SELECTION_PREFIX.length)
+  const split = rest.indexOf(':')
+  if (split <= 0) return null
+  const kind = rest.slice(0, split)
+  const slot = rest.slice(split + 1)
+  if (!slot || slot.length > MAX_PERSISTED_SLOT_LENGTH) return null
+  if (kind !== 'change' && kind !== 'issue') return null
+  return { slot, kind }
+}
+
+/** Focused source url per slot, split by kind (one Changes tab + one Issues
+ *  tab per slot, each with its own selection). */
+export type SourceSelections = Record<string, Partial<Record<SourceLinkKind, string>>>
+
+/** Set one slot's selection for one kind, returning the SAME object when
+ *  nothing changes so a React state update bails instead of re-rendering.
+ *  Clearing ('' url) is a no-op when there is nothing stored for that slot, so
+ *  the many sessions that never mention a pull request do not each accumulate
+ *  an empty entry. In-memory only — durability goes through
+ *  commitSourceSelection, which writes one field at a time. */
+export function withSourceSelection(
+  selections: SourceSelections,
+  slot: string | null,
+  kind: SourceLinkKind,
+  url: string,
+): SourceSelections {
+  if (!slot) return selections
+  const current = selections[slot]
+  if ((current?.[kind] ?? '') === url) return selections
+  if (!url && !current) return selections
+  return { ...selections, [slot]: { ...current, [kind]: url } }
+}
+
+/** Read one slot's selection for one kind. '' when nothing is remembered. */
+export function sourceSelection(
+  selections: SourceSelections,
+  slot: string | null,
+  kind: SourceLinkKind,
+): string {
+  return (slot && selections[slot]?.[kind]) || ''
+}
+
+const SOURCE_KINDS: readonly SourceLinkKind[] = ['change', 'issue']
+
+interface StoredSelection {
+  slot: string
+  kind: SourceLinkKind
+  url: string
+  /** Epoch millis of the write. Carries the recency the slot cap trims by, which
+   *  independent keys cannot express as insertion order. */
+  at: number
+}
+
+/** Enumerate and validate every stored field. localStorage is untrusted input,
+ *  so a malformed key, a non-canonical url, or an unparseable value is skipped
+ *  rather than trusted. A restored url is additionally compared against the live
+ *  transcript before it selects anything, so this validation is bounding rather
+ *  than authorization. */
+function readStoredSelections(): StoredSelection[] {
+  if (typeof localStorage === 'undefined') return []
+  const out: StoredSelection[] = []
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (!key) continue
+      const parsedKey = parseSelectionStorageKey(key)
+      if (!parsedKey) continue
+      let value: unknown
+      try {
+        value = JSON.parse(localStorage.getItem(key) ?? 'null')
+      } catch {
+        continue
+      }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+      const { u, t } = value as { u?: unknown; t?: unknown }
+      if (typeof u !== 'string' || !u || u.length > MAX_PERSISTED_SOURCE_URL_LENGTH) continue
+      if (!isCanonicalStoredUrl(u)) continue
+      out.push({ ...parsedKey, url: u, at: typeof t === 'number' && Number.isFinite(t) ? t : 0 })
+    }
+  } catch {
+    // Enumerating storage can throw in locked-down environments.
+    return out
+  }
+  return out
+}
+
+/** Slots ordered newest-write-first. A slot's recency is its most recent field,
+ *  so the two kinds of one session are capped together rather than competing. */
+function slotsByRecency(stored: readonly StoredSelection[]): string[] {
+  const newest = new Map<string, number>()
+  for (const entry of stored) {
+    newest.set(entry.slot, Math.max(newest.get(entry.slot) ?? 0, entry.at))
+  }
+  return [...newest.entries()].sort((a, b) => b[1] - a[1]).map(([slot]) => slot)
+}
+
+/** Restore the per-slot focused-tab selections, capped to the most recently
+ *  written slots.
+ *
+ *  The cap is applied HERE, on read, and nothing deletes another slot's key.
+ *  Deleting by snapshot cannot be made safe across documents: the set of doomed
+ *  slots is computed from a walk, and a sibling window can refresh one of them
+ *  before the removals run — so a "prune the tail" pass can delete a selection
+ *  that just became live. (Re-reading each key immediately before removing it
+ *  only shrinks that window, which is the same reasoning that made the old
+ *  single-blob read-modify-write unsafe.) The only removal this store performs is
+ *  the one the calling document owns: clearing its own field.
+ *
+ *  The cost is that keys accumulate — two at most per session that ever had a
+ *  selection, roughly a hundred bytes each. usePanelTabs takes the same trade for
+ *  the tab strip (no cap; a key is removed only when its own bucket empties), and
+ *  this is orders of magnitude smaller than the per-session `vc_heights_*` caches
+ *  that safeStorage's reclaim tiers exist for. */
+export function loadSourceSelections(): SourceSelections {
+  const stored = readStoredSelections()
+  const keep = new Set(slotsByRecency(stored).slice(0, MAX_PERSISTED_SOURCE_SLOTS))
+  const out: SourceSelections = {}
+  for (const entry of stored) {
+    if (!keep.has(entry.slot)) continue
+    out[entry.slot] = { ...out[entry.slot], [entry.kind]: entry.url }
+  }
+  return out
+}
+
+/**
+ * Outcome of a durable write. `unchanged` and `failed` are deliberately
+ * distinct: both mean "storage was not written", but only `failed` means storage
+ * now DISAGREES with what the caller intended, which is what
+ * `adoptSourceSelections` needs to know to avoid adopting a stale value back
+ * over a live selection.
+ */
+export type CommitOutcome = 'persisted' | 'unchanged' | 'failed'
+
+/**
+ * Write ONE (slot, kind) through to its OWN storage key.
+ *
+ * There is deliberately nothing to merge here: the value is a scalar under a key
+ * no other field shares, so this is a single setItem with no read-modify-write
+ * for a concurrent window to interleave with. That is what makes several chat
+ * windows on one origin safe — see the store's header comment. Two windows can
+ * still race the exact same field, which is last-writer-wins by nature; what
+ * cannot happen any more is one window's write dropping a field it never touched.
+ *
+ * NOT free to call speculatively. It enumerates storage to clamp the stamp, and
+ * a valid url is always written through (see the recency note below), so callers
+ * must skip it when they know nothing changed — the reconciliation effects gate
+ * their clear on there being a selection to clear rather than calling this on
+ * every render. `unchanged` therefore means "no write was attempted at all"
+ * (no slot, an over-long or non-canonical url, or a clear with nothing stored),
+ * never "the value already matched".
+ */
+export function commitSourceSelection(
+  slot: string | null,
+  kind: SourceLinkKind,
+  url: string,
+): CommitOutcome {
+  if (!slot || slot.length > MAX_PERSISTED_SLOT_LENGTH) return 'unchanged'
+  if (typeof localStorage === 'undefined') return 'unchanged'
+  const key = selectionStorageKey(slot, kind)
+  const stored = readStoredSelections()
+  const current = stored.find(entry => entry.slot === slot && entry.kind === kind)?.url ?? ''
+
+  if (!url) {
+    if (!current) return 'unchanged'
+    try {
+      localStorage.removeItem(key)
+    } catch {
+      return 'failed'
+    }
+    return 'persisted'
+  }
+  // Re-selecting the SAME url is deliberately NOT a no-op: it rewrites the entry
+  // to refresh recency. The read cap hides all but the most recent slots, so a
+  // slot that has aged out is excluded on load and the panel shows the fallback.
+  // If re-picking the value already stored there did nothing, the user's click
+  // could never bring that slot back inside the cap and the tab would reset on
+  // every reload — the exact failure this store exists to prevent.
+  if (url.length > MAX_PERSISTED_SOURCE_URL_LENGTH || !isCanonicalStoredUrl(url)) return 'unchanged'
+  // Never stamp below what is already stored. A clock that steps BACKWARD (an
+  // NTP correction, a resumed VM, a user setting the date) would otherwise put a
+  // brand-new selection at the bottom of the recency order, where the read cap
+  // hides it behind 32 older slots and the tab resets on the next reload.
+  const newest = stored.reduce((max, entry) => Math.max(max, entry.at), 0)
+  const at = Math.max(Date.now(), newest + 1)
+  if (!safeSetItem(key, JSON.stringify({ u: url, t: at }))) return 'failed'
+  return 'persisted'
+}
+
+function sameSelections(a: SourceSelections, b: SourceSelections): boolean {
+  const slots = new Set([...Object.keys(a), ...Object.keys(b)])
+  for (const slot of slots) {
+    for (const kind of SOURCE_KINDS) {
+      if ((a[slot]?.[kind] ?? '') !== (b[slot]?.[kind] ?? '')) return false
+    }
+  }
+  return true
+}
+
+/**
+ * Re-read storage and fold another window's writes into this window's map.
+ *
+ * Meant for the `storage` event, which fires in every OTHER document on the
+ * origin when one of them writes — so a window learns about a sibling's change
+ * instead of carrying its mount-time view until reload. Storage is the merged
+ * truth for slots this window is not showing (every window commits through
+ * `commitSourceSelection`), so those are taken wholesale.
+ *
+ * The ACTIVE slot is the one that needs a rule, because it is the only slot this
+ * window's own reconciliation also writes to. It is merged per KIND, and a stored
+ * value replaces this window's own only when both hold:
+ *
+ *   - It is in `available` — the urls this window's transcript currently offers
+ *     for that kind. Two windows can show the same session with DIFFERENT
+ *     transcripts (one has received a newer message mentioning another pull
+ *     request). Adopting a url this window has no tab for makes its own
+ *     reconciliation immediately overwrite the sibling's choice, discarding
+ *     whichever selection the user actually made. (Whether that exchange also
+ *     repeats depends on how the two transcripts diverged; the selection loss
+ *     does not.) Refusing an unusable value ends it: this window keeps its own,
+ *     its reconciliation sees nothing to change, and it writes nothing.
+ *   - That kind is not in `unpersisted[slot]` — the fields whose own write storage
+ *     REFUSED (`safeSetItem` returns false once nothing reclaimable is left).
+ *     Storage then holds an older url (or none) for a field the user has already
+ *     moved, and without this the next sibling event would quietly revert it. The
+ *     ledger is honored for EVERY slot, not just the active one: a refused write
+ *     is equally lost whether or not the user happens to be looking at that
+ *     session right now.
+ *
+ * Returns the SAME object when nothing differs, so a state update bails.
+ */
+export function adoptSourceSelections(
+  previous: SourceSelections,
+  activeSlot: string | null,
+  available: Partial<Record<SourceLinkKind, readonly string[]>> = {},
+  unpersisted: Record<string, Partial<Record<SourceLinkKind, boolean>>> = {},
+): SourceSelections {
+  const stored = loadSourceSelections()
+  const next: SourceSelections = { ...stored }
+  // Slots this window holds a refused write for, plus the active slot (whose
+  // transcript gates adoption). Everything else is taken from storage as-is.
+  const reconcile = new Set([...Object.keys(unpersisted), ...(activeSlot ? [activeSlot] : [])])
+  for (const slot of reconcile) {
+    const incoming = stored[slot]
+    const own = previous[slot]
+    const refused = unpersisted[slot] ?? {}
+    const merged: Partial<Record<SourceLinkKind, string>> = {}
+    for (const kind of SOURCE_KINDS) {
+      const candidate = incoming?.[kind] ?? ''
+      // The transcript check applies only to the slot on screen — it is the one
+      // whose reconciliation would answer an unusable value with a write.
+      const showable = slot !== activeSlot || (available[kind] ?? []).includes(candidate)
+      const usable = Boolean(candidate) && !refused[kind] && showable
+      const value = usable ? candidate : (own?.[kind] ?? '')
+      if (value) merged[kind] = value
+    }
+    if (Object.keys(merged).length) next[slot] = merged
+    else delete next[slot]
+  }
+  return sameSelections(previous, next) ? previous : next
+}
+
 /** Persist recent per-slot seen sources without allowing unbounded growth. */
 export function persistSeenPullRequestLinks(
   seenBySlot: Map<string, Set<string>>,

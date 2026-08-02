@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
 import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation } from '@tanstack/react-query'
@@ -11,7 +12,7 @@ import ChatInput from './ChatInput'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
-import AgentDropdownList from './AgentDropdownList'
+import AgentDropdownList, { ManageAgentsFooter } from './AgentDropdownList'
 import ModelDropdownList from './ModelDropdownList'
 import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
@@ -20,6 +21,7 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch } from '../store'
 import { selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
+import { triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
 
 
@@ -98,7 +100,19 @@ export default function ChatPane({
   )
 
   // Pickers — same hooks/data sources ChatPage uses, but selection targets THIS slot.
-  const { agents: installedAgents, defaultAgent } = useAgents(0)
+  // Subscribes to the store's global refresh so a default-agent write in ANY pane (or
+  // in single chat) lands here too; a per-hook refresh left sibling pickers stale.
+  const agentsRefreshTrigger = useAppSelector((s) => s.dashboard.refreshTrigger ?? 0)
+  const { agents: installedAgents, defaultAgent } = useAgents(agentsRefreshTrigger)
+  const navigate = useNavigate()
+  const [defaultAgentFailed, setDefaultAgentFailed] = useState(false)
+  // Same contract as ChatPage: set-only, clearing lives on the Templates page.
+  const toggleDefaultAgent = useCallback((name: string) => {
+    setDefaultAgentFailed(false)
+    Promise.resolve(api.setDefaultAgent?.(name))
+      .then(() => dispatch(triggerRefresh()))
+      .catch(() => setDefaultAgentFailed(true))
+  }, [dispatch])
   const agentDD = useFilteredDropdown(installedAgents)
   const { data: availableModels = [{ name: 'auto', description: 'Default' }] } = useQuery({
     queryKey: ['available-models', provider.id],
@@ -348,8 +362,9 @@ export default function ChatPane({
               />
             </div>
             <div role="listbox" aria-label={i18nT('components.chatPane.agent_list')} className="overflow-y-auto max-h-[280px]">
-              <AgentDropdownList agents={agentDD.filtered} activeAgent={paneSlot?.agent || 'default'} defaultAgent={defaultAgent} onSelect={(name) => { switchAgent(name); agentDD.setOpen(false) }} />
+              <AgentDropdownList agents={agentDD.filtered} activeAgent={paneSlot?.agent || 'default'} defaultAgent={defaultAgent} onSelect={(name) => { switchAgent(name); agentDD.setOpen(false) }} onSetDefault={toggleDefaultAgent} />
             </div>
+            <ManageAgentsFooter error={defaultAgentFailed} onManage={() => { agentDD.setOpen(false); navigate('/capabilities?tab=templates') }} />
           </div>,
           document.body,
         )}

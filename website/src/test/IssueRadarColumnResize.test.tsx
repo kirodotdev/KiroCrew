@@ -4,8 +4,8 @@ import {
   loadRailWidth, loadRailCollapsed, RAIL_WIDTH_KEY, RAIL_COLLAPSED_KEY,
   DEFAULT_RAIL_WIDTH, MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, COLLAPSED_RAIL_WIDTH,
 } from '../apps/issue-radar/lib/format'
-import { useColumnResize, type CollapseConfig } from '../apps/issue-radar/lib/useColumnResize'
-import ResizeHandle from '../apps/issue-radar/components/ResizeHandle'
+import { useColumnResize, type CollapseConfig } from '../hooks/useColumnResize'
+import ResizeHandle from '../components/ResizeHandle'
 
 const COLLAPSE: CollapseConfig = { width: COLLAPSED_RAIL_WIDTH, storageKey: RAIL_COLLAPSED_KEY }
 // The default overshoot the hook requires before snapping (see DEFAULT_SLOP).

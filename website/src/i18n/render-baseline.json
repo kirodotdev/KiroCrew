@@ -1,0 +1,110 @@
+{
+  "_comment": "Phase 5 render-time gate. Findings from rendering the real DEV build under en-XA (text) and the shipped locales (layout/latent). UPWARD-ONLY and keyed per surface: a number may only go DOWN. The goal for every entry is 0. Regenerate with `node scripts/check-i18n-render.mjs --update` and only ever commit a decrease. DNT findings are not ledgered — they are zero-tolerance.",
+  "_total": {
+    "text": 2108,
+    "layout": 3,
+    "latent": 544
+  },
+  "surfaces": {
+    "chat": {
+      "text": 104,
+      "layout": 2,
+      "latent": 64
+    },
+    "settings-display": {
+      "text": 90,
+      "layout": 0,
+      "latent": 32
+    },
+    "settings-overview": {
+      "text": 34,
+      "layout": 0,
+      "latent": 16
+    },
+    "schedule": {
+      "text": 248,
+      "layout": 0,
+      "latent": 16
+    },
+    "settings-chat": {
+      "text": 258,
+      "layout": 0,
+      "latent": 88
+    },
+    "settings-privacy": {
+      "text": 48,
+      "layout": 0,
+      "latent": 16
+    },
+    "settings-computer-use": {
+      "text": 28,
+      "layout": 0,
+      "latent": 16
+    },
+    "settings-security": {
+      "text": 494,
+      "layout": 0,
+      "latent": 16
+    },
+    "settings-notifications": {
+      "text": 224,
+      "layout": 0,
+      "latent": 80
+    },
+    "settings-about": {
+      "text": 28,
+      "layout": 0,
+      "latent": 16
+    },
+    "capabilities-crews": {
+      "text": 136,
+      "layout": 0,
+      "latent": 40
+    },
+    "capabilities-mcp": {
+      "text": 126,
+      "layout": 0,
+      "latent": 16
+    },
+    "capabilities-skills": {
+      "text": 56,
+      "layout": 0,
+      "latent": 16
+    },
+    "projects": {
+      "text": 14,
+      "layout": 0,
+      "latent": 16
+    },
+    "knowledge": {
+      "text": 62,
+      "layout": 0,
+      "latent": 16
+    },
+    "artifacts": {
+      "text": 14,
+      "layout": 0,
+      "latent": 16
+    },
+    "apps": {
+      "text": 14,
+      "layout": 0,
+      "latent": 16
+    },
+    "notifications": {
+      "text": 58,
+      "layout": 0,
+      "latent": 16
+    },
+    "logs": {
+      "text": 22,
+      "layout": 0,
+      "latent": 16
+    },
+    "developer-system": {
+      "text": 50,
+      "layout": 1,
+      "latent": 16
+    }
+  }
+}

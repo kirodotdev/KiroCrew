@@ -5,9 +5,11 @@ import { calcCompanionDays, memoryRows } from './memories'
 import type { StatsPayload } from './types'
 
 
-export default function MemoriesSection({ mem, offline }: {
+export default function MemoriesSection({ mem, offline, stale }: {
   mem: StatsPayload | null
   offline: boolean
+  /** When the pet is off we show cached stats; label them as a look-back. */
+  stale?: boolean
 }) {
   const rows = mem ? memoryRows(mem.stats, mem.petName) : []
 
@@ -16,7 +18,9 @@ export default function MemoriesSection({ mem, offline }: {
       title={i18nT('apps.crewCompanion.memories.title')}
       icon={BookOpen}
       right={mem
-        ? <span className="cc-muted">{i18nT('apps.crewCompanion.memories.days_together', { days: calcCompanionDays(mem.stats.firstLaunch) })}</span>
+        ? <span className="cc-muted">{stale
+            ? i18nT('apps.crewCompanion.memories.from_last_session')
+            : i18nT('apps.crewCompanion.memories.days_together', { days: calcCompanionDays(mem.stats.firstLaunch) })}</span>
         : undefined}
     >
       {offline ? (

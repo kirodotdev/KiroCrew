@@ -64,7 +64,7 @@ import { usePanelTabs, clearInlineDraft, getInlineDraft } from '../hooks/usePane
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
-import AgentDropdownList from '../components/AgentDropdownList'
+import AgentDropdownList, { ManageAgentsFooter } from '../components/AgentDropdownList'
 import ProjectPicker from '../components/ProjectPicker'
 import InboundLinkChip from '../components/InboundLinkChip'
 import SessionActionsMenu from '../components/SessionActionsMenu'
@@ -117,11 +117,18 @@ import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } fro
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview, pinHandoffY, pinPushTravel, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
 import {
+  adoptSourceSelections,
+  commitSourceSelection,
+  isSourceSelectionKey,
   loadSeenPullRequestLinks,
+  loadSourceSelections,
   partitionSourceLinks,
   persistSeenPullRequestLinks,
   PullRequestLinkIndex,
   recordNewPullRequestLinks,
+  type SourceLinkKind,
+  sourceSelection,
+  withSourceSelection,
 } from '../utils/pullRequestLinks'
 import { deriveFollowUpOptions } from '../utils/deriveFollowUpOptions'
 import OverlayDrawer from '../components/OverlayDrawer'
@@ -859,6 +866,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [])
 
   const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger)
+  const [defaultAgentFailed, setDefaultAgentFailed] = useState(false)
+  // Promotes an agent to the global default. Set-only: clearing the default lives on
+  // the Agent Templates page, where the control is labelled and the outcome is visible.
+  // Refresh goes through the store's global trigger rather than local state, because
+  // every open picker (this one, each split pane, the Templates page) reads the same
+  // setting — a per-hook refresh would leave sibling pickers showing the old default.
+  // api.setDefaultAgent is called defensively: component tests mock the api module
+  // partially, so the method can be absent under test.
+  const toggleDefaultAgent = useCallback((name: string) => {
+    setDefaultAgentFailed(false)
+    Promise.resolve(api.setDefaultAgent?.(name))
+      .then(() => dispatch(triggerRefresh()))
+      .catch(() => setDefaultAgentFailed(true))
+  }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(installedAgents)
   const filteredAgents = filteredAgentsByName
   const { data: availableModels = [{ name: 'auto', description: 'Default' }] } = useQuery({
@@ -1441,8 +1462,163 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     () => partitionSourceLinks(indexedSourceLinks),
     [indexedSourceLinks],
   )
-  const [selectedSourceUrl, setSelectedSourceUrl] = useState('')
-  const [selectedIssueUrl, setSelectedIssueUrl] = useState('')
+  // Which Change / Issue tab is focused, PER SLOT and persisted (see
+  // pullRequestLinks.SourceSelections). Per-slot because a single shared value
+  // reconciles to the first link of whichever transcript is active, so switching
+  // A→B→A dropped A's selection; persisted because the panel tab strip itself
+  // survives reloads (mc-panel-tabs:<slot>) and a strip that comes back focused
+  // on a tab the user never chose is the bug this closes.
+  //
+  // React state holds this window's view for rendering; commitSourceSelection
+  // does the durable write, merging ONE slot into a freshly read snapshot so a
+  // second chat window (a popped-out session shares this localStorage) cannot
+  // publish its stale view of the slots it is not looking at. That means this
+  // window's map can lag another window's writes to OTHER slots — harmless,
+  // since only the active slot is ever read, and far better than losing them.
+  const [sourceSelections, setSourceSelections] = useState(loadSourceSelections)
+  const selectedSourceUrl = sourceSelection(sourceSelections, activeSlot, 'change')
+  const selectedIssueUrl = sourceSelection(sourceSelections, activeSlot, 'issue')
+  // Fields whose durable write storage REFUSED, per slot. Storage then holds an
+  // older url than the user's live choice, so adoption must not take it back
+  // (see adoptSourceSelections). A ref, not state: it changes nothing on screen
+  // and must not re-render.
+  const unpersistedSelectionsRef = useRef<Record<string, Partial<Record<SourceLinkKind, boolean>>>>({})
+  // Fields whose on-screen value is a provisional fallback rather than a real
+  // choice. The value is the link count seen when the fallback was taken, so the
+  // storage re-read below can retry only once the transcript has actually GROWN
+  // rather than on every render. Cleared by an explicit pick or a successful
+  // restore.
+  const provisionalFallbackRef = useRef<Record<string, Partial<Record<SourceLinkKind, number>>>>({})
+  const selectSource = useCallback((kind: SourceLinkKind, url: string) => {
+    const slot = activeSlotRef.current
+    setSourceSelections(previous => withSourceSelection(previous, slot, kind, url))
+    const outcome = commitSourceSelection(slot, kind, url)
+    if (!slot) return
+    // An explicit choice supersedes any provisional fallback for this field.
+    const provisional = { ...provisionalFallbackRef.current[slot] }
+    delete provisional[kind]
+    provisionalFallbackRef.current = { ...provisionalFallbackRef.current, [slot]: provisional }
+    const failed = { ...unpersistedSelectionsRef.current[slot] }
+    // 'failed' means storage refused the write and still holds an older url;
+    // 'unchanged' means storage already agrees. Both are explicit writes, so the
+    // ledger records exactly whether this selection reached storage.
+    if (outcome === 'failed') failed[kind] = true
+    else delete failed[kind]
+    unpersistedSelectionsRef.current = { ...unpersistedSelectionsRef.current, [slot]: failed }
+  }, [])
+  const selectSourceUrl = useCallback((url: string) => selectSource('change', url), [selectSource])
+  const selectIssueUrl = useCallback((url: string) => selectSource('issue', url), [selectSource])
+  // A RECONCILED pick is derived from the transcript, not chosen by the user, and
+  // is deliberately IN-MEMORY ONLY — it never writes to storage.
+  //
+  // Persisting it bought nothing and cost correctness. The fallback is
+  // deterministic (`sourceLinks[0]`), so a session where the user never picked a
+  // tab recomputes the same answer on return without any stored value; the only
+  // case persistence changes is a choice that DIFFERS from the first link, which
+  // is exactly what an explicit click already records. Meanwhile every write from
+  // here could destroy a real choice, because the fallback also fires whenever the
+  // transcript on screen is provisional — `switchSlot.pending` serves a cached
+  // transcript with `slotLoading` already false while the fetch is still in
+  // flight, and a transcript missing a url is not proof the url is gone.
+  //
+  // The slot is marked provisional so the reconciliation effects know to look in
+  // storage once for a better answer (see the effects below).
+  const reconcileSelection = useCallback((kind: SourceLinkKind, url: string, seen = 0) => {
+    const slot = activeSlotRef.current
+    setSourceSelections(previous => withSourceSelection(previous, slot, kind, url))
+    if (!slot) return
+    provisionalFallbackRef.current = {
+      ...provisionalFallbackRef.current,
+      [slot]: { ...provisionalFallbackRef.current[slot], [kind]: seen },
+    }
+  }, [])
+  // The panels normalize their own selection when the remembered url is not among
+  // the tabs they render, and that is NOT a user choice — route it to the
+  // in-memory path so it cannot overwrite storage. Before this split the panels
+  // were handed the persisting callback, which made their normalize a durable
+  // write and defeated the whole in-memory-only rule.
+  const reconcileSourceUrl = useCallback(
+    (url: string) => reconcileSelection('change', url, sourceLinks.length),
+    [reconcileSelection, sourceLinks.length],
+  )
+  const reconcileIssueUrl = useCallback(
+    (url: string) => reconcileSelection('issue', url, issueLinks.length),
+    [reconcileSelection, issueLinks.length],
+  )
+
+  // Re-read storage for a slot whose on-screen value is a provisional fallback.
+  //
+  // Without this the fallback would stick for the life of the document: nothing
+  // else re-reads storage in the window that wrote it — loadSourceSelections runs
+  // only in the useState initializer, and the `storage` event never fires in the
+  // writing document — so the user would keep seeing the fallback instead of the
+  // tab they left open until a reload.
+  //
+  // Retried only when the transcript has GROWN since the fallback was taken. A
+  // transcript is append-only within a slot, so growth is the only way a
+  // previously-absent url can appear, and gating on it keeps this off the
+  // per-render (and per-streaming-chunk) path. Membership in `links` is the
+  // "the fetch proved it still exists" condition.
+  const restoreFromStorage = useCallback((
+    kind: SourceLinkKind,
+    links: readonly { url: string }[],
+  ): boolean => {
+    const slot = activeSlotRef.current
+    if (!slot) return false
+    const seen = provisionalFallbackRef.current[slot]?.[kind]
+    if (seen === undefined || links.length <= seen) return false
+
+    const stored = sourceSelection(loadSourceSelections(), slot, kind)
+    if (stored && links.some(link => link.url === stored)) {
+      const provisional = { ...provisionalFallbackRef.current[slot] }
+      delete provisional[kind]
+      provisionalFallbackRef.current = { ...provisionalFallbackRef.current, [slot]: provisional }
+      setSourceSelections(previous => withSourceSelection(previous, slot, kind, stored))
+      return true
+    }
+    // Not there yet — wait for further growth rather than re-reading every render.
+    provisionalFallbackRef.current = {
+      ...provisionalFallbackRef.current,
+      [slot]: { ...provisionalFallbackRef.current[slot], [kind]: links.length },
+    }
+    return false
+  }, [])
+
+  // Adopt a sibling window's writes. `storage` fires in every OTHER document on
+  // this origin, so the window that did NOT write is the one that needs to
+  // re-read. Without this, a window carries its mount-time view until reload and
+  // two windows focused on the same session would each show their own last
+  // choice. The event's newValue is ignored in favour of a full re-read, so the
+  // loader's own validation and bounds apply to whatever a sibling wrote.
+  //
+  // The urls THIS window's transcript offers go in with the read: adoption is
+  // conditional on them for the active slot, which is what keeps two windows
+  // with divergent transcripts from overwriting each other in a loop (see
+  // adoptSourceSelections). Read through a ref because the listener is
+  // registered once and must see the current transcript at event time.
+  const availableSourceUrls = useMemo(() => ({
+    change: sourceLinks.map(source => source.url),
+    issue: issueLinks.map(issue => issue.url),
+  }), [sourceLinks, issueLinks])
+  const availableSourceUrlsRef = useRef(availableSourceUrls)
+  availableSourceUrlsRef.current = availableSourceUrls
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.storageArea && event.storageArea !== localStorage) return
+      // key === null is a storage.clear(), which does concern us. Otherwise
+      // match the store's key prefix — the selection lives in one key per
+      // (slot, kind), so there is no single literal to compare against.
+      if (event.key !== null && !isSourceSelectionKey(event.key)) return
+      setSourceSelections(previous => adoptSourceSelections(
+        previous,
+        activeSlotRef.current,
+        availableSourceUrlsRef.current,
+        unpersistedSelectionsRef.current,
+      ))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
 
   // Add and focus the per-slot Changes / Issues tabs for newly detected URLs,
   // but leave panel visibility under explicit user control. Both kinds share one
@@ -1465,36 +1641,54 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // An uncached slot temporarily has no messages while its history hydrates.
     // Preserve the persisted strip until that source-of-truth load settles.
     if (slotLoading) return
+    // A previous provisional render may have fallen back in memory while storage
+    // still holds the tab the user chose; look there first once links appear.
+    if (restoreFromStorage('change', sourceLinks)) return
     if (sourceLinks.length === 0) {
       // Changes is a permanently pinned tab (SidePanel.syncPinned) — never
       // auto-close it here. Just clear the source selection; the tab stays put
       // and renders its empty state until sources are detected again.
-      setSelectedSourceUrl('')
+      //
+      // Two guards, both load-bearing:
+      //  - transcript LOADED, not merely empty. switchSlot.rejected (a dropped
+      //    history fetch) empties `messages` AND drops slotLoading in one reducer
+      //    pass, so the guard above does not hold; since the selection is durable,
+      //    clearing there would outlive the failure and lose the tab on retry.
+      //  - something to clear. commitSourceSelection enumerates storage to decide
+      //    whether the value already matches, and these effects re-run on every
+      //    streaming chunk (the link index hands back a fresh array per chunk), so
+      //    an unconditional clear costs a full enumeration per chunk for every
+      //    session that never mentions a pull request — the common case.
+      if (messages.length && selectedSourceUrl) reconcileSelection('change', '')
       return
     }
+    // First-wins fallback ONLY when the remembered url is gone from the
+    // transcript: while it is still present, selectedSourceUrl already carries
+    // the restored per-slot choice and this reconciliation leaves it alone.
     if (!sourceLinks.some(source => source.url === selectedSourceUrl)) {
-      setSelectedSourceUrl(sourceLinks[0].url)
+      // Storage may still hold the tab the user actually chose — absent from an
+      // earlier PROVISIONAL transcript but present now that the fetch landed.
+      // Look there once before falling back, gated on the url being in THIS
+      // transcript (that gate IS the "the fetch proved it exists" condition).
+      reconcileSelection('change', sourceLinks[0].url, sourceLinks.length)
     }
-    // React to indexed sources, selection, and hydration completion only;
-    // tabsCtl changes identity as tabs move and must not retrigger source
-    // reconciliation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceLinks, selectedSourceUrl, slotLoading])
+    // reconcileSourceUrl reads the active slot through a ref, so it is stable and
+    // this effect reacts only to sources, selection, and hydration state.
+  }, [sourceLinks, selectedSourceUrl, slotLoading, messages.length, reconcileSelection, restoreFromStorage])
 
   useEffect(() => {
     // Same first-wins / clear-on-empty reconciliation as the Changes selection
-    // above, and the same hydration guard: an uncached slot has no messages
-    // while its history loads, so an early clear would drop a valid selection.
+    // above, including the loaded-transcript guard on the clear.
     if (slotLoading) return
+    if (restoreFromStorage('issue', issueLinks)) return
     if (issueLinks.length === 0) {
-      setSelectedIssueUrl('')
+      if (messages.length && selectedIssueUrl) reconcileSelection('issue', '')
       return
     }
     if (!issueLinks.some(issue => issue.url === selectedIssueUrl)) {
-      setSelectedIssueUrl(issueLinks[0].url)
+      reconcileSelection('issue', issueLinks[0].url, issueLinks.length)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [issueLinks, selectedIssueUrl, slotLoading])
+  }, [issueLinks, selectedIssueUrl, slotLoading, messages.length, reconcileSelection, restoreFromStorage])
 
   const addSourceCommentToChat = useCallback((text: string) => {
     setInput(previous => previous.trim() ? `${previous.trimEnd()}\n\n${text}` : text)
@@ -4778,8 +4972,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   <Input ref={agentInputRef} type="text" aria-label={i18nT('pages.chatPage.filter_agents')} placeholder={i18nT('pages.chatPage.type_to_filter')} value={agentFilter} onChange={e => setAgentFilter(e.target.value)} className="w-full px-2 py-1 text-[13px] font-mono" />
                 </div>
                 <div role="listbox" aria-label={i18nT('pages.chatPage.agent_list')} className="overflow-y-auto max-h-[280px]">
-                <AgentDropdownList agents={filteredAgents} activeAgent={currentSlot?.agent || 'default'} defaultAgent={defaultAgent} onSelect={(name) => { switchAgent(name); setAgentDropdown(false) }} filter={agentFilter} />
+                {/* Embedded chat gets neither half of the default-agent affordance: it has
+                    no /capabilities route for the footer, and the footer is what carries the
+                    failed-write alert — offering the write without its error path would make
+                    a rejected request indistinguishable from a successful one. */}
+                <AgentDropdownList agents={filteredAgents} activeAgent={currentSlot?.agent || 'default'} defaultAgent={defaultAgent} onSelect={(name) => { switchAgent(name); setAgentDropdown(false) }} onSetDefault={embedded ? undefined : toggleDefaultAgent} filter={agentFilter} />
                 </div>
+                {!embedded && <ManageAgentsFooter error={defaultAgentFailed} onManage={() => { setAgentDropdown(false); navigate('/capabilities?tab=templates') }} />}
               </div>,
               document.body
             )}
@@ -4879,8 +5078,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
               onArtifactOpen={handleArtifactOpen}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
-              sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl}
-              issues={issueLinks} selectedIssueUrl={selectedIssueUrl} onSelectIssue={setSelectedIssueUrl}
+              sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
+              issues={issueLinks} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
               onAddSourceToChat={addSourceCommentToChat}
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
               inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
@@ -4914,8 +5113,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
                 onArtifactOpen={handleArtifactOpen}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
-                sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={setSelectedSourceUrl}
-              issues={issueLinks} selectedIssueUrl={selectedIssueUrl} onSelectIssue={setSelectedIssueUrl}
+                sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
+              issues={issueLinks} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
               onAddSourceToChat={addSourceCommentToChat}
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
                 inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}

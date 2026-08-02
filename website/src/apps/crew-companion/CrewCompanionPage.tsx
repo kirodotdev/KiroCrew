@@ -1,18 +1,19 @@
 /**
  * Crew Companion — KiroCrew builtin dashboard page.
  *
- * The pet lives on the desktop as a separate macOS app running its own HTTP server
- * on 127.0.0.1:7778. A browser page can't read that server directly, so every
+ * The companion lives on the desktop as a separate macOS app running its own HTTP
+ * server on 127.0.0.1:7778. A browser page can't read that server directly, so every
  * request goes through the gateway reverse proxy at `/apps/crew-companion/api/<path>`
- * (same-origin, no CORS). This page is where you configure the three things the pet
+ * (same-origin, no CORS). This page is where you configure the things the companion
  * can't easily surface from the desktop: how it nudges you (Settings), what it will
  * remind you about (Reminders), and its record of your time together (Memories).
  *
- * The desktop app being closed is the ORDINARY case, not an error — every control
- * still renders (disabled, with a line explaining why) rather than vanishing.
+ * When the companion is not running, both of its endpoints are unreachable; instead
+ * of rendering dead disabled controls, the page shows a distinct "not running" state
+ * with an Open action, and keeps Memories visible from a local cache.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Ghost } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Ghost, ExternalLink } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { apiGet, apiPost } from './api'
 import { REMINDER_PATHS, STATS_PATHS, POLL_MS } from './constants'
@@ -130,6 +131,46 @@ export default function CrewCompanionPage() {
     })
   }, [loadReminders])
 
+  /**
+   * Relaunch the desktop pet. The user can Quit it from the avatar menu, after
+   * which there is no other way back — this button hits the gateway's app-open
+   * endpoint (allowed in the manifest). On a headless/remote gateway the open
+   * is not possible locally, so surface the command instead of failing silently.
+   */
+  const openPet = useCallback(() => {
+    apiPost<{ remote?: boolean; command?: string; message?: string }>('/api/apps/crew-companion/open')
+      .then((res) => {
+        if (res?.remote) {
+          setNotice(res.command || res.message || i18nT('components.appstore.installedAppCard.app_cannot_be_opened_kirocrew_is_running_in_a_he'))
+        } else {
+          clearNotice()
+        }
+      })
+      .catch((e: unknown) => setNotice(errText(e)))
+  }, [])
+
+  // Memories is a look-back, not a live control — keep it visible even when the
+  // pet is off by caching the last good stats and showing them (labelled) offline.
+  useEffect(() => {
+    if (mem) {
+      try { localStorage.setItem('cc:lastStats', JSON.stringify(mem)) } catch { /* quota / private mode */ }
+    }
+  }, [mem])
+  const cachedMem = useMemo<StatsPayload | null>(() => {
+    if (mem) return mem
+    try {
+      const raw = localStorage.getItem('cc:lastStats')
+      return raw ? (JSON.parse(raw) as StatsPayload) : null
+    } catch { return null }
+  }, [mem])
+
+  /**
+   * The desktop companion is unreachable only when BOTH of its endpoints are
+   * down. Keying off reminders alone would render "isn't running" over a live
+   * companion if only the reminders path drifted (version/path skew).
+   */
+  const offline = !!remError && memOffline
+
   return (
     <div className="cc-page">
       <style>{CC_CSS}</style>
@@ -140,25 +181,44 @@ export default function CrewCompanionPage() {
           <h1 className="cc-h1">{i18nT('apps.crewCompanion.header.title')}</h1>
         </div>
         <p className="cc-sub">{i18nT('apps.crewCompanion.header.subtitle')}</p>
+        {!offline ? <p className="cc-quit-tip">{i18nT('apps.crewCompanion.offline.quit_tip')}</p> : null}
       </div>
 
-      <SettingsSection
-        rem={rem}
-        remError={remError}
-        onCfg={setReminderCfg}
-        customMins={customMins}
-        setCustomMins={setCustomMins}
-      />
+      {offline ? (
+        <>
+          <section className="cc-offline">
+            <Ghost className="cc-offline-ghost" aria-hidden />
+            <div className="cc-offline-title">{i18nT('apps.crewCompanion.offline.title')}</div>
+            <div className="cc-offline-body">{i18nT('apps.crewCompanion.offline.body')}</div>
+            <button type="button" className="cc-cta" onClick={openPet}>
+              <ExternalLink size={15} aria-hidden /> {i18nT('apps.crewCompanion.offline.open')}
+            </button>
+          </section>
 
-      <RemindersSection
-        rem={rem}
-        remError={remError}
-        onAdd={addReminder}
-        onSkip={skipReminder}
-        onRemove={removeReminder}
-      />
+          {/* Memories persists from cache — a keepsake, not a live control. */}
+          {cachedMem ? <MemoriesSection mem={cachedMem} offline={false} stale /> : null}
+        </>
+      ) : (
+        <>
+          <SettingsSection
+            rem={rem}
+            remError={remError}
+            onCfg={setReminderCfg}
+            customMins={customMins}
+            setCustomMins={setCustomMins}
+          />
 
-      <MemoriesSection mem={mem} offline={memOffline} />
+          <RemindersSection
+            rem={rem}
+            remError={remError}
+            onAdd={addReminder}
+            onSkip={skipReminder}
+            onRemove={removeReminder}
+          />
+
+          <MemoriesSection mem={mem} offline={memOffline} />
+        </>
+      )}
 
       {/* Politely announce a failed write without stealing focus. */}
       <div aria-live="polite" className="cc-muted" style={{ marginTop: 12 }}>{notice}</div>

@@ -1,0 +1,177 @@
+name: Fork Workflow-Change Guard
+
+# Blocks a FORK pull request that modifies CI/workflow files under `.github/**`
+# — the vector a fork could use to fake basic-CI results (rewrite ci.yml to pass)
+# or tamper with CODEOWNERS/other automation.
+#
+# WHY DETERMINISTIC (no model): "does the diff touch .github/**" is a file-path
+# check — a grep on the authentic changed-file list is 100% reliable, instant,
+# and free. An LLM gate here would be slower, cost money, and could hallucinate.
+#
+# WHY TRUSTED CONTEXT: it runs from the DEFAULT branch (workflow_run of CI, and
+# pull_request_target for the override-label re-eval), so a fork cannot disable
+# it, and fork pull_request runs have no `checks:write` to forge its verdict. It
+# NEVER checks out or executes fork code — it only reads the authentic
+# changed-file list from GitHub's compare API and posts a check-run.
+#
+# OVERRIDE: a maintainer who has reviewed a legitimate workflow change applies
+# the `allow-fork-workflow-change` label; the guard then re-evaluates green.
+# Complements a CODEOWNERS rule on `.github/workflows/**` (which forces review;
+# this enforces it as a required, blocking check).
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  # Label events run in the base-repo context (write token) via
+  # pull_request_target, so the guard can re-post its check for a fork PR — a
+  # fork `pull_request` run would be read-only and could not. No fork code is
+  # checked out here.
+  pull_request_target:
+    # `synchronize`: a new push must invalidate any prior approval so an
+    # `allow-fork-workflow-change` label cannot carry over to a later revision
+    # (see the strip-stale-override job below).
+    types: [labeled, unlabeled, synchronize]
+
+permissions:
+  checks: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: fork-workflow-guard-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Fork workflow-change guard
+    runs-on: ubuntu-latest
+    # FORK ONLY, both event shapes. Same-repo PRs are unaffected.
+    if: >-
+      ( github.event_name == 'workflow_run'
+        && github.event.workflow_run.event == 'pull_request'
+        && github.event.workflow_run.head_repository.full_name != github.repository )
+      || ( github.event_name == 'pull_request_target'
+           && github.event.label.name == 'allow-fork-workflow-change'
+           && github.event.pull_request.head.repo.full_name != github.repository )
+    steps:
+      - name: Evaluate workflow-change guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          OVERRIDE_LABEL: allow-fork-workflow-change
+        run: |
+          set -uo pipefail
+          head_sha="${WR_HEAD_SHA:-$PR_HEAD_SHA}"
+          if [ -z "$head_sha" ]; then echo "::error::no head sha available"; exit 1; fi
+
+          # Resolve the PR by matching the open PR whose head SHA == head_sha
+          # (workflow_run.pull_requests is empty for forks).
+          pr="$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+            --jq "[.[] | select(.head.sha == \"$head_sha\")][0].number // empty" 2>/dev/null || true)"
+          if [ -z "$pr" ]; then echo "::error::could not resolve an open PR for $head_sha"; exit 1; fi
+
+          # AUTHORITATIVE, COMPLETE changed-file list from the paginated PR-files
+          # endpoint. NOT the compare API — its `.files` caps at 300, which would
+          # let a large fork PR hide a `.github/` edit past the cap and slip a
+          # forged CI through. Fail CLOSED on any API error or truncation: never
+          # post success when we could not fully determine the changed set.
+          fail_closed() {
+            gh api --method POST "repos/$REPO/check-runs" \
+              -f name="Fork workflow-change guard" -f head_sha="$head_sha" \
+              -f status="completed" -f conclusion="failure" \
+              -f "output[title]=$1" -f "output[summary]=$2" >/dev/null || true
+            echo "::error::$1"
+            exit 0
+          }
+          if ! files="$(gh api "repos/$REPO/pulls/$pr/files" --paginate --jq '.[].filename')"; then
+            fail_closed "could not determine changed files" \
+              "The changed-file list could not be retrieved from GitHub; failing closed. Re-run the guard."
+          fi
+          nfiles="$(printf '%s\n' "$files" | grep -c . || true)"
+          if [ "${nfiles:-0}" -ge 3000 ]; then
+            fail_closed "too many files to verify (>= 3000)" \
+              "This PR changes ${nfiles}+ files, at the API listing cap, so a hidden .github/** edit cannot be ruled out. Blocked; split the PR or a maintainer must review and apply the '$OVERRIDE_LABEL' label."
+          fi
+          touched="$(printf '%s\n' "$files" | grep -E '^\.github/' || true)"
+
+          has_override=no
+          if gh api "repos/$REPO/issues/$pr/labels" --paginate --jq '.[].name' 2>/dev/null \
+            | grep -Fxq "$OVERRIDE_LABEL"; then
+            has_override=yes
+          fi
+
+          if [ -z "$touched" ]; then
+            concl="success"; title="no .github/** changes"
+            summary="This fork PR does not modify CI/workflow files."
+          elif [ "$has_override" = "yes" ]; then
+            concl="success"; title="workflow change accepted by maintainer"
+            summary="This fork PR modifies .github/** but a maintainer applied the '$OVERRIDE_LABEL' label after review."
+          else
+            concl="failure"; title="fork PR modifies .github/** — blocked"
+            changed_list="$(printf '%s ' $touched)"
+            summary="This fork PR changes CI/workflow files ($changed_list). A fork could use this to fake CI results, so it is blocked. A maintainer must review the change and apply the '$OVERRIDE_LABEL' label to proceed."
+          fi
+
+          gh api --method POST "repos/$REPO/check-runs" \
+            -f name="Fork workflow-change guard" -f head_sha="$head_sha" \
+            -f status="completed" -f conclusion="$concl" \
+            -f "output[title]=$title" -f "output[summary]=$summary" >/dev/null
+          echo "guard verdict: $concl — $title"
+
+  # A new push must not inherit a prior maintainer approval. On `synchronize`,
+  # strip the override label so the guard re-blocks the new revision until it is
+  # re-reviewed — closing the "approve revision A, then push malicious revision B
+  # under the same label" hole. Runs in the trusted base context, fork-only, and
+  # never checks out fork code. Removing the label fires `unlabeled`, which
+  # re-runs the guard job above and re-posts the (now failing) check.
+  strip-stale-override:
+    name: Strip stale workflow-change override
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'pull_request_target'
+      && github.event.action == 'synchronize'
+      && github.event.pull_request.head.repo.full_name != github.repository
+    permissions:
+      pull-requests: write
+      checks: write
+    steps:
+      - name: Remove override label on new revision
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          OVERRIDE_LABEL: allow-fork-workflow-change
+        run: |
+          set -uo pipefail
+          # Fail CLOSED: a *failed* removal must never be mistaken for "no label",
+          # or a stale approval would carry into the new revision. Only an actual
+          # removal (2xx) or a genuine 404 (label absent) is acceptable; any other
+          # error blocks the new head so the prior approval cannot survive.
+          block_head() {
+            gh api --method POST "repos/$REPO/check-runs" \
+              -f name="Fork workflow-change guard" -f head_sha="$HEAD_SHA" \
+              -f status="completed" -f conclusion="failure" \
+              -f "output[title]=stale override could not be cleared" \
+              -f "output[summary]=$1" >/dev/null 2>&1 || true
+          }
+          rc=0
+          err="$(gh api --method DELETE "repos/$REPO/issues/$PR/labels/$OVERRIDE_LABEL" 2>&1 >/dev/null)" || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "Removed '$OVERRIDE_LABEL' after new push — re-approval required for this revision."
+          elif printf '%s' "$err" | grep -qiE 'HTTP 404|Not Found'; then
+            echo "No '$OVERRIDE_LABEL' label present; nothing to strip."
+          else
+            echo "::error::could not remove '$OVERRIDE_LABEL' on new push: $err"
+            block_head "Failed to remove '$OVERRIDE_LABEL' on a new push; blocking so a prior maintainer approval cannot carry over to this unreviewed revision."
+            exit 1
+          fi
+          # Confirm the label is really gone; otherwise block the new head.
+          if gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name' 2>/dev/null | grep -qx "$OVERRIDE_LABEL"; then
+            echo "::error::'$OVERRIDE_LABEL' still present after strip; failing closed."
+            block_head "The '$OVERRIDE_LABEL' label persists after a new push; blocking so a prior approval cannot carry over."
+            exit 1
+          fi

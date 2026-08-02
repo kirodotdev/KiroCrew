@@ -11,6 +11,7 @@
 
 export const CATEGORY_ORDER = [
   'Developer Tools',
+  'Designer Tools',
   'On-call & Ops',
   'Productivity',
   'Agents & Automation',
@@ -24,6 +25,9 @@ export type Category = (typeof CATEGORY_ORDER)[number]
 const MATCHERS: [Category, Set<string>][] = [
   ['On-call & Ops', new Set(['oncall', 'operations', 'monitoring', 'tickets', 'pipelines'])],
   ['Research & Writing', new Set(['research', 'writing', 'docs'])],
+  ['Designer Tools', new Set([
+    'ux', 'critique', 'usability', 'heuristic-evaluation', 'designer-tools',
+  ])],
   ['Developer Tools', new Set([
     'developer-tools', 'code-review', 'git', 'github', 'dev', 'worktrees',
     'pods', 'issue-triage', 'code-quality', 'open-source', 'performance',

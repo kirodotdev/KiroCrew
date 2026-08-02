@@ -8,9 +8,8 @@ import type { ProjectRun, RunStatus } from '../types';
 import DagView from './aidlc/DagView';
 import PhasedView from './aidlc/PhasedView';
 import TaskDetailPanel from './aidlc/TaskDetailPanel';
-import PixelCanvasWidget from '../components/PixelCanvasWidget';
 import { api } from '../api/client';
-import { AlertTriangle, Download } from 'lucide-react';
+import { AlertTriangle, Download, Hourglass } from 'lucide-react';
 
 import { i18nT } from '../i18n/t'
 type Tab = 'idea' | 'tasks';
@@ -185,7 +184,6 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
               <Download size={13} /> {exportMutation.isPending ? i18nT('pages.projectDetailPage.exporting') : i18nT('pages.projectDetailPage.export_yaml')}
             </button>
           )}
-          {!isPlanning && <PixelCanvasWidget run={run} />}
         </div>
 
         {/* Approval banner */}
@@ -261,9 +259,12 @@ function PlanningOverlay() {
   return (
     <div className="flex items-center justify-center h-full">
       <div className="text-center">
-        <div className="w-10 h-10 border-3 border-accent/30 border-t-accent rounded-full animate-spin mx-auto mb-4" />
+        {/* Static glyph plus a shimmer bar — the ticking dots and the sweep carry
+            the "work in flight" signal, so nothing here spins. */}
+        <Hourglass size={28} className="text-accent mx-auto mb-4" />
         <div className="text-accent text-[16px] font-semibold">{i18nT('pages.projectDetailPage.generating_execution_plan')}{dots}</div>
         <div className="text-muted text-[13px] mt-1">{i18nT('pages.projectDetailPage.analyzing_task_and_building_step_by_step_plan')}</div>
+        <div className="skeleton h-1.5 w-40 rounded-full mx-auto mt-4" aria-hidden="true" />
         <div className="text-muted text-[12px] mt-3">{i18nT('pages.projectDetailPage.the_dag_view_will_appear_once_the_plan_is_ready')}</div>
       </div>
     </div>

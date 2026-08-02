@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { Card, CardTitle, Btn, SendBtn, Input, SearchInput, Badge, SourceBadge, StatCard, EmptyState, PageHeader } from '../components/ui'
+import { Card, CardTitle, Btn, SendBtn, Input, SearchInput, Badge, SourceBadge, StatCard, EmptyState, PageHeader, PanelSectionHeader } from '../components/ui'
 
 describe('Card', () => {
   it('renders children', () => {
@@ -100,5 +100,73 @@ describe('PageHeader', () => {
     render(<PageHeader title="Dashboard" subtitle="Overview" />)
     expect(screen.getByText('Dashboard')).toBeInTheDocument()
     expect(screen.getByText('Overview')).toBeInTheDocument()
+  })
+})
+
+// ── PanelSectionHeader ──────────────────────────────────────────────────────
+//
+// This primitive exists to stop side-panel section headers from drifting apart
+// again, so its tests pin the two properties that drift would break rather than
+// just "it renders the label". Both are asserted as NEGATIVES, because the
+// regression is always something being ADDED back:
+//
+//  - no `uppercase`: text-transform is a no-op on CJK, so an uppercased
+//    micro-header carries hierarchy in English and none at all in zh-CN.
+//  - no opacity modifier on the text: the idiom this replaced dimmed the label
+//    to text-muted/40 (~1.7:1 on both default themes) and the count to
+//    text-muted/50 (~1.9:1), both under WCAG 1.4.3's 4.5:1 for text this size.
+//    Hierarchy has to come from weight and size instead.
+describe('PanelSectionHeader', () => {
+  it('renders the label and the count as separate nodes', () => {
+    render(<PanelSectionHeader label="Changed files" count={3} />)
+    // Not `getByText('Changed files 3')` — the count must NOT be interpolated
+    // into the translated label, which was a concatenation seam.
+    expect(screen.getByText('Changed files')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
+  })
+
+  it('omits the count node entirely when no count is given', () => {
+    render(<PanelSectionHeader label="Resources" />)
+    const header = screen.getByTestId('panel-section-header')
+    // Label + hairline rule only.
+    expect(header.children).toHaveLength(2)
+  })
+
+  it('renders a zero count rather than treating it as absent', () => {
+    render(<PanelSectionHeader label="Resources" count={0} />)
+    expect(screen.getByText('0')).toBeInTheDocument()
+  })
+
+  it('never uppercases the label, so CJK keeps its hierarchy', () => {
+    render(<PanelSectionHeader label="本次会话" count={2} />)
+    const header = screen.getByTestId('panel-section-header')
+    expect(header.innerHTML).not.toMatch(/\buppercase\b/)
+    expect(screen.getByText('本次会话')).toBeInTheDocument()
+  })
+
+  it('never dims the label or count with an opacity modifier', () => {
+    render(<PanelSectionHeader label="Changed files" count={3} />)
+    const header = screen.getByTestId('panel-section-header')
+    expect(screen.getByText('Changed files')).toHaveClass('text-muted')
+    expect(screen.getByText('3')).toHaveClass('text-muted')
+    // `text-muted/40`, `text-muted/50`, … on either node.
+    expect(header.innerHTML).not.toMatch(/text-muted\/\d/)
+  })
+
+  it('places trailing content after the rule so it cannot shift the label', () => {
+    render(<PanelSectionHeader label="Resources" count={1} trailing={<span>resolving…</span>} />)
+    const header = screen.getByTestId('panel-section-header')
+    const rule = header.querySelector('.h-px')
+    const trailing = screen.getByText('resolving…')
+    expect(rule).toBeInTheDocument()
+    // DOCUMENT_POSITION_FOLLOWING === 4
+    expect(rule!.compareDocumentPosition(trailing) & 4).toBeTruthy()
+  })
+
+  it('merges caller margins without dropping its own layout classes', () => {
+    render(<PanelSectionHeader label="Resources" className="mt-3" />)
+    const header = screen.getByTestId('panel-section-header')
+    expect(header).toHaveClass('mt-3')
+    expect(header).toHaveClass('flex')
   })
 })

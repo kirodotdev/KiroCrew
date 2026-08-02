@@ -62,7 +62,7 @@ Four mechanisms clean up processes. They are complementary — not redundant.
 3. ``_expire_idle()`` — **periodic** (every ~5 min).
    Kills sessions idle for >``timeout_secs`` (default 30 min) via
    ``reset()`` → ``provider.shutdown()`` → SIGKILL process tree.
-   Protected keys: ``_PERSISTENT_KEYS`` (``_bg`` only).
+   Protected keys: ``_PERSISTENT_KEYS`` (``_bg`` and ``_hb``).
    **Known limitation**: ``last_used`` is only bumped on ``get_or_create()``,
    not on every LLM round-trip. A task runner step doing continuous work for
    >30 min without a new ``get_or_create()`` call could be swept. This is
@@ -1892,16 +1892,23 @@ class SessionManager:
         await self._ensure_background()
 
     async def recycle_heartbeat(self) -> None:
-        """Check heartbeat session context and recycle if too full.
+        """Tear down the heartbeat session at the end of a cycle.
 
         Mirrors :meth:`recycle_background` but for ``HEARTBEAT_KEY``.  Called
         once per heartbeat cycle (after all tasks finish), NOT per task —
         per-task recycle would tear down the session under concurrent
         ``asyncio.gather``'d siblings sharing the same key.
 
-        Same thresholds as background:
-        - At ≥ 70% context → recycle
-        - After 40 prompts with no metadata → recycle (blind fallback)
+        Unconditional, unlike :meth:`recycle_background`.  Heartbeat's
+        published contract is "fresh context each cycle"
+        (``config/prompt.md``), and every entry is re-read from
+        ``HEARTBEAT.md`` each cycle, so a retained transcript supplies
+        nothing the next cycle depends on while costing input tokens on
+        every tick.  It is also actively wrong to keep: for a watch task the
+        external system — not the prior transcript — is the source of truth,
+        and unrelated queued tasks would otherwise inherit each other's
+        reasoning.  Heartbeat runs in the background with nobody waiting on
+        a tick, so the per-cycle cold-start it costs is unobserved.
 
         No-op if the heartbeat session was never created (cycle had no
         tasks) or already torn down by a per-task timeout reset.
@@ -1911,15 +1918,7 @@ class SessionManager:
             return
 
         pct = session.provider.context_usage_pct()
-        needs_recycle = pct >= _BG_RECYCLE_PCT
-        if not needs_recycle and pct == 0.0:
-            needs_recycle = session.prompt_count >= _BG_BLIND_RECYCLE_PROMPTS
-
-        if not needs_recycle:
-            return
-
-        reason = f"context at {pct:.0f}%" if pct > 0 else f"blind ({session.prompt_count} prompts)"
-        logger.info("Recycling heartbeat session — %s", reason)
+        logger.info("Recycling heartbeat session — cycle end (context at %.0f%%)", pct)
 
         # Kill old session — next get_or_create(HEARTBEAT_KEY) will create
         # a fresh one (no eager _ensure_heartbeat — heartbeat sessions are
@@ -2116,10 +2115,15 @@ class SessionManager:
                 None, _session_model, self._cfg, agent
             )
 
-        # Check session map for resume — only for long-lived sessions
+        # Check session map for resume — only for long-lived sessions.
+        # ``_hb`` is stateless alongside ``_bg``: heartbeat's published
+        # contract is "fresh context each cycle" (config/prompt.md), and each
+        # entry is re-read from HEARTBEAT.md every cycle, so resuming a prior
+        # transcript supplies nothing while costing input tokens every tick.
         resume_sid: str | None = None
         is_stateless = (
-            key == BACKGROUND_KEY or any(key.startswith(p) for p in _STATELESS_PREFIXES)
+            key in (BACKGROUND_KEY, HEARTBEAT_KEY)
+            or any(key.startswith(p) for p in _STATELESS_PREFIXES)
         ) and key not in self._continuable_keys
         if not is_stateless:
             resume_sid = self._session_map.get(key)

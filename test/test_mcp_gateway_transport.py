@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import socket
 import stat
 import sys
+import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 
@@ -168,10 +170,38 @@ def _close_immediately(
     writer.close()
 
 
+@pytest.fixture()
+def sock_dir(tmp_path: Path) -> Iterator[Path]:
+    """A directory short enough to hold a bindable ``AF_UNIX`` endpoint.
+
+    ``sockaddr_un.sun_path`` is a FIXED-SIZE char array — 104 bytes on macOS/BSD,
+    108 on Linux — and the kernel rejects a longer path with ``OSError: AF_UNIX
+    path too long`` at ``bind`` time. It is a limit on the path, not on any
+    configurable buffer, so there is nothing to raise.
+
+    ``tmp_path`` cannot be used by the tests that BIND: pytest derives it from
+    ``TMPDIR`` and appends the test's own name, and on macOS ``TMPDIR`` is already
+    a ~50-byte per-user path under ``/var/folders/...``. A test whose name is long
+    enough — ``test_harden_endpoint_makes_the_socket_owner_only`` — pushed the
+    total to 132 bytes and failed on every macOS checkout while passing on Linux,
+    where the shorter ``/tmp`` and the 108-byte cap both help.
+
+    ``/tmp`` directly, with a short unique leaf: the path stays ~25 bytes, so it
+    fits on either platform regardless of how the test is named. Only the tests
+    that actually bind a socket need this; the ones asserting path arithmetic
+    (``lock_path_for``, ``resolve_address``) are unaffected and keep ``tmp_path``.
+    """
+    base = Path(tempfile.mkdtemp(prefix="kcs-", dir="/tmp"))
+    try:
+        yield base
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 @pytest.mark.skipif(pc.IS_WINDOWS, reason="exercises the AF_UNIX branch")
 @pytest.mark.asyncio
 async def test_serve_and_connect_round_trip_preserves_newline_framing(
-    tmp_path: Path,
+    sock_dir: Path,
 ) -> None:
     """Two whole frames in one write must come back as two reads.
 
@@ -179,7 +209,7 @@ async def test_serve_and_connect_round_trip_preserves_newline_framing(
     the property the Windows read-mode flip exists to preserve, asserted here on
     the branch where it is free.
     """
-    sock = tmp_path / "gateway.sock"
+    sock = sock_dir / "gateway.sock"
     transport.prepare_dir(sock)
     seen: list[bytes] = []
     done = asyncio.Event()
@@ -218,8 +248,8 @@ async def test_serve_and_connect_round_trip_preserves_newline_framing(
 
 @pytest.mark.skipif(pc.IS_WINDOWS, reason="exercises the AF_UNIX branch")
 @pytest.mark.asyncio
-async def test_harden_endpoint_makes_the_socket_owner_only(tmp_path: Path) -> None:
-    sock = tmp_path / "gateway.sock"
+async def test_harden_endpoint_makes_the_socket_owner_only(sock_dir: Path) -> None:
+    sock = sock_dir / "gateway.sock"
     transport.prepare_dir(sock)
     server = await transport.serve(sock, _close_immediately, limit=1 << 16)
     try:
@@ -244,8 +274,8 @@ def test_connect_to_a_missing_endpoint_raises_oserror(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(pc.IS_WINDOWS, reason="AF_UNIX connect probe")
 @pytest.mark.asyncio
-async def test_probe_live_distinguishes_a_bound_endpoint(tmp_path: Path) -> None:
-    sock = tmp_path / "gateway.sock"
+async def test_probe_live_distinguishes_a_bound_endpoint(sock_dir: Path) -> None:
+    sock = sock_dir / "gateway.sock"
     transport.prepare_dir(sock)
     assert transport.probe_live(sock) is False
     server = await transport.serve(sock, _close_immediately, limit=1 << 16)
@@ -259,8 +289,8 @@ async def test_probe_live_distinguishes_a_bound_endpoint(tmp_path: Path) -> None
 
 @pytest.mark.skipif(pc.IS_WINDOWS, reason="POSIX socket files")
 @pytest.mark.asyncio
-async def test_remove_stale_unlinks_a_dead_socket(tmp_path: Path) -> None:
-    sock = tmp_path / "gateway.sock"
+async def test_remove_stale_unlinks_a_dead_socket(sock_dir: Path) -> None:
+    sock = sock_dir / "gateway.sock"
     transport.prepare_dir(sock)
     # A bound-then-abandoned socket file: what a crash leaves behind.
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -273,10 +303,10 @@ async def test_remove_stale_unlinks_a_dead_socket(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(pc.IS_WINDOWS, reason="POSIX socket files")
 @pytest.mark.asyncio
-async def test_remove_stale_refuses_a_live_endpoint(tmp_path: Path) -> None:
+async def test_remove_stale_refuses_a_live_endpoint(sock_dir: Path) -> None:
     """Unlinking a live socket would strand the running daemon and send every
     stub to per-session fallback; the bind must be allowed to fail instead."""
-    sock = tmp_path / "gateway.sock"
+    sock = sock_dir / "gateway.sock"
     transport.prepare_dir(sock)
     server = await transport.serve(sock, _close_immediately, limit=1 << 16)
     try:
@@ -622,7 +652,7 @@ def _normalize_sddl(sddl: str) -> str:
 @pytest.mark.skipif(pc.IS_WINDOWS, reason="exercises the AF_UNIX branch")
 @pytest.mark.asyncio
 async def test_wait_closed_returns_once_connections_are_cancelled(
-    tmp_path: Path,
+    sock_dir: Path,
 ) -> None:
     """Pins the shutdown ordering gatewayd depends on.
 
@@ -636,7 +666,7 @@ async def test_wait_closed_returns_once_connections_are_cancelled(
     ``wait_closed()`` returns immediately regardless, so the reordering is a
     no-op there and only the positive assertion is checked.
     """
-    sock = tmp_path / "gateway.sock"
+    sock = sock_dir / "gateway.sock"
     transport.prepare_dir(sock)
     handlers: list[asyncio.Task[None]] = []
     started = asyncio.Event()

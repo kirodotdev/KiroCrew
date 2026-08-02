@@ -40,14 +40,20 @@ describe('md', () => {
 })
 
 describe('fmtSpeed', () => {
-  it('formats KB/s', () => {
-    expect(fmtSpeed(500)).toBe('500 KB/s')
+  // Input is BINARY KiB/s (1 unit = 1024 bytes); the ECMA-402 labels are
+  // DECIMAL. 500 KiB/s = 512000 B/s = 512 kB/s.
+  it('formats KB/s, converting binary input to the decimal label', () => {
+    expect(fmtSpeed(500)).toBe('512kB/s')
   })
   it('formats MB/s', () => {
-    expect(fmtSpeed(2048)).toBe('2.0 MB/s')
+    expect(fmtSpeed(2048)).toBe('2.1MB/s')
   })
   it('rounds KB/s', () => {
-    expect(fmtSpeed(99.7)).toBe('100 KB/s')
+    expect(fmtSpeed(99.7)).toBe('102kB/s')
+  })
+  it('crosses to MB at one decimal megabyte, not at 1000 KiB', () => {
+    expect(fmtSpeed(976)).toBe('999kB/s')
+    expect(fmtSpeed(977)).toBe('1.0MB/s')
   })
 })
 

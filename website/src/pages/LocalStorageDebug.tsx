@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Trash2, RefreshCw, Download, AlertTriangle } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
+import { fmtBytes } from '../i18n/format'
 interface StorageEntry {
   key: string
   bytes: number
@@ -56,11 +57,7 @@ function groupEntries(entries: StorageEntry[]): StorageGroup[] {
   return [...map.values()].sort((a, b) => b.bytes - a.bytes)
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(2) + ' MB'
-  if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return bytes + ' B'
-}
+const formatBytes = (bytes: number): string => fmtBytes(bytes)
 
 /** Approximate quota (browsers vary; 5 MB is the common floor) */
 const ESTIMATED_QUOTA = 5 * 1024 * 1024
@@ -123,7 +120,7 @@ export default function LocalStorageDebug() {
         <div className="flex items-center justify-between mb-3">
           <div>
             <span className="text-sm font-medium text-text">{entries.length} {i18nT('pages.localStorageDebug.keys')}</span>
-            <span className="text-muted text-sm ml-2">{formatBytes(totalBytes)} {i18nT('pages.localStorageDebug.5_mb')}</span>
+            <span className="text-muted text-sm ml-2">{formatBytes(totalBytes)} / ~{formatBytes(ESTIMATED_QUOTA)}</span>
           </div>
           <div className="flex gap-2">
             <button onClick={refresh} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border border-border bg-card text-text hover:bg-bg-hover transition-all" title={i18nT('pages.localStorageDebug.refresh')}><RefreshCw size={13} /> {i18nT('pages.localStorageDebug.refresh')}</button>

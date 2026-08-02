@@ -1,6 +1,6 @@
 {
   "_comment": "Untranslated user-visible strings, per file. Generated — re-snapshot with `node scripts/check-i18n-strings.mjs --update`. These are CEILINGS, not current counts: the gate fails only when a file gains strings, so a number here may sit above reality until someone re-snapshots. Also the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 1840,
+  "_total": 1837,
   "files": {
     "api/client.ts": {
       "total": 35,
@@ -481,14 +481,6 @@
       "total": 2,
       "expression": 2
     },
-    "components/PixelCanvas.tsx": {
-      "total": 1,
-      "prose": 1
-    },
-    "components/PixelCanvasWidget.tsx": {
-      "total": 1,
-      "template": 1
-    },
     "components/PublishHub.tsx": {
       "total": 2,
       "array": 1,
@@ -724,10 +716,6 @@
     "pages/aidlc/DagView.tsx": {
       "total": 2,
       "expression": 2
-    },
-    "pages/aidlc/PhasedView.tsx": {
-      "total": 1,
-      "template": 1
     },
     "pages/aidlc/TaskDetailPanel.tsx": {
       "total": 5,

@@ -74,6 +74,7 @@
       "gateway-liveness.js",
       "gateway-recovery.js",
       "pyspy-dump.js",
+      "perf-metrics.js",
       "host-config.js",
       "remote-token.js",
       "token-retry.js",

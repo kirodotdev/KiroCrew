@@ -1,17 +1,27 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { Hourglass, ClipboardList, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus } from 'lucide-react'
+import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../store'
 import { setPendingInput, switchSlot } from '../store/chatSlice'
 import { api } from '../api/client'
 import type { TaskRunnerStatus, ProjectRun } from '../types'
-import { Card, PageHeader, SendBtn, Btn, Checkbox, Input } from '../components/ui'
+import { SendBtn, Btn, Checkbox, Input } from '../components/ui'
+import ResizeHandle from '../components/ResizeHandle'
+import { useColumnResize, type CollapseConfig } from '../hooks/useColumnResize'
 import AgentSelector from '../components/AgentSelector'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import ProjectDetailPage from './ProjectDetailPage'
+import {
+  COLLAPSED_RAIL_WIDTH, MAX_RAIL_WIDTH, MIN_RAIL_WIDTH,
+  RAIL_COLLAPSED_KEY, RAIL_WIDTH_KEY, loadRailCollapsed, loadRailWidth,
+} from './projectsLayout'
 
 import { i18nT } from '../i18n/t'
 type Mode = 'compose' | 'spec' | 'yaml'
+
+// Module-level so the resize hook's memoised resolver isn't invalidated every render.
+const RAIL_COLLAPSE: CollapseConfig = { width: COLLAPSED_RAIL_WIDTH, storageKey: RAIL_COLLAPSED_KEY }
+
 
 function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, onRun, onPlan, disabled, isPlanning, onCancel, planError, banner }: {
   text: string; setText: (v: string) => void; rows: number; placeholder: string; accept: string
@@ -67,6 +77,11 @@ export default function ProjectsPage() {
   const appliedRef = useRef<string | null>(null)
   const autoRunRef = useRef<string | null>(null)
   const activePlanRef = useRef(false)
+  // Run rail geometry — a real resizable column with drag-past-minimum collapse,
+  // the same primitive Issue Radar's rail uses.
+  const rail = useColumnResize(
+    RAIL_WIDTH_KEY, loadRailWidth, MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, RAIL_COLLAPSE, loadRailCollapsed,
+  )
 
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false } }, [])
 
@@ -262,7 +277,7 @@ export default function ProjectsPage() {
   )
 
   const composePanel = (
-    <Card>
+    <div className="px-5 py-4">
       <div className="flex items-center gap-1 mb-4">
         <button onClick={() => setMode('compose')} disabled={anyPlanning} className={`px-3 py-1.5 rounded-md text-[13px] font-semibold transition-all ${mode === 'compose' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-text hover:bg-bg-elevated'} ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.compose')}</button>
         <button onClick={() => setMode('spec')} disabled={anyPlanning} className={`px-3 py-1.5 rounded-md text-[13px] font-semibold transition-all ${mode === 'spec' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-text hover:bg-bg-elevated'} ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}><FileText className="lucide-inline" /> {i18nT('pages.projectsPage.from_spec')}</button>
@@ -292,7 +307,10 @@ export default function ProjectsPage() {
             {!isRefining && <button className={`px-4 h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.run')}</button>}
             {isRefining && <>
               <button className="px-4 h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.refineCancel(); setRefineStatus('cancelled') }}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>
-              <span className="text-accent text-[13px] animate-pulse">{i18nT('pages.projectsPage.refining')}</span>
+              <span className="text-accent text-[13px]">{i18nT('pages.projectsPage.refining')}</span>
+              {/* Shimmer bar rather than a pulsing label: the motion lives in a
+                  placeholder shape, and the text stays legible while it runs. */}
+              <span className="skeleton h-1.5 w-24 rounded-full" aria-hidden="true" />
             </>}
           </div>
           {isPlanning && <PlanningBanner onCancel={cancelPlan} />}
@@ -317,22 +335,48 @@ export default function ProjectsPage() {
         <TextInputPanel text={yamlText} setText={setYamlText} rows={8} placeholder={i18nT('pages.projectsPage.paste_yaml_workflow_or_upload_a_yaml_file')} accept=".yaml,.yml" onUpload={handleYamlUpload} onRun={() => handleRun(yamlText, 'yaml')} onPlan={() => generatePlan(yamlText, 'yaml')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError}
           banner={<div className="rounded-md border bg-bg-elevated px-3 py-2 text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.yaml_workflows_bypass_the_llm_decomposer')} <code>{i18nT('pages.projectsPage.depends_on')}</code> {i18nT('pages.projectsPage.is_enforced_as_a_hard_dag_constraint')}</div>} />
       )}
-    </Card>
+    </div>
   )
 
-  // Unified layout — sidebar always visible when runs exist
+  // Three-part workspace shell, matching Issue Radar: a resizable/collapsible
+  // rail, its drag handle, then a flush main column. The rail is present in
+  // every state (including "no runs yet") so the page never reflows out from
+  // under the pointer the moment the first run appears, and the main column owns
+  // its own padding rather than inheriting page gutters.
   return (
-    <>
-      <PageHeader title={i18nT('pages.projectsPage.task_runner')} subtitle={i18nT('pages.projectsPage.autonomous_multi_step_task_execution')} />
-      <div className="flex-1 min-h-0 flex">
-        {runs.length > 0 && (
-          <div className="w-[260px] shrink-0 border-r border-border overflow-y-auto p-3">
-            <button onClick={() => setSelectedRun(null)} className="w-full mb-3 px-3 py-2 rounded-lg text-[13px] font-semibold border cursor-pointer transition-all text-accent bg-accent/10 border-accent/30 hover:bg-accent/20"><Plus className="lucide-inline" /> {i18nT('pages.projectsPage.new_task')}</button>
-            {projectList}
+    <div className="flex h-full bg-bg text-text">
+      {rail.collapsed ? (
+        <CollapsedRail width={rail.width} onExpand={rail.expand} />
+      ) : (
+        <aside style={{ width: rail.width }} className="flex-shrink-0 flex flex-col min-h-0 border-r border-border">
+          <div className="shrink-0 h-11 px-3 flex items-center gap-2 border-b border-border">
+            <ClipboardCheck className="lucide-inline text-accent" />
+            <span className="text-[13px] font-semibold text-text-strong truncate">{i18nT('pages.projectsPage.task_runner')}</span>
           </div>
-        )}
+          <div className="shrink-0 px-3 pt-3">
+            <button onClick={() => setSelectedRun(null)} className="w-full px-3 py-2 rounded-lg text-[13px] font-semibold border cursor-pointer transition-all text-accent bg-accent/10 border-accent/30 hover:bg-accent/20"><Plus className="lucide-inline" /> {i18nT('pages.projectsPage.new_task')}</button>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto p-3">
+            {runs.length > 0
+              ? projectList
+              : <div className="text-[12px] text-muted px-1">{i18nT('pages.projectsPage.no_runs_yet')}</div>}
+          </div>
+        </aside>
+      )}
+
+      {/* Drag handle — resize the run rail. Dragging well past the minimum collapses it. */}
+      <ResizeHandle
+        handleProps={rail.handleProps}
+        label={i18nT('pages.projectsPage.resize_sidebar')}
+        onNudge={rail.nudge}
+        value={rail.width}
+        min={MIN_RAIL_WIDTH}
+        max={MAX_RAIL_WIDTH}
+      />
+
+      <main className="flex-1 min-w-0 min-h-0 flex flex-col">
         {selectedRun ? (
-          <div className="flex-1 min-h-0 min-w-0 flex flex-col">
+          <>
             <div className="px-4 py-2 flex items-center gap-2 border-b border-border shrink-0">
               {editingName ? (
                 <input aria-label={i18nT('pages.projectsPage.project_name')} className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-none min-w-[120px]" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} onBlur={() => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { api.renameTaskRun(selectedRun.task_id, v).then(load).catch(() => {}) }; setEditingName(false) }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingName(false) }} />
@@ -395,19 +439,47 @@ export default function ProjectsPage() {
                 }}><Clock className="lucide-inline" /> {i18nT('pages.projectsPage.schedule')}</button>
               </>}
             </div>
-            <div className="flex-1 min-h-0 min-w-0 flex flex-col">
-              <div className="flex-1 min-h-0 min-w-0 flex">
-                <ProjectDetailPage run={selectedRun} onRetry={async (idx) => { await api.retryTaskRun(selectedRun.task_id, idx); load() }} onRefresh={load} />
-              </div>
+            <div className="flex-1 min-h-0 min-w-0 flex">
+              <ProjectDetailPage run={selectedRun} onRetry={async (idx) => { await api.retryTaskRun(selectedRun.task_id, idx); load() }} onRefresh={load} />
             </div>
-          </div>
+          </>
         ) : (
-          <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-8">
+          <div className="flex-1 min-h-0 overflow-y-auto">
             {composePanel}
           </div>
         )}
+      </main>
+    </div>
+  )
+}
+
+/** The rail turned on its side: app mark plus the name rotated, and the whole
+ * strip is the button that reopens it. Mirrors Issue Radar's collapsed rail so a
+ * collapsed column looks the same wherever you meet one. */
+function CollapsedRail({ width, onExpand }: { width: number; onExpand?: () => void }) {
+  return (
+    <aside style={{ width }} className="flex-shrink-0 flex flex-col min-h-0 py-2 px-1">
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-xl border border-border-strong bg-bg-elevated shadow-sm">
+        <button
+          type="button"
+          onClick={onExpand}
+          title={i18nT('pages.projectsPage.expand_sidebar')}
+          aria-label={i18nT('pages.projectsPage.expand_sidebar')}
+          className="flex-1 min-h-0 w-full flex flex-col items-center gap-3 py-3.5 cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none focus-ring"
+        >
+          <ClipboardCheck size={18} className="flex-shrink-0 text-accent" />
+          {/* Rotated clockwise (writing-mode alone) so the name reads top-to-bottom
+              starting under the mark, and truncates at the strip's height rather
+              than overflowing it. */}
+          <span
+            className="min-h-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-medium tracking-[.02em]"
+            style={{ writingMode: 'vertical-rl' }}
+          >
+            {i18nT('pages.projectsPage.task_runner')}
+          </span>
+        </button>
       </div>
-    </>
+    </aside>
   )
 }
 
@@ -421,7 +493,9 @@ function PlanningBanner({ onCancel }: { onCancel: () => void }) {
     <div className="relative overflow-hidden rounded-lg border border-accent/50 bg-accent/10 px-4 py-3 mt-2">
       <div className="absolute inset-0 bg-gradient-to-r from-transparent via-accent/10 to-transparent animate-shimmer" />
       <div className="relative flex items-center gap-3">
-        <div className="w-5 h-5 border-2 border-accent/30 border-t-accent rounded-full animate-spin shrink-0" />
+        {/* Static glyph: the shimmer sweep and the ticking dots already carry the
+            "work in flight" signal, so nothing here needs to spin. */}
+        <Hourglass size={18} className="text-accent shrink-0" />
         <div className="flex-1">
           <div className="text-accent text-[14px] font-semibold">{i18nT('pages.projectsPage.generating_execution_plan')}{dots}</div>
           <div className="text-muted text-[12px] mt-0.5">{i18nT('pages.projectsPage.analyzing_task_and_building_step_by_step_plan')}</div>

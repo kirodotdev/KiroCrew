@@ -2722,9 +2722,11 @@ class GatewayOrchestrator:
             ``asyncio.gather`` and share ``HEARTBEAT_KEY``.  A per-task
             ``reset()`` would tear down the session under sibling tasks
             still in flight (per code review).
-            ``recycle_heartbeat`` is conditional (only kills when context
-            crosses the 70% threshold) so warm cycles reuse the same MCP
-            toolbelt and avoid per-cycle cold-start cost.
+            ``recycle_heartbeat`` is unconditional: heartbeat promises
+            "fresh context each cycle", and each entry is re-read from
+            HEARTBEAT.md every cycle, so carrying a transcript forward only
+            costs input tokens. Nobody waits on a heartbeat tick, so the
+            per-cycle MCP cold-start is unobserved.
             """
             assert self.sessions is not None
             try:

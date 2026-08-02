@@ -2416,7 +2416,7 @@ class TestConsolidationPromptJsonShape:
 
         from kiro_crew.history import HistoryConsolidator
 
-        src = inspect.getsource(HistoryConsolidator._consolidate)
+        src = inspect.getsource(HistoryConsolidator._run_skill_detection)
         # Find the new_skill prompt key block — it's a concatenated string
         # across multiple source lines.  Just verify the word-pair
         # '"description":' appears followed by a matching closing quote
@@ -2432,6 +2432,145 @@ class TestConsolidationPromptJsonShape:
             "procedure_md value must be a well-formed JSON string "
             "opener — don't split the value inside a quoted string."
         )
+
+
+class TestSkillDetectionFullWindow:
+    """Skill detection judges the full-session window, not the consolidated tail.
+
+    Regression for the tail-only recall gap: a reusable procedure that was
+    already consolidated away (offset advanced past it) must still be seen by
+    skill detection, because it reads the last-N of the FULL session rather
+    than only the unconsolidated tail.
+    """
+
+    @pytest.mark.asyncio
+    async def test_detects_from_full_window_when_tail_trivial(self, tmp_path):
+        import asyncio as _asyncio
+        from unittest.mock import patch
+
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        c = HistoryConsolidator(
+            log=conv_log,
+            memory=mem,
+            skills_loader=skills,
+            auto_skills_enabled=True,
+            approval_required=True,
+            auto_min_tool_calls=5,
+        )
+        key = "dashboard:chat-fullwindow"
+        # 6 tool-bearing messages = the reusable procedure...
+        for i in range(6):
+            conv_log.append(key, "assistant", f"step {i}", tools=["execute_bash"])
+        # ...already consolidated away: advance the offset past them.
+        conv_log.mark_consolidated(key, 6)
+        # A trivial, tool-free tail. Tail-only detection would see 0 tool calls
+        # (< the 5 floor) and skip; full-window detection still sees the 6.
+        conv_log.append(key, "user", "thanks!")
+        conv_log.append(key, "assistant", "you're welcome")
+        assert conv_log.unconsolidated_count(key) == 2  # the trivial tail
+
+        recorded: dict = {}
+
+        def fake_process(result, k):
+            recorded["result"], recorded["key"] = result, k
+
+        c._event_loop = _asyncio.get_running_loop()
+        with patch.object(c, "_call_llm", return_value={"new_skill": {"slug": "x"}}):
+            with patch.object(c, "_process_auto_skills", side_effect=fake_process):
+                await c._run_skill_detection(key)
+        assert recorded.get("key") == key, (
+            "skill detection must fire from the full-session window even when the "
+            "unconsolidated tail is trivial"
+        )
+
+    @pytest.mark.asyncio
+    async def test_length_guard_skips_unchanged_session(self, tmp_path):
+        import asyncio as _asyncio
+        from unittest.mock import patch
+
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        c = HistoryConsolidator(
+            log=conv_log,
+            memory=mem,
+            skills_loader=skills,
+            auto_skills_enabled=True,
+            approval_required=True,
+            auto_min_tool_calls=5,
+        )
+        key = "dashboard:chat-guard"
+        for i in range(6):
+            conv_log.append(key, "assistant", f"step {i}", tools=["execute_bash"])
+        c._event_loop = _asyncio.get_running_loop()
+        with patch.object(c, "_call_llm", return_value=None) as m1:
+            with patch.object(c, "_process_auto_skills"):
+                await c._run_skill_detection(key)
+                assert m1.call_count == 1  # first pass evaluates
+                await c._run_skill_detection(key)
+                assert m1.call_count == 1, (
+                    "an unchanged session must NOT be re-judged on the next "
+                    "consolidation (length guard)"
+                )
+
+    @pytest.mark.asyncio
+    async def test_rotation_forces_fresh_pass_despite_equal_count(self, tmp_path):
+        """A transcript rotation (generation bump) must re-trigger detection
+        even when the message count is unchanged (GPT 5.6 blocking finding)."""
+        import asyncio as _asyncio
+        import json as _json
+        from unittest.mock import patch
+
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        c = HistoryConsolidator(
+            log=conv_log,
+            memory=mem,
+            skills_loader=skills,
+            auto_skills_enabled=True,
+            approval_required=True,
+            auto_min_tool_calls=5,
+        )
+        key = "dashboard:chat-rotate"
+        for i in range(6):
+            conv_log.append(key, "assistant", f"step {i}", tools=["execute_bash"])
+        c._event_loop = _asyncio.get_running_loop()
+        with patch.object(c, "_call_llm", return_value=None) as m1:
+            with patch.object(c, "_process_auto_skills"):
+                await c._run_skill_detection(key)
+                assert m1.call_count == 1
+                # Simulate a 2MB/200-line rotation: same message count, but the
+                # rotation_generation counter bumps and the window is new content.
+                path = conv_log._path(key)
+                lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+                meta = _json.loads(lines[0])
+                meta["rotation_generation"] = int(meta.get("rotation_generation", 0) or 0) + 1
+                lines[0] = _json.dumps(meta) + "\n"
+                path.write_text("".join(lines), encoding="utf-8")
+                conv_log._invalidate_cache(key)
+                await c._run_skill_detection(key)
+                assert m1.call_count == 2, (
+                    "a rotation (generation bump) must force a fresh detection "
+                    "pass even when the message count is unchanged"
+                )
 
 
 class TestConsolidateSession:

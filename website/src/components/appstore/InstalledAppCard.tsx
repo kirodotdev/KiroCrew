@@ -77,7 +77,12 @@ export default function InstalledAppCard({
                 <button type="button" className="font-medium text-text cursor-pointer hover:text-accent transition-colors bg-transparent border-0 p-0 text-left" onClick={onDetail}>{app.displayName || app.name}</button>
                 <span className="text-[11px] text-muted bg-bg-elevated px-1.5 py-0.5 rounded">{i18nT('components.appstore.installedAppCard.v')}{app.version}{app.updateAvailable && ` (v${app._newVersion} available)`}</span>
                 {isBuiltin ? (
-                  <Badge variant="aim">{i18nT('components.appstore.installedAppCard.built_in')}</Badge>
+                  <>
+                    <Badge variant="aim">{i18nT('components.appstore.installedAppCard.built_in')}</Badge>
+                    <Badge variant={app.enabled ? 'ok' : 'warn'}>
+                      {app.enabled ? i18nT('components.appstore.installedAppCard.enabled') : i18nT('components.appstore.installedAppCard.disabled')}
+                    </Badge>
+                  </>
                 ) : isSelfManaged ? (
                   <Badge variant="ok">{i18nT('components.appstore.installedAppCard.self_managed')}</Badge>
                 ) : (
@@ -129,14 +134,14 @@ export default function InstalledAppCard({
                 onClick={() => onAction(app.name, 'disable')}
                 disabled={actionLoading === `${app.name}:disable`}
               >
-                <PowerOff size={14} /> {isBuiltin ? i18nT('components.appstore.installedAppCard.hide') : i18nT('components.appstore.installedAppCard.disable')}
+                <PowerOff size={14} /> {i18nT('components.appstore.installedAppCard.disable')}
               </Btn>
             ) : (
               <Btn
                 onClick={() => onAction(app.name, 'enable')}
                 disabled={actionLoading === `${app.name}:enable`}
               >
-                <Power size={14} /> {isBuiltin ? i18nT('components.appstore.installedAppCard.show') : i18nT('components.appstore.installedAppCard.enable')}
+                <Power size={14} /> {i18nT('components.appstore.installedAppCard.enable')}
               </Btn>
             )}
 

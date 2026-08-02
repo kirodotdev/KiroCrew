@@ -36,6 +36,8 @@ import {
   activeLocale,
   collator,
   compareText,
+  fmtBytes,
+  fmtCompact,
   fmtCurrency,
   fmtDate,
   fmtDateFields,
@@ -43,6 +45,7 @@ import {
   fmtDateNumeric,
   fmtDateTimeNumeric,
   fmtTimeNumeric,
+  fmtDuration,
   fmtList,
   fmtNumber,
   fmtPercent,
@@ -350,6 +353,100 @@ describe('fmtRelative', () => {
       const rtf = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto', style: 'long' })
       expect(fmtRelative(INSTANT, { now, unit: 'day', style: 'long' })).toBe(rtf.format(0, 'day'))
     })
+  })
+})
+
+describe('fmtDuration', () => {
+  it('preserves the compact English compound the app already rendered', () => {
+    // Golden (en). These are byte-identical to the hand-rolled templates this
+    // replaces — `${m}m ${s}s` in useUptime, `${h}h ${m}m` in InstanceTabBar —
+    // which is what keeps the migration reviewable.
+    expect(fmtDuration([[6, 'minute'], [38, 'second']])).toBe('6m 38s')
+    expect(fmtDuration([[1, 'hour'], [2, 'minute'], [3, 'second']])).toBe('1h 2m 3s')
+    expect(fmtDuration([[2, 'hour'], [15, 'minute']])).toBe('2h 15m')
+  })
+
+  it('joins with ListFormat, not a literal space', async () => {
+    // The reason this matters: zh joins unit lists with NOTHING, so a hardcoded
+    // space would leave a stray gap in `6分钟38秒`.
+    await withLanguage('zh-CN', () => {
+      expect(fmtDuration([[6, 'minute'], [38, 'second']])).toBe(
+        new Intl.ListFormat('zh-CN', { type: 'unit', style: 'narrow' }).format([
+          new Intl.NumberFormat('zh-CN', { style: 'unit', unit: 'minute', unitDisplay: 'narrow' }).format(6),
+          new Intl.NumberFormat('zh-CN', { style: 'unit', unit: 'second', unitDisplay: 'narrow' }).format(38),
+        ]),
+      )
+      expect(fmtDuration([[6, 'minute'], [38, 'second']])).not.toContain(' ')
+    })
+  })
+
+  it('renders zero parts by default, because callers depend on it', () => {
+    // `fmtTurnElapsed` rounds to whole seconds BEFORE splitting precisely so
+    // 119.6s reads `2m 0s` and never the invalid `1m 60s`. Dropping the zero by
+    // default would silently undo that fix, which is why it is opt-in.
+    expect(fmtDuration([[2, 'minute'], [0, 'second']])).toBe('2m 0s')
+    expect(fmtDuration([[0, 'minute'], [38, 'second']])).toBe('0m 38s')
+  })
+
+  it('drops zero parts on request, for callers that used to branch', () => {
+    expect(fmtDuration([[0, 'hour'], [15, 'minute']], { dropZero: true })).toBe('15m')
+  })
+
+  it('keeps a unit when every part is zero, rather than rendering empty', () => {
+    // `0s` is a real reading; '' would silently blank the surface.
+    expect(fmtDuration([[0, 'minute'], [0, 'second']], { dropZero: true })).toBe('0s')
+  })
+
+  it('renders an em dash when no part is finite', () => {
+    expect(fmtDuration([[NaN, 'second']])).toBe('—')
+    expect(fmtDuration([])).toBe('—')
+  })
+})
+
+describe('fmtCompact', () => {
+  it('abbreviates per the language, not with a hardcoded K', async () => {
+    expect(fmtCompact(1234)).toBe('1.2K') // golden (en), matches the old ladder
+    expect(fmtCompact(999)).toBe('999')
+
+    // zh abbreviates on 万 (10^4), so 15300 is 1.5万 and 1234 does not
+    // abbreviate at all — a `K` suffix is an English fact, not a numeric one.
+    await withLanguage('zh-CN', () => {
+      expect(fmtCompact(15300)).toBe(
+        new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(15300),
+      )
+    })
+  })
+})
+
+describe('fmtBytes', () => {
+  it('formats each magnitude with one shared implementation', () => {
+    // Golden (en). `kB` is the SI spelling CLDR uses; the four helpers this
+    // replaces variously said `KB`, `KB ` and `kB` for the same quantity.
+    expect(fmtBytes(512)).toBe('512B')
+    expect(fmtBytes(1500)).toBe('1.5kB')
+    expect(fmtBytes(2_400_000)).toBe('2.4MB')
+    expect(fmtBytes(3_100_000_000)).toBe('3.1GB')
+  })
+
+  it('divides by 1000 so the SI unit label is honest', () => {
+    // The helpers this replaces divided by 1024 while labelling the result `KB`,
+    // which is the DECIMAL unit — so a "1.0 KB" file was really 1024 bytes.
+    // Intl offers no binary (kibibyte) unit, so the divisor is what had to move.
+    expect(fmtBytes(1000)).toBe('1kB')
+  })
+
+  it('localizes the unit and the separator', async () => {
+    await withLanguage('ru', () => {
+      expect(fmtBytes(1500)).toBe(
+        new Intl.NumberFormat('ru', {
+          style: 'unit', unit: 'kilobyte', unitDisplay: 'narrow', maximumFractionDigits: 1,
+        }).format(1.5),
+      )
+    })
+  })
+
+  it('renders a non-finite size as an em dash', () => {
+    expect(fmtBytes(NaN)).toBe('—')
   })
 })
 

@@ -746,11 +746,18 @@ export default function PullRequestPanel({
   sources,
   selectedUrl,
   onSelect,
+  onReconcile,
   onAddToChat,
 }: {
   sources: PullRequestLink[]
   selectedUrl: string
   onSelect: (url: string) => void
+  // Called when this panel normalizes an out-of-range selection on its own,
+  // rather than the user picking a tab. Kept separate from onSelect because the
+  // parent persists an explicit choice and must NOT persist this one: a
+  // transcript that lacks the remembered url may simply be a cached one that is
+  // still being refetched. Defaults to onSelect for callers that do not care.
+  onReconcile?: (url: string) => void
   onAddToChat: (text: string) => void
 }) {
   const cappedSources = sources.slice(0, MAX_PULL_REQUEST_SOURCES)
@@ -762,8 +769,8 @@ export default function PullRequestPanel({
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    if (selected && selected.url !== selectedUrl) onSelect(selected.url)
-  }, [selected, selectedUrl, onSelect])
+    if (selected && selected.url !== selectedUrl) (onReconcile || onSelect)(selected.url)
+  }, [selected, selectedUrl, onSelect, onReconcile])
 
   useEffect(() => {
     setTab('changes')

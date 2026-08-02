@@ -271,7 +271,13 @@
     "crewCompanion": {
       "header": {
         "title": "Crew Companion",
-        "subtitle": "A pet that lives on your desktop and nudges you to take breaks, holds the reminders you set in plain language, and breathes with you."
+        "subtitle": "Set your break rhythm, add reminders, choose what your companion tells you about, and look back on your time together."
+      },
+      "offline": {
+        "title": "Crew Companion isn’t running",
+        "body": "Open it to change break nudges and set reminders — those live inside the companion on your Mac.",
+        "open": "Open Crew Companion",
+        "quit_tip": "Click the companion on your desktop to open its panel; right-click to change its avatar or quit."
       },
       "settings": {
         "title": "Settings",
@@ -314,6 +320,7 @@
         "loading": "Looking back…",
         "empty": "Nothing to look back on yet.",
         "offline": "Open the desktop app to see your memories.",
+        "from_last_session": "From your last time together",
         "days_together": "{{days}} days together",
         "row_time": "Kept you company for {{time}}",
         "row_streak": "{{streak}}-day streak",
@@ -382,9 +389,7 @@
         "disabled": "Disabled",
         "enable": "Enable",
         "enabled": "Enabled",
-        "expand_details": "Expand details",
-        "hide": "Hide",
-        "show": "Show"
+        "expand_details": "Expand details"
       },
       "sourcesPopover": {
         "install": "Install",
@@ -568,8 +573,7 @@
       "connecting": "connecting…",
       "tunnel_connected": "Tunnel connected.",
       "tunnel_connecting": "Tunnel connecting…",
-      "tunnel_error": "tunnel error",
-      "1m": "<1m"
+      "tunnel_error": "tunnel error"
     },
     "instancesViewport": {
       "connecting": "Connecting…",
@@ -623,11 +627,18 @@
       "failed_to_load_history": "Failed to load history"
     },
     "kiroPrerequisiteGate": {
+      "another_sandbox_already_confines_kiro_crew_so_it": "Another sandbox already confines Kiro Crew, so its own sandbox cannot nest inside it. This host's sandbox is not broken.",
+      "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI is installed but could not be verified",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI is installed. Finish signing in to continue.",
+      "kiro_crew_isolates_the_agent_in_an_os_level_sand": "Kiro Crew isolates the agent in an OS-level sandbox before it runs anything.",
       "kiro_setup_could_not_start": "Kiro setup could not start.",
       "required": "Required",
+      "sandbox_unavailable": "Sandbox unavailable",
+      "technical_detail": "Technical detail",
+      "the_check_hit_a_temporary_limit_and_was_not_cach": "The check hit a temporary resource limit. Try again — do not disable the sandbox.",
       "the_gateway_returned_an_unexpected_error": "The gateway returned an unexpected error.",
       "the_gateway_returned_no_prerequisite_status": "The gateway returned no prerequisite status.",
+      "this_host_provides_no_os_level_sandbox_so_kiro_c": "This host provides no OS-level sandbox, so Kiro Crew cannot isolate the agent. It refuses to run the agent unsandboxed rather than expose your credentials.",
       "waiting": "Waiting"
     },
     "linkedSurfacesSection": {
@@ -749,9 +760,6 @@
       "expand_paste": "Expand paste",
       "paste_lines_one": "[ Paste #{{seq}} · {{count}} line ]",
       "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]"
-    },
-    "pixelCanvasWidget": {
-      "project": "Project"
     },
     "publishHub": {
       "checking": "Checking…",
@@ -939,6 +947,14 @@
       "failed_to_create_workspace": "Failed to create workspace",
       "name_required": "Name required"
     },
+    "agentDropdownList": {
+      "active_in_this_session": "Active in this session",
+      "could_not_change_the_default_agent": "Could not change the default agent",
+      "default": "Default",
+      "manage_agents": "Manage agents…",
+      "new_sessions_start_with_this_agent": "New sessions start with this agent",
+      "start_new_sessions_with_this_agent": "Start new sessions with this agent"
+    },
     "agentSkillsEditor": {
       "skills_this_agent_template_loads_written_as_skil": "Skills this agent template loads. Written as skill:// resources in the agent config, so kiro-cli loads them natively when the agent starts. An agent with no skills mapped falls back to the default behavior: the kirocrew agent sees the whole catalog, other agents see none."
     },
@@ -948,11 +964,7 @@
       "subfolder_one": "{{count}} subfolder",
       "subfolder_other": "{{count}} subfolders"
     },
-    "filePickerMenu": {
-      "n_d_ago": "{{n}}d ago",
-      "n_h_ago": "{{n}}h ago",
-      "n_m_ago": "{{n}}m ago"
-    },
+    "filePickerMenu": {},
     "inlineCommentOverlay": {
       "comment_one": "{{count}} comment",
       "comment_other": "{{count}} comments",
@@ -1042,10 +1054,13 @@
     },
     "agentsPage": {
       "agent_templates_grouped_by_package_update_and_un": "Agent templates grouped by package. Update and uninstall at package level. Individual agents can be deleted (removes config file).",
+      "default": "Default",
+      "default_for_new_sessions": "Default for new sessions",
       "remove_default_agent": "Remove default agent",
       "routing_hints_for_the_conductor_skill_describe_t": "Routing hints for the conductor skill: describe the tasks and triggering conditions where this agent should be picked (e.g. 'Use for frontend/React UI work' or 'Handle DB migrations'). An incoming task is matched against this text to delegate to the right specialist. These hints only take effect once Orchestrator Mode is enabled in Config (Developer → Config → Orchestrator Mode); otherwise they're ignored. Markdown format.",
       "save_metadata": "Save Metadata",
       "saving": "Saving…",
+      "set_as_default": "Set as default",
       "set_as_default_agent": "Set as default agent"
     },
     "appDetailPage": {
@@ -1066,7 +1081,7 @@
       "failed_to_load_apps": "Failed to load apps",
       "failed_to_load_registry": "Failed to load registry",
       "find_apps_in_the_discover_tab_or_install_from_a": "Find apps in the Discover tab, or install from a local path via the sources gear above.",
-      "hidden_you_can_re_enable_it_from_the_discover_ta": "Hidden. You can re-enable it from the Discover tab.",
+      "hidden_you_can_re_enable_it_from_the_discover_ta": "Disabled. You can re-enable it from the Discover tab.",
       "kirocrew_registry": "KiroCrew registry",
       "library": "Library",
       "no_apps_installed_yet": "No apps installed yet",

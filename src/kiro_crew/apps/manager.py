@@ -1194,17 +1194,33 @@ def register_external_app(
 
 # Built-in apps are features baked into the KiroCrew dashboard that we
 # surface in the App Store as "builtin" entries.  They use the host's
-# React tree directly (no ESM bundle) and their routes are hardcoded in
-# App.tsx.  The registration here is metadata-only so the App Store can
-# display them alongside installable apps.
+# React tree directly (no ESM bundle) and their page components resolve
+# through ``BUILTIN_COMPONENT_REGISTRY`` in the frontend.  The registration
+# here is metadata-only so the App Store can display them alongside
+# installable apps.
 #
-# Default-disabled policy: every builtin app ships with ``defaultEnabled:
-# False`` so a fresh install presents a minimal sidebar (core surfaces only)
-# instead of every app at once. Apps are opt-in from the App Store Browse
-# tab. Because ``register_builtin_apps()`` applies ``defaultEnabled`` only on
-# first registration and preserves user state on restart, existing users keep
+# Default-disabled policy: a builtin app ships with ``defaultEnabled: False``
+# so a fresh install presents a minimal sidebar (core surfaces only) instead of
+# every app at once. Apps are opt-in from the App Store Browse tab. Because
+# ``register_builtin_apps()`` applies ``defaultEnabled`` only on first
+# registration and preserves user state on restart, existing users keep
 # whatever they already enabled — this only changes the out-of-the-box
 # experience for new installs.
+#
+# The exception is _DEFAULT_ON_BUILTINS below.
+
+# Builtins deliberately shipped ENABLED on a fresh install, exempt from the
+# opt-in policy above because they are core surfaces rather than optional
+# add-ons. Adding a name here is a product decision, not a convenience — keep
+# the set small. A default-on builtin still honors the ``apps`` governance
+# allowlist at registration (see _app_activation_denied), so a deny-by-default
+# host policy is never bypassed.
+#
+# This is the single source of truth for the exemption: the policy tests over
+# both the hardcoded list and the file-based manifests read it from here, so a
+# builtin cannot become default-on in one registration path while the other
+# path's test still forbids it.
+_DEFAULT_ON_BUILTINS: frozenset[str] = frozenset({"projects"})  # Task Runner
 
 _BUILTIN_APPS: list[dict[str, Any]] = [
     {
@@ -1270,36 +1286,11 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
             "pages": [{"route": "/channels", "label": "Channels", "icon": "Users"}],
         },
     },
-    {
-        "name": "projects",
-        "version": "1.0.0",
-        "displayName": "Task Runner",
-        "description": (
-            "Hand over a multi-step job and let it run to completion unattended. Describe the "
-            "work in plain language, paste a written spec, or upload a YAML file, then either "
-            "generate a plan first to review the steps or start it straight away. Each run gets "
-            "its own page showing step-by-step progress, and you can pause, resume, retry, or "
-            "stop it at any point."
-        ),
-        "author": "kirocrew",
-        "tags": ["tasks", "autonomy", "execution"],
-        "highlights": [
-            "Three ways in: describe the work in plain language, paste a spec, or upload YAML",
-            "Generate a plan and review the steps before committing to a run",
-            "Runs execute unattended, with step-by-step progress on the run's own page",
-            "Pause, resume, retry, or stop a run at any point",
-            "Keeps a history of past runs and their outcomes",
-        ],
-        "defaultEnabled": True,
-        "iconUrl": "/app-assets/projects/icon.svg",
-        "heroImage": "/app-assets/projects/hero-light.svg",
-        "heroImageDark": "/app-assets/projects/hero-dark.svg",
-        "heroImageDetail": "/app-assets/projects/hero-detail-light.svg",
-        "heroImageDetailDark": "/app-assets/projects/hero-detail-dark.svg",
-        "ui": {
-            "pages": [{"route": "/projects", "label": "Task Runner", "icon": "ClipboardCheck"}],
-        },
-    },
+    # Task Runner ("projects") used to live here as a hardcoded entry. It now
+    # ships as a file-based manifest at builtins/projects/app.json, like every
+    # other builtin, and is picked up by discover_builtin_apps(). Its
+    # ``defaultEnabled: true`` carries over unchanged — see
+    # _DEFAULT_ON_BUILTINS below for why it is exempt from the opt-in policy.
     # -------------------------------------------------------------------------
     # Example: opt-in builtin app (defaultEnabled: false)
     #

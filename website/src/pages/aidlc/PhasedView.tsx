@@ -22,19 +22,48 @@ const statusIcon: Record<string, ReactNode> = {
   completed: <CheckCircle className="lucide-inline" />, failed: <XCircle className="lucide-inline" />, skipped: <SkipForward className="lucide-inline" />, cancelled: <Square className="lucide-inline" />, cancelling: <Hourglass className="lucide-inline" />,
 };
 
-const CARD_STYLE = { padding: '8px 12px', cursor: 'pointer', borderRadius: 6, marginBottom: 4,
-  background: 'var(--bg-tertiary, #16213e)', display: 'flex' as const, alignItems: 'center' as const, gap: 8 };
+// Column and card surfaces come from the theme tokens that actually exist.
+// `--bg-secondary` / `--bg-tertiary` / `--text-muted` were referenced here with
+// dark-only literal fallbacks, and none of the three is defined in any of the 34
+// theme blocks — so the fallback always won and the board stayed navy-on-white in
+// every light theme. `--bg-elevated` raises the column off the page and
+// `--bg-hover` raises the card off the column, in both directions.
+const COLUMN_STYLE = { background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+  borderRadius: 8, padding: 12, minHeight: 80 };
 
-function TaskGroup({ icon, label, items, onTaskClick, color, opacity, showError, selectedIndex, pendingEditIndexes }: {
+const CARD_STYLE = { padding: '8px 12px', cursor: 'pointer', borderRadius: 6, marginBottom: 4,
+  background: 'var(--bg-hover)', display: 'flex' as const, alignItems: 'center' as const, gap: 8 };
+
+/** Selected-card ring and the unsaved-edit dot, as tokens rather than literals. */
+const SELECTED_RING = { boxShadow: '0 0 0 2px var(--accent)' };
+const EDIT_DOT = { width: 8, height: 8, borderRadius: '50%', background: 'var(--warn)',
+  flexShrink: 0 } as const;
+
+/** Surface for the tinted (failed) group. Written out rather than interpolated from
+ * a tint argument: there is exactly one tinted group, and a module-level style
+ * constant matches the shape the other style constants here already use. color-mix
+ * keeps the tint readable on light and dark alike; a raw rgba() of a hardcoded red
+ * did not. */
+const DANGER_GROUP_STYLE = {
+  background: 'color-mix(in srgb, var(--danger) 10%, var(--bg-elevated))',
+  border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)',
+  color: 'var(--danger)',
+} as const;
+
+function TaskGroup({ icon, label, items, onTaskClick, danger, opacity, showError, selectedIndex, pendingEditIndexes }: {
   icon: ReactNode; label: string; items: TaskDetail[]; onTaskClick?: (i: number) => void
-  color?: string; opacity?: number; showError?: boolean; selectedIndex?: number | null; pendingEditIndexes?: Set<number>
+  /** Tint the group with the danger token (the failed group). */
+  danger?: boolean; opacity?: number; showError?: boolean; selectedIndex?: number | null; pendingEditIndexes?: Set<number>
 }) {
   if (!items.length) return null;
-  const bg = color ? `rgba(${color},0.08)` : 'var(--bg-secondary, #1a1a2e)';
-  const border = color ? `1px solid rgba(${color},0.3)` : undefined;
+  // Untinted groups intentionally carry no border: the columns above already supply
+  // the visual framing, and this matches the shape the view had before.
+  const background = danger ? DANGER_GROUP_STYLE.background : COLUMN_STYLE.background;
+  const border = danger ? DANGER_GROUP_STYLE.border : undefined;
+  const headingColor = danger ? DANGER_GROUP_STYLE.color : 'var(--muted)';
   return (
-    <div style={{ marginTop: 12, background: bg, borderRadius: 8, padding: 12, opacity: opacity ?? 1, border }}>
-      <div style={{ fontSize: 12, color: color ? `rgb(${color})` : 'var(--text-muted, #888)', marginBottom: 8, fontWeight: 600 }}>{icon} {label} ({items.length})</div>
+    <div style={{ marginTop: 12, background, borderRadius: 8, padding: 12, opacity: opacity ?? 1, border }}>
+      <div style={{ fontSize: 12, color: headingColor, marginBottom: 8, fontWeight: 600 }}>{icon} {label} ({items.length})</div>
       {items.map(t => (
         <div
           key={t.index}
@@ -44,12 +73,12 @@ function TaskGroup({ icon, label, items, onTaskClick, color, opacity, showError,
           onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onTaskClick?.(t.index) } }}
           style={{
             ...CARD_STYLE,
-            ...(t.index === selectedIndex ? { boxShadow: '0 0 0 2px var(--accent, #6366f1)' } : {}),
+            ...(t.index === selectedIndex ? SELECTED_RING : {}),
           }}
         >
           <span>{icon}</span>
           <span style={{ flex: 1, fontSize: 13, opacity: opacity ?? 1 }}>{i18nT('pages.aidlc.phasedView.task')} {t.index}: {t.title}</span>
-          {pendingEditIndexes?.has(t.index) && <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e32', flexShrink: 0 }} />}
+          {pendingEditIndexes?.has(t.index) && <span style={EDIT_DOT} />}
           {showError && t.error && <span style={{ fontSize: 11, color: 'var(--danger)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.error}</span>}
         </div>
       ))}
@@ -64,8 +93,8 @@ export default function PhasedView({ tasks, onTaskClick, selectedIndex, pendingE
         {COLUMNS.map(col => {
           const items = tasks.filter(t => col.statuses.includes(t.status));
           return (
-            <div key={col.label} style={{ background: 'var(--bg-secondary, #1a1a2e)', borderRadius: 8, padding: 12, minHeight: 80 }}>
-              <div style={{ fontSize: 12, color: 'var(--text-muted, #888)', marginBottom: 8, fontWeight: 600 }}>
+            <div key={col.label} style={COLUMN_STYLE}>
+              <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8, fontWeight: 600 }}>
                 {col.icon} {col.label} ({items.length})
               </div>
               {items.map(t => {
@@ -79,23 +108,23 @@ export default function PhasedView({ tasks, onTaskClick, selectedIndex, pendingE
                     onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onTaskClick?.(t.index) } }}
                     style={{
                       ...CARD_STYLE,
-                      ...(t.index === selectedIndex ? { boxShadow: '0 0 0 2px var(--accent, #6366f1)' } : {}),
+                      ...(t.index === selectedIndex ? SELECTED_RING : {}),
                     }}
                   >
                     <span>{icon}</span>
                     <span style={{ flex: 1, fontSize: 13 }}>{i18nT('pages.aidlc.phasedView.task')} {t.index}: {t.title}</span>
-                    {pendingEditIndexes?.has(t.index) && <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e32', flexShrink: 0 }} />}
+                    {pendingEditIndexes?.has(t.index) && <span style={EDIT_DOT} />}
                   </div>
                 );
               })}
               {items.length === 0 && (
-                <div style={{ fontSize: 12, color: 'var(--text-muted, #555)', fontStyle: 'italic', padding: '8px 0' }}>{i18nT('pages.aidlc.phasedView.none')}</div>
+                <div style={{ fontSize: 12, color: 'var(--muted)', fontStyle: 'italic', padding: '8px 0' }}>{i18nT('pages.aidlc.phasedView.none')}</div>
               )}
             </div>
           );
         })}
       </div>
-      <TaskGroup icon={<XCircle className="lucide-inline" />} label={i18nT('pages.aidlc.phasedView.failed')} items={tasks.filter(t => t.status === 'failed')} onTaskClick={onTaskClick} color="239,68,68" showError selectedIndex={selectedIndex} pendingEditIndexes={pendingEditIndexes} />
+      <TaskGroup icon={<XCircle className="lucide-inline" />} label={i18nT('pages.aidlc.phasedView.failed')} items={tasks.filter(t => t.status === 'failed')} onTaskClick={onTaskClick} danger showError selectedIndex={selectedIndex} pendingEditIndexes={pendingEditIndexes} />
       <TaskGroup icon={<SkipForward className="lucide-inline" />} label={i18nT('pages.aidlc.phasedView.skipped')} items={tasks.filter(t => t.status === 'skipped')} onTaskClick={onTaskClick} opacity={0.7} selectedIndex={selectedIndex} pendingEditIndexes={pendingEditIndexes} />
       <TaskGroup icon={<Square className="lucide-inline" />} label={i18nT('pages.aidlc.phasedView.cancelled')} items={tasks.filter(t => t.status === 'cancelled')} onTaskClick={onTaskClick} opacity={0.7} selectedIndex={selectedIndex} pendingEditIndexes={pendingEditIndexes} />
     </div>

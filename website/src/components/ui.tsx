@@ -261,6 +261,50 @@ export function EmptyState({ icon, title, subtitle, testId = 'empty-state' }: { 
   )
 }
 
+/**
+ * Header for one counted list group inside a side panel: a sentence-case label,
+ * the group's count as its own token, and a hairline rule filling the remaining
+ * width so one group reads as separated from the next.
+ *
+ * Shared on purpose. The chat side panel's Files and Artifacts tabs each
+ * hand-rolled a header, and the two diverged on every axis — case, size,
+ * weight, colour, whether the count was a node or punctuation baked into the
+ * label, and whether a rule was drawn at all — so one panel looked like two.
+ * Route new panel sections through here instead of adding a third idiom.
+ *
+ * Two properties are deliberate rather than incidental:
+ *
+ *  - Hierarchy comes from WEIGHT and SIZE, never from opacity. The idiom this
+ *    replaced dimmed the label to `text-muted/40` (~1.7:1 against the panel on
+ *    both default themes) and the count to `text-muted/50` (~1.9:1), well under
+ *    WCAG 1.4.3's 4.5:1 for text this small. Full `text-muted` clears it.
+ *  - The label is NOT uppercased. `text-transform` is a no-op on CJK, so an
+ *    uppercase micro-header keeps its hierarchy in English and loses it
+ *    entirely in zh-CN / ja / ko.
+ *
+ * @param count Rendered as a separate node, so no translated label has to carry
+ *   `(%{count})` punctuation — that interpolation was a concatenation seam.
+ * @param trailing Placed AFTER the rule (e.g. a "resolving links…" pulse), so a
+ *   transient indicator cannot push the label or count around.
+ */
+export function PanelSectionHeader({ label, count, trailing, className }: {
+  label: string
+  count?: number
+  trailing?: React.ReactNode
+  className?: string
+}) {
+  return (
+    <div className={twMerge('flex items-center gap-2', className)} data-testid="panel-section-header">
+      <span className="text-[11.5px] font-semibold text-muted">{label}</span>
+      {count !== undefined && (
+        <span className="text-[10.5px] text-muted font-mono tabular-nums">{count}</span>
+      )}
+      <span className="flex-1 h-px bg-border" />
+      {trailing}
+    </div>
+  )
+}
+
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: React.ReactNode }) {
   return (
     <div className="flex items-end justify-between gap-4 px-6 pt-2 pb-3" data-testid="page-header">

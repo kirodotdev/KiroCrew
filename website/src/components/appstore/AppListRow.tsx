@@ -27,7 +27,7 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
   onUpdate: () => void
   onEnable: () => void
 }) {
-  const hiddenBuiltin = app.origin === 'builtin' && app.installed && !app.enabled
+  const isBuiltin = app.origin === 'builtin' && !!app.installed
   const hasIcon = !!(app.iconUrl || app.icon)
   const hero = useHeroArt(app)
 
@@ -70,8 +70,14 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
         onKeyDown={e => e.stopPropagation()}
         role="presentation"
       >
-        {hiddenBuiltin ? (
-          <Btn disabled={busy} onClick={onEnable}><Power size={14} /> {i18nT('components.appstore.appListRow.enable')}</Btn>
+        {isBuiltin ? (
+          app.enabled ? (
+            <span className="inline-flex items-center gap-1 text-[12px]" style={{ color: 'var(--ok)' }}>
+              <Power size={12} /> {i18nT('components.appstore.installedAppCard.enabled')}
+            </span>
+          ) : (
+            <Btn disabled={busy} onClick={onEnable}><Power size={14} /> {i18nT('components.appstore.appListRow.enable')}</Btn>
+          )
         ) : app.installed && app.updateAvailable ? (
           <Btn disabled={busy} className="border-[var(--info)] text-[var(--info)] hover:text-[var(--info)] hover:border-[var(--info)]" onClick={onUpdate}>
             <ArrowUp size={14} /> {i18nT('components.appstore.appListRow.update')}

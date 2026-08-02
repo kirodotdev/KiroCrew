@@ -1,4 +1,5 @@
 import { HKEY, JOBKEY, LIVEKEY, LIVE_TTL_MS, SLOTSKEY } from './constants'
+import { fmtRelative } from '../../i18n/format'
 import type { Detected, DiscoveryScreen, Finding, Flow, HistoryEntry, Job, Report, ReportScreen, Scope, Screen, SlotData } from './types'
 
 // What did the user hand us? Decide from the text they pasted.
@@ -60,12 +61,19 @@ export function shortLabel(s: string | undefined): string {
   return t.length > 18 ? t.slice(0, 17).trimEnd() + '…' : t
 }
 
+/**
+ * Relative age of a critique run, through the shared formatting seam.
+ *
+ * The hand-rolled ladder this replaces glued a unit onto a number (`s + 's ago'`),
+ * which is untranslatable and is what `src/i18n/unitLiterals.test.ts` gates. Narrow
+ * `fmtRelative` is byte-identical in English for seconds, minutes, hours and
+ * multi-day gaps; the two deliberate deltas documented on the seam apply here too
+ * (a sub-second age reads `now` rather than `1s ago`, and exactly one day back reads
+ * `yesterday`), and it truncates rather than rounds so an age never reads as further
+ * in the past than it is.
+ */
 export function relTime(ts: number): string {
-  const s = Math.max(1, Math.round((Date.now() - ts) / 1000))
-  if (s < 60) return s + 's ago'
-  const m = Math.round(s / 60); if (m < 60) return m + 'm ago'
-  const hr = Math.round(m / 60); if (hr < 24) return hr + 'h ago'
-  return Math.round(hr / 24) + 'd ago'
+  return fmtRelative(ts)
 }
 
 export const loadHistory = (): HistoryEntry[] => { try { return JSON.parse(localStorage.getItem(HKEY) || '[]') } catch { return [] } }

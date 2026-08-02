@@ -14,6 +14,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "analyze": "vite build --mode analyze && node scripts/bundle-report.mjs",
     "test": "npm run test:website && npm run test:electron",
     "test:website": "vitest run --coverage",
     "test:electron": "npm test --prefix electron",
@@ -29,6 +30,7 @@
     "lint:theme-colors": "node scripts/check-theme-colors.mjs",
     "lint:i18n": "node scripts/check-i18n-strings.mjs",
     "i18n:pseudo": "node scripts/gen-pseudolocale.mjs",
+    "i18n:render": "node scripts/check-i18n-render.mjs --build",
     "i18n:check": "node scripts/gen-pseudolocale.mjs --check && node scripts/check-i18n-keys.mjs && node scripts/i18n-codemod.mjs --check --baseline=3 && node scripts/i18n-plural-codemod.mjs --check && node scripts/check-source-strings.mjs && npm run lint:i18n",
     "pretest": "npm run jscpd"
   },

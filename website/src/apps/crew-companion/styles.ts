@@ -62,6 +62,19 @@ export const CC_CSS = `
 /* Memories */
 .cc-mem-icon { width:18px; height:18px; flex:none; color:var(--muted); }
 
+/* Offline state — shown when the desktop pet is not running */
+.cc-offline { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:36px 24px; margin-top:16px; text-align:center; }
+.cc-offline-ghost { width:46px; height:46px; color:var(--accent); opacity:.6; margin:0 auto 12px; display:block; }
+.cc-offline-title { font-size:15px; font-weight:650; color:var(--text-strong); margin-bottom:6px; }
+.cc-offline-body { font-size:13px; color:var(--muted); max-width:430px; margin:0 auto 18px; line-height:1.5; }
+.cc-cta { display:inline-flex; align-items:center; gap:7px; font-size:13px; font-weight:600; background:var(--accent); color:var(--accent-fg,#fff); border:none; border-radius:9px; padding:9px 18px; cursor:pointer; }
+.cc-cta:hover { background:var(--accent-hover, var(--accent)); }
+.cc-cta:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.cc-offline-tip { margin-top:20px; padding-top:14px; border-top:1px solid var(--border); font-size:12px; color:var(--muted); }
+
+/* Quit tip shown in the running (opened) state, under the header subtitle. */
+.cc-quit-tip { margin:8px 0 0; font-size:12px; color:var(--muted); }
+
 /* Focus visibility — the repo fails PRs on missing focus affordances. */
 .cc-btn:focus-visible, .cc-pill:focus-visible, .cc-num:focus-visible,
 .cc-add-input:focus-visible, .cc-icon-btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
