@@ -67,6 +67,7 @@ const { chooseRecoveryStrategy } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("./instance-guard");
+const { initMochi, shutdownMochi } = require("./mochi/index");
 const { clampZoomFactor, stepZoomFactor } = require("./zoom");
 const { buildMenuTemplate } = require("./app-menu");
 
@@ -679,6 +680,7 @@ async function fetchLocalToken(backendUrl = BACKEND_URL) {
     http,
   });
 }
+
 
 function checkBackend(healthUrl = HEALTH_URL) {
   return new Promise((resolve, reject) => {
@@ -2238,6 +2240,13 @@ app.whenReady().then(async () => {
   await startGateway();
   await showLoadingThenConnect(win);
 
+  // Mochi's pet overlay. Opened only when the builtin is enabled -- the app is
+  // defaultEnabled:false, so a user who never turned it on gets no overlay and
+  // pays nothing. Deliberately AFTER showLoadingThenConnect: the gateway must
+  // be answering before we ask it whether Mochi is on, and the pet page is
+  // loaded from the gateway origin. Best-effort -- a failure here must never
+  // block the dashboard, so everything is inside a catch that only logs.
+  initMochi({ backendUrl: BACKEND_URL, fetchLocalToken, glog });
 
   app.on("activate", () => {
     if (!mainWindow?.isVisible()) mainWindow?.show();
@@ -2248,6 +2257,7 @@ app.on("before-quit", () => {
   isQuitting = true;
   // Flush the final metrics window before the gateway teardown begins.
   try { if (desktopMetricsRecorder) desktopMetricsRecorder.stop(); } catch { /* best effort */ }
+  shutdownMochi();
   stopGateway();
 });
 

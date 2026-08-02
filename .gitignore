@@ -126,3 +126,6 @@ scripts/.scrub-aliases.txt
 
 # Local session summary (working notes, not part of the PR)
 SESSION_SUMMARY.md
+
+# Internal migration worklog — deliberately untracked (contains pre-scrub notes)
+MOCHI_MIGRATION.md

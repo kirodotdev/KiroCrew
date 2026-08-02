@@ -496,6 +496,8 @@ class TestCapabilityInstallOffloadsTheLockedSync:
         import inspect
 
         src = inspect.getsource(fn)  # type: ignore[arg-type]
+        # After removing the offloaded call forms, no bare _sync_mcp_to_agent(
+        # call may remain (the from-import has no "(" so it is not matched).
         stripped = src.replace("to_thread(_sync_mcp_to_agent", "").replace(
             "to_thread(lambda: _sync_mcp_to_agent", ""
         )

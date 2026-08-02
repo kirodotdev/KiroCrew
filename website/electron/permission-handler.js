@@ -100,6 +100,34 @@ function requestsVideo(details) {
   return Array.isArray(types) && types.includes("video");
 }
 
+/**
+ * Is this denial worth a breadcrumb, or is it a by-design permanent refusal?
+ *
+ * Chromium fires the CHECK handler on every navigation for permissions this app
+ * denies wholesale — `geolocation`, `web-app-installation`, `background-sync`,
+ * and `media` with `mediaType:"video"` (the camera, which is deliberately
+ * absent). Logging each one floods the main-process console with dozens of
+ * lines per session that carry ZERO diagnostic value: they are always denied and
+ * always will be.
+ *
+ * The ONE denial worth seeing is the class this module exists to catch — a
+ * `media` request that should have been GRANTED (audio or unspecified) but was
+ * refused, i.e. the silent-mic regression documented above. In healthy
+ * operation this never fires for the app origin (such a request is granted), so
+ * a line here is a real signal, not noise. Video is by-design and is checked on
+ * every route, so it is not noteworthy either.
+ *
+ * @param {string} permission
+ * @param {{ mediaType?: string, mediaTypes?: Array<string> }} [details]
+ * @param {boolean} [isVideo] - precomputed video verdict (request-handler side)
+ * @returns {boolean}
+ */
+function isNoteworthyDenial(permission, details, isVideo) {
+  if (permission !== "media") return false;
+  const video = isVideo ?? (details?.mediaType === "video" || requestsVideo(details));
+  return !video;
+}
+
 /** One-line breadcrumb so a denial is visible without attaching a debugger. */
 function logDeny(kind, permission, wc, origin, details) {
   // eslint-disable-next-line no-console -- see module header: silent denials
@@ -172,7 +200,9 @@ function createPermissionRequestHandler(deps = {}) {
     const granted =
       permission === "media" && originOk(wc, origin) && !requestsVideo(details);
     if (!granted) {
-      audit("request", permission, wc, origin, details);
+      if (isNoteworthyDenial(permission, details)) {
+        audit("request", permission, wc, origin, details);
+      }
       return callback(false);
     }
     // Electron says yes; on macOS the OS still has to. Absent the TCC deps
@@ -242,8 +272,10 @@ function createPermissionCheckHandler(deps = {}) {
       details?.mediaType !== "video";
     // Guarded for the same reason as the request handler's `audit`: this is a
     // synchronous Electron callback, so a throwing breadcrumb would propagate
-    // into Chromium's permission check instead of just failing to log.
-    if (!granted) {
+    // into Chromium's permission check instead of just failing to log. Only a
+    // noteworthy denial is logged — the by-design refusals Chromium re-checks on
+    // every navigation are silenced (see isNoteworthyDenial).
+    if (!granted && isNoteworthyDenial(permission, details)) {
       try {
         onDeny("check", permission, wc, origin, details);
       } catch {
@@ -257,6 +289,7 @@ function createPermissionCheckHandler(deps = {}) {
 module.exports = {
   isAppOrigin,
   requestsVideo,
+  isNoteworthyDenial,
   createPermissionRequestHandler,
   createPermissionCheckHandler,
 };

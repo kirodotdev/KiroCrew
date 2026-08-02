@@ -1,0 +1,96 @@
+{
+  "name": "mochi",
+  "version": "0.1.0",
+  "displayName": "Mochi",
+  "description": "A desktop companion that lives on your screen. Mochi chats through its own panel, watches pages and feeds for you, plans its own day around your schedule, remembers your time together, and taps you on the shoulder only when something actually changed.",
+  "author": "kirocrew",
+  "tags": [
+    "companion",
+    "desktop-pet",
+    "watchlist",
+    "reminders",
+    "autonomous"
+  ],
+  "highlights": [
+    "A pet window that floats on your desktop \u2014 transparent, click-through, always company",
+    "Watch list with reliability guarantees: due-time scheduling, failure backoff, at-least-once notification",
+    "Plans and replans its own task queue; deterministic moves and moods cost zero tokens",
+    "Remembers your relationship \u2014 streaks, busiest days, milestones celebrated exactly once",
+    "Quiet by design: notifications merge, silent mode holds them, meetings are respected",
+    "The autonomous core is fully in-process \u2014 no second app, no extra runtime"
+  ],
+  "screenshots": [
+    "/app-assets/mochi/shot-1-gallery.png"
+  ],
+  "heroImage": "/app-assets/mochi/hero.jpg",
+  "iconUrl": "/app-assets/mochi/icon.png",
+  "defaultEnabled": false,
+  "platform": {
+    "requiresDesktopApp": true
+  },
+  "permissions": {
+    "api": [
+      "/api/apps/mochi",
+      "/api/apps/mochi/*"
+    ],
+    "storage": true,
+    "events": [
+      "mochi:move",
+      "mochi:mood",
+      "mochi:notify",
+      "mochi:chat-push",
+      "mochi:quiet",
+      "mochi:peeking",
+      "mochi:idle",
+      "mochi:force-replan",
+      "mochi:watchlist-changed",
+      "mochi:gallery-packs-changed",
+      "mochi:color-map-changed",
+      "pet:state-change",
+      "pinned:files-changed",
+      "pinned:file-updated",
+      "pinned:file-deleted"
+    ],
+    "cron": true,
+    "spawn": true
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/mochi",
+        "label": "Mochi",
+        "icon": "Cat"
+      }
+    ]
+  },
+  "backend": {
+    "hooks": {
+      "on_startup": "hooks:on_startup",
+      "on_shutdown": "hooks:on_shutdown"
+    },
+    "routes": "backend.routes:register_routes"
+  },
+  "agents": [
+    "agents/mochi.json",
+    "agents/mochi-bg.json"
+  ],
+  "skills": [
+    "agents/skills/mochi-plan",
+    "agents/skills/mochi-replan",
+    "agents/skills/mochi-watch",
+    "agents/skills/mochi-remind",
+    "agents/skills/mochi-slack",
+    "agents/skills/mochi-tips"
+  ],
+  "mcpServers": {
+    "mochi": {
+      "command": "kirocrew",
+      "args": [
+        "app",
+        "mcp",
+        "mochi"
+      ],
+      "disabled": false
+    }
+  }
+}

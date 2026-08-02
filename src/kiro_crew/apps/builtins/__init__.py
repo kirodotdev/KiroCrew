@@ -6,6 +6,7 @@ BUILTIN_NAMES: list[str] = [
     "issue_radar",
     "meetings",
     "papyrus",
+    "mochi",
     "pptx_maker",
 ]
 

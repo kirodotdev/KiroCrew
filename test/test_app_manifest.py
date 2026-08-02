@@ -895,6 +895,16 @@ class TestRequiresDesktopApp:
         assert manifest.platform.requiresDesktopApp is True
         assert AppManifest.from_dict(manifest.to_dict()).platform.requiresDesktopApp is True
 
+    def test_mochi_builtin_declares_it(self):
+        """Mochi is the first consumer: its panel needs the Electron shell."""
+        from pathlib import Path
+
+        import kiro_crew.apps.builtins as builtins_pkg
+
+        app_json = Path(builtins_pkg.__file__).parent / "mochi" / "app.json"
+        manifest = AppManifest.from_dict(json.loads(app_json.read_text()))
+        assert manifest.platform.requiresDesktopApp is True
+
     def test_windows_is_expressible(self):
         """KiroCrew runs natively on Windows, so a manifest must be able to say so.
 

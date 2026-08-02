@@ -65,6 +65,7 @@
     "highlight.js": "^11.11.1",
     "i18next": "^26.3.6",
     "katex": "0.16.44",
+    "lottie-web": "5.13.0",
     "lucide-react": "1.7.0",
     "mermaid": "11.13.0",
     "monaco-editor": "^0.55.1",

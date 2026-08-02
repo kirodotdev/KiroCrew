@@ -177,3 +177,19 @@ entirely with no error anywhere. Both halves are pinned by tests; a new host
 surface that constructs an app context MUST pass a real broadcaster.
 
 Writer: `apps/lifecycle.py`; consumer: an app's `publish`/`_broadcast`.
+
+## 9. Desktop-shell (Electron main-process) code is a first-party-only exception
+
+App Kit apps are **renderer + backend** only. Mochi's `website/electron/mochi/`
+(pet overlay windows, panel/settings windows, global-shortcut registration,
+multi-instance) runs in the Electron **main process** — a deliberate first-party
+exception because Mochi is a first-party desktop pet whose windows the shell must
+own. It is **not** a precedent that a third-party (or non-desktop) builtin may
+ship main-process code; those stay renderer+backend. See
+`docs/system-specs/modules/mochi.md` § Deliberate divergences.
+
+Relatedly, Mochi's vendored `ChatPanel`/`panelBridge` are a **deliberately owned
+fork**, not a convergence-pending copy of the dashboard's `ChatEmbed` — an
+approval-flow or widget-protocol change in the dashboard chat must be ported to
+Mochi's panel too. Do not replace `ChatPanel` with `ChatEmbed` in an upstream
+sync.
