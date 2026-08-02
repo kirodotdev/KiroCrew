@@ -1523,7 +1523,7 @@ export default function App() {
             aria-label={i18nT('app.search_sessions_files_and_commands')}
             title={i18nT('app.search_everywhere_k')}
           >
-            <span className="text-[13px] truncate">{i18nT('app.k_search_for_anything')}</span>
+            <span className="text-[13px] truncate min-w-0">{i18nT('app.k_search_for_anything')}</span>
           </button>
         )}
         {/* Theme decoration: the active theme's center top-bar element (e.g. a
@@ -1881,7 +1881,7 @@ export default function App() {
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: -6, transition: { duration: 0.12, ease: 'easeIn' } }}
                       transition={{ duration: 0.2, ease: 'easeOut' }}
-                      className="text-sm font-bold tracking-[.08em] text-text-strong whitespace-nowrap truncate"
+                      className="text-sm font-bold tracking-[.08em] text-text-strong whitespace-nowrap truncate min-w-0"
                     >{botName}</motion.span>
                   )}
                 </AnimatePresence>
