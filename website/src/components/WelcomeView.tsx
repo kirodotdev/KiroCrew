@@ -17,15 +17,6 @@ interface WelcomeViewProps {
   onToggleClean?: (clean: boolean) => void
 }
 
-const FALLBACK_SUGGESTIONS = [
-  'Check my pipeline status',
-  'Triage my on-call tickets',
-  'Search code for usage examples',
-  'Summarize this week\'s Slack activity',
-  'Help me write a design doc',
-  'Review my latest CR',
-]
-
 function SuggestedPills({ setInput }: { setInput: (v: string) => void }) {
   const qc = useQueryClient()
   const [refreshing, setRefreshing] = useState(false)
@@ -37,7 +28,17 @@ function SuggestedPills({ setInput }: { setInput: (v: string) => void }) {
     refetchOnWindowFocus: false,
   })
 
-  const pills = data?.suggestions?.length ? data.suggestions : FALLBACK_SUGGESTIONS
+  // Built at render (not module scope) so each i18nT() reads the active language;
+  // the App remounts on a language switch, re-evaluating these.
+  const fallbackSuggestions = [
+    i18nT('components.welcomeView.suggestion_pipeline_status'),
+    i18nT('components.welcomeView.suggestion_triage_tickets'),
+    i18nT('components.welcomeView.suggestion_search_code'),
+    i18nT('components.welcomeView.suggestion_summarize_slack'),
+    i18nT('components.welcomeView.suggestion_write_design_doc'),
+    i18nT('components.welcomeView.suggestion_review_cr'),
+  ]
+  const pills = data?.suggestions?.length ? data.suggestions : fallbackSuggestions
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -162,8 +163,8 @@ export default function WelcomeView({
               style={(() => { const r = anonBtnRef.current?.getBoundingClientRect(); return { top: r ? r.bottom + 6 : '50%', left: r ? r.left + r.width / 2 : '50%', transform: 'translateX(-50%)' } })()}
             >
               {onSwitchMode && ([
-                { key: 'incognito' as const, Icon: EyeOff, label: 'Incognito', desc: 'Memory reads enabled, writes disabled', color: 'text-warn' },
-                { key: 'temporary' as const, Icon: VenetianMask, label: 'Temporary', desc: 'Blank slate — no memory reads or writes', color: 'text-aim' },
+                { key: 'incognito' as const, Icon: EyeOff, label: i18nT('components.welcomeView.incognito'), desc: i18nT('components.welcomeView.incognito_desc'), color: 'text-warn' },
+                { key: 'temporary' as const, Icon: VenetianMask, label: i18nT('components.welcomeView.temporary'), desc: i18nT('components.welcomeView.temporary_desc'), color: 'text-aim' },
               ] as const).map(t => (
                 <button
                   key={t.key}

@@ -962,8 +962,18 @@
     },
     "welcomeView": {
       "autopilot": "Autopilot",
+      "incognito": "Incognito",
+      "incognito_desc": "Memory reads enabled, writes disabled",
+      "suggestion_pipeline_status": "Check my pipeline status",
+      "suggestion_review_cr": "Review my latest CR",
+      "suggestion_search_code": "Search code for usage examples",
+      "suggestion_summarize_slack": "Summarize this week's Slack activity",
+      "suggestion_triage_tickets": "Triage my on-call tickets",
+      "suggestion_write_design_doc": "Help me write a design doc",
       "switch_back_to_default_mode": "Switch back to default mode",
       "switch_to_ephemeral_mode": "Switch to ephemeral mode",
+      "temporary": "Temporary",
+      "temporary_desc": "Blank slate — no memory reads or writes",
       "what_can_i_do_for_you": "What can I do for you?"
     },
     "widgetFrame": {
