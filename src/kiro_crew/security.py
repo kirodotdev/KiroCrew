@@ -4983,6 +4983,212 @@ def is_sensitive_bash_command(command: str) -> str | None:
     return None
 
 
+# `NAME=value` prefix. `normalize_shell_command` keeps it as a single token, and
+# the value is already $HOME-expanded by the time we see it.
+_SHELL_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.DOTALL)
+
+# A variable reference that survived `$HOME` expansion, e.g. `$V` or `${V}`.
+#
+# The braced form has to admit parameter expansion, not just a bare name:
+# `${V:-/tmp}`, `${V#prefix}`, `${V/a/b}`, `${V:0:5}`, `${#V}`, `${!V}`. Matching
+# only `${V}` left `cat ${D:-/tmp}/credentials` with no recognized reference at
+# all, so neither the substitution below nor the unresolved-variable hypothesis
+# saw it and the path resolved clean. The body admits one level of nesting so
+# `${V:-${W}}` resolves on the outer name rather than the inner one.
+_SHELL_VAR_REF_RE = re.compile(
+    r"\$\{[!#]?([A-Za-z_][A-Za-z0-9_]*)(?:[^{}]|\$\{[^{}]*\})*\}"
+    r"|\$([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+# A command substitution, in both spellings. Its value needs the command to run,
+# so it is unresolvable from the text in exactly the way an unassigned variable
+# is -- and it can carry a `cd` target: `cd "$(printf %s ~)/.kiro/crew"`.
+_SHELL_SUBST_RE = re.compile(r"\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`")
+
+# Stand-in for a masked command substitution. Deliberately shaped like a variable
+# reference: the substitution is unresolvable for the same reason an unassigned
+# variable is, so the existing unresolved-value machinery then handles it.
+_SUBST_PLACEHOLDER = "$__kc_subst"
+
+
+def _mask_substitutions(text: str) -> str:
+    """Collapse command substitutions to a single unresolved token.
+
+    An unquoted substitution contains spaces, and `shlex` splits on them, so
+    ``cd $(printf %s ~)/.aws`` tokenized to ``cd`` / ``$(printf`` / ``%s`` /
+    ``~)/.aws`` -- the target shredded into fragments that match nothing. Masking
+    first keeps it one token whose value is simply unknown.
+
+    Applied by the path-resolving passes, NOT by the taint scan: that one splits
+    *at* substitution boundaries on purpose, so it can see a `cd` **inside** one
+    (``echo $(cd ~/.aws; cat credentials)``). The two need opposite treatment --
+    here the substitution is an opaque value, there it is executable text.
+    """
+    return _SHELL_SUBST_RE.sub(_SUBST_PLACEHOLDER, text)
+
+
+def _split_shell_segments(command: str) -> list[str]:
+    """Split on ``&&``, ``||``, ``;`` and newline — but only outside quotes.
+
+    A `cd` in one segment sets the working directory the following segments
+    resolve against, which is why the second pass walks segments rather than one
+    flat token list. Pipes are deliberately not separators: they do not change
+    the directory.
+
+    The split has to respect quoting. A separator inside a quoted argument is
+    data, and splitting on it lets that data be read as shell syntax::
+
+        cd ~/.kiro/crew && echo 'x; cd /tmp' && cat token_signing.key
+
+    A naive split treats the quoted ``;`` as a separator, so ``cd /tmp'``
+    becomes a segment and retargets the tracked base directory. The shell never
+    left ``~/.kiro/crew``, but the bare filename then resolves against ``/tmp``
+    and the signing key reads clean. Splitting only outside quotes keeps the
+    tracked directory in step with the shell.
+
+    An unquoted ``(`` or ``)`` is emitted as its own segment so the caller can
+    scope the subshell it opens. That also keeps ``(cd`` from arriving as one
+    token, whose basename matches no ``cd`` check.
+
+    An unterminated quote yields no further separators, so the remainder stays a
+    single segment — the safe direction: fewer splits cannot corrupt the base.
+
+    Note the asymmetry with `_split_segments` further down, which regex-splits
+    for the deny-pattern pass, and with `_CMD_SPLIT_RE` as used by
+    `_check_sensitive_cd_taint`. Those want *more* segments -- every fragment is
+    matched against deny patterns, or scanned for a sensitive `cd`, so an extra
+    split can only add matches -- whereas this one wants *fewer*, because a wrong
+    split corrupts the tracked directory. They are not interchangeable: do not
+    unify them.
+    """
+    segments: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    # A command substitution runs in a subshell, so a `cd` inside one does not
+    # move the parent's directory and its separators are not the parent's
+    # either. Same reasoning as quoting: do not split inside.
+    subst_depth = 0
+    in_backtick = False
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote is not None:
+            buf.append(ch)
+            # Inside double quotes a backslash still escapes; inside single
+            # quotes it is literal, exactly as a shell reads it.
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                buf.append(command[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            buf.append(ch)
+            buf.append(command[i + 1])
+            i += 2
+            continue
+        if command.startswith("$(", i):
+            subst_depth += 1
+            buf.append("$(")
+            i += 2
+            continue
+        if ch == ")" and subst_depth:
+            subst_depth -= 1
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "`":
+            in_backtick = not in_backtick
+            buf.append(ch)
+            i += 1
+            continue
+        if subst_depth or in_backtick:
+            buf.append(ch)
+            i += 1
+            continue
+        if ch in ("(", ")"):
+            # A subshell boundary. Emitted as its own segment so the walk can
+            # scope the `cd` inside it -- and so `(cd ~/.aws` cannot arrive as a
+            # single token whose basename is `(cd`, which matched no `cd` check
+            # and left the base unset.
+            segments.append("".join(buf))
+            segments.append(ch)
+            buf = []
+            i += 1
+            continue
+        if ch in (";", "\n"):
+            segments.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        if command.startswith("&&", i) or command.startswith("||", i):
+            segments.append("".join(buf))
+            buf = []
+            i += 2
+            continue
+        buf.append(ch)
+        i += 1
+    segments.append("".join(buf))
+    return [segment for segment in segments if segment.strip()]
+
+
+def _expand_known_vars(token: str, assignments: dict[str, str]) -> str:
+    """Substitute variables this command assigned earlier in its own text."""
+
+    def repl(match: re.Match[str]) -> str:
+        name = match.group(1) or match.group(2)
+        return assignments.get(name, match.group(0))
+
+    return _SHELL_VAR_REF_RE.sub(repl, token)
+
+
+def _unresolved_home_hypothesis(token: str) -> str | None:
+    """Rewrite the first unresolved expansion in *token* as a home reference.
+
+    `normalize_shell_command` expands `$HOME` and `~`, and the segment walk
+    substitutes variables the command assigned itself. What is left cannot be
+    resolved from the command text at all: a variable whose value lives in the
+    shell, or a command substitution whose value needs the command to run.
+
+    Rather than let such a token through unchecked, test the hypothesis that the
+    unresolved part names a home directory -- `$V/.aws/credentials` and
+    `$(printf %s ~)/.kiro/crew` both become a `~`-anchored path. Any further
+    unresolved parts drop out, since `~` only expands at the start.
+
+    Returns the hypothesis, or None when the token carries nothing unresolved or
+    the hypothesis is not home-anchored.
+    """
+    marked = _SHELL_SUBST_RE.sub("\x00", token)
+    marked = _SHELL_VAR_REF_RE.sub("\x00", marked)
+    if "\x00" not in marked:
+        return None
+    hypothesis = marked.replace("\x00", "~", 1).replace("\x00", "")
+    if not hypothesis.startswith("~"):
+        return None
+    return hypothesis
+
+
+def _sensitive_under_unresolved_var(token: str) -> bool:
+    """Would *token* be sensitive if its unresolved expansions named a home?
+
+    Fails closed only when the literal part of the path is sensitive on its own:
+    `$V/.aws/credentials` is caught, while `$BUILD/out.txt` stays clean because
+    its remainder is not sensitive under any value.
+    """
+    hypothesis = _unresolved_home_hypothesis(token)
+    if hypothesis is None:
+        return False
+    return bool(is_sensitive_path(hypothesis))
+
+
 def _check_sensitive_via_normalizer(command: str) -> str | None:
     """Normalizer second-pass: tokenize command and route paths through is_sensitive_path.
 
@@ -4991,55 +5197,277 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     - Variable expansion: ``$HOME/.ssh/id_rsa``
     - Relative traversal: ``awk '{print}' ~/../../.aws/credentials``
     - Mixed evasion: ``"cat" ~/.aws/credentials``
+    - Indirection through a variable the command itself assigned:
+      ``V=$HOME; awk 1 $V/.aws/credentials``
+    - A bare filename read after a ``cd``:
+      ``cd ~/.kiro/crew && cat token_signing.key``
 
-    Only triggers when a recognized read verb is present in the resolved tokens
-    (avoids false positives on write/create commands).
+    The command is walked segment by segment so a ``cd`` target becomes the base
+    directory for the segments after it. Without that base, a bare filename is
+    not even path-like, so it was never checked at all, and `is_sensitive_path`
+    would have resolved it against the gateway's own working directory rather
+    than the directory the command moved to.
+
+    Only triggers when a recognized read verb — or a hardlink/symlink creation
+    verb, since `ln` to a credential file is the same disclosure one step
+    removed — is present in the segment (avoids false positives on write/create
+    commands).
 
     Returns denial reason string, or None if clean.
     """
+    assignments: dict[str, str] = {}
+    base_dir: str | None = None
+    # The directory `cd -` goes back to.
+    prev_base: str | None = None
+    # Saved (base_dir, prev_base, assignments) per open subshell.
+    scopes: list[tuple[str | None, str | None, dict[str, str]]] = []
+
+    # Pass A: run the full command through normalize_shell_command BEFORE
+    # segmenting. This is quote-aware (shlex) and catches sensitive paths
+    # even when a shell separator sits inside quotes — the segment split
+    # would shred those into malformed fragments. This pass has no cd-tracking
+    # (it sees the whole line as one unit), so it complements the segment walk.
     try:
-        tokens = normalize_shell_command(command)
+        full_tokens = normalize_shell_command(_mask_substitutions(command))
     except Exception:
-        return None
+        full_tokens = []
+    if full_tokens:
+        has_verb = any(
+            os.path.basename(t).lower() in _NORMALIZER_READ_VERBS
+            or os.path.basename(t).lower() in _LINK_CREATE_VERBS
+            for t in full_tokens
+        )
+        if has_verb:
+            for token in full_tokens:
+                if not token or token.startswith("-"):
+                    continue
+                bname = os.path.basename(token).lower()
+                if bname in _NORMALIZER_READ_VERBS or bname in _LINK_CREATE_VERBS:
+                    continue
+                if _is_path_like(token) and is_sensitive_path(token):
+                    return (
+                        "Blocked: command accesses sensitive credential path "
+                        f"(resolved via normalizer: {token[:80]})"
+                    )
+                if _sensitive_under_unresolved_var(token):
+                    return (
+                        "Blocked: command accesses sensitive credential path through an "
+                        f"unresolved variable: {token[:80]}"
+                    )
 
-    if not tokens:
-        return None
+    # Pass B: segment walk — splits on &&, ||, ; and newline (outside quotes) to
+    # track `cd` targets across chained commands. Pass A above still sees the
+    # whole line as one unit, so a shape this walk cannot segment is covered
+    # there.
+    for segment in _split_shell_segments(command):
+        if not segment.strip():
+            continue
 
-    # Check if any token resolves to a known read verb or hardlink/symlink
-    # creation verb (by basename, so /usr/bin/cat is recognized as "cat").
-    has_relevant_verb = False
-    for token in tokens:
-        if not token:
+        # A subshell is its own scope: a `cd` or assignment inside one does not
+        # outlive the closing paren. Save the state on the way in and restore it
+        # on the way out, so `(cd ~/.aws)` neither leaks its base to the parent
+        # nor -- the failure this replaced -- hides it from the segment that
+        # reads the file, which is the case where `(cd` was glued into one token
+        # and never matched the `cd` check at all.
+        if segment == "(":
+            scopes.append((base_dir, prev_base, dict(assignments)))
             continue
-        basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
-            has_relevant_verb = True
-            break
+        if segment == ")":
+            if scopes:
+                base_dir, prev_base, assignments = scopes.pop()
+            continue
 
-    if not has_relevant_verb:
-        return None
+        try:
+            tokens = normalize_shell_command(_mask_substitutions(segment))
+        except Exception:
+            continue
+        if not tokens:
+            continue
 
-    # Route each path-like token through is_sensitive_path()
-    for token in tokens:
-        if not token:
+        # Peel off `NAME=value` prefixes, recording them for later segments, and
+        # resolve references to names this command already assigned.
+        #
+        # Only the LEADING run counts, exactly as a shell reads it: once the
+        # command word is seen, a later `NAME=value` is an argument, not an
+        # assignment. Treating one as an assignment let a decoy overwrite a real
+        # value -- `V=$HOME; echo V=/tmp; cd $V/.kiro/crew` recorded `V=/tmp`
+        # from the `echo` argument and resolved the `cd` under `/tmp`, while the
+        # shell kept `V=$HOME` and entered the protected directory.
+        operands: list[str] = []
+        in_assignment_prefix = True
+        for token in tokens:
+            if not token:
+                continue
+            assign = _SHELL_ASSIGN_RE.match(token) if in_assignment_prefix else None
+            if assign and not os.path.isabs(token):
+                assignments[assign.group(1)] = _expand_known_vars(assign.group(2), assignments)
+                continue
+            in_assignment_prefix = False
+            operands.append(_expand_known_vars(token, assignments))
+
+        if not operands:
             continue
-        # Skip flags
-        if token.startswith("-"):
+
+        # `cd <target>` moves the base directory for everything after it.
+        if os.path.basename(operands[0]).lower() in ("cd", "pushd"):
+            args = [token for token in operands[1:] if token != "--"]
+            # `cd -` returns to the previous directory. The shell remembers it,
+            # so the tracker has to as well: skipping `-` as a flag left the base
+            # on the directory the command had already left.
+            if args and args[0] == "-":
+                base_dir, prev_base = prev_base, base_dir
+                continue
+            target = next((token for token in args if not token.startswith("-")), None)
+            prev_base = base_dir
+            hypothesis = _unresolved_home_hypothesis(target) if target else None
+            if target is None:
+                # A bare `cd` goes to the home directory.
+                base_dir = os.path.expanduser("~")
+            elif hypothesis is not None:
+                # The target carries a variable or command substitution this
+                # command cannot resolve. Fail closed on the hypothesis that it
+                # names a home directory, so the reads that follow are still
+                # joined onto the literal tail: `cd "$(printf %s ~)/.kiro/crew"`
+                # otherwise left the base on a literal that matched nothing.
+                base_dir = os.path.expanduser(hypothesis)
+            elif target.startswith("~"):
+                base_dir = os.path.expanduser(target)
+            elif os.path.isabs(target):
+                base_dir = target
+            elif base_dir:
+                base_dir = os.path.join(base_dir, target)
+            else:
+                base_dir = target
             continue
-        # Skip tokens that ARE the verb itself
-        basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
+
+        # A read verb, or a hardlink/symlink creation verb — `ln` stages a link
+        # to a credential file, which is the same disclosure one step removed.
+        has_relevant_verb = any(
+            os.path.basename(token).lower() in _NORMALIZER_READ_VERBS
+            or os.path.basename(token).lower() in _LINK_CREATE_VERBS
+            for token in operands
+        )
+        if not has_relevant_verb:
             continue
-        # Only check tokens that look like filesystem paths
-        if not _is_path_like(token):
+
+        for token in operands:
+            # Skip flags
+            if token.startswith("-"):
+                continue
+            # Skip tokens that ARE the verb itself
+            basename = os.path.basename(token).lower()
+            if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
+                continue
+
+            # is_sensitive_path handles symlink resolution, traversal, ~ expansion,
+            # $HOME expansion, and all sensitive directory checks
+            if _is_path_like(token) and is_sensitive_path(token):
+                return (
+                    "Blocked: command accesses sensitive credential path "
+                    f"(resolved via normalizer: {token[:80]})"
+                )
+
+            # A relative operand — including a bare filename, which is not
+            # path-like on its own — resolves against the directory a preceding
+            # `cd` moved to.
+            if base_dir and not os.path.isabs(token) and not token.startswith("~"):
+                candidate = os.path.join(base_dir, token)
+                if is_sensitive_path(candidate):
+                    return (
+                        "Blocked: command accesses sensitive credential path "
+                        f"(resolved against 'cd' target: {candidate[:80]})"
+                    )
+
+            # A path whose variable this command never assigned cannot be
+            # resolved from the command text alone.
+            if _sensitive_under_unresolved_var(token):
+                return (
+                    "Blocked: command accesses sensitive credential path through an "
+                    f"unresolved variable: {token[:80]}"
+                )
+
+    return _check_sensitive_cd_taint(command)
+
+
+def _strip_grouping(token: str) -> str:
+    """Strip leading subshell / substitution punctuation from a token.
+
+    ``$(cd`` and ``(cd`` have to be recognized as ``cd``: the taint scan below
+    splits at substitution boundaries, so the verb can arrive still carrying the
+    punctuation that opened the group.
+    """
+    return token.lstrip("$(`{ ")
+
+
+def _check_sensitive_cd_taint(command: str) -> str | None:
+    """Monotone pass: did the command enter a sensitive directory, then read?
+
+    **This is where the emulation stops.** Pass B above resolves the working
+    directory the way the shell would, and that is worth having -- it is the only
+    pass that catches a read whose *joined* path is sensitive while the ``cd``
+    target alone is not (``cd ~ && cat .aws/credentials``). But its guarantee is
+    only as good as its fidelity to real bash, and the grammar it would have to
+    match is unbounded: a ``cd`` that does not execute (``false && cd /tmp``),
+    one that is undone (``cd -``, ``popd``), one scoped to a substitution or a
+    nested shell (``bash -c``, ``eval``), an assignment prefix that is temporary
+    rather than persistent (``V=/tmp echo hi``). Every divergence is a silent
+    bypass, and each one closed adds parser state that can diverge again.
+
+    So the security guarantee does not rest there. This pass asks a question that
+    needs no emulation: was a ``cd`` into a sensitive directory seen anywhere, and
+    does a read follow it? Once seen, the command is tainted and **no later token
+    can clear it** -- monotone, so it cannot be walked back by adding syntax,
+    which is precisely the property a positional tracker lacks. Pass B is then
+    free to be best-effort rather than exhaustive.
+
+    The split is the naive `_CMD_SPLIT_RE` on purpose, and it is the reason a
+    ``cd`` inside ``$( )`` or backticks is visible here while `_split_shell_segments`
+    deliberately keeps those whole: over-splitting can only widen this scan, and a
+    wider scan can only add denials. The two splitters fail safe in opposite
+    directions -- see the note on `_split_shell_segments`.
+
+    Cost: a read of an unrelated file after entering a credential directory is
+    denied too (``cd ~/.aws && cat /etc/hosts``). That shape is already denied
+    before this pass, because the sensitive ``cd`` target is itself a path-like
+    token next to a read verb, so this widens nothing in practice.
+
+    Returns denial reason string, or None if clean.
+    """
+    tainted_by: str | None = None
+    for segment in _CMD_SPLIT_RE.split(command):
+        if not segment or not segment.strip():
             continue
-        # is_sensitive_path handles symlink resolution, traversal, ~ expansion,
-        # $HOME expansion, and all sensitive directory checks
-        if is_sensitive_path(token):
-            return (
-                "Blocked: command accesses sensitive credential path "
-                f"(resolved via normalizer: {token[:80]})"
-            )
+        try:
+            tokens = normalize_shell_command(segment)
+        except Exception:
+            continue
+        if not tokens:
+            continue
+
+        # A read in any segment after the move. Checked before this segment's own
+        # `cd`, so the taint applies to what FOLLOWS the move, not to the
+        # `cd` segment itself.
+        if tainted_by is not None:
+            for token in tokens:
+                if not token or token.startswith("-"):
+                    continue
+                basename = os.path.basename(_strip_grouping(token)).lower()
+                if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
+                    return (
+                        "Blocked: command reads a file after entering a sensitive "
+                        f"credential directory ({tainted_by[:60]})"
+                    )
+
+        for index, token in enumerate(tokens):
+            if os.path.basename(_strip_grouping(token)).lower() not in ("cd", "pushd"):
+                continue
+            target = next((t for t in tokens[index + 1 :] if t and not t.startswith("-")), None)
+            if not target:
+                continue
+            probe = os.path.expanduser(target) if target.startswith("~") else target
+            if is_sensitive_path(probe) or _sensitive_under_unresolved_var(target):
+                tainted_by = target
+                break
     return None
 
 
@@ -6786,14 +7214,24 @@ def normalize_shell_command(cmd: str) -> list[str]:
     # template eagerly -- ``\U`` is an invalid escape, so a string replacement
     # raises ``re.error`` for EVERY input on that platform, not just ones
     # containing ``$HOME``.  A callable is substituted literally.
-    preprocessed = _HOME_VAR_RE.sub(lambda _m: home, cmd)
+    #
+    # Escape the separators in the substituted value: ``shlex.split(posix=True)``
+    # below treats a backslash as an escape character, so the native Windows
+    # home ``C:\Users\<name>`` would tokenize to ``C:Users<name>`` -- the
+    # separators eaten, the path no longer under the home directory, and so
+    # every ``$HOME``-spelled credential path resolves clean.  Doubling them
+    # makes shlex unescape back to the real path.  A no-op wherever the home
+    # holds no backslash, which is every POSIX home in practice.
+    preprocessed = _HOME_VAR_RE.sub(lambda _m: home.replace("\\", "\\\\"), cmd)
 
     # Tokenize using POSIX shlex — handles quoting, escaping, etc.
     try:
         tokens = shlex.split(preprocessed, posix=True)
     except ValueError:
         # Unbalanced quotes or other parse errors — fall back to basic split.
-        tokens = preprocessed.split()
+        # shlex never ran, so nothing will unescape the doubled separators:
+        # split the unescaped spelling instead.
+        tokens = _HOME_VAR_RE.sub(lambda _m: home, cmd).split()
         tokens = [t.strip("\"'\\") for t in tokens]
 
     resolved: list[str] = []

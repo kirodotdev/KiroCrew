@@ -643,9 +643,7 @@ class TestRedactCredentials:
         from kiro_crew.dashboard.token_auth import generate_token
         from kiro_crew.security import _CREDENTIAL_PATTERNS
 
-        floors = re.findall(
-            r"eyJ\[A-Za-z0-9_-\]\{(\d+),\}", _CREDENTIAL_PATTERNS.pattern
-        )
+        floors = re.findall(r"eyJ\[A-Za-z0-9_-\]\{(\d+),\}", _CREDENTIAL_PATTERNS.pattern)
         assert len(floors) == 1, f"expected one bounded eyJ floor, got {floors}"
         floor = int(floors[0])
 
@@ -655,9 +653,7 @@ class TestRedactCredentials:
 
         # Derived worst case: the narrowest `sub` a caller could pass, with every
         # float claim at its shortest repr (an exactly-integral `time.time()`).
-        claims = json.loads(
-            base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
-        )
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         # `gen` is normalised alongside `sub` because it mirrors the process-global
         # `_REVOCATION_GEN`, which is LOADED FROM DISK at import. Left ambient, the
         # derived floor would depend on how many times this machine has revoked:
@@ -2497,6 +2493,298 @@ class TestIsSensitiveBashCommand:
 
     def test_safe_command(self) -> None:
         assert is_sensitive_bash_command("cat ~/readme.md") is None
+
+    # ── Shell normalization: variable indirection and `cd` targets ──
+
+    def test_variable_assigned_in_the_command_is_resolved(self) -> None:
+        """A path reached through a variable the command itself assigned.
+
+        The normalizer expands `$HOME`, so `V=$HOME` resolves, but `$V` used as
+        a path prefix stayed literal and the path never matched. The assignment
+        is in the command text, so it can be substituted.
+        """
+        assert is_sensitive_bash_command("V=$HOME; awk 1 $V/.aws/credentials") is not None
+        assert is_sensitive_bash_command("V=$HOME; cat $V/.ssh/id_rsa") is not None
+        assert is_sensitive_bash_command("V=${HOME}; xxd $V/.ssh/id_rsa") is not None
+        # The variable can carry part of the sensitive path itself.
+        assert is_sensitive_bash_command("D=$HOME/.aws; cat $D/credentials") is not None
+
+    def test_unresolvable_variable_over_a_sensitive_tail_is_blocked(self) -> None:
+        """A variable assigned outside the command still cannot hide the tail.
+
+        The value lives in the shell, not the command text, so it cannot be
+        resolved. Fail closed only when the literal remainder is itself
+        sensitive — see the benign counterparts below.
+        """
+        assert is_sensitive_bash_command("awk 1 $V/.aws/credentials") is not None
+        assert is_sensitive_bash_command("cat $SOMEVAR/.ssh/id_rsa") is not None
+
+    def test_variable_over_a_benign_tail_is_allowed(self) -> None:
+        """An unresolved variable is not itself a reason to block."""
+        assert is_sensitive_bash_command("B=$HOME/build; cat $B/out.txt") is None
+        assert is_sensitive_bash_command("cat $PWD/out.txt") is None
+        assert is_sensitive_bash_command("cat $BUILD_DIR/report.log") is None
+
+    def test_bare_filename_after_cd_is_resolved_against_the_cd_target(self) -> None:
+        """`cd` + a bare filename read the same file as the absolute form.
+
+        A bare filename has no path separator, so it is not path-like and was
+        never checked; had it been, it would have resolved against the
+        gateway's working directory rather than the directory the command
+        moved to.
+        """
+        assert is_sensitive_bash_command("cd ~/.kiro/crew && cat token_signing.key") is not None
+        assert is_sensitive_bash_command("cd ~/.kiro/crew; cat token_signing.key") is not None
+        assert is_sensitive_bash_command("cd ~/.aws && cat credentials") is not None
+        assert is_sensitive_bash_command("cd ~/.ssh && cat id_rsa") is not None
+        # The `cd` target may itself arrive through $HOME.
+        assert (
+            is_sensitive_bash_command("cd $HOME/.kiro/crew && awk 1 token_signing.key") is not None
+        )
+
+    def test_cd_into_a_benign_directory_is_allowed(self) -> None:
+        """Tracking the `cd` target must not block ordinary relative reads."""
+        assert is_sensitive_bash_command("cd /tmp && cat notes.txt") is None
+        assert is_sensitive_bash_command("cd ~/project && cat config.json") is None
+        assert is_sensitive_bash_command("cd src && grep -rn pattern .") is None
+
+    def test_chained_relative_cd_resolves_against_prior_base(self) -> None:
+        """Relative cd targets must join against the prior base_dir, not overwrite."""
+        # cd ~/.kiro && cd crew → base should be ~/.kiro/crew, not bare "crew"
+        assert is_sensitive_bash_command("cd ~/.kiro && cd crew && cat token_signing.key") is not None
+        assert is_sensitive_bash_command("cd ~ && cd .aws && cat credentials") is not None
+        # Absolute cd resets the base entirely
+        assert is_sensitive_bash_command("cd /tmp && cd /home/user/.aws && cat credentials") is not None
+        # Benign chained cd is allowed
+        assert is_sensitive_bash_command("cd ~/project && cd src && cat main.py") is None
+
+    def test_quoted_separator_does_not_suppress_detection(self) -> None:
+        """A separator inside quotes must not shred the command and lose detection."""
+        # The semicolon is inside quotes — not a real shell separator
+        assert is_sensitive_bash_command('cat "a;b" ~/.aws/credentials') is not None
+        assert is_sensitive_bash_command("echo 'x; y' && cat ~/.ssh/id_rsa") is not None
+        # Quoted && inside an argument
+        assert is_sensitive_bash_command('awk "a&&b" ~/.aws/credentials') is not None
+        # A quote that breaks the `~/` adjacency the path regex needs, so only
+        # the quote-aware tokenizer can resolve it.
+        assert is_sensitive_bash_command('cat "a;b" "~"/.aws/credentials') is not None
+        assert is_sensitive_bash_command("awk '{a=1;b=2}' ~/\".aws\"/credentials") is not None
+
+    def test_quoted_separator_does_not_retarget_the_cd_base(self) -> None:
+        """A `cd` inside a quoted argument must not move the tracked directory.
+
+        The shell never leaves the directory it moved to, so neither may the
+        tracked base. Splitting on the quoted `;` would make `cd /tmp'` a
+        segment, and the bare filename would then resolve against `/tmp` and
+        read clean.
+        """
+        assert (
+            is_sensitive_bash_command(
+                "cd ~/.kiro/crew && echo 'x; cd /tmp' && cat token_signing.key"
+            )
+            is not None
+        )
+        assert (
+            is_sensitive_bash_command('cd ~/.aws && echo "a && cd /tmp" && cat credentials')
+            is not None
+        )
+        # The benign counterpart: no sensitive directory was ever entered.
+        assert is_sensitive_bash_command("echo 'x; cd /tmp' && cat notes.txt") is None
+
+    def test_separator_in_a_command_substitution_does_not_retarget_the_cd_base(self) -> None:
+        """A `cd` inside `$(...)` or backticks runs in a subshell.
+
+        It does not move the parent's directory, so its separators must not be
+        read as the parent's either — the same shape as a quoted separator, one
+        level of syntax removed.
+        """
+        assert (
+            is_sensitive_bash_command(
+                "cd ~/.kiro/crew && echo $(true; cd /tmp) && cat token_signing.key"
+            )
+            is not None
+        )
+        assert (
+            is_sensitive_bash_command(
+                "cd ~/.kiro/crew && echo `true; cd /tmp` && cat token_signing.key"
+            )
+            is not None
+        )
+        # An escaped separator is not a separator to a shell either.
+        assert (
+            is_sensitive_bash_command("cd ~/.aws && echo x\\; cd /tmp && cat credentials")
+            is not None
+        )
+
+    def test_assignment_only_counts_as_a_prefix(self) -> None:
+        """`NAME=value` past the command word is an argument, not an assignment.
+
+        A decoy could otherwise overwrite a real value: the shell keeps
+        `V=$HOME` and enters the protected directory, while the tracker had
+        recorded `V=/tmp` from an `echo` argument and resolved the `cd` there.
+        """
+        assert (
+            is_sensitive_bash_command(
+                "V=$HOME; echo V=/tmp; cd $V/.kiro/crew; cat token_signing.key"
+            )
+            is not None
+        )
+        assert (
+            is_sensitive_bash_command("D=$HOME/.aws; printf D=/tmp; cat $D/credentials") is not None
+        )
+        # A genuine leading assignment still resolves.
+        assert is_sensitive_bash_command("V=$HOME cat $V/.aws/credentials") is not None
+        # And an argument that merely looks like one does not deny on its own.
+        assert is_sensitive_bash_command("echo V=/tmp && cat notes.txt") is None
+
+    def test_cd_dash_returns_to_the_previous_directory(self) -> None:
+        """`cd -` goes back, so the tracked base has to go back with it."""
+        assert (
+            is_sensitive_bash_command("cd ~/.kiro/crew; cd /tmp; cd -; cat token_signing.key")
+            is not None
+        )
+        assert (
+            is_sensitive_bash_command("pushd ~/.aws; pushd /tmp; cd -; cat credentials") is not None
+        )
+        # A bare `cd` goes to the home directory.
+        assert is_sensitive_bash_command("cd ~/project; cd; cat .aws/credentials") is not None
+        # Going back to an ordinary directory stays allowed.
+        assert is_sensitive_bash_command("cd /tmp; cd -; cat notes.txt") is None
+
+    def test_subshell_cd_is_scoped_to_the_subshell(self) -> None:
+        """A `cd` inside `( ... )` applies inside it and is dropped on exit.
+
+        Both halves matter. The read inside the subshell must see the base --
+        `(cd` glued into one token matched no `cd` check, so the base was never
+        set and the bare filename read clean. And the base must not outlive the
+        closing paren, or an ordinary read after it would start denying.
+        """
+        assert is_sensitive_bash_command("(cd ~/.kiro/crew && cat token_signing.key)") is not None
+        assert is_sensitive_bash_command("( cd ~/.aws && cat credentials )") is not None
+        assert is_sensitive_bash_command("(cd ~/.ssh; cat id_rsa)") is not None
+        # The move does not escape the subshell.
+        assert is_sensitive_bash_command("( cd ~/project && cat README.md )") is None
+
+    def test_entering_a_sensitive_directory_taints_later_reads(self) -> None:
+        """A `cd` into a credential directory is not walked back by later syntax.
+
+        Positional resolution has to match real bash to be sound, and the grammar
+        is unbounded. The monotone pass asks a question that needs no emulation:
+        the move was seen, so a read after it is denied — whatever syntax follows.
+        """
+        # A `cd` that does not execute at runtime, but the move was still spelled.
+        assert is_sensitive_bash_command("cd ~/.ssh; false && cd /tmp; cat id_rsa") is not None
+        # An assignment prefix is temporary, so the shell keeps the real value.
+        assert (
+            is_sensitive_bash_command("V=$HOME; V=/tmp echo hi; cd $V/.ssh; cat id_rsa") is not None
+        )
+        # Inside a command substitution, in both spellings.
+        assert is_sensitive_bash_command("echo $(cd ~/.aws; cat credentials)") is not None
+        assert is_sensitive_bash_command("echo `cd ~/.aws; cat credentials`") is not None
+        # Through a nested shell, which this gate does not parse into.
+        assert is_sensitive_bash_command("bash -c 'cd ~/.aws; cat credentials'") is not None
+        # `popd` unwinds a stack the tracker does not model.
+        assert (
+            is_sensitive_bash_command("pushd ~/.aws; pushd /tmp; popd; cat credentials") is not None
+        )
+
+    def test_taint_needs_both_a_sensitive_move_and_a_read(self) -> None:
+        """Neither half denies on its own, so ordinary work stays allowed."""
+        # An ordinary directory, read verb present.
+        assert is_sensitive_bash_command("cd /tmp; cd -; cat notes.txt") is None
+        assert is_sensitive_bash_command("cd ~/project && cd src && cat main.py") is None
+        assert is_sensitive_bash_command("cd ~/project && cat README.md") is None
+        # A read whose joined path is sensitive while the `cd` target is not is
+        # caught by the positional pass, not this one — both are needed.
+        assert is_sensitive_bash_command("cd ~ && cat .aws/credentials") is not None
+
+    def test_parameter_expansion_resolves_like_a_plain_reference(self) -> None:
+        """`${V:-default}` and friends name a variable just as `${V}` does.
+
+        Matching only the bare braced form left `cat ${D:-/tmp}/credentials` with
+        no recognized reference at all, so neither the substitution nor the
+        unresolved-variable hypothesis saw it.
+        """
+        assert is_sensitive_bash_command("D=$HOME/.aws; cat ${D:-/tmp}/credentials") is not None
+        assert is_sensitive_bash_command("D=$HOME/.aws; cat ${D:=/tmp}/credentials") is not None
+        assert is_sensitive_bash_command("D=$HOME/.aws; cat ${D#/nope}/credentials") is not None
+        assert is_sensitive_bash_command("D=$HOME/.aws; cat ${D/zz/yy}/credentials") is not None
+        # One level of nesting resolves on the outer name.
+        assert is_sensitive_bash_command("D=$HOME/.aws; cat ${D:-${E}}/credentials") is not None
+        # A variable the command never assigned still fails closed on the tail.
+        assert is_sensitive_bash_command("cat ${SOMEVAR:-/tmp}/.ssh/id_rsa") is not None
+        # As a `cd` target.
+        assert (
+            is_sensitive_bash_command("D=$HOME/.kiro/crew; cd ${D:-/tmp}; cat token_signing.key")
+            is not None
+        )
+        # A benign remainder stays clean under any value.
+        assert is_sensitive_bash_command("B=$HOME/build; cat ${B:-/tmp}/out.txt") is None
+        assert is_sensitive_bash_command("cat ${PWD:-/tmp}/out.txt") is None
+
+    def test_command_substitution_is_an_unresolved_value(self) -> None:
+        """A substitution's value needs the command to run, so fail closed on it.
+
+        Unquoted it also contains spaces, and `shlex` splits on them, so the
+        target used to shred into fragments that matched nothing. It is masked to
+        a single token before tokenization.
+        """
+        assert (
+            is_sensitive_bash_command('cd "$(printf %s ~)/.kiro/crew" && cat token_signing.key')
+            is not None
+        )
+        assert (
+            is_sensitive_bash_command("cd $(printf %s ~)/.aws && cat credentials") is not None
+        )
+        assert is_sensitive_bash_command("cd `printf %s ~`/.ssh && cat id_rsa") is not None
+        assert is_sensitive_bash_command("cat $(printf %s ~)/.aws/credentials") is not None
+        # Through a variable assigned from a substitution.
+        assert (
+            is_sensitive_bash_command("D=$(printf %s ~); cd $D/.kiro/crew && cat token_signing.key")
+            is not None
+        )
+        # A substitution over a benign remainder is not a reason to deny.
+        assert (
+            is_sensitive_bash_command('cd "$(git rev-parse --show-toplevel)" && cat README.md')
+            is None
+        )
+        assert is_sensitive_bash_command("cd $(mktemp -d) && cat notes.txt") is None
+        assert is_sensitive_bash_command("cat $(pwd)/out.txt") is None
+
+    def test_pushd_tracks_directory(self) -> None:
+        """pushd should be treated like cd for directory tracking."""
+        assert is_sensitive_bash_command("pushd ~/.kiro/crew && cat token_signing.key") is not None
+        assert is_sensitive_bash_command("pushd /tmp && cat notes.txt") is None
+
+    def test_home_with_backslash_separators_survives_tokenization(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """`$HOME` must still resolve when the home path holds backslashes.
+
+        `normalize_shell_command` substitutes the home into the command text
+        before `shlex.split(posix=True)`, which reads a backslash as an escape
+        character. A Windows home — `C:\\Users\\<name>` — was therefore
+        tokenized to `C:Users<name>`: separators eaten, the path no longer
+        under the home directory, and so every `$HOME`-spelled credential path
+        resolved clean. This reproduces that shape on any platform, since a
+        backslash is a legal POSIX filename character.
+        """
+        home = tmp_path / "Users\\runneradmin"
+        (home / ".aws").mkdir(parents=True)
+        (home / ".aws" / "credentials").write_text("[default]\n")
+        (home / ".kiro" / "crew").mkdir(parents=True)
+        (home / ".kiro" / "crew" / "token_signing.key").write_text("k\n")
+        monkeypatch.setenv("HOME", str(home))
+
+        assert is_sensitive_bash_command("cat $HOME/.aws/credentials") is not None
+        # Through a variable the command assigns from $HOME.
+        assert is_sensitive_bash_command("D=$HOME/.aws; cat $D/credentials") is not None
+        # As a `cd` target, with the operand a bare filename.
+        assert (
+            is_sensitive_bash_command("cd $HOME/.kiro/crew && awk 1 token_signing.key") is not None
+        )
+        # A benign remainder under the same home stays clean.
+        assert is_sensitive_bash_command("cat $HOME/notes.txt") is None
 
     # ── Symlink-staging (pentest recommendation item 3) ──
 
