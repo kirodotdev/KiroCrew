@@ -191,6 +191,10 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
     "kirocrew.gateway.request.duration": _FAST_BUCKETS_MS,
     "kirocrew.mcp.backend.acquire.duration": _FAST_BUCKETS_MS,
     "kirocrew.skill.lazy_load.duration": _FAST_BUCKETS_MS,
+    # Telegram Bot API round-trips: typically 50-500ms, but a 429 retry_after
+    # wait or a transport timeout reaches seconds -- _FAST_BUCKETS_MS spans
+    # 0.5ms..60s, which covers both without flooring the tail percentiles.
+    "kirocrew.telegram.api.duration": _FAST_BUCKETS_MS,
     "kirocrew.session.startup.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.mcp.lazy_load.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.gateway.boot.duration": _STARTUP_BUCKETS_MS,

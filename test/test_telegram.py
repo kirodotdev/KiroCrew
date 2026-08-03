@@ -24,7 +24,15 @@ from kiro_crew.messaging.renderer import (
     OutputEvent,
 )
 from kiro_crew.messaging.transport import InboundMessage
-from kiro_crew.telegram.client import TELEGRAM_CHUNK_LIMIT, TelegramClient, TelegramInbound
+from kiro_crew.telegram.client import (
+    TELEGRAM_CHUNK_LIMIT,
+    TELEGRAM_MAX_TEXT,
+    TelegramClient,
+    TelegramInbound,
+    _cap_text,
+    _record_api_duration,
+    truncate_html_safe,
+)
 from kiro_crew.telegram.commands import (
     ConversationState,
     parse_command,
@@ -34,8 +42,11 @@ from kiro_crew.telegram.renderer import (
     TelegramApprovalDecider,
     TelegramRenderer,
     _extract_options,
+    _may_exceed_rendered,
     _md_to_telegram_html,
+    _rendered_len,
     _split_markdown,
+    _split_markdown_bounded,
     _split_text,
     _strip_steering,
     build_inline_keyboard,
@@ -449,6 +460,336 @@ class TestSplitText:
         assert any("<pre>" in h and "&lt;" in h for h in htmls)  # wrapped + escaped
 
 
+_TAG_SCAN_RE = __import__("re").compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)[^>]*>")
+
+
+def _html_is_balanced(html_text: str) -> bool:
+    """True when every opened tag in ``html_text`` is closed.
+
+    Mirrors what Telegram's parser rejects: an unmatched start tag produces
+    "Can't find end tag corresponding to start tag ...".
+    """
+    stack: list[str] = []
+    for m in _TAG_SCAN_RE.finditer(html_text):
+        closing, name = m.group(1), m.group(2).lower()
+        if closing:
+            for i in range(len(stack) - 1, -1, -1):
+                if stack[i] == name:
+                    del stack[i]
+                    break
+        else:
+            stack.append(name)
+    return not stack
+
+
+class TestTruncateHtmlSafe:
+    """Tag-safe truncation of rendered Telegram HTML.
+
+    The production failure this guards: a blind ``text[:4096]`` on rendered HTML
+    cut between ``<code>`` and ``</code>``, so Telegram rejected the whole edit
+    with 400 "Can't find end tag corresponding to start tag \"code\"".
+    """
+
+    def test_short_text_unchanged(self) -> None:
+        assert truncate_html_safe("<b>hi</b>", 100) == "<b>hi</b>"
+
+    def test_closes_open_tag_left_by_the_cut(self) -> None:
+        text = "<code>" + "x" * 200 + "</code>"
+        out = truncate_html_safe(text, 60)
+        assert len(out) <= 60
+        assert out.endswith("</code>")
+        assert out.count("<code>") == out.count("</code>")
+
+    def test_never_cuts_inside_a_tag(self) -> None:
+        # Force the naive cut to land in the middle of the "<code>" open tag.
+        text = "abcd<code>zzzz</code>"
+        naive = text[:7]
+        assert naive == "abcd<co"  # what the old blind slice produced
+        out = truncate_html_safe(text, 7)
+        assert "<co" not in out.replace("<code>", "")
+        assert out == "abcd"
+
+    def test_never_cuts_inside_an_entity(self) -> None:
+        text = "ab&amp;cd" * 20
+        out = truncate_html_safe(text, 4)
+        assert not out.endswith("&")
+        assert out == "ab"
+
+    def test_nested_tags_closed_innermost_first(self) -> None:
+        text = "<blockquote><b>" + "y" * 200 + "</b></blockquote>"
+        out = truncate_html_safe(text, 80)
+        assert len(out) <= 80
+        assert out.endswith("</b></blockquote>")
+
+    def test_result_always_within_limit(self) -> None:
+        text = "<pre>" + "&lt;" * 500 + "</pre>"
+        for limit in (16, 64, 256, 1024):
+            out = truncate_html_safe(text, limit)
+            assert len(out) <= limit, f"limit={limit} produced {len(out)}"
+
+    def test_never_emits_unclosed_tags_when_closers_do_not_fit(self) -> None:
+        # Regression (HIGH): a fixed 3-iteration reserve loop bailed to a bare
+        # prefix here, leaving <b> and <i> unclosed -- the exact
+        # "Can't find end tag" 400 this helper exists to prevent. A 4th pass
+        # would have converged, so the budget, not the algorithm, was the bug.
+        text = "<b><i><u><s><code>WXYZ</code></s></u></i></b>"
+        out = truncate_html_safe(text, 37)
+        assert len(out) <= 37
+        assert _html_is_balanced(out), f"unclosed tags in {out!r}"
+        assert out == "<b><i><u><s></s></u></i></b>"
+
+    def test_entity_backoff_cannot_strand_the_cut_inside_a_tag(self) -> None:
+        # Regression: backing out of a raw `&` in an attribute value used to drag
+        # the cut into the middle of a COMPLETE tag, emitting `<a href="u?x=1`.
+        text = '<a href="u?x=1&y=2">Z'
+        out = truncate_html_safe(text, 20)
+        assert len(out) <= 20
+        assert _html_is_balanced(out)
+        assert "<a" not in out or out.count("<a") == out.count(">")
+
+    def test_prefers_a_shorter_closed_prefix_over_collapsing_to_empty(self) -> None:
+        # Quality: the old reserve heuristic overshot to "" even when a closed
+        # prefix fit.
+        assert truncate_html_safe("<b><i>DEEP</i></b>", 12) == "<b></b>"
+
+    def test_invariants_hold_across_a_balanced_corpus(self) -> None:
+        import re as _re
+
+        closers_only = _re.compile(r"^(?:</[a-zA-Z][a-zA-Z0-9-]*>)*$")
+
+        def is_prefix_plus_closers(doc: str, out: str) -> bool:
+            # I3 needs SOME valid split, not the greedy longest common prefix:
+            # a closer's leading "<" can coincide with the doc's next "<".
+            return any(
+                out[:k] == doc[:k] and closers_only.match(out[k:]) for k in range(len(out), -1, -1)
+            )
+
+        corpus = [
+            "<b><i><u><s><code>WXYZ</code></s></u></i></b>",
+            "<blockquote><b>x</b></blockquote>",
+            "<pre>" + "&lt;" * 60 + "</pre>",
+            '<a href="https://e.com/a?b=1&amp;c=2">link</a>text',
+            "<b>" * 40 + "X" + "</b>" * 40,
+            "plain text only",
+            "<blockquote>q</blockquote>" * 20,
+        ]
+        for doc in corpus:
+            assert _html_is_balanced(doc), "fixture must itself be balanced"
+            for limit in range(0, len(doc) + 3):
+                out = truncate_html_safe(doc, limit)
+                assert len(out) <= limit, f"I1: {doc[:30]!r} limit={limit}"
+                assert _html_is_balanced(out), f"I2: {doc[:30]!r} limit={limit} -> {out!r}"
+                assert is_prefix_plus_closers(doc, out), f"I3: {doc[:30]!r} limit={limit}"
+
+
+class TestApiDurationMetric:
+    """The histogram must measure what it claims: caller block time on outbound
+    calls only. All three defects below shipped in the first cut of this metric.
+    """
+
+    def _record_calls(self, monkeypatch: Any) -> list[tuple[str, float, dict]]:
+        seen: list[tuple[str, float, dict]] = []
+
+        class _Rec:
+            def histogram(self, name: str, value: float, *, unit: str = "ms", attrs=None, **kw):
+                seen.append((name, value, dict(attrs or {})))
+
+        # Patch the name in the CLIENT's namespace: get_recorder is imported at
+        # module scope there, so patching metrics.provider would not be seen.
+        monkeypatch.setattr("kiro_crew.telegram.client.get_recorder", lambda: _Rec(), raising=True)
+        return seen
+
+    def test_long_poll_is_not_recorded(self, monkeypatch: Any) -> None:
+        # getUpdates blocks ~30s by design and runs back-to-back forever. The
+        # Telemetry surface does not split on `method`, so recording it buried
+        # the 50-500ms outbound distribution under a permanent 30000ms mode.
+        seen = self._record_calls(monkeypatch)
+        _record_api_duration("editMessageText", 120.0, ok=True, err_code=None)
+        assert [m for _, _, a in seen for m in [a["method"]]] == ["editMessageText"]
+        assert all(a["method"] != "getUpdates" for _, _, a in seen)
+
+    def test_timeout_gets_its_own_outcome(self, monkeypatch: Any) -> None:
+        # Transport failures used to record NOTHING, hiding the longest stalls.
+        seen = self._record_calls(monkeypatch)
+        _record_api_duration("editMessageText", 30000.0, ok=False, err_code=None, timed_out=True)
+        assert seen and seen[-1][2]["outcome"] == "timeout"
+
+    def test_outcome_mapping_is_low_cardinality(self, monkeypatch: Any) -> None:
+        seen = self._record_calls(monkeypatch)
+        _record_api_duration("sendMessage", 1.0, ok=True, err_code=None)
+        _record_api_duration("sendMessage", 1.0, ok=False, err_code=400)
+        _record_api_duration("sendMessage", 1.0, ok=False, err_code=429)
+        _record_api_duration("sendMessage", 1.0, ok=False, err_code=None, timed_out=True)
+        assert [a["outcome"] for _, _, a in seen] == [
+            "ok",
+            "error",
+            "rate_limited",
+            "timeout",
+        ]
+        # chat_id / description must never become attributes (unbounded values).
+        assert all(set(a) == {"method", "outcome"} for _, _, a in seen)
+
+
+class TestCapText:
+    def test_plaintext_is_plain_sliced(self) -> None:
+        text = "z" * (TELEGRAM_MAX_TEXT + 50)
+        assert _cap_text(text, None) == text[:TELEGRAM_MAX_TEXT]
+
+    def test_html_is_tag_safe_capped(self) -> None:
+        # Oversize HTML whose 4096 boundary falls inside a code span.
+        text = "<code>" + "q" * (TELEGRAM_MAX_TEXT + 100) + "</code>"
+        out = _cap_text(text, "HTML")
+        assert len(out) <= TELEGRAM_MAX_TEXT
+        assert out.count("<code>") == out.count("</code>")
+
+    def test_under_limit_untouched_for_both_modes(self) -> None:
+        assert _cap_text("<b>ok</b>", "HTML") == "<b>ok</b>"
+        assert _cap_text("ok", None) == "ok"
+
+
+class TestRenderedBudget:
+    """Splitting must budget the RENDERED HTML, not the pre-escape source.
+
+    ``html.escape`` inflates ``&`` to ``&amp;`` (+4) and ``<`` to ``&lt;`` (+3),
+    so a chunk that fits a source budget can render past Telegram's hard cap --
+    which is what produced the oversize HTML in the first place.
+    """
+
+    def test_gate_says_plain_text_provably_fits(self) -> None:
+        assert _may_exceed_rendered("just some plain prose", 4000) is False
+
+    def test_gate_flags_escape_heavy_text(self) -> None:
+        # Each "<" costs +3 on render; 900 of them blow a 1000-char cap.
+        assert _may_exceed_rendered("<" * 900, 1000) is True
+
+    def test_gate_flags_link_heavy_text(self) -> None:
+        links = "[t](https://example.com/x)" * 40
+        assert _may_exceed_rendered(links, len(links) + 10) is True
+
+    def test_gate_refuses_to_guess_for_tag_producing_markup(self) -> None:
+        # Regression: the gate used to model only html.escape + links, so these
+        # shapes returned False ("provably fits") while rendering far past the
+        # cap -- oversize HTML then reached the client and lost its tail.
+        # Measured source -> rendered at cap 4000: blockquote 1000->5600,
+        # heading 2000->4500, italic 3600->8100, bold 3720->5580,
+        # inline code 2800->10500.
+        cap = 4000
+        shapes = {
+            "blockquote": "> q\n\n" * 200,
+            "heading": "# x\n" * 500,
+            "italic": "*x* " * 900,
+            "bold": "**x** " * 620,
+            "inline_code": "`x` " * 700,
+            "link": "[t](https://e.com/p) " * 180,
+        }
+        for name, text in shapes.items():
+            assert len(text) < cap, f"{name} fixture must be under the cap"
+            assert (
+                _may_exceed_rendered(text, cap) is True
+            ), f"{name}: gate returned False but renders to {_rendered_len(text)}"
+
+    def test_gate_false_always_means_it_really_fits(self) -> None:
+        # The load-bearing invariant: a False lets the caller SKIP the real
+        # render, so it must never be wrong. Over-returning True is safe.
+        import random
+
+        rng = random.Random(99)
+        toks = [
+            "> q\n\n",
+            "# h\n",
+            "text ",
+            "a ",
+            "**b** ",
+            "`c` ",
+            "[l](https://e/x) ",
+            "&",
+            "<x> ",
+            "'q' ",
+            '"d" ',
+            "_i_ ",
+            "- b\n",
+        ]
+        cap = 4000
+        for _ in range(600):
+            text = "".join(rng.choice(toks) for _ in range(rng.randint(1, 700)))
+            if len(text) >= cap:
+                text = text[: cap - 1]
+            if _may_exceed_rendered(text, cap) is False:
+                assert _rendered_len(text) <= cap, (
+                    f"gate said fits but rendered {_rendered_len(text)} > {cap}: " f"{text[:80]!r}"
+                )
+
+    def test_gate_still_short_circuits_plain_prose(self) -> None:
+        # The hot-path shortcut must survive the fix for genuinely plain text.
+        assert _may_exceed_rendered("just some plain prose with no markup", 4000) is False
+
+    def test_split_preserves_code_indentation_across_chunks(self) -> None:
+        # Regression: the continuation used a bare lstrip(), which ate the
+        # leading indentation of the first line of every continuation chunk and
+        # silently re-indented split code blocks. Render-aware splitting fires on
+        # more shapes, making that pre-existing corruption much easier to hit.
+        body = "\n".join(f'    if a["k{i}"] < b & c:   # <indented>' for i in range(120))
+        src = f"```python\n{body}\n```"
+        chunks = _split_markdown_bounded(src, 800)
+        assert len(chunks) > 1
+        for ch in chunks[1:]:
+            code_lines = [ln for ln in ch.split("\n") if ln.strip() and not ln.startswith("```")]
+            assert code_lines, "continuation chunk should carry code"
+            assert code_lines[0].startswith(
+                "    "
+            ), f"indentation lost on continuation: {code_lines[0][:60]!r}"
+
+    def test_shrinks_to_the_floor_instead_of_giving_up_early(self) -> None:
+        # Regression: a fixed pass budget returned still-oversize chunks, which
+        # the client backstop then truncated -- silently dropping content. Only
+        # the _MIN_SPLIT_LIMIT floor may yield oversize chunks.
+        cap = 4000
+        for src in (
+            "&" * 5000,
+            "```\n" + "&" * 3000 + "\n```",
+            "\n".join("q" * 40 + "&" for _ in range(400)),
+        ):
+            chunks = _split_markdown_bounded(src, cap)
+            worst = max(_rendered_len(c) for c in chunks)
+            assert worst <= cap, f"still oversize at {worst} for {src[:24]!r}"
+
+    def test_terminates_when_content_cannot_fit_the_cap(self) -> None:
+        # cap below what any _MIN_SPLIT_LIMIT-sized chunk can render to: must
+        # return (worst-effort) rather than loop forever.
+        chunks = _split_markdown_bounded("&" * 5000, 500)
+        assert chunks and max(_rendered_len(c) for c in chunks) > 500
+
+    def test_bounded_split_keeps_every_chunk_renderable(self) -> None:
+        # Escape-dense code: source-only budgeting overflows the rendered cap.
+        code = "\n".join(f'a["k{i}"] = b<c> & d>e "f" {i}' for i in range(400))
+        full = f"here:\n\n```python\n{code}\n```\n\ndone"
+        cap = 1000
+        chunks = _split_markdown_bounded(full, cap)
+        assert len(chunks) > 1
+        for ch in chunks:
+            assert _rendered_len(ch) <= cap, f"chunk renders to {_rendered_len(ch)} > cap {cap}"
+
+    def test_old_source_only_split_would_have_overflowed(self) -> None:
+        # Mutation-style guard: proves the new path is doing real work by
+        # showing the previous strategy (source budget only) overflows here.
+        code = "\n".join(f'x <{i}> & "{i}" & y' for i in range(300))
+        full = f"```\n{code}\n```"
+        cap = 1200
+        source_only = _split_markdown(full, cap)
+        assert any(
+            _rendered_len(c) > cap for c in source_only
+        ), "fixture no longer reproduces the inflation bug"
+        bounded = _split_markdown_bounded(full, cap)
+        assert all(_rendered_len(c) <= cap for c in bounded)
+
+    def test_no_content_lost_by_bounded_split(self) -> None:
+        text = "\n\n".join(f"para {i} with & and <tag>" for i in range(60))
+        chunks = _split_markdown_bounded(text, 800)
+        joined = " ".join(chunks)
+        for i in range(60):
+            assert f"para {i} " in joined or f"para {i}\n" in joined
+
+
 class TestInlineKeyboard:
     def test_none_when_no_options(self) -> None:
         assert build_inline_keyboard([]) is None
@@ -600,6 +941,41 @@ class TestRenderer:
 
         asyncio.run(_go())
         return cli
+
+    def test_rotation_keeps_an_open_fence_open_in_the_retained_tail(self) -> None:
+        # Regression: mid-stream the source fence is still open (the model has
+        # not emitted its closing ``` yet). _split_markdown balances each chunk
+        # with a synthetic closer, which is right for sealed chunks but wrong for
+        # the tail we keep streaming into: later tokens would land after that
+        # closer, render outside <pre>, and the real closing fence would show up
+        # literally.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+        open_src = "intro\n\n```python\n" + "\n".join(
+            f'    x{i} = a["k{i}"] & b<c>' for i in range(150)
+        )
+        assert open_src.count("```") % 2 == 1, "fixture must leave the fence open"
+        r._buf = [open_src]
+        asyncio.run(r._rotate_on_length())
+        tail = "".join(r._buf)
+        assert not tail.rstrip().endswith(
+            "```"
+        ), f"synthetic closer retained in streaming tail: {tail[-40:]!r}"
+
+    def test_rotation_preserves_a_real_closing_fence(self) -> None:
+        # Control for the above: when the source fence IS closed, the tail must
+        # keep its genuine closer.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+        closed_src = (
+            "intro\n\n```python\n"
+            + "\n".join(f'    y{i} = a["k{i}"] & b<c>' for i in range(150))
+            + "\n```"
+        )
+        assert closed_src.count("```") % 2 == 0
+        r._buf = [closed_src]
+        asyncio.run(r._rotate_on_length())
+        assert "".join(r._buf).rstrip().endswith("```")
 
     def test_streaming_strips_options_and_renders_keyboard(self) -> None:
         cli = self._drive(
