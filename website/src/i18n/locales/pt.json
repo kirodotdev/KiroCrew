@@ -3477,6 +3477,15 @@
       "message_failed_to_render": "Falha ao renderizar a mensagem",
       "view_raw": "ver dados brutos"
     },
+    "micSourceMenu": {
+      "applies_next_recording": "Será aplicado na próxima gravação.",
+      "change_input_source": "Alterar fonte de entrada",
+      "input_source": "Fonte de entrada",
+      "saved_device_unavailable": "O microfone salvo está indisponível — usando o padrão do sistema.",
+      "switching_drops_audio": "Trocar durante a gravação descarta cerca de 0,2 s de áudio.",
+      "system_default": "Padrão do sistema",
+      "unnamed_input": "Entrada sem nome"
+    },
     "migrationBanner": {
       "install_app_from_apps": "Instale \"{{app}}\" em Apps antes da próxima atualização do KiroCrew para continuar usando.",
       "install_from_apps": "Instalar pelo Apps",

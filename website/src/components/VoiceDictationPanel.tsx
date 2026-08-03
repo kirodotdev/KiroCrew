@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Mic } from 'lucide-react'
 import Strands, { strandsSupported } from './Strands'
 import type { AudioSample } from '../hooks/mic'
+import MicSourceMenu from './MicSourceMenu'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -42,6 +42,10 @@ interface Props {
   partial?: string
   /** Active capture device label. */
   deviceLabel?: string
+  /** Change the capture device. Receives a deviceId, or '' for system default. */
+  onSelectDevice: (deviceId: string) => void
+  /** True when a switch applies immediately rather than to the next recording. */
+  deviceSwitchIsLive?: boolean
 }
 
 /**
@@ -51,7 +55,7 @@ interface Props {
  * backend is solid, the in-flight partial hypothesis is muted. Both come from
  * the composer's own value, so what is shown here is exactly what will be sent.
  */
-export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel }: Props) {
+export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, onSelectDevice, deviceSwitchIsLive }: Props) {
   // Split committed vs partial without coupling to STT internals: the partial
   // is appended to the composer value, so it is the suffix — but only trust
   // that when it actually matches (the user may have typed since).
@@ -71,13 +75,24 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
             <span className="relative inline-flex h-2 w-2 rounded-full bg-danger" />
           </span>
           <span aria-live="polite">{i18nT('components.voiceDictationPanel.listening')}</span>
+          {/* The overlay is `pointer-events-none` so the shader stays visible and
+              un-clickable; the picker is the one interactive child, so it opts
+              itself back in. Still gated on a known label, preserving this
+              panel's deliberate difference from VoiceStatusBar (an extra row at
+              17px over a live shader is noise, and the panel's job is the
+              transcript) — by the time the panel is up the label has resolved,
+              so the picker is reachable in practice. `max-w-[40%]` keeps a long
+              device name from pushing the keyboard hint out of the row. */}
           {deviceLabel && (
-            <>
-              <Mic size={11} className="shrink-0 opacity-70" aria-hidden="true" />
-              <span className="text-muted font-normal truncate max-w-[40%]" title={deviceLabel}>
-                {deviceLabel}
-              </span>
-            </>
+            <span className="pointer-events-auto max-w-[40%] min-w-0 flex items-center">
+              <MicSourceMenu
+                deviceLabel={deviceLabel}
+                onSelect={onSelectDevice}
+                recording
+                liveSwitch={deviceSwitchIsLive}
+                triggerClass="text-muted font-normal hover:text-text"
+              />
+            </span>
           )}
           <span className="ml-auto text-muted font-normal font-mono text-[11px]">
             {i18nT('components.voiceDictationPanel.esc_to_stop_enter_to_send')}

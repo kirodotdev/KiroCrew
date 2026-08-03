@@ -32,6 +32,9 @@ export function setPreferredMicId(id: string): void {
  * getUserMedia audio constraints honoring the saved device. Uses `ideal`
  * (not `exact`) so an unplugged/removed device falls back to the default
  * instead of throwing OverconstrainedError.
+ *
+ * Because the fallback is SILENT, never infer the live device from what was
+ * requested — read it off the track with {@link activeDeviceId}.
  */
 export function micAudioConstraints(): MediaStreamConstraints {
   const id = getPreferredMicId()
@@ -70,6 +73,35 @@ function isPermissionDenial(e: unknown): boolean {
  */
 export function reportIfMicDenied(e: unknown): void {
   if (isPermissionDenial(e)) reportMicDenied()
+}
+
+/**
+ * The deviceId a live stream is ACTUALLY capturing from, or `''` when unknown.
+ *
+ * This is the only trustworthy answer to "which mic am I recording?": the
+ * `ideal` constraint above degrades to the default device without raising, so a
+ * stream acquired while asking for device B may well be on device A. Comparing
+ * this against {@link getPreferredMicId} is what detects both a stale saved id
+ * and a pre-warmed stream that predates the user's choice.
+ */
+export function activeDeviceId(stream: MediaStream | null | undefined): string {
+  const track = stream?.getAudioTracks()[0]
+  if (!track) return ''
+  try {
+    return track.getSettings().deviceId || ''
+  } catch {
+    return ''
+  }
+}
+
+/** True when *stream* is live but not capturing from the user's saved choice. */
+export function isDeviceStale(stream: MediaStream | null | undefined): boolean {
+  const want = getPreferredMicId()
+  if (!want) return false // "system default" is whatever the OS says right now
+  const got = activeDeviceId(stream)
+  // An unknown id (permission-scoped redaction) is not evidence of a mismatch;
+  // treating it as stale would re-acquire the mic on every check.
+  return !!got && got !== want
 }
 
 /** Map a getUserMedia rejection to a short, human-readable message. */

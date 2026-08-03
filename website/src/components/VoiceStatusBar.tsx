@@ -1,4 +1,6 @@
-import { Mic, AlertTriangle, X } from 'lucide-react'
+import { AlertTriangle, X } from 'lucide-react'
+
+import MicSourceMenu from './MicSourceMenu'
 
 import { i18nT } from '../i18n/t'
 interface Props {
@@ -12,6 +14,10 @@ interface Props {
   error?: string | null
   /** Dismiss the error. */
   onDismissError?: () => void
+  /** Change the capture device. Receives a deviceId, or '' for system default. */
+  onSelectDevice: (deviceId: string) => void
+  /** True when a switch applies immediately rather than to the next recording. */
+  deviceSwitchIsLive?: boolean
 }
 
 /**
@@ -20,7 +26,7 @@ interface Props {
  * dot + input-level meter + active microphone name) while capturing. Renders
  * nothing when idle and error-free.
  */
-export default function VoiceStatusBar({ recording, level, deviceLabel, error, onDismissError }: Props) {
+export default function VoiceStatusBar({ recording, level, deviceLabel, error, onDismissError, onSelectDevice, deviceSwitchIsLive }: Props) {
   if (error) {
     return (
       <div
@@ -67,10 +73,13 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, error, o
           style={{ width: `${pct}%` }}
         />
       </span>
-      <Mic size={12} className="shrink-0 text-danger opacity-70" />
-      <span className="flex-1 min-w-0 truncate text-danger opacity-80" title={deviceLabel || undefined}>
-        {deviceLabel || i18nT('components.voiceStatusBar.default_microphone')}
-      </span>
+      <MicSourceMenu
+        deviceLabel={deviceLabel}
+        onSelect={onSelectDevice}
+        recording
+        liveSwitch={deviceSwitchIsLive}
+        triggerClass="text-danger opacity-80 hover:opacity-100"
+      />
     </div>
   )
 }

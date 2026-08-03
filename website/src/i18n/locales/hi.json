@@ -3433,6 +3433,15 @@
       "message_failed_to_render": "संदेश रेंडर नहीं हो सका",
       "view_raw": "रॉ देखें"
     },
+    "micSourceMenu": {
+      "applies_next_recording": "अगली रिकॉर्डिंग पर लागू होगा।",
+      "change_input_source": "इनपुट स्रोत बदलें",
+      "input_source": "इनपुट स्रोत",
+      "saved_device_unavailable": "सहेजा गया माइक्रोफ़ोन अनुपलब्ध है — सिस्टम डिफ़ॉल्ट का उपयोग हो रहा है।",
+      "switching_drops_audio": "रिकॉर्डिंग के दौरान बदलने से लगभग 0.2 सेकंड ऑडियो छूट जाता है।",
+      "system_default": "सिस्टम डिफ़ॉल्ट",
+      "unnamed_input": "अनामित इनपुट"
+    },
     "migrationBanner": {
       "install_app_from_apps": "इंस्टॉल करें \"{{app}}\" को Apps से, अगले KiroCrew अपडेट से पहले, ताकि इसका उपयोग जारी रह सके।",
       "install_from_apps": "Apps से इंस्टॉल करें",

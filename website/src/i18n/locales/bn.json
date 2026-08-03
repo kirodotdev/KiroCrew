@@ -3433,6 +3433,15 @@
       "message_failed_to_render": "মেসেজ রেন্ডার করা যায়নি",
       "view_raw": "raw দেখো"
     },
+    "micSourceMenu": {
+      "applies_next_recording": "পরবর্তী রেকর্ডিংয়ে প্রযোজ্য হবে।",
+      "change_input_source": "ইনপুট সোর্স পরিবর্তন করুন",
+      "input_source": "ইনপুট সোর্স",
+      "saved_device_unavailable": "সংরক্ষিত মাইক্রোফোন অনুপলব্ধ — সিস্টেম ডিফল্ট ব্যবহার করা হচ্ছে।",
+      "switching_drops_audio": "রেকর্ডিং চলাকালীন পরিবর্তন করলে প্রায় 0.2 সেকেন্ড অডিও বাদ যায়।",
+      "system_default": "সিস্টেম ডিফল্ট",
+      "unnamed_input": "নামবিহীন ইনপুট"
+    },
     "migrationBanner": {
       "install_app_from_apps": "ইনস্টল করুন \"{{app}}\" — Apps থেকে, পরবর্তী KiroCrew আপডেটের আগে, যাতে এটি ব্যবহার করা চালিয়ে যেতে পারেন।",
       "install_from_apps": "Apps থেকে ইনস্টল করুন",

@@ -3477,6 +3477,15 @@
       "message_failed_to_render": "Impossibile visualizzare il messaggio",
       "view_raw": "mostra grezzo"
     },
+    "micSourceMenu": {
+      "applies_next_recording": "Sarà applicato alla prossima registrazione.",
+      "change_input_source": "Cambia sorgente di ingresso",
+      "input_source": "Sorgente di ingresso",
+      "saved_device_unavailable": "Il microfono salvato non è disponibile: verrà usato quello predefinito di sistema.",
+      "switching_drops_audio": "Cambiare durante la registrazione scarta circa 0,2 s di audio.",
+      "system_default": "Predefinito di sistema",
+      "unnamed_input": "Ingresso senza nome"
+    },
     "migrationBanner": {
       "install_app_from_apps": "Installa \"{{app}}\" da App prima del prossimo aggiornamento di KiroCrew per continuare a usarla.",
       "install_from_apps": "Installa da App",

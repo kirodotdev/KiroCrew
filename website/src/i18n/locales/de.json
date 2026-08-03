@@ -3433,6 +3433,15 @@
       "message_failed_to_render": "Nachricht konnte nicht gerendert werden",
       "view_raw": "Rohdaten anzeigen"
     },
+    "micSourceMenu": {
+      "applies_next_recording": "Gilt für die nächste Aufnahme.",
+      "change_input_source": "Eingangsquelle ändern",
+      "input_source": "Eingangsquelle",
+      "saved_device_unavailable": "Das gespeicherte Mikrofon ist nicht verfügbar — der Systemstandard wird verwendet.",
+      "switching_drops_audio": "Ein Wechsel während der Aufnahme verwirft etwa 0,2 s Audio.",
+      "system_default": "Systemstandard",
+      "unnamed_input": "Unbenanntes Eingabegerät"
+    },
     "migrationBanner": {
       "install_app_from_apps": "Installieren „{{app}}“ aus Apps, bevor das nächste KiroCrew-Update erscheint, um sie weiter zu nutzen.",
       "install_from_apps": "Aus Apps installieren",

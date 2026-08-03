@@ -1326,6 +1326,15 @@
       "eyebrow": "Privacy",
       "subtitle": "The five anonymous fields Kiro Crew sends, and how to turn them off.",
       "title": "Privacy"
+    },
+    "micSourceMenu": {
+      "applies_next_recording": "Applies to your next recording.",
+      "change_input_source": "Change input source",
+      "input_source": "Input source",
+      "saved_device_unavailable": "Your saved microphone is unavailable — using the system default.",
+      "switching_drops_audio": "Switching while recording drops about 0.2s of audio.",
+      "system_default": "System default",
+      "unnamed_input": "Unnamed input"
     }
   },
   "hooks": {

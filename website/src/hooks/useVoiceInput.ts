@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { api } from '../api/client'
 import { streamingSupported, useStreamingStt } from './useStreamingStt'
-import { micAudioConstraints, humanizeMicError, createLevelMeter, createAudioSample } from './mic'
+import { micAudioConstraints, humanizeMicError, createLevelMeter, createAudioSample, getPreferredMicId, setPreferredMicId } from './mic'
 import { i18nT } from '../i18n/t'
 
 function pickMimeType(): string {
@@ -66,6 +66,10 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
   // (which Whisper otherwise hallucinates into a canned phrase like "Thank you.").
   const warmRef = useRef<MediaStream | null>(null)
   const warmPromiseRef = useRef<Promise<MediaStream> | null>(null)
+  // The saved preference AS IT WAS when `warmRef` was acquired. Comparing this
+  // against the current preference is what detects "this stream predates the user's
+  // choice" without mistaking an unavoidable device fallback for staleness.
+  const warmWantRef = useRef<string | null>(null)
   const warmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clearError = useCallback(() => setError(null), [])
 
@@ -96,7 +100,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
   // Destructure individual members so downstream useCallback deps track
   // stable references (start/stop/recording) instead of the hook's
   // always-new return object literal, preventing memoization churn.
-  const { recording: streamRecording, start: streamStart, stop: streamStop } = useStreamingStt({
+  const { recording: streamRecording, start: streamStart, stop: streamStop, switchDevice: streamSwitchDevice } = useStreamingStt({
     onPartial: streamOnPartial,
     onFinal: streamOnFinal,
     onError: setError,
@@ -140,8 +144,28 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
   // start() reuses the same promise the press already kicked off.
   const acquireWarm = useCallback(async (): Promise<MediaStream> => {
     const live = warmRef.current
-    if (live && live.getAudioTracks()[0]?.readyState === 'live') return live
+    if (live && live.getAudioTracks()[0]?.readyState === 'live') {
+      // A pre-warmed stream is bound to the device it was acquired with. If the
+      // user changed their input since the press, reusing it records from the OLD
+      // mic — the setting appears to have no effect until the WARM_IDLE_MS timer
+      // happens to drop the stream.
+      //
+      // The test is "was this acquired under a DIFFERENT preference", not "is the
+      // track on the preferred device". Those differ when the `ideal` constraint
+      // silently fell back because the chosen mic was busy: the track is then
+      // permanently not-the-preference, so a track-based test would discard a
+      // working stream and re-acquire on EVERY press, getting the same fallback
+      // device back each time. Re-acquiring cannot fix a busy device; the menu
+      // already surfaces it (`saved_device_unavailable`, and the label reads the
+      // live track), and re-picking the entry is the user's explicit retry.
+      if (warmWantRef.current === getPreferredMicId()) return live
+      live.getTracks().forEach(t => t.stop())
+      warmRef.current = null
+      levelStopRef.current?.()
+      levelStopRef.current = null
+    }
     if (warmPromiseRef.current) return warmPromiseRef.current
+    const want = getPreferredMicId()
     const p = navigator.mediaDevices.getUserMedia(micAudioConstraints())
     warmPromiseRef.current = p
     try {
@@ -156,6 +180,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
       }
       setDeviceLabel(stream.getAudioTracks()[0]?.label || '')
       levelStopRef.current = createLevelMeter(stream, setLevel, sampleRef)
+      warmWantRef.current = want
       warmRef.current = stream
       return stream
     } finally {
@@ -315,5 +340,46 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
   const isRecording = streamEnabled ? streamRecording : recording
   const toggle = useCallback(() => { if (isRecording) stop(); else start() }, [isRecording, start, stop])
 
-  return { recording: isRecording, transcribing, sessionOwner, streamEnabled, toggle, prewarm, error, level, deviceLabel, clearError, partial, sampleRef }
+  /**
+   * Change the capture device from the in-chat picker.
+   *
+   * Two behaviors, deliberately different and surfaced to the user by
+   * `deviceSwitchIsLive`:
+   *
+   * - **Streaming session live** — hot-swap the source node; the WebSocket and
+   *   everything already transcribed survive (see `useStreamingStt.switchDevice`).
+   * - **Otherwise** — persist the preference and drop any pre-warmed stream so
+   *   the next press acquires the new device. `MediaRecorder` cannot change its
+   *   source mid-recording, and splicing two blobs (or restarting and discarding
+   *   what was said) is worse than applying it to the next utterance.
+   */
+  const switchDevice = useCallback(async (deviceId: string) => {
+    if (streamEnabled && streamRecording) { await streamSwitchDevice(deviceId); return }
+    setPreferredMicId(deviceId)
+    // Invalidate the pre-warm so the next press honors the new choice; without
+    // this the stale-device check would do it, but only after re-entering start().
+    //
+    // The in-flight promise must go too, not just the settled stream: acquireWarm
+    // returns `warmPromiseRef.current` BEFORE any staleness check, so a getUserMedia
+    // still resolving from the old device would be handed back whole — the next
+    // recording captures the previous mic and only the one after is correct. That is
+    // the very defect class this picker exists to remove, just in a ~50-200ms window
+    // (longer on a first permission grant). Nulling the ref is how releaseWarm() and
+    // stopStream() already cancel an in-flight acquisition: the awaiting branch sees
+    // `warmPromiseRef.current !== p`, stops the orphaned stream, and rejects.
+    warmPromiseRef.current = null
+    if (warmRef.current) {
+      warmRef.current.getTracks().forEach(t => t.stop())
+      warmRef.current = null
+      levelStopRef.current?.()
+      levelStopRef.current = null
+      setLevel(0)
+      setDeviceLabel('')
+    }
+  }, [streamEnabled, streamRecording, streamSwitchDevice])
+
+  /** True when `switchDevice` takes effect immediately rather than next recording. */
+  const deviceSwitchIsLive = streamEnabled && streamRecording
+
+  return { recording: isRecording, transcribing, sessionOwner, streamEnabled, toggle, prewarm, error, level, deviceLabel, clearError, partial, sampleRef, switchDevice, deviceSwitchIsLive }
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { micAudioConstraints, humanizeMicError, createLevelMeter } from './mic'
+import { micAudioConstraints, humanizeMicError, createLevelMeter, setPreferredMicId, activeDeviceId } from './mic'
 import type { AudioSample } from './mic'
 import { i18nT } from '../i18n/t'
 
@@ -41,6 +41,12 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
   const wsRef = useRef<WebSocket | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  // Held so the capture device can be swapped mid-session: the worklet (and the
+  // WebSocket behind it) survives, only the upstream source node is replaced.
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const workletRef = useRef<AudioWorkletNode | null>(null)
+  // Claim-check for concurrent device switches — see switchDevice.
+  const switchGenRef = useRef(0)
   const levelStopRef = useRef<(() => void) | null>(null)
   const finalsRef = useRef<string[]>([])
   // Keep callback refs fresh so the long-lived WS handlers (`ws.onmessage`
@@ -180,6 +186,8 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     }
     const source = ctx.createMediaStreamSource(stream)
     const node = new AudioWorkletNode(ctx, 'pcm-worklet')
+    sourceRef.current = source
+    workletRef.current = node
     // PCM routing: buffer until server is ready (Transcribe start-up is
     // ~2-3s), then flush and switch to live send. Cap buffer at ~8s of
     // audio (16 kHz mono Int16 = 32 KB/s) so a never-arriving `ready`
@@ -248,5 +256,86 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     }
   }, [cleanup])
 
-  return { recording, start, stop }
+  /**
+   * Swap the capture device WITHOUT ending the transcription session.
+   *
+   * The WebSocket, the worklet and the accumulated finals all survive — only the
+   * upstream `MediaStreamAudioSourceNode` is replaced. That is what makes a
+   * mid-sentence switch cost a sliver of audio (the gap between stopping the old
+   * track and the new one delivering its first frame, ~0.2s in practice) instead
+   * of the whole utterance.
+   *
+   * A no-op when not capturing: the next `start()` reads the saved preference
+   * anyway, so there is nothing to do.
+   */
+  const switchDevice = useCallback(async (deviceId: string) => {
+    setPreferredMicId(deviceId)
+    const ctx = ctxRef.current
+    const worklet = workletRef.current
+    if (!ctx || !worklet || !streamRef.current) return
+
+    // Nothing to do when we are ALREADY capturing from that device. Decided here,
+    // not in the menu: the menu only knows the saved preference, and re-picking the
+    // checked entry is meaningful precisely when the `ideal` constraint silently
+    // fell back — that tap is the user's retry. Keying on the live track makes it a
+    // no-op only when it truly is one, so a redundant tap costs no audio and a
+    // corrective tap still re-acquires.
+    //
+    // Monotonic generation, claimed BEFORE both the no-op check and the await.
+    //
+    // Before the await: two switches in flight (pick A, pick B before A resolves)
+    // complete in acquisition order, not click order — B could connect first and
+    // then A, arriving later, would replace it, leaving the graph on A while the UI
+    // and the saved preference both say B, and every word spoken after that lost.
+    // Only the newest claim may mutate.
+    //
+    // Before the no-op check: returning without claiming would leave an in-flight
+    // switch owning the current generation, so pick B then re-pick the live device
+    // A and B — still resolving — goes on to replace the graph even though the
+    // user's last action said "stay on A" and `setPreferredMicId(A)` already ran.
+    // The saved preference and the audio graph would then disagree.
+    const gen = ++switchGenRef.current
+    if (activeDeviceId(streamRef.current) === deviceId) return
+
+    let next: MediaStream
+    try {
+      next = await navigator.mediaDevices.getUserMedia(micAudioConstraints())
+    } catch (e) {
+      // Keep the old source running — a failed switch must not end the session.
+      // Only the newest attempt owns the error surface; a superseded one is moot.
+      if (gen === switchGenRef.current) onErrorRef.current?.(humanizeMicError(e))
+      return
+    }
+    // Re-check after the await: superseded by a newer switch, or the graph was
+    // torn down by stop() while acquiring (connecting then would resurrect a
+    // dead session).
+    if (gen !== switchGenRef.current || ctxRef.current !== ctx || workletRef.current !== worklet) {
+      next.getTracks().forEach(t => t.stop())
+      return
+    }
+
+    const prevStream = streamRef.current
+    try { sourceRef.current?.disconnect() } catch { /* already detached */ }
+    try { levelStopRef.current?.() } catch { /* ignore */ }
+    levelStopRef.current = null
+
+    const source = ctx.createMediaStreamSource(next)
+    source.connect(worklet)
+    sourceRef.current = source
+    streamRef.current = next
+    // Report the ACTUAL device: the `ideal` constraint falls back silently, so the
+    // trigger label must come from the live track rather than from what was asked
+    // for. The saved preference is deliberately NOT rewritten to the fallback — a
+    // device that enumerates but cannot be opened right now (busy, held by another
+    // app) would otherwise have the user's explicit pick permanently replaced by
+    // whatever answered instead, so it would never be tried again once free. The
+    // pick stays; the label tells the truth about this session.
+    onDeviceRef.current?.(next.getAudioTracks()[0]?.label || '')
+    levelStopRef.current = createLevelMeter(next, v => onLevelRef.current?.(v), sampleRef)
+    // Stop the old tracks LAST: releasing them before the replacement is live
+    // would surrender the mic and can drop the device's hardware clock.
+    prevStream.getTracks().forEach(t => t.stop())
+  }, [sampleRef])
+
+  return { recording, start, stop, switchDevice }
 }

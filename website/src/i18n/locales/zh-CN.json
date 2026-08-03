@@ -3389,6 +3389,15 @@
       "message_failed_to_render": "消息渲染失败",
       "view_raw": "查看原始内容"
     },
+    "micSourceMenu": {
+      "applies_next_recording": "将在下次录音时生效。",
+      "change_input_source": "更改输入源",
+      "input_source": "输入源",
+      "saved_device_unavailable": "保存的麦克风不可用 —— 正在使用系统默认设备。",
+      "switching_drops_audio": "录音中切换会丢弃约 0.2 秒音频。",
+      "system_default": "系统默认",
+      "unnamed_input": "未命名输入设备"
+    },
     "migrationBanner": {
       "install_app_from_apps": "从“应用”安装“{{app}}”，以便在下次 KiroCrew 更新后继续使用。",
       "install_from_apps": "从“应用”安装",

@@ -257,6 +257,10 @@ interface ChatInputProps {
   onDragLeave?: (e: React.DragEvent) => void
   /** Voice input state */
   voiceRecording?: boolean
+  /** Change the voice capture device from the in-chat picker. */
+  onSelectVoiceDevice?: (deviceId: string) => void
+  /** True when a device switch applies to the live capture, not the next one. */
+  voiceDeviceSwitchIsLive?: boolean
   voiceTranscribing?: boolean
   onVoiceToggle?: () => void
   /** Pre-warm the mic on pointer-down so recording starts instantly on click. */
@@ -426,6 +430,9 @@ function FilePreviewStrip({ files, resizedInfo, onRemove }: { files: string[]; r
 }
 
 
+/** Stable no-op so an unwired embedder does not remount the picker each render. */
+const noopSelectDevice = () => {}
+
 function ChatInput({
   aboveComposer,
   value,
@@ -448,6 +455,8 @@ function ChatInput({
   onDragOver,
   onDragLeave,
   voiceRecording = false,
+  onSelectVoiceDevice,
+  voiceDeviceSwitchIsLive = false,
   voiceTranscribing = false,
   onVoiceToggle,
   onVoicePrewarm,
@@ -2212,9 +2221,9 @@ function ChatInput({
         <FilePreviewStrip files={pendingFiles} resizedInfo={resizedInfo} onRemove={onRemoveFile} />
 
         {showDictation ? (
-          <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} />
+          <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} />
         ) : (
-          <VoiceStatusBar recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} error={voiceError} onDismissError={onClearVoiceError} />
+          <VoiceStatusBar recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} error={voiceError} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} />
         )}
 
         {optimizing && <span className="absolute inset-0 flex items-start px-4 pt-3 text-sm text-white font-medium pointer-events-none z-10 bg-black/60 rounded-2xl"><Sparkles size={14} className="inline mr-1 text-yellow-400" /> {i18nT('components.chatInput.optimizing_prompt')}</span>}
