@@ -6075,12 +6075,12 @@
         "runtime": "Runtime",
         "show_an_animated_panel_while_recording_instead_of": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion.",
         "status": "Status",
-        "stream_live_partial_transcripts_into_the_input_b": "Stream live partial transcripts into the input box as you speak (Transcribe only)",
+        "stream_live_partial_transcripts_into_the_input_b": "Stream live partial transcripts into the input box as you speak. Supported by Transcribe (AWS) and Apple Speech (on-device).",
         "streaming": "Streaming",
         "then_click_install_below": "Then click Install below.",
         "transcribe_voice_into_the_message_box_when_you_c": "Transcribe voice into the message box when you click the mic",
         "us_east_1": "us-east-1",
-        "whisper_and_mlx_run_locally_transcribe_calls_aws": "Whisper and MLX run locally; Transcribe calls AWS",
+        "whisper_and_mlx_run_locally_transcribe_calls_aws": "Whisper, MLX and Apple Speech run locally; Transcribe calls AWS",
         "whisper_model_running_on_apple_mlx_metal_gpu_dow": "Whisper model running on Apple MLX (Metal GPU). Downloads on first use."
       },
       "teamsPanel": {

@@ -452,6 +452,30 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "slack/gateway.py::_check_missing_deps",
         "slack/gateway.py::_init_services",
         "testing/harness.py::spawn_feature_gateway",
+        # Apple on-device speech (macOS only). None of these takes an agent-authored
+        # command: the argv is a fixed toolchain path, the helper Kiro Crew itself
+        # compiled, or ffmpeg — and every variable part is a positional argument to
+        # execve (no shell), so a hostile value can only be a bad filename, not a
+        # second command. `_to_native_audio` mirrors the already-allowlisted
+        # `transcribe.py::_run_whisper_cli`: same ffmpeg invocation on the same
+        # user-supplied audio path. `_build_helper` runs swiftc over a file that ships
+        # inside the package, writing to the data home's `run/` dir (sensitive-path
+        # fenced, 0700). The three spawns that EXECUTE the compiled helper
+        # (`transcribe`, `inventory`, `StreamingSession.start`) now route through
+        # `sandbox.sandboxed_spawn_argv(mode="strict")` via `_sandboxed`, so they are
+        # wrapped rather than merely declared; `strict` was verified to leave batch,
+        # inventory and streaming all working. `_swiftc` and `_sdk_path` spawn only `/usr/bin/xcrun` with a
+        # fixed flag and no agent input; both pass `env=_build_env()`, which strips
+        # `DEVELOPER_DIR`/`SDKROOT`/`TOOLCHAINS`/`SWIFT_EXEC` and pins PATH, and both
+        # trust-check the returned path via `_is_trusted_toolchain` before it is used
+        # — so a redirected toolchain is refused rather than compiled with.
+        "apple_speech/__init__.py::_build_helper",
+        "apple_speech/__init__.py::_sdk_path",
+        "apple_speech/__init__.py::_swiftc",
+        "apple_speech/__init__.py::_to_native_audio",
+        "apple_speech/__init__.py::inventory",
+        "apple_speech/__init__.py::start",
+        "apple_speech/__init__.py::transcribe",
         "transcribe.py::_python3_bin_dir",
         "transcribe.py::_run_whisper_cli",
         "transcribe.py::_transcribe_aws",

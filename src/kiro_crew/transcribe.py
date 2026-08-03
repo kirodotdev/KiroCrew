@@ -254,6 +254,14 @@ def is_available(stt_config=None) -> bool:  # type: ignore[no-untyped-def]
     if provider == "mlx":
         ensure_ffmpeg_in_path()
         return _find_mlx_whisper() is not None
+    if provider == "apple":
+        from kiro_crew import apple_speech
+
+        # NOT a build check: this function runs on the event loop (config GET,
+        # the transcribe endpoint, Slack voice), and compiling the Swift helper
+        # there would freeze the gateway for up to 180s. `availability()` is
+        # stats-only; the build happens inside the offloaded transcribe path.
+        return apple_speech.availability().ok
     ensure_ffmpeg_in_path()
     return _find_whisper(stt_config.whisper_path) is not None
 
@@ -300,6 +308,8 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
     elif provider == "mlx":
         await asyncio.to_thread(ensure_ffmpeg_in_path)
         result = await _transcribe_mlx(audio_path, stt_config)
+    elif provider == "apple":
+        result = await _transcribe_apple(audio_path, stt_config)
     else:
         await asyncio.to_thread(ensure_ffmpeg_in_path)
         result = await _transcribe_native(audio_path, stt_config)
@@ -614,6 +624,37 @@ async def _transcribe_mlx(audio_path: str, stt_config) -> str | None:  # type: i
         stt_config.timeout_secs,
         label="mlx_whisper",
     )
+
+
+async def _transcribe_apple(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
+    """Transcribe with Apple's on-device SpeechAnalyzer (macOS 26+).
+
+    Delegates to :mod:`kiro_crew.apple_speech`, which owns the Swift-helper seam.
+    The framework needs a language *locale* rather than whisper's bare language
+    code, so ``stt_config.language_code`` (already BCP-47, e.g. ``en-US``) is passed
+    straight through; the helper falls back to another installed dialect of the same
+    language before it refuses.
+
+    Unlike whisper/mlx this needs no model download on a supported host — the OS
+    ships the assets — so a failure here is a real error, not a missing-model state.
+    """
+    from kiro_crew import apple_speech
+
+    text, metrics = await apple_speech.transcribe(
+        audio_path,
+        locale=stt_config.language_code or "en-US",
+        timeout_secs=stt_config.timeout_secs or apple_speech.DEFAULT_TIMEOUT_SECS,
+    )
+    if text is None:
+        logger.error("Apple speech transcription failed: %s", metrics.get("error", "unknown"))
+        return None
+    logger.debug(
+        "Apple speech: %.2fs for %.1fs of audio (locale=%s)",
+        metrics.get("transcribe_secs", 0.0),
+        metrics.get("audio_secs", 0.0),
+        metrics.get("locale", "?"),
+    )
+    return text
 
 
 async def _transcribe_native(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]

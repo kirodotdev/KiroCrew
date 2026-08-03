@@ -35,6 +35,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.stt_stream import _STREAMING_PROVIDERS
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
@@ -459,14 +460,20 @@ def _is_apple_silicon() -> bool:
 def _stt_providers() -> list[str]:
     """STT provider values offered to the UI.
 
-    ``mlx`` (Whisper on Apple's MLX framework) only runs on Apple Silicon, so
-    it is omitted entirely on every other platform rather than being shown as
-    an unusable option. This is the single source of truth for which providers
-    are advertised (GET) and accepted (PUT).
+    ``mlx`` (Whisper on Apple's MLX framework) only runs on Apple Silicon, and
+    ``apple`` (the on-device SpeechAnalyzer framework) needs macOS 26 or later plus
+    a Swift toolchain — both are omitted entirely elsewhere rather than being shown
+    as unusable options. This is the single source of truth for which providers are
+    advertised (GET) and accepted (PUT).
     """
     providers = list(_VALID_STT_PROVIDERS)
     if not _is_apple_silicon() and "mlx" in providers:
         providers.remove("mlx")
+    if "apple" in providers:
+        from kiro_crew import apple_speech
+
+        if not apple_speech.availability().ok:
+            providers.remove("apple")
     return providers
 
 
@@ -574,6 +581,11 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "models": _STT_MODEL_SIZES,
             "mlx_models": _STT_MLX_MODELS,
             "providers": _stt_providers(),
+            # Which of those providers can stream partial results. Served from the
+            # backend's own `_STREAMING_PROVIDERS` so the Settings UI gates the
+            # streaming controls on a CAPABILITY rather than on a hardcoded provider
+            # name — the latter silently hid the toggle when `apple` was added.
+            "streaming_providers": list(_STREAMING_PROVIDERS),
             "language_codes": list(_STT_LANGUAGE_CODES),
             "install_step": _stt_install_status["step"],
             "install_detail": _stt_install_status["detail"],

@@ -2632,7 +2632,7 @@ class ChannelConfig:
         )
 
 
-_VALID_STT_PROVIDERS = ("whisper", "mlx", "transcribe")
+_VALID_STT_PROVIDERS = ("whisper", "mlx", "apple", "transcribe")
 _VALID_CHANNEL_PREFIXES = ("C", "D", "G")
 
 
@@ -2888,7 +2888,10 @@ class SttConfig:
         default=False,
         metadata=_meta(
             "Streaming",
-            "Stream partial transcripts live to the dashboard input (transcribe provider only).",
+            "Stream partial transcripts live to the dashboard input. Supported by the "
+            "streaming providers only: `transcribe` (AWS, cloud) and `apple` "
+            "(on-device, macOS 26+). The whisper/mlx CLIs have no partial-result "
+            "channel.",
         ),
     )
     endpointing: bool = field(
@@ -2897,7 +2900,8 @@ class SttConfig:
             "Semantic endpointing",
             "While streaming dictation, run a fast background model on each stable "
             "transcript segment to detect when you have finished a complete request, "
-            "then auto-submit. Transcribe streaming only; off by default.",
+            "then auto-submit. Streaming providers only (transcribe, apple); "
+            "off by default.",
         ),
     )
     dictation_panel: bool = field(

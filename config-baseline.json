@@ -1910,6 +1910,7 @@
       "enumValues": [
         "whisper",
         "mlx",
+        "apple",
         "transcribe"
       ],
       "defaultValue": "whisper"
@@ -2040,7 +2041,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Streaming",
-      "help": "Stream partial transcripts live to the dashboard input (transcribe provider only).",
+      "help": "Stream partial transcripts live to the dashboard input. Supported by the streaming providers only: `transcribe` (AWS, cloud) and `apple` (on-device, macOS 26+). The whisper/mlx CLIs have no partial-result channel.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -2054,7 +2055,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Semantic endpointing",
-      "help": "While streaming dictation, run a fast background model on each stable transcript segment to detect when you have finished a complete request, then auto-submit. Transcribe streaming only; off by default.",
+      "help": "While streaming dictation, run a fast background model on each stable transcript segment to detect when you have finished a complete request, then auto-submit. Streaming providers only (transcribe, apple); off by default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
