@@ -80,6 +80,24 @@ _BANNED_ATTR_CALLS = {
     "rmtree",                                 # shutil.rmtree
     "Popen", "run", "call", "check_call", "check_output",  # subprocess.*
     "import_module",                          # importlib.import_module
+    # Process replacement and creation that lives on ``os``. The module itself
+    # cannot be banned — a skill legitimately needs os.path/os.environ — so the
+    # specific calls are named instead: os.exec* replaces this process with a
+    # program of the script's choosing, os.spawn*/posix_spawn start one
+    # alongside, and os.fork/forkpty duplicate the interpreter. Each reaches
+    # arbitrary execution without ever naming ``subprocess``. These names are
+    # matched on the attribute alone (see ``_ast_findings``), which is why only
+    # os-specific spellings belong here — a common name like ``load`` would
+    # collide with ``json.load``.
+    "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
+    "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp",
+    "spawnvpe", "posix_spawn", "posix_spawnp",
+    "fork", "forkpty", "openpty",
+    # os.startfile hands a path to the Windows shell, which launches it with
+    # whatever handler is registered — an .exe runs, and a document runs its
+    # application. It is the Windows-only sibling of the exec family above and
+    # exists on no other platform, so nothing benign is lost by naming it.
+    "startfile",
     # asyncio egress primitives — high-level stream/server openers and their
     # loop-level equivalents. Banned by attribute name (alias-proof) so a script
     # can't reach a remote host via ``asyncio.open_connection()`` etc. while the
@@ -92,7 +110,33 @@ _BANNED_ATTR_CALLS = {
 
 # Import roots that enable dynamic code / process exec (alias-proof: matched on
 # the imported module, not on the call site).
-_DANGEROUS_IMPORT_ROOTS = {"subprocess", "ctypes", "importlib"}
+#
+# Banning the root rather than the call is what keeps these precise. The
+# call-site check matches an attribute name against every module, so putting
+# ``load``/``loads`` there would reject ``json.load`` as readily as
+# ``pickle.load``; banning the ``pickle`` import instead reaches the same
+# payload and leaves the safe parsers alone.
+#
+#   pty            allocates a terminal and runs a program in it — an
+#                  interactive shell, which a denylist keyed on ``subprocess``
+#                  never sees
+#   pickle,        unpickling calls ``__reduce__`` on the incoming bytes, so
+#   marshal        loading attacker-controlled data is execution, not parsing
+#   multiprocessing  Process(target=...).start() runs a callable in a new
+#                  interpreter, so the payload need not be a string command
+#   runpy          executes a module or a file as ``__main__``
+#   code           evaluates source in a live interpreter — exec by another name
+#   builtins       every name this module denies as a bare call — eval, exec,
+#                  compile, __import__, getattr, vars — is reachable again as
+#                  ``builtins.eval(...)``, which the bare-name check does not
+#                  see. The builtins are available without the import, so a
+#                  script that reaches for the module is asking for the
+#                  qualified spelling and nothing else.
+_DANGEROUS_IMPORT_ROOTS = {
+    "subprocess", "ctypes", "importlib",
+    "pty", "pickle", "marshal", "multiprocessing", "runpy", "code",
+    "builtins",
+}
 # Module roots whose banned attributes are dangerous even when merely referenced
 # (assigned/aliased) rather than called directly (``f = os.remove``).
 _DANGEROUS_ATTR_ROOTS = {"os", "shutil", "subprocess", "importlib", "ctypes"}
@@ -107,6 +151,25 @@ _NETWORK_IMPORT_ROOTS = {
     # launched URL leaves via the browser, bypassing the HTTP-client denylist.
     "webbrowser",
 }
+# Builtins that hand back a module's namespace, so a banned attribute can be
+# resolved from a string at runtime: ``getattr(os, "execv")``,
+# ``vars(os)["execv"]``. The attribute name is a string constant this pass does
+# not evaluate, so the module argument is what gets flagged.
+_NAMESPACE_LOOKUP_NAMES = {"getattr", "vars"}
+
+# Attributes that expose a module's namespace as a mapping, reachable with a
+# subscript: ``os.__dict__["execv"]``. Same reasoning as above — deny the handle,
+# not the key.
+_NAMESPACE_ATTRS = {"__dict__", "__getattribute__", "__getattr__"}
+
+# Builtin types whose descriptor methods can retrieve arbitrary attributes from
+# any object — ``object.__getattribute__(os, "__dict__")["execv"]`` bypasses the
+# namespace guard because the *base* is ``object``, not a dangerous module.  The
+# first *argument* is the dangerous module in this pattern.  Deny these calls
+# when the first positional argument resolves to a dangerous module root.
+_BUILTIN_DESCRIPTOR_BASES = {"object", "type", "super"}
+_DESCRIPTOR_METHODS = {"__getattribute__", "__getattr__"}
+
 # Dangerous callables that must not be pulled in via ``from <mod> import <name>``
 # (which would bind a bare name the call-site checks miss, e.g.
 # ``from os import remove; remove(x)``). Checked on the ORIGINAL imported name,
@@ -136,19 +199,56 @@ def _ast_findings(content: str) -> List[str]:
             for a in node.names:
                 root = a.name.split(".")[0]
                 alias_map[a.asname or root] = root
+    # A dangerous builtin bound to another name defeats every check keyed on the
+    # call site: ``lookup = getattr; lookup(os, "execv")`` calls through `lookup`,
+    # so `fn.id` never matches. Rather than chase the binding, reject the bare
+    # name wherever it is *loaded* without being called. Scoped to a Load
+    # context, so assigning TO one of these names is unaffected, and the call
+    # forms below still report the more specific finding.
+    _rebindable = _BANNED_CALL_NAMES | _NAMESPACE_LOOKUP_NAMES
+    called_names = {
+        n.func for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Name)
+            and node.id in _rebindable
+            and isinstance(node.ctx, ast.Load)
+            and node not in called_names
+        ):
+            findings.append(f"dangerous builtin rebound: {node.id}")
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             fn = node.func
             if isinstance(fn, ast.Name) and fn.id in _BANNED_CALL_NAMES:
                 findings.append(f"dynamic exec/import: {fn.id}()")
-            elif isinstance(fn, ast.Name) and fn.id == "getattr" and node.args:
-                # ``getattr(os, "remove")`` (or an alias) dynamically resolves a
-                # banned attribute, bypassing the static attribute check.
+            elif isinstance(fn, ast.Name) and fn.id in _NAMESPACE_LOOKUP_NAMES and node.args:
+                # ``getattr(os, "remove")`` and ``vars(os)["remove"]`` both
+                # resolve a banned attribute at runtime, so the static attribute
+                # check never sees the name. Flag on the module argument alone —
+                # the attribute is a string this pass will not evaluate.
                 a0 = node.args[0]
                 if isinstance(a0, ast.Name) and alias_map.get(a0.id, a0.id) in _DANGEROUS_ATTR_ROOTS:
-                    findings.append(f"dynamic attribute access: getattr({a0.id}, ...)")
+                    findings.append(f"dynamic attribute access: {fn.id}({a0.id}, ...)")
             elif isinstance(fn, ast.Attribute) and fn.attr in _BANNED_ATTR_CALLS:
                 findings.append(f"dangerous call: .{fn.attr}()")
+            elif (
+                isinstance(fn, ast.Attribute)
+                and fn.attr in _DESCRIPTOR_METHODS
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id in _BUILTIN_DESCRIPTOR_BASES
+                and node.args
+            ):
+                # ``object.__getattribute__(os, "__dict__")["execv"]`` bypasses
+                # the namespace guard: the base is ``object``, not a dangerous
+                # module, so the attribute check on _NAMESPACE_ATTRS never fires.
+                # Deny when the first positional arg resolves to a dangerous root.
+                a0 = node.args[0]
+                if isinstance(a0, ast.Name) and alias_map.get(a0.id, a0.id) in _DANGEROUS_ATTR_ROOTS:
+                    findings.append(
+                        f"builtin descriptor bypass: {fn.value.id}.{fn.attr}({a0.id}, ...)"
+                    )
         elif isinstance(node, ast.Attribute) and node.attr in _BANNED_ATTR_CALLS:
             # Catch a dangerous callable *referenced* (not just called) off a
             # dangerous module — e.g. ``f = os.remove; f(x)`` or, via an alias,
@@ -158,6 +258,14 @@ def _ast_findings(content: str) -> List[str]:
             base = node.value
             if isinstance(base, ast.Name) and alias_map.get(base.id, base.id) in _DANGEROUS_ATTR_ROOTS:
                 findings.append(f"dangerous attribute: {base.id}.{node.attr}")
+        elif isinstance(node, ast.Attribute) and node.attr in _NAMESPACE_ATTRS:
+            # ``os.__dict__["execv"]`` reaches the same callable through a
+            # subscript, which the attribute check above cannot see: the name
+            # lives in a string constant, not in the AST as an attribute. Deny
+            # the namespace handle itself rather than trying to read the key.
+            base = node.value
+            if isinstance(base, ast.Name) and alias_map.get(base.id, base.id) in _DANGEROUS_ATTR_ROOTS:
+                findings.append(f"dynamic attribute access: {base.id}.{node.attr}[...]")
         elif isinstance(node, ast.Import):
             for a in node.names:
                 root = a.name.split(".")[0]
