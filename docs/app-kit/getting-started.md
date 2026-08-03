@@ -176,6 +176,14 @@ Available in `@kirocrew/app-sdk`:
 | `useNavBadge()` | Update sidebar badge count |
 | `useChatLauncher()` | Navigate to chat with optional agent and message |
 
+> **Sidebar status dot.** To reflect your app's *runtime* state (idle / running
+> / healthy / warning / error) as a colored dot on its sidebar icon — even while
+> the app's page is closed — report it from a **backend** hook with
+> `ctx.set_nav_status(tone, label)` (declare `permissions.events: ["app_nav_status"]`
+> + `storage: true`). See the
+> [manifest reference](./manifest-reference.md#sidebar-nav-status-app_nav_status)
+> and [API reference](./api-reference.md#app-nav-status-sidebar-icon).
+
 ## Shared UI Components
 
 Available in `@kirocrew/app-sdk/ui`:

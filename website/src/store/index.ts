@@ -4,6 +4,7 @@ import dashboardReducer from './dashboardSlice'
 import notificationsReducer from './notificationsSlice'
 import chatReducer from './chatSlice'
 import instancesReducer from './instancesSlice'
+import appStatusReducer from './appStatusSlice'
 
 export const store = configureStore({
   reducer: {
@@ -11,6 +12,7 @@ export const store = configureStore({
     notifications: notificationsReducer,
     chat: chatReducer,
     instances: instancesReducer,
+    appStatus: appStatusReducer,
   },
 })
 

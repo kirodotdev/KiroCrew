@@ -245,6 +245,45 @@ API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 
 > **Advisory today, not enforced in-process.** These fields are **not** a runtime sandbox. The validator functions in `apps/permissions.py` (`validate_permissions`, `format_permissions_summary`) are currently **not wired into the install or runtime path** — they are only exercised by unit tests — so the manifest `permissions` block is neither enforced nor even surfaced today: `mcpTools` is not gated at tool dispatch and an empty `mcpTools` list is treated as unrestricted. What actually confines an app today is the HTTP app-token scope (`permissions.api` allowlist, deny-by-default — see `security.md`) plus the OS sandbox. Install-time path traversal is blocked separately by `_check_path_safety(name)` + `manifest.validate()`, not by the permission validator. Full in-process enforcement is tracked in [app-sandbox-roadmap.md](./app-sandbox-roadmap.md).
 
+### Sidebar nav status (`app_nav_status`)
+
+An app can report a **runtime status** that the dashboard renders as a small
+colored dot on the app's sidebar icon (idle, running, healthy, warning, error at
+a glance — even while the app's page is closed). This is one reserved event, gated
+like any other: declare it and app-scoped storage, then push from a backend hook.
+
+```json
+{
+  "permissions": { "events": ["app_nav_status"], "storage": true }
+}
+```
+
+From a backend hook (e.g. `backend.hooks.on_startup`, a poll loop, or a route
+handler) call `set_nav_status` on the injected `AppContext`:
+
+```python
+def on_startup(ctx):
+    ctx.set_nav_status("busy", "Indexing 42%")   # tone + optional label
+```
+
+- `tone` is one of a small **render vocabulary** the core owns:
+  `neutral` (idle — renders no dot), `busy` (pulses), `positive`, `caution`,
+  `critical`. Your app owns its *own* domain states and maps them to a tone; the
+  core validates render-safety only, never semantics. An unrecognized tone
+  degrades to `neutral` (never raises).
+- `label` is optional free-form text (length-capped, currently 48 chars) shown as
+  the dot's hover tooltip / accessible name. It is never drawn inline.
+- Tone colors map to the active theme's existing tokens
+  (`--muted`/`--accent`/`--ok`/`--warn`/`--danger`) via `--nav-status-*`
+  indirection, so every built-in and custom theme is covered with no per-theme
+  edits.
+
+`set_nav_status` no-ops unless the app declared the `app_nav_status` event
+permission (so `ctx.events` is wired). With `storage: true` the last status is
+persisted, so a freshly loaded dashboard shows current state (via the
+`nav_status` field on `GET /api/apps`) before the next live push. See
+[api-reference.md](./api-reference.md#app-nav-status-sidebar-icon).
+
 ## Setup Hooks
 
 ### `setup` — Lifecycle Scripts

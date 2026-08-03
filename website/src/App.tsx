@@ -45,6 +45,8 @@ import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
 
 import ErrorBoundary from './components/ErrorBoundary'
 import AppIcon from './components/AppIcon'
+import { AppStatusIndicator } from './components/AppStatusIndicator'
+import { selectAppNavState, hydrateAppNavStatuses } from './store/appStatusSlice'
 import Clickable from './components/Clickable'
 import MarkdownRenderer, { Lightbox } from './components/MarkdownRenderer'
 import NotificationsPage from './pages/NotificationsPage'
@@ -107,6 +109,7 @@ interface AppListEntry {
   enabled?: boolean
   origin?: string
   orphaned?: boolean
+  nav_status?: { tone: string; label: string }
   manifest?: {
     iconUrl?: string
     ui?: {
@@ -329,8 +332,12 @@ function NavBadge({ navId, collapsed, appBadges }: { navId: string; collapsed: b
   const builtinLabel = surface?.badgeLabel ?? i18nT('app.updates')
   const activityCount = useAppSelector(selectSurfaceActivityCount(navId))
   const activityLabel = surface?.activityLabel ?? 'in flight'
+  // App-reported runtime status (issue #520). Null for built-in surfaces and
+  // apps that reported nothing → renders no dot.
+  const appNavStatus = useAppSelector(s => selectAppNavState(s, appName))
   return (
     <>
+      <AppStatusIndicator status={appNavStatus} collapsed={collapsed} />
       <ActivityIndicator count={activityCount} collapsed={collapsed} label={activityLabel} />
       <BadgeIndicator count={builtinCount} collapsed={collapsed} label={builtinLabel} />
       <BadgeIndicator count={dynamicCount} collapsed={collapsed} label={builtinLabel} />
@@ -1059,6 +1066,13 @@ export default function App() {
           })
         setAppNavItems(items)
         dispatch(setEnabledAppIds(items.map(i => i.id)))
+        // Seed the last-known nav status per app (issue #520) so the sidebar
+        // dots are correct on load, before any live app_nav_status WS frame.
+        const statuses: Record<string, { tone: string; label: string }> = {}
+        for (const a of apps) {
+          if (a.enabled && a.nav_status) statuses[a.name] = a.nav_status
+        }
+        dispatch(hydrateAppNavStatuses(statuses))
       })
       .catch(() => {
         // A transient failure (e.g. the gateway mid-restart right after a

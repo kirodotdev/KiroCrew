@@ -99,6 +99,29 @@ API (dashboard-user only; app tokens have no grant here):
 - **Deep links**: the detail panel renders an Open button for a note-level `url` and buttons for url-carrying actions (same validation).
 - **Dock badge**: the renderer mirrors the unread (non-passive, non-silenced) count to `app.setBadgeCount` via a `badge:set` IPC bridge; clamp lives in `electron/badge.js`.
 
+## Related: sidebar nav status (`app_nav_status`)
+
+A sibling app→user signal, but a **glanceable status** rather than a
+notification. An app reports a runtime state that renders as a small colored dot
+on its sidebar icon (issue #520), instead of (or alongside) a feed notification.
+
+- API: backend `AppContext.set_nav_status(tone, label=None)`
+  (`apps/context.py`). `tone ∈ {neutral, busy, positive, caution, critical}`
+  (unknown → `neutral`); `label` is optional tooltip text, capped at 48 chars.
+  The app owns its domain state and maps it to a tone; the core validates
+  render-safety only.
+- Gating: manifest `permissions.events: ["app_nav_status"]` wires `ctx.events`;
+  `set_nav_status` no-ops otherwise. `permissions.storage: true` persists the
+  last status so `GET /api/apps` returns a `nav_status` field for fresh-load
+  hydration before the next live push.
+- Transport: publishes an `app_nav_status` EventBus frame
+  (`{type, app, data:{tone,label}}`) → `useWebSocket` → `appStatusSlice` →
+  `AppStatusIndicator` (corner dot when the rail is collapsed, right-edge dot
+  when expanded; `busy` pulses; label is the hover tooltip). Tones map to the
+  active theme's tokens via `--nav-status-*`, so no per-theme edits are needed.
+- Full contract: `docs/app-kit/manifest-reference.md` and
+  `docs/app-kit/api-reference.md`.
+
 ## Known follow-ups
 
 - Phase 3 frontend: settings UI section (channel list grouped by source), priority tiers wired through sound/native banner/feed styling, provisional keep/mute prompt for the first notification from a new app channel.

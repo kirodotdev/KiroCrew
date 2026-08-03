@@ -39,6 +39,7 @@ from kiro_crew.apps.bridges import (
     reregister_app_mcp_servers,
 )
 from kiro_crew.apps.builtins import BUILTIN_NAMES
+from kiro_crew.apps.context import read_persisted_nav_status
 from kiro_crew.apps.dependencies import clean_dependencies
 from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
 from kiro_crew.apps.dependency_ledger import (
@@ -288,6 +289,11 @@ async def handle_list_apps(request: web.Request) -> web.Response:
                 "healthy": proc["healthy"],
                 "pid": proc["pid"],
             }
+        # Enrich with the app's last-reported nav status (issue #520) so a fresh
+        # dashboard load shows current icon state before the next live push.
+        nav = read_persisted_nav_status(apps_dir() / app["name"] / "data")
+        if nav:
+            app["nav_status"] = nav
     return web.json_response(apps)
 
 

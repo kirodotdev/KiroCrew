@@ -102,7 +102,7 @@ All `on*` methods return an unsubscribe function.
 WebSocket event types: `chat_chunk`, `chat_done`, `chat_message`, `chat_error`,
 `tool_call`, `notification`, `slots`, `slot_title`, `dashboard`, `log`, `refresh`,
 `approval`, `subagent_done`, `task_update`, `task_complete`, `proactive_notification`,
-`app_reload`, `error`.
+`app_reload`, `app_nav_status`, `error`.
 
 ### Subagents
 
@@ -217,6 +217,41 @@ Silent background context for LLM — content appears in the next user-initiated
 | `pendingContextCount` | `number` | Number of buffered context entries |
 
 Options: `{ source?: string, ephemeral?: boolean, maxAge?: number }`
+
+### App Nav Status (sidebar icon)
+
+A backend method on the injected `AppContext` that reports a runtime status
+rendered as a colored dot on the app's sidebar icon (issue #520). Call it from
+any backend hook — an `on_startup` poll loop, a route handler, a cron — where the
+app knows its state.
+
+| Method (Python `AppContext`) | Description |
+|------------------------------|-------------|
+| `ctx.set_nav_status(tone, label=None)` | Report the app's runtime status. `tone ∈ {neutral, busy, positive, caution, critical}` (unknown → `neutral`); `label` optional tooltip text (capped 48 chars). No-op unless the app declared the `app_nav_status` event permission. |
+
+Requires manifest `permissions.events: ["app_nav_status"]` (wires `ctx.events`)
+and, to survive reloads, `permissions.storage: true`. The app owns its own
+domain state names and maps them to a tone; the core validates render-safety
+only (tone membership + label length), never semantics.
+
+On each call the gateway broadcasts a WebSocket frame:
+
+```json
+{ "type": "app_nav_status", "app": "<app-name>", "data": { "tone": "busy", "label": "Indexing 42%" } }
+```
+
+and persists the last status under the app's storage. `GET /api/apps` enriches
+each app with its persisted status so a freshly loaded dashboard is correct
+before the next live push:
+
+```json
+{ "name": "midway-status", "enabled": true, "nav_status": { "tone": "positive", "label": "Valid 11h" } }
+```
+
+The dashboard maps each tone to the active theme's tokens
+(`--muted`/`--accent`/`--ok`/`--warn`/`--danger`) via `--nav-status-*`, so all
+themes are covered; `busy` pulses, `neutral` renders no dot. See
+[manifest-reference.md](./manifest-reference.md#sidebar-nav-status-app_nav_status).
 
 ### Proxy Authentication (Server-side)
 

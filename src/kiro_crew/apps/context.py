@@ -18,6 +18,14 @@ from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.event_bus import EventBus
 from kiro_crew.apps.spawn_sdk import SpawnSDK
 
+# Nav-status render vocabulary (issue #520). The app maps its OWN domain states
+# to one of these tones; the core owns the pixels. Unknown tones degrade to
+# "neutral" rather than raising, so a typo never breaks the app.
+NAV_STATUS_EVENT = "app_nav_status"
+NAV_STATUS_TONES = ("neutral", "busy", "positive", "caution", "critical")
+NAV_STATUS_LABEL_MAX = 48
+_NAV_STATUS_KEY = "_nav_status"  # reserved AppStorage key for durability
+
 
 @dataclass
 class AppHealthStatus:
@@ -65,6 +73,40 @@ class AppContext:
     storage: AppStorage | None = None
     spawn: SpawnSDK | None = None
     health: AppHealthStatus = field(default_factory=AppHealthStatus)
+
+    def set_nav_status(self, tone: str, label: str | None = None) -> None:
+        """Report a runtime status rendered on the app's sidebar nav icon.
+
+        ``tone`` is mapped to a render treatment by the core; an unrecognized
+        tone degrades to ``"neutral"`` (never raises). ``label`` is optional
+        free-form text used as the icon tooltip/aria text, length-capped for
+        render safety. The app owns its own state vocabulary and maps it to a
+        tone; the core validates render safety only, not semantics.
+
+        No-op when the app cannot publish the reserved event — either it
+        declared no events (``ctx.events`` is None) or it declared events
+        without ``app_nav_status`` (the publish is denied). In both cases
+        nothing is broadcast or persisted, and the call never raises into the
+        app's hook. When permitted and storage is available, the last status is
+        persisted under a reserved AppStorage key so a freshly loaded dashboard
+        shows current state before the next live push.
+        """
+        if self.events is None:
+            return
+        safe_tone = tone if tone in NAV_STATUS_TONES else "neutral"
+        safe_label = (label or "")[:NAV_STATUS_LABEL_MAX]
+        status = {"tone": safe_tone, "label": safe_label}
+        try:
+            # Let EventBus own the permission decision so its SEL audit fires on
+            # both the allow and the deny path; it raises PermissionError when
+            # the app did not declare the reserved event. Catch it to keep the
+            # no-op contract, and persist only after a successful publish so a
+            # denied app can never leave a stored status behind.
+            self.events.publish(NAV_STATUS_EVENT, status)
+        except PermissionError:
+            return
+        if self.storage is not None:
+            self.storage.set(_NAV_STATUS_KEY, status)
 
 
 def build_app_context(
@@ -129,3 +171,24 @@ def build_app_context(
         storage=app_storage,
         spawn=spawn_sdk,
     )
+
+
+def read_persisted_nav_status(data_dir: Path) -> dict[str, str] | None:
+    """Return an app's last persisted nav status, render-safe, or None.
+
+    Reads the reserved ``_nav_status`` key from the app's storage so a freshly
+    loaded dashboard (``GET /api/apps``) can show current state before the next
+    live push. Delegates to :meth:`AppStorage.read_key` — a read-only accessor
+    that owns the on-disk layout and does no directory creation / write I/O in
+    this read path. Defensive on read: a missing/corrupt/unreadable file yields
+    None, an unknown persisted tone is coerced to ``"neutral"``, and the label is
+    length-capped, so a hand-edited or corrupt file cannot inject an unrenderable
+    tone or oversized text into the nav.
+    """
+    stored = AppStorage.read_key(data_dir, _NAV_STATUS_KEY)
+    if not isinstance(stored, dict):
+        return None
+    raw_tone = stored.get("tone")
+    tone = raw_tone if raw_tone in NAV_STATUS_TONES else "neutral"
+    label = str(stored.get("label", ""))[:NAV_STATUS_LABEL_MAX]
+    return {"tone": tone, "label": label}

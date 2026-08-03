@@ -5,6 +5,7 @@ import { useAppDispatch } from '../store'
 import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
+import { setAppNavStatus } from '../store/appStatusSlice'
 import { MC_NOTIFICATION_EVENT, TURN_DONE_KIND, shouldChimeOnTurnDone, type McNotificationDetail } from './notificationEvent'
 import { emitThemeSound } from './themeSound'
 import { fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, appendSlotMessage, setQuestionCard, resolveQuestionCard, setFollowupCard, sseMcpAppRender, setGoalLoops, sseGoalLoop } from '../store/chatSlice'
@@ -468,6 +469,25 @@ export function useWebSocket() {
             // the panel's visibility depends on the pending count.
             queryClient.invalidateQueries({ queryKey: ['skills-pending'] })
             queryClient.invalidateQueries({ queryKey: ['skills'] })
+            break
+          }
+          case 'app_event': {
+            // All app-published events ride under one namespaced WS type
+            // (EventBus.build_broadcast_fn): the real event name is in
+            // data.event and the emitting app in data.app, with the event's own
+            // payload nested at data.data. Route the app nav-status report
+            // (issue #520) to the sidebar slice; ignore every other app event.
+            const env = (data ?? {}) as {
+              app?: string
+              event?: string
+              data?: { tone?: string; label?: string }
+            }
+            if (env.event === 'app_nav_status' && typeof env.app === 'string') {
+              const s = env.data ?? {}
+              if (typeof s.tone === 'string') {
+                dispatch(setAppNavStatus({ app: env.app, tone: s.tone, label: s.label ?? '' }))
+              }
+            }
             break
           }
           case 'todo_update': {

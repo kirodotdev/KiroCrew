@@ -599,6 +599,23 @@ process — but the contract DIFFERS from builtins (`auto_research` etc.):
 - Trust: backend code runs UNSANDBOXED with full gateway privileges (SEC-012
   warning logged; `agent.apps_allow_third_party=false` refuses it entirely).
 
+### Sidebar nav status (a colored dot on your app's icon)
+
+Report your app's runtime state (idle / running / healthy / warning / error) as a
+dot on its sidebar icon — visible even when the app's page is closed (issue #520).
+
+- Manifest: `permissions.events: ["app_nav_status"]` (wires `ctx.events`) and
+  `permissions.storage: true` (persists the last status for fresh-load hydration).
+- Call from any backend hook — an `on_startup` poll loop, a route handler, a
+  cron: `ctx.set_nav_status(tone, label)`. `tone` ∈ `neutral` (no dot), `busy`
+  (pulses), `positive`, `caution`, `critical`; unknown → `neutral`. `label` is
+  optional hover-tooltip text (capped 48 chars). No-op if the event permission
+  is absent.
+- You own your domain state names and map them to a tone — the core only
+  validates render-safety, not meaning. Colors follow the active theme.
+- Full contract: `docs/app-kit/manifest-reference.md` §"Sidebar nav status" and
+  `docs/app-kit/api-reference.md` §"App Nav Status".
+
 ## Dev Loop for App UIs
 
 - **Preferred: dev mode** — `kirocrew app dev <name>` (off: `--off`). Serves that

@@ -6,6 +6,7 @@ Backed by files in the app's data directory:
 Keys are validated to prevent path traversal.
 Values are JSON-serializable dicts or strings.
 """
+
 from __future__ import annotations
 
 import json
@@ -52,6 +53,27 @@ class AppStorage:
             logger.warning("AppStorage[%s] read error for key %r: %s", self._app_name, key, exc)
             return None
 
+    @classmethod
+    def read_key(cls, data_dir: Path, key: str) -> dict[str, Any] | str | None:
+        """Read a single key WITHOUT constructing an AppStorage / creating its kv dir.
+
+        A read-only accessor for callers that must not perform write I/O — e.g.
+        the core reflecting an app's persisted state in a GET handler (see
+        ``apps/context.py:read_persisted_nav_status``). It keeps the file-per-key
+        on-disk layout owned by THIS class instead of duplicated at the call
+        site, while avoiding the ``__init__`` ``mkdir`` that the instance path
+        performs. Returns None for a missing / corrupt / unreadable / invalid-key
+        file; never raises and never creates directories.
+        """
+        try:
+            path = cls._kv_path(data_dir, key)
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # OSError: missing/unreadable file. ValueError: an invalid key
+            # (from _kv_path), a JSON parse error (JSONDecodeError), or invalid
+            # UTF-8 bytes (UnicodeDecodeError) in a hand-edited/corrupt file.
+            return None
+
     def set(self, key: str, value: dict[str, Any] | str) -> None:
         """Write a value. Atomic write (tmp + rename).
 
@@ -88,10 +110,15 @@ class AppStorage:
             return []
         return sorted(p.stem for p in self._kv_dir.iterdir() if p.suffix == ".json")
 
-    def _key_path(self, key: str) -> Path:
-        """Validate key and return file path.
+    @staticmethod
+    def _kv_path(data_dir: Path, key: str) -> Path:
+        """Validate a key and return its file path under ``data_dir/kv``.
 
-        Raises ValueError if key contains path traversal characters.
+        Static so the read-only ``read_key`` accessor can resolve a path WITHOUT
+        constructing an AppStorage (whose ``__init__`` creates the kv dir). This
+        is the single place that owns the file-per-key on-disk layout.
+
+        Raises ValueError if key contains path traversal / unsafe-prefix chars.
         """
         if not key:
             raise ValueError("Storage key must not be empty")
@@ -100,4 +127,8 @@ class AppStorage:
         # Additional safety: reject keys that would produce unexpected paths
         if key.startswith(".") or key.startswith("~"):
             raise ValueError(f"Invalid storage key (unsafe prefix): {key!r}")
-        return self._kv_dir / f"{key}.json"
+        return data_dir / "kv" / f"{key}.json"
+
+    def _key_path(self, key: str) -> Path:
+        """Validate key and return its file path (see :meth:`_kv_path`)."""
+        return self._kv_path(self._kv_dir.parent, key)

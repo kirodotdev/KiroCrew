@@ -1771,3 +1771,47 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    every other label in the app (everything else inherits letter-spacing:normal
    from body). Do not promote any of this to an unscoped rule. */
 html[data-font-family="mono"] .rail-community-links{ letter-spacing:-0.05em; word-spacing:-2.5px; gap:3px }
+
+/* ── App nav-status indicator (issue #520) ──────────────────────────────────
+   Tones map to each theme's OWN semantic tokens, so every built-in and custom
+   theme inherits the palette with zero edits; a theme may override any
+   --nav-status-* to customise. Literal fallbacks keep an incomplete theme
+   rendering. Defined once at :root — resolved per active theme via var(). */
+:root {
+  --nav-status-neutral: var(--muted, #7f7f88);
+  --nav-status-busy: var(--accent, #00d492);
+  --nav-status-positive: var(--ok, #22c55e);
+  --nav-status-caution: var(--warn, #eab308);
+  --nav-status-critical: var(--danger, #ef4444);
+}
+.app-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--bg, #18181b); /* separate the dot from the row */
+}
+/* Collapsed rail: a corner dot on the icon. */
+.app-status-dot--corner {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+}
+/* Expanded rail: a dot vertically centered at the row's right edge. */
+.app-status-dot--edge {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.app-status-dot--busy { background: var(--nav-status-busy); }
+.app-status-dot--positive { background: var(--nav-status-positive); }
+.app-status-dot--caution { background: var(--nav-status-caution); }
+.app-status-dot--critical { background: var(--nav-status-critical); }
+@keyframes app-status-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .45; transform: scale(.8); }
+}
+.app-status-dot--pulse { animation: app-status-pulse 1.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .app-status-dot--pulse { animation: none; }
+}

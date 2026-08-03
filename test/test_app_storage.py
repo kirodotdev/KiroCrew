@@ -3,6 +3,7 @@
 Feature: app-sdk-gateway-hooks
 Properties 18, 19: Storage key isolation and key validation.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,7 +29,9 @@ def _json_value() -> st.SearchStrategy[dict]:
     return st.dictionaries(
         st.from_regex(r"[a-z][a-z0-9_]{0,10}", fullmatch=True),
         st.one_of(
-            st.text(min_size=0, max_size=50, alphabet=st.characters(whitelist_categories=("L", "N"))),
+            st.text(
+                min_size=0, max_size=50, alphabet=st.characters(whitelist_categories=("L", "N"))
+            ),
             st.integers(min_value=-1000, max_value=1000),
             st.booleans(),
         ),
@@ -87,6 +90,7 @@ class TestAppStorageKeyIsolation:
         """list_keys() returns all keys that have been set."""
         # Use unique subdir to avoid hypothesis tmp_path reuse
         import uuid
+
         work_dir = tmp_path / uuid.uuid4().hex
         work_dir.mkdir()
         storage = AppStorage("test-app", work_dir)
@@ -115,37 +119,46 @@ class TestAppStorageKeyValidation:
     **Validates: Security (path traversal prevention)**
     """
 
-    @pytest.mark.parametrize("bad_key", [
-        "../etc/passwd",
-        "..secret",
-        "path/to/file",
-        "back\\slash",
-        "",
-        ".hidden",
-        "~home",
-    ])
+    @pytest.mark.parametrize(
+        "bad_key",
+        [
+            "../etc/passwd",
+            "..secret",
+            "path/to/file",
+            "back\\slash",
+            "",
+            ".hidden",
+            "~home",
+        ],
+    )
     def test_invalid_keys_raise_valueerror(self, bad_key: str, tmp_path: Path) -> None:
         """Keys with traversal characters raise ValueError."""
         storage = AppStorage("test-app", tmp_path)
         with pytest.raises(ValueError):
             storage.set(bad_key, {"data": True})
 
-    @pytest.mark.parametrize("bad_key", [
-        "../escape",
-        "sub/dir",
-        "back\\slash",
-        "",
-    ])
+    @pytest.mark.parametrize(
+        "bad_key",
+        [
+            "../escape",
+            "sub/dir",
+            "back\\slash",
+            "",
+        ],
+    )
     def test_get_with_invalid_key_raises(self, bad_key: str, tmp_path: Path) -> None:
         """get() with invalid key raises ValueError."""
         storage = AppStorage("test-app", tmp_path)
         with pytest.raises(ValueError):
             storage.get(bad_key)
 
-    @pytest.mark.parametrize("bad_key", [
-        "../escape",
-        "sub/dir",
-    ])
+    @pytest.mark.parametrize(
+        "bad_key",
+        [
+            "../escape",
+            "sub/dir",
+        ],
+    )
     def test_delete_with_invalid_key_raises(self, bad_key: str, tmp_path: Path) -> None:
         """delete() with invalid key raises ValueError."""
         storage = AppStorage("test-app", tmp_path)
@@ -161,3 +174,34 @@ class TestAppStorageKeyValidation:
         storage.set(key, {"ok": True})
         storage.get(key)
         storage.delete(key)
+
+
+# ---------------------------------------------------------------------------
+# read_key: read-only accessor (no construction, no mkdir)
+# ---------------------------------------------------------------------------
+
+
+class TestAppStorageReadKey:
+    """``read_key`` reflects an app's stored value without constructing an
+    AppStorage or creating its kv directory — the property the core relies on
+    when reading app state inside a read-only GET handler."""
+
+    def test_roundtrip_reads_a_value_written_by_an_instance(self, tmp_path: Path) -> None:
+        AppStorage("app", tmp_path).set("k", {"a": 1})
+        assert AppStorage.read_key(tmp_path, "k") == {"a": 1}
+
+    def test_absent_returns_none_and_creates_no_kv_dir(self, tmp_path: Path) -> None:
+        # The reason read_key exists: a read path must not do write I/O. A miss
+        # returns None and leaves the filesystem untouched (no kv/ created).
+        assert AppStorage.read_key(tmp_path, "missing") is None
+        assert not (tmp_path / "kv").exists()
+
+    def test_invalid_key_returns_none_not_raises(self, tmp_path: Path) -> None:
+        assert AppStorage.read_key(tmp_path, "../escape") is None
+        assert AppStorage.read_key(tmp_path, "") is None
+
+    def test_corrupt_file_returns_none(self, tmp_path: Path) -> None:
+        kv = tmp_path / "kv"
+        kv.mkdir()
+        (kv / "bad.json").write_text("{not valid json", encoding="utf-8")
+        assert AppStorage.read_key(tmp_path, "bad") is None

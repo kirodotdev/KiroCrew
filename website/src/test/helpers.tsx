@@ -8,6 +8,7 @@ import dashboardReducer from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
+import appStatusReducer from '../store/appStatusSlice'
 import type { RootState } from '../store'
 import { ThemeProvider } from '../hooks/useTheme'
 
@@ -19,6 +20,7 @@ export function createTestStore(preloadedState?: Partial<RootState>) {
       chat: chatReducer,
       notifications: notificationsReducer,
       instances: instancesReducer,
+      appStatus: appStatusReducer,
     },
     preloadedState,
   })
