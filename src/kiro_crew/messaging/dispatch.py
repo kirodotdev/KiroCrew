@@ -267,6 +267,27 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
     finally:
         # Always finalize the turn, even if get_or_create raised before the
         # semaphore was held. Only release if we actually acquired it.
-        await renderer.close()
+        #
+        # ``renderer.close()`` is best-effort and must NEVER prevent the release
+        # below. A renderer that fails to finalize -- a malformed vendor
+        # response, a dropped socket mid-flush -- would otherwise leave the
+        # semaphore held with no path to give it back. Because the semaphore is
+        # keyed by SESSION, that does not just lose this turn: every later
+        # message for that conversation blocks forever, and any queued turn
+        # never drains. The channel looks permanently busy until the gateway
+        # restarts.
+        #
+        # Discord already guards this in its own dispatcher, which is how the
+        # hazard was found; the guard belongs here so every channel on the
+        # shared pipeline inherits it instead of re-deriving it.
+        try:
+            await renderer.close()
+        except Exception:
+            logger.warning(
+                "%s: renderer.close failed session=%s",
+                turn.channel_type,
+                session_key,
+                exc_info=True,
+            )
         if _acquired:
             sessions.release(session_key)
