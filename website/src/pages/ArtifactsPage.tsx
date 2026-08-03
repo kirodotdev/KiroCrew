@@ -9,7 +9,7 @@ import type { ItemContent } from '@virtuoso.dev/masonry'
 import { DndContext, PointerSensor, useSensor, useSensors, DragOverlay, MeasuringStrategy, pointerWithin, type DragEndEvent, type DragStartEvent, type CollisionDetection, type Modifier } from '@dnd-kit/core'
 import SegmentedControl from '../components/SegmentedControl'
 import { api } from '../api/client'
-import { Card, CardTitle, PageHeader, Btn, Badge, SearchInput, EmptyState, Input, StatCard } from '../components/ui'
+import { Card, CardTitle, PageHeader, Btn, Badge, SearchInput, EmptyState, Input } from '../components/ui'
 import RemoteArtifactCard from '../components/RemoteArtifactCard'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
@@ -1694,12 +1694,6 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     <>
       <PageHeader title={i18nT('pages.artifactsPage.artifacts')} subtitle={i18nT('pages.artifactsPage.widgets_files_and_snippets_live_tracked_with_ver')} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-        <div className="grid gap-3 grid-cols-2 sm:grid-cols-4 mb-4">
-          <StatCard label={i18nT('pages.artifactsPage.total')} value={artifacts.length} accent />
-          <StatCard label={i18nT('pages.artifactsPage.starred')} value={artifacts.filter(a => a.pinned).length} />
-          <StatCard label={i18nT('pages.artifactsPage.folders')} value={folders.length} />
-          <StatCard label={i18nT('pages.artifactsPage.kinds')} value={new Set(artifacts.map(a => a.kind)).size} />
-        </div>
         {(errMessage || mutErr || addError) && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
             <span className="text-danger text-lg shrink-0"><AlertTriangle className="lucide-inline" /></span>

@@ -99,20 +99,6 @@ describe('ArtifactsPage', () => {
     expect(starBtn).toHaveAttribute('aria-pressed', 'true')
   })
 
-  it('renders StatCard summary row', async () => {
-    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
-      artifacts: [
-        mkArtifact('cr-queue', { pinned: true }),
-        mkArtifact('another', { pinned: false }),
-      ],
-    })
-    renderWithProviders(<ArtifactsPage />)
-    await waitFor(() => expect(screen.getByText('Total')).toBeInTheDocument())
-    // StatCard labels (check they're in the stat card grid)
-    expect(screen.getByText('Folders')).toBeInTheDocument()
-    expect(screen.getByText('Kinds')).toBeInTheDocument()
-  })
-
   it('filters by name search', async () => {
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
       artifacts: [
