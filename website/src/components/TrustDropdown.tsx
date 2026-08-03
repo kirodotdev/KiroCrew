@@ -3,6 +3,7 @@ import { Handshake, Shield, ShieldPlus, ShieldCheck, ChevronDown } from 'lucide-
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem
 } from './ui/dropdown-menu'
+import { baseCommandLabel, trustBasePattern, truncateCommandLabel } from '../utils/trustPatterns'
 
 import { i18nT } from '../i18n/t'
 interface TrustDropdownProps {
@@ -17,9 +18,11 @@ interface TrustDropdownProps {
 export default function TrustDropdown({ fullCommand, baseCommand, isShell, disabled, className, onAction }: TrustDropdownProps) {
   const [open, setOpen] = useState(false)
 
-  const truncated = fullCommand.length > 30 ? fullCommand.slice(0, 30) + '…' : fullCommand
-  const basePattern = baseCommand.split(',').map(b => b.trim() + ' *').join(',')
-  const baseLabel = baseCommand.split(',').join(', ')
+  // Pattern shaping lives in utils/trustPatterns so every surface that offers
+  // tiered trust grants an identical scope for the same click.
+  const truncated = truncateCommandLabel(fullCommand)
+  const basePattern = trustBasePattern(baseCommand)
+  const baseLabel = baseCommandLabel(baseCommand)
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
