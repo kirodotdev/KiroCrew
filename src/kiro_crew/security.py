@@ -3048,6 +3048,51 @@ def is_sensitive_bash_command(command: str) -> str | None:
     return None
 
 
+# Command separators that end one simple command and begin the next. A `cd` in
+# one segment sets the working directory the following segments resolve against,
+# which is why the second pass has to walk segments rather than one flat token
+# list. Pipes are deliberately absent: they do not change the directory.
+_SHELL_SEGMENT_RE = re.compile(r"\s*(?:&&|\|\||;|\n)\s*")
+
+# `NAME=value` prefix. `normalize_shell_command` keeps it as a single token, and
+# the value is already $HOME-expanded by the time we see it.
+_SHELL_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.DOTALL)
+
+# A variable reference that survived `$HOME` expansion, e.g. `$V` or `${V}`.
+_SHELL_VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _expand_known_vars(token: str, assignments: dict[str, str]) -> str:
+    """Substitute variables this command assigned earlier in its own text."""
+
+    def repl(match: re.Match[str]) -> str:
+        name = match.group(1) or match.group(2)
+        return assignments.get(name, match.group(0))
+
+    return _SHELL_VAR_REF_RE.sub(repl, token)
+
+
+def _sensitive_under_unresolved_var(token: str) -> bool:
+    """Would *token* be sensitive if its unresolved variables named a home?
+
+    `normalize_shell_command` expands `$HOME`, so a path that still carries a
+    variable cannot be resolved — the value lives in the shell, not the command
+    text. Rather than let the token through unchecked, test the hypothesis that
+    the variable holds a home directory: `$V/.aws/credentials` becomes
+    `~/.aws/credentials` and is caught, while `$BUILD/out.txt` stays clean
+    because its remainder is not sensitive either way. Fails closed only when
+    the literal part of the path is itself sensitive.
+    """
+    if not _SHELL_VAR_REF_RE.search(token):
+        return False
+    hypothesis = _SHELL_VAR_REF_RE.sub("~", token, count=1)
+    # `~` only expands at the start, so collapse `~/a/~/b` shapes to the tail.
+    hypothesis = _SHELL_VAR_REF_RE.sub("", hypothesis)
+    if not hypothesis.startswith("~"):
+        return False
+    return bool(is_sensitive_path(hypothesis))
+
+
 def _check_sensitive_via_normalizer(command: str) -> str | None:
     """Normalizer second-pass: tokenize command and route paths through is_sensitive_path.
 
@@ -3056,55 +3101,97 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     - Variable expansion: ``$HOME/.ssh/id_rsa``
     - Relative traversal: ``awk '{print}' ~/../../.aws/credentials``
     - Mixed evasion: ``"cat" ~/.aws/credentials``
+    - Indirection through a variable the command itself assigned:
+      ``V=$HOME; awk 1 $V/.aws/credentials``
+    - A bare filename read after a ``cd``:
+      ``cd ~/.kiro/crew && cat token_signing.key``
 
-    Only triggers when a recognized read verb is present in the resolved tokens
-    (avoids false positives on write/create commands).
+    The command is walked segment by segment so a ``cd`` target becomes the base
+    directory for the segments after it. Without that base, a bare filename is
+    not even path-like, so it was never checked at all, and `is_sensitive_path`
+    would have resolved it against the gateway's own working directory rather
+    than the directory the command moved to.
+
+    Only triggers when a recognized read verb is present in the segment (avoids
+    false positives on write/create commands).
 
     Returns denial reason string, or None if clean.
     """
-    try:
-        tokens = normalize_shell_command(command)
-    except Exception:
-        return None
+    assignments: dict[str, str] = {}
+    base_dir: str | None = None
 
-    if not tokens:
-        return None
+    for segment in _SHELL_SEGMENT_RE.split(command):
+        if not segment.strip():
+            continue
+        try:
+            tokens = normalize_shell_command(segment)
+        except Exception:
+            continue
+        if not tokens:
+            continue
 
-    # Check if any token resolves to a known read verb (by basename, so
-    # /usr/bin/cat is recognized as "cat").
-    has_read_verb = False
-    for token in tokens:
-        if not token:
-            continue
-        basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS:
-            has_read_verb = True
-            break
+        # Peel off `NAME=value` prefixes, recording them for later segments, and
+        # resolve references to names this command already assigned.
+        operands: list[str] = []
+        for token in tokens:
+            if not token:
+                continue
+            assign = _SHELL_ASSIGN_RE.match(token)
+            if assign and not token.startswith("/"):
+                assignments[assign.group(1)] = _expand_known_vars(assign.group(2), assignments)
+                continue
+            operands.append(_expand_known_vars(token, assignments))
 
-    if not has_read_verb:
-        return None
+        if not operands:
+            continue
 
-    # Route each path-like token through is_sensitive_path()
-    for token in tokens:
-        if not token:
+        # `cd <target>` moves the base directory for everything after it.
+        if os.path.basename(operands[0]).lower() == "cd":
+            target = next((t for t in operands[1:] if not t.startswith("-")), None)
+            if target:
+                base_dir = os.path.expanduser(target) if target.startswith("~") else target
             continue
-        # Skip flags
-        if token.startswith("-"):
+
+        has_read_verb = any(
+            os.path.basename(token).lower() in _NORMALIZER_READ_VERBS for token in operands
+        )
+        if not has_read_verb:
             continue
-        # Skip tokens that ARE the read verb itself
-        basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS:
-            continue
-        # Only check tokens that look like filesystem paths
-        if not _is_path_like(token):
-            continue
-        # is_sensitive_path handles symlink resolution, traversal, ~ expansion,
-        # $HOME expansion, and all sensitive directory checks
-        if is_sensitive_path(token):
-            return (
-                "Blocked: command accesses sensitive credential path "
-                f"(resolved via normalizer: {token[:80]})"
-            )
+
+        for token in operands:
+            # Skip flags
+            if token.startswith("-"):
+                continue
+            # Skip tokens that ARE the read verb itself
+            if os.path.basename(token).lower() in _NORMALIZER_READ_VERBS:
+                continue
+
+            # is_sensitive_path handles symlink resolution, traversal, ~ expansion,
+            # $HOME expansion, and all sensitive directory checks
+            if _is_path_like(token) and is_sensitive_path(token):
+                return (
+                    "Blocked: command accesses sensitive credential path "
+                    f"(resolved via normalizer: {token[:80]})"
+                )
+
+            # A relative operand — including a bare filename, which is not
+            # path-like on its own — resolves against the directory a preceding
+            # `cd` moved to.
+            if base_dir and not token.startswith("/") and not token.startswith("~"):
+                candidate = os.path.join(base_dir, token)
+                if is_sensitive_path(candidate):
+                    return (
+                        "Blocked: command accesses sensitive credential path "
+                        f"(resolved against 'cd' target: {candidate[:80]})"
+                    )
+
+            # A path whose variable this command never assigned cannot be
+            # resolved from the command text alone.
+            if _sensitive_under_unresolved_var(token):
+                return (
+                    "Blocked: command accesses sensitive credential path through an "
+                    f"unresolved variable: {token[:80]}"
+                )
     return None
 
 

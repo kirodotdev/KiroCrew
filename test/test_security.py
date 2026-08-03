@@ -643,9 +643,7 @@ class TestRedactCredentials:
         from kiro_crew.dashboard.token_auth import generate_token
         from kiro_crew.security import _CREDENTIAL_PATTERNS
 
-        floors = re.findall(
-            r"eyJ\[A-Za-z0-9_-\]\{(\d+),\}", _CREDENTIAL_PATTERNS.pattern
-        )
+        floors = re.findall(r"eyJ\[A-Za-z0-9_-\]\{(\d+),\}", _CREDENTIAL_PATTERNS.pattern)
         assert len(floors) == 1, f"expected one bounded eyJ floor, got {floors}"
         floor = int(floors[0])
 
@@ -655,9 +653,7 @@ class TestRedactCredentials:
 
         # Derived worst case: the narrowest `sub` a caller could pass, with every
         # float claim at its shortest repr (an exactly-integral `time.time()`).
-        claims = json.loads(
-            base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
-        )
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         # `gen` is normalised alongside `sub` because it mirrors the process-global
         # `_REVOCATION_GEN`, which is LOADED FROM DISK at import. Left ambient, the
         # derived floor would depend on how many times this machine has revoked:
@@ -2272,6 +2268,60 @@ class TestIsSensitiveBashCommand:
 
     def test_safe_command(self) -> None:
         assert is_sensitive_bash_command("cat ~/readme.md") is None
+
+    # ── Shell normalization: variable indirection and `cd` targets ──
+
+    def test_variable_assigned_in_the_command_is_resolved(self) -> None:
+        """A path reached through a variable the command itself assigned.
+
+        The normalizer expands `$HOME`, so `V=$HOME` resolves, but `$V` used as
+        a path prefix stayed literal and the path never matched. The assignment
+        is in the command text, so it can be substituted.
+        """
+        assert is_sensitive_bash_command("V=$HOME; awk 1 $V/.aws/credentials") is not None
+        assert is_sensitive_bash_command("V=$HOME; cat $V/.ssh/id_rsa") is not None
+        assert is_sensitive_bash_command("V=${HOME}; xxd $V/.ssh/id_rsa") is not None
+        # The variable can carry part of the sensitive path itself.
+        assert is_sensitive_bash_command("D=$HOME/.aws; cat $D/credentials") is not None
+
+    def test_unresolvable_variable_over_a_sensitive_tail_is_blocked(self) -> None:
+        """A variable assigned outside the command still cannot hide the tail.
+
+        The value lives in the shell, not the command text, so it cannot be
+        resolved. Fail closed only when the literal remainder is itself
+        sensitive — see the benign counterparts below.
+        """
+        assert is_sensitive_bash_command("awk 1 $V/.aws/credentials") is not None
+        assert is_sensitive_bash_command("cat $SOMEVAR/.ssh/id_rsa") is not None
+
+    def test_variable_over_a_benign_tail_is_allowed(self) -> None:
+        """An unresolved variable is not itself a reason to block."""
+        assert is_sensitive_bash_command("B=$HOME/build; cat $B/out.txt") is None
+        assert is_sensitive_bash_command("cat $PWD/out.txt") is None
+        assert is_sensitive_bash_command("cat $BUILD_DIR/report.log") is None
+
+    def test_bare_filename_after_cd_is_resolved_against_the_cd_target(self) -> None:
+        """`cd` + a bare filename read the same file as the absolute form.
+
+        A bare filename has no path separator, so it is not path-like and was
+        never checked; had it been, it would have resolved against the
+        gateway's working directory rather than the directory the command
+        moved to.
+        """
+        assert is_sensitive_bash_command("cd ~/.kiro/crew && cat token_signing.key") is not None
+        assert is_sensitive_bash_command("cd ~/.kiro/crew; cat token_signing.key") is not None
+        assert is_sensitive_bash_command("cd ~/.aws && cat credentials") is not None
+        assert is_sensitive_bash_command("cd ~/.ssh && cat id_rsa") is not None
+        # The `cd` target may itself arrive through $HOME.
+        assert (
+            is_sensitive_bash_command("cd $HOME/.kiro/crew && awk 1 token_signing.key") is not None
+        )
+
+    def test_cd_into_a_benign_directory_is_allowed(self) -> None:
+        """Tracking the `cd` target must not block ordinary relative reads."""
+        assert is_sensitive_bash_command("cd /tmp && cat notes.txt") is None
+        assert is_sensitive_bash_command("cd ~/project && cat config.json") is None
+        assert is_sensitive_bash_command("cd src && grep -rn pattern .") is None
 
     # ── Symlink-staging (pentest recommendation item 3) ──
 
