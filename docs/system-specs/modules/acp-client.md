@@ -259,6 +259,8 @@ When kiro-cli needs OAuth authentication for an MCP server, `AcpClient` surfaces
 
 **API**: `pop_pending_oauth_requests()` drains requests captured during init (called after `ensure_ready()`).
 
+**Remote-gateway callback relay**: The Connections waiting card accepts the failed browser return address when the browser and gateway run on different machines. `POST /api/mcp/oauth/relay` sends that address from the gateway host to kiro-cli's local callback listener. The handler is intentionally not a generic proxy: it accepts only plain-HTTP IP-literal loopback URLs (`127.0.0.0/8` or `::1`) with an explicit port and exactly one non-empty `code` value; it rejects userinfo, fragments, hostnames, non-loopback addresses, oversized input, and does not follow redirects. The callback URL and authorization code are never logged or returned; SEL records only the provider slug and completed/failed outcome.
+
 ## Cancellation
 
 `cancel_session()` sends a `session/cancel` JSON-RPC notification to kiro-cli's stdin. It is fire-and-forget — no response ID is awaited.

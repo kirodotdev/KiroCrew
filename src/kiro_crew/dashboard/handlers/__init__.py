@@ -89,6 +89,9 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
     api_models,
     api_slash_commands,
 )
+
+# ── Connections OAuth relay (handlers/connections.py) ──
+from kiro_crew.dashboard.handlers.connections import api_mcp_oauth_relay  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_ack,
     api_cron_batch_delete,
@@ -157,8 +160,6 @@ from kiro_crew.dashboard.handlers.kiro_prerequisite import (  # noqa: E402, F401
     api_kiro_prerequisite_login,
     api_kiro_prerequisite_status,
 )
-
-# ── MCP (extracted to handlers/mcp.py) ──
 from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     _bg_mcp_probe,
     _sync_mcp_to_agent,

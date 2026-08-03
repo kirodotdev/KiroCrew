@@ -1988,6 +1988,7 @@ async def start_dashboard(
     app.router.add_post("/api/mcp/toggle-tool", handlers.api_mcp_toggle_tool)
     app.router.add_post("/api/mcp/toggle-all", handlers.api_mcp_toggle_all)
     app.router.add_post("/api/mcp/remove", handlers.api_mcp_remove)
+    app.router.add_post("/api/mcp/oauth/relay", handlers.api_mcp_oauth_relay)
     # REST-style MCP server registration (App Kit)
     app.router.add_put("/api/mcp/servers/{name}", handlers.api_mcp_server_detail)
     app.router.add_delete("/api/mcp/servers/{name}", handlers.api_mcp_server_detail)
