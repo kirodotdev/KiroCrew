@@ -18,6 +18,14 @@ export const FOCUSABLE =
  * `onEscape` is called on Escape — the caller decides whether that actually
  * closes (e.g. a dialog with work in flight can refuse).
  *
+ * `enabled` exists for stacked dialogs: a dialog that opens a dialog of its own
+ * must stop trapping Tab, or focus is dragged back out of the inner one on every
+ * keypress. Pass `false` for as long as an inner dialog owns the keyboard.
+ * Only the key handling is gated — focus-in on mount and focus-restore on
+ * unmount are deliberately NOT, because tying them to `enabled` would restore
+ * focus to whatever was focused before the OUTER dialog opened (i.e. behind
+ * both overlays) the moment the inner one appears.
+ *
  * The keydown listener is CAPTURE phase on purpose: dialogs stop keydown
  * propagation so the page's own shortcuts don't fire while the user types
  * inside them, and a bubble-phase listener would then never see Escape or Tab
@@ -26,6 +34,7 @@ export const FOCUSABLE =
 export function useDialogFocusTrap(
   containerRef: RefObject<HTMLElement | null>,
   onEscape: () => void,
+  enabled = true,
 ): void {
   // Move focus into the dialog on open, restore it on close, so keyboard users
   // aren't dumped at the top of the document afterwards.
@@ -43,6 +52,7 @@ export function useDialogFocusTrap(
   }, [containerRef])
 
   useEffect(() => {
+    if (!enabled) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         onEscape()
@@ -69,5 +79,5 @@ export function useDialogFocusTrap(
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [containerRef, onEscape])
+  }, [containerRef, onEscape, enabled])
 }
