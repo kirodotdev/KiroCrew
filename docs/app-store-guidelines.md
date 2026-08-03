@@ -266,7 +266,7 @@ Hero art is the main way an app looks like a product rather than a list entry. S
 
 | Field | Rendered where | Recommended size |
 |-------|----------------|------------------|
-| `heroImage` | Discover list rows (16:9 capsule), featured spotlight, feature cards, detail-page banner | 1200x675 (16:9) |
+| `heroImage` | Discover list rows and Library rows (16:9 capsule), featured spotlight, feature cards, detail-page banner | 1200x675 (16:9) |
 | `heroImageDark` | Same surfaces when the user's theme is dark | 1200x675 (16:9) |
 | `heroImageDetail` / `heroImageDetailDark` | Detail-page banner only, preferred over `heroImage` there | 1200x288 (25:6) |
 

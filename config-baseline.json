@@ -3774,6 +3774,7 @@
         "mcp_probe_timeout_secs": 15,
         "widget_density": "more",
         "verbosity": "default",
+        "link_previews": false,
         "tail_fork_enabled": false,
         "auto_open_browser": true,
         "quick_send": false,
@@ -3946,6 +3947,20 @@
         "concise"
       ],
       "defaultValue": "default"
+    },
+    {
+      "path": "dashboard.link_previews",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Link Previews",
+      "help": "Render http(s) links in assistant messages as favicon + page title instead of a raw URL. Off by default because it is a network decision, not a display one: this machine fetches every link the model outputs, so each linked site sees a request from your IP address. When false the /api/link-meta endpoint fetches nothing and returns 403.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.tail_fork_enabled",

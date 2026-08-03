@@ -1,10 +1,60 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 400 200">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" width="480" height="270">
   <defs>
-    <linearGradient id="gl" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#f1f5f9"/>
-      <stop offset="100%" stop-color="#e2e8f0"/>
+    <linearGradient id="df-bg-l" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f5f7fb"/>
+      <stop offset="100%" stop-color="#e4eaf4"/>
     </linearGradient>
   </defs>
-  <rect width="400" height="200" fill="url(#gl)" rx="8"/>
-  <text x="200" y="105" text-anchor="middle" fill="#475569" font-family="system-ui" font-size="16" font-weight="500">Dev Fleet</text>
+  <rect width="480" height="270" rx="12" fill="url(#df-bg-l)"/>
+  <circle cx="58" cy="38" r="20" fill="#c7d2fe" opacity="0.55"/>
+  <circle cx="432" cy="236" r="30" fill="#a5b4fc" opacity="0.45"/>
+
+  <!-- Worktree trunk: three branches checked out side by side -->
+  <line x1="48" y1="52" x2="48" y2="200" stroke="#6366f1" stroke-width="2" opacity="0.45"/>
+
+  <g>
+    <rect x="28" y="62" width="220" height="44" rx="8" fill="#ffffff" stroke="#d7dfeb" stroke-width="1.5"/>
+    <circle cx="48" cy="84" r="5" fill="#6366f1"/>
+    <rect x="66" y="76" width="110" height="6" rx="3" fill="#4f46e5" opacity="0.7"/>
+    <rect x="66" y="88" width="70" height="5" rx="2.5" fill="#cbd5e1"/>
+    <rect x="196" y="77" width="40" height="14" rx="7" fill="#10b981" opacity="0.8"/>
+  </g>
+
+  <g>
+    <rect x="28" y="118" width="220" height="44" rx="8" fill="#ffffff" stroke="#d7dfeb" stroke-width="1.5"/>
+    <circle cx="48" cy="140" r="5" fill="#6366f1"/>
+    <rect x="66" y="132" width="94" height="6" rx="3" fill="#4f46e5" opacity="0.55"/>
+    <rect x="66" y="144" width="58" height="5" rx="2.5" fill="#cbd5e1"/>
+    <rect x="196" y="133" width="40" height="14" rx="7" fill="#f59e0b" opacity="0.8"/>
+  </g>
+
+  <g opacity="0.65">
+    <rect x="28" y="174" width="220" height="44" rx="8" fill="#ffffff" stroke="#d7dfeb" stroke-width="1.5"/>
+    <circle cx="48" cy="196" r="5" fill="#94a3b8"/>
+    <rect x="66" y="188" width="82" height="6" rx="3" fill="#94a3b8" opacity="0.7"/>
+    <rect x="66" y="200" width="64" height="5" rx="2.5" fill="#cbd5e1"/>
+    <rect x="196" y="189" width="40" height="14" rx="7" fill="#94a3b8" opacity="0.7"/>
+  </g>
+
+  <!-- One of them brought up as a pod: its own window, its own port -->
+  <rect x="280" y="62" width="170" height="130" rx="10" fill="#ffffff" stroke="#d0d9e8" stroke-width="1.5"/>
+  <circle cx="296" cy="78" r="3.5" fill="#f87171"/>
+  <circle cx="308" cy="78" r="3.5" fill="#f59e0b"/>
+  <circle cx="320" cy="78" r="3.5" fill="#10b981"/>
+  <circle cx="434" cy="78" r="8" fill="#10b981" opacity="0.2"/>
+  <circle cx="434" cy="78" r="4" fill="#10b981"/>
+  <line x1="280" y1="92" x2="450" y2="92" stroke="#e2e8f0" stroke-width="1.5"/>
+  <rect x="294" y="106" width="64" height="8" rx="4" fill="#6366f1"/>
+  <rect x="294" y="126" width="130" height="5" rx="2.5" fill="#cbd5e1"/>
+  <rect x="294" y="140" width="104" height="5" rx="2.5" fill="#cbd5e1" opacity="0.8"/>
+  <rect x="294" y="154" width="118" height="5" rx="2.5" fill="#cbd5e1" opacity="0.6"/>
+  <rect x="294" y="168" width="76" height="5" rx="2.5" fill="#cbd5e1" opacity="0.45"/>
+
+  <!-- Fleet glyph, echoing the app icon -->
+  <g transform="translate(384,208)">
+    <rect width="52" height="18" rx="4" fill="#6366f1"/>
+    <circle cx="10" cy="9" r="2.5" fill="#eef2ff"/>
+    <rect y="24" width="52" height="18" rx="4" fill="#6366f1" opacity="0.7"/>
+    <circle cx="10" cy="33" r="2.5" fill="#eef2ff" opacity="0.85"/>
+  </g>
 </svg>

@@ -3365,6 +3365,11 @@
       "select": "Seleziona",
       "workspace_name": "Nome del workspace",
       "workspace_name_2": "workspace-name"
+    },
+    "linkPreview": {
+      "copied": "Copiato",
+      "copy_url": "Copia URL",
+      "copy_url_of": "Copia URL di {{name}}"
     }
   },
   "hooks": {
@@ -6103,6 +6108,8 @@
         "status_unavailable": "Stato non disponibile"
       },
       "chatPanel": {
+        "link_previews": "Anteprime dei link",
+        "show_a_favicon_and_page_title_instead_of_the_raw": "Mostra la favicon e il titolo della pagina invece dell'URL grezzo. Da quel momento questo computer scarica ogni link prodotto dal modello, quindi ogni sito collegato vedrà una richiesta dal tuo indirizzo IP.",
         "about_you": "Su di te",
         "auto_compact_threshold": "Soglia di compattazione automatica",
         "combine_follow_up_messages_into_a_single_labeled": "Unisci i messaggi successivi in un unico prompt etichettato mentre l'agente è occupato",

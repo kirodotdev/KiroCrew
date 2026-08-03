@@ -1,9 +1,13 @@
 /**
  * InstalledAppCard — management row for the Library tab.
  *
- * Moved verbatim from AppsPage's inline ``AppCard`` during the Discover
- * revamp (behavior unchanged): expandable row with Open / Enable / Disable /
- * Update / Sync / Uninstall actions and a details drawer.
+ * Originally moved verbatim from AppsPage's inline ``AppCard`` during the
+ * Discover revamp, which left the Library rendering a flat lucide icon while
+ * Discover grew hero art — so the same app looked like two different apps
+ * depending on the tab. The leading slot is now the same 16:9 hero capsule
+ * AppListRow uses (``useHeroArt`` + gradient/icon fallback); the rest of the
+ * row is unchanged: Open / Enable / Disable / Update / Sync / Uninstall
+ * actions and a details drawer.
  */
 import { useState } from 'react'
 import {
@@ -13,7 +17,7 @@ import {
 } from 'lucide-react'
 import { api } from '../../api/client'
 import { Badge, Btn } from '../ui'
-import AppIcon from '../AppIcon'
+import HeroCapsule from './HeroCapsule'
 import type { InstalledApp } from './types'
 
 import { i18nT } from '../../i18n/t'
@@ -69,9 +73,15 @@ export default function InstalledAppCard({
       <div className="p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 flex-1 min-w-0">
-            <div className="w-12 h-12 rounded-xl bg-accent/10 flex items-center justify-center shrink-0 mt-0.5 overflow-hidden">
-              <AppIcon icon={pageIcon} iconUrl={iconUrl} size={36} />
-            </div>
+            {/* Hero capsule — same art and fallback chain as Discover's rows,
+                so one app looks like itself on both tabs. */}
+            <HeroCapsule
+              name={app.name}
+              art={{ heroImage: m?.heroImage, heroImageDark: m?.heroImageDark, screenshots: m?.screenshots }}
+              icon={pageIcon}
+              iconUrl={iconUrl}
+              className="w-24 h-[54px] mt-0.5"
+            />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-1 flex-wrap">
                 <button type="button" className="font-medium text-text cursor-pointer hover:text-accent transition-colors bg-transparent border-0 p-0 text-left" onClick={onDetail}>{app.displayName || app.name}</button>

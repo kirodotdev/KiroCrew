@@ -281,8 +281,9 @@ export function unitLiteralHits(file: string, source: string): number[] {
  *
  * Nothing is stored. Git already holds the previous state, so the base count is
  * computed rather than read from a ledger that can go stale or be re-snapshotted
- * past. Returns `null` only when there is genuinely nothing to diff — a push to
- * `main`, where `I18N_BASE_REF` is unset.
+ * past. Returns `null` only when there is genuinely nothing to diff — a bare local
+ * run with `I18N_BASE_REF` unset. CI always supplies it, on a PR and on a push to
+ * `main` alike.
  *
  * When a base ref IS configured but cannot be resolved this THROWS rather than
  * returning `null`: a gate that cannot run must fail, not pass. `ci.yml` records
@@ -466,7 +467,7 @@ describe('a number is never glued to a unit literal', () => {
    */
   it('[added-lines] no finding sits on a line this branch wrote', () => {
     const s = scope()
-    if (!s) return // push to main: no branch to diff against
+    if (!s) return // bare local run: no base commit to diff against
 
     const introduced: string[] = []
     for (const rel of s.touched) {

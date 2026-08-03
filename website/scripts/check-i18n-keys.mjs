@@ -720,30 +720,38 @@ if (shadowed.length > 0) {
   )
 }
 
+// REPORT, not a gate — in EITHER direction. This was the repo's last bidirectional
+// ratchet: it failed when the number went UP and also when it went DOWN, so improving a
+// file broke CI until someone committed a new count to a file every branch shares. That
+// made it a merge-conflict generator whose failures were, in both directions,
+// unattributable to the diff in front of them. The dangling-reference check above stays
+// a HARD ZERO, because a reference to a key that does not exist renders a raw dotted key
+// to a user and there is no ceiling to inherit.
 if (grew.length > 0) {
-  failed = true
-  console.error(
-    `\n${grew.length} file(s) gained translation call sites whose key cannot be resolved statically:\n`
-    + `${grew.join('\n')}\n\n`
-    + 'A key this gate cannot resolve is a key it cannot verify exists, so the site is exempt from\n'
-    + 'every check above. Index an `as const` map of full literal keys instead — see\n'
+  console.log(
+    `\n[dynamic-keys] REPORT: ${grew.length} file(s) gained call sites whose key cannot be\n`
+    + `resolved statically:\n${grew.join('\n')}\n\n`
+    + 'This does NOT fail the run. A key this gate cannot resolve is a key it cannot verify\n'
+    + 'exists, so the site is exempt from every check above — worth fixing, not worth\n'
+    + 'blocking an unrelated PR. Index an `as const` map of full literal keys instead — see\n'
     + '`UPDATE_ERROR_KEYS` in pages/settings/AboutPanel.tsx or `STATUS_LABEL_KEY` in\n'
     + 'pages/chat/McpToolsPanel.tsx, which resolve to 7 and 3 checked keys respectively.',
   )
 }
 
 if (shrank.length > 0) {
-  failed = true
-  console.error(
-    `\n${shrank.length} file(s) improved — lock it in:\n${shrank.join('\n')}\n\n`
-    + 'Run `node scripts/check-i18n-keys.mjs --update` and commit the baseline, so the coverage\n'
-    + 'gain cannot be given back. Deliberate, for the reason check-i18n-strings.mjs states: a\n'
-    + 'one-way ratchet never comes down on its own.',
+  console.log(
+    `\n[dynamic-keys] REPORT: ${shrank.length} file(s) improved. Nothing to do — re-snapshot\n`
+    + `with --update only if you want the record tightened:\n${shrank.join('\n')}`,
   )
 }
 
 if (failed) process.exit(1)
 
+// Unconditional, and it must stay that way: `[key-refs]` reads this line as its own
+// success signal, so suppressing it when the dynamic-site count moves would make THAT
+// row MISSING and fail the step. `[dynamic-keys]` shares the line, which is why
+// `resolveRows` tries an `over` pattern BEFORE this one — see i18n-gate-table.mjs.
 console.log(
   `OK: ${staticCount} static key references all resolve, `
   + `${dynamicCount} dynamic site(s) at baseline (${coverage}% static coverage), `

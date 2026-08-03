@@ -303,8 +303,8 @@ function scan() {
 /**
  * Files this branch touched, and which of their lines it wrote.
  *
- * Returns `null` only when there is genuinely no base to compare against — a push to
- * `main`, where `I18N_BASE_REF` is empty. If a base ref IS configured and cannot be
+ * Returns `null` only when there is genuinely no base to compare against — a bare
+ * local run with `I18N_BASE_REF` empty. If a base ref IS configured and cannot be
  * used, this exits non-zero rather than returning `null`: `ci.yml` records having
  * watched the sibling gate skip itself green on a failed fetch, and a gate that cannot
  * run must fail, not pass.
@@ -313,7 +313,17 @@ function diffScope() {
   const baseRef = process.env.I18N_BASE_REF
   if (!baseRef) return null
   const cwd = path.resolve(ROOT, '..')
-  const git = (args) => execFileSync('git', args, { cwd, encoding: 'utf-8', maxBuffer: 128 * 1024 * 1024 })
+  // `stdio` pipes stderr DELIBERATELY. `execFileSync` inherits the child's stderr by
+  // default, so `readBase()`'s expected miss — a file this branch created has no
+  // version at the base — printed a raw `fatal: path '...' exists on disk, but not in
+  // <sha>` straight into the CI log, unlabelled, between two OK lines. The exception
+  // was already caught and handled; only git's own chatter escaped. Every PR that
+  // added a file under `website/src` printed it, indistinguishable from a real
+  // failure. Piped, a genuine git error still surfaces — as the thrown error's
+  // message, at the place that decided to fail.
+  const git = (args) => execFileSync('git', args, {
+    cwd, encoding: 'utf-8', maxBuffer: 128 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'],
+  })
 
   try {
     git(['rev-parse', '--verify', `${baseRef}^{commit}`])
@@ -465,8 +475,8 @@ async function main() {
   const scope = diffScope()
   if (scope === null) {
     console.log(
-      '[diff-scope] skipped — I18N_BASE_REF is unset, so there is no branch to diff '
-      + '(push to main). Only the per-file ceilings were checked.',
+      '[diff-scope] skipped — I18N_BASE_REF is unset, so there is nothing to diff. '
+      + 'Only the per-file ceilings were checked. CI always sets it, so this is a local run.',
     )
   } else {
     // Both gates below count EVERY finding from the strict pass, including the ones
@@ -526,14 +536,19 @@ async function main() {
     }
   }
 
+  // REPORT, not a gate — same reasoning as [allcaps] above. These per-file ceilings are a
+  // whole-repo measurement against committed numbers, so a file can cross its ceiling
+  // because another branch landed. `[added-lines]` and `[vs-base]` above already enforce
+  // this population against the base ref, where every finding IS attributable.
   if (grew.length > 0) {
-    console.error(
-      `${grew.length} file(s) gained untranslated strings:\n${grew.join('\n')}\n\n`
-      + 'Wrap them with `i18nT()` and add the keys to the catalog. If a string is genuinely\n'
-      + 'not user-visible copy, exclude it by shape in `eslint.i18n.config.js` rather than\n'
-      + 'raising the baseline.',
+    console.log(
+      `[untranslated] REPORT: ${grew.length} file(s) are over their committed ceiling:\n`
+      + `${grew.join('\n')}\n\n`
+      + 'This does NOT fail the run — a stored per-file count cannot be charged to one\n'
+      + 'diff. Wrap them with `i18nT()` and add the keys to the catalog. If a string is\n'
+      + 'genuinely not user-visible copy, exclude it by shape in `eslint.i18n.config.js`\n'
+      + 'rather than raising the baseline.',
     )
-    process.exit(1)
   }
 
   // The class the ceilings do not cover, as its own upward-only number so it has
@@ -560,38 +575,67 @@ async function main() {
     )
     process.exit(2)
   }
+  // REPORT, not a gate. A whole-repo total is not attributable to a diff: another branch
+  // can push this number past the ceiling without touching your files, and then the
+  // failure names no diff anyone can fix. It happened here twice in one day — `main`
+  // itself sat at 1120 against its own ceiling of 1118 within minutes of #1099 setting
+  // it, and every open PR inherited the red. The diff-scoped half of this script
+  // ([added-lines] / [vs-base]) is what enforces the same population, and it reads the
+  // base ref instead of a committed number. Only the three hard zeros still fail on a
+  // whole-repo measurement, because a hard zero has no ceiling to inherit.
   if (strictOnly > strictCeiling) {
     const worst = Object.entries(strictOnlyByFile).sort((a, b) => b[1] - a[1]).slice(0, 15)
-    console.error(
-      `${strictOnly} untranslated string(s) sit inside ALL-CAPS module constants, above the\n`
-      + `ceiling of ${strictCeiling}. These are invisible to the per-file ceilings by design —\n`
-      + 'store a catalog key in the table and translate where it renders (see\n'
-      + '`FILTER_LABEL_KEY` in pages/ChatSidebar.tsx). Densest files:\n'
+    console.log(
+      `[allcaps] REPORT: ${strictOnly} untranslated string(s) sit inside ALL-CAPS module\n`
+      + `constants, ${strictOnly - strictCeiling} above the ceiling of ${strictCeiling}. `
+      + 'This does NOT fail the run —\n'
+      + 'a whole-repo total cannot be charged to one diff. [added-lines] covers the same\n'
+      + 'population for lines you wrote. Store a catalog key in the table and translate\n'
+      + 'where it renders (see `FILTER_LABEL_KEY` in pages/ChatSidebar.tsx). Densest files:\n'
       + worst.map(([f, n]) => `  ${n}\t${f}`).join('\n'),
     )
-    process.exit(1)
   }
-  console.log(
-    `OK: ${strictOnly} untranslated string(s) inside ALL-CAPS constants across `
-    + `${Object.keys(strictOnlyByFile).length} files, at or below the ceiling of ${strictCeiling}.`,
-  )
+  // Only when it IS at or below — the report above already said otherwise, and printing
+  // both would make the log contradict itself.
+  if (strictOnly <= strictCeiling) {
+    console.log(
+      `OK: ${strictOnly} untranslated string(s) inside ALL-CAPS constants across `
+      + `${Object.keys(strictOnlyByFile).length} files, at or below the ceiling of ${strictCeiling}.`,
+    )
+  }
 
   // Deliberately NOT a failure — see the header. Re-snapshotting is optional and
   // never required to land a change, which is what keeps parallel branches from
   // colliding in this file.
+  //
+  // Aggregated rather than listed. It was 83 lines on a clean run, one per improved
+  // file, every one saying the same thing, on every PR, followed by "Nothing to do" —
+  // which reads as a contradiction and trains the reader to skip the block. The
+  // aggregate states what the drift actually costs: that slack is what a ceiling would
+  // hand to a merge-conflict resolution. The per-file detail is still emitted, folded
+  // into a group so CI keeps every number without spending 83 lines on them.
   if (shrank.length > 0) {
+    const slack = shrank.reduce((n, line) => {
+      const m = line.match(/: (\d+) → (\d+)$/)
+      return m ? n + (Number(m[1]) - Number(m[2])) : n
+    }, 0)
     console.log(
-      `${shrank.length} file(s) improved since the last snapshot:\n${shrank.join('\n')}\n\n`
-      + 'Nothing to do. Run `node scripts/check-i18n-strings.mjs --update` if you want to\n'
-      + 'tighten the ceilings now, but only when no other i18n branch is in flight — that\n'
-      + 'regeneration is what makes this file conflict.',
+      `[ceilings] STALE on ${shrank.length} file(s) — ${slack} string(s) of slack. `
+      + 'Optional: `node scripts/check-i18n-strings.mjs --update`, but only when no other '
+      + 'i18n branch is in flight — that regeneration is what makes this file conflict.',
     )
+    // No `::group::` here: `i18n-check.mjs` already folds this script's whole output
+    // into one, and Actions does not nest groups. Run standalone, the detail just
+    // prints, which is what someone running it by hand wants.
+    console.log(shrank.join('\n'))
   }
 
-  console.log(
-    `OK: ${total} untranslated strings across ${Object.keys(byFile).length} files, `
-    + `at or below the baseline of ${base._total ?? 'unknown'}.`,
-  )
+  if (grew.length === 0) {
+    console.log(
+      `OK: ${total} untranslated strings across ${Object.keys(byFile).length} files, `
+      + `at or below the baseline of ${base._total ?? 'unknown'}.`,
+    )
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {

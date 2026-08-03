@@ -1579,14 +1579,13 @@ async def _handle_connection(
        cancellation.
     """
     # Endpoint hardening: deny-by-default peer-principal check on every
-    # platform. Where the platform can confirm the peer principal (Linux via
-    # SO_PEERCRED, Windows via a pipe-client SID comparison), reject any
-    # connection that is not a positively-confirmed MATCH -- both a MISMATCH and
-    # an UNVERIFIABLE lookup failure fail closed. Where no mechanism is wired
-    # (macOS), the principal cannot be read, so rather than silently proceeding
-    # we positively verify the filesystem access gate -- the 0600 socket mode
-    # that already prevents any other uid from connecting -- and fail closed if
-    # it has been loosened.
+    # platform. All three supported platforms can confirm the peer principal
+    # (Linux SO_PEERCRED, Windows pipe-client SID comparison, macOS
+    # LOCAL_PEERCRED), so any connection that is not a positively-confirmed
+    # MATCH is rejected -- a MISMATCH and an UNVERIFIABLE lookup failure both
+    # fail closed. The else branch below is now reached only on a POSIX platform
+    # with none of those mechanisms, where the principal cannot be read at all
+    # and the 0600 socket mode is the only gate available.
     if socketsec.PEER_IDENTITY_SUPPORTED:
         peer_result = socketsec.check_peer_is_self(writer)
         if peer_result is not socketsec.PeerCredResult.MATCH:
@@ -1597,21 +1596,20 @@ async def _handle_connection(
             _audit_peer_denied(f"peer principal not confirmed ({peer_result.value})")
             return
     else:
-        # macOS: the principal check is advisory-plus-MISMATCH-enforcing, NOT
+        # No principal mechanism on this platform: MISMATCH-enforcing but not
         # UNVERIFIABLE-enforcing, and the asymmetry is deliberate. A positively
-        # parsed xucred naming a different uid is a real intruder and is refused.
-        # A check that merely FAILED (getsockopt error, unexpected cr_version,
-        # short buffer) must not refuse: folding macOS into
-        # PEER_IDENTITY_SUPPORTED would make every such failure a rejection, and
-        # that is exactly how the Windows port shipped a gate that denied 100% of
-        # connections while looking merely strict. So UNVERIFIABLE keeps falling
-        # through to the filesystem gate below -- byte-identical to the behaviour
-        # before this check existed. Strictly more protection, no new lockout.
+        # parsed foreign principal is a real intruder and is refused. A check
+        # that merely FAILED must not refuse, because on a platform where the
+        # lookup can never succeed that would reject every connection -- the
+        # shape of the Windows impersonation defect that denied 100% of them
+        # while looking merely strict. So UNVERIFIABLE falls through to the
+        # filesystem gate below, which is a real check rather than a shrug: a
+        # 0600 socket already prevents any other uid from connecting.
         #
-        # Promote macOS into PEER_IDENTITY_SUPPORTED only once the macOS CI job
-        # has demonstrated MATCH on real hardware over time; that flip is one
-        # line and test_macos_check_matches_a_socket_we_connected_to_ourselves is
-        # the evidence it depends on.
+        # macOS used to take this branch. It was promoted into
+        # PEER_IDENTITY_SUPPORTED once the macOS CI job proved LOCAL_PEERCRED
+        # returns MATCH on real hardware over an accepted socket, with that
+        # canary enforced by node id so it cannot silently stop running.
         peer_result = socketsec.check_peer_is_self(writer)
         if peer_result is socketsec.PeerCredResult.MISMATCH:
             logger.warning(

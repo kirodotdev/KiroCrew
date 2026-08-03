@@ -3279,6 +3279,11 @@
       "select": "选择",
       "workspace_name": "工作区名称",
       "workspace_name_2": "workspace-name"
+    },
+    "linkPreview": {
+      "copied": "已复制",
+      "copy_url": "复制网址",
+      "copy_url_of": "复制 {{name}} 的网址"
     }
   },
   "hooks": {
@@ -5963,6 +5968,8 @@
         "status_unavailable": "状态不可用"
       },
       "chatPanel": {
+        "link_previews": "链接预览",
+        "show_a_favicon_and_page_title_instead_of_the_raw": "显示网站图标和页面标题，而不是原始网址。开启后，这台机器会抓取模型输出的每个链接，因此每个被链接站点都会看到来自你 IP 地址的请求。",
         "about_you": "关于你",
         "auto_compact_threshold": "自动压缩阈值",
         "combine_follow_up_messages_into_a_single_labeled": "代理繁忙时，将后续消息合并为单条带标签的提示词",

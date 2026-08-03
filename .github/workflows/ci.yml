@@ -251,9 +251,29 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop]" --group dev
 
+      # The macOS peer-identity check is admission-gating: gatewayd refuses any
+      # connection that is not MATCH, so this canary -- a real transport.serve /
+      # connect round trip asserting MATCH on real Darwin hardware -- is the ONLY
+      # evidence that the gate admits its own peer. `pytest -q` does not name
+      # passing tests and a skip exits 0, so a canary that quietly stopped running
+      # (a changed skipif, a collection change) would leave this job green while
+      # the gate it proves went unverified. That is the same blindness that let
+      # four mutation-verified tests sit unrun inside conftest's Windows
+      # collect_ignore. Run it by node id and fail unless it actually PASSED.
+      - name: Assert the macOS peer-identity canary runs (not skipped)
+        run: |
+          set -o pipefail
+          pytest -v -n0 --no-cov --timeout=120 \
+            "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves" \
+            | tee canary.log
+          grep -q "1 passed" canary.log || {
+            echo "::error::macOS peer-identity canary did not PASS (skipped or not collected)"
+            exit 1
+          }
+
       - name: Run gateway + platform suites
         run: |
-          pytest -q --timeout=180 --no-cov \
+          pytest -q -rs --timeout=180 --no-cov \
             test/test_mcp_gateway_*.py \
             test/test_socketsec.py \
             test/test_platform_compat.py \
@@ -486,82 +506,65 @@ jobs:
       - name: Check i18n extraction, key references and plurals
         working-directory: website
         env:
-          # Two gates need a ref to diff against: `check-source-strings.mjs` compares the
-          # catalogs against it to find NEWLY ADDED keys and CHANGED values, and
+          # Two gates need a commit to diff against: `check-source-strings.mjs` compares
+          # the catalogs against it to find NEWLY ADDED keys and CHANGED values, and
           # `check-i18n-strings.mjs` uses it to find literals on lines this branch wrote.
-          # On a PR that ref is the base branch; on a push to main there is no branch to
-          # diff, and both scopes skip while the ceilings still run. Note
-          # `frontend-lint`'s checkout is shallow, so the ref has to be fetched — see the
-          # step below. `check-i18n-strings.mjs` falls back from the merge base to the
-          # base tip for exactly that reason, and EXITS NON-ZERO if a configured ref
-          # cannot be resolved rather than skipping itself green.
-          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
-        # Two codemods with different jobs to do. `i18n-plural-codemod.mjs --check` is a
-        # hard gate: it passes today and any reintroduced `{n} {t('item')}s`
-        # concatenation fails it. `i18n-codemod.mjs --check --baseline=N` is a
-        # ratchet, mirroring the `--max-warnings` idiom above: a number of user-visible
-        # strings are unextracted today, so a hard check would fail on arrival.
-        # Ratchet the baseline DOWN as they are converted; never raise it.
+          # On a PR this is `base.sha` — the commit the MERGE REF was computed against —
+          # NOT `origin/<base.ref>`. The tip is a moving target measured at step time while
+          # the checked-out tree is a snapshot from job start, so anything that lands on
+          # `main` in between appears only on the base side and is charged to every PR
+          # running in that window. Observed: a PR whose run started 36s before #1223
+          # merged was billed 58 render findings for `WelcomeView` translations its head
+          # simply did not have yet. `base.sha` makes the two sides consistent by
+          # construction. On a push to main it is the commit the push replaced, so a merge
+          # that only breaks in combination with another merge is still charged to a diff. Note `frontend-lint`'s
+          # checkout is shallow, so it has to be fetched — see the step below.
+          # `check-i18n-strings.mjs` falls back from the merge base to the base tip for
+          # exactly that reason, and EXITS NON-ZERO if a configured ref cannot be
+          # resolved rather than skipping itself green.
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        # `npm run i18n:check` is a RUNNER (`website/scripts/i18n-check.mjs`), not an `&&`
+        # chain: it executes all six scripts and reports the eleven checks they contain in
+        # one table, because `&&` short-circuits and a PR only ever learned about its first
+        # failing gate. `--check` on the two codemods is deliberately not `--dry-run`:
+        # dry-run reports and exits 0, which would make this step decorative. An
+        # unrecognised flag makes those scripts refuse to run rather than fall through to
+        # their destructive conversion path.
         #
-        # `--check` is deliberately not `--dry-run`: dry-run reports and exits 0,
-        # which would make this step decorative. Note also that an unrecognised
-        # flag makes the script refuse to run rather than fall through to its
-        # destructive conversion path.
+        # ONLY TWO KINDS OF CHECK CAN FAIL THIS STEP.
         #
-        # The same script also runs `lint:i18n`, which drives a SECOND eslint
-        # invocation with its own config. `no-literal-string` at `mode: 'all'` reports
-        # thousands of findings, and folding those into the 1116 budget above would make
-        # an i18n regression indistinguishable from a new `no-explicit-any`.
+        #   DIFF-SCOPED, zero tolerance — a finding on a line you wrote is yours and there
+        #   is no number to raise:
+        #     [added-lines]     a user-visible literal on a line THIS BRANCH WROTE.
+        #     [vs-base]         a file you touched holds more than it did at the base.
+        #     [source-strings]  new ENGLISH keys must be well-shaped copy.
+        #     [changed-values]  catalog QA over values this branch added or changed.
         #
-        # Which gate trips for which defect, since several overlap here:
-        #   `check-i18n-strings.mjs` [added-lines] — ZERO tolerance on a user-visible
-        #     literal sitting on a line THIS BRANCH WROTE. No baseline, nothing to
-        #     regenerate, so it cannot be bought past. This is the real coverage gate.
-        #   `check-i18n-strings.mjs` / `untranslated-baseline.json` — a PER-FILE CEILING
-        #     over the frozen debt on lines nobody touched. UPWARD-ONLY: going over
-        #     fails, going under does not. The ultimate goal is zero for every file, at
-        #     which point the ceiling is deleted and the gate is unconditional.
-        #   `i18n-codemod.mjs --check --baseline=N` — one AGGREGATE count of strings the
-        #     codemod could mechanically extract (JSX text and attributes). Also
-        #     upward-only.
-        #   `check-source-strings.mjs` [source-strings] — new ENGLISH keys must be
-        #     well-shaped copy, not sentence fragments.
-        #   `check-source-strings.mjs` [changed-values] — catalog QA at ZERO tolerance
-        #     over every catalog value the branch added or changed, in all languages.
-        #     This is what replaced `qa-allowlist.json`'s per-site frozen set.
-        #   `check-i18n-keys.mjs` / `dynamic-keys-baseline.json` — asks the one question none
-        #     of the others do: does the key a call site names actually EXIST. Every gate
-        #     above starts from the catalogs and works outward, so a reference to a key that
-        #     was renamed or deleted is invisible to all of them — `catalogParity` included,
-        #     because a key absent from `en` is absent from all 9 targets, which is perfect
-        #     parity. i18next returns a missing key as its own fallback, so the failure is a
-        #     raw dotted key rendered into the UI. This gate's first run found one already
-        #     shipping (`components.linkedSurfacesSection.released`), fixed here. Two
-        #     dispositions in one script: dangling references are a HARD ZERO (each is a
-        #     user-visible bug, so there is no acceptable count), while call sites whose key
-        #     cannot be resolved statically are a per-file bidirectional ratchet — that
-        #     number is the gate's coverage statement, 1 site of ~5500 today. It stays
-        #     bidirectional because nothing diff-scoped covers the same defect, which is
-        #     the rule stated below. WHOLE-REPO, not diff-scoped, and necessarily so: a reference and its catalog entry are
-        #     edited independently, so a catalog-only rename dangles references in files the
-        #     PR never opens. It needs no base ref, so unlike `check-source-strings.mjs` it
-        #     cannot silently skip itself.
-        #   `gen-pseudolocale.mjs --check` — `en-XA` drift only, not coverage.
+        #   WHOLE-REPO HARD ZEROS — no ceiling to inherit, so a new one is always a diff:
+        #     [key-refs]        a `t()` naming a key that does not exist. i18next returns a
+        #                       missing key as its own fallback, so the symptom is a raw
+        #                       dotted key rendered to a user. Necessarily whole-repo: a
+        #                       reference and its catalog entry are edited independently, so
+        #                       a catalog-only rename dangles references in files the PR
+        #                       never opens. Needs no base ref, so it cannot skip itself.
+        #     [plurals]         a `{n} {t('item')}s` concatenation.
+        #     [pseudolocale]    `en-XA.json` stale against its generator.
         #
-        # Why some per-file baselines stopped being bidirectional and others did not.
-        # The rule: a count may stop failing on IMPROVEMENT only when a DIFF-SCOPED gate
-        # fails on the regression regardless of the count. `untranslated-baseline.json`,
-        # the qa ceilings and the codemod baseline qualify — [added-lines] and
-        # [changed-values] cover them. `deadKeys`, `glossary`, `localeFormatting` and this
-        # script's dynamic-site counts do not, so they stay exact in both directions.
+        # EVERYTHING ELSE IS REPORT ONLY — [untranslated], [allcaps], [extractable] and
+        # [dynamic-keys]. Each is a stored whole-repo total, written by whichever branch
+        # measured it last, so another branch can push it past its number without touching
+        # your files — and then the failure names no diff anyone can fix. Measured twice in
+        # one day: `main` sat at 1120 against its own ALL-CAPS ceiling of 1118 within
+        # minutes of it being set, and every open PR inherited the red. [dynamic-keys] was
+        # the worst, failing when a file IMPROVED. The numbers are still printed; they do
+        # not gate. See website/AGENTS.md for the residual gap this leaves on [dynamic-keys]
+        # specifically, and the qa `CEILINGS` / `deadKeys` / `glossary` ratchets that are
+        # still exact in both directions.
         #
-        # The three that changed did so because each is one generated ledger, which made it
-        # a merge conflict between every parallel i18n branch, and every merge to main
-        # invalidated the number in all the others. The guard also did not do what it
-        # looked like it did: the bypass is one `--update`, and `195904c` shipped a new app
-        # with 113 untranslated strings while moving `_total` 1747 -> 1860, green, under the
-        # fully bidirectional gate. Moving enforcement to the diff is a net tightening —
-        # that commit fails [added-lines] today.
+        # `check-i18n-strings.mjs` drives a SECOND eslint invocation with its own config.
+        # `no-literal-string` at `mode: 'all'` reports thousands of findings, and folding
+        # those into the 1116 budget above would make an i18n regression indistinguishable
+        # from a new `no-explicit-any`.
         run: |
           # `actions/checkout` fetches depth 1, so the base branch is not present and
           # `git show origin/main:…` would fail. Fetch just that one ref.
@@ -573,12 +576,10 @@ jobs:
           # website/src/i18n/locales/en.json at origin/main (shallow clone?)" and the
           # step still went green. A gate that cannot run must fail, not pass: an
           # unavailable base ref is a CI problem to fix, not a reason to stop checking.
-          if [ -n "$I18N_BASE_REF" ]; then
-            git fetch --depth=1 origin "${I18N_BASE_REF#origin/}" \
-              || { echo "::error::could not fetch base ref ${I18N_BASE_REF#origin/}; the new-key i18n gate cannot run"; exit 1; }
-            git update-ref "refs/remotes/$I18N_BASE_REF" FETCH_HEAD \
-              || { echo "::error::could not update $I18N_BASE_REF; the new-key i18n gate cannot run"; exit 1; }
-          fi
+          # Absolute path: this step's working-directory is `website`.
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the new-key i18n gate')" || exit 1
+          export I18N_BASE_REF
           npm run i18n:check
 
   cfn-lint:
@@ -623,23 +624,20 @@ jobs:
         env:
           # Two vitest gates are DIFF-SCOPED rather than baseline-scoped —
           # `localeFormatting.test.ts`'s `[added-lines]` / `[vs-base]`. They read the
-          # base ref out of git instead of storing a count, and they skip themselves
+          # base commit out of git instead of storing a count, and they skip themselves
           # when this is empty. Without it they would skip on every PR, which is the
           # "gate nobody watched go red" failure mode their own docs warn about.
-          # Same expression as `frontend-lint`: the base branch on a PR, empty on a
-          # push to main, where there is no branch to diff.
-          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
-        # `actions/checkout` fetches depth 1, so the base branch is not present and
-        # `git diff`/`git show` against it would fail. Fetch just that one ref, and
+          # Same expression as `frontend-lint`: the base branch on a PR, the commit the
+          # push replaced on a push to main.
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        # `actions/checkout` fetches depth 1, so the base is not present and
+        # `git diff`/`git show` against it would fail. Fetch just that one commit, and
         # fail the step if it cannot be fetched — the gates throw on an unresolvable
         # configured ref rather than skipping green, and this keeps the two consistent.
         run: |
-          if [ -n "$I18N_BASE_REF" ]; then
-            git fetch --depth=1 origin "${I18N_BASE_REF#origin/}" \
-              || { echo "::error::could not fetch base ref ${I18N_BASE_REF#origin/}; the diff-scoped i18n test gates cannot run"; exit 1; }
-            git update-ref "refs/remotes/$I18N_BASE_REF" FETCH_HEAD \
-              || { echo "::error::could not update $I18N_BASE_REF; the diff-scoped i18n test gates cannot run"; exit 1; }
-          fi
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the diff-scoped i18n test gates')" || exit 1
+          export I18N_BASE_REF
           npx vitest run --coverage
 
       - name: Upload coverage
@@ -719,21 +717,24 @@ jobs:
         #
         # Two runs, one per tree: [vs-base] renders the BASE commit with the same
         # scanner and fails on any per-surface increase, reading no committed number.
-        # That is what makes the ledger's upward-only ceilings legitimate under
-        # website/AGENTS.md's rule -- there is nothing to re-snapshot a regression
-        # into. The base ref must be fetched first because this checkout is shallow;
-        # the script EXITS NON-ZERO if a configured ref cannot be resolved rather
-        # than skipping itself green, for the reason the frontend-lint job documents.
+        # It is the ONLY thing that fails; the debt record in
+        # `src/i18n/render-baseline.json` is printed and never enforced, because a
+        # stored total is written by whichever branch measured it last and two branches
+        # that never touch the same file can combine into a number neither produced --
+        # `projects.latent 16 -> 24` from #1107 + #985, red on main with no diff anyone
+        # could fix. A push to main therefore gets a base too (the commit it replaced),
+        # which is what keeps that interaction enforced somewhere. It costs a second
+        # bundle build on merges, the same ~5min every PR already pays.
+        # The base must be fetched first because this checkout is shallow; the script
+        # EXITS NON-ZERO if a configured ref cannot be resolved rather than skipping
+        # itself green, for the reason the frontend-lint job documents.
         working-directory: website
         env:
-          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || '' }}
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
-          if [ -n "$I18N_BASE_REF" ]; then
-            git fetch --depth=1 origin "${I18N_BASE_REF#origin/}" \
-              || { echo "::error::could not fetch base ref ${I18N_BASE_REF#origin/}; the diff-scoped render gate cannot run"; exit 1; }
-            git update-ref "refs/remotes/$I18N_BASE_REF" FETCH_HEAD \
-              || { echo "::error::could not update $I18N_BASE_REF; the diff-scoped render gate cannot run"; exit 1; }
-          fi
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the diff-scoped render gate')" || exit 1
+          export I18N_BASE_REF
           npm run i18n:render
 
       - name: Run E2E (smoke + Playwright)

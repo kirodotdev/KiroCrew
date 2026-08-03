@@ -3408,6 +3408,11 @@
       "select": "Выбрать",
       "workspace_name": "Название рабочей области",
       "workspace_name_2": "workspace-name"
+    },
+    "linkPreview": {
+      "copied": "Скопировано",
+      "copy_url": "Копировать URL",
+      "copy_url_of": "Копировать URL для {{name}}"
     }
   },
   "hooks": {
@@ -6173,6 +6178,8 @@
         "status_unavailable": "Статус недоступен"
       },
       "chatPanel": {
+        "link_previews": "Предпросмотр ссылок",
+        "show_a_favicon_and_page_title_instead_of_the_raw": "Показывать значок сайта и заголовок страницы вместо самой ссылки. После включения этот компьютер запрашивает каждую ссылку, которую выдаёт модель, поэтому каждый сайт увидит запрос с твоего IP-адреса.",
         "about_you": "О вас",
         "auto_compact_threshold": "Порог автосжатия",
         "combine_follow_up_messages_into_a_single_labeled": "Объединять последующие сообщения в один помеченный запрос, пока агент занят",

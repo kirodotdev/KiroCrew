@@ -1673,6 +1673,18 @@ class DashboardConfig:
             enum=["default", "concise"],
         ),
     )
+    link_previews: bool = field(
+        default=False,
+        metadata=_meta(
+            "Link Previews",
+            "Render http(s) links in assistant messages as favicon + page title "
+            "instead of a raw URL. Off by default because it is a network "
+            "decision, not a display one: this machine fetches every link the "
+            "model outputs, so each linked site sees a request from your IP "
+            "address. When false the /api/link-meta endpoint fetches nothing and "
+            "returns 403.",
+        ),
+    )
     tail_fork_enabled: bool = field(
         default=False,
         metadata=_meta(
@@ -4455,6 +4467,7 @@ class KiroCrewConfig:
                 session_grid=dashboard_data.get("session_grid", False),
                 widget_density=dashboard_data.get("widget_density", "more"),
                 verbosity=dashboard_data.get("verbosity", "default"),
+                link_previews=_safe_bool(dashboard_data.get("link_previews"), False),
                 tail_fork_enabled=dashboard_data.get("tail_fork_enabled", False),
                 terminal=dashboard_data.get("terminal", {"enabled": True}),
                 default_project=dashboard_data.get("default_project", ""),

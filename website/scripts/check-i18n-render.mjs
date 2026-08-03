@@ -38,27 +38,30 @@
  *
  *   - `dnt` findings are ZERO TOLERANCE. The catalog-level DNT check
  *     (`glossary.test.ts`) already passes, so any render-level violation is new.
- *   - **[vs-base] is the gate.** With `I18N_BASE_REF` set, this renders the BASE
- *     commit too — same scanner, same surfaces, same locales, only the bundle
- *     differs — and fails on any per-surface increase. It reads no committed
- *     number, so there is nothing to re-snapshot and nothing to absorb a
- *     regression with. That is what licenses the ledger below to be upward-only
- *     under `website/AGENTS.md`'s rule.
- *   - the LEDGER (`src/i18n/render-baseline.json`) is a debt record and the
- *     backstop for a push to `main`, where there is no base to diff. Upward-only,
- *     keyed per surface, allowed to sit above reality; a decrease is reported,
- *     never required. Goal 0 for every entry.
+ *   - **[vs-base] is the ONLY thing that fails.** With `I18N_BASE_REF` set, this
+ *     renders the BASE commit too — same scanner, same surfaces, same locales, only
+ *     the bundle differs — and fails on any per-surface increase. It reads no
+ *     committed number, so there is nothing to re-snapshot and nothing to absorb a
+ *     regression with. Every path to `main` supplies a base: a PR is diffed against
+ *     its base branch, and a push to `main` against the commit it replaced
+ *     (`ci.yml` passes `github.event.before`).
+ *   - the LEDGER (`src/i18n/render-baseline.json`) is a REPORT. It is printed in
+ *     both directions and never fails a run. A total cannot be attributed to a diff:
+ *     #1107 recorded `projects.latent: 16` measured on its own base while #985
+ *     independently added one `min-w-0`-less `truncate` to the Projects rail, and
+ *     after both merged `main` measured 24 against 16 and went red on a defect that
+ *     neither branch's diff introduced. See `lib/render-verdict.mjs`.
  *
- * A finer ledger alone would NOT have been enough, and it is worth being precise
- * about why: per-surface keys only shrink the range a regression can hide within.
- * Measured — inflate `settings-about.text` from 28 to 100, add 18 real defects, and
- * the ledger reports an *improvement* while [vs-base] fails with `28 -> 46 (+18)`.
+ * A finer ledger would not have helped, and it is worth being precise about why:
+ * per-surface keys only shrink the range a regression can hide within. Measured —
+ * inflate `settings-about.text` from 28 to 100, add 18 real defects, and the ledger
+ * reports an *improvement* while [vs-base] fails with `28 -> 46 (+18)`.
  *
  * Usage:
  *   npm run i18n:render                                   # build + gate (+ vs-base)
- *   node scripts/check-i18n-render.mjs --build --update    # build + reseed ledger
+ *   node scripts/check-i18n-render.mjs --build --update    # build + rewrite the debt record
  *   node scripts/check-i18n-render.mjs                     # gate an existing dist-dev
- *   node scripts/check-i18n-render.mjs --no-vs-base        # ledger only, skip base render
+ *   node scripts/check-i18n-render.mjs --no-vs-base        # report only, skip base render
  *   node scripts/check-i18n-render.mjs --surface chat --locale en-XA --verbose
  *   I18N_BASE_REF=origin/main node scripts/check-i18n-render.mjs --build
  *
@@ -74,10 +77,113 @@ import { serveDist } from './lib/serve-dist.mjs'
 import { stubDashboardApi, logPageProblems, json } from './lib/stub-dashboard-api.mjs'
 import { SURFACES, LOCALES, VIEWPORTS } from './lib/i18n-surfaces.mjs'
 import { browserBundle } from './lib/render-scan.mjs'
+import {
+  BUCKETS,
+  BUCKET_MEANING,
+  LEDGER_COMMENT,
+  addedFindings,
+  bucketOf,
+  decide,
+  fmtDelta,
+  identityIsExact,
+  tally,
+  totals,
+} from './lib/render-verdict.mjs'
 
 const SCAN_SRC = fileURLToPath(new URL('./lib/render-scan.mjs', import.meta.url))
 const LEDGER = fileURLToPath(new URL('../src/i18n/render-baseline.json', import.meta.url))
 const GLOSSARY = fileURLToPath(new URL('../src/i18n/glossary.json', import.meta.url))
+/**
+ * ONE output stream, always.
+ *
+ * Everything this script prints goes through here, and it is stdout for failures too.
+ * Mixing `console.log` with `console.error` shredded the log: Node buffers stdout and
+ * stderr independently once they are pipes rather than a TTY, GitHub Actions merges
+ * both into one stream, and the two blocks interleaved line-by-line —
+ *
+ *     chat.latent: 48 -> 64 (+16)
+ *         282  latin-leak/untranslated-attribute
+ *     settings-display.latent: 16 -> 32 (+16)
+ *            worst: en-XA
+ *
+ * — which is unreadable and, worse, looks like the gate reporting nonsense. The
+ * failure signal is the EXIT CODE; it never needed a separate stream.
+ */
+const out = line => process.stdout.write(`${line}\n`)
+
+/** A GitHub Actions collapsed section; plain lines anywhere else. */
+const group = (title, lines) => {
+  if (!lines.length) return
+  const ci = !!process.env.GITHUB_ACTIONS
+  out(ci ? `::group::${title}` : `\n${title}`)
+  for (const l of lines) out(l)
+  if (ci) out('::endgroup::')
+}
+
+/** One finding, with the source location that says which line to edit. */
+const fmtFinding = (rec, indent = '    ', count = 1, details = []) => {
+  const { surface, locale, finding } = rec
+  const lines = [
+    `${indent}${finding.kind}/${finding.signature}  [${surface} · ${locale}]${count > 1 ? `  ×${count}` : ''}`,
+    `${indent}  ${JSON.stringify(finding.text)}`,
+  ]
+  if (finding.source && finding.source.length) {
+    // Leaf first — for an inline string that IS the line. The `via` hops matter when a
+    // shared component rendered a string its CALLER hardcoded; then the answer is the
+    // first `via`. See `sourceChain` in lib/render-scan.mjs for the measurement.
+    lines.push(`${indent}  ${finding.source[0]}`)
+    for (const via of finding.source.slice(1)) lines.push(`${indent}  via ${via}`)
+  } else {
+    // Never silently degrade to the DOM path — say the mapping was unavailable, or
+    // the next React upgrade removes `_debugSource` and nobody notices for months.
+    lines.push(`${indent}  no source location (React _debugSource unavailable) — DOM: ${finding.path}`)
+  }
+  // More than one run leaked from the same element: the templated `fix` quotes only
+  // the first, so list them all rather than letting the author fix one of three.
+  if (details.length > 1) {
+    lines.push(`${indent}  untranslated runs: ${details.map(d => JSON.stringify(d)).join(', ')}`)
+  }
+  if (finding.fix) lines.push(`${indent}  ${finding.fix}`)
+  return lines
+}
+
+/**
+ * Collapse findings that are the same defect seen more than once.
+ *
+ * One hardcoded `"Beta preview"` produced SIX findings: the scanner reports each
+ * untranslated RUN separately ("Beta", then "preview"), the element and its parent both
+ * carry the text, and every surface is swept at two viewports. Reporting 26 rows for
+ * three mistakes is how a correct list becomes an ignored one.
+ *
+ * Grouped by SITE — signature + source location + text — deliberately excluding
+ * `detail`, which is "which run leaked" and is what split one `title` attribute into
+ * three rows. The distinct runs are merged onto one line instead, so the row still says
+ * which words to extract.
+ *
+ * The COUNTS are untouched: `identityOf` keeps `detail`, and `addedFindings` stays a
+ * multiset, because sixteen findings from one `.map()` are sixteen findings. This
+ * collapses only what is printed.
+ */
+const groupForDisplay = records => {
+  const groups = new Map()
+  for (const rec of records) {
+    const { finding } = rec
+    const key = [
+      finding.signature,
+      (finding.source || []).join('<') || `path:${finding.path}`,
+      finding.text || '',
+    ].join('|')
+    const prev = groups.get(key)
+    if (prev) {
+      prev.count++
+      if (finding.detail && !prev.details.includes(finding.detail)) prev.details.push(finding.detail)
+    } else {
+      groups.set(key, { rec, count: 1, details: finding.detail ? [finding.detail] : [] })
+    }
+  }
+  return [...groups.values()]
+}
+
 /** Repo root — `website/`'s parent, where every git call is rooted. */
 const REPO = fileURLToPath(new URL('../..', import.meta.url))
 
@@ -92,12 +198,14 @@ const BUILD = has('--build')
 const NO_VS_BASE = has('--no-vs-base')
 const UPDATE = has('--update')
 const VERBOSE = has('--verbose')
+/** Why the diff half did not run, so the verdict line can name it. */
+let SKIP_REASON = ''
 const DIST = fileURLToPath(new URL(`../${opt('--dist', 'dist-dev')}/`, import.meta.url))
 const ONLY_SURFACE = opt('--surface', '')
 const ONLY_LOCALE = opt('--locale', '')
 
 const die = msg => {
-  console.error(`\n[i18n-render] ${msg}\n`)
+  out(`\n[i18n-render] ${msg}\n`)
   process.exit(2)
 }
 
@@ -189,10 +297,10 @@ function runViteDevBuild(cwd, outDir, label) {
     },
   )
   if (res.status !== 0) {
-    console.error(`${res.stdout || ''}\n${res.stderr || ''}`.trim().split('\n').slice(-25).join('\n'))
+    out(`${res.stdout || ''}\n${res.stderr || ''}`.trim().split('\n').slice(-25).join('\n'))
     die(`[${label}] vite build failed (exit ${res.status})`)
   }
-  console.log(`[i18n-render] [${label}] built in ${((Date.now() - started) / 1000).toFixed(0)}s`)
+  out(`[i18n-render] [${label}] built in ${((Date.now() - started) / 1000).toFixed(0)}s`)
 }
 
 /**
@@ -214,8 +322,13 @@ function buildDevBundle(outDir) {
  *
  * Mirrors `check-i18n-strings.mjs`'s contract deliberately, including the parts that
  * look defensive:
- *   - no `I18N_BASE_REF` means there is genuinely no base (a push to `main`), so the
- *     ledger runs alone.
+ *   - `I18N_BASE_REF` accepts a ref name OR a bare SHA, because the two contexts that
+ *     supply it differ: a PR passes `origin/<base branch>`, while a push to `main`
+ *     passes `github.event.before` — the commit the push replaced. Both are a real
+ *     diff, and the push one is the only place an interaction between two branches
+ *     that never touched the same file can be attributed to the merge that caused it.
+ *   - no `I18N_BASE_REF` at all means nothing is enforced this run, which
+ *     `reconcile()` announces rather than exiting 0 as though it had checked.
  *   - a ref that IS configured but cannot be resolved is a HARD failure, never a
  *     green skip. `ci.yml` records having watched a sibling gate skip itself green on
  *     a failed fetch and silently stop checking for a whole PR.
@@ -227,18 +340,26 @@ function buildDevBundle(outDir) {
 function resolveBaseScope() {
   if (NO_VS_BASE) return { run: false, reason: '--no-vs-base' }
   if (ONLY_SURFACE || ONLY_LOCALE) return { run: false, reason: 'partial run (--surface/--locale)' }
-  if (UPDATE) return { run: false, reason: '--update only reseeds the ledger' }
+  if (UPDATE) return { run: false, reason: '--update only rewrites the debt record' }
   const baseRef = process.env.I18N_BASE_REF
   if (!baseRef) {
-    return { run: false, reason: 'I18N_BASE_REF is unset, so there is no branch to diff (push to main)' }
+    // `fallback` separates "no diff was AVAILABLE" from the three opt-outs above, which
+    // asked for a report and must keep getting one. With no base there is nothing left
+    // to check, so the debt record stops being a report and becomes the guard — see
+    // `decide()`'s `totalIsFallback`.
+    return {
+      run: false,
+      fallback: true,
+      reason: 'I18N_BASE_REF is unset, so there is no commit to diff against',
+    }
   }
 
   const git = args => execFileSync('git', args, { cwd: REPO, encoding: 'utf-8' }).trim()
   try {
     git(['rev-parse', '--verify', `${baseRef}^{commit}`])
   } catch {
-    die(`cannot resolve ${baseRef}. The diff-scoped render gate needs the base ref; fetch it\n`
-      + '    before running this script, or unset I18N_BASE_REF to check only the ledger.')
+    die(`cannot resolve ${baseRef}. The diff-scoped render gate needs the base commit; fetch it\n`
+      + '    before running this script, or unset I18N_BASE_REF to report counts without a gate.')
   }
 
   let sha
@@ -251,11 +372,28 @@ function resolveBaseScope() {
     return { run: false, reason: 'HEAD is the base commit' }
   }
 
-  // Nothing renderable changed, so the base render is guaranteed identical and the
-  // second build+sweep would be ~2.5 minutes of CI for a known answer. Scoped to what
-  // can actually alter a rendered surface: app source, the catalogs, the build config.
+  // Nothing that can move a number changed, so the base render is guaranteed identical
+  // and the second build+sweep would be ~2.5 minutes of CI for a known answer.
+  //
+  // This filter is load-bearing now that the debt record no longer fails: a path that
+  // escapes it gets NO check at all, where before it still had to clear the ledger. So
+  // it covers everything that can move a count, not just what renders:
+  //   - `src/`                app source and the catalogs
+  //   - `scripts/`            the scanner (`lib/render-scan.mjs`), the surface list
+  //                           (`lib/i18n-surfaces.mjs`) and the API fixtures
+  //                           (`lib/stub-dashboard-api.mjs`), whose text is rendered
+  //                           and scanned like any other string
+  //   - `public/`             assets served into the rendered page
+  //   - build config          `index.html`, `vite.config*`, `tailwind*`, `postcss*`,
+  //                           `tsconfig*`, and `package.json` / `package-lock.json`
+  //                           (bare `package` matches both — a dependency bump can
+  //                           change what renders)
+  // Adding a surface to `i18n-surfaces.mjs` is the case that decided this: its numbers
+  // start at 0 and every finding it brings is growth, which must face a diff.
   const changed = git(['diff', '--name-only', `${sha}`, 'HEAD']).split('\n').filter(Boolean)
-  const renderable = changed.filter(f => /^website\/(src\/|index\.html|vite\.config|tailwind|postcss|package\.json)/.test(f))
+  const renderable = changed.filter(
+    f => /^website\/(src\/|scripts\/|public\/|index\.html|vite\.config|tailwind|postcss|tsconfig|package)/.test(f),
+  )
   if (!renderable.length) {
     return { run: false, reason: `no renderable file changed vs ${sha.slice(0, 8)} (${changed.length} file(s) in diff)` }
   }
@@ -283,7 +421,7 @@ function buildBaseBundle(sha) {
   const dir = join(tmpdir(), `i18n-render-base-${sha.slice(0, 12)}`)
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
-  console.log(`[i18n-render] [vs-base] exporting base tree ${sha.slice(0, 8)}`)
+  out(`[i18n-render] [vs-base] exporting base tree ${sha.slice(0, 8)}`)
 
   const tarball = join(dir, 'base.tar')
   try {
@@ -312,7 +450,38 @@ function buildBaseBundle(sha) {
 
   runViteDevBuild(baseWeb, 'dist-dev', `base ${sha.slice(0, 8)}`)
   TEMP_DIRS.push(dir)
-  return join(baseWeb, 'dist-dev')
+  return { dist: join(baseWeb, 'dist-dev'), baseWeb }
+}
+
+/**
+ * Which surfaces exist in the BASE tree's registry.
+ *
+ * A surface added by this branch has no base measurement, and the base bundle has no
+ * route for its URL — so whatever the base render produces for it is meaningless. It is
+ * not necessarily ZERO either: the SPA resolves an unknown path through its router, so
+ * the base sweep can land on a fallback page and report ITS findings. If that page is
+ * busier than the new surface, the new surface's real defects read as an IMPROVEMENT
+ * (`now < was`) and `[vs-base]` passes a branch that shipped them.
+ *
+ * So a new surface's base count is forced to 0 rather than measured. Read from the base
+ * tree's own registry, which `git archive` already exported next to the bundle.
+ *
+ * Fails closed: an unreadable or empty base registry would silently mark EVERY surface
+ * new, which is over-strict rather than dangerous, but it would also mean this gate no
+ * longer knows what it is comparing — so say so instead.
+ */
+function baseSurfaceIds(baseWeb) {
+  const reg = join(baseWeb, 'scripts', 'lib', 'i18n-surfaces.mjs')
+  if (!existsSync(reg)) {
+    die(`base tree has no ${reg} — cannot tell which surfaces are new on this branch`)
+  }
+  const src = readFileSync(reg, 'utf-8')
+  const ids = new Set([...src.matchAll(/\{\s*id:\s*'([^']+)'/g)].map(m => m[1]))
+  if (!ids.size) {
+    die(`could not read any surface id from the base tree's ${reg}; the registry's shape `
+      + 'changed, so "which surfaces are new" cannot be answered. Update baseSurfaceIds().')
+  }
+  return ids
 }
 
 /** Exported base trees to delete on exit. Plain directories — no repo state involved. */
@@ -348,6 +517,9 @@ async function main() {
   const browser = await chromium.launch()
   let head
   let baseAll = null
+  let totalIsFallback = false
+  /** Surfaces this branch added — no base measurement exists for them. */
+  let newSurfaces = new Set()
   try {
     head = await sweep(browser, DIST, { scanScript, dnt, surfaces, locales, label: 'HEAD' })
 
@@ -355,7 +527,13 @@ async function main() {
     // trees; nothing is read from a committed number, which is the whole point.
     const scope = resolveBaseScope()
     if (scope.run) {
-      const baseDist = buildBaseBundle(scope.sha)
+      const { dist: baseDist, baseWeb } = buildBaseBundle(scope.sha)
+      const baseIds = baseSurfaceIds(baseWeb)
+      newSurfaces = new Set(surfaces.map(x => x.id).filter(id => !baseIds.has(id)))
+      if (newSurfaces.size) {
+        out(`[i18n-render] [vs-base] ${newSurfaces.size} surface(s) are new on this branch`
+          + ` — their base count is 0, not measured: ${[...newSurfaces].join(', ')}`)
+      }
       // Deliberately the SAME scanScript, surfaces and locales as the HEAD run —
       // they come from this checkout, not from the base tree. Only the BUNDLE is
       // base's. If the base tree's own scanner were used instead, any change to the
@@ -364,15 +542,16 @@ async function main() {
         scanScript, dnt, surfaces, locales, label: `base ${scope.sha.slice(0, 8)}`,
       })).all
     } else if (scope.reason) {
-      console.log(`[i18n-render] [vs-base] skipped — ${scope.reason}`)
+      totalIsFallback = !!scope.fallback
+      SKIP_REASON = scope.reason
+      out(`[i18n-render] [vs-base] skipped — ${scope.reason}`)
     }
   } finally {
     await browser.close()
   }
 
-  report(head.all)
   const partial = !!(ONLY_SURFACE || ONLY_LOCALE)
-  process.exit(reconcile(head.all, baseAll, { partial }))
+  process.exit(reconcile(head.all, baseAll, { partial, totalIsFallback, newSurfaces }))
 }
 
 /**
@@ -412,7 +591,7 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
         // A crashed surface is the gate's most dangerous failure mode, because it
         // does not look like a failure: React's error boundary replaces the panel
         // with its own English message, the scan dutifully reports that message as
-        // untranslated copy, and the ledger absorbs a number that has nothing to do
+        // untranslated copy, and the run charges a number that has nothing to do
         // with the product. Treat any uncaught page error as INFRASTRUCTURE broken
         // (exit 2) rather than as findings.
         const pageErrors = []
@@ -504,204 +683,238 @@ async function assertPseudoActive(page, surface) {
     )
     return true
   } catch {
-    if (VERBOSE) console.log(`[i18n-render] no accented text on ${surface.id}`)
+    if (VERBOSE) out(`[i18n-render] no accented text on ${surface.id}`)
     return false
   }
 }
 
-/** Group findings and print the prescriptive output Phase 5 item 3 requires. */
+/**
+ * The whole-repo census, grouped the way every enforced number is grouped.
+ *
+ * Signature counts are kept because they are the only per-signature view that exists —
+ * the record and `[vs-base]` are per-surface × bucket, so `76 fragment/multi-unit`
+ * appears nowhere else, and it is what tells you whether the next batch is "extract
+ * strings" or "add min-w-0". The per-signature EXAMPLE is not kept: its `fix:` line is
+ * a constant for five of the seven signatures (so printing it every run is
+ * documentation in a log), and its `e.g.` DOM path names one arbitrary row out of
+ * 1366. Detail moves to `--verbose`, where it can carry source locations.
+ */
 function report(all) {
   if (!all.length) {
-    console.log('[i18n-render] no findings')
+    out('[i18n-render] no findings')
     return
   }
-  /** @type {Map<string, {count: number, worst: {locale: string, ratio: number}, sample: object}>} */
-  const bySignature = new Map()
-  for (const { locale, finding } of all) {
+  const byBucket = { text: new Map(), latent: new Map(), layout: new Map() }
+  const worst = new Map()
+  for (const rec of all) {
+    const { locale, finding } = rec
+    // DNT is not a count — it is zero-tolerance and reported on its own.
+    if (finding.kind === 'dnt') continue
     const key = `${finding.kind}/${finding.signature}`
-    const prev = bySignature.get(key)
+    const m = byBucket[bucketOf(finding)]
+    m.set(key, (m.get(key) || 0) + 1)
     const ratio = finding.ratio || 0
-    if (!prev) {
-      bySignature.set(key, { count: 1, worst: { locale, ratio }, sample: finding })
-    } else {
-      prev.count++
-      if (ratio > prev.worst.ratio) prev.worst = { locale, ratio }
+    if (ratio > (worst.get(key)?.ratio || 0)) worst.set(key, { locale, ratio })
+  }
+  const total = BUCKETS.reduce(
+    (n, b) => n + [...byBucket[b].values()].reduce((x, y) => x + y, 0), 0,
+  )
+  // Column widths come from the data: the `worst:` column has to line up, and a
+  // signature name longer than today's cannot be allowed to shove it out of true.
+  const sigWidth = Math.max(
+    0, ...BUCKETS.flatMap(b => [...byBucket[b].keys()].map(k => k.length)),
+  ) + 6
+  out(`\n[i18n-render] ${total} findings — grouped the way the record and [vs-base] count them\n`)
+  for (const bucket of ['text', 'latent', 'layout']) {
+    const m = byBucket[bucket]
+    const sum = [...m.values()].reduce((x, y) => x + y, 0)
+    out(`  ${bucket.padEnd(8)}${String(sum).padStart(5)}  ${BUCKET_MEANING[bucket]}`)
+    for (const [key, count] of [...m].sort((a, b) => b[1] - a[1])) {
+      const w = worst.get(key)
+      // Indented well past the bucket's own number so a signature row can never be
+      // misread as a bucket row — they are different vocabularies and the whole point
+      // of this block is that the reader can tell which one they are looking at.
+      // `worst:` is printed only where the ratio is real: on a text row `worst: en-XA`
+      // is a tautology, because leaks are scanned under the pseudolocale and nowhere else.
+      const row = w && w.ratio ? `${key.padEnd(sigWidth)}worst: ${w.locale} @ ${w.ratio}x` : key
+      out(`                ${String(count).padStart(6)}  ${row}`)
     }
   }
-  console.log('\n[i18n-render] findings by signature\n')
-  for (const [key, v] of [...bySignature].sort((a, b) => b[1].count - a[1].count)) {
-    console.log(`  ${String(v.count).padStart(5)}  ${key}`)
-    console.log(`         worst: ${v.worst.locale}${v.worst.ratio ? ` @ ${v.worst.ratio}x` : ''}`)
-    console.log(`         e.g.:  ${v.sample.path}`)
-    console.log(`                ${JSON.stringify(v.sample.text)}`)
-    if (v.sample.fixedAncestor) console.log(`         ancestor: ${v.sample.fixedAncestor}`)
-    console.log(`         fix:   ${v.sample.fix}\n`)
-  }
+  out('')
   if (VERBOSE) {
-    console.log('[i18n-render] every finding\n')
-    for (const { surface, locale, viewport, finding } of all) {
-      console.log(`  ${surface} ${locale} ${viewport} ${finding.signature} ${finding.path}`)
-      console.log(`      ${JSON.stringify(finding.text)}${finding.detail ? ` -- ${finding.detail}` : ''}`)
-    }
+    const groups = groupForDisplay(all)
+    group(
+      `[i18n-render] every finding — ${all.length} at ${groups.length} distinct site(s)`,
+      groups.flatMap(({ rec, count, details }) => [...fmtFinding(rec, '  ', count, details), '']),
+    )
+  } else {
+    out('  Per-finding source locations: --verbose.')
   }
 }
 
 /**
- * Ledger buckets.
+ * Print the verdict and return the exit code.
  *
- *   text   — never reached a catalog, or was assembled from several keys.
- *   layout — the text does not fit RIGHT NOW, in some shipped locale.
- *   latent — a pattern that is silently broken but not yet visible, which today
- *            means `ellipsis-with-flex-parent`: `text-overflow` cannot apply while
- *            a flex child's `min-width` is `auto`, so the truncation those sites
- *            think they have does nothing and the text pushes its sibling out
- *            instead. It is kept separate because there are ~460 of them and
- *            folding them into `layout` would bury the handful of real overflows
- *            under a uniform `min-w-0` cleanup that belongs to its own PR.
- */
-const BUCKETS = ['text', 'layout', 'latent']
-
-const bucketOf = finding => {
-  if (finding.kind !== 'layout') return 'text'
-  return finding.signature === 'ellipsis-with-flex-parent' ? 'latent' : 'layout'
-}
-
-/** Compare against the ledger, or rewrite it under `--update`. */
-/**
- * Two independent checks, in decreasing order of strength.
+ * The decision itself lives in `lib/render-verdict.mjs` as a pure function over
+ * plain numbers; this only formats it. Two things are measured, and only one of them
+ * can fail:
  *
- * 1. **[vs-base]** — the real gate. Renders the base tree with the SAME scanner and
- *    fails on any per-surface increase. It reads no committed number, so there is
+ * 1. **[vs-base] — the gate.** Renders the base tree with the SAME scanner and fails
+ *    on any per-surface increase. Both sides are derived at runtime, so there is
  *    nothing to re-snapshot and nothing to absorb a regression with: the bypass that
  *    made the old bidirectional ratchets decorative (`195904c` shipped 113
  *    untranslated strings while RAISING `_total`, green) does not exist here.
- * 2. **ledger** — upward-only, per surface. With [vs-base] carrying enforcement this
- *    is a debt record and a backstop for the push-to-`main` case where there is no
- *    base to diff. It is allowed to sit above reality; a decrease is reported, never
- *    required.
+ * 2. **the ledger — a report.** Per-surface absolute debt. It is printed, never
+ *    enforced: a stored total is written by whichever branch measured it last, so two
+ *    branches that never touch the same file can combine into a number neither
+ *    produced, and no diff exists that anyone could fix. See `lib/render-verdict.mjs`
+ *    for the incident that proved it (#1107 + #985 -> `projects.latent 16 -> 24`).
  */
-function reconcile(all, baseAll, { partial }) {
-  const tally = records => {
-    const c = {}
-    for (const s of SURFACES) c[s.id] = Object.fromEntries(BUCKETS.map(b => [b, 0]))
-    const dnt = []
-    for (const { surface, finding, locale } of records) {
-      if (finding.kind === 'dnt') { dnt.push({ surface, locale, finding }); continue }
-      c[surface][bucketOf(finding)]++
-    }
-    return { counts: c, dnt }
-  }
-
-  const { counts, dnt: dntFindings } = tally(all)
-  const zero = () => Object.fromEntries(BUCKETS.map(b => [b, 0]))
-  const totals = c => Object.fromEntries(
-    BUCKETS.map(b => [b, Object.values(c).reduce((n, x) => n + x[b], 0)]),
-  )
+function reconcile(all, baseAll, { partial, totalIsFallback = false, newSurfaces = new Set() }) {
+  const surfaceIds = SURFACES.map(s => s.id)
+  const { counts, dnt: dntFindings } = tally(all, surfaceIds)
 
   if (UPDATE) {
     if (partial) die('--update needs the full run; drop --surface/--locale')
     const ledger = {
-      _comment: 'Phase 5 render-time gate. Findings from rendering the real DEV build under '
-        + 'en-XA (text) and the shipped locales (layout/latent). This is a DEBT RECORD, not '
-        + 'the enforcement: [vs-base] renders the base tree and fails on any per-surface '
-        + 'increase without reading this file, so nothing here can absorb a regression. '
-        + 'Upward-only and keyed per surface; a decrease is reported, never required. The '
-        + 'goal for every entry is 0. Regenerate with `--update` and only commit a decrease.',
+      _comment: LEDGER_COMMENT,
       _total: totals(counts),
       surfaces: counts,
     }
     writeFileSync(LEDGER, `${JSON.stringify(ledger, null, 2)}\n`)
     const t = ledger._total
-    console.log(`[i18n-render] ledger written: text=${t.text} layout=${t.layout} latent=${t.latent}`)
+    out(`[i18n-render] ledger written: text=${t.text} layout=${t.layout} latent=${t.latent}`)
     return 0
   }
 
-  if (!existsSync(LEDGER)) die(`no ledger at ${LEDGER}. Seed it with --update.`)
+  // A missing record is a HARD failure, not a soft `null`. It is a committed file, so
+  // its absence is a broken checkout or a deletion, never a normal state — and in the
+  // one case where the record is the guard (no base to diff) a `null` would leave the
+  // run with nothing to check but DNT while still exiting 0. That is exactly the
+  // "stops guarding silently" mode this whole change removes. `--update` seeds it and
+  // returns above, before this line, so bootstrapping still works.
+  if (!existsSync(LEDGER)) {
+    die(`no debt record at ${LEDGER}. Seed it with --build --update.`)
+  }
   const ledger = JSON.parse(readFileSync(LEDGER, 'utf-8'))
-  let failed = false
 
-  if (dntFindings.length) {
-    failed = true
-    console.error(`\n[i18n-render] [dnt] ${dntFindings.length} do-not-translate violation(s) — zero tolerance\n`)
-    for (const { surface, locale, finding } of dntFindings.slice(0, 20)) {
-      console.error(`  ${surface} (${locale}): ${finding.detail}`)
-      console.error(`      ${finding.path}\n`)
+  const baseCounts = baseAll ? tally(baseAll, surfaceIds).counts : null
+  const { failed, enforced, dnt, grew, shrank, above, below } = decide({
+    counts,
+    baseCounts,
+    ledger,
+    surfaceIds,
+    dnt: dntFindings,
+    partial,
+    onlySurface: ONLY_SURFACE,
+    totalIsFallback,
+    newSurfaces,
+  })
+
+  // ---- the verdict, FIRST -----------------------------------------------------
+  // It used to sit at line 49 of 96, between a 45-line census and a 46-line drift
+  // list. In a collapsed Actions log the reader lands on the reports and scrolls
+  // past the one line that decided the run. Verdict first, evidence after.
+  const ht = totals(counts)
+  const live = `text=${ht.text} layout=${ht.layout} latent=${ht.latent}`
+  if (dnt.length) {
+    out(`\n[i18n-render] FAIL [dnt] — ${dnt.length} do-not-translate violation(s), zero tolerance`)
+  }
+  if (grew.length) {
+    out(`\n[i18n-render] FAIL [vs-base] — this branch ADDS render-time i18n defects`)
+  } else if (enforced) {
+    const bt = totals(baseCounts)
+    out(`\n[i18n-render] PASS [vs-base] — no surface got worse`)
+    out(`              base ${`text=${bt.text} layout=${bt.layout} latent=${bt.latent}`}  ->  head ${live}`)
+  } else if (totalIsFallback) {
+    out(`\n[i18n-render] ${above.length ? 'FAIL' : 'PASS'} [debt record] — NO base commit to diff, so the`
+      + '\n              record is the guard for this run instead of a report.')
+  } else {
+    out('\n[i18n-render] NOT ENFORCED — no base was rendered and none was asked for'
+      + `\n              (${SKIP_REASON || 'report-only run'}). DNT is still zero-tolerance.`)
+  }
+  if (!failed) out(`[i18n-render] ${live} (goal 0)`)
+
+  // ---- what to change, for each failure ---------------------------------------
+  if (dnt.length) {
+    out('\n[i18n-render] [dnt] a do-not-translate term was altered:\n')
+    for (const { rec, count, details } of groupForDisplay(dnt).slice(0, 20)) {
+      for (const l of fmtFinding(rec, '    ', count, details)) out(l)
+      out('')
     }
   }
 
-  // ---- [vs-base]: the strict, stateless half --------------------------------
-  if (baseAll) {
-    const { counts: baseCounts } = tally(baseAll)
-    const grew = []
-    const shrank = []
-    for (const s of SURFACES) {
-      for (const bucket of BUCKETS) {
-        const now = counts[s.id][bucket]
-        const was = baseCounts[s.id][bucket]
-        if (now > was) grew.push(`${s.id}.${bucket}: ${was} -> ${now} (+${now - was})`)
-        else if (now < was) shrank.push(`${s.id}.${bucket}: ${was} -> ${now} (-${was - now})`)
+  if (grew.length) {
+    out('\n[i18n-render] [vs-base] surfaces that got worse:\n')
+    for (const g of grew) out(`    ${fmtDelta(g)}                (base -> head)`)
+    // A count tells the author a number moved; it does not tell them which line to
+    // edit. These are the individual findings present at HEAD and absent at base.
+    const added = addedFindings(all, baseAll || [], grew)
+    if (added.length) {
+      const exact = identityIsExact(added) && identityIsExact(baseAll || [])
+      const groups = groupForDisplay(added)
+      const same = groups.length === added.length
+      out(`\n  the ${added.length} finding(s) this branch added`
+        + `${same ? '' : `, at ${groups.length} distinct site(s)`}`
+        + `${exact ? '' : ' (approximate — see below)'}:\n`)
+      for (const { rec, count, details } of groups.slice(0, 25)) {
+        for (const l of fmtFinding(rec, '    ', count, details)) out(l)
+        out('')
+      }
+      if (groups.length > 25) out(`    ... and ${groups.length - 25} more site(s) (--verbose)\n`)
+      if (!exact) {
+        out('  Some findings carry no source location, so identity fell back to the DOM'
+          + '\n  path, which is positional — inserting one wrapper can make an untouched'
+          + '\n  finding look new. The per-surface counts above are exact regardless.\n')
       }
     }
-    if (grew.length) {
-      failed = true
-      console.error('\n[i18n-render] [vs-base] this branch ADDS render-time i18n defects:\n')
-      for (const g of grew) console.error(`  ${g}`)
-      console.error('\n  These are measured against the base commit, not against a committed'
-        + '\n  number — there is nothing to re-snapshot. Fix the findings above.\n')
+    out('  Measured against the base commit, not against a committed number — there is'
+      + '\n  nothing to re-snapshot.\n')
+  }
+
+  report(all)
+
+  if (shrank.length && enforced && !grew.length) {
+    out('\n[i18n-render] [vs-base] this branch FIXES:\n')
+    for (const s of shrank) out(`    ${fmtDelta(s)}`)
+    out('')
+  }
+
+  // ---- the debt record --------------------------------------------------------
+  // An increase can come from two branches that never touched the same file combining
+  // after merge — a number no diff produced and nobody can fix by fixing their own
+  // change — so it is a report unless it is the only check available.
+  if (above.length) {
+    if (totalIsFallback) {
+      out('\n[i18n-render] above the debt record, and there was no diff to check instead:\n')
+      for (const a of above) out(`    ${fmtDelta(a)}                (record -> live)`)
+      out('')
     } else {
-      const bt = totals(baseCounts)
-      const ht = totals(counts)
-      console.log(`[i18n-render] [vs-base] OK — no surface got worse `
-        + `(base text=${bt.text}/layout=${bt.layout}/latent=${bt.latent} → `
-        + `head text=${ht.text}/layout=${ht.layout}/latent=${ht.latent})`)
-      if (shrank.length) {
-        console.log('\n[i18n-render] [vs-base] this branch FIXES:\n')
-        for (const s of shrank) console.log(`  ${s}`)
-        console.log('')
-      }
+      out(`\n[i18n-render] above the debt record on ${above.length} entr(ies) — a report; [vs-base] decided this run.`)
+      group('[i18n-render] record -> live, above (report)', above.map(a => `  ${fmtDelta(a)}`))
     }
   }
-
-  // ---- ledger: upward-only debt record --------------------------------------
-  const regressions = []
-  const improvements = []
-  for (const s of SURFACES) {
-    if (partial && ONLY_SURFACE && s.id !== ONLY_SURFACE) continue
-    const ceiling = (ledger.surfaces && ledger.surfaces[s.id]) || zero()
-    for (const bucket of BUCKETS) {
-      const now = counts[s.id][bucket]
-      const was = ceiling[bucket] || 0
-      // A partial run cannot see every locale, so it can only ever under-count.
-      // Reporting an "improvement" from that would invite a bogus ledger drop.
-      if (partial && now < was) continue
-      if (now > was) regressions.push(`${s.id}.${bucket}: ${was} -> ${now}`)
-      else if (now < was) improvements.push(`${s.id}.${bucket}: ${was} -> ${now}`)
-    }
-  }
-
-  if (regressions.length) {
-    failed = true
-    console.error('\n[i18n-render] these surfaces exceed the ledger (upward-only):\n')
-    for (const r of regressions) console.error(`  ${r}`)
-    console.error('\n  Fix the findings above. Do NOT run --update to absorb them.\n')
-  }
-  if (improvements.length) {
-    // NOT a failure. An upward-only ledger fails on growth only; failing on a
-    // decrease is the bidirectional behaviour #1060 removed, and it would turn any
-    // merge that fixes strings — #1040, say — into a red main until someone
-    // remembered to re-run --update.
-    console.log('\n[i18n-render] ledger sits above reality — lower it when convenient:\n')
-    for (const i of improvements) console.log(`  ${i}`)
-    console.log('\n  node scripts/check-i18n-render.mjs --build --update\n')
-  }
-  if (!failed) {
-    const t = totals(counts)
-    console.log(`[i18n-render] OK — text=${t.text} layout=${t.layout} latent=${t.latent} (goal 0)`)
+  if (below.length) {
+    // Two lines instead of forty. Every line of the old list said the same thing, on
+    // every run, for every PR, and nothing obliges anyone to act — so it trained
+    // readers to skip a block that IS the verdict on the no-base path. The aggregate
+    // states the one fact that matters: this slack is the fallback's blind spot.
+    const gap = { text: 0, layout: 0, latent: 0 }
+    for (const b of below) gap[b.bucket] += b.was - b.now
+    const surfaces = new Set(below.map(b => b.surface)).size
+    out(`\n[i18n-render] debt record is STALE on ${surfaces}/${surfaceIds.length} surfaces — overstates by `
+      + `text +${gap.text}, layout +${gap.layout}, latent +${gap.latent}.`)
+    out('              That slack is exactly the blind spot of the no-base fallback.'
+      + ' Refresh: --build --update')
+    group(
+      `[i18n-render] record -> live, per surface (${below.length} entries)`,
+      below.map(b => `  ${fmtDelta(b)}`),
+    )
   }
   return failed ? 1 : 0
 }
 
 main().catch(err => {
-  console.error(err)
+  out(String(err && err.stack ? err.stack : err))
   process.exit(2)
 })

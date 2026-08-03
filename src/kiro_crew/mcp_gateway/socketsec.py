@@ -23,22 +23,30 @@ Windows      owning-process token SID              ``GetNamedPipeClientProcessId
 macOS        ``LOCAL_PEERCRED`` xucred uid          ``LOCAL_PEERPID``
 ===========  ====================================  =========================
 
-macOS remains deliberately asymmetric, but for a narrower reason than before.
-The principal check now exists (``LOCAL_PEERCRED``, Darwin's analogue of
-``SO_PEERCRED``), so a peer that is positively confirmed to be a DIFFERENT uid is
-refused. What macOS still does not do is treat a *failed* check as grounds for
-refusal: it is absent from :data:`PEER_IDENTITY_SUPPORTED`, so ``UNVERIFIABLE``
-falls through to :func:`socket_owner_only` instead of rejecting.
+All three platforms now fail closed: every one of them is in
+:data:`PEER_IDENTITY_SUPPORTED`, so an ``UNVERIFIABLE`` lookup is refused rather
+than waved through. macOS was the last holdout, and the reason it waited is worth
+keeping: turning failed lookups into refusals *before* a real Mac had answered
+``MATCH`` is exactly how the Windows port shipped a gate that denied 100% of
+connections while presenting as merely strict.
 
-That asymmetry is the lesson from the Windows port, where an admission gate that
-turned every unverifiable lookup into a refusal denied 100% of connections while
-presenting as merely strict. Until the macOS CI job has shown ``MATCH`` on real
-hardware over time, a getsockopt failure or an unrecognised ``cr_version`` must
-degrade to the filesystem gate that already
-works there. Promoting macOS into :data:`PEER_IDENTITY_SUPPORTED` -- so that
-``UNVERIFIABLE`` refuses too -- is a one-line follow-up whose evidence is
-``test_macos_check_matches_a_socket_we_connected_to_ourselves`` passing on the
-macOS CI job.
+That evidence now exists, and it is enforced rather than merely observed. The
+macOS CI job runs ``test_macos_check_matches_a_socket_we_connected_to_ourselves``
+by node id and fails unless it PASSES, so the canary cannot quietly stop running
+and leave this gate unproven. It deliberately exercises an *accepted* socket
+(``transport.serve`` + ``connect``) rather than a socketpair, because the kernel
+populates peer credentials by different paths for the two: ``UNP_HAVEPC`` is set
+at ``connect()``, while an accepted socket takes the listener's cached cred. A
+passing socketpair therefore would not have implied a passing endpoint.
+
+The residual risk is bounded by the stub, not by this module. When gatewayd
+refuses a connection the stub's handshake raises ``FallbackRequestedError`` and
+it then ``execvpe`` the target backend directly, appending a record to
+``stub_fallback.jsonl``. So a ``LOCAL_PEERCRED`` failure on some Mac
+configuration costs pooling and leaves an audit trail; it does not break the
+session. :func:`socket_owner_only` consequently no longer guards any supported
+platform's admission path -- it is the fallback for a POSIX platform that has
+neither ``SO_PEERCRED`` nor Darwin's option.
 
 Stdlib-only (``socket``, ``struct``, ``ctypes``, ``os``, ``logging``) plus the
 ``platform_compat`` leaf; no asyncio imports, so this module is safe to call
@@ -109,10 +117,20 @@ _TOKEN_QUERY = 0x0008  # noqa: N806 - Windows API constant
 _TOKEN_USER_CLASS = 1  # TokenUser  # noqa: N806 - Windows API constant
 
 #: ``True`` when this platform can positively confirm the peer's principal, so
-#: callers can fail closed on ``UNVERIFIABLE`` instead of treating it as allow.
-#: Where it is ``False`` (macOS) the caller falls back to the filesystem gate;
-#: see the module docstring for why macOS is not in this set.
-PEER_IDENTITY_SUPPORTED: bool = _SO_PEERCRED is not None or platform_compat.IS_WINDOWS
+#: callers fail closed on ``UNVERIFIABLE`` instead of treating it as allow. True
+#: for all three supported platforms, each by its own mechanism: Linux
+#: ``SO_PEERCRED``, Windows token-SID comparison, macOS ``LOCAL_PEERCRED``. It is
+#: ``False`` only on a POSIX platform with none of them, where the caller falls
+#: back to :func:`socket_owner_only`.
+#:
+#: macOS is included on the strength of an enforced real-hardware canary; see the
+#: module docstring for the evidence and for why the blast radius of a Darwin
+#: getsockopt failure is lost pooling rather than a broken session.
+PEER_IDENTITY_SUPPORTED: bool = (
+    _SO_PEERCRED is not None
+    or platform_compat.IS_WINDOWS
+    or platform_compat.IS_MACOS
+)
 
 
 class PeerCredResult(enum.Enum):
@@ -154,15 +172,18 @@ def socket_owner_only(path: Path) -> bool:
     or other permission bits set).
 
     This is the filesystem access gate the gateway falls back to where the
-    peer's principal cannot be confirmed -- in practice macOS only, since Linux
-    reads ``SO_PEERCRED`` and Windows compares SIDs. A 0600 socket already
-    prevents any other uid from ``connect()``-ing. Returns ``False`` (deny)
-    when the file is missing or any group/other bit is set, so the caller can
-    fail closed instead of allowing an unverifiable connection through.
+    peer's principal cannot be confirmed. No supported platform reaches it any
+    more -- Linux reads ``SO_PEERCRED``, Windows compares SIDs and macOS reads
+    ``LOCAL_PEERCRED``, so all three fail closed on ``UNVERIFIABLE`` instead.
+    It remains for a POSIX platform with none of those mechanisms. A 0600 socket
+    already prevents any other uid from ``connect()``-ing. Returns ``False``
+    (deny) when the file is missing or any group/other bit is set, so the caller
+    can fail closed instead of allowing an unverifiable connection through.
 
     Never reached on Windows (``PEER_IDENTITY_SUPPORTED`` is ``True`` there),
     which matters because ``st_mode`` is synthetic on Windows and this test
-    would be meaningless.
+    would be meaningless. Kept rather than deleted because deleting it would
+    make an unverifiable peer on an unlisted POSIX platform an *allow*.
     """
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)

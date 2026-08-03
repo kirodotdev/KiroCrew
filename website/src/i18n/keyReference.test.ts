@@ -11,7 +11,7 @@
  * `pages.chat.activityViewer.show_all` to the user.
  *
  * That state was reproduced on this tree before the gate landed, and every existing
- * i18n gate passed on it: `npm run i18n:check` (5 gates) exited 0, and
+ * i18n gate passed on it: `npm run i18n:check` (11 checks) exited 0, and
  * `npx vitest run src/i18n/` (30 files) exited 0 — `catalogParity` included, because a
  * key absent from `en` is absent from all 9 targets too, which is perfect parity. The
  * only thing that failed was `src/test/ActivityViewer.test.tsx`, and only by accident:
@@ -342,7 +342,7 @@ export function assembled(id: string, prefix: string) {
 /** `s.labelKey`, the template, the concatenation, and the bare parameter. */
 const DYNAMIC_SITES = 4
 
-describe('dynamic call sites are counted, never waved through', () => {
+describe('dynamic call sites are counted and reported', () => {
   it('holds when the baseline matches', () => {
     const r = run({
       files: withPadding({ 'src/probe/Dynamic.tsx': DYNAMIC_SOURCE }),
@@ -353,26 +353,31 @@ describe('dynamic call sites are counted, never waved through', () => {
     expect(r.stdout).toContain(`${DYNAMIC_SITES} dynamic site(s)`)
   })
 
-  it('fails when a file gains one', () => {
+  it('REPORTS a file that gains one, without failing the run', () => {
+    // This count is a whole-repo stored total, so another branch can move it without
+    // touching your files — and then the failure names no diff anyone can fix. It is a
+    // report; `[added-lines]` in check-i18n-strings.mjs is what enforces new sites
+    // against the base ref. See website/AGENTS.md § "Only two kinds of check can fail".
     const r = run({
       files: withPadding({ 'src/probe/Dynamic.tsx': DYNAMIC_SOURCE }),
       keys: [],
       baseline: { 'probe/Dynamic.tsx': DYNAMIC_SITES - 1 },
     })
-    expect(r.status).toBe(1)
-    expect(r.stderr).toContain('cannot be resolved statically')
+    expect(r.status, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`).toBe(0)
+    expect(r.stdout).toContain('cannot be\nresolved statically')
   })
 
-  it('fails when a file LOSES one, so the coverage gain cannot be given back', () => {
-    // The bidirectional half, for the reason `check-i18n-strings.mjs` gives: a one-way
-    // ratchet has no downward pressure, so the debt sits at N forever.
+  it('REPORTS a file that LOSES one, instead of demanding a re-snapshot', () => {
+    // This direction was the worst of it: improving a file broke CI until someone
+    // committed a new number to a file every branch shares, which made an ordinary
+    // improvement a merge conflict.
     const r = run({
       files: withPadding({ 'src/probe/Dynamic.tsx': DYNAMIC_SOURCE }),
       keys: [],
       baseline: { 'probe/Dynamic.tsx': DYNAMIC_SITES + 1 },
     })
-    expect(r.status).toBe(1)
-    expect(r.stderr).toContain('improved')
+    expect(r.status, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`).toBe(0)
+    expect(r.stdout).toContain('improved')
   })
 
   it('never resolves an assembled key, which dynamicKeys.test.ts bans', () => {
@@ -536,8 +541,29 @@ describe('wiring', () => {
     // The gate lives in a script, so nothing in the vitest suite would notice it being
     // dropped from the chain CI runs. `englishIdentity.test.ts` reads codemod source for
     // the same reason: assert the mechanism, not only the behaviour.
+    //
+    // The chain used to be six `&&`-joined commands in this field, so a `toContain` on
+    // the field was enough. It is now a runner, `scripts/i18n-check.mjs`, whose table
+    // lives in `scripts/lib/i18n-gate-table.mjs` — because `&&` short-circuits and a PR
+    // only ever learned about its FIRST failing gate. So follow both hops.
     const pkg = JSON.parse(fs.readFileSync(path.join(WEBSITE, 'package.json'), 'utf-8'))
-    expect(pkg.scripts['i18n:check']).toContain('check-i18n-keys.mjs')
+    expect(pkg.scripts['i18n:check']).toContain('scripts/i18n-check.mjs')
+
+    const table = fs.readFileSync(
+      path.join(WEBSITE, 'scripts/lib/i18n-gate-table.mjs'), 'utf-8',
+    )
+    expect(table).toContain('check-i18n-keys.mjs')
+    // Every gate, not only this file's: dropping any one of them from the table is the
+    // same silent loss of coverage. `i18nGateTable.test.ts` asserts the exact argv;
+    // this is the cross-check from the gate that would go unnoticed.
+    for (const gate of [
+      'gen-pseudolocale.mjs',
+      'check-i18n-keys.mjs',
+      'i18n-codemod.mjs',
+      'i18n-plural-codemod.mjs',
+      'check-source-strings.mjs',
+      'check-i18n-strings.mjs',
+    ]) expect(table, `${gate} missing from the runner's table`).toContain(gate)
   })
 
   it('gates the real tree at zero dangling references', () => {

@@ -176,6 +176,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.link-previews",
+    "label": "Link Previews",
+    "description": "Show a favicon and page title instead of the raw URL. This machine then fetches every link the model outputs, so each linked site sees a request from your IP address.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.merge-queued-messages",
     "label": "Merge Queued Messages",
     "description": "Combine follow-up messages into a single labeled prompt while the agent is busy",
