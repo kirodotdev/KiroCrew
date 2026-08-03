@@ -503,13 +503,27 @@ def _redact_value(v):  # type: ignore[no-untyped-def]
     if isinstance(v, dict):
         return _redact_meta(v)
     if isinstance(v, list):
-        return [_redact_value(i) for i in v]
+        # Snapshot for the same reason as _redact_meta — the flush thread reads
+        # containers the event loop is still appending to.
+        return [_redact_value(i) for i in list(v)]
     return v
 
 
 def _redact_meta(meta: dict) -> dict:
-    """Recursively redact string values in meta dict."""
-    return {k: _redact_value(v) for k, v in meta.items()}
+    """Recursively redact string values in meta dict.
+
+    Iterates a SNAPSHOT of the dict, never the live object. ``_redact_meta`` is
+    reached from ``_save_slot_to_history``, which runs in the flush executor
+    thread while the event loop is still mutating that same message's meta
+    (streaming tool calls, growing file-change lists). Iterating ``meta.items()``
+    directly therefore raised ``RuntimeError: dictionary changed size during
+    iteration``, which propagated out of ``_save_slot_to_history`` and aborted
+    the whole slot's save — the transcript for that flush was lost.
+
+    A shallow copy per level suffices: the copy's key set is stable, and nested
+    containers get their own snapshot from the recursive call.
+    """
+    return {k: _redact_value(v) for k, v in list(meta.items())}
 
 
 def _redact_meta_for_role(role: str, meta: dict) -> dict:
@@ -522,7 +536,7 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
     """
     if role == "mcp_oauth":
         out: dict = {}
-        for k, v in meta.items():
+        for k, v in list(meta.items()):
             if k == "oauth_url" and isinstance(v, str):
                 # Two gates, and deliberately NOT a third:
                 #   1. http(s)-only — a tampered history line can't smuggle a

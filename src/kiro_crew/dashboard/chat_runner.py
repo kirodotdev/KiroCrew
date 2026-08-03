@@ -667,6 +667,17 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
             meta={"file_changes": fc_list},
         )
     logger.info("Attached %d file_changes to slot %s", len(fc_list), slot.key)
+    # Honour the in-place-mutation contract (see resolve_permission_message in
+    # state.py): "the periodic flush skips non-dirty slots, so an unflagged
+    # in-place mutation can be lost on restart". The assistant-message branch
+    # above mutates meta in place without appending, so nothing else marks the
+    # slot dirty. That matters on the error/cancel call path, which — unlike the
+    # success path — is NOT followed by an explicit save_slot_off_loop: without
+    # this flag a periodic flush that snapshotted the message just before this
+    # write clears _dirty, and the file_changes never reach disk.
+    # (slot.append in the else branch already sets it; setting it once here
+    # covers both branches and cannot be missed by a later edit.)
+    slot._dirty = True
     slot._file_changes = []
 
 
