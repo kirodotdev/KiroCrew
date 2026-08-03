@@ -721,9 +721,11 @@ function ResourceRow({ link }: { link: ExtractedLink }) {
  *       3. Virtual session documents — non-code files recorded in chat
  *          `file_changes`, not persisted until starred (materialized).
  *
- *  B. "Other artifacts" — the rest of the local library, so the tab answers "what do I
- *     have?" and not only "what happened here?". De-duped against section A:
- *     anything already listed above is omitted rather than shown twice.
+ *  B. "From your library" — a search field that pulls a SPECIFIC prior artifact
+ *     into this session (results de-duped against section A), plus a link to the
+ *     full /artifacts page. This replaces the old inline library mirror: the
+ *     panel stays scoped to the conversation, and the /artifacts page remains
+ *     the home for browsing the whole library.
  *
  * The star means "keep in library" for either kind. An artifact row opens the
  * artifact, a document row opens the file.
@@ -732,10 +734,10 @@ type SessionArtifactRow =
   | { kind: 'artifact'; key: string; name: string; sub: string; slug: string; starred: boolean }
   | { kind: 'doc'; key: string; name: string; sub: string; path: string; slug: string; starred: boolean }
 
-/** Library rows rendered before the "Show all" cut. The library is unbounded
- *  and this panel is ~460px wide, so cap the DOM the same way the Subagents
- *  view does rather than mounting hundreds of rows nobody scrolls to. */
-const ARTIFACT_LIBRARY_CAP = 50
+/** Cap on library search results shown inline — the panel is a ~460px rail, so
+ *  a search that matches half the library still shows a readable slice, and the
+ *  "Browse all" link goes to the full /artifacts page for the rest. */
+const LIBRARY_SEARCH_CAP = 20
 
 function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: string; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void }) {
   const qc = useQueryClient()
@@ -866,9 +868,16 @@ function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: strin
   }, [libraryData, rows])
 
   const loading = isFetching || artifactsFetching
-  const [showAllLibrary, setShowAllLibrary] = useState(false)
-  const visibleLibrary = showAllLibrary ? libraryRows : libraryRows.slice(0, ARTIFACT_LIBRARY_CAP)
-  const cappedLibrary = libraryRows.length - visibleLibrary.length
+  const libraryTotal = libraryData?.artifacts?.length ?? 0
+  // Search the library (section-A items already excluded) as a pull-in
+  // affordance. Results appear ONLY while a query is present — an empty query
+  // never dumps the whole library inline; that is what the /artifacts page is for.
+  const [libQuery, setLibQuery] = useState('')
+  const filteredLibrary = useMemo<SessionArtifactRow[]>(() => {
+    const q = libQuery.trim().toLowerCase()
+    if (!q) return []
+    return libraryRows.filter(r => r.name.toLowerCase().includes(q)).slice(0, LIBRARY_SEARCH_CAP)
+  }, [libQuery, libraryRows])
 
   const openRow = useCallback((r: SessionArtifactRow) => {
     // A doc row addresses a file on disk, so it opens as a file tab even when
@@ -890,14 +899,13 @@ function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: strin
     (r.kind === 'doc' && busyPath === r.path) || (!!r.slug && busySlug === r.slug)
   ), [busyPath, busySlug])
 
-  // Nothing at all — no session activity AND an empty library.
-  if (rows.length === 0 && libraryRows.length === 0) {
+  // Still loading with nothing resolved yet — show a single spinner line rather
+  // than flashing the empty hero before data lands.
+  if ((loading || libraryFetching) && rows.length === 0 && libraryTotal === 0) {
     return (
       <div className="flex-1 overflow-y-auto py-1.5">
         <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">
-          {loading || libraryFetching
-            ? i18nT('pages.chat.activityViewer.loading')
-            : i18nT('pages.chat.activityViewer.artifacts_empty')}
+          {i18nT('pages.chat.activityViewer.loading')}
         </div>
       </div>
     )
@@ -906,11 +914,9 @@ function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: strin
   return (
     <div className="flex-1 overflow-y-auto py-1.5">
       <div className="px-3 flex flex-col">
-        {/* Section A — this session. Rendered whenever there is session
-            activity; suppressed entirely (header included) when there is none,
-            so a fresh session shows just the library instead of an empty
-            heading above it. */}
-        {rows.length > 0 && (
+        {/* Section A — this session. When the session has touched nothing yet, a
+            short hero explains what the panel collects instead of an empty heading. */}
+        {rows.length > 0 ? (
           <>
             <PanelSectionHeader
               label={i18nT('pages.chat.activityViewer.artifacts_this_session')}
@@ -921,28 +927,58 @@ function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: strin
               <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onToggleStar={toggleStar} />
             ))}
           </>
+        ) : (
+          <div className="flex flex-col items-center text-center px-4 pt-6 pb-1">
+            <Component size={22} className="text-muted/50" />
+            <div className="mt-2.5 text-[13px] font-medium text-text">
+              {i18nT('pages.chat.activityViewer.artifacts_empty_title')}
+            </div>
+            <div className="mt-1 text-[12px] text-muted leading-snug max-w-[260px]">
+              {i18nT('pages.chat.activityViewer.artifacts_empty_hint')}
+            </div>
+          </div>
         )}
-        {/* Section B — the rest of the library. */}
-        {libraryRows.length > 0 && (
-          <>
+        {/* Section B — bridge to the wider library: search to pull a specific
+            artifact into this session, plus a link to the full /artifacts page.
+            Replaces the old inline library mirror. */}
+        {libraryTotal > 0 && (
+          <div className={rows.length > 0 ? 'mt-3' : 'mt-4'}>
             <PanelSectionHeader
-              label={i18nT('pages.chat.activityViewer.artifacts_library')}
-              count={libraryRows.length}
-              className={`mb-0.5 ${rows.length > 0 ? 'mt-3' : 'mt-0.5'}`}
+              label={i18nT('pages.chat.activityViewer.artifacts_from_library')}
+              className="mb-1.5"
             />
-            {visibleLibrary.map(r => (
-              <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onToggleStar={toggleStar} />
-            ))}
-            {cappedLibrary > 0 && (
-              <button
-                type="button"
-                onClick={() => setShowAllLibrary(true)}
-                className="self-start mt-1 px-2 py-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer transition-colors"
-              >
-                {i18nT('pages.chat.activityViewer.show_all_count', { count: cappedLibrary })}
-              </button>
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+              <input
+                type="text"
+                value={libQuery}
+                onChange={e => setLibQuery(e.target.value)}
+                placeholder={i18nT('pages.chat.activityViewer.artifacts_search_library')}
+                aria-label={i18nT('pages.chat.activityViewer.artifacts_search_library')}
+                className="w-full text-[12px] pl-7 pr-2.5 py-1.5 rounded-md bg-bg border border-border text-text placeholder:text-muted focus:outline-none focus:border-accent transition-colors"
+              />
+            </div>
+            {libQuery.trim() && (
+              filteredLibrary.length > 0 ? (
+                <div className="mt-1">
+                  {filteredLibrary.map(r => (
+                    <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onToggleStar={toggleStar} />
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-2 px-2 text-[11.5px] text-muted">
+                  {i18nT('pages.chat.activityViewer.no_matches')}
+                </div>
+              )
             )}
-          </>
+            <button
+              type="button"
+              onClick={() => navigate('/artifacts')}
+              className="self-start mt-1.5 px-2 py-1 text-[11.5px] text-accent hover:underline bg-transparent border-none cursor-pointer transition-colors"
+            >
+              {i18nT('pages.chat.activityViewer.artifacts_browse_all', { count: libraryTotal })}
+            </button>
+          </div>
         )}
       </div>
     </div>

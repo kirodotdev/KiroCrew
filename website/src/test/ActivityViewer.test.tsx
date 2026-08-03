@@ -664,7 +664,7 @@ describe('ActivityViewer — Artifacts tab', () => {
 
   it('shows the empty state when the session produced nothing and the library is empty', async () => {
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    expect(await screen.findByText(/No artifacts yet/)).toBeInTheDocument()
+    expect(await screen.findByText(/No artifacts in this chat yet/)).toBeInTheDocument()
   })
 
   it('keeps a file-backed artifact this session only READ in the session section', async () => {
@@ -699,7 +699,7 @@ describe('ActivityViewer — Artifacts tab', () => {
     )
   }
 
-  it('lists the whole library in its own section below the session', async () => {
+  it('surfaces a library artifact by search, de-duped against the session', async () => {
     mockArtifactQueries(
       [{ slug: 'mine', name: 'Made Here', kind: 'widget', pinned: false }],
       [
@@ -709,20 +709,16 @@ describe('ActivityViewer — Artifacts tab', () => {
     )
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
     await findSection('This session', 1)
-    // The library section excludes the session's own artifact, so it counts 1,
-    // not 2 — the de-dup is visible in the header count, not just the rows.
-    await findSection('Artifact library', 1)
-    expect(screen.getByText('From Last Week')).toBeInTheDocument()
-    // 'Made Here' appears exactly once, in the session section.
+    // The library is no longer mirrored inline — the "From your library" header
+    // carries no count and no rows until the user searches.
+    expect(screen.getByText('From your library')).toBeInTheDocument()
+    expect(screen.queryByText('From Last Week')).not.toBeInTheDocument()
+    // Typing a query surfaces the matching library artifact.
+    fireEvent.change(screen.getByPlaceholderText('Search your library…'), { target: { value: 'last week' } })
+    expect(await screen.findByText('From Last Week')).toBeInTheDocument()
+    // 'Made Here' stays once (session only) — the session item is excluded from
+    // library search results.
     expect(screen.getAllByText('Made Here')).toHaveLength(1)
-  })
-
-  it('hides the session header entirely when the session touched nothing', async () => {
-    mockArtifactQueries([], [{ slug: 'older', name: 'From Last Week', kind: 'markdown', pinned: true }])
-    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    await findSection('Artifact library', 1)
-    // A fresh session shows the library alone, not an empty "This session" heading.
-    expect(screen.queryByText(/^This session/)).not.toBeInTheDocument()
   })
 
   it('does not list a library twin of an unstarred materialized doc', async () => {
@@ -741,17 +737,41 @@ describe('ActivityViewer — Artifacts tab', () => {
     expect(screen.getByText('/p/notes.md')).toBeInTheDocument()
   })
 
-  it('caps the library list and reveals the rest on Show all', async () => {
+  it('shows the empty hero and the library bridge when the session touched nothing', async () => {
+    mockArtifactQueries([], [{ slug: 'older', name: 'From Last Week', kind: 'markdown', pinned: true }])
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    // A fresh session shows the empty hero + "From your library", not an empty
+    // "This session" heading.
+    expect(await screen.findByText(/No artifacts in this chat yet/)).toBeInTheDocument()
+    expect(screen.getByText('From your library')).toBeInTheDocument()
+    expect(screen.queryByText(/^This session/)).not.toBeInTheDocument()
+  })
+
+  it('caps library search results and shows a no-matches state', async () => {
     const many = Array.from({ length: 55 }, (_, i) => ({
       slug: `a${i}`, name: `Artifact ${i}`, kind: 'widget', pinned: false,
     }))
     mockArtifactQueries([], many)
     render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
-    await findSection('Artifact library', 55)
-    // 50 rendered, 5 held back — the panel is ~460px wide, so the DOM is capped.
-    expect(screen.queryByText('Artifact 54')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByText(/Show all \(5\)/))
-    expect(await screen.findByText('Artifact 54')).toBeInTheDocument()
+    // Nothing is listed until the user searches.
+    expect(await screen.findByText('From your library')).toBeInTheDocument()
+    expect(screen.queryByText('Artifact 0')).not.toBeInTheDocument()
+    const box = screen.getByPlaceholderText('Search your library…')
+    // A broad query matches more than the cap; at most 20 rows render.
+    fireEvent.change(box, { target: { value: 'artifact' } })
+    await waitFor(() => {
+      expect(screen.getAllByText(/^Artifact \d+$/).length).toBe(20)
+    })
+    // A query matching nothing shows the no-matches state.
+    fireEvent.change(box, { target: { value: 'zzz-nope' } })
+    expect(await screen.findByText('No matches')).toBeInTheDocument()
+  })
+
+  it('links to the full artifacts library', async () => {
+    mockArtifactQueries([], [{ slug: 'older', name: 'From Last Week', kind: 'markdown', pinned: true }])
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    // The browse control carries the total library count and routes to /artifacts.
+    expect(await screen.findByText(/Browse all \(1\)/)).toBeInTheDocument()
   })
 
   /* ── Companion binding (requirement: the association must persist) ─────── */
@@ -801,7 +821,7 @@ describe('ActivityViewer — Artifacts tab', () => {
     // metadata to render, so the row is skipped rather than faked.
     mockArtifactQueries([], [])
     renderWithSlots([{ key: 'test-slot', title: 'Artifact: Gone', messages: 1, running: false, artifact: 'deleted-slug' }])
-    expect(await screen.findByText(/No artifacts yet/)).toBeInTheDocument()
+    expect(await screen.findByText(/No artifacts in this chat yet/)).toBeInTheDocument()
   })
 
   // ── Row click routes into the side panel, not a full-page navigation ───────
@@ -821,14 +841,14 @@ describe('ActivityViewer — Artifacts tab', () => {
     expect(onArtifactOpen).toHaveBeenCalledWith('cr-queue')
   })
 
-  it('routes a library-section row through onArtifactOpen too', async () => {
-    // Section B rows are the same artifact rows, so they must not keep the old
-    // navigate() behavior just because they came from the unscoped query.
+  it('routes a library search-result row through onArtifactOpen too', async () => {
+    // A library artifact surfaced by search is the same artifact row, so it must
+    // route through onArtifactOpen (open in panel), not navigate().
     const onArtifactOpen = vi.fn()
     mockArtifactQueries([], [{ slug: 'old-doc', name: 'Old Doc', kind: 'markdown', pinned: false }])
     render(<ActivityViewer {...artifactProps} onArtifactOpen={onArtifactOpen} />, { wrapper: routerWrapper })
-    await findSection('Artifact library', 1)
-    fireEvent.click(screen.getByText('Old Doc'))
+    fireEvent.change(await screen.findByPlaceholderText('Search your library…'), { target: { value: 'old doc' } })
+    fireEvent.click(await screen.findByText('Old Doc'))
     expect(onArtifactOpen).toHaveBeenCalledWith('old-doc')
   })
 
@@ -1025,10 +1045,10 @@ describe('ActivityViewer — panel section headers', () => {
              { slug: 'lib1', name: 'Kept Doc', kind: 'markdown', pinned: true }],
       }) as never)
     render(<ActivityViewer {...headerProps} view="artifacts" />, { wrapper: panelWrapper })
-    await findSection('Artifact library', 1)
-    // "This session", not "THIS SESSION (1)" — the count is its own node, so no
-    // translated label carries parentheses, and nothing is uppercased.
-    expect(sectionHeaders()).toEqual([['This session', '1'], ['Artifact library', '1']])
+    await findSection('This session', 1)
+    // "This session" carries its count as a sibling node; "From your library" is
+    // a countless header (the hairline rule sits where a count would).
+    expect(sectionHeaders()).toEqual([['This session', '1'], ['From your library', null]])
     expect(screen.queryByText(/\(1\)/)).not.toBeInTheDocument()
   })
 })

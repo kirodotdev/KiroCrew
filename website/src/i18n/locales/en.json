@@ -3122,8 +3122,6 @@
         "activity": "Activity",
         "approve": "Approve",
         "approved": "Approved",
-        "artifacts_empty": "No artifacts yet — ask me to create one, or star a session file",
-        "artifacts_library": "Artifact library",
         "artifacts_this_session": "This session",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "Ask me to \"use a dynamic workflow to …\" — runs from this chat appear here live.",
         "back_to_files": "Back to files",
