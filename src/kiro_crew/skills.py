@@ -293,6 +293,41 @@ def _project_skills_dir() -> Path | None:
     return None
 
 
+def _trusted_skill_roots() -> tuple[str, ...]:
+    """Resolved roots a symlink inside the skills tree may legitimately point into.
+
+    An app ships its skills inside its OWN tree, and
+    ``apps.bridges._register_skills`` symlinks them into the skills dir "so the
+    skill scanner finds the skill" — so their resolved paths land OUTSIDE the
+    skills base by construction. Two roots are legitimate skill providers:
+
+    * the installed ``kiro_crew`` package — built-in apps keep their skills
+      under ``apps/builtins/<app>/skills/``;
+    * ``<data home>/apps`` — externally installed apps.
+
+    A symlink resolving anywhere else stays rejected: an arbitrary target would
+    admit unvetted ``SKILL.md`` prose into the agent's context.
+    """
+    roots: list[str] = [os.path.realpath(Path(__file__).parent)]
+    try:
+        roots.append(os.path.realpath(config_dir() / "apps"))
+    except Exception:  # noqa: BLE001 — an unresolvable data home must not stop scanning
+        pass
+    return tuple(roots)
+
+
+def _within_any(candidate: str, roots: tuple[str, ...]) -> bool:
+    """True when the already-resolved *candidate* equals one of *roots* or sits under it."""
+    cand = Path(candidate)
+    for root in roots:
+        try:
+            if cand == Path(root) or cand.is_relative_to(root):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def _iter_skill_files(base: Path) -> list[tuple[str, Path]]:
     """Recursively find all SKILL.md files under *base*.
 
@@ -306,6 +341,9 @@ def _iter_skill_files(base: Path) -> list[tuple[str, Path]]:
     if not base.exists():
         return results
     real_base = os.path.realpath(base)
+    # A skills-tree symlink into an app's own tree resolves outside ``base`` by
+    # construction — allow those provider roots, and nothing else.
+    allowed_roots = (real_base,) + _trusted_skill_roots()
     seen_real: set[str] = set()
     for dirpath, _dirs, files in os.walk(base, followlinks=True):
         real = os.path.realpath(dirpath)
@@ -316,11 +354,16 @@ def _iter_skill_files(base: Path) -> list[tuple[str, Path]]:
         # Prune dot-directories (e.g. ``auto/.archive``, ``.pending``) so
         # archived / pending / hub-state skills are never enumerated as live,
         # trigger-matchable skills. Mutating ``_dirs`` in place prunes the walk.
-        _dirs[:] = [d for d in _dirs if not d.startswith(".")]
-        # Path containment: ensure we stay within the skill base directory
-        try:
-            Path(real).relative_to(real_base)
-        except ValueError:
+        # SORTED so enumeration is deterministic: ``bridges._register_skills``
+        # registers each app skill twice (``skills/<app>/<skill>`` and a flat
+        # ``skills/<skill>``), both resolving to one target, so the ``seen_real``
+        # guard keeps exactly one — and without a sort ``os.walk`` picks the
+        # winner in arbitrary ``scandir`` order, giving the same skill a
+        # different key on different machines.
+        _dirs[:] = sorted(d for d in _dirs if not d.startswith("."))
+        # Path containment: stay inside the skills base, or inside a trusted
+        # skill-provider root reached through an app's registered symlink.
+        if not _within_any(real, allowed_roots):
             _dirs.clear()
             continue
         if is_sensitive_path(real):
