@@ -1833,18 +1833,18 @@ export default function App() {
       </AnimatePresence>
 
       {/* Nav */}
-      <AnimatePresence>
-      {(!isMobile || mobileNavOpen) && (
-      <motion.nav
-        initial={isMobile ? { x: -240 } : false}
-        animate={isMobile ? { width: 220, x: 0 } : { x: 0 }}
-        exit={{ x: -240 }}
-        transition={isMobile ? { duration: 0.25, ease: [0.32, 0.72, 0, 1] } : undefined}
-        className={`bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-0 mb-2 shadow-sm z-50 overflow-hidden ${isMobile ? 'fixed top-0 left-0 bottom-0' : ''}`}
-        style={isMobile ? undefined : { gridArea: 'nav', width: 'auto' }}
-        role="navigation"
-        aria-label={i18nT('app.main_navigation')}
-      >
+      {/* Desktop rail and mobile drawer share one body but get DIFFERENT
+          wrappers, and only the mobile drawer sits inside AnimatePresence.
+          An exit animation on the desktop rail is actively wrong: when the
+          viewport crosses the mobile threshold, the shell grid drops its
+          `nav` area in the same render — AnimatePresence would keep the
+          exiting rail mounted with its frozen `gridArea: 'nav'` style, and
+          CSS auto-places that orphaned item into an implicit row BELOW the
+          content (the rail visibly jumped under the chat input before
+          sliding away). The desktop rail therefore unmounts instantly at
+          the threshold; only the fixed-position drawer animates in/out. */}
+      {(() => {
+        const navBody = (<>
         {/* Top-fixed: menu row + primary destinations + Apps section header.
             The sidebar toggle lives HERE (menu row), not in the topbar. */}
         <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-2">
@@ -2132,9 +2132,35 @@ export default function App() {
             </div>
           )
         })()}
-      </motion.nav>
-      )}
-      </AnimatePresence>
+        </>)
+        return isMobile ? (
+          <AnimatePresence>
+            {mobileNavOpen && (
+              <motion.nav
+                key="mobile-nav-drawer"
+                initial={{ x: -240 }}
+                animate={{ width: 220, x: 0 }}
+                exit={{ x: -240 }}
+                transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
+                className="bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-0 mb-2 shadow-sm z-50 overflow-hidden fixed top-0 left-0 bottom-0"
+                role="navigation"
+                aria-label={i18nT('app.main_navigation')}
+              >
+                {navBody}
+              </motion.nav>
+            )}
+          </AnimatePresence>
+        ) : (
+          <nav
+            className="bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-0 mb-2 shadow-sm z-50 overflow-hidden"
+            style={{ gridArea: 'nav', width: 'auto' }}
+            role="navigation"
+            aria-label={i18nT('app.main_navigation')}
+          >
+            {navBody}
+          </nav>
+        )
+      })()}
 
       {/* Content */}
       <div className="flex flex-col min-h-0 min-w-0" style={{ gridArea: 'content' }}>
