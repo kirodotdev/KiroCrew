@@ -84,8 +84,8 @@
   },
   "auto": {
     "display": "Auto",
-    "description": "Let the provider pick the model",
-    "window": 200000,
+    "description": "Models chosen by task for optimal usage and consistent quality",
+    "window": 1000000,
     "providers": { "claude_code": "", "acp": "" }
   }
 }

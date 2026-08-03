@@ -25,6 +25,7 @@ from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
+    advertises_model,
 )
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import kiro_sessions_dir
@@ -607,9 +608,15 @@ class AcpProvider(LLMProvider):
             # session/new (or session/load) + MCP-toolset/system-prompt load done.
             phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
 
-            # Apply the configured model override (mirrors AcpClient handshake).
-            # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
-            if configured_model and configured_model != DEFAULT_MODEL:
+            # Apply the configured model (mirrors AcpClient handshake). A
+            # concrete model is always set; DEFAULT_MODEL ("auto") is set too,
+            # but only when this session advertised it — kiro-cli serves `auto`
+            # as a real, task-routing model id, so skipping the call leaves the
+            # session on whatever `--agent` resolved to instead of selecting it.
+            if configured_model and (
+                configured_model != DEFAULT_MODEL
+                or advertises_model(handle.available_models, DEFAULT_MODEL)
+            ):
                 _t_model = time.monotonic()
                 try:
                     await handle.set_model(configured_model)

@@ -95,6 +95,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     JsonRpcRequest,
     TurnUsage,
+    advertises_model,
 )
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
@@ -2322,8 +2323,22 @@ class AcpClient:
             )
             logger.info("ACP agent activated: %s", self._agent)
 
-        # 5. Set model — override if KiroCrew config specifies non-default.
-        if self._model and self._model != DEFAULT_MODEL:
+        # 5. Set model.
+        #
+        # A concrete model is always sent. DEFAULT_MODEL ("auto") is sent too,
+        # but ONLY when this backend advertised it: kiro-cli serves `auto` as a
+        # real model id (its own default_model, task-routing, 1.0x credit rate),
+        # so skipping the call does NOT select it — kiro instead resolves the
+        # model from `--agent`, and a spec that pins one (the shipped default)
+        # silently wins. That made an explicit Auto pick run on a fixed model at
+        # that model's credit rate, with nothing in the UI showing the drift.
+        # The claude backend has no server-side router and never advertises
+        # `auto`, so it keeps the historical skip via the same gate.
+        _wants_default = self._model == DEFAULT_MODEL
+        _send_model = bool(self._model) and (
+            not _wants_default or advertises_model(self._available_models, DEFAULT_MODEL)
+        )
+        if _send_model:
             if self._is_claude:
                 await self.set_config_option("model", self._model)
             else:

@@ -908,7 +908,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     queryKey: ['available-models', provider.id],
     queryFn: async () => {
       const models = await provider.fetchAvailableModels()
-      return [{ name: 'auto', description: 'Default' }, ...models.filter(m => m.name !== 'auto')]
+      // Keep Auto pinned first, but present the row the BACKEND advertised for
+      // it — description included — instead of relabelling it "Default". `auto`
+      // is a real task-routing model with its own credit rate, and calling it
+      // the default made it read as "no model chosen": the labelling half of
+      // the auto-never-selected bug. A backend that does not advertise `auto`
+      // gets no Auto row at all, because selecting it there would fail and
+      // _wire_model_id already refuses to wire an unadvertised sentinel.
+      const advertisedAuto = models.find(m => m.name === 'auto')
+      const rest = models.filter(m => m.name !== 'auto')
+      return advertisedAuto ? [advertisedAuto, ...rest] : rest
     },
     refetchInterval: modelListRefetchInterval,
   })

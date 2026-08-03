@@ -91,6 +91,32 @@ ACP_CLIENT_CAPABILITIES: dict = {
     "elicitation": {"form": {}, "url": {}},
 }
 
+
+def advertises_model(advertised: list[dict[str, str]], model_id: str) -> bool:
+    """True when the backend advertised ``model_id`` as a selectable model id.
+
+    ``advertised`` is the normalized ``{modelId, name, description}`` list an
+    ACP ``session/new`` response carries (``AcpClient._capture_available_models``
+    / ``AcpSessionHandle._normalize_models``).
+
+    This is the ONE gate every caller uses before sending ``session/set_model``
+    for the ``auto`` sentinel. kiro-cli serves ``auto`` as a real model id (its
+    own ``default_model``, with a task-routing description and a 1.0 credit
+    multiplier), so it must be SET explicitly rather than treated as "no model
+    chosen" — but the claude backend has no server-side router and never
+    advertises it, so the same call there must stay skipped. Asking the backend
+    what it offers keeps both behaviours correct without hardcoding either.
+
+    Returns False for an empty ``model_id`` or an unadvertised list, so a
+    backend that reported no models at all (a lazy or older agent) degrades to
+    the historical "let the backend pick" behaviour instead of sending an id it
+    might reject with -32603.
+    """
+    if not model_id:
+        return False
+    return any(isinstance(m, dict) and m.get("modelId") == model_id for m in advertised)
+
+
 # ── ACP Backend Identifiers ──
 
 ACP_BACKEND_CLAUDE = "claude"

@@ -3676,8 +3676,13 @@ class TestInitializeSession:
         assert "session/set_model" in send_calls
 
     @pytest.mark.asyncio
-    async def test_no_set_model_when_auto(self, tmp_path):
-        """Default model 'auto' skips set_model request."""
+    async def test_no_set_model_when_auto_not_advertised(self, tmp_path):
+        """'auto' is skipped when the backend does not advertise it as a model.
+
+        The claude backend has no server-side router, and a lazy/older agent may
+        report no models at all — either way we must not send an id the backend
+        would reject. Degrades to the historical "let the backend pick".
+        """
         client = self._make_client(tmp_path)
         client._model = "auto"
 
@@ -3688,6 +3693,90 @@ class TestInitializeSession:
                 return {"protocolVersion": "2025-08-22", "agentCapabilities": {}}
             if req_id == 2:
                 return {"sessionId": "s1"}
+            return {}
+
+        client._wait_for_response = AsyncMock(side_effect=fake_wait)
+        client._drain_notifications = AsyncMock()
+
+        original_send_request = client._send_request
+
+        async def tracking_send(method, params):
+            send_calls.append(method)
+            return await original_send_request(method, params)
+
+        client._send_request = tracking_send
+
+        await client._initialize_session()
+
+        assert "session/set_model" not in send_calls
+
+    @pytest.mark.asyncio
+    async def test_set_model_auto_when_advertised(self, tmp_path):
+        """'auto' IS sent when the backend advertises it (kiro-cli does).
+
+        Regression for the auto-never-selected bug: kiro-cli serves `auto` as a
+        real, task-routing model id, so treating it as "no model chosen" and
+        skipping set_model left the session on whatever `--agent` resolved to
+        (the agent spec's pinned model) at that model's credit rate.
+        """
+        client = self._make_client(tmp_path)
+        client._model = "auto"
+
+        sent: list[tuple[str, dict]] = []
+
+        async def fake_wait(req_id, timeout=50.0):
+            if req_id == 1:
+                return {"protocolVersion": "2025-08-22", "agentCapabilities": {}}
+            if req_id == 2:
+                return {
+                    "sessionId": "s1",
+                    "models": {
+                        "currentModelId": "claude-opus-4.8",
+                        "availableModels": [
+                            {"modelId": "auto", "name": "auto", "description": "routed"},
+                            {"modelId": "claude-opus-4.8", "name": "claude-opus-4.8"},
+                        ],
+                    },
+                }
+            return {}
+
+        client._wait_for_response = AsyncMock(side_effect=fake_wait)
+        client._drain_notifications = AsyncMock()
+
+        original_send_request = client._send_request
+
+        async def tracking_send(method, params):
+            sent.append((method, params))
+            return await original_send_request(method, params)
+
+        client._send_request = tracking_send
+
+        await client._initialize_session()
+
+        set_model = [p for m, p in sent if m == "session/set_model"]
+        assert set_model, "set_model must be sent for an advertised 'auto'"
+        assert set_model[0]["modelId"] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_no_set_model_when_model_empty(self, tmp_path):
+        """An empty model still sends nothing, even if 'auto' is advertised.
+
+        AcpClient.__init__ normalizes "" to DEFAULT_MODEL, so this only guards
+        a client whose _model was cleared after construction.
+        """
+        client = self._make_client(tmp_path)
+        client._model = ""
+
+        send_calls = []
+
+        async def fake_wait(req_id, timeout=50.0):
+            if req_id == 1:
+                return {"protocolVersion": "2025-08-22", "agentCapabilities": {}}
+            if req_id == 2:
+                return {
+                    "sessionId": "s1",
+                    "models": {"availableModels": [{"modelId": "auto", "name": "auto"}]},
+                }
             return {}
 
         client._wait_for_response = AsyncMock(side_effect=fake_wait)
