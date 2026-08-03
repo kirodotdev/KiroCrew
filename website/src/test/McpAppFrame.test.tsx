@@ -171,13 +171,14 @@ describe('McpAppFrame', () => {
         'ui/notifications/tool-result',
       ])
       expect(new Set(methods.slice(0, -2))).toEqual(new Set(['ui/notifications/tool-input-partial']))
-      expect(methods.filter((m) => m === 'ui/notifications/tool-input-partial').length).toBe(4)
+      expect(methods.filter((m) => m === 'ui/notifications/tool-input-partial').length).toBe(3)
 
       // Partials grow monotonically and stay short of the full array.
       const counts = win.postMessage.mock.calls
         .filter((c) => c[0].method === 'ui/notifications/tool-input-partial')
         .map((c) => (JSON.parse(c[0].params.arguments.elements as string) as unknown[]).length)
-      expect(counts).toEqual([1, 2, 3, 4])
+      // Prefixes start at 2 because the app drops each frame's last element.
+      expect(counts).toEqual([2, 3, 4])
 
       // The COMPLETE notification carries the whole payload, unmodified.
       const complete = win.postMessage.mock.calls.at(-2)![0]

@@ -464,6 +464,43 @@ class TestLessonsGate:
             assert resp.status == 200
 
     @pytest.mark.asyncio
+    async def test_learn_add_allowed_for_channel_namespace_session(self, tmp_path, monkeypatch):
+        """POST /api/lessons succeeds for a channel session key with NO slot and
+        NO persisted JSONL — the #1268 regression, live-reproduced from a
+        Telegram forum topic.
+
+        Post-#232 the transport publishes ``session_pid`` so the gateway
+        resolves the ``X-Session-Key`` (e.g. ``telegram:kirocrew:forum:…``), but
+        the acceptance gate recognised only the ``slack:`` namespace, so every
+        OTHER channel fell through to the ``_session_has_persisted_history``
+        fallback — which can never match a channel key (``sk.split(':',1)[-1]``
+        keeps inner colons while the on-disk file folds them to ``_``) — and was
+        rejected with HTTP 400 ``unknown session``. The gate now recognises the
+        whole channel-namespace family via ``is_channel_session_key``.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers._get_memory",
+            MagicMock(return_value=MagicMock(vector_store=None)),
+        )
+        state = _make_state(tmp_path)
+        # Deliberately create NO slot and write NO JSONL: acceptance must come
+        # purely from the channel namespace, exactly as it does for Slack.
+        for channel_key in (
+            "telegram:kirocrew:forum:-1004326574849:18:gen3",
+            "discord:kirocrew:dm:123456789:gen1",
+            "webex:kirocrew:dm:user@example.com",
+            "wecom:kirocrew:dm:wuser",
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/lessons",
+                    json={"rule": "remember this", "category": "knowledge"},
+                    headers={"X-Session-Key": channel_key},
+                )
+                assert resp.status == 200, (channel_key, await resp.text())
+
+    @pytest.mark.asyncio
     async def test_learn_add_rejected_without_session_header(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -1190,8 +1227,10 @@ class TestSessionSlotRecovery:
         )
 
     @pytest.mark.asyncio
-    async def test_learn_add_audits_slack_namespace_allow_path(self, tmp_path, monkeypatch):
-        """Key in the ``slack:`` namespace → audit event with resources='slack_namespace'."""
+    async def test_learn_add_audits_channel_namespace_allow_path(self, tmp_path, monkeypatch):
+        """Key in a channel namespace (here ``slack:``) → audit event with
+        resources='channel_namespace' (the tag now covers every channel, not
+        just Slack; see #1268)."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
@@ -1211,7 +1250,7 @@ class TestSessionSlotRecovery:
 
         mock_sel().log_api_access.assert_any_call(
             caller="slack:C123:1777000000.000000", operation="learn_add", outcome="allowed",
-            source="dashboard", resources="slack_namespace",
+            source="dashboard", resources="channel_namespace",
         )
 
     @pytest.mark.asyncio
@@ -1274,10 +1313,10 @@ class TestSessionSlotRecovery:
                 )
                 assert resp.status == 200
 
-        # Audited as a Slack-namespace allow, not a JSONL recovery.
+        # Audited as a channel-namespace allow (bare Slack thread_ts), not a JSONL recovery.
         mock_sel().log_api_access.assert_any_call(
             caller="1781215864.487849", operation="learn_add", outcome="allowed",
-            source="dashboard", resources="slack_namespace",
+            source="dashboard", resources="channel_namespace",
         )
 
     @pytest.mark.asyncio
@@ -1307,7 +1346,7 @@ class TestSessionSlotRecovery:
         """Security: the Slack-ts regex gates an authorization decision, so it
         must match ASCII digits only. A key built from non-ASCII Unicode
         decimal digits (Arabic-Indic) that is otherwise thread_ts-shaped must
-        NOT be granted slack_namespace access — `[0-9]` (not `\\d`) enforces
+        NOT be granted channel_namespace access — `[0-9]` (not `\\d`) enforces
         this. With no backing JSONL the call is rejected as unknown session.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

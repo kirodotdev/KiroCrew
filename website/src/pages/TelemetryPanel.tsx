@@ -11,6 +11,13 @@ type Stat = {
   p90_ms: number
   min_ms: number
   max_ms: number
+  // >0 => the 14d window straddles a bucket-boundary change and these numbers
+  // describe only the newest generation. Surfaced so a truncated sample is
+  // never quoted as the whole window.
+  other_generations?: number
+  // Samples across EVERY generation. Paired with `count` this reads
+  // "showing 1,134 of 2,926" — the reader-facing form of the disclosure.
+  total_count?: number
 }
 type Startup = {
   overall: Stat
@@ -47,8 +54,13 @@ type Other = {
   count?: number
   p50_ms?: number
   p90_ms?: number
+  other_generations?: number
+  total_count?: number
   total?: number
   by_attr?: Record<string, number>
+  // Per-attribute sub-histograms, present only for the attribute keys the
+  // backend splits on (_OTHER_SPLIT_ATTRS). Keyed "attr=value", e.g. "warm=false".
+  splits?: Record<string, Stat>
 }
 type Resp = {
   enabled: boolean
@@ -87,12 +99,14 @@ function Tile({
   value,
   unit,
   sub,
+  note,
   color,
 }: {
   label: string
   value: string
   unit?: string
   sub?: string
+  note?: React.ReactNode
   color?: string
 }) {
   return (
@@ -103,6 +117,28 @@ function Tile({
         {unit && <span className="text-[11px] text-muted font-normal ml-0.5">{unit}</span>}
       </div>
       {sub && <div className="text-[10px] text-muted mt-1.5">{sub}</div>}
+      {note}
+    </div>
+  )
+}
+
+// "these numbers cover only part of the window" caveat.
+//
+// Rendered next to every histogram-derived figure because the dropped
+// generation is otherwise invisible: the API reports ONE generation's count and
+// percentiles (merging incompatible boundaries would fabricate values), so a
+// window that straddles a boundary change shows a subset styled exactly like a
+// full-window total.
+//
+// It states the SHOWN/TOTAL pair rather than a generation count. A generation
+// count is an internal unit a reader cannot convert into missing data, which is
+// exactly the gap that made `n=1134` unreconcilable against a `2837 hit`
+// counter beside it.
+function GenNote({ shown, total }: { shown?: number; total?: number }) {
+  if (shown == null || total == null || total <= shown) return null
+  return (
+    <div className="text-[10px] mt-1" style={{ color: 'var(--warn)' }}>
+      {i18nT('pages.telemetryPanel.showing_partial_window', { shown, total })}
     </div>
   )
 }
@@ -256,8 +292,12 @@ export default function TelemetryPanel() {
   const warmMiss = warm?.by_attr?.['result=miss'] ?? 0
   const warmRate = pct(warmHit, warmHit + warmMiss)
   const acquire = oh('kirocrew.mcp.backend.acquire.duration')
-  const mcpLazy = oh('kirocrew.mcp.lazy_load.duration')
-  const mcpLazyN = oc('kirocrew.mcp.lazy_load.count')?.total ?? 0
+  // Cold spawn = the cold side of the acquire split. This used to read
+  // kirocrew.mcp.lazy_load.duration, which only the LEGACY lazy-spawn path
+  // emits (gatewayd: "only pre-ensure_backend stubs reach here"); modern stubs
+  // pre-flight via ensure_backend, so that instrument records nothing and the
+  // card read "no data yet" permanently while real cold spawns were happening.
+  const coldSpawn = acquire?.splits?.['warm=false']
   const skillLazy = oh('kirocrew.skill.lazy_load.duration')
   const skillLazyN = oc('kirocrew.skill.lazy_load.count')?.total ?? 0
 
@@ -321,6 +361,7 @@ export default function TelemetryPanel() {
             </div>
           </div>
         )}
+        {t && <GenNote shown={t.count} total={t.total_count} />}
         {!t && (
           <div className="text-muted text-[11px] mt-2">
             {i18nT('pages.telemetryPanel.agent_turn_latency_fault_rate_populate_after_the')}
@@ -336,6 +377,14 @@ export default function TelemetryPanel() {
             <Tile label={i18nT('pages.telemetryPanel.cold_start_p90')} value={fmtMs(s.cold.p90_ms)} color="var(--warn)" />
             <Tile label={i18nT('pages.telemetryPanel.warm_start_p50')} value={fmtMs(s.warm.p50_ms)} color="var(--ok)" sub={`${s.warm.count} warm`} />
             <Tile label={i18nT('pages.telemetryPanel.overall_mean')} value={fmtMs(s.overall.mean_ms)} sub={`min ${fmtMs(s.overall.min_ms)} · max ${fmtMs(s.overall.max_ms)}`} />
+          </div>
+          {/* Directly under the tiles it qualifies, and OUTSIDE the phases /
+              distribution conditionals below: nesting the caveat inside either
+              of those meant the truncated tiles rendered caveat-free whenever
+              that unrelated card was absent (no phase points on the claude
+              startup path, or empty distribution buckets). */}
+          <div className="-mt-1 mb-3">
+            <GenNote shown={s.overall.count} total={s.overall.total_count} />
           </div>
           {s.phases?.length > 0 && (
             <div className="card-glow border border-border bg-card rounded-xl p-3.5 mb-3">
@@ -395,30 +444,43 @@ export default function TelemetryPanel() {
           </Card>
           <Card title={i18nT('pages.telemetryPanel.mcp_backend_acquire')} meaning={i18nT('pages.telemetryPanel.time_to_hand_a_pooled_mcp_backend_to_a_session')}>
             {acquire ? (
-              <div className="text-[18px] font-bold">
-                {fmtMs(acquire.p50_ms)}
-                <span className="text-[10px] text-muted font-normal"> {i18nT('pages.telemetryPanel.typ_p90')} {fmtMs(acquire.p90_ms)} {i18nT('pages.telemetryPanel.n')}{acquire.count ?? 0}</span>
-              </div>
+              <>
+                <div className="text-[18px] font-bold">
+                  {fmtMs(acquire.p50_ms)}
+                  <span className="text-[10px] text-muted font-normal"> {i18nT('pages.telemetryPanel.typ_p90')} {fmtMs(acquire.p90_ms)} {i18nT('pages.telemetryPanel.n')}{acquire.count ?? 0}</span>
+                </div>
+                <GenNote shown={acquire.count} total={acquire.total_count} />
+              </>
             ) : (
               <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_data_yet')}</div>
             )}
           </Card>
           <Card title={i18nT('pages.telemetryPanel.mcp_cold_load_first_use')} meaning={i18nT('pages.telemetryPanel.first_use_spawn_of_an_mcp_server_backend')}>
-            {mcpLazy ? (
-              <div className="text-[18px] font-bold">
-                {fmtMs(mcpLazy.p50_ms)}
-                <span className="text-[10px] text-muted font-normal"> · {mcpLazyN} {i18nT('pages.telemetryPanel.loads')}</span>
-              </div>
+            {/* Gated on the ACQUIRE instrument, not on the cold split. A window
+                with zero cold spawns is a healthy pool, not absent telemetry —
+                reporting it as "no data yet" would recreate the permanently
+                empty card this change exists to fix. */}
+            {acquire ? (
+              <>
+                <div className="text-[18px] font-bold">
+                  {fmtMs(coldSpawn?.p50_ms)}
+                  <span className="text-[10px] text-muted font-normal"> · {coldSpawn?.count ?? 0} {i18nT('pages.telemetryPanel.cold_spawn')}</span>
+                </div>
+                <GenNote shown={coldSpawn?.count} total={coldSpawn?.total_count} />
+              </>
             ) : (
               <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_data_yet')}</div>
             )}
           </Card>
           <Card title={i18nT('pages.telemetryPanel.skill_load')} meaning={i18nT('pages.telemetryPanel.on_demand_read_of_a_skill_body_from_disk')}>
             {skillLazy ? (
-              <div className="text-[18px] font-bold" style={{ color: 'var(--ok)' }}>
-                {fmtMs(skillLazy.p50_ms)}
-                <span className="text-[10px] text-muted font-normal"> · {skillLazyN} {i18nT('pages.telemetryPanel.loads')}</span>
-              </div>
+              <>
+                <div className="text-[18px] font-bold" style={{ color: 'var(--ok)' }}>
+                  {fmtMs(skillLazy.p50_ms)}
+                  <span className="text-[10px] text-muted font-normal"> · {skillLazyN} {i18nT('pages.telemetryPanel.loads')}</span>
+                </div>
+                <GenNote shown={skillLazy.count} total={skillLazy.total_count} />
+              </>
             ) : (
               <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_data_yet')}</div>
             )}

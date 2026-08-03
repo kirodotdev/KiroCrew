@@ -1155,6 +1155,140 @@
         "no_background_runs_yet_runs_started_in_the_backg": "No background runs yet. Runs started in the background appear here.",
         "select_a_run_to_see_its_phases_agents_and_result": "Select a run to see its phases, agents, and result."
       }
+    },
+    "mdNotebook": {
+      "title": "Notes",
+      "badge": {
+        "pending": "pending"
+      },
+      "boot": {
+        "loading": "Loading…",
+        "unreachable": "Could not reach the Notes backend: {{message}}. It may still be starting."
+      },
+      "body": {
+        "empty": "Select a note, or create one with the + button.",
+        "backlinks": "Linked from {{n}}"
+      },
+      "banner": {
+        "staleBackend": "The Notes backend is running older code than this page — missing: {{features}}. Toggle Notes off and on in the Apps page to restart it.",
+        "staleBackendRoute": "The Notes backend is running older code than this page. Toggle Notes off and on in the Apps page to restart it.",
+        "diskConflict": "This note changed on disk since you opened it.",
+        "useDisk": "Use the version on disk",
+        "keepMine": "Keep my version",
+        "syncConflict": "Sync stopped on a merge conflict, so nothing was pushed. Conflicting notes: {{paths}}"
+      },
+      "editor": {
+        "blockAria": "Edit block",
+        "titleAria": "Note title",
+        "renameHint": "Click to rename this note"
+      },
+      "header": {
+        "newNote": "New note",
+        "view_rendered": "Rendered",
+        "view_raw": "Markdown source"
+      },
+      "panel": {
+        "hide": "Hide notes panel",
+        "show": "Show notes panel",
+        "switchVault": "Switch vault",
+        "vaults": "Vaults",
+        "connectVault": "Connect a vault",
+        "searchPlaceholder": "Search notes",
+        "sortAndView": "Sort and view",
+        "viewSection": "View",
+        "sortSection": "Sort by",
+        "view_folders": "Folders",
+        "view_list": "Flat list",
+        "noMatches": "No matches"
+      },
+      "sort": {
+        "modifiedNewOld": "Modified — new to old",
+        "modifiedOldNew": "Modified — old to new",
+        "createdNewOld": "Created — new to old",
+        "createdOldNew": "Created — old to new",
+        "nameAZ": "File name — A to Z",
+        "nameZA": "File name — Z to A"
+      },
+      "sync": {
+        "action": "Sync",
+        "syncing": "Syncing",
+        "justNow": "Synced just now",
+        "ago_m": "Synced {{n}}m ago",
+        "ago_h": "Synced {{n}}h ago",
+        "ago_d": "Synced {{n}}d ago"
+      },
+      "knowledge": {
+        "label": "Sync to Kiro Crew knowledge",
+        "connectHelp": "Adds this vault to the Knowledge library so agents can search your notes. You can change this later in Settings."
+      },
+      "connect": {
+        "title": "Connect a vault",
+        "cloneTab": "Clone a repo",
+        "attachTab": "Attach a folder",
+        "cloneHelp": "Clones a GitHub repository and keeps its own working copy.",
+        "attachHelp": "Uses a git folder you already have, in place — no second copy.",
+        "repoUrl": "Repository URL",
+        "branch": "Branch",
+        "token": "Access token (optional)",
+        "localFolder": "Local folder",
+        "subfolder": "Subfolder (optional)",
+        "choose": "Choose…",
+        "choosing": "Choosing…",
+        "cloneAction": "Connect vault",
+        "attachAction": "Attach folder",
+        "cloning": "Cloning…",
+        "attaching": "Attaching…",
+        "cancel": "Cancel",
+        "pickerNeedsMac": "Folder chooser needs macOS — type the path instead.",
+        "pickerFailed": "Could not open the folder chooser: {{message}}",
+        "knowledgeFailed": "Vault connected, but knowledge sync failed: {{message}}",
+        "localFolderPlaceholder": "~/Developer/my-notes",
+        "repoUrlPlaceholder": "https://github.com/you/notes",
+        "tokenPlaceholder": "github_pat_…",
+        "subfolderPlaceholder": "notes"
+      },
+      "settings": {
+        "title": "Settings",
+        "subtitle": "Vaults, GitHub access and sync",
+        "close": "Close settings",
+        "vaultsSection": "Vaults",
+        "badgeLocal": "Local folder",
+        "badgeCloned": "Cloned",
+        "active": "Active",
+        "open": "Open",
+        "remove": "Remove",
+        "removeConfirm": "Remove this vault from the app? Your files are left untouched on disk — only the connection is forgotten.",
+        "removeIt": "Remove it",
+        "knowledgeIndexed": "Indexed in the Knowledge library — agents can search these notes.",
+        "knowledgeNotIndexed": "Not indexed. Turn on to let agents search this vault.",
+        "knowledgeAdding": "Adding to Knowledge…",
+        "knowledgeRemoving": "Removing from Knowledge…",
+        "knowledgeAdded": "Added to Knowledge.",
+        "knowledgeAddedCount": "Added to Knowledge — {{n}} file(s) queued for indexing.",
+        "knowledgeRemoved": "Removed from Knowledge.",
+        "githubSection": "GitHub access",
+        "authStored": "Using a token stored in this app.",
+        "authGh": "Using your GitHub CLI login.",
+        "authNone": "No GitHub access — add a token to sync private repositories.",
+        "tokenPlaceholderStored": "Replace stored token…",
+        "tokenPlaceholderEmpty": "github_pat_…",
+        "save": "Save",
+        "clear": "Clear",
+        "tokenSaved": "Token saved.",
+        "tokenCleared": "Token cleared.",
+        "syncSection": "Sync",
+        "autoSync": "Auto sync",
+        "autoSyncHelp": "Pushes your changes to GitHub and pulls the latest, on a timer. Paused while a conflict needs your decision.",
+        "every": "Every",
+        "minutes": "minutes",
+        "intervalAria": "Auto sync interval in minutes",
+        "shortcut": "Manual sync shortcut",
+        "shortcutHelpIdle": "Click to record a new shortcut.",
+        "shortcutHelpRecording": "Press the keys you want to use — Esc to cancel.",
+        "recording": "Recording…",
+        "reset": "Reset",
+        "shortcutNeedsModifier": "Use at least one of ⌘, Ctrl or ⌥ — a plain letter would fire while you type."
+      }
     }
   },
   "components": {
@@ -4846,6 +4980,7 @@
       "ready_rate": "Ready rate",
       "session_startup": "Session startup",
       "shard_s_source": "shard(s) · source",
+      "showing_partial_window": "Showing {{shown}} of {{total}} samples (histogram boundaries changed mid-window)",
       "skill_load": "Skill load",
       "startup_latency_distribution_from_otel_histogram": "Startup latency distribution · from OTEL histogram buckets",
       "telemetry_enabled_true": "telemetry.enabled = true",

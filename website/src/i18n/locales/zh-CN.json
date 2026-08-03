@@ -1403,6 +1403,140 @@
         "repeat_days": "每 {{n}} 天",
         "repeat_daily": "每天"
       }
+    },
+    "mdNotebook": {
+      "title": "笔记",
+      "badge": {
+        "pending": "待同步"
+      },
+      "boot": {
+        "loading": "加载中…",
+        "unreachable": "无法连接笔记后端：{{message}}。它可能仍在启动。"
+      },
+      "body": {
+        "empty": "选择一条笔记，或用 + 按钮新建。",
+        "backlinks": "被 {{n}} 处引用"
+      },
+      "banner": {
+        "staleBackend": "笔记后端运行的代码比此页面旧 —— 缺少：{{features}}。请在应用页面关闭再打开笔记以重启它。",
+        "staleBackendRoute": "笔记后端运行的代码比此页面旧。请在应用页面中关闭再打开笔记以重启它。",
+        "diskConflict": "自你打开后，这条笔记在磁盘上已被更改。",
+        "useDisk": "使用磁盘上的版本",
+        "keepMine": "保留我的版本",
+        "syncConflict": "同步因合并冲突而停止，未推送任何内容。冲突笔记：{{paths}}"
+      },
+      "editor": {
+        "blockAria": "编辑块",
+        "titleAria": "笔记标题",
+        "renameHint": "点击重命名此笔记"
+      },
+      "header": {
+        "newNote": "新建笔记",
+        "view_rendered": "渲染视图",
+        "view_raw": "Markdown 源码"
+      },
+      "panel": {
+        "hide": "隐藏笔记面板",
+        "show": "显示笔记面板",
+        "switchVault": "切换仓库",
+        "vaults": "仓库",
+        "connectVault": "连接仓库",
+        "searchPlaceholder": "搜索笔记",
+        "sortAndView": "排序与视图",
+        "viewSection": "视图",
+        "sortSection": "排序方式",
+        "view_folders": "文件夹",
+        "view_list": "平铺列表",
+        "noMatches": "无匹配结果"
+      },
+      "sort": {
+        "modifiedNewOld": "修改时间 —— 由新到旧",
+        "modifiedOldNew": "修改时间 —— 由旧到新",
+        "createdNewOld": "创建时间 —— 由新到旧",
+        "createdOldNew": "创建时间 —— 由旧到新",
+        "nameAZ": "文件名 —— A 到 Z",
+        "nameZA": "文件名 —— Z 到 A"
+      },
+      "sync": {
+        "action": "同步",
+        "syncing": "同步中",
+        "justNow": "刚刚同步",
+        "ago_m": "{{n}} 分钟前同步",
+        "ago_h": "{{n}} 小时前同步",
+        "ago_d": "{{n}} 天前同步"
+      },
+      "knowledge": {
+        "label": "同步到 Kiro Crew 知识库",
+        "connectHelp": "将此仓库加入知识库，使智能体可以搜索你的笔记。稍后可在设置中更改。"
+      },
+      "connect": {
+        "title": "连接仓库",
+        "cloneTab": "克隆仓库",
+        "attachTab": "附加文件夹",
+        "cloneHelp": "克隆一个 GitHub 仓库并保留独立的工作副本。",
+        "attachHelp": "就地使用你已有的 git 文件夹 —— 不会复制第二份。",
+        "repoUrl": "仓库地址",
+        "branch": "分支",
+        "token": "访问令牌（可选）",
+        "localFolder": "本地文件夹",
+        "subfolder": "子文件夹（可选）",
+        "choose": "选择…",
+        "choosing": "选择中…",
+        "cloneAction": "连接仓库",
+        "attachAction": "附加文件夹",
+        "cloning": "克隆中…",
+        "attaching": "附加中…",
+        "cancel": "取消",
+        "pickerNeedsMac": "文件夹选择器需要 macOS —— 请手动输入路径。",
+        "pickerFailed": "无法打开文件夹选择器：{{message}}",
+        "knowledgeFailed": "仓库已连接，但知识库同步失败：{{message}}",
+        "localFolderPlaceholder": "~/Developer/my-notes",
+        "repoUrlPlaceholder": "https://github.com/you/notes",
+        "tokenPlaceholder": "github_pat_…",
+        "subfolderPlaceholder": "notes"
+      },
+      "settings": {
+        "title": "设置",
+        "subtitle": "仓库、GitHub 访问与同步",
+        "close": "关闭设置",
+        "vaultsSection": "仓库",
+        "badgeLocal": "本地文件夹",
+        "badgeCloned": "已克隆",
+        "active": "当前",
+        "open": "打开",
+        "remove": "移除",
+        "removeConfirm": "从应用中移除此仓库？磁盘上的文件不会改动 —— 仅忘记该连接。",
+        "removeIt": "确认移除",
+        "knowledgeIndexed": "已在知识库中建立索引 —— 智能体可以搜索这些笔记。",
+        "knowledgeNotIndexed": "未建立索引。开启后智能体可搜索此仓库。",
+        "knowledgeAdding": "正在加入知识库…",
+        "knowledgeRemoving": "正在从知识库移除…",
+        "knowledgeAdded": "已加入知识库。",
+        "knowledgeAddedCount": "已加入知识库 —— {{n}} 个文件排队待索引。",
+        "knowledgeRemoved": "已从知识库移除。",
+        "githubSection": "GitHub 访问",
+        "authStored": "正在使用此应用中存储的令牌。",
+        "authGh": "正在使用你的 GitHub CLI 登录。",
+        "authNone": "无 GitHub 访问权限 —— 添加令牌以同步私有仓库。",
+        "tokenPlaceholderStored": "替换已存储的令牌…",
+        "tokenPlaceholderEmpty": "github_pat_…",
+        "save": "保存",
+        "clear": "清除",
+        "tokenSaved": "令牌已保存。",
+        "tokenCleared": "令牌已清除。",
+        "syncSection": "同步",
+        "autoSync": "自动同步",
+        "autoSyncHelp": "按计时器将更改推送到 GitHub 并拉取最新内容。存在需你决定的冲突时暂停。",
+        "every": "每",
+        "minutes": "分钟",
+        "intervalAria": "自动同步间隔（分钟）",
+        "shortcut": "手动同步快捷键",
+        "shortcutHelpIdle": "点击以录制新快捷键。",
+        "shortcutHelpRecording": "按下想使用的按键 —— Esc 取消。",
+        "recording": "录制中…",
+        "reset": "重置",
+        "shortcutNeedsModifier": "请至少使用 ⌘、Ctrl 或 ⌥ 之一 —— 单个字母会在输入时触发。"
+      }
     }
   },
   "components": {
@@ -6576,6 +6710,7 @@
       "session_startup": "会话启动",
       "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "复用热 MCP 后端与冷启动的会话对比",
       "shard_s_source": "个分片 · 来源",
+      "showing_partial_window": "显示 {{total}} 个样本中的 {{shown}} 个（窗口内直方图边界已变化）",
       "skill_load": "技能加载",
       "startup_latency_distribution_from_otel_histogram": "启动延迟分布 · 来自 OTEL 直方图分桶",
       "telemetry_enabled_true": "telemetry.enabled = true",

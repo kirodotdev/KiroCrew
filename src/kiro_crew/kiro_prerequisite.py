@@ -747,6 +747,27 @@ def _ensure_auth_staging_parent(home: Path) -> Path:
     """Create the fixed sandbox-hidden parent before agent sessions can start."""
 
     staging_parent = home / _AUTH_STAGING_RELATIVE
+    # A stray file or dangling/loop symlink at this path makes a plain
+    # mkdir(exist_ok=True) raise FileExistsError and crash gateway boot. Remove
+    # it before mkdir so boot self-heals. UNLINK rather than rename-aside: the
+    # staging root holds credential material, and moving an unexpected file to a
+    # sibling name would leave its (possibly sensitive) contents readable outside
+    # the sandbox-hidden staging prefix. unlink() acts on the symlink itself,
+    # never its target. (#561)
+    if staging_parent.is_symlink() or (staging_parent.exists() and not staging_parent.is_dir()):
+        try:
+            staging_parent.unlink()
+        except OSError as exc:
+            # A concurrent gateway boot may have won the race and already cleared
+            # the stray path (FileNotFoundError) or replaced it with the real
+            # private directory. Only abort if a non-directory we cannot clear is
+            # STILL sitting here; otherwise fall through to the idempotent mkdir.
+            # (#561, concurrent-boot race)
+            if staging_parent.is_symlink() or (staging_parent.exists() and not staging_parent.is_dir()):
+                raise OSError(
+                    f"Kiro auth staging root {staging_parent} is not a private "
+                    "directory and could not be reset"
+                ) from exc
     staging_parent.mkdir(parents=True, exist_ok=True)
     if staging_parent.is_symlink() or not staging_parent.is_dir():
         raise OSError("Kiro auth staging root is not a private directory")

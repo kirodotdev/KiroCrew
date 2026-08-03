@@ -7,6 +7,7 @@ Tools:
     spawn_run       — spawn a background subagent
     spawn_list      — list running/completed subagents
     spawn_status    — retrieve full subagent output
+    resource_status — check host resource headroom before heavy work
     learn_add       — save a learned correction
     learn_list      — list all lessons
     learn_remove    — remove lessons by substring
@@ -385,6 +386,22 @@ def _list_tools() -> list[dict[str, Any]]:
         {
             "name": "spawn_list",
             "description": "List all running and completed subagents (read-only, no commands executed)",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "resource_status",
+            "description": (
+                "Check current host resource headroom BEFORE starting a heavy "
+                "step — a full test suite, a large build, or a big parallel "
+                "sub-agent wave. Returns available memory, CPU load, and an "
+                "advisory posture (ample / tight / critical) plus the current "
+                "concurrent sub-agent cap, so you can decide whether to run the "
+                "heavy path now, switch to a lighter path (targeted tests, fewer "
+                "sub-agents, deferred build), or wait for memory to free. "
+                "Read-only and advisory — it does NOT reserve or enforce "
+                "anything, and headroom can change between the check and your "
+                "action, so treat it as guidance, not a guarantee."
+            ),
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
@@ -3628,6 +3645,37 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         except Exception:
             pass  # list_agents failure is non-critical
         return "\n".join(lines)
+
+    if name == "resource_status":
+        from kiro_crew.resource_status import probe as _probe_resources
+
+        rstatus = _probe_resources()
+        out = rstatus.summary_lines()
+        try:
+            cap = resolve_max_subagents(KiroCrewConfig.load())
+        except Exception:
+            cap = 0
+        if cap > 0:
+            out.append(f"  Concurrent sub-agent cap: {cap}")
+        if rstatus.posture == "critical":
+            out.append(
+                "\nGuidance: memory is critically low — do NOT start heavy work "
+                "(full suites, large builds, big sub-agent waves) now; run only "
+                "light steps or wait for memory to free."
+            )
+        elif rstatus.posture == "tight":
+            out.append(
+                "\nGuidance: memory is tight — prefer the lighter path (targeted "
+                "tests, fewer sub-agents, deferred builds) for heavy work."
+            )
+        elif rstatus.posture == "ample":
+            out.append("\nGuidance: ample headroom — heavy work is fine.")
+        else:
+            out.append(
+                "\nGuidance: headroom could not be measured on this host — "
+                "proceed with normal caution."
+            )
+        return "\n".join(out)
 
     if name == "spawn_status":
         agent_id = args.get("agent_id", "")

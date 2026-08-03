@@ -18,6 +18,7 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -693,13 +694,31 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         slot_name = sk.split(":", 1)[-1] if ":" in sk else sk
         in_slots = slot_name in state._slots
         in_restricted = sk in state._restricted_keys
-        # A Slack thread keys its session off the bare thread_ts
-        # (e.g. "1781215864.487849"), not the "slack:<chan>:<ts>" delivery
-        # form, so recognise that shape as the Slack namespace too. Without
-        # this, the first learn_add in a fresh Slack thread races the JSONL
-        # flush (which only happens after the LLM turn completes) and is
-        # rejected with HTTP 400 until the transcript lands on disk.
-        is_slack_ns = sk.startswith("slack:") or bool(SLACK_THREAD_TS_RE.match(sk))
+        # A channel-originated session (Slack, Telegram, Discord, Webex,
+        # WeCom, …) is a legitimate established session: its key is namespaced
+        # ``{channel}:{conversation_id}`` and the transport publishes
+        # ``session_pid`` so the gateway resolves this X-Session-Key (#232).
+        # Recognise the WHOLE channel-namespace family via the canonical
+        # ``is_channel_session_key`` — not just Slack. Two reasons this is the
+        # right gate, both already true for Slack:
+        #   * the first learn_add in a fresh channel thread races the JSONL
+        #     flush (which only lands after the LLM turn completes), so a
+        #     namespace fast-path avoids a spurious HTTP 400 until the
+        #     transcript is on disk; and
+        #   * the ``_session_has_persisted_history`` fallback below cannot
+        #     rescue a channel key anyway — ``slot_name`` is
+        #     ``sk.split(":", 1)[-1]`` (inner colons kept, channel prefix
+        #     dropped) while the file is ``dashboard_<safe_key>.jsonl`` with
+        #     colons folded to ``_``, so no probed name ever matches.
+        # Before this, only ``slack:`` was accepted, so learn_add failed with
+        # HTTP 400 "unknown session" from every OTHER channel (Telegram /
+        # Discord / Webex / WeCom) even though the session is fully identified
+        # (#1268). The bare Slack thread_ts shim stays for legacy native-Slack
+        # keys. Incognito/temporary sessions are still blocked below by
+        # ``_is_restricted_session`` (Slack is the only channel with that
+        # concept), so widening the namespace does not widen memory writes to
+        # ephemeral sessions.
+        is_channel_ns = is_channel_session_key(sk) or bool(SLACK_THREAD_TS_RE.match(sk))
         # Only consult the on-disk JSONL when the cheaper in-memory
         # checks all fail. ``_session_has_persisted_history()`` performs
         # synchronous filesystem I/O (up to two ``Path.exists()`` calls),
@@ -707,7 +726,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # block the event loop on the common (live-slot) path. Deferring
         # it keeps the fallback semantics identical while making the
         # happy path allocation-free.
-        if not (in_slots or in_restricted or is_slack_ns):
+        if not (in_slots or in_restricted or is_channel_ns):
             if not _session_has_persisted_history(slot_name):
                 # Slot may have been evicted from memory (idle sweep,
                 # gateway restart) while the MCP subprocess keeps its
@@ -740,10 +759,10 @@ async def api_lessons_create(request: web.Request) -> web.Response:
                 caller=sk, operation="learn_add", outcome="allowed",
                 source="dashboard", resources="restricted_key",
             )
-        else:  # is_slack_ns
+        else:  # is_channel_ns
             _sel().log_api_access(
                 caller=sk, operation="learn_add", outcome="allowed",
-                source="dashboard", resources="slack_namespace",
+                source="dashboard", resources="channel_namespace",
             )
     else:
         # Browser UI's static key — implicitly trusted, but the allow

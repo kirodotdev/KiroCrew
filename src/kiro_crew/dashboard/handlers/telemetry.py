@@ -50,6 +50,16 @@ _TURN_METRIC = "kirocrew.turn.duration"
 _PHASE_TOTAL = "total"
 _WINDOW_DAYS = 14
 
+# Attribute keys the generic ``other`` histograms are additionally split on, so
+# one side of a split can be reported on its own.
+#
+# Restricted to a NAMED set of low-cardinality flags rather than splitting on
+# every attribute present: ``kirocrew.gateway.request.duration`` carries
+# method+route, which would grow one sub-histogram per endpoint and force an
+# arbitrary truncation cap on the payload. ``warm`` is boolean, so the split is
+# two entries wide and needs no cap.
+_OTHER_SPLIT_ATTRS = frozenset({"warm"})
+
 # (shard-fingerprint, TTL) cache — shards are append-only, so a change to any
 # shard's (mtime, size) invalidates the cache exactly when needed (same pattern
 # as usage._parse_token_history).
@@ -336,6 +346,8 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     phases: dict[str, _Hist] = {}  # startup internal phase -> _Hist
     # generic surface for every other kirocrew.* metric
     other_hist: dict[str, _Hist] = {}
+    # name -> "attr=value" -> _Hist, for _OTHER_SPLIT_ATTRS only
+    other_split: dict[str, dict[str, _Hist]] = {}
     other_ctr: dict[str, dict[str, Any]] = {}  # name -> {total, by_attr}
     turn = _Hist()
 
@@ -395,6 +407,13 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
                                         )
                                     elif is_hist:
                                         other_hist.setdefault(name, _Hist()).add(dp)
+                                        for ak in _OTHER_SPLIT_ATTRS:
+                                            if ak not in attrs:
+                                                continue
+                                            sig = f"{ak}={str(attrs[ak]).lower()}"
+                                            other_split.setdefault(
+                                                name, {}
+                                            ).setdefault(sig, _Hist()).add(dp)
                                     elif "value" in dp:
                                         rec = other_ctr.setdefault(
                                             name, {"total": 0.0, "by_attr": {}}
@@ -429,6 +448,9 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     for name in sorted(other_hist):
         s = other_hist[name].stats()
         s.update({"name": name, "kind": "histogram"})
+        splits = other_split.get(name)
+        if splits:
+            s["splits"] = {sig: splits[sig].stats() for sig in sorted(splits)}
         other.append(s)
     for name in sorted(other_ctr):
         rec = other_ctr[name]
@@ -445,6 +467,9 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     turn_total = sum(turn_outcome.values())
     turn_faults = sum(v for k, v in turn_outcome.items() if k != "ok")
     turn_block = {
+        # ``other_generations`` arrives via stats(): >0 means the window
+        # straddles a bucket-boundary change and only the dominant generation
+        # is reported (see _Hist).
         **turn.stats(),
         "outcome": turn_outcome,
         "fault_rate": round(turn_faults / turn_total, 4) if turn_total else 0.0,

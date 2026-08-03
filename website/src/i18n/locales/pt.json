@@ -1445,6 +1445,140 @@
         "repeat_days": "a cada {{n}} dias",
         "repeat_daily": "todo dia"
       }
+    },
+    "mdNotebook": {
+      "title": "Notas",
+      "badge": {
+        "pending": "pendente"
+      },
+      "boot": {
+        "loading": "Carregando…",
+        "unreachable": "Não foi possível acessar o backend de Notas: {{message}}. Ele pode ainda estar iniciando."
+      },
+      "body": {
+        "empty": "Selecione uma nota ou crie uma com o botão +.",
+        "backlinks": "Vinculada de {{n}}"
+      },
+      "banner": {
+        "staleBackend": "O backend de Notas está executando código mais antigo que esta página — faltando: {{features}}. Desligue e ligue Notas na página de Aplicativos para reiniciá-lo.",
+        "staleBackendRoute": "O backend do Notas está executando um código mais antigo que esta página. Desative e reative o Notas na página de Apps para reiniciá-lo.",
+        "diskConflict": "Esta nota mudou no disco desde que você a abriu.",
+        "useDisk": "Usar a versão do disco",
+        "keepMine": "Manter minha versão",
+        "syncConflict": "A sincronização parou num conflito de merge, portanto nada foi enviado. Notas em conflito: {{paths}}"
+      },
+      "editor": {
+        "blockAria": "Editar bloco",
+        "titleAria": "Título da nota",
+        "renameHint": "Clique para renomear esta nota"
+      },
+      "header": {
+        "newNote": "Nova nota",
+        "view_rendered": "Renderizado",
+        "view_raw": "Código Markdown"
+      },
+      "panel": {
+        "hide": "Ocultar o painel de notas",
+        "show": "Mostrar o painel de notas",
+        "switchVault": "Trocar de cofre",
+        "vaults": "Cofres",
+        "connectVault": "Conectar um cofre",
+        "searchPlaceholder": "Pesquisar notas",
+        "sortAndView": "Ordem e visualização",
+        "viewSection": "Visualização",
+        "sortSection": "Ordenar por",
+        "view_folders": "Pastas",
+        "view_list": "Lista simples",
+        "noMatches": "Nenhum resultado"
+      },
+      "sort": {
+        "modifiedNewOld": "Modificação — da mais nova para a mais antiga",
+        "modifiedOldNew": "Modificação — da mais antiga para a mais nova",
+        "createdNewOld": "Criação — da mais nova para a mais antiga",
+        "createdOldNew": "Criação — da mais antiga para a mais nova",
+        "nameAZ": "Nome do arquivo — de A a Z",
+        "nameZA": "Nome do arquivo — de Z a A"
+      },
+      "sync": {
+        "action": "Sincronizar",
+        "syncing": "Sincronizando",
+        "justNow": "Sincronizado agora",
+        "ago_m": "Sincronizado há {{n}} min",
+        "ago_h": "Sincronizado há {{n}} h",
+        "ago_d": "Sincronizado há {{n}} d"
+      },
+      "knowledge": {
+        "label": "Sincronizar com o conhecimento do Kiro Crew",
+        "connectHelp": "Adiciona este cofre à biblioteca de Conhecimento para que os agentes possam pesquisar suas notas. Você pode alterar isso depois nas Configurações."
+      },
+      "connect": {
+        "title": "Conectar um cofre",
+        "cloneTab": "Clonar um repositório",
+        "attachTab": "Anexar uma pasta",
+        "cloneHelp": "Clona um repositório do GitHub e mantém sua própria cópia de trabalho.",
+        "attachHelp": "Usa uma pasta git que você já tem, no lugar — sem uma segunda cópia.",
+        "repoUrl": "URL do repositório",
+        "branch": "Branch",
+        "token": "Token de acesso (opcional)",
+        "localFolder": "Pasta local",
+        "subfolder": "Subpasta (opcional)",
+        "choose": "Escolher…",
+        "choosing": "Escolhendo…",
+        "cloneAction": "Conectar cofre",
+        "attachAction": "Anexar pasta",
+        "cloning": "Clonando…",
+        "attaching": "Anexando…",
+        "cancel": "Cancelar",
+        "pickerNeedsMac": "O seletor de pastas precisa do macOS — digite o caminho.",
+        "pickerFailed": "Não foi possível abrir o seletor de pastas: {{message}}",
+        "knowledgeFailed": "Cofre conectado, mas a sincronização de conhecimento falhou: {{message}}",
+        "localFolderPlaceholder": "~/Developer/my-notes",
+        "repoUrlPlaceholder": "https://github.com/you/notes",
+        "tokenPlaceholder": "github_pat_…",
+        "subfolderPlaceholder": "notes"
+      },
+      "settings": {
+        "title": "Configurações",
+        "subtitle": "Cofres, acesso ao GitHub e sincronização",
+        "close": "Fechar configurações",
+        "vaultsSection": "Cofres",
+        "badgeLocal": "Pasta local",
+        "badgeCloned": "Clonado",
+        "active": "Ativo",
+        "open": "Abrir",
+        "remove": "Remover",
+        "removeConfirm": "Remover este cofre do aplicativo? Seus arquivos permanecem intactos no disco — apenas a conexão é esquecida.",
+        "removeIt": "Remover",
+        "knowledgeIndexed": "Indexado na biblioteca de Conhecimento — os agentes podem pesquisar estas notas.",
+        "knowledgeNotIndexed": "Não indexado. Ative para que os agentes pesquisem neste cofre.",
+        "knowledgeAdding": "Adicionando ao Conhecimento…",
+        "knowledgeRemoving": "Removendo do Conhecimento…",
+        "knowledgeAdded": "Adicionado ao Conhecimento.",
+        "knowledgeAddedCount": "Adicionado ao Conhecimento — {{n}} arquivo(s) na fila de indexação.",
+        "knowledgeRemoved": "Removido do Conhecimento.",
+        "githubSection": "Acesso ao GitHub",
+        "authStored": "Usando um token salvo neste aplicativo.",
+        "authGh": "Usando seu login do GitHub CLI.",
+        "authNone": "Sem acesso ao GitHub — adicione um token para sincronizar repositórios privados.",
+        "tokenPlaceholderStored": "Substituir o token salvo…",
+        "tokenPlaceholderEmpty": "github_pat_…",
+        "save": "Salvar",
+        "clear": "Limpar",
+        "tokenSaved": "Token salvo.",
+        "tokenCleared": "Token limpo.",
+        "syncSection": "Sincronização",
+        "autoSync": "Sincronização automática",
+        "autoSyncHelp": "Envia suas alterações ao GitHub e traz as mais recentes, por temporizador. Pausada enquanto um conflito precisa da sua decisão.",
+        "every": "A cada",
+        "minutes": "minutos",
+        "intervalAria": "Intervalo de sincronização automática em minutos",
+        "shortcut": "Atalho de sincronização manual",
+        "shortcutHelpIdle": "Clique para gravar um novo atalho.",
+        "shortcutHelpRecording": "Pressione as teclas desejadas — Esc para cancelar.",
+        "recording": "Gravando…",
+        "reset": "Redefinir",
+        "shortcutNeedsModifier": "Use ao menos ⌘, Ctrl ou ⌥ — uma letra sozinha dispararia ao digitar."
+      }
     }
   },
   "components": {
@@ -6716,6 +6850,7 @@
       "session_startup": "Inicialização da sessão",
       "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "Sessões que reutilizam um backend MCP aquecido vs. uma inicialização a frio",
       "shard_s_source": "shard(s) · origem",
+      "showing_partial_window": "Mostrando {{shown}} de {{total}} amostras (os limites do histograma mudaram dentro da janela)",
       "skill_load": "Carregamento de skill",
       "startup_latency_distribution_from_otel_histogram": "Distribuição da latência de inicialização · a partir dos buckets do histograma OTEL",
       "telemetry_enabled_true": "telemetry.enabled = true",

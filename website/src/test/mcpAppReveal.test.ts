@@ -7,7 +7,7 @@ import {
   __resetRevealedForTests,
   REVEAL_MAX_FRAMES,
   REVEAL_MAX_SOURCE_BYTES,
-  REVEAL_MIN_STEP_MS,
+  REVEAL_STEP_MS,
 } from '../components/mcpAppReveal'
 
 /** N distinct element-ish objects, the shape a diagram tool actually sends. */
@@ -24,9 +24,13 @@ describe('planReveal', () => {
     expect(planReveal({ prose: 'not json at all' })).toBeNull()
   })
 
-  it('returns null for a single-element array — there is no intermediate state', () => {
-    expect(planReveal({ elements: elements(1) })).toBeNull()
-    expect(planReveal({ elements: JSON.stringify(elements(1)) })).toBeNull()
+  it('returns null below three elements — the app drops each frame\'s last element', () => {
+    // excalidraw's excludeIncompleteLastItem means a 1- or 2-element array has
+    // no frame that both shows something AND is short of the whole diagram.
+    for (const n of [1, 2]) {
+      expect(planReveal({ elements: elements(n) })).toBeNull()
+      expect(planReveal({ elements: JSON.stringify(elements(n)) })).toBeNull()
+    }
   })
 
   it('reveals a JSON-STRING encoded array as growing JSON strings', () => {
@@ -34,18 +38,18 @@ describe('planReveal', () => {
     // parsePartialElements tolerates truncation — so frames must stay strings.
     const plan = planReveal({ elements: JSON.stringify(elements(4)) })!
     expect(plan.key).toBe('elements')
-    expect(plan.frames.length).toBe(3)
+    expect(plan.frames.length).toBe(2)
     for (const frame of plan.frames) {
       expect(typeof frame.elements).toBe('string')
     }
     const lengths = plan.frames.map((f) => (JSON.parse(f.elements as string) as unknown[]).length)
-    expect(lengths).toEqual([1, 2, 3])
+    expect(lengths).toEqual([2, 3])
   })
 
   it('reveals a NATIVE array as growing arrays', () => {
     const plan = planReveal({ elements: elements(3) })!
     const lengths = plan.frames.map((f) => (f.elements as unknown[]).length)
-    expect(lengths).toEqual([1, 2])
+    expect(lengths).toEqual([2])
     expect(Array.isArray(plan.frames[0].elements)).toBe(true)
   })
 
@@ -108,9 +112,25 @@ describe('planReveal', () => {
     expect(planReveal(circular)).toBeNull()
   })
 
-  it('never schedules frames faster than the minimum step', () => {
-    const plan = planReveal({ elements: elements(400) })!
-    expect(plan.stepMs).toBeGreaterThanOrEqual(REVEAL_MIN_STEP_MS)
+  it('paces per element at excalidraw\'s reference interval, not a total budget', () => {
+    // The reference harness (dev-mock streamElements) uses 120ms per element.
+    const small = planReveal({ elements: elements(6) })!
+    const large = planReveal({ elements: elements(400) })!
+    expect(small.stepMs).toBe(REVEAL_STEP_MS)
+    expect(large.stepMs).toBe(REVEAL_STEP_MS)
+    // A small diagram gets one element per frame rather than batching.
+    expect(small.frames.map((f) => (f.elements as unknown[]).length)).toEqual([2, 3, 4, 5])
+  })
+
+  it('bounds total cloned bytes by trading frames against payload size', () => {
+    // A fat-but-legal payload animates in fewer, larger steps instead of
+    // cloning frames x payload without limit.
+    const fat = planReveal({
+      elements: elements(300),
+      backdrop: 'z'.repeat(400_000),
+    })!
+    expect(fat.frames.length).toBeLessThan(REVEAL_MAX_FRAMES)
+    expect(fat.frames.length).toBeGreaterThan(0)
   })
 })
 
