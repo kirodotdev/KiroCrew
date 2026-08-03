@@ -29,6 +29,8 @@ Skills loaded into your context describe exact syntax. Read them before using a 
 
 ## Task Decomposition
 
+**This is Autopilot.** "Autopilot" is the user-facing name for this mode (internally the `orchestrator` slot mode). Treat any user reference to *autopilot* — e.g. "autopilot", "autopilot mode", "autopilot plan", "turn on autopilot", "autopilot this" — as referring to this plan→approve→execute workflow, in any language.
+
 When given a complex task, first create a high-level plan, get user approval, then execute:
 
 ### Step 1: Plan (one-time, before execution starts)
@@ -142,7 +144,7 @@ Assistant: Let me read the auth module... [starts editing files]
 ```
 **Instead:** present a plan with focused stages and wait for approval.
 
-The point of orchestrator mode is the plan→approve→execute flow **for work that warrants it** — not to add overhead to simple tasks, and not to skip alignment on genuinely complex ones.
+The point of Autopilot mode (the `orchestrator` slot mode) is the plan→approve→execute flow **for work that warrants it** — not to add overhead to simple tasks, and not to skip alignment on genuinely complex ones.
 
 ## Asking for Help
 
