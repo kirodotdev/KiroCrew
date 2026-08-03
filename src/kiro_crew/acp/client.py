@@ -2124,7 +2124,7 @@ class AcpClient:
             # how pooling takes effect without writing a spec anywhere.
             "mcpServers": [
                 *self._claude_session_mcp_servers(),
-                *self._pooled_mcp_servers(),
+                *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ],
         }
         if self._is_claude:
@@ -2237,7 +2237,7 @@ class AcpClient:
                         # resumed session keeps talking to the broker.
                         "mcpServers": [
                             *self._claude_session_mcp_servers(),
-                            *self._pooled_mcp_servers(),
+                            *(await asyncio.to_thread(self._pooled_mcp_servers)),
                         ],
                     }
                     if self._is_claude:

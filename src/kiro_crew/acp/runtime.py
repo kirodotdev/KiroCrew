@@ -1112,8 +1112,10 @@ class AcpRuntime:
         # in the agent spec, so this is what actually pools the servers — no file
         # is written anywhere. Empty when the gateway is disabled.
         if mcp_servers is None:
-            mcp_servers = pooled_session_servers(
-                self._mcp_gateway_overlay, agent or self._agent
+            # Resolve the overlay off the event loop: the lookup stats/reads
+            # files, and blocking the loop stalls every other session's I/O.
+            mcp_servers = await asyncio.to_thread(
+                pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
             )
         params = build_session_new_params(
             cwd if cwd else self._work_dir,

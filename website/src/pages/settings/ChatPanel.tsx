@@ -8,6 +8,7 @@ import { modelListRefetchInterval } from '../../providers/modelListHealth'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
+import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
 
 import { i18nT } from '../../i18n/t'
 /**
@@ -33,7 +34,7 @@ const COMPACT_OPTIONS = ['20', '40', '60', '80', '90']
 const COMPACT_LABELS = ['20% (aggressive)', '40%', '60%', '80%', '90% (default)']
 
 // About You — slugs shared with onboarding step 2 and context.py's prompt maps.
-const ROLE_OPTIONS = ['', 'developer', 'designer', 'product-manager', 'data-ml', 'it-ops', 'other']
+const ROLE_OPTIONS = ['', ...ROLE_SLUGS]
 function roleLabels(): string[] {
   return [
     i18nT('pages.settings.chatPanel.not_set'),
@@ -45,7 +46,7 @@ function roleLabels(): string[] {
     i18nT('pages.settings.chatPanel.other'),
   ]
 }
-const TECH_OPTIONS = ['', 'codes', 'somewhat-technical', 'non-technical']
+const TECH_OPTIONS = ['', ...TECH_SLUGS]
 function techLabels(): string[] {
   return [
     i18nT('pages.settings.chatPanel.not_set'),

@@ -14,6 +14,7 @@ import {
 } from './PrivacyDisclosure'
 import { api } from '../api/client'
 import { capRoleOther, clampRoleOther } from '../lib/userProfile'
+import { ROLE_SLUGS, TECH_SLUGS } from '../lib/profileOptions'
 
 import { i18nT } from '../i18n/t'
 /**
@@ -96,19 +97,8 @@ const LAST_POP_STEP = 5
 // dashboard.user_role / dashboard.user_technical_level enums in the config
 // PATCH allowlist (handlers/core.py) and mapped to prompt descriptions in
 // context.py — keep all three in sync.
-const ROLE_OPTIONS: ReadonlyArray<{ value: string }> = [
-  { value: 'developer' },
-  { value: 'designer' },
-  { value: 'product-manager' },
-  { value: 'data-ml' },
-  { value: 'it-ops' },
-  { value: 'other' },
-]
-const TECH_OPTIONS: ReadonlyArray<{ value: string }> = [
-  { value: 'codes' },
-  { value: 'somewhat-technical' },
-  { value: 'non-technical' },
-]
+const ROLE_OPTIONS: ReadonlyArray<{ value: string }> = ROLE_SLUGS.map(value => ({ value }))
+const TECH_OPTIONS: ReadonlyArray<{ value: string }> = TECH_SLUGS.map(value => ({ value }))
 
 /**
  * Catalog KEY for each chip's visible text, keyed by the enum slug above. Flat
