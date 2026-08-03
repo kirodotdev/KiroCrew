@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import tempfile
 import threading
 import time
@@ -279,6 +280,118 @@ _UNSAFE_SHELL_RE = re.compile(r">|`|\$\(|<\(|(?<!&)&(?!&)")
 # a sink, smuggling a real-file write past the unsafe-shell check.
 _DEVNULL_REDIR_RE = re.compile(r"(?:\d*>>?|&>)\s*/dev/null(?![\w./-])|\d*>&\d+")
 
+# A trailing `--help` is only meaningful for a program that treats it as
+# "print usage and exit". These programs instead treat their operands as code
+# or a target to act on, so `--help` lands as a positional argument and the
+# real work still happens: `sh evil.sh --help` runs evil.sh with $1=--help.
+# The classifier cannot know which behaviour a given program has, so the
+# executors are named explicitly and the shape of the command is constrained
+# below.
+_HELP_PROBE_DENIED_PROGRAMS: frozenset[str] = frozenset(
+    (
+        # Shells and interpreters — operands are code.
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+        "csh",
+        "tcsh",
+        "ash",
+        "busybox",
+        "python",
+        "python2",
+        "python3",
+        "perl",
+        "ruby",
+        "node",
+        "deno",
+        "bun",
+        "php",
+        "lua",
+        "tclsh",
+        "osascript",
+        "pwsh",
+        "powershell",
+        "cmd",
+        # Wrappers that hand off to another program.
+        "env",
+        "sudo",
+        "doas",
+        "nohup",
+        "setsid",
+        "nice",
+        "ionice",
+        "time",
+        "timeout",
+        "xargs",
+        "watch",
+        "script",
+        "stdbuf",
+        "unbuffer",
+        "ssh",
+        "scp",
+        "rsync",
+        "docker",
+        "podman",
+        "kubectl",
+        "make",
+        "cmake",
+        # Network tools — operands establish a connection.
+        "nc",
+        "ncat",
+        "netcat",
+        "socat",
+        "curl",
+        "wget",
+        "telnet",
+        "ftp",
+    )
+)
+
+_HELP_FLAGS: frozenset[str] = frozenset(("--help", "--version", "-h", "-V", "-v"))
+
+# A subcommand between the program and the flag, e.g. `git log --help`. Bare
+# words only: no path separator, no dot, no leading dash. This is what keeps
+# `sh /tmp/evil.sh --help` (path) and `rm -rf ./proj --help` (option) out,
+# while `docker compose --help` and `git rev-parse --help` stay in.
+_HELP_PROBE_SUBCOMMAND_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def _is_help_probe(segment: str) -> bool:
+    """True only when *segment* is a genuine usage/version probe.
+
+    Accepts ``<program> --help`` and ``<program> <subcommand> --help`` where
+    *program* is not a known code executor and *subcommand* is a bare word.
+    Everything else — extra operands, file paths, other options, quoted code —
+    is rejected so it falls through to the read-only allowlist and, failing
+    that, to the human approval prompt.
+
+    The old rule was ``segment.endswith("--help")``, which auto-approved any
+    command at all once the token was appended.
+    """
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        # Unbalanced quotes: cannot establish the argv, so do not vouch for it.
+        return False
+    if len(tokens) < 2 or len(tokens) > 3:
+        return False
+    if tokens[-1] not in _HELP_FLAGS:
+        return False
+    # Basename, so `/bin/sh` and `./sh` are recognised as `sh`.
+    program = tokens[0].rsplit("/", 1)[-1]
+    if not program or program in _HELP_PROBE_DENIED_PROGRAMS:
+        return False
+    # A `VAR=value cmd --help` prefix assigns into the command's environment;
+    # shlex keeps it as one token, and it is not a usage probe.
+    if "=" in tokens[0]:
+        return False
+    if len(tokens) == 3 and not _HELP_PROBE_SUBCOMMAND_RE.match(tokens[1]):
+        return False
+    return True
+
 
 def _classify_bash(cmd: str) -> str:
     """Single source of truth for read-only bash classification.
@@ -305,8 +418,7 @@ def _classify_bash(cmd: str) -> str:
             return "unsafe shell pattern"
         first = pipe_parts[0].strip().lower()
         if not (
-            first.endswith("--help")
-            or first.endswith("--version")
+            _is_help_probe(first)
             or any(first == p or first.startswith(p + " ") for p in _READ_ONLY_BASH_PREFIXES)
         ):
             base = first.split()[0] if first.split() else first
