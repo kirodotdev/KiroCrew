@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { McpServer } from '../types'
 import {
   connectionStateFor,
+  disconnectFeedback,
   effectiveOAuth,
   isValidLoopbackReturnAddress,
   uninstallOnCancel,
@@ -77,6 +78,22 @@ describe('cancel semantics', () => {
     expect(uninstallOnCancel({ kind: 'new', sinceTs: 0 })).toBe(true)
     expect(uninstallOnCancel({ kind: 'reconnect', sinceTs: 0 })).toBe(false)
     expect(uninstallOnCancel(undefined)).toBe(false)
+  })
+})
+
+describe('disconnect feedback', () => {
+  it('keeps the provider revoke destination after removing the local entry', () => {
+    expect(disconnectFeedback({
+      name: 'Notion',
+      revoke_page_url: 'https://www.notion.so/my-integrations',
+    }, 'Disconnected locally.')).toEqual({
+      kind: 'success',
+      text: 'Disconnected locally.',
+      revoke: {
+        href: 'https://www.notion.so/my-integrations',
+        provider: 'Notion',
+      },
+    })
   })
 })
 

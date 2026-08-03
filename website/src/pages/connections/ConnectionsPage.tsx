@@ -33,7 +33,11 @@ export type ConnectionCardState =
   | 'needs-attention'
 
 type ConnectionAction = 'connect' | 'disconnect' | 'relay' | 'test'
-type Feedback = { kind: 'success' | 'error'; text: string }
+export type Feedback = {
+  kind: 'success' | 'error'
+  text: string
+  revoke?: { href: string; provider: string }
+}
 export type OAuthState = {
   completed: boolean
   failed: boolean
@@ -103,6 +107,17 @@ export function effectiveOAuth(
  *  cancelling a reconnect (or a stateless wait) must not destroy config. */
 export function uninstallOnCancel(pending: PendingConnect | undefined): boolean {
   return pending?.kind === 'new'
+}
+
+export function disconnectFeedback(
+  provider: Pick<ConnectionProvider, 'name' | 'revoke_page_url'>,
+  text: string,
+): Feedback {
+  return {
+    kind: 'success',
+    text,
+    revoke: { href: provider.revoke_page_url, provider: provider.name },
+  }
 }
 
 export function connectionStateFor(
@@ -385,6 +400,14 @@ function ConnectionCard({
       {feedback && (
         <div role={feedback.kind === 'error' ? 'alert' : 'status'} className={`mt-3 text-[11px] ${feedback.kind === 'error' ? 'text-danger' : 'text-ok'}`}>
           {feedback.text}
+          {feedback.revoke && (
+            <>
+              {' '}
+              <a href={feedback.revoke.href} target="_blank" rel="noopener noreferrer" className="font-medium text-accent hover:text-accent-hover">
+                {t('pages.connectionsPage.revoke_at_provider', { provider: feedback.revoke.provider })} <ExternalLink className="lucide-inline" aria-hidden="true" />
+              </a>
+            </>
+          )}
         </div>
       )}
     </article>
@@ -521,7 +544,7 @@ export default function ConnectionsPage() {
     if (!cancelled) {
       setFeedback(current => ({
         ...current,
-        [provider.slug]: { kind: 'success', text: t('pages.connectionsPage.disconnected_locally') },
+        [provider.slug]: disconnectFeedback(provider, t('pages.connectionsPage.disconnected_locally')),
       }))
     }
   })
