@@ -412,11 +412,20 @@ function resolveBaseScope() {
  * did exactly that to me once. `git archive` touches no repo state at all, needs no
  * cleanup, cannot corrupt anything, and works on the shallow clone CI checks out.
  *
- * Only `website/` is exported: nothing in its build config reaches outside it.
- * `node_modules` is symlinked rather than installed — a second `npm ci` would cost
- * minutes, and the base's dependency set only matters if the lockfile changed, which
- * a render gate is not the right place to police.
+ * Mostly `website/` is exported, plus the handful of files it imports ACROSS the
+ * repo boundary at build time (`CROSS_BOUNDARY_BUILD_DEPS`): those escape `website/`
+ * via `../../../../src/kiro_crew/...`, so without them in the export vite cannot
+ * resolve the import and the base build dies. `node_modules` is symlinked rather
+ * than installed — a second `npm ci` would cost minutes, and the base's dependency
+ * set only matters if the lockfile changed, which a render gate is not the right
+ * place to police.
  */
+const CROSS_BOUNDARY_BUILD_DEPS = [
+  // website/src/pages/connections/registry.ts imports this JSON via
+  // ../../../../src/kiro_crew/connections/registry.json, reaching outside website/.
+  'src/kiro_crew/connections/registry.json',
+]
+
 function buildBaseBundle(sha) {
   const dir = join(tmpdir(), `i18n-render-base-${sha.slice(0, 12)}`)
   rmSync(dir, { recursive: true, force: true })
@@ -424,9 +433,23 @@ function buildBaseBundle(sha) {
   out(`[i18n-render] [vs-base] exporting base tree ${sha.slice(0, 8)}`)
 
   const tarball = join(dir, 'base.tar')
+  // `git archive` fatals on a pathspec that matches nothing, so include each
+  // cross-boundary dep only when it exists at THIS base sha (older bases predate
+  // it). `website` is always present.
+  const extraPaths = CROSS_BOUNDARY_BUILD_DEPS.filter((p) => {
+    try {
+      execFileSync('git', ['cat-file', '-e', `${sha}:${p}`], { cwd: REPO, stdio: 'ignore' })
+      return true
+    } catch {
+      return false
+    }
+  })
   try {
-    const out = execFileSync('git', ['archive', '--format=tar', '-o', tarball, sha, 'website'],
-      { cwd: REPO, stdio: 'pipe' })
+    const out = execFileSync(
+      'git',
+      ['archive', '--format=tar', '-o', tarball, sha, 'website', ...extraPaths],
+      { cwd: REPO, stdio: 'pipe' },
+    )
     void out
     execFileSync('tar', ['-xf', tarball, '-C', dir], { stdio: 'pipe' })
     rmSync(tarball, { force: true })
