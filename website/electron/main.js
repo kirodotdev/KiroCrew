@@ -1804,6 +1804,47 @@ function showScreenPermissionDialog() {
     .catch(() => {});
 }
 
+// The microphone twin of showScreenPermissionDialog, shown when macOS reports
+// the mic as denied/restricted. This dialog IS the recovery route: TCC's own
+// prompt is one-shot, so once denied the OS never asks again and the mic button
+// would otherwise fail forever with no way for the user to fix it.
+//
+// Latched, unlike the screen-capture dialog: that one has a single entry point,
+// whereas the mic is reachable from several independent capture call sites
+// (dictation, streaming STT, the settings mic test, meeting transcription), so
+// an unlatched dialog can stack copies of itself.
+let micDialogOpen = false;
+function showMicPermissionDialog(status = "denied") {
+  if (micDialogOpen) return;
+  micDialogOpen = true;
+  const pane = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
+  // 'restricted' is policy-managed (MDM/parental controls): the toggle the
+  // 'denied' copy tells the user to flip either is not there or will not stick,
+  // so do not send them on an errand they cannot complete.
+  const restricted = status === "restricted";
+  dialog
+    .showMessageBox({
+      type: "info",
+      title: "Microphone permission needed",
+      message: restricted
+        ? "Microphone access is blocked by a policy"
+        : "Allow Kiro Crew to use the microphone",
+      detail: restricted
+        ? "Voice input needs macOS Microphone permission, but access is restricted by a device-management policy on this Mac. Contact whoever manages it to allow microphone access for Kiro Crew."
+        : "Voice input needs macOS Microphone permission, and macOS will not ask again once it has been denied. Open System Settings › Privacy & Security › Microphone, enable Kiro Crew, then try the mic again.",
+      buttons: restricted ? ["OK"] : ["Open System Settings", "Cancel"],
+      defaultId: 0,
+      cancelId: restricted ? 0 : 1,
+    })
+    .then(({ response }) => {
+      if (!restricted && response === 0) shell.openExternal(pane);
+    })
+    .catch(() => {})
+    .then(() => {
+      micDialogOpen = false;
+    });
+}
+
 // Last-resort safety net. An unhandled exception/rejection anywhere on the main
 // process would otherwise tear the app down with no trace — the exact "it just
 // crashed" the remote-tunnel drop used to produce. Log it (best-effort; logging
@@ -1987,14 +2028,46 @@ app.whenReady().then(async () => {
   // MIDI, …) per least privilege. Screen capture uses its own
   // setDisplayMediaRequestHandler and is unaffected. See permission-handler.js
   // for why the audio grant must NOT require a populated details.mediaTypes.
-  // On macOS we also proactively trigger the OS microphone (TCC) prompt.
-  session.defaultSession.setPermissionRequestHandler(createPermissionRequestHandler());
+  //
+  // The macOS (TCC) leg is wired INTO the request handler rather than fired at
+  // launch. Asking at launch spent the OS's one-shot prompt before the user had
+  // done anything mic-related — easy to dismiss, and once dismissed macOS never
+  // asks again, leaving voice input permanently dead. Asking from the handler
+  // puts the prompt exactly where the user clicked the mic, and an
+  // already-denied state now opens the Privacy pane instead of failing mutely.
+  // NOTE: none of this works without com.apple.security.device.audio-input in
+  // the signing entitlements — the hardened runtime refuses the mic before TCC
+  // is ever consulted, which is what produced a denial with no prompt at all.
+  const isMac = process.platform === "darwin";
+  session.defaultSession.setPermissionRequestHandler(
+    createPermissionRequestHandler(
+      isMac
+        ? {
+            getMicAccessStatus: () => systemPreferences.getMediaAccessStatus("microphone"),
+            askForMicAccess: () => systemPreferences.askForMediaAccess("microphone"),
+            onMicBlocked: () => showMicPermissionDialog(),
+          }
+        : {},
+    ),
+  );
   session.defaultSession.setPermissionCheckHandler(createPermissionCheckHandler());
-  if (process.platform === "darwin") {
-    systemPreferences.askForMediaAccess("microphone").catch(() => {
-      /* best effort — older macOS or TCC denied */
-    });
-  }
+
+  // Renderer-side recovery route. The handler above only sees requests that
+  // reach Electron; a mic can still fail further down (a stale TCC row pinned to
+  // an old code-signing identity, a revoked grant mid-session), and all the
+  // renderer gets is getUserMedia's opaque NotAllowedError. It reports that here
+  // so the OS status can be re-checked and the Privacy pane offered — otherwise
+  // the "permission denied" toast is a dead end, since macOS never re-prompts.
+  // Only speaks up when macOS is genuinely the one refusing.
+  ipcMain.on("mic:denied", () => {
+    if (!isMac) return;
+    try {
+      const status = systemPreferences.getMediaAccessStatus("microphone");
+      if (status === "denied" || status === "restricted") showMicPermissionDialog(status);
+    } catch {
+      /* status probe unavailable — stay silent rather than guess */
+    }
+  });
 
   createTray();
   const win = createWindow();

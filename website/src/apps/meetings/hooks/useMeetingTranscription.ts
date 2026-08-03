@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { MeetingsApiError, meetingsApi } from '../api'
+import { reportIfMicDenied } from '../../../hooks/mic'
 
 /** Feature detection mirroring `useStreamingStt` — the dashboard's own hook. */
 export const transcriptionSupported =
@@ -196,7 +197,11 @@ export function useMeetingTranscription({ meetingId, onCaption, onFinal, onError
     let stream: MediaStream
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    } catch {
+    } catch (e) {
+      // This surface reports its own generic 'microphone' error rather than
+      // routing through humanizeMicError, so hand a DENIAL to the shell here or
+      // the desktop app has no route to System Settings (macOS never re-prompts).
+      reportIfMicDenied(e)
       onErrorRef.current?.('microphone')
       startingRef.current = false
       return

@@ -4,7 +4,7 @@ import { AlertTriangle, X, Hourglass, Package } from 'lucide-react'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import { api } from '../../api/client'
-import { listMicrophones, getPreferredMicId, setPreferredMicId, micAudioConstraints } from '../../hooks/mic'
+import { listMicrophones, getPreferredMicId, setPreferredMicId, micAudioConstraints, reportIfMicDenied } from '../../hooks/mic'
 
 import { i18nT } from '../../i18n/t'
 interface SttConfig {
@@ -93,8 +93,12 @@ export default function SttSettings() {
       const s = await navigator.mediaDevices.getUserMedia(micAudioConstraints())
       s.getTracks().forEach(t => t.stop())
       refreshMics()
-    } catch {
-      /* permission denied — device names stay hidden */
+    } catch (e) {
+      // Device names stay hidden, and this button is the user's ONLY affordance
+      // for fixing that — so a denial must still reach the shell's recovery
+      // route. Otherwise clicking "Allow microphone access" appears to do
+      // nothing at all, forever (macOS never re-prompts after a denial).
+      reportIfMicDenied(e)
     }
   }
   const changeMic = (id: string) => { setMicId(id); setPreferredMicId(id) }

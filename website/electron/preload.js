@@ -42,6 +42,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // its unread (critical+default) count; main.js applies app.setBadgeCount.
   // No-op on platforms without badge support (Windows) -- Electron handles it.
   setBadgeCount: (count) => ipcRenderer.send("badge:set", count),
+  // Mic-denial recovery. The renderer only ever sees getUserMedia's
+  // NotAllowedError — it cannot tell "the OS refused" from "Electron refused",
+  // and it cannot open System Settings itself. So when a mic capture is denied
+  // it pings the main process, which checks the real OS status and shows the
+  // Privacy-pane dialog only if macOS is actually the one saying no. Without
+  // this the toast is a dead end: macOS never re-prompts after a denial.
+  reportMicDenied: () => ipcRenderer.send("mic:denied"),
 });
 
 // Native zoom bridge for the Settings > Display "Zoom Level" stepper.

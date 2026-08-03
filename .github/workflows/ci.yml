@@ -601,6 +601,43 @@ jobs:
       - name: Lint deploy templates
         run: cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml
 
+  # The Electron shell (website/electron) has its own 460+ test node:test suite,
+  # and until now NOTHING ran it on a PR — its only runner was ota-test.yml,
+  # which is nightly/on-demand and called by no other workflow. So main-process
+  # regressions (permission handling, packaging/entitlements contracts, the
+  # updater IPC surface) could land green and surface a day later, or in a
+  # shipped DMG. That is not hypothetical: the missing macOS microphone
+  # entitlement reached users this way. This job is deliberately tiny and fast —
+  # pure unit tests, no Electron binary download, no packaging.
+  electron-test:
+    name: Electron Shell Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: website/electron/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website/electron
+        # Belt-and-braces: this pin currently downloads no Electron binary
+        # anyway (electron 43's package ships no install script), so the var is
+        # inert today — it is set so a future version that reintroduces the
+        # ~100MB postinstall download cannot silently slow this job down. The
+        # tests require() only main-process modules and the stdlib test runner,
+        # so the binary is never needed.
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci --no-audit --no-fund
+
+      - name: Unit tests
+        working-directory: website/electron
+        run: npm test
+
   frontend-test:
     name: Frontend Tests
     runs-on: ubuntu-latest
