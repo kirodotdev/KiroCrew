@@ -21,7 +21,7 @@
     "electron-builder-squirrel-windows": "^26.15.3"
   },
   "overrides": {
-    "fast-uri": "3.1.4",
+    "fast-uri": "3.1.5",
     "js-yaml": "4.3.0"
   },
   "build": {
