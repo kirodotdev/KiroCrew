@@ -236,16 +236,31 @@ interface SettingsButtonGroupProps {
 export function SettingsButtonGroup({ label, description, hint, value, options, onChange, disabled }: SettingsButtonGroupProps) {
   return (
     <SettingsField label={label} description={description} hint={hint}>
-      <div className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit">
+      {/* Segmented control: a RECESSED track (`bg-accent`) holding a RAISED
+          selected thumb (`bg-elevated` + border + shadow).
+
+          The track must not be `bg-elevated`: in every light theme
+          `--bg-elevated` and `--card` are both #ffffff (index.css), so a
+          `bg-elevated` track is invisible against the card it sits on. Only
+          the selected pill rendered, reading as one stray grey box rather
+          than as a three-way choice. `bg-accent` is a step DARKER than the
+          card in light themes and darker than `bg-elevated` in dark ones, so
+          the track is visible in both directions.
+
+          Selection is conveyed by elevation + weight, not by hue alone, so it
+          survives a theme whose accent is low-contrast — and `aria-pressed`
+          carries it to screen readers, which no amount of styling does. */}
+      <div role="group" aria-label={label} className="inline-flex items-center gap-0.5 p-[3px] rounded-lg border border-border bg-bg-accent w-fit">
         {options.map(o => (
           <button
             key={o.value}
             type="button"
             disabled={disabled}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] font-medium cursor-pointer border-none transition-colors ${
+            aria-pressed={value === o.value}
+            className={`flex items-center gap-1.5 px-3 py-[5px] rounded-md text-[13px] cursor-pointer border transition-colors ${
               value === o.value
-                ? 'bg-bg-hover text-accent'
-                : 'bg-transparent text-muted hover:text-text'
+                ? 'bg-bg-elevated text-text-strong border-border-strong shadow-sm font-semibold'
+                : 'bg-transparent text-muted border-transparent font-medium hover:text-text-strong'
             } disabled:opacity-40 disabled:cursor-not-allowed`}
             onClick={() => !disabled && onChange(o.value)}
           >
