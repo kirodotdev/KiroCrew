@@ -5430,6 +5430,7 @@
         "show_line_numbers": "Mostra i numeri di riga",
         "switch_to_split_view": "Passa alla vista divisa",
         "switch_to_unified_view": "Passa alla vista unificata",
+        "this_app_render_is_no_longer_available": "Questo rendering dell'app non è più disponibile. Esegui di nuovo lo strumento per visualizzarlo.",
         "turn_diff": "Diff del turno",
         "menu_artifacts": "Artefatti",
         "menu_artifacts_desc": "Documenti e preferiti della sessione",
@@ -5536,7 +5537,8 @@
       "toolCallLine": {
         "aria_awaiting_approval": "In attesa di approvazione per lo strumento: {{label}}",
         "aria_hide_details": "Nascondi i dettagli per lo strumento: {{label}}",
-        "aria_show_details": "Mostra i dettagli per lo strumento: {{label}}"
+        "aria_show_details": "Mostra i dettagli per lo strumento: {{label}}",
+        "opened_in_the_side_panel": "Aperto nel pannello laterale"
       }
     },
     "chatPage": {
@@ -5565,6 +5567,7 @@
       "in_split": "Nella vista divisa",
       "incognito_memory_writes_disabled": "Incognito — scritture in memoria disattivate",
       "loading": "Caricamento…",
+      "mcp_app_tab_title": "App MCP",
       "mcp_servers": "Server MCP",
       "mcp_servers_2": "Server MCP",
       "no_results": "Nessun risultato",
@@ -7343,6 +7346,8 @@
       },
       "chatPanel": {
         "link_previews": "Anteprime dei link",
+        "mcp_apps_in_side_panel": "App MCP nel pannello laterale",
+        "render_interactive_mcp_apps_in_the_right_side_pa": "Mostra le app MCP interattive (come i diagrammi Excalidraw) nel pannello laterale destro invece che nella chat. Il pannello si apre automaticamente.",
         "show_a_favicon_and_page_title_instead_of_the_raw": "Mostra la favicon e il titolo della pagina invece dell'URL grezzo. Da quel momento questo computer scarica ogni link prodotto dal modello, quindi ogni sito collegato vedrà una richiesta dal tuo indirizzo IP.",
         "about_you": "Su di te",
         "auto_compact_threshold": "Soglia di compattazione automatica",

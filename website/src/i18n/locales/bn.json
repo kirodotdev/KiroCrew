@@ -5367,6 +5367,7 @@
         "show_line_numbers": "লাইন নম্বর দেখাও",
         "switch_to_split_view": "স্প্লিট ভিউতে যাও",
         "switch_to_unified_view": "ইউনিফায়েড ভিউতে যাও",
+        "this_app_render_is_no_longer_available": "এই অ্যাপ রেন্ডার আর উপলব্ধ নেই। এটি দেখতে টুলটি আবার চালান।",
         "turn_diff": "টার্ন ডিফ",
         "menu_artifacts": "আর্টিফ্যাক্ট",
         "menu_artifacts_desc": "সেশনের ভেতরের ডকুমেন্ট ও স্টার",
@@ -5473,7 +5474,8 @@
       "toolCallLine": {
         "aria_awaiting_approval": "টুলের অনুমোদনের অপেক্ষায়: {{label}}",
         "aria_hide_details": "টুলের বিস্তারিত লুকাও: {{label}}",
-        "aria_show_details": "টুলের বিস্তারিত দেখাও: {{label}}"
+        "aria_show_details": "টুলের বিস্তারিত দেখাও: {{label}}",
+        "opened_in_the_side_panel": "সাইড প্যানেলে খোলা হয়েছে"
       }
     },
     "chatPage": {
@@ -5502,6 +5504,7 @@
       "in_split": "স্প্লিটে আছে",
       "incognito_memory_writes_disabled": "ছদ্মবেশী — মেমরিতে লেখা বন্ধ",
       "loading": "লোড হচ্ছে…",
+      "mcp_app_tab_title": "MCP অ্যাপ",
       "mcp_servers": "MCP সার্ভার",
       "mcp_servers_2": "MCP সার্ভার",
       "no_results": "কোনো ফলাফল নেই",
@@ -7267,6 +7270,8 @@
       },
       "chatPanel": {
         "link_previews": "লিঙ্ক প্রিভিউ",
+        "mcp_apps_in_side_panel": "সাইড প্যানেলে MCP অ্যাপ",
+        "render_interactive_mcp_apps_in_the_right_side_pa": "ইন্টারঅ্যাক্টিভ MCP অ্যাপ (যেমন Excalidraw ডায়াগ্রাম) চ্যাটের ভিতরে না দেখিয়ে ডান দিকের সাইড প্যানেলে দেখান। প্যানেলটি স্বয়ংক্রিয়ভাবে খোলে।",
         "show_a_favicon_and_page_title_instead_of_the_raw": "কাঁচা URL-এর বদলে ফেভিকন ও পেজের শিরোনাম দেখান। চালু করলে এই মেশিন মডেলের দেওয়া প্রতিটি লিঙ্ক ফেচ করে, তাই লিঙ্ক করা প্রতিটি সাইট তোমার IP অ্যাড্রেস থেকে একটি রিকোয়েস্ট দেখতে পাবে।",
         "about_you": "আপনার সম্পর্কে",
         "auto_compact_threshold": "অটো-কম্প্যাক্ট থ্রেশহোল্ড",

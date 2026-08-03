@@ -60,7 +60,7 @@ const SCROLL_AFTER_RENDER_MS = 100
 export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import WelcomeView from '../components/WelcomeView'
-import { usePanelTabs, clearInlineDraft, getInlineDraft } from '../hooks/usePanelTabs'
+import { usePanelTabs, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
@@ -149,6 +149,7 @@ import DetailPanel from '../components/DetailPanel'
 import type { ChatMessage, Artifact } from '../types'
 
 import ToolCallLine from './chat/ToolCallLine'
+import { shouldMountSidePanel, isSidePanelHidden } from './chat/sidePanelMount'
 import WorkflowRunCard, { extractWorkflowRunId } from './chat/WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch } from './chat/SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './chat/WorkflowCompletionCard'
@@ -637,6 +638,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const ids = Object.keys(apps).filter(k => k.startsWith(prefix)).map(k => k.slice(prefix.length))
     return ids.length ? new Set(ids) : EMPTY_APP_ID_SET
   }, (a, b) => a.size === b.size && [...a].every(id => b.has(id)))
+  // MCP Apps in the side panel (dashboard.mcp_app_panel, opt-in). When on, a new
+  // render opens the panel to its own `app` tab instead of drawing inline in the
+  // bubble — same auto-open path the web-preview marker uses.
+  const { data: appPanelCfg } = useQuery<{ mcp_app_panel?: boolean }>({
+    queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000,
+  })
+  const mcpAppPanel = appPanelCfg?.mcp_app_panel === true
+  // Tool-call ids already routed to a tab, so re-renders of the same app don't
+  // yank focus back to the panel on every streaming update.
+  useEffect(() => {
+    if (!mcpAppPanel || !activeSlot) return
+    for (const id of appToolCallIds) {
+      // The claim lives at module scope, NOT in a ref: a ref is recreated on every
+      // ChatPage mount, so a trip to Settings and back re-opened (and re-focused)
+      // a tab the user had deliberately closed.
+      if (!claimAppAutoOpen(activeSlot, id)) continue
+      dispatch(openActivityPanel())
+      tabsCtlRef.current?.openApp(id, i18nT('pages.chatPage.mcp_app_tab_title'), activeSlot)
+    }
+  }, [mcpAppPanel, activeSlot, appToolCallIds, dispatch])
+
   const messages = useAppSelector(s => s.chat.messages)
   const messagesRef = useRef(messages)
   messagesRef.current = messages
@@ -1506,6 +1528,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // batch value on the same render that `streamEnabled` goes false.)
 
   const tabsCtl = usePanelTabs(activeSlot)
+  // An MCP App tab hosts a null-origin iframe with no storage: unmounting it
+  // reloads the app and destroys whatever the user has drawn (see
+  // docs/dashboard-iframe-hosts.md). The whole SidePanel subtree is normally
+  // gated on `activityOpen`, so closing the panel would unmount it. While an app
+  // tab is live we therefore keep the subtree MOUNTED and hide it instead — the
+  // same hide-not-unmount rule SidePanel already applies to its own tab bodies.
+  // With no app tab, behaviour is unchanged (the panel still unmounts on close,
+  // preserving the existing exit animation).
+  // Across ALL slots, not just the active one: with cross-slot hosting a frame
+  // belonging to another chat lives in this panel subtree, so deciding to unmount
+  // on the active slot's (possibly empty) tab list would destroy that canvas.
+  const hasLiveAppTab = useAnyLiveAppTab()
   // Which file (if any) the Files tab is showing inline — kept PER SLOT (above
   // the SidePanel subtree so it survives panel collapse). Per-slot (not a single
   // value reset on switch) so it stays consistent with the per-slot tab buckets
@@ -3173,6 +3207,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Refs so the "run in terminal" listener (registered once) always sees the
   // live panel controller + this chat's working directory.
   const tabsCtlRef = useRef(tabsCtl); tabsCtlRef.current = tabsCtl
+
+  /** Bring an app's panel tab back — focusing it if open, re-creating it if the
+   *  user closed it (`openApp` upserts).
+   *
+   *  The auto-open effect above deliberately does not re-open a tab the user
+   *  closed, which is why the bubble placeholder has to be a real control rather
+   *  than static text. Note the effect's once-per-tool-call guard holds only
+   *  PER CHATPAGE MOUNT: `openedAppTabsRef` is not persisted, so navigating away
+   *  and back re-arms it. Closing the find pane is part of the action: `isSidePanelHidden`
+   *  keeps the panel hidden while search owns the dock, so without this the click
+   *  would open a tab the user cannot see and look broken. */
+  const revealAppInPanel = useCallback((toolCallId: string) => {
+    if (search.isOpen) search.close()
+    dispatch(openActivityPanel())
+    tabsCtlRef.current?.openApp(toolCallId, i18nT('pages.chatPage.mcp_app_tab_title'), activeSlot ?? null)
+  }, [dispatch, activeSlot, search])
   const currentProjectRef = useRef<string | undefined>(undefined)
   currentProjectRef.current = currentSlot?.project || undefined
 
@@ -4166,7 +4216,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (spawnLaunch) return <SubagentRunCard key={key} launch={spawnLaunch} slot={activeSlot || ''} />
       // Animate tools in the trailing group (after last assistant/streaming text)
       const isInTrailingGroup = slotState === 'tool_running' && i > lastTextIdx
-      return <ToolCallLine key={key} message={m} running={isInTrailingGroup} onFileOpen={handleFileOpen} disclosure={toolDisclosure[key]} disclosureKey={key} onDisclosureChange={setToolDisclosureFor} />
+      return <ToolCallLine key={key} message={m} running={isInTrailingGroup} onFileOpen={handleFileOpen} disclosure={toolDisclosure[key]} disclosureKey={key} onDisclosureChange={setToolDisclosureFor} appInPanel={mcpAppPanel} onOpenApp={revealAppInPanel} />
     }
     if (m.role === 'file') {
       try {
@@ -5192,7 +5242,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       <AnimatePresence initial={false}>
         {/* Inline side panel — mobile / embed frames where there's no actbar
             grid column. Desktop uses the actbar portal below. */}
-        {activityOpen && !search.isOpen && !activitySlot && (
+        {shouldMountSidePanel({ activityOpen, hasLiveAppTab, searchOpen: search.isOpen }) && !activitySlot && (
           <motion.div
             key="side-panel-inline"
             initial={{ width: 0 }}
@@ -5200,6 +5250,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             exit={{ width: 0 }}
             transition={{ duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
             className="h-full overflow-hidden flex justify-end shrink-0"
+            // Kept mounted for a live app tab: hide instead of unmounting so the
+            // iframe (and the drawing inside it) survives a panel close.
+            style={isSidePanelHidden({ activityOpen, hasLiveAppTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
           >
             <SidePanel
               tabsCtl={tabsCtl}
@@ -5227,7 +5280,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           the window edge — both sides move together instead of snapping. */}
       {activitySlot && createPortal(
         <AnimatePresence initial={false}>
-          {activityOpen && !search.isOpen && (
+          {shouldMountSidePanel({ activityOpen, hasLiveAppTab, searchOpen: search.isOpen }) && (
             <motion.div
               key="side-panel"
               initial={{ width: 0, opacity: 0 }}
@@ -5235,6 +5288,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               exit={{ width: 0, opacity: 0 }}
               transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
               className="h-full overflow-visible flex justify-end"
+              style={isSidePanelHidden({ activityOpen, hasLiveAppTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
             >
               <SidePanel
                 tabsCtl={tabsCtl}

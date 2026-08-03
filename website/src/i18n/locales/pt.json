@@ -5430,6 +5430,7 @@
         "show_line_numbers": "Mostrar números de linha",
         "switch_to_split_view": "Alternar para a visualização dividida",
         "switch_to_unified_view": "Alternar para a visualização unificada",
+        "this_app_render_is_no_longer_available": "Esta renderização do app não está mais disponível. Execute a ferramenta novamente para vê-la.",
         "turn_diff": "Diff do turno",
         "menu_artifacts": "Artefatos",
         "menu_artifacts_desc": "Documentos e favoritos da sessão",
@@ -5536,7 +5537,8 @@
       "toolCallLine": {
         "aria_awaiting_approval": "Aguardando aprovação da ferramenta: {{label}}",
         "aria_hide_details": "Ocultar detalhes da ferramenta: {{label}}",
-        "aria_show_details": "Mostrar detalhes da ferramenta: {{label}}"
+        "aria_show_details": "Mostrar detalhes da ferramenta: {{label}}",
+        "opened_in_the_side_panel": "Aberto no painel lateral"
       }
     },
     "chatPage": {
@@ -5565,6 +5567,7 @@
       "in_split": "Na divisão",
       "incognito_memory_writes_disabled": "Anônimo — gravações de memória desativadas",
       "loading": "Carregando…",
+      "mcp_app_tab_title": "App MCP",
       "mcp_servers": "Servidores MCP",
       "mcp_servers_2": "Servidores MCP",
       "no_results": "Nenhum resultado",
@@ -7343,6 +7346,8 @@
       },
       "chatPanel": {
         "link_previews": "Pré-visualizações de links",
+        "mcp_apps_in_side_panel": "Apps MCP no painel lateral",
+        "render_interactive_mcp_apps_in_the_right_side_pa": "Exibir apps MCP interativos (como diagramas do Excalidraw) no painel lateral direito em vez de dentro da conversa. O painel abre automaticamente.",
         "show_a_favicon_and_page_title_instead_of_the_raw": "Mostra o favicon e o título da página em vez da URL bruta. A partir daí, esta máquina busca cada link que o modelo produz, então cada site vinculado verá uma requisição do seu endereço IP.",
         "about_you": "Sobre você",
         "auto_compact_threshold": "Limite de compactação automática",

@@ -5493,6 +5493,7 @@
         "show_line_numbers": "Показать номера строк",
         "switch_to_split_view": "Переключиться на раздельный вид",
         "switch_to_unified_view": "Переключиться на единый вид",
+        "this_app_render_is_no_longer_available": "Этот рендер приложения больше недоступен. Запустите инструмент снова, чтобы посмотреть его.",
         "turn_diff": "Изменения за ход",
         "menu_artifacts": "Артефакты",
         "menu_artifacts_desc": "Документы и избранное в сессии",
@@ -5599,7 +5600,8 @@
       "toolCallLine": {
         "aria_awaiting_approval": "Ожидание одобрения инструмента: {{label}}",
         "aria_hide_details": "Скрыть подробности инструмента: {{label}}",
-        "aria_show_details": "Показать подробности инструмента: {{label}}"
+        "aria_show_details": "Показать подробности инструмента: {{label}}",
+        "opened_in_the_side_panel": "Открыто в боковой панели"
       }
     },
     "chatPage": {
@@ -5628,6 +5630,7 @@
       "in_split": "В разделении",
       "incognito_memory_writes_disabled": "Инкогнито — запись в память отключена",
       "loading": "Загрузка…",
+      "mcp_app_tab_title": "MCP-приложение",
       "mcp_servers": "MCP-серверы",
       "mcp_servers_2": "MCP-серверы",
       "no_results": "Ничего не найдено",
@@ -7419,6 +7422,8 @@
       },
       "chatPanel": {
         "link_previews": "Предпросмотр ссылок",
+        "mcp_apps_in_side_panel": "MCP-приложения в боковой панели",
+        "render_interactive_mcp_apps_in_the_right_side_pa": "Показывать интерактивные MCP-приложения (например, диаграммы Excalidraw) в правой боковой панели, а не внутри чата. Панель открывается автоматически.",
         "show_a_favicon_and_page_title_instead_of_the_raw": "Показывать значок сайта и заголовок страницы вместо самой ссылки. После включения этот компьютер запрашивает каждую ссылку, которую выдаёт модель, поэтому каждый сайт увидит запрос с твоего IP-адреса.",
         "about_you": "О вас",
         "auto_compact_threshold": "Порог автосжатия",

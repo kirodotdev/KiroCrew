@@ -5367,6 +5367,7 @@
         "show_line_numbers": "Zeilennummern anzeigen",
         "switch_to_split_view": "Zur geteilten Ansicht wechseln",
         "switch_to_unified_view": "Zur einheitlichen Ansicht wechseln",
+        "this_app_render_is_no_longer_available": "Diese App-Darstellung ist nicht mehr verfügbar. Führen Sie das Tool erneut aus, um sie anzuzeigen.",
         "turn_diff": "Zug-Diff",
         "menu_artifacts": "Artefakte",
         "menu_artifacts_desc": "Dokumente & Markierungen in der Sitzung",
@@ -5473,7 +5474,8 @@
       "toolCallLine": {
         "aria_awaiting_approval": "Warten auf Genehmigung für Werkzeug {{label}}",
         "aria_hide_details": "Details für Werkzeug {{label}} ausblenden",
-        "aria_show_details": "Details für Werkzeug {{label}} anzeigen"
+        "aria_show_details": "Details für Werkzeug {{label}} anzeigen",
+        "opened_in_the_side_panel": "Im Seitenbereich geöffnet"
       }
     },
     "chatPage": {
@@ -5502,6 +5504,7 @@
       "in_split": "In geteilter Ansicht",
       "incognito_memory_writes_disabled": "Inkognito — Schreiben in die Erinnerung deaktiviert",
       "loading": "Wird geladen…",
+      "mcp_app_tab_title": "MCP-App",
       "mcp_servers": "MCP-Server",
       "mcp_servers_2": "MCP-Server",
       "no_results": "Keine Ergebnisse",
@@ -7267,6 +7270,8 @@
       },
       "chatPanel": {
         "link_previews": "Link-Vorschauen",
+        "mcp_apps_in_side_panel": "MCP-Apps im Seitenbereich",
+        "render_interactive_mcp_apps_in_the_right_side_pa": "Interaktive MCP-Apps (etwa Excalidraw-Diagramme) im rechten Seitenbereich anzeigen statt inline im Chat. Der Bereich öffnet sich automatisch.",
         "show_a_favicon_and_page_title_instead_of_the_raw": "Zeigt Favicon und Seitentitel anstelle der reinen URL. Dieser Rechner ruft dann jeden Link ab, den das Modell ausgibt, sodass jede verlinkte Website eine Anfrage von deiner IP-Adresse sieht.",
         "about_you": "Über Sie",
         "auto_compact_threshold": "Schwellenwert für automatische Verdichtung",

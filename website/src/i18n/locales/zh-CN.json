@@ -5304,6 +5304,7 @@
         "show_line_numbers": "显示行号",
         "switch_to_split_view": "切换到并排视图",
         "switch_to_unified_view": "切换到统一视图",
+        "this_app_render_is_no_longer_available": "此应用渲染已不可用。请重新运行工具以查看。",
         "turn_diff": "本轮差异",
         "menu_artifacts": "工件",
         "menu_artifacts_desc": "会话内的文档与收藏",
@@ -5410,7 +5411,8 @@
       "toolCallLine": {
         "aria_awaiting_approval": "等待批准工具：{{label}}",
         "aria_hide_details": "隐藏工具详情：{{label}}",
-        "aria_show_details": "展开工具详情：{{label}}"
+        "aria_show_details": "展开工具详情：{{label}}",
+        "opened_in_the_side_panel": "已在侧边栏中打开"
       }
     },
     "chatPage": {
@@ -5439,6 +5441,7 @@
       "in_split": "在分屏中",
       "incognito_memory_writes_disabled": "隐身 — 已禁用记忆写入",
       "loading": "正在加载…",
+      "mcp_app_tab_title": "MCP 应用",
       "mcp_servers": "MCP 服务器",
       "mcp_servers_2": "MCP 服务器",
       "no_results": "无结果",
@@ -7191,6 +7194,8 @@
       },
       "chatPanel": {
         "link_previews": "链接预览",
+        "mcp_apps_in_side_panel": "在侧边栏中打开 MCP 应用",
+        "render_interactive_mcp_apps_in_the_right_side_pa": "在右侧边栏中渲染交互式 MCP 应用（例如 Excalidraw 图表），而不是嵌入在聊天中。侧边栏会自动打开。",
         "show_a_favicon_and_page_title_instead_of_the_raw": "显示网站图标和页面标题，而不是原始网址。开启后，这台机器会抓取模型输出的每个链接，因此每个被链接站点都会看到来自你 IP 地址的请求。",
         "about_you": "关于你",
         "auto_compact_threshold": "自动压缩阈值",

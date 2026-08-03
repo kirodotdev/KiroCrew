@@ -3869,6 +3869,7 @@
         "open_side_panel_tab": "Open side panel tab",
         "pick_a_panel_to_view": "Pick a panel to view",
         "resize_panel": "Resize panel",
+        "this_app_render_is_no_longer_available": "This app render is no longer available. Run the tool again to view it.",
         "turn_diff": "Turn Diff"
       },
       "stopEventCard": {
@@ -3952,6 +3953,7 @@
       "in_split": "In split",
       "incognito_memory_writes_disabled": "Incognito — memory writes disabled",
       "loading": "Loading…",
+      "mcp_app_tab_title": "MCP App",
       "mcp_servers": "MCP servers",
       "mcp_servers_2": "MCP Servers",
       "pop_out_session_to_its_own_window": "Pop out session to its own window",
@@ -5176,6 +5178,7 @@
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro matches vocabulary and examples to your professional background",
         "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro quotes this back to itself when calibrating vocabulary and examples.",
         "link_previews": "Link Previews",
+        "mcp_apps_in_side_panel": "MCP Apps in Side Panel",
         "merge_queued_messages": "Merge Queued Messages",
         "messages": "Messages",
         "model": "Model",
@@ -5185,6 +5188,7 @@
         "pin_last_prompt_desc": "Keep the most recent prompt visible as a sticky banner once it scrolls above the fold.",
         "quick_send": "Quick Send",
         "re_open_recently_active_sessions_on_startup": "Re-open recently active sessions on startup",
+        "render_interactive_mcp_apps_in_the_right_side_pa": "Render interactive MCP Apps (such as Excalidraw diagrams) in the right side panel instead of inline in the chat. The panel opens automatically.",
         "restore_sessions": "Restore Sessions",
         "restore_window": "Restore Window",
         "retry": "Retry",

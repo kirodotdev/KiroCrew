@@ -5430,6 +5430,7 @@
         "show_line_numbers": "Afficher les numéros de ligne",
         "switch_to_split_view": "Passer en vue divisée",
         "switch_to_unified_view": "Passer en vue unifiée",
+        "this_app_render_is_no_longer_available": "Ce rendu d'application n'est plus disponible. Exécutez à nouveau l'outil pour l'afficher.",
         "turn_diff": "Diff du tour",
         "menu_artifacts": "Artefacts",
         "menu_artifacts_desc": "Documents et favoris de la session",
@@ -5536,7 +5537,8 @@
       "toolCallLine": {
         "aria_awaiting_approval": "En attente d’approbation pour l’outil : {{label}}",
         "aria_hide_details": "Masquer les détails de l’outil : {{label}}",
-        "aria_show_details": "Afficher les détails de l’outil : {{label}}"
+        "aria_show_details": "Afficher les détails de l’outil : {{label}}",
+        "opened_in_the_side_panel": "Ouvert dans le panneau latéral"
       }
     },
     "chatPage": {
@@ -5565,6 +5567,7 @@
       "in_split": "En vue divisée",
       "incognito_memory_writes_disabled": "Incognito — écritures en mémoire désactivées",
       "loading": "Chargement…",
+      "mcp_app_tab_title": "Application MCP",
       "mcp_servers": "Serveurs MCP",
       "mcp_servers_2": "Serveurs MCP",
       "no_results": "Aucun résultat",
@@ -7343,6 +7346,8 @@
       },
       "chatPanel": {
         "link_previews": "Aperçus de liens",
+        "mcp_apps_in_side_panel": "Applications MCP dans le panneau latéral",
+        "render_interactive_mcp_apps_in_the_right_side_pa": "Afficher les applications MCP interactives (comme les diagrammes Excalidraw) dans le panneau latéral droit au lieu du fil de discussion. Le panneau s'ouvre automatiquement.",
         "show_a_favicon_and_page_title_instead_of_the_raw": "Affiche le favicon et le titre de la page au lieu de l'URL brute. Cette machine récupère alors chaque lien produit par le modèle, si bien que chaque site lié voit une requête venant de ton adresse IP.",
         "about_you": "À propos de vous",
         "auto_compact_threshold": "Seuil de compactage automatique",

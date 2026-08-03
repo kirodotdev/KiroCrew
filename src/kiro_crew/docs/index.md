@@ -67,6 +67,7 @@ agent backend and Slack credentials.
 - [Configuration](configuration.md) — Config file reference, environment variables, sandbox modes
 - [Use Cases](use-cases.md) — Real-world workflows from the community
 - [Profiling](profiling.md) — Debug-only stack sampler (`kirocrew perf sample`) and desktop app metrics (`kirocrew desktop metrics`)
+- [Dashboard iframe hosts](dashboard-iframe-hosts.md) — Which of the four embed hosts to use, why their sandboxes differ, and why an iframe can never be moved
 - [Troubleshooting](troubleshooting.md) — Common issues and fixes
 
 ## Security

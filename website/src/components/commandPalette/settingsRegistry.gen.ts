@@ -184,6 +184,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.mcp-apps-in-side-panel",
+    "label": "MCP Apps in Side Panel",
+    "description": "Render interactive MCP Apps (such as Excalidraw diagrams) in the right side panel instead of inline in the chat. The panel opens automatically.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.merge-queued-messages",
     "label": "Merge Queued Messages",
     "description": "Combine follow-up messages into a single labeled prompt while the agent is busy",
