@@ -517,12 +517,27 @@ export default function DevFleetPage() {
     refetchInterval: 30000,
   })
 
-  const invalidateFleet = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['dev-fleet', 'fleet'] })
+  // Every call below happens right after a user-initiated mutation (or the
+  // explicit Refresh button), so the fleet has to be REBUILT rather than
+  // re-read: a plain refetch hits the backend's stale-while-revalidate cache,
+  // which serves the PRE-mutation snapshot and only rebuilds behind it — so a
+  // pruned worktree would keep rendering until that rebuild lands. `fresh=1`
+  // forces the rebuild and the backend coalesces concurrent ones onto a single
+  // build. Falls back to a plain invalidate if the fresh fetch fails.
+  const refetchFleetFresh = useCallback(async () => {
+    try {
+      const data = await api.get<FleetData>('/fleet?fresh=1')
+      if (data) queryClient.setQueryData(['dev-fleet', 'fleet'], data)
+      else queryClient.invalidateQueries({ queryKey: ['dev-fleet', 'fleet'] })
+    } catch {
+      queryClient.invalidateQueries({ queryKey: ['dev-fleet', 'fleet'] })
+    }
   }, [queryClient])
+  const invalidateFleet = useCallback(() => { void refetchFleetFresh() }, [refetchFleetFresh])
   const invalidateAll = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['dev-fleet'] })
-  }, [queryClient])
+    void refetchFleetFresh()
+    queryClient.invalidateQueries({ queryKey: ['dev-fleet', 'disk'] })
+  }, [refetchFleetFresh, queryClient])
 
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})

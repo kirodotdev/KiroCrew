@@ -15,7 +15,9 @@ Gateway session auth (token/cookie) gates the proxy entrance as with all builtin
 
 ## Responsibilities
 
-1. **Worktree discovery** — enumerates git worktrees via `git worktree list --porcelain`
+1. **Worktree discovery** — enumerates git worktrees via `git worktree list --porcelain`,
+   dropping records git flags `prunable` (checkout directory deleted without a
+   `git worktree prune`); the primary checkout is never dropped, since it anchors `is_main`
 2. **Pod integration** — spin up/down/restart isolated pod instances per worktree
 3. **Pull+Build sync** — pull origin/main and rebuild (venv + frontend dist)
 4. **Prune** — safely remove merged/empty worktrees with PR-shipped verification
@@ -193,7 +195,18 @@ after the unit was installed.
   without a restart. Cycles that remove or fail anything are SEL-audited under
   `dev_fleet_auto_prune`. Cancelled on `dev_fleet_cleanup`.
 - **Fleet cache** — 10s TTL. Cold requests block on fresh data; warm requests serve stale
-  and background-refresh.
+  and background-refresh. Concurrent rebuilds (the background revalidate plus any number
+  of `?fresh=1` requests) coalesce onto a single in-flight build, so a rebuild never costs
+  more than one `gh pr` round-trip per branch. A successful `_worktree_remove` evicts that
+  worktree from the cached snapshot and zeroes the timestamp, so the next response stops
+  listing a removed worktree without waiting for a rebuild. An eviction also tombstones the
+  name against an eviction counter: a rebuild that started before the removal still read the
+  worktree from git, so it re-applies any eviction recorded after it began rather than
+  storing a snapshot that would resurrect the row. Tombstones are reaped by the first build
+  that started after them, so a worktree later re-created under the same name is not hidden.
+  The dashboard refreshes with
+  `?fresh=1` after every mutating action (and on the explicit Refresh button) so it never
+  renders the pre-mutation snapshot.
 
 ## Async Runs
 

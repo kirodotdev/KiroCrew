@@ -810,6 +810,43 @@ describe('DevFleetPage', () => {
     expect(screen.getByText('pod still active after shutdown')).toBeInTheDocument()
     expect(screen.getByText('Prune complete')).toBeInTheDocument()
   }, 15000)
+
+  it('refetches the fleet with fresh=1 once a prune finishes', async () => {
+    // The backend serves /fleet from a stale-while-revalidate cache, so a plain
+    // refetch after a prune returns the PRE-prune snapshot and the removed rows
+    // keep rendering. The post-action refresh must force a rebuild.
+    const fleetUrls: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) {
+        fleetUrls.push(u)
+        return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      }
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/prune-candidates')) return Promise.resolve(new Response(JSON.stringify({
+        ok: true, candidates: [{ name: 'wt-a', code: 'merged' }], kept: [], scanned: 1,
+      }), { status: 200 }))
+      if (u.includes('/prune-run')) return Promise.resolve(new Response(JSON.stringify({ ok: true, total: 1 }), { status: 200 }))
+      if (u.includes('/prune-status')) return Promise.resolve(new Response(JSON.stringify({
+        running: false, total: 1, done: 1, current: null,
+        results: [{ name: 'wt-a', ok: true }],
+        items: { 'wt-a': { status: 'done', error: null } },
+      }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    // The initial load must NOT force a rebuild — only post-action refreshes do.
+    expect(fleetUrls.every((u) => !u.includes('fresh=1'))).toBe(true)
+
+    fireEvent.click(screen.getByText('Prune merged'))
+    await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Remove selected'))
+    await waitFor(
+      () => expect(fleetUrls.some((u) => u.includes('fresh=1'))).toBe(true),
+      { timeout: 8000 },
+    )
+  }, 15000)
 })
 
 // The overlap-merge algorithm behind client-side log accumulation — dedupes
