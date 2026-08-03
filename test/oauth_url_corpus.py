@@ -15,7 +15,7 @@ This corpus is the contract: every entry is a *real* provider URL shape
 
 **Adding a provider:** when KiroCrew gains/observes a new MCP OAuth provider,
 add a representative authorize URL here.  If any param it uses isn't yet in
-``_OAUTH_QUERY_PARAMS`` (kiro_crew/dashboard/chat_runner.py), add it there too
+``_OAUTH_QUERY_PARAMS`` (kiro_crew/security.py), add it there too
 — and confirm the value is benign (not a real secret) before exempting it.
 
 Values use realistic-but-fake identifiers; PKCE ``code_challenge`` is a real
@@ -128,14 +128,13 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&state=somerandomstate"
         "&response_type=code&prompt=consent",
     ),
-    # Long-state OIDC (some providers pack return-path into state) — must pass
-    # purely because ``state`` is an exempt high-entropy param.
+    # Notion OAuth + long-state/PKCE. This exact endpoint is owned by the
+    # Connections registry and exercises the parameter-level entropy exemption.
     (
-        "oidc-long-state",
-        "https://id.example-idp.com/authorize"
+        "notion-long-state",
+        "https://api.notion.com/v1/oauth/authorize"
         "?client_id=client123&response_type=code"
         "&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fcb"
-        "&scope=openid%20profile%20email%20offline_access"
         "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         "&code_challenge_method=S256"
         "&state=" + ("a1B2c3D4" * 16),  # 128-char opaque state

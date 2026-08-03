@@ -481,8 +481,9 @@ class TestOauthUrlCredentialGate:
         )
 
     def test_unparseable_url_is_refused(self):
-        with patch.object(chat_runner, "urlparse", side_effect=ValueError("bad")):
-            assert chat_runner._oauth_url_contains_credential("https://example.test/x") is True
+        # An invalid IPv6 authority makes urlparse raise ValueError inside the
+        # shared security gate, which fails closed.
+        assert chat_runner._oauth_url_contains_credential("https://[bad-ipv6/x") is True
 
     def test_credential_signature_inside_an_oauth_param_is_refused(self):
         url = "https://example.test/authorize?state=AKIAIOSFODNN7EXAMPLE1"

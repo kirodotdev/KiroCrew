@@ -3982,11 +3982,12 @@ class DashboardState:
         #
         # 1. This is the LIVE oauth banner's egress path. _emit_mcp_oauth_request
         #    appends the banner with a real `oauth_url`, already gated by
-        #    _oauth_url_contains_credential — a gate that deliberately exempts OAuth
-        #    params from the query-length / base64 heuristics because those
-        #    "would reject every real OAuth URL". Running _redact_meta_for_role here
-        #    would blank a genuine Google/GitHub consent URL and break the user's
-        #    ability to authorize an MCP server.
+        #    _oauth_url_contains_credential — the shared security gate, which
+        #    exempts standard high-entropy OAuth values only at exact code-owned
+        #    authorization endpoints while scanning everything else fail-closed.
+        #    Running _redact_meta_for_role here would blank a genuine
+        #    Google/GitHub consent URL and break the user's ability to authorize
+        #    an MCP server.
         # 2. chat_utils imports from this module, so importing the redactors the
         #    other way would be a cycle.
         #
