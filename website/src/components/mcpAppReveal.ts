@@ -27,29 +27,68 @@
  *  the pre-existing behaviour.
  */
 
-/** Wall-clock budget for the whole reveal. Deliberately short: the reveal is
- *  gated on argument SHAPE, not on app capability, so an app that ignores
- *  `tool-input-partial` still waits this long for its complete input and result.
- *  A capability gate is not available — `ui/initialize` params do carry
- *  `appCapabilities`, but excalidraw (the reference partial-aware consumer)
- *  declares `capabilities: {}`, so gating on a declared capability would switch
- *  the animation off for the very app that implements it. Keeping the budget
- *  small is the honest trade instead. */
-export const REVEAL_BUDGET_MS = 700
-/** Upper bound on posted frames. A 4000-element diagram must not become 4000
- *  postMessage round-trips; past ~two dozen steps the motion reads identically. */
-export const REVEAL_MAX_FRAMES = 24
-/** Floor on the gap between frames, so a short list still animates visibly
- *  instead of flashing through in three frames' worth of milliseconds. */
-export const REVEAL_MIN_STEP_MS = 45
+/** Gap between frames. Matched deliberately to excalidraw's OWN reference
+ *  harness (`dev-mock.ts` `streamElements(elements, intervalMs = 120)`), which
+ *  posts one element per 120ms with no total budget — that cadence is what the
+ *  project's sample recordings show, and its tool description promises
+ *  "elements stream in one by one with draw-on animations".
+ *
+ *  A previous revision used a fixed ~700ms TOTAL budget instead. That squeezed
+ *  a whole diagram into under a second and batched several elements per frame,
+ *  which reads as a flicker rather than a draw-on: the animation was there but
+ *  not perceptible. Pace per element, not per payload.
+ *
+ *  PROVENANCE (this is a sibling checkout, NOT a dependency — nothing in CI can
+ *  notice if these upstream numbers change, so they are pinned here by hand):
+ *  github.com/excalidraw/excalidraw-mcp @ 157aa23 — `src/dev-mock.ts:105`
+ *  (intervalMs = 120), `src/server.ts:12` (MAX_INPUT_BYTES = 5MB),
+ *  `src/mcp-app.tsx:32` (excludeIncompleteLastItem).
+ *
+ *  ONE DELIBERATE DEVIATION from that reference: the harness increments before
+ *  posting, so it emits prefixes 1..n — the complete array included, as a
+ *  "partial". We never do: a partial equal to the whole payload would tell an
+ *  app that only listens to partials that it had final state. Combined with the
+ *  app dropping each frame's last element, the visible consequence is that our
+ *  final partial shows total-2 elements and the complete `tool-input` then
+ *  jumps to total — the tail lands two elements at once where the reference
+ *  lands one. That is the one place this cadence provably differs.
+ *
+ *  WHY THE REVEAL IS GATED ON ARGUMENT SHAPE AND NOT APP CAPABILITY (kept here
+ *  so the gap is not re-litigated): `ui/initialize` params DO carry
+ *  `appCapabilities`, so a real capability gate looks available. It is not —
+ *  excalidraw, the reference partial-aware consumer, declares `capabilities: {}`
+ *  while implementing `ontoolinputpartial`, so gating on a declared capability
+ *  would switch the animation off for the very app that implements it. The cost
+ *  of shape-gating is that an app which ignores partials still waits out the
+ *  reveal for its complete input; REVEAL_MAX_TOTAL_MS bounds that wait. */
+export const REVEAL_STEP_MS = 120
+/** Ceiling on the whole reveal, so a 400-element diagram does not hold the
+ *  app's complete input for the best part of a minute. Past this, frames carry
+ *  more than one element each (see prefixLengths). */
+export const REVEAL_MAX_TOTAL_MS = 7_200
+/** Frame ceiling implied by the interval and the total cap. */
+export const REVEAL_MAX_FRAMES = Math.floor(REVEAL_MAX_TOTAL_MS / REVEAL_STEP_MS)
 /** Cap on the encoded size of the WHOLE arguments object.
  *
  *  It must be the whole object, not just the revealed array: every frame is
  *  `{...toolInput, [key]: prefix}`, so each frame structured-clones every
  *  SIBLING argument too. Measuring only the array would let a small array
  *  beside a multi-megabyte sibling ship (frames x sibling) bytes through
- *  postMessage. At this cap the worst case is ~24 x 256KB. */
-export const REVEAL_MAX_SOURCE_BYTES = 256_000
+ *  postMessage.
+ *
+ *  1MB, not the 256KB a previous revision used: the excalidraw server itself
+ *  accepts up to 5MB of elements (`MAX_INPUT_BYTES`), so a much tighter host
+ *  cap meant large-but-legal diagrams silently got no animation at all. Total
+ *  cloned bytes stay bounded by REVEAL_MAX_CLONE_BYTES below rather than by
+ *  making the accepted payload small. */
+export const REVEAL_MAX_SOURCE_BYTES = 1_000_000
+/** Budget for total bytes handed to postMessage across the whole reveal.
+ *
+ *  Frame count and payload size multiply, so bounding either alone is not
+ *  enough. This trades frames against size: a typical 40KB diagram gets the
+ *  full per-element cadence, while a 1MB one animates in fewer, larger steps
+ *  instead of cloning 60MB. */
+export const REVEAL_MAX_CLONE_BYTES = 24_000_000
 
 /** How the revealed array was carried in the arguments object. Servers differ:
  *  excalidraw passes `elements` as a JSON *string*, others pass a real array. */
@@ -98,13 +137,26 @@ function encodeItems(items: unknown[], encoding: RevealEncoding): unknown {
   return encoding === 'json-string' ? JSON.stringify(items) : items
 }
 
-/** Evenly spaced prefix lengths over `1 .. total-1`, at most `REVEAL_MAX_FRAMES`
- *  of them, strictly increasing and never including `total`. */
-function prefixLengths(total: number): number[] {
-  const steps = Math.min(REVEAL_MAX_FRAMES, total - 1)
+/** Prefix lengths to reveal, strictly increasing and never including `total`.
+ *
+ *  Starts at TWO, not one, because the app drops the last element of every
+ *  partial frame on purpose (`excludeIncompleteLastItem` in excalidraw's
+ *  DiagramView — during real streaming that element is truncated mid-JSON). A
+ *  1-element frame therefore renders nothing, so it would waste the first step.
+ *
+ *  `maxFrames` collapses steps when the payload is large: one element per frame
+ *  is the ideal, but frames x payload bytes has to stay bounded. */
+function prefixLengths(total: number, maxFrames: number): number[] {
+  const last = total - 1
+  if (last < 2) return []
+  // Available lengths are 2..last inclusive; `span` is the largest increment
+  // above the starting length, so the final frame lands exactly on `last` and
+  // never on `total`.
+  const span = last - 2
+  const steps = Math.max(1, Math.min(maxFrames, last - 1))
   const out: number[] = []
-  for (let i = 1; i <= steps; i++) {
-    const len = Math.max(1, Math.round((i * (total - 1)) / steps))
+  for (let i = 0; i < steps; i++) {
+    const len = steps === 1 ? last : 2 + Math.round((i * span) / (steps - 1))
     if (out[out.length - 1] !== len) out.push(len)
   }
   return out
@@ -140,10 +192,14 @@ export function planReveal(toolInput: unknown): RevealPlan | null {
       best = { key, items: decoded.items, encoding: decoded.encoding }
     }
   }
-  // Fewer than two items yields no intermediate state worth showing.
-  if (!best || best.items.length < 2) return null
+  // Fewer than three items yields no useful intermediate state: the app drops
+  // the last element of each partial, so only a 3+ element array can show a
+  // frame with something in it that is also short of the whole diagram.
+  if (!best || best.items.length < 3) return null
 
-  const lengths = prefixLengths(best.items.length)
+  // Trade frames against payload size so total cloned bytes stay bounded.
+  const byteCappedFrames = Math.max(1, Math.floor(REVEAL_MAX_CLONE_BYTES / Math.max(1, encodedBytes)))
+  const lengths = prefixLengths(best.items.length, Math.min(REVEAL_MAX_FRAMES, byteCappedFrames))
   if (lengths.length === 0) return null
 
   const frames = lengths.map((len) => ({
@@ -154,7 +210,7 @@ export function planReveal(toolInput: unknown): RevealPlan | null {
   return {
     key: best.key,
     frames,
-    stepMs: Math.max(REVEAL_MIN_STEP_MS, Math.round(REVEAL_BUDGET_MS / frames.length)),
+    stepMs: REVEAL_STEP_MS,
   }
 }
 
