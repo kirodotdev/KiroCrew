@@ -299,6 +299,8 @@ def build_permission_event(
     tool_input_cache: dict[str, str] | None = None,
     shell_cache: dict[str, bool] | None = None,
     raw_params_cache: dict[str, dict] | None = None,
+    mcp_server_name_cache: dict[str, str] | None = None,
+    tool_name_cache: dict[str, str] | None = None,
 ) -> tuple[AcpEvent, dict[str, str] | None]:
     """Build an ``EVENT_PERMISSION_REQUEST`` from a ``session/request_permission``.
 
@@ -448,6 +450,25 @@ def build_permission_event(
         tool_call_id=tool_call_id,
         raw_tool_params=_resolved_raw_params,
         is_shell=is_shell,
+        # Trusted MCP server identity recovered from the preceding tool_call
+        # (the permission payload carries no _meta). .get() (not .pop()) mirrors
+        # the is_shell cache: a later tool_call_update for the same id re-reads
+        # it; the per-turn dispatch .clear() handles cleanup. Empty on a miss
+        # (fail-closed for the app-own-server auto-approve).
+        mcp_server_name=(
+            mcp_server_name_cache.get(tool_call_id, "")
+            if (mcp_server_name_cache is not None and tool_call_id)
+            else ""
+        ),
+        # Trusted tool identity recovered from the preceding tool_call, mirroring
+        # mcp_server_name above. Lets the app-own-server auto-approve govern the
+        # canonical mcp__<server>__<tool> on the permission path (no _meta here).
+        # Empty on a miss (fail-closed: no trusted tool name → no auto-approve).
+        tool_name=(
+            tool_name_cache.get(tool_call_id, "")
+            if (tool_name_cache is not None and tool_call_id)
+            else ""
+        ),
     )
     return event, recorded
 
@@ -457,6 +478,8 @@ def _build_tool_call_event(
     tool_input_cache: dict[str, str] | None,
     shell_cache: dict[str, bool] | None = None,
     raw_params_cache: dict[str, dict] | None = None,
+    mcp_server_name_cache: dict[str, str] | None = None,
+    tool_name_cache: dict[str, str] | None = None,
 ) -> AcpEvent:
     """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction)."""
     title = update.get("title", "unknown")
@@ -475,6 +498,21 @@ def _build_tool_call_event(
     is_shell = is_shell_kind(kind)
     if tool_call_id and shell_cache is not None:
         shell_cache[tool_call_id] = is_shell
+    # Capture the TRUSTED MCP server identity (_meta.kiro.mcpServerName) so the
+    # later permission_request — the dashboard's gate path, which carries no
+    # _meta — can inherit it via mcp_server_name_cache. This is what lets the
+    # app-own-server auto-approve (hooks.on_tool_call) fire on the permission
+    # path: without the cache, the permission event's mcp_server_name is always
+    # "" and the branch never matches.
+    _mcp_server_name = _kiro_mcp_server_name(update)
+    if tool_call_id and mcp_server_name_cache is not None:
+        mcp_server_name_cache[tool_call_id] = _mcp_server_name
+    # Same lifecycle for the trusted tool name (_meta.kiro.toolName) so the
+    # permission event can reconstruct the canonical mcp__<server>__<tool> for
+    # per-tool governance in the app-own-server auto-approve.
+    _tool_name = _kiro_tool_name(update)
+    if tool_call_id and tool_name_cache is not None:
+        tool_name_cache[tool_call_id] = _tool_name
     # Initial tool input string from raw params.
     input_str = ""
     if tool_call_id and raw_input:
@@ -531,8 +569,8 @@ def _build_tool_call_event(
         raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
         is_shell=is_shell,
         # Trusted identity from _meta.kiro (NOT the LLM-authored title).
-        tool_name=_kiro_tool_name(update),
-        mcp_server_name=_kiro_mcp_server_name(update),
+        tool_name=_tool_name,
+        mcp_server_name=_mcp_server_name,
         diff_old_text=_diff_old_text,
         diff_path=_diff_path,
     )
@@ -815,6 +853,8 @@ def parse_session_update(
     tool_input_cache: dict[str, str] | None = None,
     shell_cache: dict[str, bool] | None = None,
     raw_params_cache: dict[str, dict] | None = None,
+    mcp_server_name_cache: dict[str, str] | None = None,
+    tool_name_cache: dict[str, str] | None = None,
 ) -> list[AcpEvent]:
     """Parse one ``session/update`` inner ``update`` dict into ``AcpEvent``s.
 
@@ -843,7 +883,14 @@ def parse_session_update(
         return events
     if kind == UPDATE_TOOL_CALL:
         events.append(
-            _build_tool_call_event(update, tool_input_cache, shell_cache, raw_params_cache)
+            _build_tool_call_event(
+                update,
+                tool_input_cache,
+                shell_cache,
+                raw_params_cache,
+                mcp_server_name_cache,
+                tool_name_cache,
+            )
         )
         return events
     if kind == UPDATE_TOOL_CALL_UPDATE:

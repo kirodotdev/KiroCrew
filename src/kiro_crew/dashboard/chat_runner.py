@@ -3699,10 +3699,13 @@ async def _run_chat(
                         event.title,
                         session_key=session_key,
                         agent=slot.agent or "",
+                        app=slot._app or "",
                         tool_kind=event.tool_kind,
                         raw_params=event.raw_tool_params,
                         command=event.shell_command,
                         is_shell=event.is_shell,
+                        mcp_server_name=event.mcp_server_name,
+                        mcp_tool_name=event.tool_name,
                     )
                     if tool_result.action == TOOL_DENY:
                         await client.reject_tool(event.request_id)

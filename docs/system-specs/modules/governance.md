@@ -609,11 +609,29 @@ read-your-writes should add it deliberately, with its own tests.
   as `denied_regexes` (see `security.md`). Gate order: **sensitive-path
   keystone → effective deny-floor (`is_denied`) → `gate_decision(ceiling,
   profile, title)` (governance, incl. the `commands` scope, and MCP titles
-  `mcp__server__tool` converted to `@server/tool`) → read-only auto-approve →
+  `mcp__server__tool` converted to `@server/tool`) → first-party app-own MCP
+  server auto-approve → read-only auto-approve →
   user `auto_approve_tools` loop**. A governance deny wins over a user
   auto-approve, and the read-only auto-approve fast-path runs strictly AFTER
   both the deny-floor and `gate_decision`, so a read-only classification can
-  never re-admit a denied/governed call. **Inside** that fast-path the semantic
+  never re-admit a denied/governed call. **First-party app-own MCP server
+  auto-approve** (`_app_owns_mcp_server` ∧ `_is_first_party_app`) sits
+  immediately after `gate_decision`, so a ceiling/profile still denies it: a
+  **builtin** app agent calling its OWN app-scoped server (registered
+  `<app>:<server>`) is intra-app — the app talking to its own gateway-shipped
+  code, not a host surface — and is auto-approved without re-widening any host
+  grant, independent of the Normal/Read/Trust tier (that tier governs the HOST
+  tools an app may reach, not the app talking to itself). It keys on the trusted,
+  non-model-authored `mcp_server_name` (the ACP `_meta.kiro.mcpServerName`), NEVER
+  the LLM-authored title: kiro-cli sets that field only for a genuine MCP-served
+  call, so a prompt-injected agent that titles a Bash call `mcp__<app>:srv__x`
+  carries an empty server name and never matches (fail-closed). Restricted to
+  builtins on purpose: only a builtin's server is provably first-party. A
+  THIRD-PARTY app's own server is arbitrary installed code whose internals the
+  gate cannot see, so its own-server calls are NOT auto-approved here — the OS
+  sandbox it runs under and the third-party admission gate bound its behavior,
+  not this prompt. **Inside**
+  the read-only fast-path the semantic
   `tool_kind` is authoritative and is tested first, as an ALLOW-list: only
   `read`/`fetch` auto-approve, and every other non-empty kind falls through to
   interactive approval before any title-keyed branch (including the computer-use one)

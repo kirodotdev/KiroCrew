@@ -1120,6 +1120,31 @@ def register_external_app(
     dest = app_dir(name)
     existing = _read_installed(name)
 
+    # Builtin provenance is assigned ONLY by register_builtin_apps(). A
+    # self-registration must never OVERWRITE an existing builtin-owned record
+    # (which the update branch below would do — downgrading origin/lifecycle to
+    # external/app). That would both hand a third-party app a shipped builtin's
+    # execution exemption AND leave the boot-warmed first-party name / MCP-server
+    # sets stale until the next gateway restart. Stand down, mirroring
+    # register_builtin_apps()'s refusal to take over a user-installed app — so a
+    # builtin's provenance is immutable at runtime and the warmed sets stay valid.
+    if existing and _builtin_owns_install(existing):
+        sel().log_api_access(
+            caller="app_register_external",
+            operation="provenance",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error="builtin-owned app cannot be replaced by self-registration",
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=(
+                f"{name!r} is a KiroCrew-shipped builtin and cannot be replaced "
+                "by self-registration"
+            ),
+        )
+
     if existing:
         # Update existing registration
         existing.version = version
@@ -1520,6 +1545,22 @@ def _builtin_owns_install(existing: InstalledApp) -> bool:
     by older gateway versions are still recognised as ours.
     """
     return existing.source == "builtin" or existing.origin == "builtin"
+
+
+def builtin_owns_installed(name: str) -> bool:
+    """Whether the ACTIVE installed record for ``name`` is builtin-owned.
+
+    ``True`` only when an ``installed.json`` exists for ``name`` AND it was
+    written by :func:`register_builtin_apps` (``source``/``origin`` == builtin,
+    per :func:`_builtin_owns_install`). A user-installed app that shadows a
+    builtin's name — which makes registration *stand down* and leaves the
+    user's record in place — or a missing/unreadable record both return
+    ``False`` (fail-closed). Callers use this to confirm a shipped-manifest name
+    is actually occupied by first-party code before granting it first-party
+    trust; it can only REMOVE trust, never manufacture it.
+    """
+    existing = _read_installed(name)
+    return existing is not None and _builtin_owns_install(existing)
 
 
 def _app_declares_backend(app_data: dict[str, Any]) -> bool:

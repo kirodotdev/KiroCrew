@@ -2377,6 +2377,29 @@ async def start_dashboard(
     # dirs, which must not block the event loop during startup.
     await asyncio.get_running_loop().run_in_executor(subprocess_executor(), register_builtin_apps)
 
+    # Warm the PreToolUse gate's first-party (builtin) app-name set from the
+    # shipped manifests, ONCE, on the executor (the discovery walk touches the
+    # filesystem and must not run on the event loop). The gate's app-own-server
+    # auto-approve then does a pure in-memory membership test with zero I/O; an
+    # empty set (should this fail) simply fails closed (owns-server calls prompt).
+    async def _warm_builtin_app_names() -> None:
+        try:
+            from kiro_crew.apps.execution import builtin_app_mcp_servers, builtin_app_names
+            from kiro_crew.hooks import set_builtin_app_mcp_servers, set_builtin_app_names
+
+            names = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), builtin_app_names
+            )
+            set_builtin_app_names(names)
+            servers = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), builtin_app_mcp_servers
+            )
+            set_builtin_app_mcp_servers(servers)
+        except Exception:  # noqa: BLE001 — a warm failure only costs an extra prompt
+            logger.warning("Failed to warm builtin app-name set for the gate", exc_info=True)
+
+    await _warm_builtin_app_names()
+
     # Reconcile resources (agents / skills / crons / MCP) for every ENABLED app.
     # Registration otherwise happens only in the enable path, so an app that
     # gains agents or skills in a later version never registers them for a user

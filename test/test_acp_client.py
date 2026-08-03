@@ -8276,6 +8276,40 @@ class TestAcpClientIsShellSignal:
         perm = client._build_permission_event(self._permission_msg())
         assert perm.is_shell is False
 
+    def test_permission_event_inherits_trusted_tool_identity(self, tmp_path):
+        # The client caches the trusted _meta.kiro identity (mcpServerName +
+        # toolName) from the tool_call so the later permission event (which
+        # carries no _meta) can rebuild mcp__<server>__<tool> for the
+        # app-own-server auto-approve's per-tool governance. Without the
+        # tool_name cache the permission event's tool_name is always "" and the
+        # auto-approve fails closed (never fires).
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        client = AcpClient(work_dir=tmp_path)
+        tc = JsonRpcMessage(
+            method="session/update",
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc-1",
+                    "title": "Doing app work",  # prose, not the canonical mcp__ form
+                    "kind": "other",
+                    "rawInput": {},
+                    "_meta": {
+                        "kiro": {
+                            "toolName": "list_intakes",
+                            "mcpServerName": "beehive:beehive-mcp",
+                        }
+                    },
+                }
+            },
+        )
+        client._extract_tool_event(tc)
+        perm = client._build_permission_event(self._permission_msg())
+        assert perm.tool_name == "list_intakes"
+        assert perm.mcp_server_name == "beehive:beehive-mcp"
+
     def test_end_to_end_long_shell_title_passes_validation(self, tmp_path):
         """The full regression: a 400-char shell title validates only because
         is_shell propagated from tool_call → permission → _validate_tool_name."""

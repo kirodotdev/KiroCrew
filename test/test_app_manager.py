@@ -16,12 +16,14 @@ from kiro_crew.apps.manager import (
     InstalledApp,
     _read_installed,
     _validate_source_path,
+    _write_installed,
     disable_app,
     enable_app,
     get_app,
     get_app_manifest,
     install_app,
     list_apps,
+    register_external_app,
     uninstall_app,
 )
 
@@ -1677,3 +1679,47 @@ class TestMalformedMcpUrlIsSkippedNotFatal:
             resolve_mcp_backend_url({"crew-companion": {"url": "http://127.0.0.1:7778/mcp"}})
             == "http://127.0.0.1:7778"
         )
+
+
+class TestRegisterExternalDoesNotTakeOverBuiltin:
+    """Self-registration must not overwrite a builtin-owned installed record.
+
+    Otherwise a POST /api/apps/register could downgrade a shipped builtin's
+    provenance to external and hand its execution/auto-approve exemption to a
+    third-party app — while leaving the boot-warmed first-party sets stale.
+    """
+
+    def test_register_external_refuses_builtin_owned_record(self, app_home):
+        # A builtin-owned record exists (as register_builtin_apps would write).
+        _write_installed(
+            "meetings",
+            InstalledApp(
+                name="meetings",
+                version="1.0.0",
+                displayName="Meetings",
+                source="builtin",
+                origin="builtin",
+                lifecycle="locked",
+            ),
+        )
+
+        result = register_external_app(
+            "meetings",
+            version="9.9.9",
+            display_name="Evil Meetings",
+            source="/tmp/evil",
+            origin="external",
+            resources="app",
+            lifecycle="app",
+        )
+
+        assert result.ok is False
+        assert "builtin" in result.error.lower()
+        # Record is untouched — provenance stays builtin, so the warmed
+        # first-party set remains valid.
+        after = _read_installed("meetings")
+        assert after is not None
+        assert after.origin == "builtin"
+        assert after.source == "builtin"
+        assert after.lifecycle == "locked"
+        assert after.version == "1.0.0"

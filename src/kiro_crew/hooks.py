@@ -12,6 +12,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -404,6 +405,8 @@ class HookManager:
         raw_params: dict | None = None,
         command: str | None = None,
         is_shell: bool = False,
+        mcp_server_name: str = "",
+        mcp_tool_name: str = "",
     ) -> ToolHookResult:
         """Check if a tool should be auto-approved, denied, or handled normally.
 
@@ -442,6 +445,27 @@ class HookManager:
         that always pass a resolved command can leave ``is_shell`` at its
         default; those forwarding an event should pass both the command and the
         event's ``is_shell`` flag.
+
+        ``mcp_server_name`` is the NON-model-authored MCP server identity from
+        the ACP event's ``_meta.kiro.mcpServerName`` (``AcpEvent.mcp_server_name``),
+        set by kiro-cli ONLY for MCP-served tool calls and empty for shell /
+        built-in tools. It is the trusted discriminator "this call was genuinely
+        served by MCP server X" — as opposed to the LLM-authored ``tool_name``
+        title, which a prompt-injected agent can forge (e.g. titling a Bash call
+        ``mcp__<app>:srv__x``). The app-own-server auto-approve keys on THIS, never
+        on the title, so a forged title cannot win an auto-approval. Empty (the
+        default, or a backend that omits ``_meta.kiro``) fails closed: no match.
+
+        ``mcp_tool_name`` is the sibling NON-model-authored tool identity from
+        ``_meta.kiro.toolName`` (``AcpEvent.tool_name``), set by kiro-cli
+        alongside ``mcp_server_name`` for MCP-served calls. It is used to
+        reconstruct the canonical ``mcp__<server>__<tool>`` name and govern the
+        REAL tool before the app-own-server auto-approve — because the ``tool_name``
+        title above is LLM-authored prose (``select_tool_title`` prefers the
+        model's ``description``) and may not carry the canonical form a per-tool
+        MCP policy matches on. Empty (no ``_meta.kiro.toolName``) means the tool
+        cannot be identified for governance, so the own-server auto-approve does
+        NOT fire (fall through to interactive approval — fail-closed).
         """
         # Deny-by-default: a shell tool whose command could not be recovered
         # must not be evaluated on the untrusted title alone — that is the very
@@ -567,6 +591,86 @@ class HookManager:
         )
         if gov_reason:
             return ToolHookResult.deny(gov_reason)
+
+        # App-own MCP server auto-approve — a FIRST-PARTY (builtin) app agent
+        # calling its OWN app-scoped MCP server is intra-app, not a host surface.
+        # A builtin app's declared server is registered under the
+        # ``<app>:<server>`` key (see ``apps/bridges.py``) and IS the gateway's
+        # own shipped code, so it only touches the app's own data — never
+        # fs/network/exec/exfil on the host. Once a shipped app agent stopped
+        # pre-authorizing tools (no template ``allowedTools``, the "no template
+        # pre-authorizes tools" invariant), even those intra-app calls fell
+        # through to an interactive prompt the user could not meaningfully act on
+        # (the app was blocked from talking to itself). Auto-approving them here
+        # restores that UX without re-widening any host grant.
+        #
+        # Keyed on the NON-model-authored ``mcp_server_name`` (the ACP
+        # ``_meta.kiro.mcpServerName``), NEVER on the LLM-authored title: a
+        # prompt-injected agent can title a Bash call ``mcp__<app>:srv__x``, but
+        # kiro-cli only sets ``mcp_server_name`` for a genuine MCP-served call, so
+        # a forged shell/host title carries an empty server name and never
+        # matches (fail-closed). Restricted to builtins on purpose: only a
+        # builtin's server is provably first-party. A THIRD-PARTY app's server is
+        # arbitrary installed code whose internals the gate cannot see, so its
+        # own-server calls are NOT auto-approved here — the OS sandbox it runs
+        # under and the third-party admission gate bound its behavior instead.
+        #
+        # Placed AFTER the always-on deny floor and ``_governance_denial`` so a
+        # ceiling/profile can still deny even a builtin's own server and every
+        # sensitive-path / keystone / exfil deny above still wins; and BEFORE the
+        # interactive fall-through, independent of the Normal/Read/Trust tier
+        # (that tier governs the HOST tools an app agent may reach, not the app
+        # talking to its own server). Generic App Kit contract keyed only on the
+        # ``<app>:<server>`` convention + shipped-manifest provenance — no per-app
+        # special-casing.
+        #
+        # ``_app_owns_mcp_server`` only proves the NAME is ``<app>:``-prefixed;
+        # ``_own_mcp_servers`` (bridges.py) injects app servers into the agent by
+        # reading that prefix from the MUTABLE global MCP config, so a
+        # ``<app>:evil`` entry that landed there (not declared by the app) would
+        # otherwise be trusted. Require the server to be DECLARED in the app's
+        # SHIPPED manifest (``_is_declared_builtin_mcp_server``, an in-memory set
+        # warmed at boot from immutable manifests — same discipline as
+        # ``_BUILTIN_APP_NAMES``) so only a genuinely app-own server auto-approves.
+        if (
+            _app_owns_mcp_server(mcp_server_name, app)
+            and _is_first_party_app(app)
+            and _is_declared_builtin_mcp_server(mcp_server_name)
+        ):
+            # Govern the REAL tool by its TRUSTED _meta.kiro identity before
+            # granting the intra-app auto-approve. ``select_tool_title`` prefers
+            # the model's prose ``description``, so ``tool_name`` (and thus the
+            # ``_governance_denial`` above) may not carry the canonical
+            # ``mcp__server__tool`` a per-tool policy matches on — a ceiling /
+            # profile that denies ONE tool of this server would otherwise be
+            # skipped here and the tool auto-executed. Reconstruct the canonical
+            # title from the NON-model-authored server + tool names (mirroring
+            # the ``mcp__<server>__<tool>`` form ``mcp_title_to_ref`` parses) and
+            # re-check governance. A missing trusted tool name (a backend without
+            # ``_meta.kiro.toolName``, or an uncached permission event) means we
+            # cannot prove WHICH tool this is, so we do NOT auto-approve — fall
+            # through to interactive approval (fail-closed), never silent execute.
+            if mcp_tool_name:
+                canonical_mcp_name = f"mcp__{mcp_server_name}__{mcp_tool_name}"
+                # Re-apply the always-on deny floor to the canonical name too:
+                # the top-of-method ``authority.is_denied`` ran against the prose
+                # title / command, so a configured deny rule (``auto_deny_tools``
+                # or a denied regex) keyed on the canonical ``mcp__server__tool``
+                # would have MISSED — and this auto-approve must never re-admit a
+                # tool the deny floor forbids. Mirrors the governance re-check.
+                deny_reason = authority.is_denied(
+                    canonical_mcp_name,
+                    self._config.auto_deny_tools,
+                    denied_regexes=denied_regexes,
+                )
+                if deny_reason:
+                    return ToolHookResult.deny(deny_reason)
+                gov_reason = _governance_denial(
+                    ctx, canonical_mcp_name, session_key, agent, app, tool_kind, raw_params
+                )
+                if gov_reason:
+                    return ToolHookResult.deny(gov_reason)
+                return ToolHookResult.auto_approve()
 
         # Auto-approve — match against both the original title (preserves
         # "Running: "/"Reading " prefixes) and the normalized name (stripped)
@@ -834,6 +938,116 @@ def _governance_denial(
         except Exception:
             logger.debug("governance degrade audit unavailable", exc_info=True)
         return None
+
+
+def _app_owns_mcp_server(mcp_server_name: str, app: str) -> bool:
+    """True when *mcp_server_name* is *app*'s OWN app-scoped MCP server.
+
+    App-declared MCP servers are registered under the ``<app>:<server>`` key
+    (``apps/bridges.py`` ``_own_mcp_servers``), so the owning app is the segment
+    before the first ``:``.  ``mcp_server_name`` is the trusted, NON-model-authored
+    identity from ``_meta.kiro.mcpServerName`` (``AcpEvent.mcp_server_name``) —
+    NOT the LLM-authored display title — so a forged shell/host title cannot spoof
+    a match: kiro-cli leaves ``mcp_server_name`` empty for non-MCP tools, and an
+    empty value fails closed here.  Comparison is case-insensitive to mirror the
+    governance MCP matcher.  Returns ``False`` for a blank ``app`` (an ordinary
+    user/host turn carries no app identity) and for any server name that is not
+    ``<app>:``-prefixed (host/managed servers such as ``kirocrew-cron`` never
+    match).
+    """
+    if not app or not mcp_server_name:
+        return False
+    owning_app, sep, _rest = mcp_server_name.partition(":")
+    return bool(sep) and owning_app.casefold() == app.casefold()
+
+
+# Canonical ``<app>:<server>`` names DECLARED in shipped builtin manifests,
+# populated ONCE at gateway boot via ``set_builtin_app_mcp_servers`` (see the
+# dashboard startup). Parallel to ``_BUILTIN_APP_NAMES`` and kept as a plain
+# module global for the same reason — the PreToolUse gate does ZERO filesystem
+# I/O; the shipped-manifest scan happens once at boot, off the event loop. Names
+# are casefolded on ingest so the gate lookup is a pure set membership test.
+# Empty until warmed → fail-closed: an unrecognised server name never
+# auto-approves. This is what stops an undeclared ``<app>:evil`` entry that
+# landed in the MUTABLE global MCP config from being trusted just because its
+# prefix matches a first-party app.
+_BUILTIN_APP_MCP_SERVERS: frozenset[str] = frozenset()
+
+
+def set_builtin_app_mcp_servers(names: Iterable[str]) -> None:
+    """Install the set of shipped-manifest-declared ``<app>:<server>`` names.
+
+    Called once at gateway boot with the names from
+    ``apps.execution.builtin_app_mcp_servers`` (which enumerates the same
+    immutable manifest sources as ``builtin_app_names``). Dependency-inverted
+    like ``set_builtin_app_names`` so ``hooks`` never imports ``apps`` and the
+    gate never touches the filesystem. Idempotent; a later call replaces the set.
+    """
+    global _BUILTIN_APP_MCP_SERVERS
+    _BUILTIN_APP_MCP_SERVERS = frozenset(
+        n.casefold() for n in names if isinstance(n, str) and n
+    )
+
+
+def _is_declared_builtin_mcp_server(mcp_server_name: str) -> bool:
+    """True when *mcp_server_name* is a server a shipped builtin manifest declares.
+
+    Pure in-memory, case-insensitive membership test against
+    ``_BUILTIN_APP_MCP_SERVERS`` (warmed at boot from immutable manifests). The
+    app-own-server auto-approve requires this in addition to prefix ownership so
+    a ``<app>:``-prefixed entry the app never declared (e.g. one injected into
+    the mutable global MCP config) cannot win an auto-approval. Fail-closed
+    before the set is warmed.
+    """
+    return bool(mcp_server_name) and mcp_server_name.casefold() in _BUILTIN_APP_MCP_SERVERS
+
+
+# Builtin (first-party) app names, populated ONCE at gateway boot via
+# ``set_builtin_app_names`` (see the dashboard startup). Kept as a plain
+# module global — NOT derived on the per-tool-call path — so the PreToolUse gate
+# does ZERO filesystem I/O: scanning the shipped-manifest tree on the event loop
+# (even once, before an lru_cache warmed) would stall every gateway task. Names
+# are casefolded on ingest so the gate lookup is a pure set membership test.
+# Empty until warmed → fail-closed: an app whose provenance is not yet known is
+# treated as third-party and its own-server calls simply prompt (never wrongly
+# auto-approved). Boot runs on the startup thread, well before any tool call.
+_BUILTIN_APP_NAMES: frozenset[str] = frozenset()
+
+
+def set_builtin_app_names(names: Iterable[str]) -> None:
+    """Install the set of first-party (builtin) app names for the gate.
+
+    Called once at gateway boot with the names discovered from the shipped
+    manifests (``apps.execution.builtin_app_names``, which enumerates the same
+    sources as ``shipped_builtin_app_root`` — core + the active edition). The
+    dependency is
+    inverted on purpose — boot code (which already imports ``apps``) pushes the
+    names in, so ``hooks`` never imports ``apps`` and the gate never touches the
+    filesystem. Idempotent; a later call replaces the set.
+    """
+    global _BUILTIN_APP_NAMES
+    _BUILTIN_APP_NAMES = frozenset(n.casefold() for n in names if isinstance(n, str) and n)
+
+
+def _is_first_party_app(app: str) -> bool:
+    """True when *app* is a shipped builtin (first-party gateway code).
+
+    Only a BUILTIN app's MCP server is provably the gateway's own shipped code,
+    so only then does the app-own-server auto-approve's justification — "the
+    server is the app's own declared code and only touches the app's own data,
+    never a host surface" — actually hold.  A THIRD-PARTY installed app's server
+    is arbitrary operator-installed code whose internals the PreToolUse gate
+    cannot see (it reads files with plain OS syscalls in its own process, which
+    the gate never observes), so its own-server calls are NOT blanket
+    auto-approved here — they still surface for interactive approval / governance.
+    What bounds a server's internal behavior is the OS sandbox it runs under plus
+    the third-party install/admission gate, not this UX auto-approve.
+
+    Pure in-memory lookup against ``_BUILTIN_APP_NAMES`` (populated at boot from
+    immutable shipped-manifest provenance) — NO filesystem I/O on the event loop.
+    Fail-closed before the set is warmed.
+    """
+    return bool(app) and app.casefold() in _BUILTIN_APP_NAMES
 
 
 def _cu_read_only_auto_approve(tool_name: str) -> bool:

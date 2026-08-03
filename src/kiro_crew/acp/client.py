@@ -1359,6 +1359,16 @@ class AcpClient:
         # the later permission_request event (which carries no kind) can inherit
         # the canonical shell signal. Mirrors _tool_call_inputs lifecycle.
         self._tool_call_is_shell: dict[str, bool] = {}
+        # Map toolCallId → trusted MCP server name (_meta.kiro.mcpServerName),
+        # cached from the tool_call notification so the later permission_request
+        # event (which carries no _meta) can inherit it — the signal the
+        # app-own-server auto-approve keys on. Mirrors _tool_call_is_shell.
+        self._tool_call_mcp_server: dict[str, str] = {}
+        # Map toolCallId → trusted tool name (_meta.kiro.toolName), cached like
+        # _tool_call_mcp_server so the permission_request event can rebuild the
+        # canonical mcp__<server>__<tool> for per-tool governance in the
+        # app-own-server auto-approve.
+        self._tool_call_tool_name: dict[str, str] = {}
         # Structured raw tool params (rawInput dict) keyed by toolCallId, cached
         # from the ToolCall notification so the later request_permission event —
         # which carries only a truncated title — can recover the real path/url
@@ -3110,6 +3120,8 @@ class AcpClient:
         )
         self._tool_call_inputs.clear()
         self._tool_call_is_shell.clear()
+        self._tool_call_mcp_server.clear()
+        self._tool_call_tool_name.clear()
         self._tool_call_params.clear()
         # Reset the per-turn observed-tool-call bookkeeping (see __init__).
         self._observed_tool_calls.clear()
@@ -4082,6 +4094,12 @@ class AcpClient:
             is_shell = _is_shell_kind(kind)
             if tool_call_id:
                 self._tool_call_is_shell[tool_call_id] = is_shell
+                # Same lifecycle as is_shell: cache the trusted MCP server
+                # identity so the later permission event can inherit it.
+                self._tool_call_mcp_server[tool_call_id] = _kiro_mcp_server_name(update)
+                # Cache the trusted tool name too, so the permission event can
+                # rebuild mcp__<server>__<tool> for per-tool governance.
+                self._tool_call_tool_name[tool_call_id] = _kiro_tool_name(update)
             title = _select_tool_title(title, raw_input) or ""
             if title:
                 title, _ = redact_exfiltration_urls(title)
@@ -4477,6 +4495,18 @@ class AcpClient:
             tool_call_id=tool_call_id,
             raw_tool_params=raw_params,
             is_shell=is_shell,
+            # Trusted MCP server identity recovered from the preceding tool_call
+            # (the permission payload has no _meta). .get() mirrors the is_shell
+            # cache-read; empty on a miss (fail-closed for app-own auto-approve).
+            mcp_server_name=(
+                self._tool_call_mcp_server.get(tool_call_id, "") if tool_call_id else ""
+            ),
+            # Trusted tool name recovered from the preceding tool_call, mirroring
+            # mcp_server_name — lets the app-own-server auto-approve govern the
+            # canonical mcp__<server>__<tool> on this permission path.
+            tool_name=(
+                self._tool_call_tool_name.get(tool_call_id, "") if tool_call_id else ""
+            ),
         )
 
     def _backfill_context_window(self, pct: float) -> None:

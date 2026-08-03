@@ -275,6 +275,16 @@ class AcpSessionHandle:
         # raw_tool_params for the governance keystone (sensitive-path /
         # write-protected-config) checks. Mirrors AcpClient's _tool_call_params.
         self._tool_call_raw_params: dict[str, dict] = {}
+        # toolCallId -> trusted MCP server name (_meta.kiro.mcpServerName) cached
+        # from the tool_call notification so the later permission_request event
+        # can carry mcp_server_name (empty on the permission payload). This is
+        # what lets hooks.on_tool_call's app-own-server auto-approve fire on the
+        # permission path. Mirrors _tool_call_is_shell.
+        self._tool_call_mcp_server: dict[str, str] = {}
+        # Trusted tool name (_meta.kiro.toolName) cached like _tool_call_mcp_server
+        # so the permission event can rebuild mcp__<server>__<tool> for per-tool
+        # governance in the app-own-server auto-approve.
+        self._tool_call_tool_name: dict[str, str] = {}
         # Server names for which a mid-session MCP OAuth banner was already
         # emitted, so we don't spam duplicates. Discarded on the matching
         # server_initialized / server_init_failure so a later token-expiry
@@ -379,6 +389,8 @@ class AcpSessionHandle:
         self._tool_call_inputs.clear()
         self._tool_call_is_shell.clear()
         self._tool_call_raw_params.clear()
+        self._tool_call_mcp_server.clear()
+        self._tool_call_tool_name.clear()
         self._permission_options.clear()
 
         # Drain frames left over from a prior abandoned turn. The cancel-unacked
@@ -1644,6 +1656,8 @@ class AcpSessionHandle:
             tool_input_cache=self._tool_call_inputs,
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_raw_params,
+            mcp_server_name_cache=self._tool_call_mcp_server,
+            tool_name_cache=self._tool_call_tool_name,
         )
         if recorded is not None and event.request_id != "":
             self._permission_options[event.request_id] = recorded
@@ -1694,6 +1708,8 @@ class AcpSessionHandle:
             tool_input_cache=self._tool_call_inputs,
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_raw_params,
+            mcp_server_name_cache=self._tool_call_mcp_server,
+            tool_name_cache=self._tool_call_tool_name,
         )
         for ev in events:
             if ev.kind == EVENT_TEXT_CHUNK:
