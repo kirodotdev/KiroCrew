@@ -781,7 +781,8 @@ class TestTransportAuth:
         assert DISCORD_CAPABILITIES.streaming is True
         assert DISCORD_CAPABILITIES.edit is True
         assert DISCORD_CAPABILITIES.reactions is True
-        assert DISCORD_CAPABILITIES.files is True
+        assert DISCORD_CAPABILITIES.files_inbound is True
+        assert DISCORD_CAPABILITIES.files_outbound is False  # no upload path exists
         assert DISCORD_CAPABILITIES.threads is True
 
 

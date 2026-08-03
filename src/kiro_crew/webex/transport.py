@@ -40,17 +40,28 @@ logger = logging.getLogger(__name__)
 DispatchFn = Callable[[WebexInbound], Awaitable[None]]
 
 # Webex capabilities: no streaming (10-edit cap per message), but edits exist
-# (budgeted status placeholder), no tappable chips (max_buttons=0 -> the
-# renderer drops [OPTIONS:] trailers), and proactive send is fine (a bot may
-# post to a room / person at any time).
+# (budgeted status placeholder), no tappable chips (max_buttons=0 records the
+# fact; the renderer's [OPTIONS:] drop is unconditional and does not read it),
+# and proactive send is fine (a bot may post to a room / person at any time).
+#
+# max_message_chars is a CHARACTER count, but Webex caps messages in UTF-8
+# BYTES (WEBEX_MAX_TEXT = 7000 bytes; see chunk_utf8's docstring on why the
+# neutral char chunker is unsafe here). This previously declared the raw byte
+# limit as a char count — a caller chunking 7000 CHARS of CJK produces up to
+# 28000 bytes, and WebexClient.send_message tail-TRUNCATES the overflow
+# (silent data loss on the dashboard mirror leg, the one live consumer of
+# this field). Declare the worst-case-safe char count instead: 4 bytes/char.
+WEBEX_SAFE_MESSAGE_CHARS = WEBEX_MAX_TEXT // 4
+
 WEBEX_CAPABILITIES = TransportCapabilities(
     streaming=False,
     edit=True,
     reactions=False,
-    files=False,
+    files_inbound=False,
+    files_outbound=False,
     rich_blocks=False,
     threads=False,
-    max_message_chars=WEBEX_MAX_TEXT,
+    max_message_chars=WEBEX_SAFE_MESSAGE_CHARS,
     max_buttons=0,
     supports_proactive_send=True,
 )

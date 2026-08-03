@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew.webex.client import WEBEX_MAX_TEXT
 from kiro_crew.webex.renderer import _TOOL_EDIT_BUDGET, WebexRenderer, _strip_options
 from kiro_crew.webex.transport import WEBEX_CAPABILITIES
 
@@ -104,7 +105,7 @@ class TestFinalAnswer:
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
-        await r.on_text_chunk("x" * (WEBEX_CAPABILITIES.max_message_chars + 100))
+        await r.on_text_chunk("x" * (WEBEX_MAX_TEXT + 100))
         await r.on_done()
         # First chunk via edit, overflow as a follow-up message.
         assert len(c.edits) == 1
@@ -208,7 +209,7 @@ class TestDeliveryFailure:
         c = DeadClient()
         r = _renderer(c)
         await r.on_turn_start()
-        await r.on_text_chunk("x" * (WEBEX_CAPABILITIES.max_message_chars + 100))
+        await r.on_text_chunk("x" * (WEBEX_MAX_TEXT + 100))
         await r.on_done()
         # Only the placeholder attempt + ONE first-chunk send attempt — the
         # 100-char follow-up was never attempted.
@@ -237,7 +238,7 @@ class TestDeliveryFailure:
         r = _renderer(c)
         await r.on_turn_start()
         # 3 chunks: first via edit, then two follow-ups; the first follow-up fails.
-        await r.on_text_chunk("x" * (2 * WEBEX_CAPABILITIES.max_message_chars + 100))
+        await r.on_text_chunk("x" * (2 * WEBEX_MAX_TEXT + 100))
         await r.on_done()
         followups = [m for (conv, m) in c.sent if conv == "ROOM" and m != "🤔 Thinking…"]
         assert len(followups) == 1  # second follow-up never attempted

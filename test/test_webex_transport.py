@@ -8,7 +8,7 @@ import pytest
 
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.webex.client import WebexInbound
-from kiro_crew.webex.transport import WEBEX_CAPABILITIES, WebexTransport
+from kiro_crew.webex.transport import WEBEX_CAPABILITIES, WEBEX_SAFE_MESSAGE_CHARS, WebexTransport
 
 
 class FakeClient:
@@ -47,7 +47,7 @@ class TestCapabilities:
         assert cap.edit is True
         assert cap.max_buttons == 0  # no tappable chips
         assert cap.supports_proactive_send is True
-        assert cap.max_message_chars == 7000
+        assert cap.max_message_chars == WEBEX_SAFE_MESSAGE_CHARS
 
 
 class TestAuthorize:
