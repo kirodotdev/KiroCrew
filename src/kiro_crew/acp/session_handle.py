@@ -291,6 +291,9 @@ class AcpSessionHandle:
         # retry can re-surface. Instance-scoped (NOT reset per turn) — mirrors
         # AcpClient._oauth_emitted_servers.
         self._oauth_emitted_servers: set[str] = set()
+        # OAuth requests collected by drain_init(). Dashboard startup drains
+        # this list through AcpSessionProvider after create_session returns.
+        self._pending_oauth_requests: list[dict[str, str]] = []
         # JSON-RPC request id -> {"once","always","reject"} optionId map, so
         # approve_tool / reject_tool echo the exact ids the agent advertised
         # (kiro "allow_once"/"allow_always"; claude-agent-acp "allow"/"reject").
@@ -1330,39 +1333,13 @@ class AcpSessionHandle:
                             text=redact_text(su_text),
                         )
                 elif action == "mcp_oauth_request":
-                    params = msg.params or {}
-                    server_name = str(params.get("serverName") or params.get("name") or "")
-                    oauth_url = str(params.get("oauthUrl") or params.get("url") or "")
-                    # Parity with AcpClient (client.py mcp_oauth_request): reject
-                    # unsafe-scheme URLs BEFORE recording dedupe (so a later safe
-                    # retry still gets through), drop empty serverName (can't
-                    # correlate the later initialized/failure discard), and dedupe
-                    # per server so token-expiry retries don't spam banners. MCP
-                    # server names/URLs can be LLM-influenced, so the scheme check
-                    # is defense-in-depth.
-                    if not _is_safe_oauth_url(oauth_url):
-                        if oauth_url:
-                            logger.warning(
-                                "ACP: refusing unsafe mid-session MCP OAuth URL for %s",
-                                server_name or "(unknown)",
-                            )
+                    request = self._accept_oauth_request(msg)
+                    if request is None:
                         continue
-                    if not server_name:
-                        logger.warning(
-                            "ACP: dropping mid-session MCP OAuth request with empty serverName"
-                        )
-                        continue
-                    if server_name in self._oauth_emitted_servers:
-                        logger.debug(
-                            "ACP: dropping duplicate mid-session MCP OAuth request for %s",
-                            server_name,
-                        )
-                        continue
-                    self._oauth_emitted_servers.add(server_name)
                     yield AcpEvent(
                         kind=EVENT_MCP_OAUTH_REQUEST,
-                        server_name=server_name,
-                        oauth_url=oauth_url,
+                        server_name=request["serverName"],
+                        oauth_url=request["oauthUrl"],
                     )
                 elif action == "mcp_server_initialized":
                     params = msg.params or {}
@@ -1582,6 +1559,33 @@ class AcpSessionHandle:
                 "SEL audit failed for tool_interrupted at %s", site, exc_info=True
             )
 
+    def _accept_oauth_request(self, msg: JsonRpcMessage) -> dict[str, str] | None:
+        """Validate and deduplicate one MCP OAuth notification."""
+        params = msg.params if isinstance(msg.params, dict) else {}
+        server_name = str(params.get("serverName") or params.get("name") or "")
+        oauth_url = str(params.get("oauthUrl") or params.get("url") or "")
+        if not _is_safe_oauth_url(oauth_url):
+            if oauth_url:
+                logger.warning(
+                    "ACP: refusing unsafe MCP OAuth URL for %s",
+                    server_name or "(unknown)",
+                )
+            return None
+        if not server_name:
+            logger.warning("ACP: dropping MCP OAuth request with empty serverName")
+            return None
+        if server_name in self._oauth_emitted_servers:
+            logger.debug("ACP: dropping duplicate MCP OAuth request for %s", server_name)
+            return None
+        self._oauth_emitted_servers.add(server_name)
+        return {"serverName": server_name, "oauthUrl": oauth_url}
+
+    def pop_pending_oauth_requests(self) -> list[dict[str, str]]:
+        """Drain OAuth requests captured while this session initialized."""
+        pending = list(self._pending_oauth_requests)
+        self._pending_oauth_requests.clear()
+        return pending
+
     async def drain_init(
         self,
         duration: float = _MCP_DRAIN_DURATION,
@@ -1595,7 +1599,8 @@ class AcpSessionHandle:
         turn's event stream and gives MCP servers a brief window to report in
         before the first prompt races ahead. Bounded by ``duration`` with early
         exit after ``idle_exit`` seconds of silence. ``config_option_update``
-        frames refresh cached configOptions; everything else is logged/discarded.
+        frames refresh cached configOptions; OAuth requests remain drainable via
+        ``pop_pending_oauth_requests``; everything else is logged/discarded.
         Best-effort — never raises.
         """
         deadline = time.monotonic() + duration
@@ -1626,6 +1631,10 @@ class AcpSessionHandle:
                         if isinstance(cfg, list):
                             self._config_options = cfg
                             self._sync_effort_levels()
+                elif action == "mcp_oauth_request":
+                    request = self._accept_oauth_request(msg)
+                    if request is not None:
+                        self._pending_oauth_requests.append(request)
                 elif action == "mcp_server_init_failure":
                     p = msg.params or {}
                     logger.info(

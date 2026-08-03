@@ -209,7 +209,19 @@ Step 5 drains MCP server init notifications (both after `session/load` and
 
 ### Notification Buffering
 
-`_wait_for_response()` buffers ALL JSON-RPC notifications in `_mcp_notifications` list instead of discarding them. `_drain_notifications()` processes buffered notifications first, then reads any remaining from stdout. This ensures no MCP `server_initialized` notifications are lost during `session/new` — all servers load reliably within ~2.4s.
+`AcpClient._wait_for_response()` buffers all JSON-RPC notifications in
+`_mcp_notifications` instead of discarding them. `_drain_notifications()`
+processes buffered notifications first, then reads any remaining from stdout.
+
+The multiplexed `AcpRuntime` has the same guarantee for session-scoped OAuth
+requests even though it cannot register the session queue until `session/new`
+or `session/load` returns the session id. While either request is in flight, the
+runtime stages matching `_kiro.dev/mcp/oauth_request` notifications in a bounded
+buffer, transfers them into the new handle's queue once the id is known, and
+`AcpSessionHandle.drain_init()` retains them for
+`pop_pending_oauth_requests()`. Staging is cleared when the last concurrent init
+finishes, including failure paths, so a stale approval URL cannot leak into a
+later session.
 
 ## Key APIs
 
@@ -257,7 +269,8 @@ When kiro-cli needs OAuth authentication for an MCP server, `AcpClient` surfaces
 
 **Persistence**: Role-aware redaction (`_redact_meta_for_role`) preserves `oauth_url` for `mcp_oauth` messages so the Authorize link survives history rehydrate, while still scrubbing unsafe schemes on the read path.
 
-**API**: `pop_pending_oauth_requests()` drains requests captured during init (called after `ensure_ready()`).
+**API**: `pop_pending_oauth_requests()` drains requests captured during init on
+both `AcpClient` and `AcpSessionProvider` (called after `ensure_ready()`).
 
 **Remote-gateway callback relay**: The Connections waiting card accepts the failed browser return address when the browser and gateway run on different machines. `POST /api/mcp/oauth/relay` sends that address from the gateway host to kiro-cli's local callback listener. The handler is intentionally not a generic proxy: it accepts only plain-HTTP IP-literal loopback URLs (`127.0.0.0/8` or `::1`) with an explicit port and exactly one non-empty `code` value; it rejects userinfo, fragments, hostnames, non-loopback addresses, oversized input, and does not follow redirects. The callback URL and authorization code are never logged or returned; SEL records only the provider slug and completed/failed outcome.
 

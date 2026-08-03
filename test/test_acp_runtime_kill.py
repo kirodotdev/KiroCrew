@@ -9,6 +9,7 @@ every sweep and leak until reboot.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from unittest.mock import MagicMock
 
 import pytest
@@ -21,6 +22,7 @@ def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
     r = rt.AcpRuntime.__new__(rt.AcpRuntime)
     r._dead = False
     r._pending_requests = {}
+    r._pending_init_notifications = deque()
     r._routed_requests = {}
     r._session_queues = {}
     r._stderr_lines = []

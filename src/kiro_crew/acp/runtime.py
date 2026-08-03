@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,7 @@ from kiro_crew.acp.session_handle import (
 )
 from kiro_crew.acp.types import (
     ACP_CLIENT_CAPABILITIES,
+    METHOD_MCP_OAUTH_REQUEST,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
     METHOD_SESSION_TERMINATE,
@@ -86,6 +88,7 @@ __all__ = [
 _STDOUT_BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB
 _INIT_TIMEOUT = 30.0
 _REQUEST_TIMEOUT = 30.0
+_INIT_NOTIFICATION_BUFFER_LIMIT = 100
 # Teardown must be snappy: a session is usually terminated on a hot path
 # (background task done, subagent reaped). kiro-cli's terminate handler responds
 # as soon as it enqueues the eviction (the actual shutdown runs in its actor
@@ -363,6 +366,16 @@ class AcpRuntime:
         # (e.g. session/prompt response signals turn completion and must reach the session)
         self._routed_requests: dict[int, str] = {}
         self._session_queues: dict[str, asyncio.Queue[JsonRpcMessage | None]] = {}
+        # OAuth notifications can precede the session/new or session/load
+        # response that reveals which queue to register. Stage only those
+        # frames while an init is active, then transfer the matching session's
+        # frames into its queue. The bounded buffer is cleared when the last
+        # concurrent init finishes so an abandoned URL cannot reach a later
+        # session that happens to reuse the same id.
+        self._session_inits_in_flight = 0
+        self._pending_init_notifications: deque[JsonRpcMessage] = deque(
+            maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT
+        )
         self._next_id = 1
         self._initialized = False
         # Whether kiro-cli advertised session/load support in its initialize
@@ -862,6 +875,13 @@ class AcpRuntime:
                     queue = self._session_queues.get(session_id)
                     if queue is not None:
                         await queue.put(msg)
+                    elif self._session_inits_in_flight and msg.is_method(
+                        METHOD_MCP_OAUTH_REQUEST
+                    ):
+                        # session/new can emit OAuth before its response. The
+                        # response is what gives create_session the id needed to
+                        # register this queue, so retain the frame until then.
+                        self._pending_init_notifications.append(msg)
                     else:
                         # Counted, not logged per frame: this is the measured
                         # flood (transcript replay during session/load, plus any
@@ -936,6 +956,7 @@ class AcpRuntime:
             if not future.done():
                 future.set_exception(exc)
         self._pending_requests.clear()
+        self._pending_init_notifications.clear()
         # Also drop routed-request correlations: on death no reader will pop
         # them, and if a session is never destroyed the entry would otherwise
         # linger. unregister_session() also sweeps these per-session; this is
@@ -1097,6 +1118,24 @@ class AcpRuntime:
 
     # ── Session Management ──
 
+    def _finish_session_init(self, session_id: str) -> list[JsonRpcMessage]:
+        """Take staged init frames for one session and close its init scope."""
+        matched: list[JsonRpcMessage] = []
+        retained: deque[JsonRpcMessage] = deque(maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT)
+        for msg in self._pending_init_notifications:
+            params = msg.params if isinstance(msg.params, dict) else {}
+            if session_id and str(params.get("sessionId") or "") == session_id:
+                matched.append(msg)
+            else:
+                retained.append(msg)
+        self._pending_init_notifications = retained
+        self._session_inits_in_flight -= 1
+        if self._session_inits_in_flight == 0:
+            # Anything unmatched belongs to a failed/abandoned init. Never let
+            # it survive into the next session creation attempt.
+            self._pending_init_notifications.clear()
+        return matched
+
     async def create_session(
         self,
         cwd: str | Path | None = None,
@@ -1120,15 +1159,21 @@ class AcpRuntime:
             mcp_servers=mcp_servers,
         )
 
-        resp = await self._send_and_await(METHOD_SESSION_NEW, params)
-
-        session_id = resp.get("sessionId")
-        if not session_id:
-            raise AcpRuntimeError(f"session/new did not return sessionId: {resp}")
+        self._session_inits_in_flight += 1
+        session_id = ""
+        try:
+            resp = await self._send_and_await(METHOD_SESSION_NEW, params)
+            session_id = str(resp.get("sessionId") or "")
+            if not session_id:
+                raise AcpRuntimeError(f"session/new did not return sessionId: {resp}")
+        finally:
+            buffered_init = self._finish_session_init(session_id)
 
         # Register session queue
         queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
         self._session_queues[session_id] = queue
+        for msg in buffered_init:
+            queue.put_nowait(msg)
 
         handle = AcpSessionHandle(
             session_id=session_id,
@@ -1191,12 +1236,20 @@ class AcpRuntime:
             "mcpServers": [],  # kiro-cli gets its servers via --agent
             "_meta": {"_kiro.dev/session_file": session_file},
         }
-        resp = await self._send_and_await(METHOD_SESSION_LOAD, load_params)
+        self._session_inits_in_flight += 1
+        loaded_session_id = ""
+        try:
+            resp = await self._send_and_await(METHOD_SESSION_LOAD, load_params)
 
-        # A genuine resume echoes "modes" in the response (same signal AcpClient
-        # keys on). Anything else means load did not actually restore state.
-        if "modes" not in resp:
-            raise AcpRuntimeError(f"session/load did not resume session {resume_sid}: {resp}")
+            # A genuine resume echoes "modes" in the response (same signal AcpClient
+            # keys on). Anything else means load did not actually restore state.
+            if "modes" not in resp:
+                raise AcpRuntimeError(
+                    f"session/load did not resume session {resume_sid}: {resp}"
+                )
+            loaded_session_id = resume_sid
+        finally:
+            buffered_init = self._finish_session_init(loaded_session_id)
 
         # Register the queue AFTER _send_and_await returns. During session/load
         # kiro-cli replays the full prior transcript on stdout; without a
@@ -1207,6 +1260,8 @@ class AcpRuntime:
         # queue, so this reorder is safe.
         queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
         self._session_queues[resume_sid] = queue
+        for msg in buffered_init:
+            queue.put_nowait(msg)
 
         handle = AcpSessionHandle(
             session_id=resume_sid,

@@ -40,6 +40,7 @@ from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_TEXT_CHUNK,
     METHOD_COMMANDS_EXECUTE,
+    METHOD_MCP_OAUTH_REQUEST,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
     METHOD_SESSION_TERMINATE,
@@ -3120,6 +3121,88 @@ async def test_create_session_registers_queue_on_success(monkeypatch):
     handle = await rt.create_session(cwd="/w", agent="kirocrew")
     assert handle.session_id == "sid-ok"
     assert "sid-ok" in rt._session_queues
+
+
+@pytest.mark.asyncio
+async def test_create_session_buffers_oauth_emitted_before_response():
+    """OAuth emitted during session/new survives until the provider can drain it."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    rt, reader, _ = _make_runtime()
+    reader_task = await _start_reader(rt)
+    create_task = asyncio.create_task(rt.create_session(cwd="/w"))
+    try:
+        await asyncio.sleep(0)
+        request_id = next(iter(rt._pending_requests))
+        oauth_url = "https://mcp.linear.app/authorize?client_id=shared"
+        _feed(
+            reader,
+            {
+                "method": METHOD_MCP_OAUTH_REQUEST,
+                "params": {
+                    "sessionId": "sid-new",
+                    "serverName": "linear",
+                    "oauthUrl": oauth_url,
+                },
+            },
+        )
+        _feed(reader, {"id": request_id, "result": {"sessionId": "sid-new"}})
+
+        handle = await asyncio.wait_for(create_task, timeout=3.0)
+        provider = AcpSessionProvider(handle, rt)
+        assert provider.pop_pending_oauth_requests() == [
+            {"serverName": "linear", "oauthUrl": oauth_url}
+        ]
+        assert provider.pop_pending_oauth_requests() == []
+    finally:
+        if not create_task.done():
+            create_task.cancel()
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
+async def test_failed_session_init_oauth_does_not_leak_to_reused_id():
+    """A failed init cannot leave an approval URL for a later shared session."""
+    rt, reader, _ = _make_runtime()
+    reader_task = await _start_reader(rt)
+    failed_task = asyncio.create_task(rt.create_session(cwd="/w"))
+    fresh_task = None
+    try:
+        await asyncio.sleep(0)
+        failed_request_id = next(iter(rt._pending_requests))
+        _feed(
+            reader,
+            {
+                "method": METHOD_MCP_OAUTH_REQUEST,
+                "params": {
+                    "sessionId": "sid-reused",
+                    "serverName": "linear",
+                    "oauthUrl": "https://mcp.linear.app/authorize?client_id=stale",
+                },
+            },
+        )
+        _feed(
+            reader,
+            {
+                "id": failed_request_id,
+                "error": {"code": -32603, "message": "session init failed"},
+            },
+        )
+        with pytest.raises(AcpRuntimeError, match="session init failed"):
+            await asyncio.wait_for(failed_task, timeout=3.0)
+        assert not rt._pending_init_notifications
+
+        fresh_task = asyncio.create_task(rt.create_session(cwd="/w"))
+        await asyncio.sleep(0)
+        fresh_request_id = next(iter(rt._pending_requests))
+        _feed(reader, {"id": fresh_request_id, "result": {"sessionId": "sid-reused"}})
+        handle = await asyncio.wait_for(fresh_task, timeout=3.0)
+        assert handle.pop_pending_oauth_requests() == []
+    finally:
+        for task in (failed_task, fresh_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await _stop_reader(reader_task)
 
 
 # ── Drift-parity fixes (AcpRuntime ↔ AcpClient): #1-#4 + #5b ──

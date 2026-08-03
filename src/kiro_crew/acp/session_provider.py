@@ -524,6 +524,10 @@ class AcpSessionProvider(LLMProvider):
         """Models advertised by the backend."""
         return self._handle.available_models
 
+    def pop_pending_oauth_requests(self) -> list[dict[str, str]]:
+        """Drain OAuth requests captured while the shared session initialized."""
+        return self._handle.pop_pending_oauth_requests()
+
     def get_valid_effort_levels(self) -> list[str]:
         """Valid effort levels from config options."""
         return self._handle.get_valid_effort_levels()
