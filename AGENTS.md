@@ -622,6 +622,63 @@ should always use the MCP tool equivalents.
 - **Do NOT** add regex to match NL variants — the LLM handles NL interpretation
 - **`kirocrew computer call` is the one deliberate "no MCP twin" row.** It is not a capability — it is a human debug/repro harness that runs the ten existing `computer_*` tools through the same gated chokepoint (optionally a JSON array of them in ONE process, so `element_index` values stay resolvable). The MCP-first rule exists so the model gets a structured tool instead of shelling out, and the model already has all ten. A tool that runs other tools would let a model launder one per-call gate decision into many — so do NOT add `computer_call`.
 
+#### IMPORTANT: MCP Tools MUST Be Stateless
+
+**A new `kirocrew-core` / `kirocrew-cron` tool MUST NOT keep per-caller or
+per-session state in the MCP-server process. Resolve the caller's identity on
+every call and keep the authoritative state in the gateway.**
+
+**Why (the shared-backend invariant).** The managed MCP servers are long-lived
+stdio subprocesses (`kirocrew mcp-core` / `mcp-cron`), and **one server process
+serves many sessions**: in the pooled topology a single warm backend is reused
+across sessions, and a sub-agent spawned via `spawn_run` runs *inside the parent
+slot's process tree* and talks to the same MCP server. So anything the process
+"remembers" is shared by every session and sub-agent that touches it. Two
+concrete failure modes follow:
+
+1. **Identity is not the process — it is the call.** `KIROCREW_SESSION_KEY` (and
+   `os.getppid()`) identify the *process*, which is "wrong-by-construction in a
+   shared backend (one process, many sessions)" — the warm pool spawns with an
+   empty key, and sub-agents inherit the parent's tree. Resolve identity per call
+   via `_resolve_session_key()` / `_resolve_session_key_strict()` in `mcp_core.py`,
+   which prefer the **gateway-injected caller context** (`current_caller()`) that
+   gatewayd stamps on every forwarded frame after stripping client-forged
+   `kirocrew.caller` blocks.
+   - Use **`_resolve_session_key_strict()` for any tool that mutates or targets a
+     specific session** (post to a slot, change its state, deliver a callback). It
+     drops the `/proc` ancestor walk on purpose: a sub-agent walking ancestors
+     resolves to its *parent* slot and would mutate the wrong conversation. It
+     accepts only the gateway caller context, the injected env var, or an
+     **HMAC-verified** signed PID sidecar.
+   - The lenient `_resolve_session_key()` (which still walks ancestors) is only for
+     read-only/telemetry callers where misattribution is harmless.
+
+2. **State belongs in the gateway, not the tool.** The tool should be a thin
+   forwarder: resolve the session, then `POST` to a gateway HTTP endpoint that
+   owns the state (typically in `DashboardState`), addressed by session key plus a
+   per-request id — and block on that round-trip if the tool needs a result. This
+   is exactly what **`ask_question`** does (the canonical example, and the tool the
+   maintainer rewrote to be stateless): the pending future lives in `DashboardState`
+   keyed by `slot` + `ask_id`; the MCP tool holds nothing, it strict-resolves the
+   session and POSTs `/api/ask-question`, and the answer is routed back by
+   `ask_id`. A stateful version — parking the pending question in a module global
+   and trusting env-var identity — would hand the answer to whichever session the
+   shared process last saw, and let a sub-agent's card land in the parent slot. See
+   `src/kiro_crew/docs/agent-questions.md` and `docs/mcp-architecture.md`.
+
+**Process-level caches are the one allowed exception, and only when
+caller-agnostic.** A module-level cache is fine when it is keyed on an *external*
+signature and identical for every caller — e.g. `_KNOWLEDGE_CACHE` in
+`mcp_core.py` is keyed on the knowledge-DB/config file signature and shared safely
+across calls. Never key a cache (or any retained object) on caller identity,
+session, or "the last request I saw".
+
+**Checklist for a new tool:** no module-global holds per-call/per-session data ·
+identity comes from `_resolve_session_key[_strict]()`, never a bare env read ·
+mutating/targeted tools use the **strict** resolver · durable state lives behind a
+gateway endpoint keyed by session · the tool behaves identically whether it is the
+only caller or one of many sharing the backend.
+
 #### Project-Level Configuration
 
 Agent config and skills live in top-level project directories for easy editing without code changes:
