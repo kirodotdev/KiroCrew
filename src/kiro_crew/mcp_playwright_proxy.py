@@ -582,6 +582,108 @@ def _write_message_to_subprocess(stream, msg: dict[str, Any]) -> None:
 _PENDING_REQUESTS: dict[Any, dict[str, Any]] = {}
 
 
+# Slightly longer than the gateway's own default command timeout (15s) so the
+# gateway's 504 is what surfaces, rather than this side giving up first.
+_NATIVE_CALL_TIMEOUT_S = 20.0
+
+
+def _gateway_command_url() -> str:
+    """Loopback gateway endpoint that runs one op on a NATIVE browser panel."""
+    port = os.environ.get("KIROCREW_PORT", "5476")
+    return f"http://127.0.0.1:{port}/api/browser/command"
+
+
+# `browser_*` tool name -> the closed op verb the native control plane accepts.
+#
+# INTENTIONALLY EMPTY. Interception is wired end-to-end and tested, but routing
+# ANY op natively today would split the agent's world across two browsers:
+# `browser_snapshot` / `browser_click` / `browser_type` / `browser_evaluate`
+# address elements by `ref`, an opaque handle minted by PLAYWRIGHT's own
+# accessibility snapshot of PLAYWRIGHT's page. Serving only `browser_navigate`
+# natively would mean the agent navigates the embedded view and then snapshots a
+# different, un-navigated Playwright page -- confidently wrong rather than
+# broken, which is worse.
+#
+# Mapping the rest requires a real translation layer (mint refs from the native
+# a11y tree, resolve a ref back to view-relative coordinates) so one browser
+# serves the whole workflow. Until that exists the agent keeps using Playwright,
+# which honours its own contract coherently. Populate this map only together with
+# that translation layer.
+#
+# The HUMAN path is unaffected: the panel's URL bar drives the native view
+# directly (see WebPreviewPanel), independent of this map.
+_NATIVE_OPS: dict[str, str] = {}
+
+
+def _try_native_tool_call(msg: dict[str, Any]) -> dict[str, Any] | None:
+    """Run a ``browser_*`` tools/call on the native embedded panel, if there is one.
+
+    Returns a JSON-RPC response to send back to the client, or ``None`` to mean
+    "not handled — forward to the Playwright subprocess as usual".
+
+    The topology decision is made by the GATEWAY, not guessed here: it answers
+    503 ``no-native-panel`` unless an Electron poller is currently registered for
+    this session, and we fall back on anything other than a clean result. That
+    keeps the remote-gateway case (where the browser genuinely lives elsewhere)
+    on the streamed-mirror path with no extra state to keep in sync.
+    """
+    if msg.get("method") != "tools/call":
+        return None
+    params = msg.get("params") or {}
+    op = _NATIVE_OPS.get(params.get("name") or "")
+    if not op:
+        return None
+    session_key = _SESSION_KEY
+    if not session_key:
+        # A warm-pool worker never had KIROCREW_SESSION_KEY frozen in, so we
+        # cannot say which panel to drive. Fall back rather than guess. (The
+        # frame path handles this by having the GATEWAY resolve the key from the
+        # session_pid sidecar; doing the same here is a follow-up.)
+        return None
+
+    body = json.dumps(
+        {"session_key": session_key, "op": op, "args": params.get("arguments") or {}}
+    ).encode()
+    req = urllib.request.Request(
+        _gateway_command_url(),
+        data=body,
+        headers={"Content-Type": "application/json", "X-Internal-Secret": _internal_secret()},
+        method="POST",
+    )
+    try:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (http://127.0.0.1 + the fixed /api/browser/command path from _gateway_command_url); only the port varies, from KIROCREW_PORT local config, never user/agent/request input, so no file:// or arbitrary-read is reachable  # noqa: E501
+        with urllib.request.urlopen(req, timeout=_NATIVE_CALL_TIMEOUT_S) as resp:
+            payload = json.loads(resp.read() or b"{}")
+    except Exception:
+        # TRANSPORT unavailable -- 503 no-native-panel, a timeout, a connection
+        # error. There is no native panel able to answer, so Playwright is the
+        # correct destination. This is the ONLY case that may fall back.
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    if not payload.get("ok"):
+        # The panel ANSWERED and refused. Falling back here would convert a deny
+        # into an allow by another route: when the user revokes "let the agent
+        # act", the control plane refuses, and forwarding to Playwright would run
+        # the very operation authorization just withheld. Surface it as an MCP
+        # error instead, so the refusal is what the agent sees.
+        detail = payload.get("error") or "native browser refused the operation"
+        return {
+            "jsonrpc": "2.0",
+            "id": msg.get("id"),
+            "error": {"code": -32000, "message": str(detail)},
+        }
+
+    result = payload.get("result")
+    text = result if isinstance(result, str) else json.dumps(result, default=str)
+    return {
+        "jsonrpc": "2.0",
+        "id": msg.get("id"),
+        "result": {"content": [{"type": "text", "text": text}], "isError": False},
+    }
+
+
 def _forward_stdin_to_subprocess_tracked(client_stdin, proc_stdin) -> None:
     """Forward client→subprocess, tracking in-flight IDs to synthesize errors if subprocess dies."""
     while True:
@@ -590,6 +692,12 @@ def _forward_stdin_to_subprocess_tracked(client_stdin, proc_stdin) -> None:
             proc_stdin.close()
             break
         req_id = msg.get("id")
+        # A browser_* call goes to the NATIVE embedded panel when one exists for
+        # this session; otherwise this returns None and we forward as usual.
+        native = _try_native_tool_call(msg)
+        if native is not None:
+            _write_message(sys.stdout.buffer, native)
+            continue
         if req_id is not None:
             _PENDING_REQUESTS[req_id] = msg
         with _proc_stdin_lock:

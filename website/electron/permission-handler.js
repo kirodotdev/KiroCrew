@@ -148,6 +148,7 @@ function logDeny(kind, permission, wc, origin, details) {
 function createPermissionRequestHandler(deps = {}) {
   const originOk = deps.isAppOrigin || isAppOrigin;
   const onDeny = deps.onDeny || logDeny;
+  const isUntrusted = deps.isUntrusted || (() => false);
   const getMicAccessStatus = deps.getMicAccessStatus;
   const askForMicAccess = deps.askForMicAccess;
   const onMicBlocked = deps.onMicBlocked || (() => {});
@@ -169,8 +170,16 @@ function createPermissionRequestHandler(deps = {}) {
     // The REQUEST handler has no origin string of its own; details may carry a
     // requesting URL on some Electron versions, so offer it as the fallback.
     const origin = details?.securityOrigin || details?.requestingUrl;
+    // Untrusted first, by IDENTITY, before any origin heuristic. The embedded
+    // browser view shares this session, and `isAppOrigin` treats ANY localhost
+    // origin as the app — so browsing to `http://localhost:<anything>` would
+    // otherwise inherit the dashboard's microphone grant. A page never gets a
+    // capability just for being served from loopback.
     const granted =
-      permission === "media" && originOk(wc, origin) && !requestsVideo(details);
+      !isUntrusted(wc) &&
+      permission === "media" &&
+      originOk(wc, origin) &&
+      !requestsVideo(details);
     if (!granted) {
       audit("request", permission, wc, origin, details);
       return callback(false);
@@ -235,8 +244,15 @@ function createPermissionRequestHandler(deps = {}) {
 function createPermissionCheckHandler(deps = {}) {
   const originOk = deps.isAppOrigin || isAppOrigin;
   const onDeny = deps.onDeny || logDeny;
+  const isUntrusted = deps.isUntrusted || (() => false);
   return function handlePermissionCheck(wc, permission, origin, details) {
+    // Mirrors the request handler's untrusted-first rule; see the note there.
+    // Note this handler may receive a null `wc`, in which case identity is
+    // unavailable — but a check alone grants no capability, and the REQUEST
+    // handler (which does the actual granting) is always frame-originated and
+    // therefore always has a webContents to match.
     const granted =
+      !isUntrusted(wc) &&
       permission === "media" &&
       originOk(wc, origin) &&
       details?.mediaType !== "video";

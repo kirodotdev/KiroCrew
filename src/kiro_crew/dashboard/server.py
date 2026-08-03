@@ -231,6 +231,15 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/browser-event",
         "/api/browser/frame",
         "/api/browser/pump-audit",
+        # Native browser command channel (agent->Electron). MACHINE endpoints,
+        # same trust class as ``/api/browser/frame``: the MCP proxy posts commands
+        # and the Electron main process long-polls/returns results, all loopback +
+        # internal-secret. No browser calls them, so STRICT (not mixed). Each
+        # handler re-asserts loopback because a ``local_only=False`` deployment
+        # reclassifies strict paths as mixed.
+        "/api/browser/command",
+        "/api/browser/command-drain",
+        "/api/browser/command-result",
         # Computer use: the ``kirocrew-computer`` stdio shim's forwarding leg.
         # STRICT (not mixed): no browser calls it, and it is the entry point to
         # accessibility reads and input synthesis into the operator's real
@@ -860,6 +869,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/browser-auth-retry", handlers.api_browser_auth_retry)
     app.router.add_post("/api/browser/frame", handlers.api_browser_frame)
     app.router.add_post("/api/browser/pump-audit", handlers.api_browser_pump_audit)
+    app.router.add_post("/api/browser/command", handlers.api_browser_command)
+    app.router.add_post("/api/browser/command-drain", handlers.api_browser_command_drain)
+    app.router.add_post("/api/browser/command-result", handlers.api_browser_command_result)
     app.router.add_get("/api/browser/config", handlers.api_browser_config_get)
     app.router.add_put("/api/browser/config", handlers.api_browser_config_save)
     # Computer use: the thin ``kirocrew-computer`` stdio shim's only call. Lives

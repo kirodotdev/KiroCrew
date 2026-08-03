@@ -68,6 +68,55 @@ contextBridge.exposeInMainWorld("zoomAPI", {
   step: (dir) => ipcRenderer.invoke("zoom:step", dir),
 });
 
+// Native browser panel bridge. The Browser side panel is a real embedded
+// Chromium view owned by the main process, composited over the panel rect —
+// not an iframe and not in the React tree. So the renderer has to (a) report
+// the rectangle it laid out, and (b) report when one of its own overlays covers
+// that rectangle, since the native layer paints above the SPA and would occlude
+// it. Every call resolves with the view's state ({open, visible, bounds, url}).
+//
+// Every call takes a `panelId` — the dashboard renders one Browser panel per
+// chat session, and each gets its own view, control plane and agent-act
+// authorization. A single per-window slot let two sessions clobber each other.
+//
+// Absent in a plain browser — the renderer treats a missing bridge as "no native
+// panel available" and falls back to the streamed-frame transport.
+contextBridge.exposeInMainWorld("browserAPI", {
+  open: (panelId, url) => ipcRenderer.invoke("browser:open", panelId, url),
+  navigate: (panelId, url) => ipcRenderer.invoke("browser:navigate", panelId, url),
+  setBounds: (panelId, rect, viewport) =>
+    ipcRenderer.invoke("browser:set-bounds", panelId, rect, viewport),
+  setOverlayActive: (panelId, active) =>
+    ipcRenderer.invoke("browser:set-overlay", panelId, !!active),
+  // Hides the view without destroying the page — for a panel whose tab is not
+  // currently visible. `close` is the destructive one.
+  setInactive: (panelId, value) =>
+    ipcRenderer.invoke("browser:set-inactive", panelId, !!value),
+  close: (panelId) => ipcRenderer.invoke("browser:close", panelId),
+  getState: (panelId) => ipcRenderer.invoke("browser:get-state", panelId),
+  // Agent control. `setAgentAct` mirrors the dashboard's general "let the agent
+  // act" authorization into the main process, which evaluates the control gate
+  // itself on every owner transition. `control` takes a CLOSED verb set, never a
+  // raw CDP method — the surface cannot be widened from here.
+  setAgentAct: (panelId, enabled) =>
+    ipcRenderer.invoke("browser:set-agent-act", panelId, !!enabled),
+  setControlOwner: (panelId, owner) =>
+    ipcRenderer.invoke("browser:set-control-owner", panelId, owner),
+  getControl: (panelId) => ipcRenderer.invoke("browser:get-control", panelId),
+  control: (panelId, op, args) => ipcRenderer.invoke("browser:control", panelId, op, args),
+  // Events carry their own panelId so a listener can ignore other panels'.
+  onDidNavigate: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on("browser:did-navigate", handler);
+    return () => ipcRenderer.removeListener("browser:did-navigate", handler);
+  },
+  onTitleUpdated: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on("browser:title-updated", handler);
+    return () => ipcRenderer.removeListener("browser:title-updated", handler);
+  },
+});
+
 // Desktop auto-update bridge. Drives the in-app UpdateModal + Settings > About.
 // onState pushes update lifecycle events ({state, version, notes, channel});
 // check/install/getInfo are promise-based round-trips to the main process.

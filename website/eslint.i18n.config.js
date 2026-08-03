@@ -186,6 +186,17 @@ export default [
               //      flagged, so it lands in the baseline. Accepted: a false positive
               //      costs one baseline entry, a false negative hides copy forever.
               '^(?![a-z]+(?: [a-z]+)+$)[\\s\\-a-z0-9:/\\[\\]().%#]+$',
+              // CSS ATTRIBUTE SELECTORS, e.g. `[role="dialog"],[data-x]` — a
+              // comma-joined list of bracketed attribute selectors, as passed to
+              // querySelector. The Tailwind/class shape above cannot cover these:
+              // its char class forbids `=`, `"` and `,`, which is exactly what an
+              // attribute selector is made of. Such constants live at module level
+              // under an ALL-CAPS name, so `i18n-strict` looks inside them.
+              //
+              // Deliberately anchored and total: the WHOLE string must be
+              // bracketed selectors, so prose cannot match (prose has no square
+              // brackets), and a sentence merely containing one is still flagged.
+              '^\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\](?:\\s*,\\s*\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\])*$',
               // Identifiers, paths, URLs, mime types, storage keys.
               // camelCase identifiers only. A plain lowercase word must NOT be excluded
               // here: `saved`, `active` and `done` are all real UI copy, and a pattern of
