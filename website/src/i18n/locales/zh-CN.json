@@ -2451,7 +2451,8 @@
       "skip": "跳过",
       "start_in_new_worktree": "在新工作树中开始",
       "suggested_follow_up_other": "建议的后续操作",
-      "this_session_has_no_project_directory_so_there_i": "此会话没有项目目录路径，因此没有可用于开分支的仓库"
+      "this_session_has_no_project_directory_so_there_i": "此会话没有项目目录路径，因此没有可用于开分支的仓库",
+      "worktree_disabled_no_project_directory": "“添加到此会话”只是预填输入框 — 在你按下发送前不会发送任何内容。此处无法使用工作树：此会话没有项目目录（可通过输入框的“项目”按钮选择一个）。"
     },
     "inboundLinkChip": {
       "confirm_release": "解除此会话与 {{label}} 的关联？\n\n那里发送的消息将不再到达此处，回复也将不再发送到那里。你可以在该频道使用 !sessions 重新关联。",

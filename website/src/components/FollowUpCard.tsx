@@ -114,7 +114,18 @@ function FollowUpCard({
                     ? `Create a git worktree from ${projectDir} and open a new session there`
                     : i18nT('components.followUpCard.this_session_has_no_project_directory_so_there_i')
                 }
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-accent text-accent-fg hover:bg-accent-hover border-none"
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                  // Accent (primary-CTA) styling ONLY when the action can work.
+                  // An unscoped session disables this button permanently, and a
+                  // dimmed accent button still reads as "the main action" on a
+                  // dark theme — users click it, meet a not-allowed cursor, and
+                  // report it as a dead button. Demote it to the secondary
+                  // look so "Add to this session" is the visual default, and let
+                  // the footer (below) say WHY instead of hiding the feature.
+                  projectDir
+                    ? 'bg-accent text-accent-fg hover:bg-accent-hover border-none'
+                    : 'border border-border text-muted bg-bg'
+                }`}
               >
                 <GitBranch size={13} aria-hidden="true" />
                 {busy ? i18nT('components.followUpCard.creating_worktree') : i18nT('components.followUpCard.start_in_new_worktree')}
@@ -145,7 +156,13 @@ function FollowUpCard({
         )
       })}
       <div className="px-4 pb-3 text-[11px] text-muted">
-        {i18nT('components.followUpCard.both_actions_pre_fill_the_composer_nothing_is_se')}
+        {projectDir
+          ? i18nT('components.followUpCard.both_actions_pre_fill_the_composer_nothing_is_se')
+          // The unscoped variant must not claim "both actions": the worktree
+          // button is disabled above, and this line is where the user learns
+          // why — the tooltip alone hides behind a hover the not-allowed
+          // cursor has already soured.
+          : i18nT('components.followUpCard.worktree_disabled_no_project_directory')}
       </div>
     </div>
   )

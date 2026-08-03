@@ -2425,7 +2425,18 @@ async def api_chat_slot_followup(request: web.Request) -> web.Response:
         len(items),
         clients,
     )
-    return web.json_response({"ok": True, "count": len(items), "delivered": clients})
+    resp: dict[str, Any] = {"ok": True, "count": len(items), "delivered": clients}
+    if not getattr(slot, "project", ""):
+        # Parity with session_directive_apply._suggest_followup: the card's
+        # worktree button renders disabled for an unscoped slot, and the caller
+        # (the MCP relay, and through it the model) must hear that from the
+        # delivery path — the tool description alone cannot know this slot.
+        resp["warning"] = (
+            "this session has no project directory, so the card's 'Start in "
+            "new worktree' button is disabled; steer the user to 'Add to this "
+            "session' or to scoping a project first"
+        )
+    return web.json_response(resp)
 
 
 _MAX_RECENT_PROJECTS = 100

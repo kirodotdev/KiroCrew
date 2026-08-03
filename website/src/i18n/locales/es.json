@@ -2535,7 +2535,8 @@
       "suggested_follow_up_many": "Seguimientos sugeridos",
       "suggested_follow_up_one": "Seguimiento sugerido",
       "suggested_follow_up_other": "Seguimientos sugeridos",
-      "this_session_has_no_project_directory_so_there_i": "Esta sesión no tiene directorio de proyecto, así que no hay repositorio del que crear una rama"
+      "this_session_has_no_project_directory_so_there_i": "Esta sesión no tiene directorio de proyecto, así que no hay repositorio del que crear una rama",
+      "worktree_disabled_no_project_directory": "«Añadir a esta sesión» precarga el editor de mensajes — no se envía nada hasta que pulsas enviar. Los worktrees no están disponibles aquí: esta sesión no tiene directorio de proyecto (elige uno con el chip Proyecto del editor)."
     },
     "inboundLinkChip": {
       "confirm_release": "¿Desvincular esta sesión de {{label}}?\n\nLos mensajes enviados allí dejarán de llegar aquí y las respuestas dejarán de entregarse allí. Puedes volver a vincularla con !sessions desde ese canal.",

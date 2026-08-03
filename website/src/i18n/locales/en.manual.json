@@ -774,7 +774,8 @@
       "creating_worktree": "Creating worktree…",
       "failed_to_create_worktree": "Failed to create worktree",
       "start_in_new_worktree": "Start in new worktree",
-      "this_session_has_no_project_directory_so_there_i": "This session has no project directory, so there is no repository to branch from"
+      "this_session_has_no_project_directory_so_there_i": "This session has no project directory, so there is no repository to branch from",
+      "worktree_disabled_no_project_directory": "\"Add to this session\" pre-fills the composer — nothing is sent until you press send. Worktrees are unavailable here: this session has no project directory (pick one with the composer's Project chip)."
     },
     "inboundLinkChip": {
       "confirm_release": "Release this session from {{label}}?\n\nMessages sent there will stop arriving here, and replies will stop being delivered there. You can re-attach with !sessions from that channel.",
