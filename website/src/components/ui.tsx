@@ -322,6 +322,10 @@ export function Toggle({ checked, onChange, disabled, label }: { checked: boolea
     <div
       role="switch"
       aria-checked={checked}
+      // Without this a screen reader announces a disabled switch as actionable:
+      // the disabled state was carried only by `tabIndex={-1}` and an opacity
+      // class, neither of which reaches the accessibility tree.
+      aria-disabled={disabled || undefined}
       aria-label={label}
       tabIndex={disabled ? -1 : 0}
       onClick={() => !disabled && onChange(!checked)}

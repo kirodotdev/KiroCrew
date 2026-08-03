@@ -19,6 +19,9 @@ const mockApi = vi.hoisted(() => ({
   createKirocrewAgent: vi.fn(),
   updateKirocrewAgent: vi.fn(),
   deleteKirocrewAgent: vi.fn(),
+  agentResolvedModel: vi.fn(),
+  setDefaultAgent: vi.fn(),
+  createChatSlot: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({ api: mockApi }))
@@ -59,31 +62,24 @@ beforeEach(() => {
   mockApi.agentsInstalled.mockResolvedValue(INSTALLED_RESPONSE)
   mockApi.workspaces.mockResolvedValue(WORKSPACES_RESPONSE)
   mockApi.kirocrewConfig.mockResolvedValue(CONFIG_RESPONSE)
+  mockApi.agentResolvedModel.mockResolvedValue({ model: '', pinned: false, kiro_agent: 'kirocrew' })
 })
 
-/** Open the workspace StyledSelect dropdown in the create form and click
- *  the "+ New workspace…" action to open the modal. */
-/** Locate the "Workspace" field group's StyledSelect trigger button.
- *  The field label is a <span> (it labels a StyledSelect, which has no native
- *  form control to associate a <label> with), so we scope by the enclosing
- *  ``.flex.flex-col`` group that actually contains a button trigger rather
- *  than by the label's tag name. */
-function findWorkspaceTrigger(): HTMLElement {
-  const wsLabels = screen.getAllByText('Workspace')
-  for (const label of wsLabels) {
-    const group = label.closest('.flex.flex-col') as HTMLElement | null
-    const trigger = group?.querySelector('button')
-    if (trigger) return trigger as HTMLElement
-  }
-  throw new Error('Workspace StyledSelect trigger not found')
+/** Open the crew editor panel. The workspace picker lives inside it now, so
+ *  every workspace-modal path goes through here first. */
+async function openCrewSheet(): Promise<HTMLElement> {
+  fireEvent.click(screen.getByTestId('new-crew'))
+  return await screen.findByRole('dialog', { name: 'Create a new crew' })
 }
 
+/** Open the workspace select inside the editor panel and click the
+ *  "+ New workspace…" action row to open the modal. The trigger is found by
+ *  its accessible name — SimpleSelect forwards aria-label onto the combobox —
+ *  rather than by DOM structure, so restyling the panel cannot break this. */
 async function openModalViaWorkspaceDropdown() {
-  const wsTrigger = findWorkspaceTrigger()
-  fireEvent.click(wsTrigger)
-  // Now click the "+ New workspace…" action in the portal dropdown
-  const newWsBtn = await screen.findByText('+ New workspace…')
-  fireEvent.click(newWsBtn)
+  const sheet = await openCrewSheet()
+  fireEvent.click(within(sheet).getByRole('combobox', { name: 'Workspace' }))
+  fireEvent.click(await screen.findByText('+ New workspace…'))
 }
 
 describe('WorkspaceModal — StyledSelect trigger and modal lifecycle', () => {
@@ -91,10 +87,8 @@ describe('WorkspaceModal — StyledSelect trigger and modal lifecycle', () => {
     renderPage()
     await waitFor(() => expect(mockApi.kirocrewAgents).toHaveBeenCalled())
     await waitFor(() => expect(mockApi.workspaces).toHaveBeenCalled())
-    // Open the workspace StyledSelect
-    const wsTrigger = findWorkspaceTrigger()
-    expect(wsTrigger).toBeTruthy()
-    fireEvent.click(wsTrigger)
+    const sheet = await openCrewSheet()
+    fireEvent.click(within(sheet).getByRole('combobox', { name: 'Workspace' }))
     expect(await screen.findByText('+ New workspace…')).toBeInTheDocument()
   })
 
