@@ -72,6 +72,7 @@ from kiro_crew.subagent_cost import (
 from kiro_crew.subagent_persistence import (
     _agent_dir,
     _cleanup_session_files_sync,
+    _subagents_dir,
     clear_tombstone,
     create_agent_folder,
     list_orphans,
@@ -213,6 +214,11 @@ _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 # run for this long has its session files + map entry deleted by the reaper.
 # Hibernated conversations cost a JSON file, not RSS, so this is generous.
 _CONVERSATION_TTL_SECS = 6 * 3600
+# Startup grace for spawn_steer (#1113): how long a steer on a live run
+# waits for its session to register before returning the typed
+# ``session_starting`` refusal, and the poll cadence within that window.
+_STEER_STARTUP_WAIT_SECS = 15.0
+_STEER_STARTUP_POLL_SECS = 0.5
 # Wave liveness backstop: a wave with lost submissions (submitted < expected,
 # all registered members terminal, nothing queued) is force-reconciled after
 # this many seconds without submission progress, so held digest results can
@@ -1022,10 +1028,20 @@ class SubagentManager:
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
         # Continuable conversations: session_key ("subagent:<conv-id>") →
-        # last-used unix ts. Drives the reaper's idle-TTL sweep. Rebuilt
-        # lazily after a gateway restart: a spawn_continue on an unknown key
-        # re-registers it when SessionManager still holds a resumable sid.
+        # last-used unix ts. Drives the reaper's idle-TTL sweep. Rebuilt from
+        # state.json (keep=True runs) on the reaper's first pass after a
+        # gateway restart (#1114), so promoted conversations stay owned by
+        # the TTL sweep across restarts; a spawn_continue on an unknown key
+        # also re-registers it on demand.
         self._conversations: dict[str, float] = {}
+        self._conv_registry_rebuilt = False
+        # state.json is the source of truth for retention (#1115): give the
+        # SessionManager's in-memory continuable cache a disk fallback so a
+        # cache miss (restart window) cannot demote a promoted conversation.
+        try:
+            self._sessions.set_continuable_fallback(self._keep_recorded_on_disk)
+        except AttributeError:
+            pass  # test doubles without the setter
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         # Queued spawns store the FULL spawn() kwarg set (not just a 5-tuple), so a
         # drained spawn preserves approval_mode / silent / model / allowed_tools / bare —
@@ -1477,6 +1493,21 @@ class SubagentManager:
         while True:
             await asyncio.sleep(_REAPER_INTERVAL)
             now = time.time()
+            if not self._conv_registry_rebuilt:
+                # First pass after (re)start: re-seed the conversation TTL
+                # registry from state.json so promoted conversations survive
+                # a gateway restart under sweep ownership (#1114). The flag
+                # is set only on SUCCESS — a failed rebuild retries on the
+                # next sweep instead of silently restoring the pre-#1114
+                # orphaning until the next restart (Arbiter, PR #1246).
+                try:
+                    await self._rebuild_conversation_registry()
+                    self._conv_registry_rebuilt = True
+                except Exception:
+                    logger.warning(
+                        "Reaper: conversation registry rebuild failed — retrying next sweep",
+                        exc_info=True,
+                    )
             self._sample_live_costs()
             # Wave liveness backstop: reconcile waves wedged by submissions
             # lost before the process boundary (see _sweep_stuck_waves).
@@ -2758,6 +2789,127 @@ class SubagentManager:
                 )
         return None
 
+    def _keep_recorded_on_disk(self, key: str) -> bool:
+        """Disk-truth continuable check for SessionManager's cache (#1115).
+
+        True iff *key* is a subagent conversation whose run's ``state.json``
+        records ``keep`` — the single persisted source of retention intent.
+        Non-subagent keys short-circuit without touching disk.
+        """
+        if not key.startswith("subagent:"):
+            return False
+        conv_id = key[len("subagent:"):]
+        try:
+            state = read_state(conv_id) or {}
+        except Exception:
+            return False
+        return bool(state.get("keep"))
+
+    def _promote_conversation(self, conv_id: str, conv_key: str, last_used: float | None = None) -> None:
+        """Single choke point for promoting a conversation's retention (#1115).
+
+        Writes all three retention surfaces together so they cannot drift:
+        ``keep=True`` in state.json (the persisted source of truth), the
+        SessionManager continuable cache (file-deletion exemption), and the
+        TTL registry entry (sweep ownership).
+        """
+        try:
+            update_state(conv_id, keep=True)
+        except Exception:
+            logger.debug("promote: failed to persist keep for %s", conv_id, exc_info=True)
+        self._sessions.mark_continuable(conv_key)
+        self._conversations[conv_key] = last_used if last_used is not None else time.time()
+
+    def _scan_keep_states(self) -> list[tuple[str, str, str, str, str, float]]:
+        """Blocking scan for keep runs (#1114): read every ``state.json``
+        under the subagents dir and collect the promoted conversations.
+
+        Returns ``(conv_id, conv_key, sid, provider, cwd, last_used)`` tuples.
+        Runs in an executor — no event-loop work here.
+        """
+        out: list[tuple[str, str, str, str, str, float]] = []
+        try:
+            base = _subagents_dir()
+            entries = list(base.iterdir()) if base.is_dir() else []
+        except Exception:
+            return out
+        for d in entries:
+            try:
+                if not d.is_dir():
+                    continue
+                state = read_state(d.name) or {}
+                if not state.get("keep"):
+                    continue
+                conv_key = str(state.get("conversation_key") or "") or f"subagent:{d.name}"
+                conv_id = conv_key[len("subagent:"):]
+                sid = str(state.get("session_id") or "")
+                last_used = float(state.get("updated_at") or state.get("started") or 0.0)
+                out.append((
+                    conv_id, conv_key, sid,
+                    str(state.get("provider") or "acp"),
+                    str(state.get("cwd") or ""),
+                    last_used,
+                ))
+            except Exception:
+                logger.debug("registry rebuild: skipping %s", d, exc_info=True)
+        return out
+
+    async def _rebuild_conversation_registry(self) -> None:
+        """Re-seed the conversation TTL registry from disk after a restart (#1114).
+
+        The registry (``_conversations`` + the SessionManager continuable
+        cache + session map) is in-memory; without this, a gateway restart
+        orphans promoted conversations — the TTL sweep no longer knows them,
+        and nothing else deletes their session files (the tombstone pruner
+        skips keep runs by design). Runs on the reaper's first pass (retried
+        until it succeeds); entries already past TTL are released by the
+        very next sweep.
+
+        Threading contract (Arbiter, PR #1246): ONLY the pure-read
+        ``_scan_keep_states`` runs in the executor. All ``SessionMap``
+        access (``resumable_sid`` self-prune, ``seed_conversation`` writes)
+        stays on the event loop — the map is an unlocked dict with
+        whole-file saves, concurrently mutated by ``get_or_create`` /
+        ``close_all``, so touching it from a worker thread races restart
+        cold-starts (lost mappings / dict-changed-size errors). Per-entry
+        work is small and bounded by the keep-run count, and the loop
+        yields between entries so a large batch cannot stall chat turns
+        (the round-2 event-loop concern).
+        """
+        loop = asyncio.get_running_loop()
+        found = await loop.run_in_executor(None, self._scan_keep_states)
+        # Newest record wins: a conversation appears once per run that
+        # touched it (original + each continuation). The first record kept
+        # for a conv_key wins the `in self._conversations` guard below, so
+        # iterate newest-first — an oldest-first order would seed a stale
+        # last_used and let the SAME pass's sweep expire (and delete) a
+        # conversation whose real last-use is recent.
+        found.sort(key=lambda t: t[5], reverse=True)
+        seeded = 0
+        for conv_id, conv_key, sid, provider, cwd, last_used in found:
+            if conv_key in self._conversations:
+                continue  # live registration wins over the disk snapshot
+            # Same on-demand seeding as continue_conversation (also on-loop):
+            # the map entry is what makes release_conversation able to find
+            # and delete files.
+            if sid and not self._sessions.resumable_sid(conv_key):
+                self._sessions.seed_conversation(conv_key, sid, provider=provider, cwd=cwd)
+            # Resumability gate: SessionMap.get self-prunes entries whose
+            # session files are missing, so this also rejects RELEASED
+            # conversations whose continuation runs still carry a stale
+            # keep=True in their own state.json — their files are gone, and
+            # re-owning them would resurrect a released conversation.
+            if not self._sessions.resumable_sid(conv_key):
+                continue
+            self._sessions.mark_continuable(conv_key)
+            self._conversations[conv_key] = last_used or time.time()
+            seeded += 1
+            # Cooperative yield: keep restart cold-start turns responsive
+            # while a large keep batch seeds (one small file write each).
+            await asyncio.sleep(0)
+        if seeded:
+            logger.info("Rebuilt conversation TTL registry from disk: %d conversation(s)", seeded)
+
     def continue_conversation(
         self,
         conv_id: str,
@@ -2834,15 +2986,11 @@ class SubagentManager:
                 ),
             )
             return info
-        self._sessions.mark_continuable(conv_key)
-        self._conversations[conv_key] = time.time()
-        # Promote the ORIGINAL run's retention: the tombstone pruner reads
-        # keep from state.json and skips session-file deletion for it. The
-        # conversation TTL sweep / spawn_release owns deletion from here.
-        try:
-            update_state(conv_id, keep=True)
-        except Exception:
-            logger.debug("continue: failed to promote state for %s", conv_id, exc_info=True)
+        # Promote the run's retention through the single choke point
+        # (#1115): state.json keep=True (tombstone pruner skips deletion),
+        # the SessionManager continuable cache, and the TTL registry entry.
+        # The conversation TTL sweep / spawn_release owns deletion from here.
+        self._promote_conversation(conv_id, conv_key)
         return self.spawn(
             task,
             parent_session_key=parent_session_key,
@@ -2858,22 +3006,47 @@ class SubagentManager:
 
         Returns ``(ok, detail)``. Typed detail values on refusal:
         ``not_found`` (unknown id), ``not_running`` (run finished — use
-        spawn_continue), ``no_session`` (session not reachable), or the
-        provider's failure reason.
+        spawn_continue), ``session_starting`` (run alive but its session has
+        not registered yet — retry shortly), ``no_session`` (session not
+        reachable), or the provider's failure reason.
+
+        Startup grace (#1113): the window between spawn-return and session
+        registration is precisely when a parent most wants to steer (it just
+        realized the task text was wrong), so a missing provider on a live
+        run polls for up to ``_STEER_STARTUP_WAIT_SECS`` instead of failing
+        immediately with a bare ``no_session``.
         """
         info = self._agents.get(agent_id)
         if info is None:
             return False, "not_found"
         if info.done:
             return False, "not_running: run finished — use spawn_continue"
-        provider: Any = None
-        if info._session_sharing and info._shared_provider is not None:
-            provider = info._shared_provider
-        else:
+
+        def _resolve_provider() -> Any:
+            if info._session_sharing and info._shared_provider is not None:
+                return info._shared_provider
             session_key = info.conversation_key or f"subagent:{info.id}"
-            provider = self._sessions.get_provider(session_key)
+            return self._sessions.get_provider(session_key)
+
+        provider: Any = _resolve_provider()
         if provider is None or not hasattr(provider, "steer"):
-            return False, "no_session"
+            # Bounded wait for session registration on a run that is still
+            # alive. Re-checks done-ness each tick: a run finishing while we
+            # wait flips the answer to not_running, never a stale inject.
+            deadline = time.monotonic() + _STEER_STARTUP_WAIT_SECS
+            while time.monotonic() < deadline:
+                await asyncio.sleep(_STEER_STARTUP_POLL_SECS)
+                if info.done:
+                    return False, "not_running: run finished — use spawn_continue"
+                provider = _resolve_provider()
+                if provider is not None and hasattr(provider, "steer"):
+                    break
+            else:
+                return False, (
+                    "session_starting: the run is alive but its session has "
+                    f"not registered within {_STEER_STARTUP_WAIT_SECS}s — "
+                    "retry in a few seconds"
+                )
         try:
             ok = await provider.steer(message)
         except Exception as exc:  # pragma: no cover - provider-specific
@@ -2905,6 +3078,14 @@ class SubagentManager:
         provider_label = self._sessions.conversation_provider(conv_key) or "acp"
         sid = self._sessions.forget_conversation(conv_key)
         self._conversations.pop(conv_key, None)
+        # Demote the persisted source of truth too (#1115): with the disk
+        # fallback in place, a stale keep=True would re-warm the continuable
+        # cache after release and resurrect the conversation on the next
+        # restart's registry rebuild.
+        try:
+            update_state(conv_id, keep=False)
+        except Exception:
+            logger.debug("release: failed to demote state for %s", conv_id, exc_info=True)
         if not sid:
             return False, "conversation_gone: nothing to release"
         try:

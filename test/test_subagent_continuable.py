@@ -306,12 +306,21 @@ class TestSteerRun:
 
     @pytest.mark.asyncio
     async def test_no_session_reachable(self) -> None:
+        """A live run with no reachable session now gets the #1113 startup
+        grace, then the typed ``session_starting`` refusal (retryable) —
+        not the old terminal bare ``no_session``."""
+        import kiro_crew.subagent as subagent_mod
+
         sessions = _mock_sessions()
         sessions.get_provider = MagicMock(return_value=None)
         manager = _manager(sessions)
         manager._agents["a1"] = SubagentInfo(id="a1", task="t")
-        ok, detail = await manager.steer_run("a1", "hi")
-        assert not ok and detail == "no_session"
+        with (
+            patch.object(subagent_mod, "_STEER_STARTUP_WAIT_SECS", 0.05),
+            patch.object(subagent_mod, "_STEER_STARTUP_POLL_SECS", 0.01),
+        ):
+            ok, detail = await manager.steer_run("a1", "hi")
+        assert not ok and detail.startswith("session_starting")
 
 
 # ── release_conversation + TTL sweep ──

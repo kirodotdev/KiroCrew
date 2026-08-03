@@ -673,6 +673,14 @@ class SessionManager:
         # SubagentManager for ``keep=True`` spawns; unregistered on explicit
         # conversation release.
         self._continuable_keys: set[str] = set()
+        # Disk-truth fallback for continuable checks (#1115): SubagentManager
+        # injects a callable that reads ``keep`` from the run's state.json.
+        # The in-memory set above is a CACHE for the common case; state.json
+        # is the source of truth, so a cache miss (e.g. after a gateway
+        # restart, before the reaper rebuilds the registry) falls through to
+        # disk instead of silently treating a promoted conversation as
+        # stateless.
+        self._continuable_fallback: Callable[[str], bool] | None = None
         self._active_dashboard_slots: set[str] | None = (
             None  # None = uninitialized; empty set = all tabs closed
         )
@@ -2124,7 +2132,7 @@ class SessionManager:
         is_stateless = (
             key in (BACKGROUND_KEY, HEARTBEAT_KEY)
             or any(key.startswith(p) for p in _STATELESS_PREFIXES)
-        ) and key not in self._continuable_keys
+        ) and not self._is_continuable_key(key)
         if not is_stateless:
             resume_sid = self._session_map.get(key)
 
@@ -3064,7 +3072,7 @@ class SessionManager:
                         and key != BACKGROUND_KEY
                         and (
                             not any(key.startswith(p) for p in _STATELESS_PREFIXES)
-                            or key in self._continuable_keys
+                            or self._is_continuable_key(key)
                         )
                     ):
                         # Persist the provider label so detect_provider_switch
@@ -3082,7 +3090,7 @@ class SessionManager:
                         and key != BACKGROUND_KEY
                         and (
                             not any(key.startswith(p) for p in _STATELESS_PREFIXES)
-                            or key in self._continuable_keys
+                            or self._is_continuable_key(key)
                         )
                     ):
                         self._session_map.set(key, sid, provider="claude_code", cwd=_cwd_str)
@@ -3205,9 +3213,41 @@ class SessionManager:
         """Remove *key* from the continuable set (conversation released)."""
         self._continuable_keys.discard(self._fold_key(key))
 
+    def set_continuable_fallback(self, fn: Callable[[str], bool] | None) -> None:
+        """Install the disk-truth fallback for continuable checks (#1115).
+
+        *fn* receives the (folded) session key and returns True when the
+        underlying run's ``state.json`` records ``keep``. Injected by
+        SubagentManager so this module stays free of subagent-persistence
+        imports.
+        """
+        self._continuable_fallback = fn
+
+    def _is_continuable_key(self, folded: str) -> bool:
+        """Cache-then-disk continuable check for an already-folded key.
+
+        The in-memory set answers the common case; a miss consults the
+        injected state.json fallback so a gateway restart cannot demote a
+        promoted conversation to stateless treatment. A disk hit re-warms
+        the cache.
+        """
+        if folded in self._continuable_keys:
+            return True
+        # getattr: tests construct SessionManager bypassing __init__.
+        fb = getattr(self, "_continuable_fallback", None)
+        if fb is None:
+            return False
+        try:
+            if fb(folded):
+                self._continuable_keys.add(folded)
+                return True
+        except Exception:
+            logger.debug("continuable fallback failed for %s", folded, exc_info=True)
+        return False
+
     def is_continuable(self, key: str) -> bool:
         """True iff *key* is registered as a continuable conversation."""
-        return self._fold_key(key) in self._continuable_keys
+        return self._is_continuable_key(self._fold_key(key))
 
     def resumable_sid(self, key: str) -> str | None:
         """Return the persisted sid for *key*, or None.
@@ -3263,7 +3303,7 @@ class SessionManager:
             if (
                 cleanup
                 and key.startswith(_SUBAGENT_PREFIX)
-                and key not in self._continuable_keys
+                and not self._is_continuable_key(key)
             ):
                 try:
                     session_id = session.provider.session_id
