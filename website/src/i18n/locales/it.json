@@ -6909,6 +6909,7 @@
         "light_or_dark_appearance_for_the_dashboard": "Aspetto chiaro o scuro per la dashboard",
         "local_folder": "Cartella locale",
         "mode": "Modalità",
+        "native_window_zoom_tip": "Zoom nativo della finestra, la stessa impostazione di {{mod}}+ / {{mod}}− (50%–300%). Viene mantenuto tra un avvio e l’altro.",
         "new_theme": "+ Nuovo tema",
         "no_color": "Nessun colore",
         "none_auto_cycle_or_pick_a_fixed_color": "Nessuno, ciclo automatico oppure scegli un colore fisso.",

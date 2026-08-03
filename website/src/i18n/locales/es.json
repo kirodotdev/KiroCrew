@@ -6909,6 +6909,7 @@
         "light_or_dark_appearance_for_the_dashboard": "Aspecto claro u oscuro del panel",
         "local_folder": "Carpeta local",
         "mode": "Modo",
+        "native_window_zoom_tip": "Zoom nativo de la ventana, el mismo ajuste que {{mod}}+ / {{mod}}− (50%–300%). Se recuerda entre inicios.",
         "new_theme": "+ Tema nuevo",
         "no_color": "Sin color",
         "none_auto_cycle_or_pick_a_fixed_color": "Ninguno, ciclo automático o elige un color fijo.",

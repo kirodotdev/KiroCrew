@@ -6833,6 +6833,7 @@
         "light_or_dark_appearance_for_the_dashboard": "Helles oder dunkles Erscheinungsbild für das Dashboard",
         "local_folder": "Lokaler Ordner",
         "mode": "Modus",
+        "native_window_zoom_tip": "Nativer Fensterzoom, dieselbe Einstellung wie {{mod}}+ / {{mod}}− (50–300 %). Wird über Neustarts hinweg beibehalten.",
         "new_theme": "+ Neues Theme",
         "no_color": "Keine Farbe",
         "none_auto_cycle_or_pick_a_fixed_color": "Keine, automatisch wechseln oder eine feste Farbe wählen.",

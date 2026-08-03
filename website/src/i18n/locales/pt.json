@@ -6909,6 +6909,7 @@
         "light_or_dark_appearance_for_the_dashboard": "Aparência clara ou escura para o dashboard",
         "local_folder": "Pasta local",
         "mode": "Modo",
+        "native_window_zoom_tip": "Zoom nativo da janela, a mesma configuração de {{mod}}+ / {{mod}}− (50%–300%). Fica salvo entre inicializações.",
         "new_theme": "+ Novo tema",
         "no_color": "Sem cor",
         "none_auto_cycle_or_pick_a_fixed_color": "Nenhuma, ciclo automático ou escolha uma cor fixa.",

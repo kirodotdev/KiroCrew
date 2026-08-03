@@ -6909,6 +6909,7 @@
         "light_or_dark_appearance_for_the_dashboard": "Apparence claire ou sombre du tableau de bord",
         "local_folder": "Dossier local",
         "mode": "Mode",
+        "native_window_zoom_tip": "Zoom natif de la fenêtre, le même réglage que {{mod}}+ / {{mod}}− (50–300 %). Conservé d’un lancement à l’autre.",
         "new_theme": "+ Nouveau thème",
         "no_color": "Aucune couleur",
         "none_auto_cycle_or_pick_a_fixed_color": "Aucune, rotation automatique, ou couleur fixe.",

@@ -6757,6 +6757,7 @@
         "light_or_dark_appearance_for_the_dashboard": "仪表板的浅色或深色外观",
         "local_folder": "本地文件夹",
         "mode": "模式",
+        "native_window_zoom_tip": "原生窗口缩放，与 {{mod}}+ / {{mod}}− 是同一项设置（50%–300%）。重新启动后仍保留。",
         "new_theme": "+ 新建主题",
         "no_color": "无颜色",
         "none_auto_cycle_or_pick_a_fixed_color": "无、自动轮换，或选择固定颜色。",

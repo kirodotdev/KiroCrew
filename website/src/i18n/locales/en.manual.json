@@ -2517,7 +2517,8 @@
         "edit_theme": "Edit Theme",
         "fetching": "Fetching…",
         "install": "Install",
-        "install_failed": "Install failed"
+        "install_failed": "Install failed",
+        "native_window_zoom_tip": "Native window zoom, the same setting as {{mod}}+ / {{mod}}− (50%–300%). Remembered across launches."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",

@@ -173,7 +173,7 @@ export function DisplayPanel() {
       <SettingsSection title={i18nT('pages.settings.displayPanel.zoom_font')}>
         <SettingsCard>
           {zoomSupported ? (
-            <SettingsStepper label={i18nT('pages.settings.displayPanel.zoom_level')} description={`Native window zoom, the same setting as ${modKey}+ / ${modKey}− (50%–300%). Remembered across launches.`} value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onReset={reset} />
+            <SettingsStepper label={i18nT('pages.settings.displayPanel.zoom_level')} description={i18nT('pages.settings.displayPanel.native_window_zoom_tip', { mod: modKey })} value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onReset={reset} />
           ) : (
             <div className="flex items-center justify-between gap-4 py-1.5">
               <div className="flex flex-col gap-0.5">

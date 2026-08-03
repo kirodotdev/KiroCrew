@@ -6833,6 +6833,7 @@
         "light_or_dark_appearance_for_the_dashboard": "डैशबोर्ड के लिए हल्का या गहरा रूप",
         "local_folder": "स्थानीय फ़ोल्डर",
         "mode": "मोड",
+        "native_window_zoom_tip": "नेटिव विंडो ज़ूम, वही सेटिंग जो {{mod}}+ / {{mod}}− है (50%–300%)। ऐप दोबारा खोलने पर भी याद रहती है।",
         "new_theme": "+ नई थीम",
         "no_color": "कोई रंग नहीं",
         "none_auto_cycle_or_pick_a_fixed_color": "कोई नहीं, स्वतः-चक्र, या कोई निश्चित रंग चुनें।",

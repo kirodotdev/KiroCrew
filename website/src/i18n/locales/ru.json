@@ -6985,6 +6985,7 @@
         "light_or_dark_appearance_for_the_dashboard": "Светлое или тёмное оформление панели управления",
         "local_folder": "Локальная папка",
         "mode": "Режим",
+        "native_window_zoom_tip": "Родной масштаб окна — та же настройка, что и {{mod}}+ / {{mod}}− (50–300 %). Сохраняется между запусками.",
         "new_theme": "+ Новая тема",
         "no_color": "Без цвета",
         "none_auto_cycle_or_pick_a_fixed_color": "Нет, автоперебор или фиксированный цвет.",
