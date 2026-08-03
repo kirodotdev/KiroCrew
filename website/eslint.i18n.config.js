@@ -191,9 +191,46 @@ export default [
               // copy takes.
               '^[a-z][a-zA-Z0-9]*(?:\\.[a-z][a-zA-Z0-9_]*)+$',
               '^[A-Z][A-Z0-9_]*$',
+              // lowercase_snake, the third member of the identifier family above and
+              // the one this codebase generates most: the backend is Python, so every
+              // wire field, enum value and decision token arrives snake_case
+              // (`trust_command`, `design_doc`, `pool_agent`). Without it those literals
+              // are exempt only when something else happens to cover them — for a while
+              // that was the broad comparison-callee exemption, which meant
+              // `['trust_command', 'trust_base'].includes(decision)` went quiet for the
+              // wrong reason and got noisy again the moment that exemption was narrowed.
+              // Naming the shape puts the exemption where the argument actually lives.
+              //
+              // Known false negative, stated: snake_case copy would be missed. It is not
+              // a shape UI copy takes — copy has spaces and capitals, which is what keeps
+              // `['Save changes', 'Delete item']` reported.
+              '^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$',
               '^[\\w.-]+/[\\w./-]*$',
-              '^https?://',
-              '^[.~]?/',
+              // EVERY PATTERN IN THIS FILE IS MATCHED FULL-STRING, so a prefix
+              // pattern MUST spell out its own tail. `eslint-plugin-i18next` compiles
+              // each entry with `generateFullMatchRegExp`, which appends `$` unless the
+              // source already ends in one:
+              //
+              //   `^https?://`  ->  /^^https?:\/\/$/    matched ONLY the bare scheme
+              //   `^[.~]?/`     ->  /^^[.~]?\/$/        matched ONLY `/`, `./`, `~/`
+              //
+              // Both were written as prefixes and so exempted nothing. The URL/path
+              // class was silently carried by the lowercase-token pattern above
+              // instead, whose character class holds no `*`, `?`, `_`, `=`, `&` or
+              // capital — so `/api/chat/*`, `/api/file_read`, `/api/chat?slot=1` and
+              // `https://kiro.dev/Docs` were all reported as untranslated copy. That is
+              // invisible on existing code (frozen in the ledgers, and both whole-repo
+              // ledger checks are report-only) and fails only NEW code, at
+              // `[added-lines]`/`[vs-base]` zero tolerance — a hole that bites none of
+              // the authors who caused it and every author who arrives later. Repairing
+              // the two patterns drops 53 findings tree-wide and adds none.
+              //
+              // `\S*` rather than a character class: a leading `/` or a scheme plus no
+              // whitespace is not a shape UI copy takes, and enumerating URL characters
+              // is what produced the hole. Known false negative, stated: a one-word
+              // slash-prefixed string (`'/Delete'`) is exempt.
+              '^https?://\\S*$',
+              '^[.~]?/\\S*$',
               // Tokens with no letters at all: separators, punctuation, symbols, numbers.
               // Written as an ASCII class on purpose. `[^\p{L}]` looks equivalent but a
               // JS regex without the `u` flag reads `\p{L}` as the character class
@@ -251,9 +288,60 @@ export default [
               // exclusion cannot mask a `call(...)`/`vq(...)` callee elsewhere.
               '^mdnbCall$', '^mdnbVaultQuery$',
               'setAttribute', 'getAttribute', 'removeAttribute', 'classList\\.\\w+',
-              // The translate functions themselves. Anchored: these are matched as
-              // regexes, so a bare 't' would exclude every callee whose name contains
-              // the letter t.
+              // STRING COMPARISON. The argument is the value being compared AGAINST,
+              // so that call cannot render it — the same reason the plugin already
+              // exempts `x === 'lit'` and `switch (x) { case 'lit': }` by position.
+              // Without this, `err.startsWith('backing off')` is reported while the
+              // byte-identical `err === 'backing off'` two lines away is not, purely
+              // because one is a CallExpression.
+              //
+              // This is a POSITION exemption, not a shape one, and that is the whole
+              // point: `'backing off'` as a wire-protocol token and `'backing off'` as
+              // a label are the same string, so no content regex can separate them.
+              // Position can — and the argument of `.startsWith()` is decidable.
+              //
+              // Scope note: a literal assigned to a named constant first and compared
+              // later is still reported, correctly — nothing at the declaration says it
+              // is a token rather than copy. Declaring the type
+              // (`const X: Wire = 'backing off'`) is how an author says that, and the
+              // plugin honours it via `getContextualType` — but only under a type-aware
+              // parser, which this config deliberately does not pay for.
+              //
+              // ANCHORED, and not the bare method names, because a callee exemption
+              // suppresses the WHOLE call subtree, receiver included. The plugin pushes
+              // the callee verdict on `CallExpression` enter and tests the stack with
+              // `.some()`, and `withDottedPrefix` compiles a bare `includes` to
+              // `/^(?:.*\.)?includes$/` whose `.*` absorbs anything before the dot. With
+              // the bare names, an inline table of UI copy tested for membership passed
+              // at zero tolerance:
+              //
+              //   ['Save changes', 'Delete item'].includes(x)      // 0 findings
+              //   (c ? 'Save changes' : 'Delete item').startsWith(s)
+              //   g('Save changes').includes(x)
+              //
+              // Requiring the receiver to be an identifier/property chain reports all
+              // three again. `(?:\(\))?` admits a zero-argument link
+              // (`text.trim().startsWith(…)`) because empty parens cannot hold a
+              // literal, while `g('Save changes')` still cannot match. `\s*` is there
+              // because the plugin matches the callee's SOURCE TEXT, so a chain the
+              // formatter broke across lines carries newlines — without it the gate
+              // would depend on line width.
+              //
+              // Known false positives, stated: a receiver that is not a plain chain is
+              // reported even when the call is a genuine comparison — `(a || b)`,
+              // `(await p)`, `(x as string)`, `arr[0]`, `o['k']`, `s.slice(0, 3)`,
+              // `a.filter(Boolean)`, or a comment spliced mid-chain. None occurs in
+              // `src/` today with a reportable literal. Widening to admit them means
+              // admitting `(…)` and `[…]`, which is the hole itself, so the cost is
+              // deliberately left on the false-positive side — the same trade the
+              // lowercase-token pattern above documents.
+              '^[\\w$]+!?(?:\\s*\\??\\.\\s*[\\w$]+!?(?:\\(\\))?)*\\s*\\??\\.\\s*'
+                + '(?:startsWith|endsWith|includes|indexOf|lastIndexOf|localeCompare)$',
+              // The translate functions themselves. Anchored to the bare name: the
+              // plugin wraps every callee pattern as `^(?:.*\.)?<pattern>$`, so an
+              // UNANCHORED entry already matches the whole callee text (`fetch` and
+              // `api.fetch`, never `prefetch`). A leading `^` opts out of the dotted
+              // prefix, which is what is wanted here — `i18nT`, not `obj.i18nT`.
               '^i18nT$', '^t$',
             ],
           },
