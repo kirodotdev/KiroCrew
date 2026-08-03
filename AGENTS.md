@@ -819,6 +819,29 @@ Apps can register gateway-level hooks via the App SDK:
 - Backend: pytest-timeout enforced, xdist loadgroup mode for parallel execution (`--dist loadgroup` so `xdist_group`-marked tests serialize on one worker)
 - Backend: security-critical modules require 80%+ coverage
 
+**Determinism and speed: read `docs/system-specs/common/testing-conventions.md`
+before "fixing" a flaky test or optimizing the suite.** It carries the four flake
+classes with their one correct fix each, and the profiling method. The short version:
+
+- **Never** fix a flake with a rerun, a longer `sleep`, or a weakened assertion. Seed
+  nondeterministic input; **poll** for a condition instead of sleeping a fixed span
+  (Windows' ~15.6ms timer granularity is what turns a 50ms wait into a CI failure); use
+  `MagicMock` for synchronous methods (an `AsyncMock` `write()` leaks a coroutine that
+  is reported against a *later* test); `await` a task after `cancel()`.
+- The suite is ~26.5k tests, so **per-test setup cost dominates, not slow tests**. An
+  autouse fixture chain cost 9.2ms per test before these fixes. Build expensive
+  immutable fixtures (real `git` repos above all) **once** at `scope="session"` and
+  `copytree` per test, copying from the template rather than yielding it.
+- Measure back to back on one machine (`git stash`, run, pop, run). `--store-durations`
+  numbers taken under `-n auto` include worker contention and overstate single tests, so
+  never *sum* them to predict a shard; run the shard (`--splits 4 --group N`) instead.
+- After any speedup, mutate the covered production code and confirm the test still
+  fails, because a test made faster by checking less is a regression. Restore it from
+  a `cp` backup, never `git checkout --` (that resets to HEAD and discards any unrelated
+  uncommitted work in the file, unrecoverably).
+- CI's 4 shards split by test count (no `.test_durations` is committed), which measures a
+  1.5× spread, close enough that outlier files, not the split, are the lever.
+
 ## Gateway Test Harness
 
 For integration tests and eval harnesses, use composable CLI flags:

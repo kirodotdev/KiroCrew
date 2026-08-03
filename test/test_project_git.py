@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -65,14 +66,30 @@ def _git(cwd, *args) -> None:
         cwd=str(cwd),
         check=True,
         capture_output=True,
-        env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"},
+        # Identity is pinned here as well as in conftest's autouse ``_git_identity``,
+        # which is FUNCTION-scoped and so does not cover the session-scoped template
+        # builder below. os.devnull rather than a literal /dev/null: this file is
+        # collected on Windows, where that path does not exist.
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        },
     )
 
 
-@pytest.fixture()
-def repo(tmp_path):
-    """A real git repo with one commit on branch ``trunk``."""
-    root = tmp_path / "proj"
+@pytest.fixture(scope="session")
+def _repo_template(tmp_path_factory):
+    """Build the one-commit ``trunk`` repo once per session; ``repo`` copies it.
+
+    The five git subprocesses below cost ~0.6s per test across 32 invocations. Session
+    scope is safe because the template is never handed to a test, only copied from.
+    """
+    root = tmp_path_factory.mktemp("project-git-seed") / "proj"
     root.mkdir()
     _git(root, "init", "-q", "-b", "trunk")
     _git(root, "config", "user.email", "t@example.com")
@@ -80,6 +97,14 @@ def repo(tmp_path):
     (root / "f.txt").write_text("x")
     _git(root, "add", "f.txt")
     _git(root, "commit", "-qm", "init")
+    return root
+
+
+@pytest.fixture()
+def repo(tmp_path, _repo_template):
+    """A real git repo with one commit on branch ``trunk``."""
+    root = tmp_path / "proj"
+    shutil.copytree(_repo_template, root)
     return root
 
 

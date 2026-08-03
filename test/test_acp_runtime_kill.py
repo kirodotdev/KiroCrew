@@ -43,8 +43,16 @@ def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
 
 @pytest.fixture(autouse=True)
 def _fast_kill_windows(monkeypatch):
-    monkeypatch.setattr(rt.AcpRuntime, "_KILL_TERM_TIMEOUT", 0.05)
-    monkeypatch.setattr(rt.AcpRuntime, "_KILL_REAP_TIMEOUT", 0.05)
+    """Make the two escalation waits time out without waiting for a real clock.
+
+    `kill()` only reaches the SIGKILL escalation and the liveness probe after both
+    `wait_for`s expire. At 0.05s that depended on the scheduler resuming a coroutine
+    inside 50ms, which a loaded runner (and Windows, ~15.6ms timer granularity) does
+    not promise. Zero makes `wait_for` raise on its first check: same code path,
+    reached deterministically with no sleeping.
+    """
+    monkeypatch.setattr(rt.AcpRuntime, "_KILL_TERM_TIMEOUT", 0)
+    monkeypatch.setattr(rt.AcpRuntime, "_KILL_REAP_TIMEOUT", 0)
 
 
 @pytest.mark.asyncio

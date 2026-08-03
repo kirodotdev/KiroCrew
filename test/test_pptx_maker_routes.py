@@ -27,6 +27,7 @@ import asyncio
 import base64
 import json
 import os
+import random
 import shutil
 import tempfile
 import unittest
@@ -43,6 +44,23 @@ from kiro_crew.apps.builtins.pptx_maker.backend import engine, paths, provision,
 # An AKIA-shaped access key ID. The canonical AWS documentation example, so it is
 # a real pattern match without being a live secret.
 _FAKE_AKIA = "AKIAIOSFODNN7EXAMPLE"
+
+# Verified clean against `_ENCODED_CREDENTIAL_RE` at every size used below.
+_RASTER_SEED = 20260803
+
+
+def _raster_body(size: int) -> bytes:
+    """`size` bytes of high-entropy but DETERMINISTIC raster payload.
+
+    These tests assert a genuine raster is *exempted* from redaction, which needs its
+    base64 body to carry no credential pattern. `os.urandom` cannot promise that:
+    `_ENCODED_CREDENTIAL_RE` matches the bare prefixes `xox[abposr]` and `sk-ant`, and
+    random base64 produces one ~1.07% of the time per 20 KB (measured 32/3000), which
+    made two of these the 3rd and 4th most frequent failures in CI. A fixed seed keeps
+    the payload high-entropy, which is the property under test since it is what makes
+    the bare-secret heuristic fire, while fixing the outcome on every host.
+    """
+    return random.Random(_RASTER_SEED).randbytes(size)
 
 
 def _enabled(value: bool):
@@ -375,7 +393,7 @@ class TestPreviewRedaction(_RoutesFixture):
         long base64-alphabet-looking runs, and rewriting one corrupts the image."""
         png = self.deck / "preview"
         png.mkdir()
-        raw = b"\x89PNG\r\n\x1a\n" + os.urandom(4096)
+        raw = b"\x89PNG\r\n\x1a\n" + _raster_body(4096)
         (png / "page1-x.png").write_bytes(raw)
         resp = await self._preview("preview/page1-x.png")
         self.assertEqual(resp.status, 200)
@@ -403,7 +421,7 @@ class TestPreviewRedaction(_RoutesFixture):
         # A real WebP header, then random compressed-image bytes — which is what
         # makes the bare-secret heuristic fire without the excision.
         webp = b"RIFF" + (20 * 1024).to_bytes(4, "little") + b"WEBP"
-        raster = base64.b64encode(webp + os.urandom(20 * 1024)).decode()
+        raster = base64.b64encode(webp + _raster_body(20 * 1024)).decode()
         (self.deck / "compose" / "intro_1.json").write_text(
             json.dumps(
                 {
@@ -451,7 +469,7 @@ class TestPreviewRedaction(_RoutesFixture):
         }
         for subtype, magic in rasters.items():
             with self.subTest(subtype=subtype):
-                blob = base64.b64encode(magic + os.urandom(9000)).decode()
+                blob = base64.b64encode(magic + _raster_body(9000)).decode()
                 (self.deck / "compose" / "intro_1.json").write_text(
                     json.dumps(
                         {
@@ -567,7 +585,7 @@ class TestRedactArtifactHelper(unittest.TestCase):
         self.assertIsNone(routes._scanned_bitmap_bytes("!!!not base64!!!"))
 
     def test_the_bitmap_probe_accepts_a_real_raster(self) -> None:
-        blob = base64.b64encode(b"\x89PNG\r\n\x1a\n" + os.urandom(64)).decode()
+        blob = base64.b64encode(b"\x89PNG\r\n\x1a\n" + _raster_body(64)).decode()
         self.assertIsNotNone(routes._scanned_bitmap_bytes(blob))
 
 
@@ -856,7 +874,7 @@ class TestLibraryRoutes(_RoutesFixture):
         This is the guard against over-redacting — an unguarded `redact()` eats a
         random raster as a bare secret and blanks every picture in every deck.
         """
-        clean = base64.b64encode(b"\x89PNG\r\n\x1a\n" + os.urandom(20000)).decode()
+        clean = base64.b64encode(b"\x89PNG\r\n\x1a\n" + _raster_body(20000)).decode()
         doc = '{"img": "data:image/png;base64,' + clean + '"}'
         self.assertIsNotNone(routes._scanned_bitmap_bytes(clean))
         self.assertEqual(routes._redact_artifact(doc.encode("utf-8")).decode("utf-8"), doc)
@@ -941,7 +959,7 @@ class TestLibraryRoutes(_RoutesFixture):
         """...and it goes through the bitmap-aware helper, not a bare redact():
         an unguarded pass over a raster eats it as a bare secret, which would
         silently blank the style preview."""
-        raster = base64.b64encode(b"\x89PNG\r\n\x1a\n" + os.urandom(4096)).decode()
+        raster = base64.b64encode(b"\x89PNG\r\n\x1a\n" + _raster_body(4096)).decode()
         styled = f'<html><body><img src="data:image/png;base64,{raster}"></body></html>'
         with _enabled(True), mock.patch.object(
             routes.library, "style_html", return_value=styled

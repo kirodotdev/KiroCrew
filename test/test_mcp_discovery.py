@@ -1515,6 +1515,11 @@ class TestProbeServerTimeout:
 
         mock_proc = AsyncMock()
         mock_proc.stdin = AsyncMock()
+        # `StreamWriter.write` is synchronous; only `drain()` is awaited. As an
+        # AsyncMock auto-child it returned a coroutine nobody awaits, surfacing later
+        # as an unraisable "never awaited" warning attributed to whichever test
+        # triggered the GC. The sibling test above already pins this.
+        mock_proc.stdin.write = MagicMock()
         mock_proc.stdin.close = MagicMock()
         mock_proc.stdout = AsyncMock()
         mock_proc.stdout.readline = AsyncMock(side_effect=asyncio.TimeoutError)

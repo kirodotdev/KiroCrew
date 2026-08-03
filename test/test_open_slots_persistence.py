@@ -751,6 +751,13 @@ def test_restore_open_slots_async_yields_between_tabs(tmp_path, monkeypatch):
         restored = await restore_open_slots_async(state2)
         stop = True
         t.cancel()
+        # `cancel()` only requests cancellation; without awaiting it the ticker is
+        # still live when `asyncio.run` tears the loop down, leaving a "coroutine
+        # ignored GeneratorExit" for a later test to trip over.
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
         return restored
 
     restored = asyncio.run(_drive())

@@ -537,10 +537,23 @@ class TestFailOpen:
 
         Pins the boot-path contract: even a beacon that hangs far past its own
         timeout costs the caller only the thread spawn.
+
+        The hang is RELEASED at the end rather than left running. ``beacon.send``
+        resolves state through the module-global ``config_dir``, which
+        ``_isolated_home`` repoints per test -- so a thread still inside ``send``
+        when this test ends goes on to mint ``beacon_install_id`` in whichever
+        LATER test's home is installed by then, and
+        ``TestStatusOutput.test_status_does_not_create_id`` then fails for
+        something this test did. Reproduced by running this file followed by any
+        second file; a uuid4 stack trace showed the id being minted on this thread.
         """
+        released = threading.Event()
 
         def hang(*_a, **_k):
-            time.sleep(30)
+            # Indistinguishable from a 30s hang at the assertion below -- still
+            # unfinished when it runs -- but releasable before teardown.
+            released.wait(30)
+            raise OSError("released")
 
         monkeypatch.setattr(beacon.urllib.request, "urlopen", hang)
         start = time.monotonic()
@@ -554,6 +567,9 @@ class TestFailOpen:
         elapsed = time.monotonic() - start
         assert elapsed < 1.0, f"spawning the beacon cost {elapsed:.2f}s"
         assert thread.daemon, "must not pin interpreter exit"
+        released.set()
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "the beacon thread outlived its test"
 
     def test_gateway_wiring_is_detached_and_daemon(self):
         """The gateway must never await the beacon.

@@ -23,6 +23,9 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.pptx_maker.backend import decks, paths
 
@@ -245,9 +248,13 @@ class TestListDecks(_DeckTree):
         )
 
     def test_listing_is_capped(self) -> None:
-        for i in range(decks.MAX_DECKS + 5):
-            self._write(self._deck(f"2026-{i:04d}") / "deck.json", "{}")
-        self.assertEqual(len(decks.list_decks()), decks.MAX_DECKS)
+        # Shrink the cap instead of materializing MAX_DECKS+5 (505) real directories.
+        # The break being tested is the same at 5; building 505 deck trees was ~1010
+        # filesystem syscalls for no extra coverage.
+        with mock.patch.object(decks, "MAX_DECKS", 5):
+            for i in range(decks.MAX_DECKS + 5):
+                self._write(self._deck(f"2026-{i:04d}") / "deck.json", "{}")
+            self.assertEqual(len(decks.list_decks()), decks.MAX_DECKS)
 
 
 class TestDeckDetail(_DeckTree):
@@ -414,7 +421,7 @@ class TestAgentMetadataIsRedacted:
         assert _FAKE_AWS_SECRET not in name
         assert "REDACTED" in name
 
-    def test_a_credential_shaped_deck_ID_is_refused_entirely(self, tmp_path: Path):
+    def test_a_credential_shaped_deck_ID_is_refused_entirely(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """The deck ID is the one agent-authored field that cannot be redacted on the
         way out — it is the directory name, the `preview/<deckId>/...` URL segment and
         the handle every later request sends back, so rewriting it would break the deck.
@@ -432,7 +439,7 @@ class TestAgentMetadataIsRedacted:
             (deck / "specs").mkdir(parents=True)
             (deck / "deck.json").write_text("{}", encoding="utf-8")
             (deck / "specs" / "brief.md").write_text("ordinary brief", encoding="utf-8")
-        os.environ[paths.DECK_ROOT_ENV] = str(root)
+        monkeypatch.setenv(paths.DECK_ROOT_ENV, str(root))
 
         rows = decks.list_decks()
 
@@ -441,7 +448,7 @@ class TestAgentMetadataIsRedacted:
         # And the deck cannot be reached by asking for it directly either.
         assert decks.deck_detail(f"20260101-{_FAKE_AKIA}") is None
 
-    def test_a_credential_shaped_slide_slug_is_skipped(self, tmp_path: Path):
+    def test_a_credential_shaped_slide_slug_is_skipped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """The same leak as the deck ID, one level down — and reachable only by the
         FALLBACK slug path, which is why the outline's grammar is not a defence.
 
@@ -469,7 +476,7 @@ class TestAgentMetadataIsRedacted:
         for slug in (_FAKE_AKIA, "intro"):
             (deck / "slides" / f"{slug}.json").write_text("{}", encoding="utf-8")
             (deck / "compose" / f"{slug}.json").write_text("{}", encoding="utf-8")
-        os.environ[paths.DECK_ROOT_ENV] = str(root)
+        monkeypatch.setenv(paths.DECK_ROOT_ENV, str(root))
 
         detail = decks.deck_detail("20260101-demo")
 
@@ -479,7 +486,7 @@ class TestAgentMetadataIsRedacted:
         # the previewUrl / composeUrl strings built from it.
         assert _FAKE_AKIA not in json.dumps(detail)
 
-    def test_a_credential_shaped_thumbnail_filename_is_refused(self, tmp_path: Path):
+    def test_a_credential_shaped_thumbnail_filename_is_refused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Third instance of one class, which is why the guard is in `_preview_url`.
 
         The engine names preview PNGs, so the filename is agent-authored and
@@ -497,7 +504,7 @@ class TestAgentMetadataIsRedacted:
         (deck / "specs" / "brief.md").write_text("ordinary brief", encoding="utf-8")
         (deck / "deck.json").write_text("{}", encoding="utf-8")
         (deck / "preview" / f"{_FAKE_AKIA}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-        os.environ[paths.DECK_ROOT_ENV] = str(root)
+        monkeypatch.setenv(paths.DECK_ROOT_ENV, str(root))
 
         rows = decks.list_decks()
 
@@ -505,7 +512,7 @@ class TestAgentMetadataIsRedacted:
         assert rows[0]["thumbnailUrl"] is None
         assert _FAKE_AKIA not in json.dumps(rows)
 
-    def test_an_ordinary_thumbnail_is_still_linked(self, tmp_path: Path):
+    def test_an_ordinary_thumbnail_is_still_linked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """The screen must not drop honest artifact URLs — a refusal-only test would
         pass against a builder that returned `None` for everything."""
         root = tmp_path / "decks"
@@ -515,14 +522,14 @@ class TestAgentMetadataIsRedacted:
         (deck / "specs" / "brief.md").write_text("ordinary brief", encoding="utf-8")
         (deck / "deck.json").write_text("{}", encoding="utf-8")
         (deck / "preview" / "page_1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-        os.environ[paths.DECK_ROOT_ENV] = str(root)
+        monkeypatch.setenv(paths.DECK_ROOT_ENV, str(root))
 
         rows = decks.list_decks()
 
         assert rows[0]["thumbnailUrl"] == "preview/20260102-demo/preview/page_1.png"
 
     @unittest.skipUnless(hasattr(os, "link"), "needs hardlinks")
-    def test_hardlinked_deck_files_are_not_read(self, tmp_path: Path):
+    def test_hardlinked_deck_files_are_not_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """A HARDLINK is what `contained_deck_file` cannot see.
 
         It resolves and re-checks containment, which stops a symlink — but a hardlink
@@ -551,7 +558,7 @@ class TestAgentMetadataIsRedacted:
         (good / "deck.json").write_text(json.dumps({"name": "Quarterly"}), encoding="utf-8")
         (good / "specs" / "brief.md").write_text("a real brief", encoding="utf-8")
 
-        os.environ[paths.DECK_ROOT_ENV] = str(root)
+        monkeypatch.setenv(paths.DECK_ROOT_ENV, str(root))
         rows = decks.list_decks()
 
         assert "SECRETUSER" not in json.dumps(rows)

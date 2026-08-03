@@ -86,6 +86,12 @@ _APP = AppRef(name="Fixture", pid=4242, bundle_id="dev.kirocrew.fixture", window
 def fakes(monkeypatch: pytest.MonkeyPatch):
     """Install the fake frameworks and force a re-bind (see test_computer_use_ffi)."""
     fake = _Fakes()
+    # The fake trees are deliberately smaller than ELECTRON_STUB_NODE_THRESHOLD, so
+    # nearly every test took the opt-in retry path and slept its full 2s budget --
+    # ~2s x 119 tests, the slowest file in the suite. Nothing asserts on the poll
+    # interval, only on the retry behaviour, which still runs.
+    monkeypatch.setattr(macos_ffi, "ELECTRON_OPT_IN_WAIT_SECS", 0.0)
+    monkeypatch.setattr(macos_ffi, "ELECTRON_OPT_IN_POLL_SECS", 0.0)
     monkeypatch.setattr(platform_compat, "IS_MACOS", True)
     monkeypatch.setattr(macos_ffi.platform_compat, "IS_MACOS", True, raising=False)
     monkeypatch.setattr(permissions.platform_compat, "IS_MACOS", True, raising=False)
