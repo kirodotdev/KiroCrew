@@ -3034,11 +3034,6 @@
       "make_it_yours": "Rendilo tuo.",
       "next": "Avanti",
       "pick_your_look": "Scegli il tuo aspetto",
-      "privacy_eyebrow": "Privacy",
-      "privacy_panel_body": "I tuoi prompt, file e credenziali non lasciano mai il tuo computer. Raccogliamo il minimo indispensabile: cinque campi anonimi.",
-      "privacy_panel_headline": "Il controllo resta a te",
-      "privacy_subtitle": "I cinque campi anonimi che Kiro Crew invia e come disattivarli.",
-      "privacy_title": "Privacy",
       "saving": "Salvataggio in corso…",
       "set_your_look_and_tell_kiro_about_you_so_respons": "Scegli il tuo aspetto e racconta a Kiro chi sei, così le risposte si adattano al tuo modo di lavorare.",
       "skip": "Salta",
@@ -3770,6 +3765,12 @@
       "select": "Seleziona",
       "workspace_name": "Nome del workspace",
       "workspace_name_2": "workspace-name"
+    },
+    "privacyChapter": {
+      "continue": "Continua",
+      "eyebrow": "Privacy",
+      "subtitle": "I cinque campi anonimi che Kiro Crew invia e come disattivarli.",
+      "title": "Privacy"
     }
   },
   "hooks": {

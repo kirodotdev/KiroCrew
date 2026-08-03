@@ -47,6 +47,17 @@ vi.mock('../api/client', () => ({
       skipped: [],
       merge_only: true,
     }),
+    onboardingImportState: vi.fn().mockResolvedValue({}),
+    // The first-run Privacy chapter renders the real TelemetryToggle.
+    beaconStatus: vi.fn().mockResolvedValue({
+      enabled: true,
+      would_send: true,
+      reason: 'ready',
+      endpoint_configured: true,
+      env_override: false,
+      env_var: 'KIROCREW_TELEMETRY_DISABLED',
+    }),
+    patchConfig: vi.fn().mockResolvedValue({}),
   },
   // Default to "no auth banner showing" so existing App tests render the
   // normal connected/offline pill paths. The dedicated auth-banner
@@ -144,6 +155,156 @@ describe('App routing', () => {
     })
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+    })
+  })
+
+  // ── First-run chapter order: Import setup → Privacy → Customize ───────────
+  // Privacy is MANDATORY, so these cover the two ways out of chapter 1: it
+  // completing with nothing to import, and "Skip all".
+  describe('first-run Privacy chapter', () => {
+    const freshFirstRun = async () => {
+      const { api } = await import('../api/client')
+      localStorage.clear()
+      vi.mocked(api.updateThemeConfig).mockClear()
+      vi.mocked(api.themeBoot).mockResolvedValue({
+        mode: '',
+        color: '',
+        onboarded: false,
+        import_onboarded: false,
+      } as never)
+      return api
+    }
+
+    it('opens after Import setup and gates the Customize chapter', async () => {
+      await freshFirstRun()
+      // Nothing to import: the import chapter completes itself, and Privacy is
+      // still shown rather than skipped along with it.
+      renderWithProviders(<App />, { route: '/chat' })
+
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
+      expect(within(dialog).getByText('Anonymous daily heartbeat')).toBeInTheDocument()
+      // Mandatory: no way past it but forward.
+      expect(within(dialog).queryByRole('button', { name: /skip/i })).not.toBeInTheDocument()
+      // The Customize chapter must not be reachable behind it.
+      expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+
+      expect(await screen.findByText('Pick your look')).toBeInTheDocument()
+      expect(localStorage.getItem('mc-privacy-acked')).toBe('1')
+    })
+
+    it('"Skip all" from the Customize chapter ends first run without re-showing Privacy', async () => {
+      const api = await freshFirstRun()
+      renderWithProviders(<App />, { route: '/chat' })
+
+      // Chapter 1 (nothing to import) → Privacy → Customize.
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+      expect(await screen.findByText('Pick your look')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Skip all setup and onboarding' }))
+
+      // Privacy is already behind the user, so the skip lands in the product.
+      await waitFor(() =>
+        expect(api.updateThemeConfig).toHaveBeenCalledWith({ onboarded: true }))
+      expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument()
+      expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+    })
+
+    it('"Skip all" still lands on Privacy, then ends first run', async () => {
+      const api = await freshFirstRun()
+      vi.mocked(api.onboardingImportScan).mockResolvedValueOnce({
+        sources: [{
+          id: 'codex',
+          name: 'Codex',
+          detected: true,
+          detail: '~/.codex',
+          categories: [{
+            id: 'instructions',
+            label: 'Instructions',
+            count: 2,
+            description: 'Agent instructions',
+          }],
+        }],
+        skipped: [],
+        merge_only: true,
+      } as never)
+
+      renderWithProviders(<App />, { route: '/chat' })
+
+      const importDialog = await screen.findByRole('dialog', { name: 'Import agent setup' })
+      fireEvent.click(
+        within(importDialog).getByRole('button', { name: 'Skip all setup and onboarding' }),
+      )
+
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
+      // Skipping everything does not skip the disclosure — but nothing follows it.
+      expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+
+      await waitFor(() =>
+        expect(api.updateThemeConfig).toHaveBeenCalledWith({ onboarded: true }))
+      expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+    })
+
+    // Escape IS "Skip all" — same routing, from a keystroke instead of the
+    // header control. Asserted end-to-end because the two halves live apart:
+    // the flow reports a skip, and App is what owes the user Privacy first.
+    it('Escape in Import setup lands on Privacy, then ends first run', async () => {
+      const api = await freshFirstRun()
+      vi.mocked(api.onboardingImportScan).mockResolvedValueOnce({
+        sources: [{
+          id: 'codex',
+          name: 'Codex',
+          detected: true,
+          detail: '~/.codex',
+          categories: [{
+            id: 'instructions',
+            label: 'Instructions',
+            count: 2,
+            description: 'Agent instructions',
+          }],
+        }],
+        skipped: [],
+        merge_only: true,
+      } as never)
+
+      renderWithProviders(<App />, { route: '/chat' })
+      await screen.findByRole('dialog', { name: 'Import agent setup' })
+
+      fireEvent.keyDown(document, { key: 'Escape' })
+
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
+      expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+
+      // Escape skipped the REST of first run, so Customize never opens.
+      await waitFor(() =>
+        expect(api.updateThemeConfig).toHaveBeenCalledWith({ onboarded: true }))
+      expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+    })
+
+    // A tree whose import chapter was completed by a build that PREDATES the
+    // Privacy chapter: `mc-import-onboarded` is set, `mc-privacy-acked` is not.
+    // The tour is seeded from localStorage BEFORE theme boot resolves, so this
+    // holds boot pending — the window in which the derive effect cannot yet
+    // correct anything, and the only thing standing between "Done" and the end
+    // of first run is the guard on the completion path itself.
+    it('cannot end first run from the pre-boot tour when Privacy is unacknowledged', async () => {
+      const api = await freshFirstRun()
+      localStorage.setItem('mc-import-onboarded', '1')
+      // Boot never resolves for the duration of this test.
+      vi.mocked(api.themeBoot).mockReturnValueOnce(new Promise(() => {}) as never)
+
+      renderWithProviders(<App />, { route: '/chat' })
+
+      // The seed must NOT put Customize on screen ahead of the disclosure.
+      expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+      // And nothing may have marked first run complete.
+      expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
     })
   })
 

@@ -2946,11 +2946,6 @@
       "make_it_yours": "打造你的专属体验。",
       "next": "下一步",
       "pick_your_look": "选择外观",
-      "privacy_eyebrow": "隐私",
-      "privacy_panel_body": "你的提示词、文件和凭证绝不会离开你的设备。我们尽可能少地收集数据——只有五个匿名字段。",
-      "privacy_panel_headline": "一切由你掌控",
-      "privacy_subtitle": "Kiro Crew 发送的五个匿名字段，以及如何关闭。",
-      "privacy_title": "隐私",
       "saving": "保存中…",
       "set_your_look_and_tell_kiro_about_you_so_respons": "设置外观并告诉 Kiro 你的情况，让回复贴合你的工作方式。",
       "skip": "跳过",
@@ -3672,6 +3667,12 @@
       "select": "选择",
       "workspace_name": "工作区名称",
       "workspace_name_2": "workspace-name"
+    },
+    "privacyChapter": {
+      "continue": "继续",
+      "eyebrow": "隐私",
+      "subtitle": "Kiro Crew 发送的五个匿名字段，以及如何关闭。",
+      "title": "隐私"
     }
   },
   "hooks": {

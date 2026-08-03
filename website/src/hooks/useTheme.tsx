@@ -739,9 +739,20 @@ export interface ThemeContextValue {
   themeVersion: number
   onboarded: boolean
   importOnboarded: boolean
+  /**
+   * Has the user seen the mandatory first-run Privacy chapter?
+   *
+   * Browser-local on purpose, unlike `onboarded` / `importOnboarded`: it only
+   * ever gates a screen INSIDE first run, and a finished first run (`onboarded`,
+   * which IS server-backed) implies it — so a second machine never re-shows the
+   * chapter to someone who already completed onboarding, and no config field is
+   * needed to say so.
+   */
+  privacyAcked: boolean
   themeBootReady: boolean
   markOnboarded: () => void
   markImportOnboarded: () => void
+  markPrivacyAcked: () => void
   addCustomTheme: (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => Promise<CustomThemeData>
   deleteCustomTheme: (slug: string) => Promise<void>
   loadCustomThemes: () => Promise<void>
@@ -815,6 +826,12 @@ function useThemeState(): ThemeContextValue {
   const [customThemesLoaded, setCustomThemesLoaded] = useState(false)
   const [importOnboarded, setImportOnboarded] = useState(
     () => !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded'),
+  )
+  // Seeded from `mc-onboarded` as well as its own flag: a user who finished
+  // first run before this chapter existed (or on another machine) has no reason
+  // to be shown it now.
+  const [privacyAcked, setPrivacyAcked] = useState(
+    () => !!localStorage.getItem('mc-privacy-acked') || !!localStorage.getItem('mc-onboarded'),
   )
   const legacyOnboardedRef = useRef(
     !!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-import-onboarded'),
@@ -904,6 +921,8 @@ function useThemeState(): ThemeContextValue {
         legacyMigrationStartedRef.current = true
         setOnboarded(true)
         setImportOnboarded(true)
+        setPrivacyAcked(true)
+        safeSetItem('mc-privacy-acked', '1')
         persistTheme(
           { onboarded: true, import_onboarded: true },
           {
@@ -918,6 +937,10 @@ function useThemeState(): ThemeContextValue {
           setOnboarded(bootData.onboarded)
           if (bootData.onboarded) {
             safeSetItem('mc-onboarded', '1')
+            // A completed first run passed through the Privacy chapter (or
+            // predates it) — the server flag is the durable record of both.
+            safeSetItem('mc-privacy-acked', '1')
+            setPrivacyAcked(true)
           } else {
             localStorage.removeItem('mc-onboarded')
           }
@@ -1117,6 +1140,11 @@ function useThemeState(): ThemeContextValue {
     setImportOnboarded(true)
   }, [])
 
+  const markPrivacyAcked = useCallback(() => {
+    safeSetItem('mc-privacy-acked', '1')
+    setPrivacyAcked(true)
+  }, [])
+
   return {
     theme: resolved,
     preference: mode,
@@ -1132,9 +1160,11 @@ function useThemeState(): ThemeContextValue {
     themeVersion,
     onboarded,
     importOnboarded,
+    privacyAcked,
     themeBootReady,
     markOnboarded,
     markImportOnboarded,
+    markPrivacyAcked,
     addCustomTheme,
     deleteCustomTheme,
     loadCustomThemes,

@@ -996,11 +996,6 @@
       "done": "Done",
       "make_it_yours": "Make it yours.",
       "next": "Next",
-      "privacy_eyebrow": "Privacy",
-      "privacy_panel_body": "Your prompts, files, and credentials never leave your machine. We collect as little as possible — five anonymous fields.",
-      "privacy_panel_headline": "You stay in control",
-      "privacy_subtitle": "The five anonymous fields Kiro Crew sends, and how to turn them off.",
-      "privacy_title": "Privacy",
       "saving": "Saving…",
       "set_your_look_and_tell_kiro_about_you_so_respons": "Set your look and tell Kiro about you so responses fit the way you work.",
       "pop_apps_body": "Install purpose-built tools that unlock new capabilities and workflows.",
@@ -1322,6 +1317,12 @@
       "desc_todos": "Show or manage the task list",
       "desc_tools": "Show available tools",
       "desc_usage": "Show billing and usage information"
+    },
+    "privacyChapter": {
+      "continue": "Continue",
+      "eyebrow": "Privacy",
+      "subtitle": "The five anonymous fields Kiro Crew sends, and how to turn them off.",
+      "title": "Privacy"
     }
   },
   "hooks": {

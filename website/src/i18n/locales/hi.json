@@ -2990,11 +2990,6 @@
       "make_it_yours": "इसे अपने मन का बनाएँ।",
       "next": "आगे",
       "pick_your_look": "अपना लुक चुनें",
-      "privacy_eyebrow": "गोपनीयता",
-      "privacy_panel_body": "तुम्हारे प्रॉम्प्ट, फ़ाइलें और क्रेडेंशियल कभी तुम्हारी मशीन से बाहर नहीं जाते। हम कम से कम इकट्ठा करते हैं — पाँच अनाम फ़ील्ड।",
-      "privacy_panel_headline": "नियंत्रण तुम्हारे पास रहता है",
-      "privacy_subtitle": "Kiro Crew जो पाँच अनाम फ़ील्ड भेजता है, और उन्हें कैसे बंद करना है।",
-      "privacy_title": "गोपनीयता",
       "saving": "सहेजा जा रहा है…",
       "set_your_look_and_tell_kiro_about_you_so_respons": "अपना लुक चुनें और Kiro को अपने बारे में बताएँ, ताकि जवाब काम करने के तरीके से मेल खाएँ।",
       "skip": "छोड़ें",
@@ -3721,6 +3716,12 @@
       "select": "चुनें",
       "workspace_name": "वर्कस्पेस का नाम",
       "workspace_name_2": "workspace-name"
+    },
+    "privacyChapter": {
+      "continue": "जारी रखें",
+      "eyebrow": "गोपनीयता",
+      "subtitle": "Kiro Crew जो पाँच अनाम फ़ील्ड भेजता है, और उन्हें कैसे बंद करना है।",
+      "title": "गोपनीयता"
     }
   },
   "hooks": {
