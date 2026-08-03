@@ -485,6 +485,34 @@ class TestCompile:
         assert payload["ok"] is False
         assert payload["errors"][0]["line"] == 9
 
+    async def test_a_sandbox_refusal_carries_the_remedy_in_log(
+        self, enabled: None, project: Path
+    ) -> None:
+        """The remedy must ride `log`, because that is the field the client renders.
+
+        `api.ts`'s contract is "if the body has `ok`, it IS a CompileResult", so a
+        body carrying `ok` plus only a sibling `error` short-circuits that branch and
+        the remedy is discarded — leaving an empty diagnostics pane on the one
+        failure a user cannot diagnose from the document. Reachable on every Windows
+        host, which has no OS sandbox backend at all.
+        """
+        result = latex.CompileResult(
+            ok=False, sandbox_error="Sandbox backend unavailable: set agent.foo=true"
+        )
+        with mock.patch.object(latex, "compile_project", mock.AsyncMock(return_value=result)):
+            response = await routes._handle_compile(
+                _request("POST", "/api/apps/papyrus/compile", {"name": "my-paper"})
+            )
+        assert response.status == 422
+        payload = _json_of(response)
+        assert payload["code"] == "compiler_sandbox_unavailable"
+        # The whole CompileResult shape, so the client's `'ok' in data` branch
+        # renders it instead of falling through to a bare status line.
+        assert payload["ok"] is False
+        assert "agent.foo=true" in payload["log"]
+        assert payload["errors"] == []
+        assert payload["duration_ms"] == 0
+
     async def test_compiles_the_resolved_main_document(self, enabled: None, project: Path) -> None:
         (project / "main.tex").unlink()
         (project / "amlc.tex").write_text("", encoding="utf-8")

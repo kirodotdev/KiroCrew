@@ -1,6 +1,6 @@
 # Papyrus Module
 
-Last Updated: 2026-07-31
+Last Updated: 2026-08-03
 
 ## Overview
 
@@ -36,18 +36,19 @@ gateway startup and an unwrapped one would answer regardless of the opt-in.
 | POST | `/projects` | Create a paper from the standard `article` template (or a supplied `template`) |
 | POST | `/projects/clone` | Shallow-clone a git remote as a paper. A repo with no `.tex` is rejected **and removed**, so the name is not held hostage by an unopenable project |
 | GET | `/project` | Resolved main document + file list + PDF presence |
-| DELETE | `/project` | Delete a paper and its tree |
+| DELETE | `/project` | Delete a paper and its tree. **500 `project_delete_incomplete`** when the tree survives the removal — the old `ignore_errors` path answered `ok: true` over a partial delete, so the name stayed taken with no explanation |
 | GET | `/files` | The paper's file list |
 | GET | `/file` | Read one file as UTF-8 text |
 | PUT | `/file` | Save one file (atomic, `newline=""`) |
 | POST | `/file` | Create a file, refusing to clobber |
 | DELETE | `/file` | Delete a file; the main document is refused |
 | PUT | `/main` | Choose which `.tex` is the main document |
-| POST | `/compile` | Compile and return `{ok, log, errors[], duration_ms}`. **422 on a failed compile, and the log/diagnostics still ride the response** — that payload is exactly what the user needs to fix the document |
+| POST | `/compile` | Compile and return `{ok, log, errors[], duration_ms}`. **422 on a failed compile, and the log/diagnostics still ride the response** — that payload is exactly what the user needs to fix the document. **422 `compiler_sandbox_unavailable`** is the distinct case where this host could not build an OS-level sandbox, so the compiler never ran (see Platform) |
 | GET | `/pdf` | Serve the compiled PDF (see Security) |
 | GET | `/git` | Branch, dirtiness, ahead/behind, recent commits — or `{is_git: false}` |
 | POST | `/git/commit` | Stage all + commit. "Nothing to commit" is a **success** |
 | POST | `/git/push` | Push. **401** on an auth failure (distinct from 422) so the UI can say "log in" |
+| — | (all git routes) | **422 `git_sandbox_unavailable`** when the host has no sandbox backend, so git never ran (see Platform) |
 | POST | `/git/pull` | Rebase-pull with autostash. **409** on a conflict |
 
 ## Storage Schema
@@ -79,16 +80,59 @@ accepted name — pinned by
 A LaTeX editor writes user-controlled relative paths and hands a directory to an
 external compiler, so two functions own every filesystem decision:
 
-- **`safe_project_dir(name)`** — the name must match `PROJECT_NAME_RE`, and the
-  resolved directory must sit inside `projects_dir()` (which also catches a
-  symlinked project entry).
+- **`safe_project_dir(name)`** — the name must match `PROJECT_NAME_RE`; a
+  **symlink OR Windows junction at the project entry is refused outright** (like
+  `_config_path`: this is a directory KiroCrew creates, so a link there is
+  illegitimate wherever it points); and the resolved directory must be a **strict
+  child** of `projects_dir()`.
+
+  Junctions matter because `is_symlink()` does not report them — they are reparse
+  points — and they are the link type a Windows user can create WITHOUT elevation.
+  A symlink-only guard was therefore bypassable on exactly the platform this app
+  now supports. `store.is_reparse_link` is the shared answer (used here and by
+  `gitops`'s attributes guard) so the two cannot drift on which link types they
+  cover; `os.path.isjunction` is 3.12+ and always `False` off Windows, resolved
+  once via `getattr` the same way `apps/manager.py` does.
+
+  The strictness is load-bearing. The check previously read
+  `resolved != base_resolved and base_resolved not in resolved.parents`, and
+  `projects/<name> -> .` satisfied the first disjunct exactly — resolving the
+  "project" to the projects ROOT. Every other paper then counted as a child, so
+  `safe_child` accepted `other-paper/main.tex` as an in-project path (cross-project
+  read **and** write), and `DELETE /project` ran `rmtree` on the projects root,
+  destroying every paper. `projects_dir` itself is never a project, so nothing
+  legitimate needed the equality case.
 - **`safe_child(project, relative)`** — rejects empty/over-long paths, absolute
   POSIX **and** Windows/UNC paths, **backslashes anywhere** (a separator on
   Windows, so a `/`-only check would be a bypass), NUL bytes, any `..`/`.`/empty
-  segment, and — after `resolve()` — anything landing outside the project. That
-  last check is what catches a **symlink escape**, where every segment looks
-  innocent but a link points out of the tree; a cloned repo can ship one. Both
-  the file-link and the mid-path directory-link variants are pinned.
+  segment, **anything under `.git`** (see below), and — after `resolve()` —
+  anything landing outside the project. That last check is what catches a
+  **symlink escape**, where every segment looks innocent but a link points out of
+  the tree; a cloned repo can ship one. Both the file-link and the mid-path
+  directory-link variants are pinned.
+
+  **`.git` is refused at any depth, case-insensitively, on the RESOLVED path.**
+  Containment cannot cover it: `.git/config`, `.git/info/attributes` and
+  `.git/hooks/*` are all legitimately INSIDE the project, so every other rule above
+  passes them — but they are not document content, they decide what `git` EXECUTES
+  (`filter.<x>.clean`, `core.*Command`, hooks run directly). Without the rule,
+  `PUT /file` turned "edit a file in my paper" into code execution on the next
+  commit or push — i.e. on the path that deliberately runs in `standard` sandbox
+  mode with `~/.ssh` readable.
+
+  **Requested AND resolved** — neither alone is enough, because a symlink moves
+  `.git` in either direction. Requested-only misses `meta -> .git` + `meta/config`
+  (no `.git` in the request, resolves straight into the machinery).
+  Resolved-only misses `.git/config -> ../repo-config` (the request names `.git`,
+  resolution leaves it, and git still READS that file as its config through its own
+  path). The rule is not "where do the bytes live" but "never write anything git
+  treats as config", so both are checked. The resolved comparison is against the
+  project-RELATIVE part, so a `.git` component in an absolute path *above* the
+  project (a data home that itself sits inside a checkout) cannot refuse every
+  legitimate file. Case-insensitive because macOS and
+  Windows resolve `.GIT` to the same directory; at any depth because a submodule's
+  `.git` has the same execution surface. The app's own git work goes through
+  `gitops`, and `list_files` already hides dotfiles, so nothing legitimate is lost.
 
 Both also consult the shared `security.is_sensitive_path()`, so a project that
 somehow sat beside a credential store still could not read it.
@@ -133,6 +177,18 @@ The PDF is content the agent or a cloned repo produced, so
 `Content-Security-Policy: sandbox; default-src 'none'; object-src 'none'`,
 `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. It therefore
 cannot script the dashboard's origin. Pinned by `test_routes.py::TestPdf`.
+
+That **per-response** header is the containment, and it does not depend on which
+element embeds the document — which matters, because the pane embeds the PDF in an
+**`<iframe>`, not an `<object>`**. The dashboard's own base CSP
+(`dashboard/server.py`) sets `object-src 'none'`, so Chromium and Firefox refused
+the plugin document and the app's headline feature rendered its
+"cannot display a PDF inline" fallback; it went unnoticed because WebKit does not
+enforce the directive for this case, so it worked in Safari. `frame-src 'self'`
+already permits a same-origin frame, so no CSP was widened. The download
+affordance is now persistent chrome rather than replaced content, since an
+`<iframe>` has no fallback children. Pinned by
+`website/src/test/PapyrusPdfPreview.test.tsx`.
 
 ## Event-loop discipline
 
@@ -402,6 +458,78 @@ half-written file can never read as a usable compiler.
 - **Push** — auth failures are classified across transports (`_AUTH_MARKERS`) and
   surface as **401**, so the UI can say "log in" rather than "something broke".
 
+### Repo config cannot execute a command (and the assumption this rests on)
+
+**The threat.** A cloned repository — or the co-author agent, which can write into
+the project — controls `.git/config` and `.git/info/attributes`, and a dozen git
+config keys name an *executable* git will run. Push deliberately runs in
+`standard` sandbox mode (an SSH push needs the key), so on that path the OS
+sandbox does **not** back this up: the denylist is the load-bearing control.
+
+`_git` therefore neutralizes three classes, each shaped by what `-c` can and
+cannot reach:
+
+1. **~19 `-c` overrides** — `core.sshCommand`, `core.hooksPath=/dev/null`,
+   `core.fsmonitor`, `core.alternateRefsCommand`, `gc.recentObjectsHook`,
+   `credential.helper`, `core.askPass`, `gpg.program`, `core.pager`,
+   `core.editor`, `sequence.editor`, `diff.external`, `interactive.diffFilter`,
+   `protocol.ext.allow=never`, and the rest.
+2. **An attributes pin** (`_ATTRIBUTES_PIN`, re-established on every call) and
+   **pack-program flags** (`--upload-pack=` / `--receive-pack=`) — because
+   `filter.<name>.clean` and `remote.<name>.*` have **attacker-chosen subsection
+   names**, so no fixed `-c` key can cover them. Verified: `-c 'filter.*.clean='`
+   did not stop the filter, and `remote.pushDefault` / `branch.<b>.remote` routed
+   straight past the config pins.
+3. **`GIT_PROXY_COMMAND=true` in the env** — because `core.gitProxy` is
+   **multi-valued**, so `-c` APPENDS and git uses the repo's value first. `=none`,
+   `=` and `=true` were all tested via `-c` and all still executed the script.
+
+**Two ways the pin itself was defeatable**, both fixed and both pinned by
+`TestTheAttributesPinCannotBeNeutralized`:
+
+- **"Already present" is not "last".** The idempotence check returned early when the
+  pin line was already in the file, so an attacker pre-seeded the pin and appended
+  `* filter=x` after it. Git resolves attributes per name with the LAST match
+  winning, so the attacker's rule won while the early return prevented the real pin
+  from being re-appended (verified against real git: `check-attr` reported
+  `filter: x`). The fix strips every existing copy and appends exactly one, so
+  repeat calls still converge — but the pin's POSITION is what gets re-established.
+- **A symlink at the name.** `read_text`/`write_text` both follow one, so
+  `attributes -> /dev/null` made the pin unobservable AND unwritable (silently
+  inert forever), and `attributes -> <any file>` turned a `GET /git` status poll
+  into an arbitrary-file append that also read the victim's contents back. Both
+  **All three** of `.git`, `.git/info` and `.git/info/attributes` are now refused
+  if any is a link — symlink **or Windows junction**, via the shared
+  `store.is_reparse_link`. Each segment needs its own check for a different reason:
+  `mkdir(exist_ok=True)` is a no-op on a directory link, so `info` would silently
+  relocate the write; and a linked **`.git`** roots the whole chain on an unverified
+  indirection — point it at another repository and `info`/`attributes` are
+  legitimate non-links *inside that repo*, so both inner checks pass while a status
+  poll rewrites a different repository's attributes, outside the project entirely.
+  The rule holds for every segment KiroCrew traverses by name, not just the leaf.
+- **The rewrite preserves the existing mode.** `atomic_write` renames a fresh temp
+  file into place, so without carrying the mode across, a user who had tightened
+  `.git/info/attributes` to 0600 would find it 0644 after any status poll — a
+  protective guard silently loosening permissions on the file it protects. `None`
+  on a first write (nothing to preserve) and on Windows, where the POSIX bits are
+  not the ACL that governs.
+
+**The assumption, stated plainly:** the `-c` list is an *enumeration of git's
+command-executing config keys as of the git versions tested*. A future git that
+adds a new hook-or-program key is not covered, and **no drift guard against
+upstream is possible** — there is no "ignore repo config" switch
+(`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM` suppress the *other* two scopes; the
+repo's own config is always read), and git publishes no machine-readable list of
+executing keys. **Re-audit this list against `git config` documentation on a major
+git upgrade.**
+
+The tests are the real record, and several run against **real git** (skipped when
+absent) — so they catch a regression in our own code, but not an upstream git that
+grows a new key: `TestRepoConfigCannotExecuteCommands`,
+`TestFsmonitorAndOtherHooksAreNeutralized`,
+`TestPackProgramsArePinnedForEveryRemote`, `TestGitProxyCannotExecuteACommand`,
+`TestGitattributesCannotNameAProgram` in `test/test_papyrus_gitops.py`.
+
 ## Frontend
 
 `website/src/apps/papyrus/`, registered at `/papyrus` in `builtinRegistry.ts`
@@ -506,14 +634,74 @@ copy is what actually reaches users.
 
 ## Platform
 
-`app.json` declares `platform.os: ["macos", "linux"]` — a TeX distribution on
-Windows is out of scope for this port. The Python nevertheless **imports cleanly
-on Windows**: there is no bare `fcntl`/`os.killpg`/`signal.SIGKILL`, and process
-signalling goes through `platform_compat`. The managed-compiler code is
-Windows-complete regardless (a pinned `x86_64-pc-windows-msvc` asset, the `.zip`
-extraction leg, `tectonic.exe`, and `chmod` routed through
-`platform_compat.chmod_safe`, which is a no-op there), so enabling the manifest for
-Windows later needs no work in `tectonic.py`.
+`app.json` declares `platform.os: ["macos", "linux", "windows"]`. Windows was
+added after the port; what it took, and what it did NOT, is worth recording
+because the guess ("Windows means work in `tectonic.py`") was wrong in both
+directions.
+
+**Already correct at merge:** the managed compiler (a pinned
+`x86_64-pc-windows-msvc` asset, the `.zip` extraction leg, `tectonic.exe`,
+`chmod` via `platform_compat.chmod_safe`), and process handling throughout —
+no bare `fcntl`/`os.killpg`/`signal.SIGKILL`, `start_new_session=IS_POSIX`
++ `creationflags=CREATE_NEW_PROCESS_GROUP`, and kills via
+`platform_compat.kill_process_tree_async`.
+
+**What actually had to change, none of it in `tectonic.py`:**
+
+- **The sandbox chokepoint.** Windows has no sandbox backend (user namespaces are
+  Linux, `sandbox-exec` is macOS), so `wrap_argv` fail-closes with
+  `SandboxUnavailableError` — and both spawn sites called
+  `sandboxed_spawn_argv` OUTSIDE their `try`, so it escaped as an unhandled 500
+  on **every** compile, clone, commit, push and pull. The refusal is now
+  translated, not bypassed: `latex` returns `CompileResult.sandbox_error` →
+  422 `compiler_sandbox_unavailable`, and `gitops` raises
+  `GitSandboxUnavailable` (a `GitError` subclass, so existing handlers keep
+  working) → 422 `git_sandbox_unavailable`. Both carry the sandbox layer's own
+  remedy text, which names the `agent.sandbox_allow_unsandboxed_exec` opt-in that
+  `docs/WINDOWS_CHANGES.md` documents for this host. Bypassing the wrap was
+  rejected: `strict` mode is what stops `\input{../../.aws/credentials}` from
+  typesetting the operator's keys into the PDF, and `gitops` runs `standard`
+  precisely so an SSH push can see the key.
+- **`minimal_env`'s allowlist** (`apps/registry.py`) needed two fixes, and this one
+  fails early and opaquely rather than loudly: a Windows child without `SystemRoot`
+  usually dies before `main()` (DLL/crypto init resolves through it), and one
+  without `USERPROFILE` cannot resolve `TEXMFHOME`.
+  1. The list was POSIX-only. The Windows location hints are now allowlisted
+     alongside the POSIX ones (same set and reason as
+     `kiro_prerequisite._SAFE_ENV_KEYS`).
+  2. The match was case-SENSITIVE, which made (1) inert on the platform it was for:
+     Windows env names are case-insensitive and `os.environ` upper-cases keys, so
+     `items()` yields `SYSTEMROOT` while the list held the documented `SystemRoot`.
+     The comparison now folds **on Windows only** — POSIX keeps `PATH` and `Path`
+     distinct, where a fold would admit a lookalike.
+
+  The fold widens case, never the key set: the credential-scrub property is
+  unchanged, and `TestMinimalEnvHonorsWindowsCaseInsensitivity` pins all three
+  properties.
+- **`os.pathsep`** for `BSTINPUTS`/`BIBINPUTS`. A hardcoded `":"` was both the
+  wrong delimiter on Windows and a splitter of `C:\proj\bib` into two useless
+  fragments — reproducing the "I couldn't open style file" failure that env var
+  exists to prevent.
+- **`platform_compat.rmtree_force`** for every tree that may hold a git checkout.
+  Git writes loose objects read-only, and Windows checks the read-only ATTRIBUTE
+  on the file being deleted (POSIX consults the parent directory), so
+  `rmtree(..., ignore_errors=True)` silently left `.git/objects` behind while the
+  handler answered `ok: true` — the project name stayed taken and the next create
+  answered 409. Delete now reports `project_delete_incomplete` if the tree
+  survives.
+- **`PlatformConfig`** (`apps/manifest.py`) had no `windows` row in
+  `_OS_TO_PLATFORM`/`_PLATFORM_TO_OS`, so `"windows"` was not expressible in ANY
+  manifest — a declaring app silently matched nothing — and `current_os()`
+  returned the raw `"win32"`. The default stays `["macos", "linux"]`: an app opts
+  in by naming `windows`.
+- **21 `os.symlink` tests** across `test_papyrus_store.py` /
+  `test_papyrus_latex.py` gained the file's existing
+  `skipif(sys.platform == "win32")` guard — symlink creation needs privilege on
+  Windows, and no papyrus entry exists in `conftest`'s `collect_ignore` or
+  `windows-expected-failures.txt`, so the Windows shard ran them unguarded.
+
+Windows-on-ARM remains unsupported by the managed compiler (no upstream asset);
+that host reports `supported: false` and keeps the manual install path.
 
 ## Files
 
@@ -524,7 +712,7 @@ Windows later needs no work in `tectonic.py`.
 | `.../papyrus/backend/store.py` | Path-containment gate, project/file layout |
 | `.../papyrus/backend/latex.py` | Compiler discovery, the compile pipeline, log parsing |
 | `.../papyrus/backend/tectonic.py` | The managed, digest-pinned Tectonic install (pins, safe extract, provisioning job) |
-| `.../papyrus/backend/gitops.py` | Clone/status/commit/push/pull |
+| `.../papyrus/backend/gitops.py` | Clone/status/commit/push/pull, **and** the repo-config RCE denylist (19 `-c` overrides + the attributes pin + pack-program flags + `GIT_PROXY_COMMAND`) |
 | `.../papyrus/backend/routes.py` | aiohttp handlers + `register_routes` |
 | `src/kiro_crew/builtin_skills/papyrus-writing/SKILL.md` | The co-author's LaTeX skill |
 | `website/src/apps/papyrus/PapyrusPage.tsx` | Route entry; project list vs. workspace |
@@ -543,14 +731,15 @@ Windows later needs no work in `tectonic.py`.
 
 | File | Covers |
 |------|--------|
-| `test/test_papyrus_store.py` | Traversal/symlink/backslash/NUL defenses, project-name slug rule, untrusted `.papyrus.json`, main-document discovery, bounded walk, file I/O |
-| `test/test_papyrus_latex.py` | Log parsing (incl. the two-bangs rule), the `-no-shell-escape` invariant, the pass sequence, timeout kill, compiler discovery + cache, env minimalism |
-| `test/test_papyrus_gitops.py` | URL allowlist + `--` placement, autostash flows incl. the kept stash and the raising-pull restore, auth classification, sandbox/preexec routing, tree-kill |
+| `test/test_papyrus_store.py` | Traversal/symlink/backslash/NUL defenses, project-name slug rule, **the `.git` refusal (any depth, any case) and the symlinked-project-entry refusal incl. the self-referential `-> .` case**, untrusted `.papyrus.json`, main-document discovery, bounded walk, file I/O |
+| `test/test_papyrus_latex.py` | Log parsing (incl. the two-bangs rule), the `-no-shell-escape` invariant, the pass sequence, timeout kill, compiler discovery + cache, env minimalism (incl. the Windows location hints, and that widening the allowlist admitted no secrets), the platform `os.pathsep` for `BSTINPUTS`, and that a sandbox refusal is reported rather than bypassed |
+| `test/test_papyrus_gitops.py` | URL allowlist + `--` placement, autostash flows incl. the kept stash and the raising-pull restore, auth classification, sandbox/preexec routing, tree-kill, the repo-config denylist against real git, **that the attributes pin ends up LAST even when pre-seeded and is never written through a symlink**, and that a sandbox refusal becomes `GitSandboxUnavailable` |
 | `test/test_papyrus_routes.py` | The `_require_enabled` gate on every registered route, name/path authorization, response contracts, PDF security headers, git status mapping, the provisioning endpoint (202/idempotent/unsupported/one-job) and its off-loop discipline |
 | `test/test_papyrus_tectonic.py` | Platform→asset mapping incl. the arch-naming splits, digest-shape and mismatch/tamper refusal, tar **and** zip traversal + symlink + setuid + bomb refusal, the Python-3.10 no-`filter` leg, atomic install + exec bit, unsupported-platform degradation, no partial install after a failure, that a user's own `pdflatex` still wins, cache reset after install, and daemon-thread/off-loop discipline |
 | `website/src/test/PapyrusLib.test.ts` | Tree building/flattening, artifact filter, word count, slot persistence + pruning |
 | `website/src/test/PapyrusDiagnostics.test.tsx` | Click/Enter-to-jump, non-interactive line-less rows, collapsed hints, no emoji |
 | `website/src/test/PapyrusCloseProject.test.tsx` | Leaving the workspace flushes a dirty buffer, stays put when the flush fails, and writes nothing when clean |
+| `website/src/test/PapyrusPdfPreview.test.tsx` | The preview embeds an `<iframe>` and never `<object>`/`<embed>` (the `object-src 'none'` block), the `key={src}` remount that makes a recompile visible, the persistent download affordance, and the pre-compile empty state |
 
 The backend tests live in the repo-level `test/` tree, not an in-package
 `tests/`: `setup.cfg` sets `testpaths = test transfer`, so a test under

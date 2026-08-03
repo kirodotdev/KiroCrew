@@ -103,6 +103,16 @@ _SCRIPT_TIMEOUT = 300
 # Only pass through variables needed for git, build tools, and shell operation.
 # This prevents leaking secrets (API keys, tokens, AWS credentials) from the
 # gateway process into app install scripts.
+#
+# The list is deliberately cross-platform. It was POSIX-only, which does not fail
+# loudly on Windows — it fails *early and opaquely*: a Windows child without
+# ``SystemRoot`` usually dies before ``main()`` (DLL and crypto init resolve
+# through it), and one without ``USERPROFILE`` cannot find a per-user config root
+# (for a TeX child, ``TEXMFHOME``). ``TMPDIR`` is the POSIX spelling only, so a
+# Windows child also had no writable temp dir. Same key set and same reason as
+# ``kiro_prerequisite._SAFE_ENV_KEYS``; kept in the allowlist shape so the
+# credential-scrubbing property is unchanged — these are location hints, not
+# secrets.
 _SAFE_ENV_KEYS = frozenset(
     {
         "HOME",
@@ -115,6 +125,20 @@ _SAFE_ENV_KEYS = frozenset(
         "LC_CTYPE",
         "TERM",
         "TMPDIR",
+        # Windows equivalents of the above. `ProgramFiles` is spelled both ways
+        # because Windows env lookups are case-insensitive while `os.environ` on
+        # other platforms is not, and this set is matched literally.
+        "APPDATA",
+        "COMSPEC",
+        "LOCALAPPDATA",
+        "PATHEXT",
+        "ProgramFiles",
+        "PROGRAMFILES",
+        "SystemRoot",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "WINDIR",
         "XDG_RUNTIME_DIR",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
@@ -139,6 +163,31 @@ _SAFE_ENV_KEYS = frozenset(
 )
 
 
+#: Case-folded view of the allowlist, for the Windows match below.
+_SAFE_ENV_KEYS_FOLDED = frozenset(k.upper() for k in _SAFE_ENV_KEYS)
+
+
+def _is_safe_env_key(key: str) -> bool:
+    """Whether *key* is allowlisted, honoring Windows' case-insensitive env.
+
+    On Windows, environment variable names are case-INSENSITIVE and CPython's
+    ``os.environ`` upper-cases every key, so ``os.environ.items()`` yields
+    ``SYSTEMROOT`` — never the ``SystemRoot`` spelling Microsoft documents and that
+    this allowlist (and ``kiro_prerequisite``'s) writes. A literal membership test
+    therefore dropped exactly the variables it was extended to carry, and the
+    failure is silent at the boundary and fatal in the child: a Windows process
+    without ``SystemRoot`` cannot resolve side-by-side assemblies and dies before
+    ``main()``.
+
+    Folding on Windows only, rather than upper-casing the list, keeps POSIX exact:
+    ``PATH`` and ``Path`` are genuinely different variables there, and a
+    case-insensitive match would let a lookalike through.
+    """
+    if platform_compat.IS_WINDOWS:
+        return key.upper() in _SAFE_ENV_KEYS_FOLDED
+    return key in _SAFE_ENV_KEYS
+
+
 def minimal_env(**extra: str) -> dict[str, str]:
     """Build a minimal environment dict from the current process env.
 
@@ -146,7 +195,7 @@ def minimal_env(**extra: str) -> dict[str, str]:
     plus any explicit *extra* overrides.  Used by both registry install
     and route-level uninstall handlers.
     """
-    env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    env = {k: v for k, v in os.environ.items() if _is_safe_env_key(k)}
     env.update(extra)
     return env
 
@@ -200,10 +249,16 @@ def anonymous_git_env(**extra: str) -> dict[str, str]:
       index keep full credentials via :func:`minimal_env`; those repos are
       deliberately owner-designated.
     """
+    # The credential-suppression set is compared UPPER-CASED for the same reason
+    # `_is_safe_env_key` folds: on Windows `os.environ` yields upper-cased keys, and
+    # here a missed match would be the dangerous direction — it would PASS a
+    # credential-bearing variable (`SSH_AUTH_SOCK`) that this function exists to
+    # strip. These four are already upper-case, so the fold is a no-op today and a
+    # guard against a future mixed-case entry.
     env = {
         k: v
         for k, v in os.environ.items()
-        if k in _SAFE_ENV_KEYS and k not in _GIT_CREDENTIAL_ENV_KEYS
+        if _is_safe_env_key(k) and k.upper() not in _GIT_CREDENTIAL_ENV_KEYS
     }
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_CONFIG_NOSYSTEM"] = "1"

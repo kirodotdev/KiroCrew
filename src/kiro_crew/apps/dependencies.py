@@ -13,6 +13,7 @@ unresolved instead of shelling out to any named binary.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 from dataclasses import dataclass, field
@@ -38,7 +39,12 @@ class DependencyResult:
     installed: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
-    missing: list[str] = field(default_factory=list)  # missing system commands
+    missing: list[str] = field(default_factory=list)  # missing REQUIRED commands
+    # Absent `optionalCommands`. Reported separately BECAUSE the distinction is
+    # the whole point: an app that ships its own fallback (Papyrus provisions a
+    # Tectonic compiler when no system TeX exists) must not read as broken, so
+    # these never join `missing`, where a caller may treat an entry as a failure.
+    missing_optional: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -50,6 +56,8 @@ class DependencyResult:
             d["failed"] = self.failed
         if self.missing:
             d["missing"] = self.missing
+        if self.missing_optional:
+            d["missingOptional"] = self.missing_optional
         return d
 
 
@@ -138,6 +146,8 @@ async def resolve_dependencies(
     For ``managedBy="gateway"`` entries: installs via the ``CapabilityManager`` seam.
     For ``managedBy="app"`` entries: only checks existence (no install).
     For ``commands``: checks ``shutil.which()`` and reports missing.
+    For ``optionalCommands``: same probe, reported in ``missing_optional`` so an
+    app with its own fallback for the tool does not read as broken.
 
     When the edition provides no capability manager, gateway-managed capability
     entries are recorded as ``failed`` (unresolved) — the app still installs, and
@@ -205,13 +215,36 @@ async def resolve_dependencies(
                     dep_key, app_name, message[:200],
                 )
 
-    # Check system commands
-    for cmd in deps.commands:
-        if shutil.which(cmd):
-            result.skipped.append(f"command:{cmd}")
-        else:
-            result.missing.append(cmd)
-            logger.info("Missing command %r for app %s", cmd, app_name)
+    # Check system commands — OFF the loop, in ONE hop for every probe.
+    #
+    # `shutil.which` walks every PATH entry and stats candidates in each, so its
+    # cost is decided by the host's PATH: an entry on a wedged NFS/SMB mount blocks
+    # in the kernel for the mount's timeout, and this function is reached from the
+    # `/api/apps/...` enable/install handlers on the gateway's single loop. One
+    # stalled probe would freeze every chat session, cron tick and the liveness
+    # heartbeat. Optional commands make that strictly more likely, since they exist
+    # precisely for tools a host may not have (so the scan runs to exhaustion).
+    def _probe_commands() -> tuple[list[str], list[str], list[str]]:
+        """BLOCKING — PATH scan per command. Returns (found, missing, missing_optional)."""
+        found: list[str] = []
+        missing: list[str] = []
+        missing_optional: list[str] = []
+        for name in deps.commands:
+            (found if shutil.which(name) else missing).append(name)
+        for name in deps.optionalCommands:
+            (found if shutil.which(name) else missing_optional).append(name)
+        return found, missing, missing_optional
+
+    found, missing, missing_optional = await asyncio.to_thread(_probe_commands)
+    result.skipped.extend(f"command:{name}" for name in found)
+    result.missing.extend(missing)
+    # Recorded separately from `missing` so "not installed" stays distinguishable
+    # from "required and absent" — an app with its own fallback is not broken.
+    result.missing_optional.extend(missing_optional)
+    for name in missing:
+        logger.info("Missing command %r for app %s", name, app_name)
+    for name in missing_optional:
+        logger.debug("Optional command %r not found for app %s", name, app_name)
 
     return result
 

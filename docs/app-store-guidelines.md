@@ -166,7 +166,8 @@ are reported as unresolved and the app still installs — degrade gracefully:
       "skills": ["SomeSkillPackage"],
       "agents": ["SomeAgentPackage"]
     },
-    "commands": ["node", "python3"]
+    "commands": ["node", "python3"],
+    "optionalCommands": ["git"]
   }
 }
 ```
@@ -177,7 +178,8 @@ are reported as unresolved and the app still installs — degrade gracefully:
 | `capabilities.mcp` | MCP servers to install. |
 | `capabilities.skills` | Skill packages to install. |
 | `capabilities.agents` | Declarable, but never gateway-installed — always reported unresolved. |
-| `commands` | System commands to check (not installed, just verified). Missing commands produce a warning. |
+| `commands` | REQUIRED system commands to check (not installed, just verified). Missing commands produce a warning and are reported in `missing`. |
+| `optionalCommands` | Same check, but absence is not a problem — reported in `missingOptional`. Use it for a tool the app can work without, or can provision itself (Papyrus lists `tectonic` here because it installs a pinned copy when the host has no TeX). |
 
 Per-dependency override: use object format to override `managedBy` for individual entries:
 

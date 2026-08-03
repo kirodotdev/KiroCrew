@@ -419,12 +419,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cloud/connect.py",
         "cloud/login.py",
         "embeddings.py",
-        # Same shape as embeddings.py above: papyrus's managed-compiler download
-        # redacts the DOWNLOAD URL (userinfo + signed query) before logging it, so a
-        # mirrored/presigned override cannot leak credentials into a log. Nothing
-        # here reaches a user-facing surface — the app's egress paths (compile log,
-        # git stderr) redact separately in papyrus/backend/routes.py.
-        "apps/builtins/papyrus/backend/tectonic.py",
+        # NOTE: papyrus's tectonic.py is deliberately NOT here — see the sinks
+        # list below. Its redacted URL does reach the dashboard, so filing it as
+        # non-egress was wrong and would have let the drift guard miss a future
+        # change that started returning `{exc}` verbatim.
         # Same shape again: pptx-maker's digest-pinned engine download redacts the
         # DOWNLOAD URL (userinfo + signed query) before logging it, so a
         # mirrored/presigned KIROCREW_PPTX_ENGINE_URL override cannot leak
@@ -476,6 +474,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/meetings/backend/routes/meeting_lifecycle.py",
         "apps/builtins/meetings/backend/routes/tasks.py",
         "apps/builtins/papyrus/backend/routes.py",
+        # A real egress boundary, not a log-only redaction: `_download_to` returns
+        # `f"download failed (...) from {redact_url(url)}"`, which lands in the
+        # persisted job state, rides `GET /health`, and is rendered verbatim in the
+        # dashboard's install banner. The redaction itself is host-only (so a
+        # credentialed mirror override cannot leak), but it must be REGISTERED here
+        # or the drift guard cannot notice a change that starts returning `{exc}`.
+        "apps/builtins/papyrus/backend/tectonic.py",
         "apps/builtins/pptx_maker/backend/decks.py",
         "apps/builtins/pptx_maker/backend/routes.py",
         "apps/builtins/workflows/server.py",

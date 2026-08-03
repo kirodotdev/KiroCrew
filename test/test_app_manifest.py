@@ -573,6 +573,72 @@ class TestDependencies:
         d = deps.to_dict()
         assert "managedBy" not in d  # default "gateway" omitted
 
+    def test_optional_commands_survive_the_round_trip(self):
+        """The field was declared by two shipped manifests and read by nobody.
+
+        `from_dict` ignored `optionalCommands`, so `papyrus` — whose ONLY
+        dependency declaration is that key — round-tripped to `{}` and its
+        "needs pdflatex or tectonic" requirement was invisible to every consumer.
+        """
+        deps = Dependencies.from_dict({"optionalCommands": ["pdflatex", "tectonic"]})
+        assert deps.optionalCommands == ["pdflatex", "tectonic"]
+        assert deps.to_dict() == {"optionalCommands": ["pdflatex", "tectonic"]}
+
+    def test_optional_commands_are_independent_of_required_ones(self):
+        deps = Dependencies.from_dict(
+            {"commands": ["gh"], "optionalCommands": ["glab"]}
+        )
+        assert deps.commands == ["gh"]
+        assert deps.optionalCommands == ["glab"]
+        restored = Dependencies.from_dict(deps.to_dict())
+        assert restored.commands == ["gh"]
+        assert restored.optionalCommands == ["glab"]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"optionalCommands": None},
+            {"commands": None},
+            {"commands": None, "optionalCommands": None},
+        ],
+    )
+    def test_a_json_null_list_degrades_to_empty(self, payload):
+        """A manifest is UNTRUSTED input, so a null list must not crash the parser.
+
+        `.get(key, [])` returns `None` for an explicit `"commands": null` — the
+        default only applies to an ABSENT key — and the comprehension then raised
+        `TypeError`, which the install endpoint surfaced as an unhandled 500 instead
+        of a validation error. A hand-written or generated app.json can easily carry
+        a JSON null for an empty list.
+        """
+        deps = Dependencies.from_dict(payload)
+        assert deps.commands == []
+        assert deps.optionalCommands == []
+        assert deps.to_dict() == {}
+
+    def test_every_shipped_builtin_manifest_keeps_its_declared_commands(self):
+        """No shipped manifest may declare a dependency key the parser drops.
+
+        A guard rather than two literal assertions: the failure mode here was
+        silent, so the useful thing to pin is the general property.
+        """
+        import json
+        from pathlib import Path
+
+        from kiro_crew.apps.manifest import AppManifest
+
+        builtins = Path("src/kiro_crew/apps/builtins")
+        for app_json in sorted(builtins.glob("*/app.json")):
+            raw = json.loads(app_json.read_text(encoding="utf-8"))
+            declared = raw.get("dependencies") or {}
+            if not declared:
+                continue
+            parsed = AppManifest.from_dict(raw).dependencies
+            for key in ("commands", "optionalCommands"):
+                assert list(declared.get(key, [])) == list(
+                    getattr(parsed, key)
+                ), f"{app_json.parent.name}: {key} was dropped by the parser"
+
     def test_mixed_string_and_object_entries(self):
         deps = Dependencies.from_dict(
             {
@@ -828,3 +894,31 @@ class TestRequiresDesktopApp:
         manifest = AppManifest.from_dict(_valid_manifest(platform={"requiresDesktopApp": True}))
         assert manifest.platform.requiresDesktopApp is True
         assert AppManifest.from_dict(manifest.to_dict()).platform.requiresDesktopApp is True
+
+    def test_windows_is_expressible(self):
+        """KiroCrew runs natively on Windows, so a manifest must be able to say so.
+
+        Without the mapping row `"windows"` was accepted into the list and then
+        matched NOTHING — a declaring app was silently unsupported everywhere,
+        which is the worst of both answers.
+        """
+        from kiro_crew.apps.manifest import PlatformConfig
+
+        cfg = PlatformConfig(os=["macos", "linux", "windows"])
+        assert cfg.supports_platform("win32") is True
+        assert cfg.supports_platform("darwin") is True
+        assert cfg.supports_platform("linux") is True
+
+    def test_current_os_names_windows_in_the_manifest_vocabulary(self, monkeypatch):
+        """`current_os()` must return a name manifests compare against, not `win32`."""
+        from kiro_crew.apps import manifest as manifest_mod
+
+        monkeypatch.setattr(manifest_mod.sys, "platform", "win32", raising=False)
+        assert manifest_mod.PlatformConfig.current_os() == "windows"
+
+    def test_the_default_still_excludes_windows(self):
+        """Opt-in, not opt-out: widening the default would promise Windows for
+        every existing app that never declared it."""
+        from kiro_crew.apps.manifest import PlatformConfig
+
+        assert PlatformConfig().supports_platform("win32") is False

@@ -28,7 +28,6 @@
     "apps.meetings.taskSidebar.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
     "apps.papyrus.page.pdf": "The file format \"PDF\", labelling the compiled output of a LaTeX paper. An acronym practitioners keep untranslated in nearly every locale.",
     "apps.papyrus.workspace.log": "Noun: the LaTeX compiler's output log, naming a tab beside the PDF preview. A record of what the compiler printed — NOT the verb \"to log\" and not a logarithm.",
-    "apps.papyrus.workspace.pdf": "The file format \"PDF\", naming the preview pane that shows the compiled paper. An acronym practitioners keep untranslated in nearly every locale.",
     "apps.pptxMaker.libraryPanel.font_specimen": "Type specimen shown large in the template preview, filled with that template's own theme font and text colour. Not a label: the two characters exist so the user can judge the TYPEFACE's letterforms at a glance, the role an \"Aa\" ramp plays in a font picker. Keep the Latin pair unless your readers would judge a typeface better from one upper- and one lower-case glyph of their own script; never render it as a word.",
     "apps.workflows.workflowsPage.run": "Verb on a button: execute this job/workflow now. NOT the noun (\"a run\"), which several locales translate differently.",
     "components.appstore.featureCard.get": "Verb on an App Store button: install this app. Not the sense of obtain or receive.",

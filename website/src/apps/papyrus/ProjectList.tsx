@@ -10,10 +10,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Download, FileCheck2, FilePlus2, GitBranch, Loader2, ScrollText, Trash2, X } from 'lucide-react'
-import { Btn, Card, CardTitle, EmptyState, Input, PageHeader, SendBtn, StatCard } from '../../components/ui'
+import { Btn, Card, CardTitle, ContentSkeleton, EmptyState, Input, PageHeader, SendBtn, StatCard } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import InfoTip from '../../components/InfoTip'
-import { fmtDateTime } from '../../i18n/format'
+import { fmtBytes, fmtDateTime } from '../../i18n/format'
 import { papyrusApi, type Project } from './api'
 import { pruneSlots } from './lib'
 
@@ -177,6 +177,25 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
               {managed?.supported
                 ? i18nT('apps.papyrus.page.no_compiler_install_bundled_prompt')
                 : i18nT('apps.papyrus.page.no_compiler_found_install_texlive_or_tectonic')}
+              {/* A determinate line for a multi-MB download. The job already
+                  reports `bytes_downloaded`/`bytes_total` and nothing rendered
+                  them, so a 22MB fetch on a slow link was an indefinite spinner
+                  labelled "Installing…" with no way to tell progress from a hang.
+                  `verifying`/`installing` get their own words for the same reason —
+                  all three states read identically before.
+                  Sizes go through `fmtBytes` (the i18n seam), never `toFixed`. */}
+              {provisioning && (
+                <div className="mt-1 text-muted">
+                  {managed?.job.state === 'verifying'
+                    ? i18nT('apps.papyrus.page.verifying_compiler')
+                    : managed && managed.job.bytes_total > 0
+                      ? i18nT('apps.papyrus.page.downloading_compiler_progress', {
+                          done: fmtBytes(managed.job.bytes_downloaded),
+                          total: fmtBytes(managed.job.bytes_total),
+                        })
+                      : i18nT('apps.papyrus.page.installing_compiler')}
+                </div>
+              )}
               {managed?.job.state === 'error' && managed.job.error && (
                 <div className="mt-1 text-muted break-words">{managed.job.error}</div>
               )}
@@ -265,7 +284,13 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
 
         <Card>
           <CardTitle>{i18nT('apps.papyrus.page.your_papers')}</CardTitle>
-          {projects.length === 0 ? (
+          {/* `isLoading` first: `projects` is `[]` while the query is in flight, so a
+              bare length check told every returning user "No papers yet" for the
+              duration of the fetch — the one message guaranteed to be wrong for them.
+              The StatCards above already gate on this same flag. */}
+          {projectsQuery.isLoading ? (
+            <ContentSkeleton rows={3} />
+          ) : projects.length === 0 ? (
             <EmptyState
               icon={<ScrollText className="lucide-inline" />}
               title={i18nT('apps.papyrus.page.no_papers_yet')}
