@@ -36,7 +36,7 @@ import webbrowser
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeClient
@@ -202,6 +202,55 @@ if TYPE_CHECKING:
     from kiro_crew.webex.client import WebexClient
     from kiro_crew.wecom.client import WeComClient
     from kiro_crew.weixin.client import WeixinClient
+
+
+async def _persist_turn_row(
+    client: Any,
+    session_key: str,
+    *,
+    provider: str,
+    surface: str,
+    agent_fallback: Callable[[], str],
+    t0: float,
+) -> None:
+    """Persist one per-turn usage row for a background dispatch surface.
+
+    Extracted so the heartbeat and monitor surfaces — each with a success and a
+    timeout twin that were byte-identical copies — share one implementation
+    instead of cloning the block a fourth (and fifth, sixth…) time (issue
+    #1086, following the usage-row wiring from issue #647). Best-effort: a
+    persistence failure is logged at debug and never propagates into the
+    background loop, since a dropped analytics row must not abort a live turn.
+
+    ``agent_fallback`` is a zero-arg callable, invoked INSIDE the try/except and
+    only when ``read_effective_agent`` yields nothing — preserving the original
+    short-circuit (``read_effective_agent(client) or _get_agent_for_session(key)``)
+    so a cold-cache ``KiroCrewConfig.load()`` neither runs on every turn nor
+    escapes the best-effort guard.
+
+    NOTE: ``test_turn_duration_recorded.py`` counts ``persist_token_record_async``
+    call sites per file and requires every one to pass ``elapsed_ms``. This
+    helper is the single heartbeat/monitor call site; the two cron sites persist
+    directly (they carry a ``model`` argument). Adding a new surface that
+    bypasses this helper changes the count and fails that guard by design.
+    """
+    try:
+        _used, _window = read_context_tokens(client)
+        await persist_token_record_async(
+            session_key,
+            "",
+            provider_last_turn_usage(client),
+            provider=provider,
+            surface=surface,
+            agent=read_effective_agent(client) or agent_fallback(),
+            context_used=_used,
+            context_window=_window,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+            model_source=client,
+        )
+    except Exception:
+        logger.debug("usage row (%s) persist failed", surface, exc_info=True)
+
 
 # Chunked wave-digest size: every multi-task wave delivers its completed
 # results to the parent in digest CHUNKS of this many members (queue-style —
@@ -2617,23 +2666,14 @@ class GatewayOrchestrator:
                     result_text = "_No response._"
 
                 # ── Per-turn usage row (issue #647): attribute heartbeat spend. ──
-                try:
-
-                    _used, _window = read_context_tokens(client)
-                    await persist_token_record_async(
-                        session_key,
-                        "",
-                        provider_last_turn_usage(client),
-                        provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
-                        surface="heartbeat",
-                        agent=read_effective_agent(client) or "kirocrew-heartbeat",
-                        context_used=_used,
-                        context_window=_window,
-                        elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
-                        model_source=client,
-                    )
-                except Exception:
-                    logger.debug("usage row (heartbeat) persist failed", exc_info=True)
+                await _persist_turn_row(
+                    client,
+                    session_key,
+                    provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
+                    surface="heartbeat",
+                    agent_fallback=lambda: "kirocrew-heartbeat",
+                    t0=_turn_t0,
+                )
             except asyncio.TimeoutError:
                 # Tear down the in-flight turn so the underlying claude-agent-acp
                 # process/turn doesn't linger holding the heartbeat session.
@@ -2657,25 +2697,14 @@ class GatewayOrchestrator:
                 # success/failure outcome for ANY surface, so a timeout row is
                 # no less honest than any other row. The duration recorded is
                 # the real elapsed time, which for a timeout is ~the ceiling.
-                try:
-
-                    _used, _window = read_context_tokens(client)
-                    await persist_token_record_async(
-                        session_key,
-                        "",
-                        provider_last_turn_usage(client),
-                        provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
-                        surface="heartbeat",
-                        agent=read_effective_agent(client) or "kirocrew-heartbeat",
-                        context_used=_used,
-                        context_window=_window,
-                        elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
-                        model_source=client,
-                    )
-                except Exception:
-                    logger.debug(
-                        "usage row (heartbeat timeout) persist failed", exc_info=True
-                    )
+                await _persist_turn_row(
+                    client,
+                    session_key,
+                    provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
+                    surface="heartbeat",
+                    agent_fallback=lambda: "kirocrew-heartbeat",
+                    t0=_turn_t0,
+                )
                 try:
                     await self.sessions.reset(session_key)
                 except Exception:
@@ -2812,23 +2841,14 @@ class GatewayOrchestrator:
             )
 
             # ── Per-turn usage row (issue #647): attribute monitor spend. ──
-            try:
-
-                _used, _window = read_context_tokens(client)
-                await persist_token_record_async(
-                    key,
-                    "",
-                    provider_last_turn_usage(client),
-                    provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
-                    surface="monitor",
-                    agent=read_effective_agent(client) or _get_agent_for_session(key),
-                    context_used=_used,
-                    context_window=_window,
-                    elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
-                    model_source=client,
-                )
-            except Exception:
-                logger.debug("usage row (monitor) persist failed", exc_info=True)
+            await _persist_turn_row(
+                client,
+                key,
+                provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
+                surface="monitor",
+                agent_fallback=lambda: _get_agent_for_session(key),
+                t0=_turn_t0,
+            )
         except asyncio.TimeoutError:
             # ── Timeout spend is REAL spend (issue #874 follow-up). ──
             # A timed-out nudge turn previously fell through to the generic
@@ -2845,25 +2865,14 @@ class GatewayOrchestrator:
                 key,
                 loop.id,
             )
-            try:
-
-                _used, _window = read_context_tokens(client)
-                await persist_token_record_async(
-                    key,
-                    "",
-                    provider_last_turn_usage(client),
-                    provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
-                    surface="monitor",
-                    agent=read_effective_agent(client) or _get_agent_for_session(key),
-                    context_used=_used,
-                    context_window=_window,
-                    elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
-                    model_source=client,
-                )
-            except Exception:
-                logger.debug(
-                    "usage row (monitor timeout) persist failed", exc_info=True
-                )
+            await _persist_turn_row(
+                client,
+                key,
+                provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
+                surface="monitor",
+                agent_fallback=lambda: _get_agent_for_session(key),
+                t0=_turn_t0,
+            )
             return False
         except Exception:
             logger.exception("AutoNudge: slack nudge turn failed for %s (loop %s)", key, loop.id)

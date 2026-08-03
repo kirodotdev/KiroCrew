@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from aiohttp import web
+
 from kiro_crew.agent_discovery import (
     SKILL_URI_PREFIX,
     expand_skill_uri,
@@ -24,6 +26,55 @@ if TYPE_CHECKING:
     from kiro_crew.platform.interfaces import CapabilityManager
 
 logger = logging.getLogger(__name__)
+
+
+# Shared body cap for the small JSON-object endpoints that must bound the
+# request BEFORE decoding (the strict-internal notification routes). Kept
+# module-level and in one place so the security-relevant cap cannot drift
+# between the two call sites (issue #490). 64 KB is generous — payload fields
+# have their own caps.
+_MAX_BODY_BYTES = 64 * 1024
+
+
+async def read_bounded_json(
+    request: web.Request, max_bytes: int = _MAX_BODY_BYTES
+) -> tuple[dict[str, Any] | None, web.Response | None]:
+    """Read and parse a JSON *object* request body, capped at *max_bytes*.
+
+    Returns ``(body, None)`` on success, or ``(None, error_response)`` when the
+    caller should return early. The cap is enforced BEFORE decoding: a
+    Content-Length precheck rejects an oversized declared body, and the stream
+    is then read incrementally so a chunked body (which carries no
+    Content-Length) cannot buffer past ``max_bytes + one chunk`` on the
+    event-loop thread. Consolidates the previously-duplicated block in
+    ``messaging.api_notification_agent_push`` and
+    ``notifications_push.api_push_notification`` so the cap and the 413/400
+    contract stay identical across both (issue #490).
+    """
+    if request.content_length and request.content_length > max_bytes:
+        return None, web.json_response(
+            {"error": "payload too large", "code": "payload_too_large"}, status=413
+        )
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.content.iter_chunked(8192):
+        received += len(chunk)
+        if received > max_bytes:
+            return None, web.json_response(
+                {"error": "payload too large", "code": "payload_too_large"}, status=413
+            )
+        chunks.append(chunk)
+    try:
+        body = json.loads(b"".join(chunks))
+    except Exception:
+        return None, web.json_response(
+            {"error": "invalid JSON body", "code": "invalid_json"}, status=400
+        )
+    if not isinstance(body, dict):
+        return None, web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
+    return body, None
 
 
 def _capability_manager() -> "CapabilityManager":

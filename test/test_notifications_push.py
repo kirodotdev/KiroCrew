@@ -408,7 +408,7 @@ class TestPushHandler:
         # exactly _MAX_BODY_BYTES must pass the size gate (it then fails
         # payload validation with 400 because the body field exceeds its own
         # cap, which proves the 413 gate was cleared), one byte more -> 413.
-        from kiro_crew.dashboard.handlers.notifications_push import _MAX_BODY_BYTES
+        from kiro_crew.dashboard.handlers._shared import _MAX_BODY_BYTES
 
         prefix = b'{"channel": "ticket-update", "title": "t", "body": "'
         suffix = b'"}'

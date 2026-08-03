@@ -16,7 +16,6 @@ considerations"):
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 
@@ -24,6 +23,7 @@ from aiohttp import web
 
 from kiro_crew.apps.manager import app_lifecycle_lock, get_app_manifest, is_app_enabled
 from kiro_crew.apps.manifest import RESERVED_APP_NAMES
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.notifications.bus import (
     NotificationPayload,
     NotificationValidationError,
@@ -31,8 +31,6 @@ from kiro_crew.notifications.bus import (
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
-
-_MAX_BODY_BYTES = 64 * 1024  # generous; payload fields have their own caps
 
 
 def _resolve_app_channels(app_name: str) -> dict[str, str] | None:
@@ -74,27 +72,15 @@ async def api_push_notification(request: web.Request) -> web.Response:
             {"error": "app token required"}, status=403
         )
 
-    if request.content_length and request.content_length > _MAX_BODY_BYTES:
-        return web.json_response({"error": "payload too large"}, status=413)
-
-    # Enforce the cap while streaming: chunked transfer-encoding carries no
-    # Content-Length header, and buffering the whole body first
-    # (request.read()) would allocate up to the server-wide client_max_size
-    # before any check runs. Reading incrementally bounds the allocation to
-    # _MAX_BODY_BYTES + one chunk.
-    chunks: list[bytes] = []
-    received = 0
-    async for chunk in request.content.iter_chunked(8192):
-        received += len(chunk)
-        if received > _MAX_BODY_BYTES:
-            return web.json_response({"error": "payload too large"}, status=413)
-        chunks.append(chunk)
-    try:
-        body: dict[str, Any] = json.loads(b"".join(chunks))
-    except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "body must be a JSON object"}, status=400)
+    # Bound the body BEFORE decoding via the shared helper so the cap and the
+    # 413/400 contract cannot drift from the strict-internal push endpoint
+    # (issue #490). Chunked transfer-encoding carries no Content-Length, so the
+    # helper reads incrementally, bounding the allocation to the cap + one chunk
+    # instead of buffering the whole body on the event-loop thread.
+    body, _cap_err = await read_bounded_json(request)
+    if _cap_err is not None:
+        return _cap_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     state = request.app["state"]
     bus = state.notification_bus

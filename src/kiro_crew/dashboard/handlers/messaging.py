@@ -25,6 +25,7 @@ from kiro_crew.constants import CHAT_TURN_TIMEOUT
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
 from kiro_crew.dashboard.chat_utils import _remove_queued_by_id
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.origin import is_direct_local_request, is_loopback
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_END,
@@ -837,27 +838,15 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
             error="internal-secret authentication required (cookie callers forbidden)",
         )
         return web.json_response({"error": "internal-secret authentication required"}, status=403)
-    # Bound the body BEFORE decoding, mirroring the app push endpoint:
-    # without this the strict-internal route inherits the server-wide
-    # client_max_size, and a large JSON object would be buffered and decoded
-    # on the event-loop thread (GPT 5.6 round 11). 64 KB is generous --
-    # payload fields have their own caps.
-    _max_body = 64 * 1024
-    if request.content_length and request.content_length > _max_body:
-        return web.json_response({"error": "payload too large"}, status=413)
-    chunks: list[bytes] = []
-    received = 0
-    async for chunk in request.content.iter_chunked(8192):
-        received += len(chunk)
-        if received > _max_body:
-            return web.json_response({"error": "payload too large"}, status=413)
-        chunks.append(chunk)
-    try:
-        body = json.loads(b"".join(chunks))
-    except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "body must be a JSON object"}, status=400)
+    # Bound the body BEFORE decoding, mirroring the app push endpoint: without
+    # this the strict-internal route inherits the server-wide client_max_size,
+    # and a large JSON object would be buffered and decoded on the event-loop
+    # thread (GPT 5.6 round 11). Shared helper so the cap and the 413/400
+    # contract cannot drift from the app push endpoint (issue #490).
+    body, _cap_err = await read_bounded_json(request)
+    if _cap_err is not None:
+        return _cap_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     # Type-check optional fields BEFORE payload construction: the bus
     # validator assumes str/list shapes, so a non-string url or non-list
     # actions would raise AttributeError/TypeError past the
