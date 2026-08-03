@@ -1,6 +1,20 @@
+---
+title: Notification Bridge (bus egress fanout to chat transports)
+status: accepted
+author: zezhexu
+created: 2026-07-28
+last-audited: 2026-08-03
+audited-at: 0ab6ed48
+doc-pr: 670
+implementation-prs: []
+tracking-issues: [589]
+supersedes: ["rfc-local-notification-bus.md#resolved-design-questions-1"]
+superseded-by: []
+---
 # RFC: Notification Bridge (bus egress fanout to chat transports)
 
-- Status: DRAFT
+- Status: accepted — the document is merged (PR #670) with an open tracking issue, but **zero implementation code exists**. `notifications/bridge.py` and `BridgeDispatcher` do not exist; `ChannelSettings` carries only `muted` + `priority`, with no `deliver_to` / `deliver_min_priority`; egress is still the single hardcoded dashboard sink at `dashboard/state.py:1758`. No open PR and no live branch is building B1–B4.
+- Correction to the Summary below: it says the bus RFC's "Phases 1–5, all shipped". Phases 1/3/4 are complete, but Phase 2 has no producer app and Phase 5's kind-routing cleanup is still present in `NotificationDetailPanel.tsx`. Every dependency **this** RFC actually needs is real; the blanket claim is not.
 - Author: zezhexu
 - Created: 2026-07-28
 - Related: rfc-local-notification-bus.md (the bus this RFC extends), issue #589 (tracking), PR #422 (Phase 5 delivery + the withdrawn escalation prototype)

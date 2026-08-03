@@ -1,7 +1,23 @@
+---
+title: Version Compliance Framework for KiroCrew
+kind: framework
+status: draft
+author: KiroCrew contributors
+created: 2026-05-26
+last-audited: 2026-08-03
+audited-at: 0ab6ed48
+doc-pr: null
+implementation-prs: []
+tracking-issues: []
+supersedes: []
+superseded-by: []
+---
 # Version Compliance Framework for KiroCrew
 
 **Author:** KiroCrew contributors
-**Status:** Draft
+**Status:** draft — **nothing is built at the platform level.** No version authority document, no compliance heartbeat, no startup gate, no `kirocrew admin` command, no `block` mode, no deny-pattern propagation mechanism. `version_authority`, `version_compliance`, `set-min-version`, `recommended_version` all have zero hits repo-wide. The nearest live behavior is a *different* architecture: `update_governance.update_required()` enforces a min-version floor from the **local** trust-root `security_policy.json` and explicitly "never refuses to boot" — the opposite of Layer 2's `block`. `is_toolbox_install()` (`env.py:68`), cited below as existing infrastructure, now has **zero callers**.
+**Framing:** this is a framework/policy recommendation doc, not an RFC — note it has no `RFC:` title prefix and no `rfc-` filename prefix, unlike its ten siblings.
+**Two staleness warnings:** (1) It **predates the public repo** — it arrived at `64e47961`, so the 2026-05-26 date is pre-fork and the anonymized phrasing ("the managed distribution tool") is a scrub artifact. (2) Its §2 premise is stale: KiroCrew now ships five shapes over three channels with two independent feeds, not one managed tool with a 180-day pause window. `rfc-update-architecture.md` nonetheless cites this doc as "the policy ceiling this RFC must honor". Partially overtaken by PR #999 + the release-feed controls, which cover a subset of Layer 2 for 2 of 5 shapes.
 **Date:** 2026-05-26
 
 ---

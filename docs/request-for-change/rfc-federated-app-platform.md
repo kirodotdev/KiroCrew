@@ -1,8 +1,21 @@
+---
+title: Federated App Platform — Dynamic ESM Loading with Import Maps
+status: partial
+author: KiroCrew contributors
+created: 2026-04-18
+last-audited: 2026-08-03
+audited-at: 0ab6ed48
+doc-pr: null
+implementation-prs: [4, 284, 297]
+tracking-issues: []
+supersedes: []
+superseded-by: []
+---
 # RFC: Federated App Platform — Dynamic ESM Loading with Import Maps
 
 **Author:** KiroCrew contributors  
 **Date:** 2026-04-18  
-**Status:** Draft
+**Status:** partial — Phase 1 is substantially on main (import map, vendored ESM shims, `AppHost.tsx`, `@kirocrew/app-sdk`, static app-UI serving); Phase 3 is half-built (`app init --ui` shipped, `app dev` reinterpreted as a dev-mode toggle, no `kirocrewApp()` Vite plugin, no `app publish`). Unstarted: Phase 2 (Agent Worlds extraction — contradicted by the compiled-in builtin-apps pattern that shipped instead), Phase 1's entire removal table (app backends are alive and load-bearing), Phase 4's bundle+hash+CDN lane, Phase 5's CSP/monitoring. §3.3 and §3.7 are superseded by `rfc-appstore-official-registry.md`; this RFC's loading model is not.
 
 ---
 
