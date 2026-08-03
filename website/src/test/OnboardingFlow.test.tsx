@@ -404,17 +404,38 @@ describe('OnboardingFlow — Privacy step (final)', () => {
     })
   })
 
-  // Walk 2 → 3 → 4 → 5 → 6. The tour popovers all advance with "Next" now that
-  // privacy is the last step; only the privacy step offers "Done".
+  // Walk 2 → 3 → 4 → 5 → 6. Popovers 3-4 advance with "Next"; popover 5 ends the
+  // tour, so its primary reads "Done" (it still advances to privacy — see the
+  // dedicated test below — which owns the final "Done").
   const advanceToPrivacy = async () => {
     advanceToStep2()
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
-    for (let i = 0; i < 3; i++) {
-      fireEvent.click(screen.getByRole('button', { name: 'Next' }))
-    }
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    expect(await screen.findByText('Start your first session')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     expect(await screen.findByRole('heading', { name: 'Privacy' })).toBeInTheDocument()
   }
+
+  it('ends the tour with Done and no Skip on the last popover', async () => {
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    advanceToStep2()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
+
+    // Popovers 3 and 4 keep Next + Skip.
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+    // Popover 5 is the end of the tour: Done, and Skip is gone.
+    expect(await screen.findByText('Start your first session')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Skip' })).not.toBeInTheDocument()
+  })
 
   it('is reached after the tour and shows the disclosure plus the opt-out', async () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)

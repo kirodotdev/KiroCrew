@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Check, Monitor, Sun, Moon } from 'lucide-react'
 import { useTheme, type ModePreference, type ColorTheme } from '../hooks/useTheme'
-import { GhostVar2 } from '../assets/onboarding/GhostIcons'
+import { GhostWithArm } from '../assets/onboarding/GhostIcons'
 import { Btn, SendBtn } from './ui'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
 import {
@@ -41,9 +41,10 @@ import { i18nT } from '../i18n/t'
  * real `setColorTheme` / `setTheme`, which re-skins the whole app (including
  * these popovers) live via CSS custom properties.
  *
- * Every step has a Skip that dismisses the flow and marks the user onboarded.
- * Skipping still persists any profile answers already selected — the user
- * gave the information; losing it on Skip would be surprising.
+ * Every step except the last tour popover has a Skip that dismisses the flow and
+ * marks the user onboarded. Skipping still persists any profile answers already
+ * selected — the user gave the information; losing it on Skip would be
+ * surprising.
  */
 
 interface PopStep {
@@ -87,8 +88,9 @@ const POP_BODY_KEY: Record<string, string> = {
   chat: 'components.onboardingFlow.pop_chat_body',
 }
 
-// Step 6 (privacy) is the last step and uses the chapter-shell layout, so the
-// tour popovers (3-5) all show "Next" and only the privacy step shows "Done".
+// Step 6 (privacy) is the last step and uses the chapter-shell layout. Tour
+// popovers 3-4 show "Next"; popover 5 ends the tour, so it shows "Done" and
+// drops its Skip.
 const LAST_STEP = 6
 const LAST_POP_STEP = 5
 
@@ -719,6 +721,7 @@ export default function OnboardingFlow({
   const pop = POPS[step]
   if (!pop || !coords) return null
   const dotIdx = step - 3
+  const isLastPop = step === LAST_POP_STEP
 
   return createPortal(
     <div className="fixed z-[120] w-[288px] animate-rise" style={{ left: coords.left, top: coords.top }}>
@@ -727,7 +730,7 @@ export default function OnboardingFlow({
         style={{ boxShadow: RING_SHADOW, borderRadius: '0px 24px 24px 24px' }}
       >
         <div className="absolute" style={{ bottom: 'calc(100% + 6px)', left: -4 }}>
-          <GhostVar2 width={44} />
+          <GhostWithArm />
         </div>
         <h3 className="text-[18px] font-semibold text-text-strong leading-tight">{i18nT(POP_TITLE_KEY[pop.navId])}</h3>
         <p className="text-[13px] text-muted mt-2.5 leading-relaxed">{i18nT(POP_BODY_KEY[pop.navId])}</p>
@@ -742,19 +745,33 @@ export default function OnboardingFlow({
             ))}
           </div>
           <div className="ml-auto flex items-center gap-4">
-            <button
-              onClick={finish}
-              className="text-[13px] text-muted hover:text-text-strong cursor-pointer bg-transparent border-none"
-            >
-              {i18nT('components.onboardingFlow.skip')}
-            </button>
+            {/* Skip is hidden on the last popover: with no further tour step to
+                skip past, it reads as a second way to do what the primary
+                button already does. Escape is not wired for the popovers (they
+                are non-modal), but the primary still leads forward to the
+                privacy step, which carries its own "Skip all" — so this does
+                not strand the user. */}
+            {!isLastPop && (
+              <button
+                onClick={finish}
+                className="text-[13px] text-muted hover:text-text-strong cursor-pointer bg-transparent border-none"
+              >
+                {i18nT('components.onboardingFlow.skip')}
+              </button>
+            )}
             <button
               onClick={next}
-              aria-label={i18nT('components.onboardingFlow.next')}
+              aria-label={isLastPop
+                ? i18nT('components.onboardingFlow.done')
+                : i18nT('components.onboardingFlow.next')}
               className="flex items-center gap-1.5 rounded-[10px] bg-accent text-accent-fg text-[13px] font-semibold px-3 py-2 cursor-pointer border-none hover:opacity-90 transition-opacity"
             >
-              {i18nT('components.onboardingFlow.next')}
-              <ArrowRight size={15} />
+              {isLastPop
+                ? i18nT('components.onboardingFlow.done')
+                : i18nT('components.onboardingFlow.next')}
+              {/* No arrow on the last popover — a forward arrow next to "Done"
+                  advertises more tour than there is. */}
+              {!isLastPop && <ArrowRight size={15} />}
             </button>
           </div>
         </div>

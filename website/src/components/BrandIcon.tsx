@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react'
 import githubMarkUrl from '../assets/github-mark.svg'
 import discordMarkUrl from '../assets/discord-mark.svg'
 
@@ -11,11 +12,18 @@ import discordMarkUrl from '../assets/discord-mark.svg'
  * URL-quoting fix below — a second hand-rolled copy could silently miss a
  * future correction to it.
  */
-export function BrandGlyph({ url, size, className = 'inline-block shrink-0', testId }: {
+export function BrandGlyph({ url, size, height, className = 'inline-block shrink-0', testId, style }: {
   url: string
   size: number
+  /**
+   * Box height, for marks whose art is not square (the onboarding mascot).
+   * Defaults to `size`, so every existing square nav glyph is unchanged.
+   */
+  height?: number
   className?: string
   testId?: string
+  /** Extra style (positioning). Merged last so callers can only add, not break the mask. */
+  style?: CSSProperties
 }) {
   return (
     <span
@@ -24,7 +32,7 @@ export function BrandGlyph({ url, size, className = 'inline-block shrink-0', tes
       className={className}
       style={{
         width: size,
-        height: size,
+        height: height ?? size,
         backgroundColor: 'currentColor',
         // Quote the URL: in the production build these small SVGs are inlined
         // by Vite as `data:` URIs, whose commas/`#`/parens break an UNQUOTED
@@ -39,6 +47,7 @@ export function BrandGlyph({ url, size, className = 'inline-block shrink-0', tes
         maskSize: 'contain',
         WebkitMaskPosition: 'center',
         maskPosition: 'center',
+        ...style,
       }}
     />
   )
