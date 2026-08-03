@@ -2,7 +2,7 @@
 
 _Source of truth: `.github/workflows/*` on `main` (@ `9dd99f97`, incl. PR #549's AI-review de-noise) and the `prepare-pr` skill._
 
-This doc explains (1) the overall shape of KiroCrew's CI, (2) the purpose and design of each workflow — with emphasis on the four AI reviewers and the Arbiter — and (3) how the `prepare-pr` skill drives a change to review-ready by working *with* CI, including how the whole system resists over-engineering.
+This doc explains (1) the overall shape of KiroCrew's CI, (2) the purpose and design of each workflow — with emphasis on the four AI reviewers — and (3) how the `prepare-pr` skill drives a change to review-ready by working *with* CI, including how the whole system resists over-engineering.
 
 ---
 
@@ -27,11 +27,7 @@ flowchart TB
         direction TB
         CL["Opus 5 Review<br/><small>line · code-only</small>"]
         CX["GPT 5.6 Review<br/><small>line · +PR-intent</small>"]
-        DR["design-review<br/><small>design · advisory</small>"]
-        AR["longterm-arbiter<br/><small>aggregates the 3</small>"]
-        CL --> AR
-        CX --> AR
-        DR --> AR
+        DR["design-review<br/><small>design · advisory · owns long-term / one-way-door lens</small>"]
     end
 
     DG --> RD
@@ -50,7 +46,7 @@ flowchart TB
     class PR entry;
     class CR gate;
     class CI,BD test;
-    class CL,CX,DR,AR ai;
+    class CL,CX,DR ai;
     class RD agg;
     class V verdict;
 
@@ -111,7 +107,6 @@ Four reviewers, each with a distinct question and a distinct trust posture. The 
 | **Opus 5 Review** | Opus 5, agentic (makes its own tool calls), 1 pass (2nd only for security/data-integrity paths); `--max-turns 60`, 30-min timeout | **CODE ONLY** — `Read/Grep/Glob/gh pr diff`; **no `gh pr view`/`gh api`**, and (since #549) **no `gh pr comment`** | Line-level correctness/security/AUTOSDE | Yes | **Fail-closed** |
 | **GPT 5.6 Review** | GPT 5.6, non-agentic single-shot, **2-pass** (discovery → authoritative **falsification**); `reasoning_effort: medium` | Code + **PR title/description as nonce-wrapped UNTRUSTED context** (no prior-round context — removed in #549) | Line-level (2nd perspective) **+ description↔diff consistency** (advisory) | Yes | **Fail-closed** |
 | **Design Review** (`design-review`) | Fable 5, agentic | Code + `gh pr view` (must judge intent) | **Should we build this? Is it the right *shape*?** | No (advisory) | **Fail-open/neutral**, red only on genuine BLOCK |
-| **Arbiter** (`longterm-arbiter`) | Fable 5, `Read` only (2 pre-fetched files) | The **other three reviewers' posted comments** + capped diff | Which sub-threshold findings have real long-term impact | Yes (narrow bar) | Fail-closed until all 3 present; neutral on model error |
 
 Cross-cutting design details:
 
@@ -119,60 +114,23 @@ Cross-cutting design details:
 - **One shared binary contract (reworked in #549):** both line reviewers now run the *same* review contract — **DIVISION OF LABOUR → FINDING BAR → WHAT BLOCKS → FIX BAR → BUDGET → CALIBRATION** — and severity encodes exactly one thing: *does this block the merge*, **never confidence**. There is **no "possible issue" tier** — a finding must state (a) a concrete input/condition that occurs in practice, (b) the call path to the changed line, (c) an observable wrong outcome; anything "could / might / if a caller were to" is **NOT A FINDING** (silence is the correct output). Only two labels exist: **BLOCKING** (on the closed **WHAT BLOCKS** list — a `blocking:true` AUTOSDE violation on a changed file, or a reachable+concrete residual-class defect) and **FINDING** (advisory, never blocks). The **FIX BAR** kills over-engineering demands at the source (see §4), and a **BUDGET** caps each review at ≤2 BLOCKING findings; "No findings." is the expected output for a typical PR.
 - **De-noise (#549):** Opus 5 no longer posts inline line comments — the agent lost `gh pr comment`, and a *CI step* upserts a **single** hidden-marker-keyed summary captured from the run transcript. The gate blocks solely on the SHA-scoped `[BLOCK-MERGE]` marker, with **no text backstop**. This trades scattered inline chatter for one terse, punchline-first summary plus a binary gate.
 - **Asymmetric multi-pass is intentional, not inconsistent:** the agentic Opus 5 reviewer runs ONE pass over the diff with two internal phases — DISCOVER (generous candidate collection) then FALSIFY (kill each candidate against code it opened; extra falsification effort only on security/data-integrity paths). The lean single-shot GPT 5.6 reviewer runs **two** real invocations — a **discovery** pass that generates candidates, then an **authoritative falsification** pass whose primary job is to *kill* those candidates (a candidate survives only if pass 2 re-derives input + call path + observable outcome from code it opened itself). #549 replaced the old third "find what pass 1 missed" pass — a recall ratchet that only ever *added* candidates — with this falsification pass; pass 2 is the only gated verdict.
-- **Verdicts are structured markers, not free prose:** both line reviewers emit SHA-scoped text markers — Opus 5 `[OPUS-REVIEWED] <sha>` always and `[BLOCK-MERGE] <sha>` only when a blocking finding exists (captured from the action's `execution_file` transcript; the old `--json-schema` `structured_output` path was retired because claude-code's StructuredOutput tool refuses to fire when other tools are enabled, failing the gate on healthy reviews), and GPT 5.6 `[GPT-REVIEWED] <sha>` / `[BLOCK-MERGE] <sha>` — **the markers are the only gate**; #549 downgraded the old "`Severity: HIGH` without `[BLOCK-MERGE]`" coherence check from fail-closed to a non-gating **advisory warning** (it mis-fired whenever the model quoted prior text). Design emits `Design-Verdict: PASS|CONCERNS|BLOCK`. Arbiter emits `Arbiter-Verdict: BLOCK|PASS`.
+- **Verdicts are structured markers, not free prose:** both line reviewers emit SHA-scoped text markers — Opus 5 `[OPUS-REVIEWED] <sha>` always and `[BLOCK-MERGE] <sha>` only when a blocking finding exists (captured from the action's `execution_file` transcript; the old `--json-schema` `structured_output` path was retired because claude-code's StructuredOutput tool refuses to fire when other tools are enabled, failing the gate on healthy reviews), and GPT 5.6 `[GPT-REVIEWED] <sha>` / `[BLOCK-MERGE] <sha>` — **the markers are the only gate**; #549 downgraded the old "`Severity: HIGH` without `[BLOCK-MERGE]`" coherence check from fail-closed to a non-gating **advisory warning** (it mis-fired whenever the model quoted prior text). Design emits `Design-Verdict: PASS|CONCERNS|BLOCK`.
 - **Security guards:** explicit fork guards (`head.repo.full_name == github.repository`), `persist-credentials:false`, least-privilege Bedrock roles assumed *late* (after npm install so it never sees creds), read-only network-unshared sandboxes, and post-run redaction of AWS key/ARN/account shapes before any public comment.
-- **Human override** (`ai-review-human-override.yml`): a repo writer can post `/ai-review override <fable|gpt|arbiter|all> <head-sha>: <reason>`. It runs from the trusted default branch, validates target + 7-40-hex sha + writer permission + **commit freshness** (sha must be current head), then records a bot-authored marker the reviewers trust. Scope is **this commit only** — a new push needs a new judgment.
+- **Human override** (`ai-review-human-override.yml`): a repo writer can post `/ai-review override <fable|gpt|all> <head-sha>: <reason>`. It runs from the trusted default branch, validates target + 7-40-hex sha + writer permission + **commit freshness** (sha must be current head), then records a bot-authored marker the reviewers trust. Scope is **this commit only** — a new push needs a new judgment.
 
-### 2e. The Arbiter, specifically (the second-order reviewer)
+### 2e. Long-term / one-way-door judgment (now in Design Review)
 
-The Arbiter is the piece most people misunderstand, so it's worth spelling out. It is **not** a fifth line reviewer — it is a **second-order aggregator that judges the other reviewers' comments.**
-
-- **Trigger:** `workflow_run: completed` on the three reviewer workflows (it's its own workflow precisely so it can fire *after* Design Review completes — a job can't be triggered by its own workflow's completion). Its "Gather" step deterministically fetches the three reviewer comments by their hidden per-reviewer markers plus the capped diff.
-- **Instruction:** *"Do NOT re-review the code from scratch and do NOT invent new findings… HIGH/CRITICAL items are already handled by the reviewers and block on their own — ignore them here."* It looks **only** at the sub-threshold findings the others already surfaced and decides which few must block for long-term reasons.
-- **Deliberately narrow blocking bar** — escalate a listed finding to BLOCK only if it is caused/worsened **by this diff** AND meets one of:
-  - **One-way door** — an expensive-to-reverse contract / API / schema / persisted-data / wire-format decision merging locks in; or
-  - **Concrete harm** — a security regression, data-correctness/loss, or availability regression (must *name the concrete trigger and outcome*).
-- **Everything reversible is explicitly NOT a blocker:** *"DO NOT block for: architectural erosion, ownership-boundary drift, maintainability / tech-debt … missing abstraction, duplication, or 'this should eventually be refactored' … The author does NOT need a perfect or complete solution in THIS PR."* A **SCOPE TEST** further requires that a "related influence" both clears the narrow bar *and* is created/worsened by this PR — pre-existing concerns route to `### Suggested follow-ups` (rendered under both BLOCK and PASS), never gate.
-- **Gating handle:** an API-posted check-run **"Arbiter — judge from comments"**. `waiting` (not all 3 reviewer comments present for the SHA) stays pending/fail-closed; `ready`+PASS → success; `ready`+BLOCK → failure; unparsable/model-error → neutral.
-
-```mermaid
-flowchart TB
-    C1["💬 Opus 5 Review"] --> G
-    C2["💬 GPT 5.6 Review"] --> G
-    C3["💬 design-review"] --> G
-    G["📥 Gather step<br/><small>fetch 3 comments by marker + capped diff</small>"] --> W{"All 3 present<br/>for this SHA?"}
-    W -- "no" --> WAIT["⏳ check = pending<br/><small>fail-closed · wait</small>"]
-    W -- "yes" --> M["⚖️ Fable-5 judge<br/><small>judge ONLY listed sub-threshold findings<br/>ignore HIGH/CRITICAL — they block on their own</small>"]
-    M --> B{"Caused/worsened BY THIS diff<br/>AND one-way door OR concrete harm?"}
-    B -- "yes" --> BLOCK["🔴 Arbiter-Verdict: BLOCK<br/><small>check = failure</small>"]
-    B -- "no · reversible<br/><small>tech-debt · duplication ·<br/>architectural erosion</small>" --> PASS["🟢 Arbiter-Verdict: PASS<br/><small>→ Suggested follow-ups · check = success</small>"]
-
-    classDef cmt fill:#8957e5,stroke:#6533b5,stroke-width:2px,color:#fff;
-    classDef step fill:#2f81f7,stroke:#1c5cbf,stroke-width:2px,color:#fff;
-    classDef judge fill:#e8830c,stroke:#b5650a,stroke-width:2px,color:#fff;
-    classDef decision fill:#d4a017,stroke:#9c7611,stroke-width:2px,color:#fff,font-weight:bold;
-    classDef wait fill:#8b949e,stroke:#586069,stroke-width:2px,color:#fff;
-    classDef block fill:#d73a4a,stroke:#a32633,stroke-width:3px,color:#fff,font-weight:bold;
-    classDef pass fill:#0e8a16,stroke:#0a5f0f,stroke-width:3px,color:#fff,font-weight:bold;
-
-    class C1,C2,C3 cmt;
-    class G step;
-    class M judge;
-    class W,B decision;
-    class WAIT wait;
-    class BLOCK block;
-    class PASS pass;
-```
+The separate `longterm-arbiter` (and its fork mirror `fork-arbiter`) have been **retired**. A second-order reviewer that re-judged the other reviewers' *comments* over a `workflow_run` chain was low-yield (it blocked almost nothing) and structurally could not work for fork PRs -- the fork head SHA does not survive the extra `workflow_run` hop, so it never resolved which PR it was for (it only ever skipped or self-cancelled). Its one lens -- *is a sub-threshold finding a one-way door we'll regret?* -- now lives **directly in Design Review** as gate **8. LONG-TERM REVERSIBILITY** (in both `design-review.yml` and `fork-design-review.yml`), where the reviewer already has full diff context. It stays **advisory**: Design Review flags an unsafe one-way door prominently (its primary BLOCK trigger) but, like all of Design Review, does **not** hard-block the merge -- a human decides. This covers same-repo and fork PRs identically with no cross-workflow head-passing.
 
 ### 2f. The aggregator — `pr-readiness.yml` ("PR Readiness")
 
 Executes no tests. It resolves the PR's current head SHA, **drops stale events**, collects the latest run per required workflow, and folds them into **one `PR Readiness` commit status + one `readiness:` label** (`passed` / `checking` / `action required`).
 
 - **Always required:** CI, Build, Code Review.
-- **Non-fork also required:** CodeQL, Opus 5, GPT 5.6, Arbiter.
-- **Design Review is completion-required but advisory** — its verdict/infra failures score as `"(advisory)"` and never independently block (its job is to feed the Arbiter).
+- **Non-fork also required:** CodeQL, Opus 5, GPT 5.6.
+- **Design Review is completion-required but advisory** — its verdict/infra failures score as `"(advisory)"` and never independently block (it owns the advisory long-term / one-way-door lens).
 - **Forks skip** CodeQL + all four bots.
-- **Refreshes on re-run (#549):** it now triggers on `workflow_run` `requested` / `in_progress` / `completed` (was `completed` only). When a monitored workflow flips *back* to running — most commonly a reviewer re-run after a human override — the job re-evaluates *while* that workflow runs: the live-queried workflow buckets into `pending`, so the label honestly drops from a stale `action required` (red) back to `checking` (yellow) instead of freezing on the previous commit's verdict. It stays cheap: the `in_progress` path has `pending>0` so it skips the ~5-min Arbiter settle loop (only the all-clear path waits), and the `pr+sha` concurrency group (`cancel-in-progress`) collapses the burst of near-simultaneous fires into one live evaluation.
+- **Refreshes on re-run (#549):** it now triggers on `workflow_run` `requested` / `in_progress` / `completed` (was `completed` only). When a monitored workflow flips *back* to running — most commonly a reviewer re-run after a human override — the job re-evaluates *while* that workflow runs: the live-queried workflow buckets into `pending`, so the label honestly drops from a stale `action required` (red) back to `checking` (yellow) instead of freezing on the previous commit's verdict. It stays cheap: the `pr+sha` concurrency group (`cancel-in-progress`) collapses the burst of near-simultaneous fires into one live evaluation.
 
 ---
 
@@ -271,7 +229,7 @@ AI-native coding skews toward over-engineering — extra layers, abstractions, c
 - **Line reviewers (Opus 5 + GPT 5.6) share an identical FIX BAR:** *"every finding must carry a fix expressible as an edit to lines THIS PR changed. If the fix would need a new function, module, abstraction, config knob, dependency, or an edit to untouched code, it is out of scope for this bot: DROP THE FINDING. The absence of a mechanism is never a finding. Prefer deleting or simplifying code over adding anything."* This makes "add mechanism X" structurally un-reportable — the demand fails the FIX BAR before it can become a finding. A scope cap complements it — **Opus 5** stays within "the evident scope of *this diff*" (code-only), **GPT 5.6** within "the PR's stated purpose" (it reads the description and flags a description↔diff mismatch as an **advisory FINDING**, never a block).
 - **A strict, closed WHAT BLOCKS list:** *"exhaustive — never extend it, never reason by analogy, there is no 'and other serious issues' clause."* A finding blocks *only* if it is (1) a `blocking:true` AUTOSDE-rule violation on a changed file (or this PR weakening/removing such a rule), or (2) a **reachable and concrete** residual-class defect — a security hole with a named trigger, a crash/data-loss/corruption on a path this diff changes, or a removed guard with no compensating replacement. There is **no "possible issue" tier**: severity answers only *does this block the merge* and never encodes confidence, so anything "could / might / if a caller were to" is **NOT A FINDING**. A per-review **BUDGET of ≤2 BLOCKING findings** and a **CALIBRATION** note ("No findings." is the expected output for a typical PR) further resist manufactured escalation. Style / naming / speculative-perf / hypotheticals never block.
 - **Design Review's Suggestions must be proportionate:** *"NEVER recommend extra layers, abstractions, or future-proofing the problem does not require (over-engineered suggestions become new surface a later review flags)."* It also carries the **Design-Simpler-Alternative** ethos — actively flag when a materially simpler solution exists — but always **advisory**, never raising the verdict to BLOCK. Its tie-breaker: *"when torn between BLOCK and CONCERNS, choose CONCERNS… Only reach for BLOCK when the DESIGN is wrong — never merely because the change is large."*
-- **The Arbiter enforces it by omission:** everything reversible (architectural erosion, maintainability, "should eventually be refactored") is routed to non-blocking follow-ups; only one-way doors and concrete harm caused by *this* diff can block. *"The author does NOT need a perfect or complete solution in THIS PR."*
+- **Design Review's long-term lens enforces it by omission:** everything reversible (architectural erosion, maintainability, "should eventually be refactored") is advice / non-blocking follow-ups; it flags one-way doors and concrete long-term harm prominently, but advisory. *"The author does NOT need a perfect or complete solution in THIS PR."*
 - **prepare-pr's severity gate closes the loop:** it validates each finding's legitimacy first — fix true Critical/High, **rebut false positives with evidence rather than appeasing them by changing correct code**, defer Low/nits. Combined with single-commit + description reconciliation, this keeps a PR converging on its stated purpose instead of accreting scope round over round.
 
 Net: expensive/irreversible risk blocks; everything else is advice a human can take or defer — the design deliberately refuses to let "more mechanism" be a blocking demand.

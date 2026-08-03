@@ -15,7 +15,7 @@ concurrency:
   # main does not, so let an in-flight run finish instead of killing it.
   # This does NOT produce a verdict per commit. The group still permits one
   # pending run, and GitHub evicts that pending run when a newer one queues
-  # (longterm-arbiter.yml documents the same hazard). With a ~19min run and a
+  # (a documented GitHub concurrency behavior). With a ~19min run and a
   # ~1.4min median merge gap, main gets periodic verdicts instead of none.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 

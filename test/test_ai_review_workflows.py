@@ -58,7 +58,7 @@ class TestHumanOverrideHandler:
         assert "issue_comment:" in workflow
         assert "pull_request_target:" not in workflow
         assert "actions/checkout@" not in workflow
-        assert "/ai-review override <fable|gpt|arbiter|all> <current-sha>: <reason>" in workflow
+        assert "/ai-review override <fable|gpt|all> <current-sha>: <reason>" in workflow
 
     def test_handler_requires_write_permission_fresh_sha_and_reason(self) -> None:
         workflow = _workflow("ai-review-human-override.yml")
@@ -81,11 +81,9 @@ class TestHumanOverrideHandler:
         assert marker in workflow
         assert workflow.index(marker) < workflow.index("actions/runs/$run_id/rerun")
         assert "select(.head_sha == $head" in workflow
-        assert 'name="Arbiter — judge from comments"' in workflow
-        assert "-f status=completed -f conclusion=success" in workflow
 
     def test_reviewer_comments_advertise_the_writer_only_policy(self) -> None:
-        for name in ("claude-review.yml", "codex-review.yml", "longterm-arbiter.yml"):
+        for name in ("claude-review.yml", "codex-review.yml"):
             workflow = _workflow(name)
             assert "The PR author or a repository writer" not in workflow
             assert "A repository writer can comment:" in workflow
@@ -243,7 +241,6 @@ class TestPrReadiness:
             "design-review.yml|Design Review",
         ):
             assert workflow_name in workflow
-        assert 'for check_name in "Arbiter — judge from comments"; do' in workflow
         assert 'success|skipped) passed+=("$label")' in workflow
 
     def test_fork_readiness_omits_unavailable_review_lanes(self) -> None:
@@ -253,8 +250,6 @@ class TestPrReadiness:
         assert '[ "$FORK" = "true" ]' in workflow
         assert '"CodeQL (fork PR)"' in workflow
         assert '"GPT 5.6 Review (fork PR)"' in workflow
-        assert '"Arbiter — judge from comments (fork PR)"' in workflow
-        assert '[ "$FORK" != "true" ]; then' in workflow
         fork_branch = workflow.index('if [ "$FORK" = "true" ]; then')
         same_repo_branch = workflow.index("else", fork_branch)
         codeql_spec = workflow.index('"dynamic/github-code-scanning/codeql|CodeQL"')
@@ -263,52 +258,9 @@ class TestPrReadiness:
     def test_external_check_polling_counts_each_pass_once(self) -> None:
         workflow = _workflow("pr-readiness.yml")
 
-        assert "external_passed=()" in workflow
-        assert 'passed+=("${external_passed[@]}")' in workflow
         assert 'success|neutral|skipped) passed+=("$check_name")' not in workflow
-        for array_name in ("external_passed", "external_pending", "external_failed"):
-            assert f'if [ "${{#{array_name}[@]}}" -gt 0 ]; then' in workflow
         assert 'if [ "${#failed[@]}" -gt 0 ]; then' in workflow
         assert 'if [ "${#pending[@]}" -gt 0 ]; then' in workflow
-
-    def test_arbiter_refreshes_readiness_without_label_recursion(self) -> None:
-        workflow = _workflow("longterm-arbiter.yml")
-        override = _workflow("ai-review-human-override.yml")
-
-        assert "github.event.label.name == 'defer-longterm'" in workflow
-        assert "gh workflow run pr-readiness.yml" in workflow
-        assert "gh workflow run pr-readiness.yml" in override
-
-    def test_arbiter_dispatches_only_after_publishing_its_check(self) -> None:
-        workflow = _workflow("longterm-arbiter.yml")
-
-        assert "id: publish" in workflow
-        assert 'echo "published=true" >> "$GITHUB_OUTPUT"' in workflow
-        assert "needs.arbiter.outputs.published == 'true'" in workflow
-        assert "failed to post Arbiter — judge from comments check-run" not in workflow
-
-    def test_readiness_labels_cannot_cancel_an_active_arbiter(self) -> None:
-        workflow = _workflow("longterm-arbiter.yml")
-
-        assert "cancel-in-progress: >-" in workflow
-        assert "github.event.label.name == 'defer-longterm'" in workflow
-        assert "github.event.label.name != 'defer-longterm'" in workflow
-        assert "&& github.run_id" in workflow
-
-    def test_arbiter_rechecks_override_after_publishing_the_exact_check(self) -> None:
-        workflow = _workflow("longterm-arbiter.yml")
-        create = workflow.index('check_json="$(gh api --method POST')
-        check_id = workflow.index("check_id=", create)
-        reread = workflow.index("latest_comments=", check_id)
-        exact_patch = workflow.index(
-            'gh api --method PATCH "repos/$REPO/check-runs/$check_id"',
-            reread,
-        )
-
-        assert create < check_id < reread < exact_patch
-        assert "target=arbiter head=$SHA" in workflow
-        assert "target=all head=$SHA" in workflow
-        assert "Re-applied human override to Arbiter check-run $check_id" in workflow
 
 
 class TestDesignReviewPresentation:
@@ -362,29 +314,6 @@ class TestPreparePrPreSubmitReview:
         assert "`fixed`/`rebutted`/`accepted`" in skill
         assert "does not authorize or suppress a finding" in skill
         assert "current-SHA-scoped" in skill
-
-
-class TestArbiterPresentation:
-    def test_arbiter_replaces_stale_results_while_waiting(self) -> None:
-        workflow = _workflow("longterm-arbiter.yml")
-
-        assert 'TITLE="⏳ review pending"' in workflow
-        assert "this replaces any stale verdict from the previous commit" in workflow
-        assert "Always refresh the human-facing comment, including while waiting" in workflow
-
-    def test_arbiter_has_clear_verdict_and_override_paths(self) -> None:
-        workflow = _workflow("longterm-arbiter.yml")
-
-        assert "target=arbiter head=$SHA" in workflow
-        assert 'STATE="human_override"' in workflow
-        assert 'TITLE="✅ no blocking findings"' in workflow
-        assert (
-            "Arbiter found no unresolved long-term items that require action before "
-            "merging \\`$SHA\\`." in workflow
-        )
-        assert 'TITLE="✅ human override accepted"' in workflow
-        assert "/ai-review override arbiter $SHA:" in workflow
-        assert "defer-longterm" in workflow
 
 
 class TestClaudeReviewCodeOnlyScope:
