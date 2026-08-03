@@ -224,33 +224,72 @@ class _AiohttpTransport:
 _TRANSPORT: Any = _AiohttpTransport()
 
 
-async def _read_capped(raw: _RawResponse, limit: int) -> bytes:
-    """Read at most *limit* bytes, raising :class:`_UnfurlFailed` if exceeded.
+async def _read_capped(raw: _RawResponse, limit: int, *, truncate: bool) -> Tuple[bytes, bool]:
+    """Read at most *limit* bytes; returns the body and whether it was cut short.
 
-    ``Content-Length`` is used only as an early exit. It is a claim by the
-    upstream, so a missing, wrong, or deliberately understated header must not
-    let an unbounded body through — the accumulating check below is the actual
-    bound, and it aborts mid-stream rather than after buffering the whole thing.
+    ``truncate=True`` (a **page**) — keep the first *limit* bytes and stop. Every
+    field a preview needs (``<title>``, the ``og:*`` tags, the icon ``<link>``) is
+    declared in ``<head>``, and :class:`_HeadParser` stops parsing there, so a
+    document that merely *continues* past the cap has already delivered the whole
+    preview. Rejecting it discarded a payload that was in hand: at the 256 KiB cap
+    that lost every heavyweight page on the web — a major retailer's home page
+    measures ~730 KB with its ``<title>`` at byte ~36 000 — while looking, in chat,
+    exactly like the feature being switched off.
+
+    A head that does not itself fit is the one case where the prefix is worthless,
+    and it cannot be recognised from the bytes: ``</head>`` and ``<body`` both occur
+    inside scripts, comments and attribute values, where the parser does not treat
+    them as the end of the head. So the cut is *reported* rather than judged here,
+    and :func:`_build_payload` asks the parser instead — a cut whose title did not
+    survive whole is a failure, which keeps such a page on the 10 min negative TTL
+    rather than caching an empty or half-a-word preview for the 6 h positive one.
+
+    ``truncate=False`` (an **icon**) — an oversized image is dropped, never
+    truncated: half a PNG is not a smaller PNG, it is a corrupt one. The flag is
+    therefore always ``False`` in this mode.
+
+    Memory: ``buffered`` never exceeds *limit* in either mode, because each chunk
+    is admitted only up to the remaining room — the excess is dropped rather than
+    appended and trimmed. Reading then stops on the chunk that crossed the cap;
+    that chunk is already off the socket, so chunk granularity is as tight as a
+    stream read gets. Reject mode needs that same chunk to know the body overran at
+    all, which is why it raises there instead of earlier.
+
+    ``Content-Length`` is an early exit only in reject mode — it is a claim by the
+    upstream, so the room check below is the real bound in both modes, and a
+    missing, wrong, or deliberately understated header can never admit more than
+    *limit* bytes. The transport sends ``Accept-Encoding: identity`` with
+    ``auto_decompress=False``, so for an upstream that honors it this caps decoded
+    bytes; one that compresses anyway is capped on the compressed stream instead.
     """
     declared = raw.headers.get("Content-Length", "")
-    if declared.isdigit() and int(declared) > limit:
+    if not truncate and declared.isdigit() and int(declared) > limit:
         raise _UnfurlFailed("declared body too large")
     buffered = bytearray()
+    cut = False
     async for chunk in raw.chunks:
+        room = limit - len(buffered)
+        if len(chunk) > room:
+            if not truncate:
+                raise _UnfurlFailed("body exceeded read cap")
+            buffered.extend(chunk[:room])
+            cut = True
+            break
         buffered.extend(chunk)
-        if len(buffered) > limit:
-            raise _UnfurlFailed("body exceeded read cap")
-    return bytes(buffered)
+    return bytes(buffered), cut
 
 
-async def _fetch(vetted: VettedUrl, limit: int) -> Tuple[int, Mapping[str, str], bytes]:
-    """One vetted request; returns status, headers and the capped body."""
+async def _fetch(
+    vetted: VettedUrl, limit: int, *, truncate: bool
+) -> Tuple[int, Mapping[str, str], bytes, bool]:
+    """One vetted request; returns status, headers, the capped body, and the cut flag."""
     raw, closer = await _TRANSPORT.get(vetted)
     try:
         if raw.status in _REDIRECT_STATUSES:
             # Body is irrelevant on a redirect and may be large; skip reading it.
-            return raw.status, raw.headers, b""
-        return raw.status, raw.headers, await _read_capped(raw, limit)
+            return raw.status, raw.headers, b"", False
+        body, cut = await _read_capped(raw, limit, truncate=truncate)
+        return raw.status, raw.headers, body, cut
     finally:
         if closer is not None:
             await closer.close()
@@ -261,18 +300,21 @@ async def _vet(url: str) -> VettedUrl:
     return await asyncio.to_thread(vet_unfurl_url, url)
 
 
-async def _fetch_html(url: str) -> Tuple[VettedUrl, str]:
+async def _fetch_html(url: str) -> Tuple[VettedUrl, str, bool]:
     """Walk up to :data:`MAX_REDIRECTS` hops and return the final HTML.
 
     Every hop is vetted before it is opened, including the ones the *upstream*
     chose. A vet applied only to the URL the client supplied is trivially
     bypassed: a public host that 302s to ``http://169.254.169.254/`` would be
     fetched on the attacker's behalf.
+
+    The third element is whether the body was cut at the read cap; the caller
+    needs it to tell "this page has no title" from "we never read the title".
     """
     current = url
     for _hop in range(MAX_REDIRECTS + 1):
         vetted = await _vet(current)
-        status, headers, body = await _fetch(vetted, MAX_BODY_BYTES)
+        status, headers, body, cut = await _fetch(vetted, MAX_BODY_BYTES, truncate=True)
         if status in _REDIRECT_STATUSES:
             location = headers.get("Location", "").strip()
             if not location:
@@ -286,7 +328,7 @@ async def _fetch_html(url: str) -> Tuple[VettedUrl, str]:
             # Not a page — a PDF or a video has no title to show, and parsing
             # arbitrary bytes as HTML invites nonsense titles.
             raise _UnfurlFailed("not html")
-        return vetted, decode_html(body, content_type)
+        return vetted, decode_html(body, content_type), cut
     raise _UnfurlFailed("too many redirects")
 
 
@@ -300,7 +342,7 @@ async def _fetch_icon(candidates: Tuple[str, ...]) -> str:
     for candidate in candidates[:_MAX_ICON_ATTEMPTS]:
         try:
             vetted = await _vet(candidate)
-            status, headers, body = await _fetch(vetted, MAX_ICON_BYTES)
+            status, headers, body, _cut = await _fetch(vetted, MAX_ICON_BYTES, truncate=False)
         except (UnfurlRejected, _UnfurlFailed, aiohttp.ClientError, OSError, asyncio.TimeoutError):
             continue
         except Exception:  # noqa: BLE001 — an icon must never fail the preview
@@ -316,8 +358,17 @@ async def _fetch_icon(candidates: Tuple[str, ...]) -> str:
 
 async def _build_payload(url: str) -> Dict[str, Any]:
     """Fetch and parse *url* into the 200 body. Raises on any refusal/failure."""
-    vetted, html = await _fetch_html(url)
+    vetted, html, cut = await _fetch_html(url)
     meta = extract_meta(html, base_url=vetted.url)
+    if cut and not meta.title_complete:
+        # The body was truncated at the read cap and what came back is not a whole
+        # title: either the head did not fit at all, or the cut landed inside
+        # `<title>` and left a word-fragment ("Real Titl") that reads like a real
+        # one. Fail rather than cache either for the 6 h positive TTL — this way the
+        # 10 min negative TTL applies and the link retries. A page read in FULL is
+        # untouched: `cut` is False there, so a genuinely titleless page still gets
+        # its domain-only preview.
+        raise _UnfurlFailed("title did not survive the read cap")
     return {
         "url": vetted.url,
         "title": meta.title,
