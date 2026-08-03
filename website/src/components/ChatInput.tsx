@@ -138,6 +138,24 @@ function effectiveVh(): number {
   return window.innerHeight
 }
 
+/** Remove a trailing run of blank lines from pasted text: strips trailing
+ *  spaces/tabs/newlines, but ONLY when that run contains at least one newline
+ *  (so a paste ending in plain spaces is left untouched); interior content is
+ *  never modified. A single linear backward scan over the trailing whitespace
+ *  run — no regex backtracking, so it stays linear even on adversarial input
+ *  (e.g. a huge run of spaces followed by a non-whitespace character). */
+function stripTrailingBlankLines(s: string): string {
+  let i = s.length - 1
+  let sawNewline = false
+  while (i >= 0) {
+    const c = s.charCodeAt(i)
+    if (c === 10 /* \n */ || c === 13 /* \r */) { sawNewline = true; i--; continue }
+    if (c === 32 /* space */ || c === 9 /* \t */) { i--; continue }
+    break
+  }
+  return sawNewline ? s.slice(0, i + 1) : s
+}
+
 /** Auto-size textarea to fit content (only when not manually sized).
  *  Sets overflow:hidden during measurement so the parent flex container
  *  never sees the collapsed (height:0) intermediate state — prevents the
@@ -1646,36 +1664,71 @@ function ChatInput({
       onUploadFiles(files)
       return
     }
-    // Text paste — collapse only when the chunk is big enough and we have a sink.
-    if (!onPasteBlocksChange) return
+    // Text paste. Sources that serialize rendered HTML (web pages, PDFs, chat
+    // bubbles, table cells) routinely tack trailing blank lines onto a copied
+    // "single line", and a <textarea> inserts them verbatim — so the paste shows
+    // the line followed by several empty rows. Strip a trailing run of blank
+    // lines up front (only whitespace runs that include a newline; a paste
+    // ending in plain spaces and interior blank lines are untouched). Raw paste
+    // (Cmd/Ctrl+Shift+V) opts out entirely.
     const pasted = e.clipboardData.getData('text')
-    if (forceRaw || !shouldCollapsePaste(pasted)) return
+    const cleaned = forceRaw ? pasted : stripTrailingBlankLines(pasted)
 
-    e.preventDefault()
-    const block: PasteBlock = { id: makePasteId(), seq: nextSeq(pasteBlocks), lines: countLines(pasted), content: pasted }
-    const token = formatToken(block)
     const ta = e.currentTarget
     const start = ta.selectionStart ?? value.length
     const end = ta.selectionEnd ?? start
     const before = value.slice(0, start)
     const after = value.slice(end)
-    // Surround the token with newlines so the chip lives on its own line —
-    // long-form pasted content rarely flows with typed text around it.
-    // Skip the leading newline when the caret is at the start of a line,
-    // and the trailing one when the caret is at the end of a line.
-    const leadingNewline = before && !before.endsWith('\n') ? '\n' : ''
-    const trailingNewline = after && !after.startsWith('\n') ? '\n' : ''
-    const insert = leadingNewline + token + trailingNewline
-    const nextValue = before + insert + after
-    onChange(nextValue)
-    onPasteBlocksChange([...pasteBlocks, block])
-    // Restore caret right after the inserted token + trailing newline.
-    requestAnimationFrame(() => {
-      if (ta && document.activeElement === ta) {
-        const pos = before.length + insert.length
-        ta.setSelectionRange(pos, pos)
-      }
-    })
+
+    // Big paste → collapse into a `[ Paste #N ]` chip. Uses the cleaned text so
+    // the chip's line count and stored content exclude the stripped blanks.
+    if (onPasteBlocksChange && !forceRaw && shouldCollapsePaste(cleaned)) {
+      e.preventDefault()
+      const block: PasteBlock = { id: makePasteId(), seq: nextSeq(pasteBlocks), lines: countLines(cleaned), content: cleaned }
+      const token = formatToken(block)
+      // Surround the token with newlines so the chip lives on its own line —
+      // long-form pasted content rarely flows with typed text around it.
+      // Skip the leading newline when the caret is at the start of a line,
+      // and the trailing one when the caret is at the end of a line.
+      const leadingNewline = before && !before.endsWith('\n') ? '\n' : ''
+      const trailingNewline = after && !after.startsWith('\n') ? '\n' : ''
+      const insert = leadingNewline + token + trailingNewline
+      valueFromUserRef.current = true // a paste is a real user edit, not a draft restore
+      onChange(before + insert + after)
+      onPasteBlocksChange([...pasteBlocks, block])
+      // Restore caret right after the inserted token + trailing newline.
+      requestAnimationFrame(() => {
+        if (ta && document.activeElement === ta) {
+          const pos = before.length + insert.length
+          ta.setSelectionRange(pos, pos)
+        }
+      })
+      return
+    }
+
+    // Small paste. Only intercept when trailing blanks were actually stripped
+    // AND something remains — an all-blank clipboard (cleaned === '') is left to
+    // the browser so the paste is never a silent no-op.
+    if (cleaned !== pasted && cleaned !== '') {
+      e.preventDefault()
+      // Insert through the native input path so the textarea's own onChange runs:
+      // that fires the /, @, $ picker detection, marks the edit user-driven, and
+      // keeps native undo. Fall back to a controlled-value splice where
+      // execCommand is unavailable (jsdom/tests) or reports failure.
+      let inserted = false
+      try {
+        inserted = typeof document.execCommand === 'function' && document.execCommand('insertText', false, cleaned)
+      } catch { inserted = false }
+      if (inserted) return
+      valueFromUserRef.current = true
+      onChange(before + cleaned + after)
+      requestAnimationFrame(() => {
+        if (ta && document.activeElement === ta) {
+          const pos = before.length + cleaned.length
+          ta.setSelectionRange(pos, pos)
+        }
+      })
+    }
   }, [onUploadFiles, onPasteBlocksChange, pasteBlocks, value, onChange])
 
   /** Two-step click on a collapsed-paste token:

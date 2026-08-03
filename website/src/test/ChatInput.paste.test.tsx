@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
@@ -115,5 +115,110 @@ describe('ChatInput optimize: forwards paste content', () => {
     const body = JSON.parse((call[1] as RequestInit).body as string)
     expect(body.prompt).toBe(value)
     expect(body.pastes).toEqual([{ seq: 1, content: 'TRACEBACK: boom' }])
+  })
+})
+
+describe('ChatInput paste: strip trailing blank lines', () => {
+  const pasteText = (textarea: HTMLElement, text: string) =>
+    fireEvent.paste(textarea, {
+      clipboardData: { types: ['text/plain'], items: [], getData: () => text },
+    })
+
+  // handlePaste prefers the native document.execCommand('insertText') path so
+  // the textarea's own onChange fires. jsdom's execCommand is an unreliable
+  // no-op, so by default force it to report failure — that exercises the
+  // controlled-value fallback these assertions check. The native path gets its
+  // own dedicated test that stubs execCommand to succeed.
+  beforeEach(() => {
+    ;(document as unknown as { execCommand: (...a: unknown[]) => boolean }).execCommand = vi.fn(() => false)
+  })
+
+  it('trims trailing blank lines a single-line copy carries in (line + empty rows)', () => {
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={vi.fn()} />,
+    )
+    pasteText(screen.getByRole('textbox'), 'just one line\n\n\n')
+    expect(onChange).toHaveBeenCalledWith('just one line')
+  })
+
+  it('trims a single trailing newline too', () => {
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={vi.fn()} />,
+    )
+    pasteText(screen.getByRole('textbox'), 'hello world\n')
+    expect(onChange).toHaveBeenCalledWith('hello world')
+  })
+
+  it('strips only the trailing run, not earlier line breaks', () => {
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={vi.fn()} />,
+    )
+    pasteText(screen.getByRole('textbox'), 'line1\nline2\n\n')
+    expect(onChange).toHaveBeenCalledWith('line1\nline2')
+  })
+
+  it('does NOT intercept a clean paste (no trailing blanks) — leaves it to the browser', () => {
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={vi.fn()} />,
+    )
+    pasteText(screen.getByRole('textbox'), 'clean line')
+    // No preventDefault path taken → onChange fires via the native input event,
+    // which jsdom does not dispatch for fireEvent.paste, so our handler stays out.
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('leaves a trailing-spaces-only paste untouched (no newline in the run)', () => {
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={vi.fn()} />,
+    )
+    pasteText(screen.getByRole('textbox'), 'trailing spaces   ')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('does NOT intercept an all-blank-lines clipboard (leaves it to the browser, never a silent no-op)', () => {
+    const onChange = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={vi.fn()} />,
+    )
+    pasteText(screen.getByRole('textbox'), '\n\n\n')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('handles a large space run without pathological backtracking (linear strip)', () => {
+    const onChange = vi.fn()
+    const onPasteBlocksChange = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={onPasteBlocksChange} />,
+    )
+    // 200k spaces + a char — the exact shape that made the old trailing-strip
+    // regex backtrack quadratically (~2s). The linear scan stops at the first
+    // non-whitespace char from the end, so it must finish near-instantly. The
+    // chunk is >200 chars so it collapses into a chip.
+    const payload = ' '.repeat(200_000) + 'x'
+    const t0 = performance.now()
+    pasteText(screen.getByRole('textbox'), payload)
+    const elapsed = performance.now() - t0
+    expect(onPasteBlocksChange).toHaveBeenCalled()
+    expect(elapsed).toBeLessThan(1000)
+  })
+
+  it('uses the native execCommand insertText path when available (fires the real onChange, not a direct splice)', () => {
+    const onChange = vi.fn()
+    const exec = vi.fn(() => true)
+    ;(document as unknown as { execCommand: (...a: unknown[]) => boolean }).execCommand = exec
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={vi.fn()} />,
+    )
+    pasteText(screen.getByRole('textbox'), 'just one line\n\n\n')
+    // Inserted via the native input pipeline with the trimmed text …
+    expect(exec).toHaveBeenCalledWith('insertText', false, 'just one line')
+    // … so handlePaste does NOT splice onChange itself (the textarea's own
+    // onChange handles state + picker detection + user-edit flag).
+    expect(onChange).not.toHaveBeenCalled()
   })
 })
