@@ -4830,8 +4830,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   activity sidebar has no TODO view, so hiding it there would
                   lose the information rather than de-duplicate it. */}
               <TaskProgressBar slot={activeSlot} />
-              {!activityOpen && <SubagentProgressBar slot={activeSlot} />}
-              {!activityOpen && <WorkflowProgressBar slot={activeSlot} />}
+              {/* De-duplicate ONLY against the matching sidebar tab (#728): each
+                  bar is redundant when the activity sidebar is actually SHOWING
+                  its own view (Subagents / Workflows), but on any OTHER tab
+                  (Files, Changes, Logs, Artifacts) hiding it would lose the live
+                  roster entirely. The condition mirrors the SidePanel's own
+                  render guard (`activityOpen && !search.isOpen`) — so opening the
+                  find pane, which UNMOUNTS the panel, re-shows the bar — and
+                  reads the live panel tab (`tabsCtl`), NOT the Redux
+                  `activityTab`, which only tracks programmatic openActivityToTab
+                  calls and goes stale when the user clicks a tab in the panel. */}
+              {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
+              {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
