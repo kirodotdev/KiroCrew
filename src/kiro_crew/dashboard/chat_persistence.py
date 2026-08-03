@@ -15,6 +15,7 @@ from kiro_crew import model_registry
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.dashboard.channel_slots import slot_closed_since
 from kiro_crew.dashboard.chat_utils import (
     _history_key_for,
     _normalize_model,
@@ -326,6 +327,8 @@ def _rehydrate_slot_from_history(
     slot_name: str,
     *,
     kiro_model_map: dict[str, str] | None = None,
+    _prefetched_meta: dict | None = None,
+    _prefetched_messages: list[dict] | None = None,
 ) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
 
@@ -354,7 +357,16 @@ def _rehydrate_slot_from_history(
     if slot_name in state._slots:
         return state._slots[slot_name]
     history_key = _history_key_for(slot_name)
-    meta = state.conversation_log.get_metadata(history_key)
+    # ``_prefetched_*`` let an async caller hoist the two disk reads (this
+    # metadata line and the chained message walk further down) into a worker
+    # thread and then run the REST of this function on the event loop — see
+    # ``rehydrate_slot_from_history_async``. Slot construction below must stay
+    # loop-affine: it broadcasts through ``asyncio.Queue.put_nowait`` and
+    # ``Event.set``, neither of which is thread-safe. Omit them and the reads
+    # happen inline, which is what the synchronous callers want.
+    meta = _prefetched_meta if _prefetched_meta is not None else (
+        state.conversation_log.get_metadata(history_key)
+    )
     # No metadata → session was never persisted. Don't create a phantom slot.
     if not meta:
         return None
@@ -470,7 +482,11 @@ def _rehydrate_slot_from_history(
     # read_messages alone caps visible history at 200 lines from THIS file and
     # drops the ancestor chain — long-running forked sessions would lose 200+
     # messages of context on every gateway restart.
-    messages = state.conversation_log.read_messages_chained(history_key)
+    messages = (
+        _prefetched_messages
+        if _prefetched_messages is not None
+        else state.conversation_log.read_messages_chained(history_key)
+    )
     # Only the recent window is loaded into memory; older on-disk lines become
     # the FROZEN PREFIX that saves never rewrite. _disk_older_count must
     # therefore count those older lines so the save model preserves them.
@@ -544,6 +560,75 @@ def _rehydrate_slot_from_history(
     slot._dirty = False
     logger.info("Rehydrated session %s (%s) from history", slot_name, slot.title)
     return slot
+
+
+async def rehydrate_slot_from_history_async(
+    state: DashboardState,
+    slot_name: str,
+    *,
+    kiro_model_map: dict[str, str] | None = None,
+) -> _ChatSlot | None:
+    """:func:`_rehydrate_slot_from_history` with the disk reads off the loop.
+
+    Same contract and return values as the synchronous form, including
+    returning ``None`` for a session the user closed with ✕.
+
+    Why split rather than simply wrapping the whole thing in
+    ``asyncio.to_thread``: slot construction is loop-affine. It reaches
+    ``get_or_create_slot`` → ``push_slots_update`` → ``_broadcast``, which uses
+    ``asyncio.Queue.put_nowait`` and ``Event.set`` — neither thread-safe — and
+    ``_spawn_ws_send``'s ``ensure_future`` raises off-loop. That raise lands in
+    a broad ``except`` that marks every connected dashboard client dead and
+    drops it *without a close frame*, so browsers never reconnect and stop
+    receiving frames until a manual reload. ``restore_open_slots_async``
+    documents the same invariant.
+
+    So only the two reads move: the metadata line and the chained message walk,
+    which on a large session are tens of MB of read plus JSON parse. Everything
+    that touches slot state runs on the loop, as the synchronous callers do.
+    """
+    if not state.conversation_log:
+        return None
+    slot_name = _normalize_slot_key(slot_name)
+    if slot_name in state._slots:
+        return state._slots[slot_name]
+    history_key = _history_key_for(slot_name)
+    conv_log = state.conversation_log
+
+    def _read() -> tuple[dict | None, list[dict] | None, dict[str, str] | None]:
+        meta = conv_log.get_metadata(history_key)
+        if not meta or meta.get("closed"):
+            return None, None, None
+        return (
+            meta,
+            conv_log.read_messages_chained(history_key),
+            kiro_model_map if kiro_model_map is not None else _build_kiro_model_map(),
+        )
+
+    started = time.time()
+    meta, messages, model_map = await asyncio.to_thread(_read)
+    if meta is None or messages is None:
+        return None
+    # Tab-close race. The user can click ✕ while the read above is in flight.
+    # The close pops the slot and records a tombstone synchronously on the loop,
+    # but persists the ``closed`` flag only after its own awaits — so the
+    # metadata just read still says open, and rebuilding from it would re-create
+    # a tab the user dismissed and then fire a nudge turn into it. The tombstone
+    # is the authoritative signal in that window; the surface reconciler
+    # consults it after its own awaits for the same reason.
+    if slot_closed_since(state, slot_name, started):
+        logger.info(
+            "Rehydration abandoned: session %s was closed while its transcript loaded",
+            slot_name,
+        )
+        return None
+    return _rehydrate_slot_from_history(
+        state,
+        slot_name,
+        kiro_model_map=model_map,
+        _prefetched_meta=meta,
+        _prefetched_messages=messages,
+    )
 
 
 def _restore_recent_sessions_steps(

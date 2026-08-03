@@ -214,6 +214,12 @@ class TestOnSessionExpire:
         # Inject an expired session
         sess = MagicMock(spec=_Session)
         sess.last_used = _time.monotonic() - 9999
+        # The idle sweep now skips sessions with a turn in flight, so the stub
+        # has to answer semaphore.locked() the way a real _Session does.
+        # spec=_Session does not supply it: dataclass fields built with
+        # default_factory are instance attributes, not class attributes.
+        sess.semaphore = MagicMock()
+        sess.semaphore.locked.return_value = False
         sm._sessions["expired-key"] = sess
 
         import asyncio
@@ -239,13 +245,19 @@ class TestOnSessionExpire:
 
         sess = MagicMock(spec=_Session)
         sess.last_used = _time.monotonic() - 9999
+        # The idle sweep now skips sessions with a turn in flight, so the stub
+        # has to answer semaphore.locked() the way a real _Session does.
+        # spec=_Session does not supply it: dataclass fields built with
+        # default_factory are instance attributes, not class attributes.
+        sess.semaphore = MagicMock()
+        sess.semaphore.locked.return_value = False
         sm._sessions["expired-key"] = sess
 
         import asyncio
         asyncio.run(sm._expire_idle(60))
 
         # reset still called despite callback failure
-        mock_reset.assert_called_once_with("expired-key")
+        mock_reset.assert_called_once_with("expired-key", skip_if_busy=True)
 
 
 class TestGatewayExpireWiring:
@@ -332,13 +344,19 @@ class TestExpireIdleSelFailure:
 
         sess = MagicMock(spec=_Session)
         sess.last_used = _time.monotonic() - 9999
+        # The idle sweep now skips sessions with a turn in flight, so the stub
+        # has to answer semaphore.locked() the way a real _Session does.
+        # spec=_Session does not supply it: dataclass fields built with
+        # default_factory are instance attributes, not class attributes.
+        sess.semaphore = MagicMock()
+        sess.semaphore.locked.return_value = False
         sm._sessions["expired-sel"] = sess
 
         import asyncio
         asyncio.run(sm._expire_idle(60))
 
         callback.assert_not_called()
-        mock_reset.assert_called_once_with("expired-sel")
+        mock_reset.assert_called_once_with("expired-sel", skip_if_busy=True)
 
     @patch("kiro_crew.session.sel")
     @patch("kiro_crew.session.SessionManager.reset", new_callable=AsyncMock)
@@ -360,10 +378,16 @@ class TestExpireIdleSelFailure:
 
         sess = MagicMock(spec=_Session)
         sess.last_used = _time.monotonic() - 9999
+        # The idle sweep now skips sessions with a turn in flight, so the stub
+        # has to answer semaphore.locked() the way a real _Session does.
+        # spec=_Session does not supply it: dataclass fields built with
+        # default_factory are instance attributes, not class attributes.
+        sess.semaphore = MagicMock()
+        sess.semaphore.locked.return_value = False
         sm._sessions["expired-cb"] = sess
 
         import asyncio
         asyncio.run(sm._expire_idle(60))
 
         callback.assert_called_once_with("expired-cb")
-        mock_reset.assert_called_once_with("expired-cb")
+        mock_reset.assert_called_once_with("expired-cb", skip_if_busy=True)

@@ -79,6 +79,7 @@ from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
 from kiro_crew.cron_script import resolve_script_path, run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import start_dashboard
+from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.cron_inject import inject_cron_result_to_dashboard
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
@@ -99,6 +100,7 @@ from kiro_crew.dashboard.origin import (
 from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
+from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.discord.gateway import maybe_start_discord
 from kiro_crew.embeddings import (
     embedding_model_is_custom,
@@ -1646,15 +1648,12 @@ class GatewayOrchestrator:
                             slot.append("queued", wrapped, json.dumps(_cls))
                         else:
                             slot.append("inject", wrapped, inject_cls)
-                            task = asyncio.create_task(
-                                asyncio.wait_for(
-                                    _run_chat(self.dashboard_state, slot, wrapped),
-                                    timeout=CHAT_TURN_TIMEOUT,
-                                )
+                            task = spawn_guarded_turn(
+                                self.dashboard_state,
+                                slot,
+                                _run_chat(self.dashboard_state, slot, wrapped),
                             )
                             slot.task = task
-                            self.dashboard_state._background_tasks.add(task)
-                            task.add_done_callback(self.dashboard_state._background_tasks.discard)
                         self.dashboard_state.push_slots_update()
                     else:
                         self.dashboard_state.notify(
@@ -3000,6 +2999,114 @@ class GatewayOrchestrator:
             logger.exception("AutoNudge: discord nudge failed for %s (loop %s)", key, loop.id)
             return False
 
+    async def _fire_dashboard_nudge(self, loop: NudgeLoop) -> bool:
+        """Drive one nudge turn in a dashboard chat slot.
+
+        Sibling of :meth:`_fire_slack_nudge` / :meth:`_fire_discord_nudge`; a
+        named method rather than an inline branch so the slot-resolution
+        contract below is directly testable.
+
+        Returns True if the nudge was dispatched, False if skipped (dashboard
+        not ready, session genuinely gone, or a turn still active). The service
+        only counts dispatched cycles toward ``max_cycles``.
+        """
+        # Guard (not assert): stripped under -O; also _init_autonudge() can
+        # run before _init_dashboard(), and _init_dashboard is skipped
+        # entirely in --no-dashboard mode. Mirrors _observer's guard.
+        if self.dashboard_state is None:
+            logger.warning("AutoNudge: dashboard not ready — skipping fire for loop %s", loop.id)
+            return False
+        # Slot resolution mirrors the cron→origin delivery contract in
+        # dashboard/handlers/messaging.py: get_slot() is the hot path, and a
+        # miss falls back to restoring the session from its persisted history
+        # rather than assuming it is gone. A miss is NOT evidence of a dead
+        # session — the in-memory registry is empty for any tab the user has
+        # navigated away from, and it is empty for EVERY slot immediately
+        # after a gateway restart (AutoNudgeService.start() re-arms timers
+        # before the dashboard has restored its slots). Removing the loop here
+        # deleted a live babysit loop on nothing more than a cold cache, which
+        # silently abandoned the PR it was watching.
+        #
+        # Rehydration deliberately does NOT resurrect a session the user
+        # dismissed with ✕ (closed=true in the history metadata) — that is the
+        # documented "respect the close" rule, and returning None for it is
+        # correct. Only a genuinely unreachable session retires the loop.
+        slot = self.dashboard_state.get_slot(loop.slot_key)
+        if slot is None:
+            # Rehydration reads the session's persisted transcript and replays
+            # its window. Real sessions reach tens of MB, so the reads must not
+            # run on the event loop: the gateway serves every request, turn and
+            # the stall-watchdog heartbeat on one thread, and a fire here is a
+            # timer callback. The async form hoists ONLY the reads to a worker
+            # thread and builds the slot back on the loop, because slot
+            # construction broadcasts through asyncio primitives that are not
+            # thread-safe.
+            slot = await rehydrate_slot_from_history_async(
+                self.dashboard_state, loop.slot_key
+            )
+            if slot is None:
+                logger.warning(
+                    "AutoNudge: session %s unreachable (no history, deleted, or "
+                    "closed by the user) — removing loop %s",
+                    loop.slot_key,
+                    loop.id,
+                )
+                await self.autonudge_svc.remove(loop.id)  # type: ignore[union-attr]
+                return False
+            logger.info(
+                "AutoNudge: rehydrated session %s from history for loop %s",
+                loop.slot_key,
+                loop.id,
+            )
+        msg = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg}"
+        from kiro_crew.dashboard.chat import (
+            _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
+        )
+
+        if slot.running:
+            # Turn still active — drop this nudge. Next idle-timer tick will
+            # schedule again once the turn ends. Queueing would stack
+            # identical 3KB+ nudges and blow up the context window.
+            # Returning False keeps cycle_count accurate (only delivered
+            # nudges count toward max_cycles).
+            logger.info(
+                "AutoNudge skip: slot %s is running (loop %s cycle %d)",
+                slot.key,
+                loop.id,
+                loop.cycle_count,
+            )
+            return False
+        # Show nudge as a distinct "nudge" role message in the slot history.
+        # The structured meta lets the dashboard render a compact cycle chip
+        # instead of echoing the whole instruction payload as a chat bubble.
+        # The tag stays in ``content`` because that is what the model reads,
+        # and the body is deliberately NOT duplicated into meta — the client
+        # derives it from content, so a multi-KB payload is stored and
+        # broadcast once rather than twice.
+        slot.append(
+            "nudge",
+            tagged,
+            "msg msg-nudge",
+            meta={
+                "nudge": {
+                    "cycle": loop.cycle_count + 1,
+                    "loop_id": loop.id,
+                }
+            },
+        )
+        task = spawn_guarded_turn(
+            self.dashboard_state,
+            slot,
+            _run_chat(self.dashboard_state, slot, tagged),
+        )
+        # Mirror dashboard /api/chat/send path so slot.running == True and sidebar
+        # shows the "turn active" three-dots indicator immediately.
+        slot.task = task
+        self._session_tasks[slot.key] = task
+        self.dashboard_state.push_slots_update()
+        return True
+
     async def _init_autonudge(self) -> None:
         """Initialize and start the auto-nudge service (feature-flagged)."""
         if not autonudge_enabled():
@@ -3030,72 +3137,7 @@ class GatewayOrchestrator:
                 )
                 await self.autonudge_svc.remove(loop.id)  # type: ignore[union-attr]
                 return False
-            # Guard (not assert): stripped under -O; also _init_autonudge() can
-            # run before _init_dashboard(), and _init_dashboard is skipped
-            # entirely in --no-dashboard mode. Mirrors _observer's guard below.
-            if self.dashboard_state is None:
-                logger.warning(
-                    "AutoNudge: dashboard not ready — skipping fire for loop %s", loop.id
-                )
-                return False
-            slot = self.dashboard_state._slots.get(loop.slot_key)
-            if slot is None:
-                logger.warning(
-                    "AutoNudge: slot %s missing — removing loop %s", loop.slot_key, loop.id
-                )
-                await self.autonudge_svc.remove(loop.id)  # type: ignore[union-attr]
-                return False
-            msg = render_nudge_message(loop.message, loop.stop_sentinel_path)
-            tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg}"
-            from kiro_crew.dashboard.chat import (
-                _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
-            )
-
-            if slot.running:
-                # Turn still active — drop this nudge. Next idle-timer tick will
-                # schedule again once the turn ends. Queueing would stack
-                # identical 3KB+ nudges and blow up the context window.
-                # Returning False keeps cycle_count accurate (only delivered
-                # nudges count toward max_cycles).
-                logger.info(
-                    "AutoNudge skip: slot %s is running (loop %s cycle %d)",
-                    slot.key,
-                    loop.id,
-                    loop.cycle_count,
-                )
-                return False
-            # Show nudge as a distinct "nudge" role message in the slot history.
-            # The structured meta lets the dashboard render a compact cycle chip
-            # instead of echoing the whole instruction payload as a chat bubble.
-            # The tag stays in ``content`` because that is what the model reads,
-            # and the body is deliberately NOT duplicated into meta — the client
-            # derives it from content, so a multi-KB payload is stored and
-            # broadcast once rather than twice.
-            slot.append(
-                "nudge",
-                tagged,
-                "msg msg-nudge",
-                meta={
-                    "nudge": {
-                        "cycle": loop.cycle_count + 1,
-                        "loop_id": loop.id,
-                    }
-                },
-            )
-            task = asyncio.create_task(
-                asyncio.wait_for(
-                    _run_chat(self.dashboard_state, slot, tagged),
-                    timeout=CHAT_TURN_TIMEOUT,
-                )
-            )
-            # Mirror dashboard /api/chat/send path so slot.running == True and sidebar
-            # shows the "turn active" three-dots indicator immediately.
-            slot.task = task
-            self.dashboard_state._background_tasks.add(task)
-            task.add_done_callback(self.dashboard_state._background_tasks.discard)
-            self._session_tasks[slot.key] = task
-            self.dashboard_state.push_slots_update()
-            return True
+            return await self._fire_dashboard_nudge(loop)
 
         def _observer(event: str, loop: NudgeLoop | None) -> None:
             if event == "expired" and loop is not None:

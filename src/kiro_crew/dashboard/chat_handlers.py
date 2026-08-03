@@ -27,7 +27,6 @@ from kiro_crew.config.loader import (
     default_project_dir,
     resolve_agent_bindings,
 )
-from kiro_crew.constants import CHAT_TURN_TIMEOUT
 from kiro_crew.dashboard.channel_slots import note_slot_closed
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
@@ -57,6 +56,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _mark_permission_resolved,
 )
+from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import safety_override
@@ -533,13 +533,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     except Exception:
         logger.debug("on_user_message observer raised; ignoring", exc_info=True)
 
-    task = asyncio.create_task(
-        asyncio.wait_for(_run_chat(state, slot, message), timeout=CHAT_TURN_TIMEOUT)
-    )
+    task = spawn_guarded_turn(state, slot, _run_chat(state, slot, message))
     slot.task = task
     slot._recovery_retrigger_count = 0
-    state._background_tasks.add(task)
-    task.add_done_callback(state._background_tasks.discard)
     state.push_slots_update()
 
     if ws_mode:

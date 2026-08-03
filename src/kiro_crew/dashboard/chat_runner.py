@@ -36,7 +36,6 @@ from kiro_crew.config.loader import (
     normalize_agent_model,
     resolve_agent_bindings,
 )
-from kiro_crew.constants import CHAT_TURN_TIMEOUT
 from kiro_crew.context_management import (
     ensure_go_all_option,
     looks_like_plan,
@@ -109,6 +108,7 @@ from kiro_crew.dashboard.state import (
     should_queue_refusal_recovery,
     unsafe_bash_reason,
 )
+from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
@@ -2201,15 +2201,8 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         ),
     )
 
-    task = asyncio.create_task(
-        asyncio.wait_for(
-            _run_chat(state, slot, next_msg),
-            timeout=CHAT_TURN_TIMEOUT,
-        )
-    )
+    task = spawn_guarded_turn(state, slot, _run_chat(state, slot, next_msg))
     slot.task = task
-    state._background_tasks.add(task)
-    task.add_done_callback(state._background_tasks.discard)
     return True
 
 
@@ -2241,13 +2234,17 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
 
         # All delivery guards hold. Consume immediately before the turn begins.
         slot._pending_synthesis = False
-        synthesis_task = asyncio.create_task(
-            asyncio.wait_for(
-                _run_chat(state, slot, SUBAGENT_SYNTHESIS_PROMPT),
-                timeout=CHAT_TURN_TIMEOUT,
-            )
+        synthesis_task = spawn_guarded_turn(
+            state, slot, _run_chat(state, slot, SUBAGENT_SYNTHESIS_PROMPT)
         )
-        await synthesis_task
+        try:
+            await synthesis_task
+        except (asyncio.TimeoutError, TimeoutError):
+            # The ceiling fired; spawn_guarded_turn's callback already rendered
+            # the card naming the limit. Swallow here so the timeout does not
+            # also propagate into this function's caller, which dispatches
+            # fire-and-forget and would drop it unretrieved.
+            pass
     finally:
         slot._synthesis_inflight = False
 
@@ -5401,33 +5398,57 @@ async def _run_chat(
                 _autonudge.notify_turn_complete(slot.key)
         except Exception:
             logger.debug("autonudge.notify_turn_complete failed", exc_info=True)
-        # Clean up mirror stream on any exit path
-        if _mirror_stream_ts and state.slack_client and _mirror_chan:
-            try:
-                if _mirror_active_task:
-                    await state.slack_client.append_task(
-                        _mirror_chan,
-                        _mirror_stream_ts,
-                        _mirror_active_task,
-                        _mirror_active_task_title,
-                        "complete",
-                    )
-            except Exception:
-                logger.debug("Task append cleanup failed", exc_info=True)
-            try:
-                await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
-            except Exception:
-                logger.debug("Stream cleanup failed", exc_info=True)
-        if _acquired:
-            if needs_session_reset:
+        # Clean up mirror stream on any exit path.
+        #
+        # The release below MUST happen however this block exits. Each await in
+        # here is already guarded against ``Exception``, but ``CancelledError``
+        # derives from ``BaseException`` (since 3.8), so a cancellation
+        # delivered while one of them is suspended slips past every
+        # ``except Exception`` and skips the release entirely.
+        #
+        # The permit is keyed by SESSION, so leaking it does not merely lose
+        # this turn: the session reads as permanently busy, every later turn for
+        # it blocks forever, no queued turn drains, and only a gateway restart
+        # clears it. The nested try/finally makes the release unconditional
+        # while preserving the reset-then-release ordering.
+        try:
+            if _mirror_stream_ts and state.slack_client and _mirror_chan:
+                try:
+                    if _mirror_active_task:
+                        await state.slack_client.append_task(
+                            _mirror_chan,
+                            _mirror_stream_ts,
+                            _mirror_active_task,
+                            _mirror_active_task_title,
+                            "complete",
+                        )
+                except Exception:
+                    logger.debug("Task append cleanup failed", exc_info=True)
+                try:
+                    await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
+                except Exception:
+                    logger.debug("Stream cleanup failed", exc_info=True)
+            if _acquired and needs_session_reset:
                 try:
                     await state.sessions.reset(session_key)
                 except Exception:
                     logger.warning("Failed to reset session %s after agent switch", session_key)
-            state.sessions.release(session_key)
+        finally:
+            if _acquired:
+                # A successful reset() above already popped the key under its
+                # own lock, so this is a no-op on that path (the popped
+                # session's semaphore is discarded with it). Kept unconditional
+                # so a reset that failed or was cancelled still hands back the
+                # permit rather than stranding the session.
+                state.sessions.release(session_key)
         # End-of-turn fallback: catches set_project calls that fired mid-turn,
-        # after the start-of-turn consume already ran.
-        await _consume_pending_reset(state, slot)
+        # after the start-of-turn consume already ran. Guarded because a raise
+        # here would skip the steer requeue and queue drain below, silently
+        # stranding queued work at the end of an otherwise successful turn.
+        try:
+            await _consume_pending_reset(state, slot)
+        except Exception:
+            logger.debug("_consume_pending_reset failed", exc_info=True)
         # ── Requeue unconsumed steers ──
         # A steer handed to kiro-cli that never echoed steering_consumed dies
         # with the turn (stall-cancel, soft STOP, error, or a steer that raced

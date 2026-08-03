@@ -42,6 +42,7 @@ from kiro_crew.dashboard import (
     ws,
 )
 from kiro_crew.dashboard.crash_dump_store import (
+    claim_dump_notification,
     dump_age_seconds,
     dump_replay_lines,
     newest_dump_with_stacks,
@@ -2778,7 +2779,17 @@ async def start_dashboard(
     # and startup warnings, rather than buried in interleaved stderr/journal.
     await asyncio.to_thread(rotate_dumps)
     _dump_file = await asyncio.to_thread(open_dump_file)
-    _loop_watchdog = LoopStallWatchdog(dump_file=_dump_file)
+    # exit_after is configurable because the right budget is host-dependent: a
+    # gateway doing heavy subprocess work (long builds, test suites, bursts of
+    # child reaping) can wedge the loop briefly without being genuinely dead,
+    # and a hard-coded 25s turned those into hard exits that lost in-flight
+    # work. The default is unchanged; the loader clamps the range.
+    try:
+        _exit_after = float(KiroCrewConfig.load().dashboard.loop_stall_exit_after_secs)
+    except Exception:
+        logger.debug("loop-stall exit budget config unavailable; using default", exc_info=True)
+        _exit_after = 25.0
+    _loop_watchdog = LoopStallWatchdog(dump_file=_dump_file, exit_after=_exit_after)
 
     async def _loop_heartbeat() -> None:
         # 5s (not 10s) so the watchdog's armed dump-then-exit timer is re-petted
@@ -2846,6 +2857,28 @@ async def start_dashboard(
                 if _truncated:
                     _replay_body += "\n  [truncated — full dump at above path]"
                 logger.warning("Replaying prior crash dump stacks:\n%s", _replay_body)
+            # A log line is not enough. This dump means the previous gateway
+            # exited by hard-exit: no `finally` ran, nothing was flushed, and any
+            # turn in flight lost work that was written but not yet committed.
+            # The user needs to know that happened rather than discovering a
+            # monitoring loop had silently stopped hours earlier. Claimed once
+            # per dump — the dump is re-detected for up to 7 days on every
+            # start, so notifying unconditionally would alert every restart.
+            if await asyncio.to_thread(claim_dump_notification, _prior_dump):
+                try:
+                    state.notify(
+                        "heartbeat",
+                        "⚠️ Gateway restarted after an event-loop stall",
+                        (
+                            f"The previous gateway stopped responding and exited "
+                            f"{_age_h:.1f}h ago, then restarted. Work in flight at "
+                            f"that moment was interrupted and not saved. Thread "
+                            f"stacks: {_prior_dump}"
+                        ),
+                        meta={"url": "/settings", "dump": str(_prior_dump)},
+                    )
+                except Exception:
+                    logger.debug("stall-exit notification failed", exc_info=True)
 
     # Fire background MCP probe at startup (non-blocking)
     asyncio.create_task(handlers._bg_mcp_probe())

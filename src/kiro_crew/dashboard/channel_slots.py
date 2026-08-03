@@ -641,6 +641,26 @@ def note_slot_closed(state: "DashboardState", slot_name: str) -> float:
     return now
 
 
+def slot_closed_since(state: "DashboardState", slot_name: str, instant: float) -> bool:
+    """True when *slot_name*'s tab was closed at or after *instant*.
+
+    For any caller that snapshots session metadata, awaits, and then acts on
+    that snapshot. A close recorded during the await leaves the on-disk metadata
+    still reading *open* — the close handler pops the slot and calls
+    :func:`note_slot_closed` synchronously, but persists the ``closed`` flag
+    only after its own awaits (task cancellation, file lock) — so the snapshot
+    alone cannot see it. Consulting the tombstone after the last await closes
+    that window.
+
+    Unlike :func:`_tombstone_blocks` this asks a plain question about one slot
+    and does not weigh channel activity: callers that can be outrun by a newer
+    inbound message should use that instead.
+    """
+    closes = _RECENT_CLOSES.get(state) or {}
+    when = closes.get(slot_name)
+    return when is not None and when >= instant
+
+
 def _tombstone_blocks(state: "DashboardState", session: dict[str, Any]) -> bool:
     """True when an in-memory close tombstone suppresses surfacing *session*.
 

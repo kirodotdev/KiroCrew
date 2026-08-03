@@ -3324,6 +3324,24 @@ class SessionManager:
         session = self._sessions.get(key)
         return bool(session and session.semaphore.locked())
 
+    def touch(self, key: str) -> bool:
+        """Mark *key* as recently used so the idle sweep does not reap it.
+
+        ``last_used`` is otherwise only bumped by ``get_or_create()``, which a
+        dashboard turn calls exactly once — so a session doing continuous work
+        across a long turn ages as if it were idle (see the module docstring's
+        known limitation). The ``wait`` tool's keepalive previously refreshed
+        only the ACP runtime's activity clock, which feeds ``is_responsive()``
+        and nothing else, leaving the idle sweep's clock untouched.
+
+        Returns True if a session existed for *key*.
+        """
+        session = self._sessions.get(self._fold_key(key))
+        if session is None:
+            return False
+        session.last_used = time.monotonic()
+        return True
+
     def enqueue(
         self, key: str, msg_ts: str, text: str, *, force: bool = False, **kwargs: object
     ) -> bool:
@@ -4044,6 +4062,16 @@ class SessionManager:
                 if key.startswith(_CHANNEL_PREFIX):
                     continue
                 total_checked += 1
+                # A turn in flight is never idle, whatever the clock says.
+                # ``last_used`` is only bumped by get_or_create(), which a
+                # dashboard turn calls exactly once, so a turn running longer
+                # than timeout_secs looks idle to the arithmetic below — and the
+                # orphan branch ignores the clock entirely, so a closed tab
+                # would reap a live turn immediately. Mirrors the same guard in
+                # _rss_threshold_check; reset() re-checks atomically under its
+                # own lock via skip_if_busy for the collect→reset race.
+                if sess.semaphore.locked():
+                    continue
                 idle = now - sess.last_used > timeout_secs
                 orphaned = (
                     key.startswith("dashboard:")
@@ -4057,9 +4085,6 @@ class SessionManager:
         elif total_checked:
             logger.debug("Idle sweep: %d checked, 0 expired", total_checked)
         for key, is_orphan in expired:
-            # NOTE: Small TOCTOU window — slot could be re-activated between
-            # orphan check (under lock) and reset() here. Accepted as benign:
-            # worst case is session re-created on next user interaction.
             if is_orphan:
                 logger.warning("Expiring orphaned dashboard session (slot gone): %s", key)
             else:
@@ -4081,4 +4106,12 @@ class SessionManager:
             # Use reset() instead of remove() to preserve session_map entry.
             # The kiro-cli session file persists on disk — next get_or_create
             # can try session/load to restore full conversation history.
-            await self.reset(key)
+            #
+            # skip_if_busy closes the collect→reset window: a turn that starts
+            # after the collection loop released the lock must not be cut
+            # mid-stream. reset() evaluates it atomically with its own pop.
+            if not await self.reset(key, skip_if_busy=True):
+                logger.info(
+                    "Idle sweep: %s became busy before reset — left running",
+                    key,
+                )

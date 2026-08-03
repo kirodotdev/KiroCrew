@@ -277,20 +277,31 @@ def workspace_root() -> Path:
     return _resolve_workspace_root(base / _WORKSPACE_DIR_NAME)
 
 
-def _safe_int(value: object, default: int) -> int:
+def _safe_int(value: object, default: int, lo: int | None = None, hi: int | None = None) -> int:
     """Convert a legacy numeric config value or return *default* on failure.
 
     Existing config files may contain numeric strings or integral floats from
     older writers. Preserve that compatibility while rejecting booleans.
+
+    *lo*/*hi* clamp the result, mirroring :func:`_safe_float`. Pass them for any
+    bounded knob: ``_clamp_security_bounds`` runs over the raw dict and skips
+    non-int values, so a numeric STRING (``"1"``) slips past it and then
+    coerces here — clamping at the coercion site is what actually enforces the
+    declared range.
     """
     if isinstance(value, bool):
         return default
     if isinstance(value, float) and not value.is_integer():
         return default
     try:
-        return int(value)  # type: ignore[call-overload]
+        result = int(value)  # type: ignore[call-overload]
     except (TypeError, ValueError, OverflowError):
-        return default
+        result = default
+    if lo is not None:
+        result = max(lo, result)
+    if hi is not None:
+        result = min(hi, result)
+    return result
 
 
 def _safe_nonnegative_int(value: object, default: int) -> int:
@@ -900,6 +911,18 @@ class AgentConfig:
             "SubAgent Memory Buffer %",
             "Percent of available memory and CPU reserved for the OS and other "
             "processes when auto-sizing the subagent cap (max_subagents=0).",
+        ),
+    )
+    chat_turn_timeout_secs: int = field(
+        default=7200,
+        metadata=_meta(
+            "Chat Turn Timeout (secs)",
+            "Wall-clock ceiling for one chat turn. This is a runaway backstop, "
+            "so it is clamped to 300s..7200s (2h) and can never be disabled. "
+            "Long babysit and monitoring turns approach the default, so hitting "
+            "it is no longer silent: the turn ends with a visible card naming "
+            "the limit. Values above the ACP transport's own prompt timeout are "
+            "clamped, because the transport bounds the turn first.",
         ),
     )
     subagent_cost_gb: float = field(
@@ -1650,6 +1673,20 @@ class DashboardConfig:
             "Seconds to wait for MCP server handshake during probe (5-120).",
         ),
     )
+    loop_stall_exit_after_secs: int = field(
+        default=25,
+        metadata=_meta(
+            "Loop-stall Hard-exit Budget (secs)",
+            "Seconds the gateway's event loop may go silent before it dumps all "
+            "thread stacks and exits so systemd can restart it. Raise it on a "
+            "host that does heavy subprocess work (long builds, test suites, "
+            "many child reaps), which can wedge the loop briefly without being "
+            "genuinely dead. Clamped to 10s..300s. Note the desktop app's "
+            "liveness probe kills at roughly 20s independently, so a value "
+            "above that only takes effect for a headless gateway — the desktop "
+            "probe wins first and the stack dump is lost.",
+        ),
+    )
     widget_density: str = field(
         default="more",
         metadata=_meta(
@@ -2300,6 +2337,24 @@ SUBAGENT_AUTO_MAX_CEILING = 64  # agent.subagent_auto_max — concurrent subagen
 SUBAGENT_MAX_TURNS_CEILING = 200  # agent.subagent_max_turns — per-subagent turn budget
 POOL_SIZE_MAX = 10  # session.pool_size — pre-warmed process pool
 
+# agent.chat_turn_timeout_secs — wall-clock ceiling for one chat turn. The max
+# matches the ACP transport's own per-prompt timeout (acp/client.py
+# ``_DEFAULT_PROMPT_TIMEOUT``): above it the transport bounds the turn first, so
+# a larger value would advertise a limit the system does not honour. The floor
+# keeps a runaway backstop from being set so low it cuts ordinary work.
+CHAT_TURN_TIMEOUT_MIN = 300
+CHAT_TURN_TIMEOUT_MAX = 7200
+
+# dashboard.loop_stall_exit_after_secs — event-loop silence tolerated before the
+# gateway dumps all thread stacks and hard-exits for systemd to restart. The
+# floor keeps a stall from being declared faster than ordinary GC/IO pauses; the
+# ceiling keeps a wedged gateway from sitting unrecoverable for minutes. Above
+# ~20s the desktop app's own liveness probe kills first and the dump is lost,
+# which is a documented trade-off rather than a bound (a headless gateway has no
+# such probe), so it is not enforced here.
+LOOP_STALL_EXIT_AFTER_MIN = 10
+LOOP_STALL_EXIT_AFTER_MAX = 300
+
 # agent.max_subagents fixed-pin floor. 0 is the "auto-size" sentinel; any other
 # (explicit) value must be >= this floor. A pin of 1 or 2 would silently DISABLE
 # auto-sizing and run below today's default of 3, so such values are normalized
@@ -2318,6 +2373,8 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "subagent_auto_max", 3, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "subagent_max_turns", 1, SUBAGENT_MAX_TURNS_CEILING),
+    ("agent", "chat_turn_timeout_secs", CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX),
+    ("dashboard", "loop_stall_exit_after_secs", LOOP_STALL_EXIT_AFTER_MIN, LOOP_STALL_EXIT_AFTER_MAX),
     ("session", "pool_size", 0, POOL_SIZE_MAX),
 )
 
@@ -4151,6 +4208,12 @@ class KiroCrewConfig:
                 subagent_mem_buffer_pct=_safe_int(
                     agent_data.get("subagent_mem_buffer_pct", 20), 20
                 ),
+                chat_turn_timeout_secs=_safe_int(
+                    agent_data.get("chat_turn_timeout_secs", 7200),
+                    7200,
+                    CHAT_TURN_TIMEOUT_MIN,
+                    CHAT_TURN_TIMEOUT_MAX,
+                ),
                 subagent_cost_gb=_safe_float(agent_data.get("subagent_cost_gb", 0.5), 0.5),
                 subagent_cpu_cost_cores=_safe_float(
                     agent_data.get("subagent_cpu_cost_cores", 1.0), 1.0
@@ -4460,6 +4523,12 @@ class KiroCrewConfig:
                 merge_queued_messages=dashboard_data.get("merge_queued_messages", False),
                 mcp_probe_timeout_secs=_safe_int(
                     dashboard_data.get("mcp_probe_timeout_secs", 15), 15
+                ),
+                loop_stall_exit_after_secs=_safe_int(
+                    dashboard_data.get("loop_stall_exit_after_secs", 25),
+                    25,
+                    LOOP_STALL_EXIT_AFTER_MIN,
+                    LOOP_STALL_EXIT_AFTER_MAX,
                 ),
                 auto_open_browser=dashboard_data.get("auto_open_browser", True),
                 quick_send=dashboard_data.get("quick_send", False),

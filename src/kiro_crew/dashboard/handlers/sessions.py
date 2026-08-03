@@ -1045,6 +1045,17 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.debug("touch_activity failed for %s: %s", session_key, exc)
         return web.json_response({"error": "touch failed"}, status=500)
+    # Also advance the session's own last_used clock. touch_activity() only
+    # refreshes the ACP runtime's activity timestamp, which feeds
+    # is_responsive()/the stall watchdog — the periodic idle sweep reads
+    # ``last_used`` instead, so without this a session blocking in a long
+    # `wait` still ages toward being reaped for idleness.
+    try:
+        touched = getattr(state.sessions, "touch", None)
+        if callable(touched):
+            touched(session_key)
+    except Exception:
+        logger.debug("last_used touch failed for %s", session_key, exc_info=True)
     return web.json_response({"ok": True})
 
 

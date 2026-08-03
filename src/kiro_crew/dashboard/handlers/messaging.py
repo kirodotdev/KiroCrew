@@ -21,7 +21,6 @@ from kiro_crew.browser.setup import (
     has_playwright_extension,
     register_playwright_proxy,
 )
-from kiro_crew.constants import CHAT_TURN_TIMEOUT
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
 from kiro_crew.dashboard.chat_utils import _remove_queued_by_id
@@ -1195,17 +1194,11 @@ async def api_send_message(request: web.Request) -> web.Response:
                         # _find_prompt, _list_aim_prompts), so we can't import
                         # it at module top-level without a cycle.
                         from kiro_crew.dashboard.chat_runner import _run_chat
+                        from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 
                         slot.append("inject", wrapped, inject_cls)
-                        task = asyncio.create_task(
-                            asyncio.wait_for(
-                                _run_chat(state, slot, wrapped),
-                                timeout=CHAT_TURN_TIMEOUT,
-                            )
-                        )
+                        task = spawn_guarded_turn(state, slot, _run_chat(state, slot, wrapped))
                         slot.task = task
-                        state._background_tasks.add(task)
-                        task.add_done_callback(state._background_tasks.discard)
                         state.push_slots_update()
                     sent_session = True
         # Fall back to normal delivery if no session target or session is gone

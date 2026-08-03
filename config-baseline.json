@@ -33,8 +33,11 @@
         "session_sharing": true,
         "max_subagents": 0,
         "spawn_min_memory_gb": 4.0,
+        "resource_pressure_gb": 4.0,
+        "resource_critical_gb": 2.0,
         "workflow_run_timeout_secs": 3600,
         "subagent_mem_buffer_pct": 20,
+        "chat_turn_timeout_secs": 7200,
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
         "subagent_auto_max": 32,
@@ -343,6 +346,34 @@
       "defaultValue": 4.0
     },
     {
+      "path": "agent.resource_pressure_gb",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Resource Pressure Threshold (GB)",
+      "help": "Available memory (GB) at or below which the agent is told host memory is 'tight' via a compact [RESOURCES] context line, so it can prefer the lighter path for heavy work (targeted tests, smaller sub-agent waves). Advisory only — not enforced. 0 disables the context line. Lower this on small-memory hosts / memory-limited containers (e.g. a 2-4 GB pod) so the advisory only fires under genuine pressure.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 4.0
+    },
+    {
+      "path": "agent.resource_critical_gb",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Resource Critical Threshold (GB)",
+      "help": "Available memory (GB) at or below which the [RESOURCES] context line escalates to 'critically low' and advises against starting heavy work at all. Should be <= resource_pressure_gb. 0 disables the critical tier.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 2.0
+    },
+    {
       "path": "agent.workflow_run_timeout_secs",
       "kind": "core",
       "type": "integer",
@@ -369,6 +400,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 20
+    },
+    {
+      "path": "agent.chat_turn_timeout_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Chat Turn Timeout (secs)",
+      "help": "Wall-clock ceiling for one chat turn. This is a runaway backstop, so it is clamped to 300s..7200s (2h) and can never be disabled. Long babysit and monitoring turns approach the default, so hitting it is no longer silent: the turn ends with a visible card naming the limit. Values above the ACP transport's own prompt timeout are clamped, because the transport bounds the turn first.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 7200
     },
     {
       "path": "agent.subagent_cost_gb",
@@ -1811,6 +1856,7 @@
         "transcribe_profile": "",
         "language_code": "en-US",
         "streaming": false,
+        "endpointing": false,
         "dictation_panel": true
       }
     },
@@ -1973,6 +2019,20 @@
       "tags": [],
       "label": "Streaming",
       "help": "Stream partial transcripts live to the dashboard input (transcribe provider only).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "stt.endpointing",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Semantic endpointing",
+      "help": "While streaming dictation, run a fast background model on each stable transcript segment to detect when you have finished a complete request, then auto-submit. Transcribe streaming only; off by default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -3772,6 +3832,7 @@
         "avatar": "",
         "merge_queued_messages": false,
         "mcp_probe_timeout_secs": 15,
+        "loop_stall_exit_after_secs": 25,
         "widget_density": "more",
         "verbosity": "default",
         "link_previews": false,
@@ -3913,6 +3974,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 15
+    },
+    {
+      "path": "dashboard.loop_stall_exit_after_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Loop-stall Hard-exit Budget (secs)",
+      "help": "Seconds the gateway's event loop may go silent before it dumps all thread stacks and exits so systemd can restart it. Raise it on a host that does heavy subprocess work (long builds, test suites, many child reaps), which can wedge the loop briefly without being genuinely dead. Clamped to 10s..300s. Note the desktop app's liveness probe kills at roughly 20s independently, so a value above that only takes effect for a headless gateway — the desktop probe wins first and the stack dump is lost.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 25
     },
     {
       "path": "dashboard.widget_density",
