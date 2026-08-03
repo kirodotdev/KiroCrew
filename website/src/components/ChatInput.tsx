@@ -21,6 +21,8 @@ import { shallowEqual } from 'react-redux'
 import { motion, AnimatePresence } from 'framer-motion'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
+import { useLanguage } from '../i18n/LanguageProvider'
+import { pickToolLabel } from '../utils/toolLabel'
 import TrustDropdown from './TrustDropdown'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -536,6 +538,7 @@ function ChatInput({
     || ''
   const approvalIsUnattended = UNATTENDED_APPROVAL_SOURCES.has(approvalSource)
   const simplified = useSimplifiedToolNames()
+  const uiLang = useLanguage().resolved
   const approvalLabelRaw = sanitizeLlmOutput(pendingApproval?.content || '').replace(/^🔧\s*/, '')
 
   const approvalToolCallId = (approvalMeta?.tool_call_id as string) || null
@@ -549,7 +552,7 @@ function ChatInput({
   const approvalPurpose = approvalToolEntry?.purpose || ''
   const approvalTs = approvalToolEntry?.ts || 0
 
-  const approvalLabel = (simplified && approvalPurpose) ? approvalPurpose : approvalLabelRaw
+  const approvalLabel = pickToolLabel({ simplified, purpose: approvalPurpose, rawLabel: approvalLabelRaw, uiLang })
 
   // Subscribe to the inline pill's viewport visibility. While the pill is in
   // view, the bar collapses to just the always-visible button row; the moment

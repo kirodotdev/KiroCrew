@@ -4,6 +4,8 @@ import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
+import { useLanguage } from '../../i18n/LanguageProvider'
+import { pickToolLabel } from '../../utils/toolLabel'
 import { LoaderCircle, CircleSlash, CircleDot, Lock } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -38,6 +40,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const label = message.content.replace(/^🔧\s*/, '')
   const toolCallId = message.meta?.tool_call_id as string | undefined
   const simplified = useSimplifiedToolNames()
+  const uiLang = useLanguage().resolved
 
   // MCP App (SEP-1865) render payload attached to this tool call, if any.
   // Rendered as an inline sandboxed iframe below the tool-call row. Selected
@@ -241,7 +244,16 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     ? (isRejected ? 'var(--danger)' : 'var(--ok)')
     : hasPendingPerm ? 'var(--warn)' : 'var(--accent)'
   const barStyle = `color-mix(in srgb, ${barColor} 70%, transparent)`
-  const toolLabel = (simplified && (purpose || message.meta?.purpose)) ? (purpose || message.meta?.purpose as string) : label
+  // Purpose is the agent's prose label (simplified mode). Guard it against the
+  // active UI language so a purpose written in another language (e.g. a Chinese
+  // label persisted before the user switched to English) falls back to the
+  // language-neutral raw tool label instead of showing foreign-script text.
+  const toolLabel = pickToolLabel({
+    simplified,
+    purpose: purpose || (message.meta?.purpose as string | undefined),
+    rawLabel: label,
+    uiLang,
+  })
 
   // Design C: surface the file basename as a chip that hugs the open-in-pane
   // icon, so the affordance names the file it opens — crucial in simplified /
