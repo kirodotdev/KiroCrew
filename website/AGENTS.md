@@ -309,8 +309,8 @@ declaration site, and the ordering.
 
 It is a RUNNER (`scripts/i18n-check.mjs`), not a `&&` chain, and that matters: `&&`
 short-circuits, so a PR only ever learned about its FIRST failing gate and paid another
-~5-minute CI round to discover the next. The runner executes all six scripts, then
-reports the eleven checks they contain in one table. Each script's raw output is folded
+~5-minute CI round to discover the next. The runner executes all seven scripts, then
+reports the twelve checks they contain in one table. Each script's raw output is folded
 into its own collapsed group, so nothing is lost.
 
 The table is split by the only question an author has — **is this mine to fix?**
@@ -324,6 +324,7 @@ The table is split by the only question an author has — **is this mine to fix?
 | `[key-refs]` | repo | any | a `t('key')` naming a key that does not exist — renders the raw key to a user |
 | `[plurals]` | repo | any | a plural suffix concatenated outside `i18nT()` |
 | `[pseudolocale]` | repo | any | `en-XA.json` stale relative to its generator |
+| `[dnt]` | repo | any | a do-not-translate term respelt in a shipped catalog (`Github`, `NodeJS`) — compares catalog values, so it covers all 9 locales and needs no render |
 | `[dynamic-keys]` | repo | never (report) | a call site whose key cannot be resolved statically |
 | `[extractable]` | repo | never (report) | a literal in markup the codemod could have extracted |
 | `[untranslated]` | repo | never (report) | per-file ceilings over the frozen debt in `untranslated-baseline.json` |
@@ -555,7 +556,7 @@ that never reached a catalog. It needs no gateway, no token and no backend — i
 the build over loopback and answers every `/api/**` call from fixtures, exactly like the
 `capture-*.mjs` harnesses.
 
-Four things to know before you touch it:
+Five things to know before you touch it:
 
 1. **It builds its own bundle, with `NODE_ENV=development`.** `en-XA` is DEV-only in
    three independent places (`index.ts` tree-shakes the catalog, `isRestorableLanguage()`
@@ -566,10 +567,17 @@ Four things to know before you touch it:
 2. **A crashed surface is exit 2, not findings.** If a fixture is the wrong shape the
    error boundary replaces the panel with its own English message, and a naive scan would
    report *that* as untranslated copy. Any uncaught page error aborts the run instead.
-3. **DNT integrity runs only in real locales.** The pseudolocale accents DNT terms too
-   (`GitHub` → `ĞìţĤùƀ`), so asserting them under `en-XA` would report all 19 as mangled.
-   It is zero-tolerance, and it deliberately accepts an all-lowercase hit as the command
-   (`git push`, `docker run`) rather than a mangled product name.
+3. **DNT integrity runs only in real locales, and now in exactly one.** The pseudolocale
+   accents DNT terms too (`GitHub` → `ĞìţĤùƀ`), so asserting them under `en-XA` would
+   report all 19 as mangled. It is zero-tolerance, and it deliberately accepts an
+   all-lowercase hit as the command (`git push`, `docker run`) rather than a mangled
+   product name. The locale set is down to `en-XA` plus a single `zh-CN` **DNT probe**
+   (one viewport, non-DNT findings discarded) because the full 4-locale matrix cost
+   ~23min and blew the `e2e` job's 25-minute cap. Two consequences to keep in mind:
+   `layout`/`latent` are now measured only at pseudolocale width, so they over-report
+   against every shipped locale; and a DNT term mistranslated in `de` or `bn` but not
+   `zh-CN` is no longer caught here. `LOCALES` in `scripts/lib/i18n-surfaces.mjs`
+   carries the full rationale and the way back (shard surfaces across a matrix).
 4. **`[vs-base]` decides the run; the record decides only when there is no base.** The
    gate renders the BASE commit with the same scanner and fails on any per-surface
    increase, reading no committed number — so there is nothing to re-snapshot and
@@ -593,6 +601,22 @@ Four things to know before you touch it:
    can trade within. The measured proof that the diff is the stronger check: inflate
    `settings-about.text` from 28 to 100, add 18 real defects, and the ledger reports an
    *improvement* while `[vs-base]` fails with `28 -> 46 (+18)`.
+5. **Fixture values are digit-shaped, except where the fixture IS the subject.** Anything
+   word-shaped in `FIXTURE_OVERRIDES` renders into the page and is indistinguishable from
+   untranslated product copy, so boot payloads use `'0001'`-style placeholders. The one
+   deliberate exception is `FIXTURE_APPS`, which stands in for the Python side's
+   `app.json` metadata (`displayName`, `description`, `highlights[]`, `tags[]`): those
+   fields are interpolated raw by the App Store and app-detail components, so bare Latin
+   at those nodes under `en-XA` is the finding, and a digit placeholder would render the
+   same surface while hiding the defect the surface exists to show. Read the resulting
+   `apps` / `app-detail` numbers as a FIXED STRUCTURAL PROBE, not as the size of the debt
+   — the scanner counts per word, so the count is whatever prose the fixture carries,
+   which is why those strings are terse. The real population is 128 manifest strings
+   across 14 builtins (D14-a on #1004) and its ground truth is a server-side
+   pseudolocale, the same way `test/test_error_code_contract.py` declares it for backend
+   error bodies. Note this cuts both ways: `ui.pages[].label` stays a placeholder,
+   because the nav rail resolves it for every installed app and Latin there would land
+   the same finding on all 55 surfaces.
 
 `latent` holds `ellipsis-with-flex-parent` on its own — ~544 sites where
 `text-overflow: ellipsis` cannot apply because a flex child's `min-width` is still `auto`,
