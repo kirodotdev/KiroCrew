@@ -2448,9 +2448,12 @@
       "this_authorizes_the_merge_when_the_pipeline_succ": "此操作会在流水线成功后授权合并。"
     },
     "questionCard": {
+      "collapse_all": "全部折叠",
       "custom_answer": "自定义回答",
       "dismiss": "忽略",
       "dismiss_question_without_answering": "忽略问题而不回答",
+      "expand_all": "全部展开",
+      "not_answered_yet": "尚未回答",
       "or_type_a_custom_answer": "或输入自定义回答…",
       "submit": "提交"
     },

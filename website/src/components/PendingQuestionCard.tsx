@@ -109,9 +109,11 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
       key={askId ?? cardSlot}
       questions={pending.questions}
       busy={busy}
-      // Legacy cards have no ask_id, so nothing is blocked and there is nothing
-      // to dismiss — the control is only offered when it does something.
-      onDismiss={askId ? () => resolve(undefined) : undefined}
+      // Always offered. A blocked card resolves the wait with no answer; a
+      // legacy card blocks nothing, so dismiss just takes it off screen —
+      // withholding the control there left a card that could ONLY be answered,
+      // parked on top of the composer until the session was reset.
+      onDismiss={() => { if (askId) resolve(undefined); else clearThisCard() }}
       onSubmit={(answers) => {
         if (!askId) {
           // Legacy card: nothing is blocked, so the answer is just a message —

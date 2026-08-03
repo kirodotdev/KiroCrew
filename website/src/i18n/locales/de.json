@@ -2485,9 +2485,12 @@
       "this_authorizes_the_merge_when_the_pipeline_succ": "Dies autorisiert das Zusammenführen, wenn die Pipeline erfolgreich ist."
     },
     "questionCard": {
+      "collapse_all": "Alle einklappen",
       "custom_answer": "Benutzerdefinierte Antwort",
       "dismiss": "Schließen",
       "dismiss_question_without_answering": "Frage ohne Antwort schließen",
+      "expand_all": "Alle ausklappen",
+      "not_answered_yet": "Noch nicht beantwortet",
       "or_type_a_custom_answer": "Oder geben Sie eine eigene Antwort ein…",
       "submit": "Absenden"
     },

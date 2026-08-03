@@ -2485,9 +2485,12 @@
       "this_authorizes_the_merge_when_the_pipeline_succ": "इससे पाइपलाइन सफल होने पर मर्ज की अनुमति मिल जाती है।"
     },
     "questionCard": {
+      "collapse_all": "सभी संक्षिप्त करें",
       "custom_answer": "कस्टम उत्तर",
       "dismiss": "खारिज करें",
       "dismiss_question_without_answering": "उत्तर दिए बिना प्रश्न खारिज करें",
+      "expand_all": "सभी विस्तृत करें",
+      "not_answered_yet": "अभी उत्तर नहीं दिया",
       "or_type_a_custom_answer": "या कस्टम उत्तर लिखें...",
       "submit": "सबमिट करें"
     },

@@ -1785,9 +1785,12 @@
       "updated": "Updated"
     },
     "questionCard": {
+      "collapse_all": "Collapse all",
       "custom_answer": "Custom answer",
       "dismiss": "Dismiss",
       "dismiss_question_without_answering": "Dismiss question without answering",
+      "expand_all": "Expand all",
+      "not_answered_yet": "Not answered yet",
       "or_type_a_custom_answer": "Or type a custom answer...",
       "submit": "Submit"
     },

@@ -2,6 +2,43 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { Provider } from 'react-redux'
+/* Render framer-motion elements as plain DOM. jsdom cannot run the height
+   animation, and a real AnimatePresence keeps the exiting body mounted for the
+   duration of its exit transition — which would make "folded hides the options"
+   pass or fail on timing rather than on behaviour. */
+vi.mock('framer-motion', async () => {
+  const React = await import('react')
+  const FRAMER_PROPS = new Set([
+    'layout', 'layoutId', 'initial', 'animate', 'exit', 'transition',
+    'variants', 'whileHover', 'whileTap', 'onAnimationComplete',
+  ])
+  const make = (tag: string) =>
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
+      for (const k of Object.keys(props)) {
+        if (k === 'children' || FRAMER_PROPS.has(k)) continue
+        clean[k] = props[k]
+      }
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
+    })
+  /* One component type per tag, cached. A proxy that minted a fresh type on
+     every property read would give React a new element type each render, so it
+     would unmount and remount the subtree — detaching any DOM node a test is
+     holding and losing focus/caret for real users of this mock. */
+  const cache = new Map<string, unknown>()
+  return {
+    motion: new Proxy({}, {
+      get: (_t, tag: string) => {
+        if (!cache.has(tag)) cache.set(tag, make(tag))
+        return cache.get(tag)
+      },
+    }),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) =>
+      React.createElement(React.Fragment, null, children),
+    useReducedMotion: () => false,
+  }
+})
+
 import PendingQuestionCard from '../components/PendingQuestionCard'
 import { createTestStore } from './helpers'
 import { ApiError } from '../api/client'
@@ -119,9 +156,41 @@ describe('PendingQuestionCard — round 6 findings', () => {
     expect(onFallbackSend).not.toHaveBeenCalled()
   })
 
-  it('offers no dismiss control on a legacy card, which blocks nothing', () => {
-    renderCard(withCard())
-    expect(screen.queryByLabelText('Dismiss question without answering')).not.toBeInTheDocument()
+  it('does not carry a legacy card\u2019s picks into the next legacy card in the same slot', () => {
+    // A legacy card has no ask_id, so the QuestionCard key falls back to the slot
+    // and a second stateless card in the same slot does NOT remount. Without a
+    // reset, index-keyed state (picks, typed answers, folds) would carry over and
+    // Submit would fire an answer the user never chose for THIS question.
+    const store = withCard()
+    renderCard(store)
+    pick('Carve-out')
+    expect((screen.getByText('Submit').closest('button') as HTMLButtonElement).disabled).toBe(false)
+
+    act(() => {
+      store.dispatch(setQuestionCard({
+        slot: 'chat-1',
+        questions: [{ question: 'Pick an environment', options: [{ label: 'staging' }, { label: 'prod' }] }],
+      }))
+    })
+
+    expect((screen.getByText('Submit').closest('button') as HTMLButtonElement).disabled).toBe(true)
+    // …and the new question is open, not inheriting a fold from the old one.
+    expect(screen.getByText('staging')).toBeInTheDocument()
+  })
+
+  it('offers a dismiss control on a legacy card, which just takes it off screen', () => {
+    const answer = vi.spyOn(api, 'answerQuestion')
+    const store = withCard()
+    const onFallbackSend = renderCard(store)
+
+    // A legacy card blocks nothing, so there is no wait to resolve — but it is
+    // still parked on top of the composer, so it MUST be removable. Withholding
+    // the control left a card that could only be answered.
+    fireEvent.click(screen.getByLabelText('Dismiss question without answering'))
+
+    expect(answer).not.toHaveBeenCalled()
+    expect(onFallbackSend).not.toHaveBeenCalled()
+    expect(pendingOf(store)).toBeUndefined()
   })
 })
 

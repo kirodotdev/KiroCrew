@@ -2559,9 +2559,12 @@
       "this_authorizes_the_merge_when_the_pipeline_succ": "Это разрешает слияние после успешного прохождения пайплайна."
     },
     "questionCard": {
+      "collapse_all": "Свернуть все",
       "custom_answer": "Свой ответ",
       "dismiss": "Скрыть",
       "dismiss_question_without_answering": "Скрыть вопрос без ответа",
+      "expand_all": "Развернуть все",
+      "not_answered_yet": "Нет ответа",
       "or_type_a_custom_answer": "Или введите свой ответ...",
       "submit": "Отправить"
     },

@@ -2522,9 +2522,12 @@
       "this_authorizes_the_merge_when_the_pipeline_succ": "Isso autoriza o merge quando o pipeline for bem-sucedido."
     },
     "questionCard": {
+      "collapse_all": "Recolher tudo",
       "custom_answer": "Resposta personalizada",
       "dismiss": "Descartar",
       "dismiss_question_without_answering": "Descartar pergunta sem responder",
+      "expand_all": "Expandir tudo",
+      "not_answered_yet": "Ainda sem resposta",
       "or_type_a_custom_answer": "Ou digite uma resposta personalizada...",
       "submit": "Enviar"
     },

@@ -2522,9 +2522,12 @@
       "this_authorizes_the_merge_when_the_pipeline_succ": "Ceci autorise la fusion lorsque le pipeline réussit."
     },
     "questionCard": {
+      "collapse_all": "Tout réduire",
       "custom_answer": "Réponse personnalisée",
       "dismiss": "Ignorer",
       "dismiss_question_without_answering": "Ignorer la question sans répondre",
+      "expand_all": "Tout développer",
+      "not_answered_yet": "Pas encore répondu",
       "or_type_a_custom_answer": "Ou saisissez une réponse personnalisée...",
       "submit": "Envoyer"
     },

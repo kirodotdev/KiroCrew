@@ -2485,9 +2485,12 @@
       "this_authorizes_the_merge_when_the_pipeline_succ": "পাইপলাইন সফল হলে এটি মার্জের অনুমতি দেয়।"
     },
     "questionCard": {
+      "collapse_all": "সব সংকুচিত করুন",
       "custom_answer": "কাস্টম উত্তর",
       "dismiss": "খারিজ করুন",
       "dismiss_question_without_answering": "উত্তর না দিয়ে প্রশ্নটি খারিজ করুন",
+      "expand_all": "সব প্রসারিত করুন",
+      "not_answered_yet": "এখনও উত্তর দেওয়া হয়নি",
       "or_type_a_custom_answer": "অথবা একটি কাস্টম উত্তর লিখুন...",
       "submit": "জমা দিন"
     },
