@@ -898,14 +898,26 @@ function applyToolOutputToMessages(
 }
 
 /** Central, fail-closed accessor for a single subagent entry by wire-supplied
- *  id. Applies the `isUnsafeKey` prototype-pollution guard once, here, so no
- *  reducer that indexes the subagents map by an external id has to remember the
- *  incantation — forgetting is impossible at the call site. A hostile
- *  `__proto__`/`constructor`/`prototype` id resolves to `undefined` (frame
- *  dropped) rather than to `Object.prototype`. */
-function getSlotSub(state: ChatState, slot: string, id: string): SubagentActivity | undefined {
-  if (isUnsafeKey(id)) return undefined
-  return getSlotSubs(state, slot)?.[id]
+ *  id. Lazily upserts a minimal placeholder when the id is unknown so that an
+ *  incremental update (chunk/tool/stalled) for an agent whose spawn frame was
+ *  missed creates a card instead of being silently dropped (#759). Routes
+ *  through the isUnsafeKey/safeKey prototype-pollution guards. */
+function getOrCreateSlotSub(state: ChatState, slot: string, id: string): SubagentActivity | undefined {
+  if (isUnsafeKey(id) || isUnsafeKey(slot)) return undefined
+  const existing = getSlotSubs(state, slot)?.[id]
+  if (existing) return existing
+  const entry: SubagentActivity = {
+    id, task: '', agent: 'kirocrew',
+    status: 'running', streaming: '', lastTool: '',
+    startedAt: Date.now(), elapsed: 0,
+  }
+  if (slot !== state.activeSlot) {
+    const c = (state.slotActivity[safeKey(slot)] ??= { toolLog: [], subagents: {} })
+    c.subagents[safeKey(id)] = entry
+  } else {
+    state.subagents[safeKey(id)] = entry
+  }
+  return entry
 }
 
 /**
@@ -1391,9 +1403,8 @@ const chatSlice = createSlice({
       }
     },
     sseSubagentChunk(state, action: PayloadAction<{ slot: string; id: string; text: string }>) {
-      // Prototype-pollution guard is centralized in getSlotSub (fail-closed on
-      // __proto__/constructor/prototype ids) so no call site can forget it.
-      const a = getSlotSub(state, action.payload.slot, action.payload.id)
+      // Lazily upserts a placeholder if the spawn frame was missed (#759).
+      const a = getOrCreateSlotSub(state, action.payload.slot, action.payload.id)
       if (a) {
         a.retrying = false
         a.streaming += action.payload.text
@@ -1404,8 +1415,8 @@ const chatSlice = createSlice({
     },
     sseSubagentTool(state, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number }>) {
       const { slot, id } = action.payload
-      // Prototype-pollution guard is centralized in getSlotSub.
-      const a = getSlotSub(state, slot, id)
+      // Lazily upserts a placeholder if the spawn frame was missed (#759).
+      const a = getOrCreateSlotSub(state, slot, id)
       if (a) {
         a.lastTool = action.payload.tool; a.status = 'tool'
         if (typeof action.payload.tool_count === 'number') a.toolCount = action.payload.tool_count
@@ -1418,14 +1429,14 @@ const chatSlice = createSlice({
       // one-shot cancel auto-continue (subagent_recovering): the agent is
       // still alive and recovering — show ⟳ instead of letting it look hung.
       const { slot, id } = action.payload
-      if (id === '__proto__' || id === 'constructor' || id === 'prototype') return
-      const a = getSlotSubs(state, slot)?.[id]
+      // Lazily upserts a placeholder if the spawn frame was missed (#759).
+      const a = getOrCreateSlotSub(state, slot, id)
       if (a) { a.retrying = true; a.stalled = false }
     },
     sseSubagentStalled(state, action: PayloadAction<{ slot: string; id: string; stalled: boolean; idle_secs?: number }>) {
       const { slot, id } = action.payload
-      // Prototype-pollution guard is centralized in getSlotSub.
-      const a = getSlotSub(state, slot, id)
+      // Lazily upserts a placeholder if the spawn frame was missed (#759).
+      const a = getOrCreateSlotSub(state, slot, id)
       if (a) a.stalled = action.payload.stalled
     },
     /** One coalesced ~1s frame carrying the latest delta per agent (scale
@@ -1433,7 +1444,7 @@ const chatSlice = createSlice({
      *  agents run). Field presence decides what to apply; latest wins. */
     sseSubagentBatchUpdate(state, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; stalled?: boolean; attempt?: number }[] }>) {
       for (const u of action.payload.updates || []) {
-        const a = getSlotSub(state, u.slot, u.id)
+        const a = getOrCreateSlotSub(state, u.slot, u.id)
         if (!a) continue
         // Order matters: retrying (attempt) applies FIRST so a tool field in
         // the same merged entry — meaning work resumed — clears it last.
@@ -1447,7 +1458,7 @@ const chatSlice = createSlice({
      *  (subscriber-only, mirrors sseSubagentChunk semantics). */
     sseSubagentBatchChunks(state, action: PayloadAction<{ chunks: { id: string; slot: string; text: string }[] }>) {
       for (const c of action.payload.chunks || []) {
-        const a = getSlotSub(state, c.slot, c.id)
+        const a = getOrCreateSlotSub(state, c.slot, c.id)
         if (!a) continue
         a.retrying = false
         a.streaming += c.text
