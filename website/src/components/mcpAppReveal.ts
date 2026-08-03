@@ -27,16 +27,19 @@
  *  the pre-existing behaviour.
  */
 
-/** Gap between frames. Matched deliberately to excalidraw's OWN reference
- *  harness (`dev-mock.ts` `streamElements(elements, intervalMs = 120)`), which
- *  posts one element per 120ms with no total budget — that cadence is what the
- *  project's sample recordings show, and its tool description promises
- *  "elements stream in one by one with draw-on animations".
+/** Gap between frames, per element.
  *
- *  A previous revision used a fixed ~700ms TOTAL budget instead. That squeezed
- *  a whole diagram into under a second and batched several elements per frame,
- *  which reads as a flicker rather than a draw-on: the animation was there but
- *  not perceptible. Pace per element, not per payload.
+ *  excalidraw's own reference harness (`dev-mock.ts`
+ *  `streamElements(elements, intervalMs = 120)`) posts one element per 120ms
+ *  with no total budget, and its tool description promises "elements stream in
+ *  one by one with draw-on animations". We deliberately run SLOWER than that
+ *  reference: at 120ms a 10-element diagram was over in 1.0s, which reads as a
+ *  flash rather than as drawing. 200ms keeps each element individually legible.
+ *
+ *  An earlier revision used a fixed ~700ms TOTAL budget instead of a per-element
+ *  step. That squeezed a whole diagram into under a second and batched several
+ *  elements per frame — the animation was present but not perceptible. Pace per
+ *  element, not per payload.
  *
  *  PROVENANCE (this is a sibling checkout, NOT a dependency — nothing in CI can
  *  notice if these upstream numbers change, so they are pinned here by hand):
@@ -61,11 +64,17 @@
  *  would switch the animation off for the very app that implements it. The cost
  *  of shape-gating is that an app which ignores partials still waits out the
  *  reveal for its complete input; REVEAL_MAX_TOTAL_MS bounds that wait. */
-export const REVEAL_STEP_MS = 120
+export const REVEAL_STEP_MS = 200
 /** Ceiling on the whole reveal, so a 400-element diagram does not hold the
  *  app's complete input for the best part of a minute. Past this, frames carry
- *  more than one element each (see prefixLengths). */
-export const REVEAL_MAX_TOTAL_MS = 7_200
+ *  more than one element each (see prefixLengths).
+ *
+ *  Sized so that BATCHING is the exception, not the rule: at 200ms this allows
+ *  80 frames, so every diagram up to ~80 elements reveals exactly one element
+ *  per step. Batching is what actually destroys the sense of progress — two or
+ *  five elements appearing together reads as a jump, not as drawing — so the
+ *  ceiling has to be high enough that realistic diagrams never reach it. */
+export const REVEAL_MAX_TOTAL_MS = 16_000
 /** Frame ceiling implied by the interval and the total cap. */
 export const REVEAL_MAX_FRAMES = Math.floor(REVEAL_MAX_TOTAL_MS / REVEAL_STEP_MS)
 /** Cap on the encoded size of the WHOLE arguments object.

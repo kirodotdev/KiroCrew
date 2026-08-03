@@ -112,7 +112,32 @@ describe('planReveal', () => {
     expect(planReveal(circular)).toBeNull()
   })
 
-  it('paces per element at excalidraw\'s reference interval, not a total budget', () => {
+  it('reveals ONE element per frame for realistic diagram sizes', () => {
+    // The property that actually makes the draw-on legible. Batching (two or
+    // more elements appearing in one step) reads as a jump rather than as
+    // drawing, so the frame ceiling must be high enough that diagrams of a
+    // realistic size never reach it. Regression guard: an earlier revision
+    // capped at 60 frames, which started batching at ~62 elements.
+    //
+    // 82 is the exact knee: frames = n-2, capped at REVEAL_MAX_FRAMES.
+    // Past that, batching is accepted deliberately — holding one element per
+    // step for a 300-element diagram would run ~60s.
+    //
+    // Derived from the constant rather than hardcoded, so a legitimate retune
+    // of the step or the total cap does not fail this for no defect.
+    for (const n of [20, 40, REVEAL_MAX_FRAMES, REVEAL_MAX_FRAMES + 2]) {
+      const plan = planReveal({ elements: JSON.stringify(elements(n)) })!
+      const lengths = plan.frames.map(
+        (f) => (JSON.parse(f.elements as string) as unknown[]).length,
+      )
+      const steps = lengths.slice(1).map((len, i) => len - lengths[i])
+      expect(steps.every((s) => s === 1)).toBe(true)
+      // And the last partial stops one short of the whole diagram.
+      expect(lengths[lengths.length - 1]).toBe(n - 1)
+    }
+  })
+
+  it('paces per element rather than squeezing a diagram into a fixed budget', () => {
     // The reference harness (dev-mock streamElements) uses 120ms per element.
     const small = planReveal({ elements: elements(6) })!
     const large = planReveal({ elements: elements(400) })!
