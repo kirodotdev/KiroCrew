@@ -495,6 +495,7 @@ function Section({
 export default function IssueDetail({ issue }: { issue: Issue }) {
   const {
     active, colorByName, memberRoleByLogin, repoLabels, countByLabel, canWrite, stateFilter,
+    refreshPrefs,
   } = useIssueRadar()
   const { owner, repo } = active
   const scopeKey = repoScopeKey(active)
@@ -551,7 +552,10 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
     },
     // A CLOSED issue backs off by an order of magnitude: only late commentary can
     // still arrive, and each poll costs a fully-paginated timeline read.
-    refetchInterval: detailPollMs((cachedState ?? issue.state) !== 'closed'),
+    refetchInterval: detailPollMs(
+      (cachedState ?? issue.state) !== 'closed', refreshPrefs.detailPollMs,
+    ),
+    refetchIntervalInBackground: refreshPrefs.pollInBackground,
   })
   const refreshDetail = () => { refreshRef.current = true; detailQuery.refetch() }
 

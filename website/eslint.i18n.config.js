@@ -350,4 +350,24 @@ export default [
       'i18next/no-literal-string': 'off',
     },
   },
+
+  // PROTOCOL VALUES ONLY: the server's own action names, provider merge-state enums,
+  // and the literals a user must TYPE to arm an irreversible action. Every string in
+  // that module is compared by value against something outside the dashboard, so
+  // translating one breaks the comparison — and for a confirmation token it makes the
+  // action impossible to complete in nine languages.
+  //
+  // Scoped to this one file for exactly the reason `commitProfiler.tsx` and
+  // `styles.ts` are: a shape rule cannot express "machine values, but only in this
+  // module". Admitting them by shape instead (a snake_case / lowercase-prose
+  // exclusion) was measured and rejected — it dropped 35 strings across 5 unrelated
+  // files (`api/client.ts` 33 -> 29, `ChatInput.tsx` 23 -> 20, `TrustDropdown.tsx`
+  // 2 -> 0, ...), the same "hands back unrelated files' debt" failure the
+  // `object-properties: next` exclusion above refuses. See the module's own header.
+  {
+    files: ['src/apps/issue-radar/lib/wireValues.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
 ]

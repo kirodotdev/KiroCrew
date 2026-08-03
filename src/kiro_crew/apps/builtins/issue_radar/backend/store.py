@@ -1547,7 +1547,13 @@ def write_investigation(
 #       was rendered at, and a v5 row has no such field — served as-is it would
 #       silently disable bulk approve for every cached repo until the TTL expired,
 #       which reads as a broken button rather than as a stale cache
-PULLS_CACHE_SCHEMA = 6
+#   v7: rows carry mergeable_state / mergeable. The bulk bar reads them to tell a PR
+#       that is not ready yet (arming auto-merge is meaningful) from one that is ready
+#       NOW (GitHub REFUSES to arm, "Pull request is in clean status"). A v6 row has
+#       neither field, and an absent value is indistinguishable from "not ready" — so
+#       serving one would keep offering the arm that fails, which is the whole defect
+#       this version exists to fix
+PULLS_CACHE_SCHEMA = 7
 
 
 def pulls_cache_path(owner: str, repo: str, root: Path | None = None, state: str = "open") -> Path:

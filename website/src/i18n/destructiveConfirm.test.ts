@@ -13,7 +13,7 @@ import { describe, it, expect } from 'vitest'
 import { CATALOGS } from './index'
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE } from './languages'
 import { BULK_DELETE_TOKEN } from '../pages/SchedulePage'
-import { BULK_PR_CLOSE_TOKEN } from '../apps/issue-radar/components/PrBulkBar'
+import { BULK_PR_CLOSE_TOKEN, SEQUENTIAL_MERGE_TOKEN } from '../apps/issue-radar/components/PrBulkBar'
 
 function flatten(obj: unknown, prefix = ''): Record<string, string> {
   const out: Record<string, string> = {}
@@ -73,6 +73,25 @@ describe('bulk-delete confirmation token', () => {
           && v.trim().toLowerCase() === BULK_PR_CLOSE_TOKEN)
         .map(([k]) => k)
       expect(offenders, `${code} exposes the PR close token as copy: ${offenders.join(', ')}`)
+        .toEqual([])
+    }
+  })
+
+  it('the PR sequential-merge token is a code constant, never a catalog value', () => {
+    // Third call site, same rule. This token guards the one IRREVERSIBLE action in the
+    // bar, so a translation that happened to equal it would be the worst version of
+    // this bug: the confirmation could be satisfied by copying a visible label.
+    expect(SEQUENTIAL_MERGE_TOKEN).toBe('merge prs')
+    // And it must differ from the close token, or typing one would arm the other —
+    // two irreversibly different actions behind one phrase.
+    expect(SEQUENTIAL_MERGE_TOKEN).not.toBe(BULK_PR_CLOSE_TOKEN)
+    for (const { code } of AUTHORED) {
+      const offenders = Object.entries(FLAT[code])
+        .filter(([k, v]) =>
+          k.startsWith('apps.issueRadar.components.prBulkBar.')
+          && v.trim().toLowerCase() === SEQUENTIAL_MERGE_TOKEN)
+        .map(([k]) => k)
+      expect(offenders, `${code} exposes the PR merge token as copy: ${offenders.join(', ')}`)
         .toEqual([])
     }
   })

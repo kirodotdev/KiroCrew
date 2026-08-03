@@ -21,8 +21,10 @@ import type {
 import { repoScopeKey } from './lib/links'
 import { DEFAULT_BULK_CHUNK } from './lib/prActions'
 import {
-  asArray, coerceDashboardTab, coerceSortKey, consumeAutoSelectFirstIssue, LIST_POLL_MS, loadUiState, saveUiState,
+  asArray, coerceDashboardTab, coerceRefreshPrefs, coerceSortKey, consumeAutoSelectFirstIssue,
+  loadUiState, saveUiState,
 } from './lib/format'
+import type { RefreshPrefs } from './lib/format'
 import type { RepoRef } from './lib/refLinks'
 
 /** GitHub author_association values that mark a repo member (maintainer). Kept
@@ -176,6 +178,18 @@ export interface IssueRadarContextValue {
   /** The server's bulk-action cap, so the bulk bar chunks on the real limit. */
   prBulkMax: number
 
+  // ── refresh preferences ──
+  // Named `refreshPrefs`, not `refresh`: that name is already the manual-refresh
+  // ACTION above, and one identifier meaning both a verb and a settings bag is how a
+  // call site ends up invoking the wrong one.
+  /** How often the lists and detail panes re-read, how long a fetch stays fresh,
+   * and whether polling continues in a backgrounded tab. Every field is validated
+   * against its offered choices — see `coerceRefreshPrefs`. */
+  refreshPrefs: RefreshPrefs
+  /** Patch one or more refresh preferences. Persisted with the rest of the UI
+   * state, so it survives leaving the app and coming back. */
+  setRefreshPrefs: (patch: Partial<RefreshPrefs>) => void
+
   // ── cross-reference sheet ──
   /** The open stack of same-repo issue/PR references, innermost LAST. Empty when
    * the sheet is closed. A ref opened from inside the sheet pushes onto it, so
@@ -253,6 +267,20 @@ export function IssueRadarProvider({
   const [sortKey, setSortKey] = useState<SortKey>(() => coerceSortKey(restored.sortKey))
   const [sortDir, setSortDir] = useState<SortDir>(restored.sortDir ?? 'desc')
 
+  // Refresh preferences. Each field is validated against the OFFERED choices rather
+  // than range-clamped: a value outside them means the stored state predates a change
+  // to the choices or was hand-edited, and honouring, say, a 1s list poll would burn
+  // the provider's hourly request budget and take the app down with 403s.
+  const [refreshPrefs, setRefreshState] = useState<RefreshPrefs>(
+    () => coerceRefreshPrefs(restored.refresh),
+  )
+
+  // Re-validated on WRITE as well as on read, so a caller cannot install an
+  // out-of-range interval that the read-side coercion would only fix on next load.
+  const setRefreshPrefs = useCallback((patch: Partial<RefreshPrefs>) => {
+    setRefreshState((prev) => coerceRefreshPrefs({ ...prev, ...patch }))
+  }, [])
+
   const [mainView, setMainView] = useState<MainView>(restored.mainView ?? 'dashboard')
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>(() => coerceDashboardTab(restored.dashboardTab))
   const [settingsTarget, setSettingsTarget] = useState<SettingsTarget>(restored.settingsTarget ?? { kind: 'general', anchor: 'account' })
@@ -318,12 +346,14 @@ export function IssueRadarProvider({
       prAuthoredByMe, prAssignedToMe, prReviewRequestedByMe, prDraftOnly,
       prCreatedByMember,
       prStateFilter, prSortKey, prSortDir,
+      refresh: refreshPrefs,
     })
   }, [
     mainView, dashboardTab, settingsTarget, selectedIssue, query,
     selectedLabels, requestedByMe, assignedToMe, createdByMember, stateFilter, sortKey, sortDir,
     selectedPull, prQuery, prSelectedLabels, prAuthoredByMe, prAssignedToMe,
     prReviewRequestedByMe, prDraftOnly, prCreatedByMember, prStateFilter, prSortKey, prSortDir,
+    refreshPrefs,
   ])
 
   // Keyed on the provider + host, not global: the login is not portable across
@@ -353,14 +383,52 @@ export function IssueRadarProvider({
     [queryClient],
   )
 
+  /**
+   * `keepPreviousData`, but ONLY within the same repository.
+   *
+   * Plain `keepPreviousData` retains the previous query's rows for ANY key change,
+   * which conflates two very different transitions. Changing the state filter is a
+   * different view of the SAME repo, so painting the old rows while the new ones load
+   * is exactly the instant-repaint this exists for. Switching REPOS is not: repo A's
+   * rows would paint under repo B's identity, and a PR number means something
+   * different in each — so a row acted on during that window targets the same number
+   * in the wrong repository.
+   *
+   * The ticked selection is already cleared on `scopeKey` (see the effect below), but
+   * that effect runs AFTER the paint, so it closes the window one render late rather
+   * than never opening it. Scoping the placeholder itself is the fix that has no
+   * window: cross-repo data is never served, so there is nothing to act on.
+   *
+   * `scopeKey` (not `owner`/`repo`) is the identity, because it carries provider +
+   * host — a same-slug repo on GitLab or an Enterprise host is a DIFFERENT repo.
+   */
+  const keepWithinRepo = useCallback(
+    <T,>(previous: T | undefined, previousQuery?: { queryKey: readonly unknown[] }) => {
+      // Every list key is ['issue-radar', <kind>, scopeKey, ...], so index 2 is the
+      // scope. A previous query from another repo yields undefined -> normal loading
+      // state (skeleton), which is the honest render for "we have nothing for this
+      // repo yet".
+      const previousScope = previousQuery?.queryKey?.[2]
+      return previousScope === scopeKey ? previous : undefined
+    },
+    [scopeKey],
+  )
+
   const issuesKey = ['issue-radar', 'issues', scopeKey, stateFilter] as const
   const issuesQuery = useQuery({
     queryKey: issuesKey,
     queryFn: () => issueRadarApi.issues(active, { state: stateFilter, poll: isRefetch(issuesKey) }),
-    // react-query pauses this while the window is unfocused
-    // (refetchIntervalInBackground defaults to false), so a backgrounded tab
-    // costs nothing.
-    refetchInterval: LIST_POLL_MS,
+    // react-query pauses this while the window is unfocused unless the user opts
+    // in: a backgrounded tab then costs nothing, at the price of returning to a
+    // stale list and waiting out the first poll.
+    refetchInterval: refreshPrefs.listPollMs,
+    refetchIntervalInBackground: refreshPrefs.pollInBackground,
+    staleTime: refreshPrefs.staleTimeMs,
+    // Keep the PREVIOUS query's rows on screen while a new key loads, so switching
+    // the state filter (or the repo) repaints instantly with stale-but-real data
+    // instead of blanking to a spinner. Costs no extra requests — it only changes
+    // what is rendered during a fetch that was happening anyway.
+    placeholderData: keepWithinRepo,
   })
   const labelsQuery = useQuery({
     queryKey: ['issue-radar', 'labels', scopeKey],
@@ -411,9 +479,16 @@ export function IssueRadarProvider({
     // The two PR sources are MUTUALLY EXCLUSIVE, and only one of them is ever
     // read (see `pulls` below). Enabling both while a person filter is on would
     // poll the provider twice a minute to fill a cache nothing renders.
-    enabled: prSurfaceActive && !prPersonFilterRequested,
+    // Prefetching lifts the surface gate: the first open of the PR pane is the long
+    // wait (a fully-paginated fetch plus the GraphQL enrichment), so the user can
+    // choose to pay it in the background at app open instead. Off by default — it
+    // spends provider budget on data they may never look at.
+    enabled: (prSurfaceActive || refreshPrefs.prefetchPulls) && !prPersonFilterRequested,
     // Same cache-busting refetch as the issue list.
-    refetchInterval: LIST_POLL_MS,
+    refetchInterval: refreshPrefs.listPollMs,
+    refetchIntervalInBackground: refreshPrefs.pollInBackground,
+    staleTime: refreshPrefs.staleTimeMs,
+    placeholderData: keepWithinRepo,
   })
   const refreshPullsMutation = useMutation({
     mutationFn: () => issueRadarApi.pulls(active, { refresh: true, state: prFetchState }),
@@ -439,7 +514,23 @@ export function IssueRadarProvider({
     // to the provider — no refresh flag needed here. Gated on the surface as well
     // as the filter: a person filter left on while the user works elsewhere in
     // the app must not keep polling provider search in the background.
-    refetchInterval: LIST_POLL_MS,
+    //
+    // Deliberately NOT lifted by `prefetchPulls`: this route is uncached, so every
+    // poll is a real provider search (a 30/min quota shared with the user's own
+    // searches). Prefetching the cached LIST is cheap; prefetching this is not.
+    refetchInterval: refreshPrefs.listPollMs,
+    // And deliberately NOT given `refetchIntervalInBackground` either — this is the
+    // ONE query in the app that opts out of that setting.
+    //
+    // Every other poll here is probe-gated, so background polling costs one cheap
+    // probe that `_PROBE_COALESCE_SEC` shares across tabs. This route has no probe
+    // path at all: each poll is a real provider search, up to 3 pages, against the
+    // same 30/min quota — with no coalescing to absorb it. Honouring the toggle here
+    // would mean a person filter someone left on months ago quietly spends that quota
+    // forever, which is exactly what the gate two lines up exists to prevent. The
+    // toggle's own hint promises "a constant API cost"; on this route the cost is not
+    // constant, it is the most expensive path in the app.
+    placeholderData: keepWithinRepo,
   })
 
   const refreshMutation = useMutation({
@@ -823,6 +914,7 @@ export function IssueRadarProvider({
     // copy that breaks the day the cap changes.
     prBulkMax: (prPersonFilterActive ? pullsSearchQuery.data?.bulk_max : pullsQuery.data?.bulk_max)
       ?? DEFAULT_BULK_CHUNK,
+    refreshPrefs, setRefreshPrefs,
     countByPrLabel,
     prQuery, setPrQuery,
     prSelectedLabels, togglePrLabel,

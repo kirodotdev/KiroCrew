@@ -489,7 +489,7 @@ function AutoReviewChecks(
 }
 
 export default function PrDetail({ pull }: { pull: PullRequest }) {
-  const { active, colorByName, memberRoleByLogin, canWrite } = useIssueRadar()
+  const { active, colorByName, memberRoleByLogin, canWrite, refreshPrefs } = useIssueRadar()
   const scopeKey = repoScopeKey(active)
   // GitLab calls these merge requests; the whole pane's copy follows the ref.
   const terms = providerTerms(active)
@@ -525,7 +525,10 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
     // Derived from the LATEST detail when it has arrived, falling back to the list
     // row: a PR merged elsewhere while the pane is open must start backing off
     // rather than keep polling every 30s against a frozen PR.
-    refetchInterval: detailPollMs(!lifecycleMergedAt && lifecycleState !== 'closed'),
+    refetchInterval: detailPollMs(
+      !lifecycleMergedAt && lifecycleState !== 'closed', refreshPrefs.detailPollMs,
+    ),
+    refetchIntervalInBackground: refreshPrefs.pollInBackground,
   })
   const refreshDetail = () => { refreshRef.current = true; detailQuery.refetch() }
 

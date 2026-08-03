@@ -1492,6 +1492,21 @@ _ROLLUP_CONTEXTS_JQ = (
 # the two paths can never drift apart in what they ask for.
 _PR_SUMMARY_SELECTION = (
     " number additions deletions changedFiles"
+    # ``state`` + ``mergedAt`` fix the "already merged" half of the auto-merge defect: a
+    # row cached before a PR merged was still offered auto-merge, and the provider
+    # answered "Pull request is already merged". The list row has a ``state`` from its
+    # own source, but a SEARCH row's can be equally stale, and this is the read that
+    # happens closest to the action. ``mergedAt`` is required alongside ``state``
+    # because ``state`` alone cannot express the lifecycle in REST's vocabulary:
+    # GraphQL has a distinct ``MERGED`` state, REST has only ``open``/``closed`` plus a
+    # ``merged_at`` timestamp, and the row shape is REST's — correcting a stale
+    # ``state`` to ``closed`` without the timestamp would render a merged PR with the
+    # red closed-unmerged icon.
+    #
+    # These three ARE free (measured: adding them changes neither this query's latency
+    # nor its success rate). ``mergeStateStatus`` is deliberately NOT here — it is the
+    # one field that is not. See :data:`_PR_READINESS_SELECTION`.
+    " mergeable state mergedAt"
     # ``oid`` is the head COMMIT. Free here — this selection already walks the last
     # commit for its check rollup — and it is what gives SEARCH rows a head sha:
     # ``_PR_SEARCH_JQ`` cannot supply one (GitHub's search API does not expose it),
@@ -1504,10 +1519,52 @@ _PR_SUMMARY_SELECTION = (
     "   ... on StatusContext{context state createdAt} }}}}}}"
 )
 
+# ``mergeStateStatus`` — its OWN query, deliberately, and this is the expensive one.
+#
+# It is GraphQL's spelling of REST's ``mergeable_state``, and the bulk bar needs it to
+# tell "not ready yet, so arming auto-merge is meaningful" from "ready NOW, so GitHub
+# refuses to arm at all" (`Pull request is in clean status`). Without it that bar is
+# structurally blind — ``_PR_JQ`` carries no mergeability — so every ticked row was
+# offered auto-merge and the provider rejected each already-clean one individually.
+#
+# **Why it cannot ride on ``_PR_SUMMARY_SELECTION``.** Unlike every other field added
+# for this feature, ``mergeStateStatus`` is not a stored value: GitHub computes a merge
+# commit per PR to answer it. Folded into the card selection — which already walks each
+# PR's head commit and paginates its whole check rollup — the combined query reliably
+# **502s at ``first:100``**, on this repo and on others. Measured, per field, same page
+# size: the selection without it succeeds, ``mergeable``/``state``/``mergedAt`` added
+# succeed, ``mergeStateStatus`` added fails every time. The failure is not graceful:
+# both enrichment paths carry this selection, so a 502 leaves EVERY row with a null
+# diff size and check tally, `enrichment_complete` returns False so the route declines
+# to cache, and the list re-fetches on every load — while `mergeable_state` ends up
+# None for all of them, leaving the bulk bar exactly as blind as before. That trades a
+# 7-refusal annoyance for a total enrichment outage on the large repos most likely to
+# use bulk actions.
+#
+# Alone, with no rollup and no commit walk, the same field is comfortable at
+# ``first:100``. So it gets a second, LEAN call: one extra request per list fetch,
+# independently failable, and a failure costs only the readiness field rather than the
+# whole card payload.
+_PR_READINESS_SELECTION = " number mergeStateStatus"
+
+_PR_READINESS_JQ_BODY = (
+    "{number: .number, merge_state_status: (.mergeStateStatus // null)}"
+)
+
+# Smaller than `_SUMMARY_BATCH` (100) on purpose: this is the field GitHub COMPUTES, and
+# the by-number form asks for N of them in one query. 50 is the largest page measured
+# comfortable; the page-size ceiling is exactly what the split exists to respect.
+_READINESS_BATCH = 50
+
 # The JQ projection applied to ONE PR node (shared for the same reason).
 _PR_SUMMARY_JQ_BODY = (
     "{number: .number, additions: .additions, deletions: .deletions, "
     "changed_files: (.changedFiles // 0), "
+    # Carried through under GraphQL's own names; `_parse_summary_rows` lowercases them
+    # into REST's vocabulary, which is the spelling every reader already uses.
+    "mergeable_raw: (.mergeable // null), "
+    "pr_state: (.state // null), "
+    "pr_merged_at: (.mergedAt // null), "
     "head_sha: (.commits.nodes[0].commit.oid // null), "
     "rollup: (.commits.nodes[0].commit.statusCheckRollup.state // null), "
     "contexts_truncated: "
@@ -1552,6 +1609,100 @@ def fetch_pr_summaries(
         raise GhCliError(f"gh api graphql (pr summaries) failed (exit {proc.returncode}): {tail}")
 
     return _parse_summary_rows(proc.stdout or "")
+
+
+def fetch_pr_readiness(
+    owner: str, repo: str, state: str = "open", *, timeout: float = GH_TIMEOUT_SEC
+) -> dict[int, str | None]:
+    """``{number: mergeable_state}`` for a repo's PRs — its own LEAN GraphQL call.
+
+    Separate from :func:`fetch_pr_summaries` because ``mergeStateStatus`` is the one
+    field here GitHub has to COMPUTE (a merge commit per PR); folded into the card
+    selection the combined query 502s at this page size. See
+    :data:`_PR_READINESS_SELECTION` for the measurements.
+
+    Best-effort, like the card enrichment: raises :class:`GhCliError` and the caller
+    continues without readiness, which costs the bulk bar's merge/arm split for that
+    fetch but leaves every other field intact.
+    """
+    gql_state = _GRAPHQL_PR_STATES.get(state)
+    if gql_state is None:
+        raise GhCliError(f"unsupported state for PR readiness: {state!r}")
+    query = (
+        "query($owner:String!,$name:String!){"
+        " repository(owner:$owner,name:$name){"
+        f"  pullRequests(states:[{gql_state}], first:100,"
+        "   orderBy:{field:UPDATED_AT,direction:DESC}){"
+        "   nodes{" + _PR_READINESS_SELECTION + " } } } }"
+    )
+    argv = [
+        "gh", "api", "graphql",
+        "-f", f"query={query}",
+        "-F", f"owner={owner}",
+        "-F", f"name={repo}",
+        "--jq", f".data.repository.pullRequests.nodes[] | {_PR_READINESS_JQ_BODY}",
+    ]
+    proc = _gh_run(argv, timeout=timeout)
+    if proc.returncode != 0:
+        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        raise GhCliError(f"gh api graphql (pr readiness) failed (exit {proc.returncode}): {tail}")
+    return _parse_readiness_rows(proc.stdout or "")
+
+
+def fetch_pr_readiness_by_number(
+    owner: str, repo: str, numbers: list[int], *, timeout: float = GH_TIMEOUT_SEC
+) -> dict[int, str | None]:
+    """:func:`fetch_pr_readiness` for an EXPLICIT number list (the SEARCH path).
+
+    Same reason :func:`fetch_pr_summaries_by_number` exists: a person-filtered search
+    can return a PR that ranks outside the state-scoped window.
+    """
+    out: dict[int, str | None] = {}
+    wanted = [n for n in numbers if isinstance(n, int) and n > 0]
+    for start in range(0, len(wanted), _READINESS_BATCH):
+        batch = wanted[start:start + _READINESS_BATCH]
+        fields = " ".join(
+            f"p{n}: pullRequest(number:{n}){{{_PR_READINESS_SELECTION} }}" for n in batch
+        )
+        query = (
+            "query($owner:String!,$name:String!){"
+            f" repository(owner:$owner,name:$name){{ {fields} }} }}"
+        )
+        argv = [
+            "gh", "api", "graphql",
+            "-f", f"query={query}",
+            "-F", f"owner={owner}",
+            "-F", f"name={repo}",
+            "--jq", ".data.repository | to_entries[] | .value | select(. != null) | "
+                    + _PR_READINESS_JQ_BODY,
+        ]
+        proc = _gh_run(argv, timeout=timeout)
+        if proc.returncode != 0:
+            tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+            raise GhCliError(
+                f"gh api graphql (pr readiness by number) failed "
+                f"(exit {proc.returncode}): {tail}"
+            )
+        out.update(_parse_readiness_rows(proc.stdout or ""))
+    return out
+
+
+def _parse_readiness_rows(stdout: str) -> dict[int, str | None]:
+    """Parse the readiness JQ stream into ``{number: mergeable_state}`` (lowercased)."""
+    out: dict[int, str | None] = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        number = row.get("number")
+        if not isinstance(number, int):
+            continue
+        out[number] = _lower_or_none(row.get("merge_state_status"))
+    return out
 
 
 # How many PR numbers to request per by-number GraphQL call. Each number costs
@@ -1622,6 +1773,54 @@ def _count_context_buckets(contexts: object) -> dict[str, int]:
     return counts
 
 
+def _lower_or_none(value: object) -> str | None:
+    """A GraphQL enum lowered into REST's vocabulary, or ``None`` if absent.
+
+    ``None`` is preserved rather than becoming ``""``: an absent mergeability is
+    "GitHub has not computed this yet" (it is asynchronous, and a cold read answers
+    ``UNKNOWN``), which callers must be able to tell from a real state. An empty
+    string would compare unequal to every ready-state and so read as a confident
+    "not ready".
+    """
+    return value.strip().lower() or None if isinstance(value, str) else None
+
+
+def _graphql_mergeable(value: object) -> bool | None:
+    """GraphQL's ``MERGEABLE`` / ``CONFLICTING`` / ``UNKNOWN`` as REST's tri-state bool.
+
+    REST reports ``mergeable`` as ``true`` / ``false`` / ``null``; GraphQL reports the
+    same fact as an enum with an explicit ``UNKNOWN``. ``UNKNOWN`` maps to ``None``,
+    NOT to ``False`` — the two mean very different things, and the whole reason this
+    normalization is a named function is that collapsing them is the easy mistake.
+    Note that ``mergeable`` alone never means "ready to merge": it means "no merge
+    CONFLICTS", which is why the readiness gate keys off ``mergeable_state``.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().upper()
+    if normalized == "MERGEABLE":
+        return True
+    if normalized == "CONFLICTING":
+        return False
+    return None
+
+
+def _rest_pr_state(value: object) -> str | None:
+    """GraphQL's ``OPEN`` / ``CLOSED`` / ``MERGED`` as REST's ``open`` / ``closed``.
+
+    REST models a merged PR as ``state: "closed"`` carrying a ``merged_at`` timestamp;
+    GraphQL models it as a third state. The row shape here is REST's, and every reader
+    (``PrList.prStateVisual``, ``review.ts``, the closed-list split) compares against
+    REST's two values — so ``MERGED`` has to become ``closed``, with the merge
+    distinguished by the accompanying ``pr_merged_at``. Returning ``"merged"`` would
+    match no branch in any of those readers and paint a merged PR as open.
+    """
+    normalized = _lower_or_none(value)
+    if normalized is None:
+        return None
+    return "closed" if normalized in ("closed", "merged") else normalized
+
+
 def _parse_summary_rows(stdout: str) -> dict[int, dict]:
     """Parse the shared per-PR summary JQ stream (see ``_PR_SUMMARY_JQ_BODY``)."""
     out: dict[int, dict] = {}
@@ -1646,6 +1845,30 @@ def _parse_summary_rows(stdout: str) -> dict[int, dict]:
             # value that then fails the caller's sha validation with a confusing
             # error instead of simply leaving the row un-approvable in bulk.
             "head_sha": row.get("head_sha") or None,
+            # GraphQL SHOUTS its enums (`CLEAN`, `MERGEABLE`, `OPEN`) where REST speaks
+            # lowercase (`clean`, `open`). Normalized here, at the single point where
+            # GraphQL output becomes an internal row, so no reader has to know which
+            # transport its row came from — `routes._MERGE_ALLOWED_STATES` and the
+            # frontend's `MERGE_READY_STATES` both compare lowercase, and an un-lowered
+            # `CLEAN` would silently miss both and read as "not ready".
+            #
+            # `None` stays `None`: unknown mergeability must not collapse to a value.
+            # GitHub computes it asynchronously and answers `UNKNOWN` on a cold read,
+            # and treating that as "not ready" would be a guess presented as a fact.
+            #
+            # `mergeable_state` is filled by the SEPARATE readiness call
+            # (`_PR_READINESS_SELECTION`) and is seeded None here so the key always
+            # exists — absent would be falsy, i.e. indistinguishable from "not ready".
+            "mergeable_state": None,
+            "mergeable": _graphql_mergeable(row.get("mergeable_raw")),
+            # GraphQL's MERGED/CLOSED/OPEN collapsed into REST's open|closed, because
+            # the row shape is REST's and every reader compares against those two.
+            # `MERGED` becomes `closed` and is distinguished by `pr_merged_at`, exactly
+            # as REST does it (`PrList.prStateVisual` checks `merged_at` FIRST, so
+            # reporting `merged` here would match no branch and paint a merged PR as
+            # open — the bug this normalization exists to avoid).
+            "pr_state": _rest_pr_state(row.get("pr_state")),
+            "pr_merged_at": row.get("pr_merged_at") or None,
             # Same bucketing table as every other surface; an unrecognized rollup
             # value lands in "other" and so must not read as passing.
             "checks_state": _check_bucket(None, rollup) if rollup else None,
@@ -1710,7 +1933,14 @@ def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[d
             summaries.update(fetch_pr_summaries_by_number(owner, repo, missing))
         except GhCliError:
             pass
-    return _apply_summaries(pulls, summaries)
+    # Merge readiness is a SECOND, lean call — it cannot ride on the card selection
+    # without 502ing it (see `_PR_READINESS_SELECTION`). Independently failable: losing
+    # it costs the bulk bar's arm/merge split, not the whole card payload.
+    try:
+        readiness = fetch_pr_readiness(owner, repo, state)
+    except GhCliError:
+        readiness = {}
+    return _apply_summaries(pulls, summaries, readiness)
 
 
 def enrich_pulls_by_number(owner: str, repo: str, pulls: list[dict]) -> list[dict]:
@@ -1725,10 +1955,21 @@ def enrich_pulls_by_number(owner: str, repo: str, pulls: list[dict]) -> list[dic
         )
     except GhCliError:
         summaries = {}
-    return _apply_summaries(pulls, summaries)
+    # Readiness by number, for the same reason the summaries are: a search hit can rank
+    # outside the state-scoped window. Separate + independently failable, as above.
+    try:
+        readiness = fetch_pr_readiness_by_number(
+            owner, repo, [pr.get("number") for pr in pulls]  # type: ignore[misc]
+        )
+    except GhCliError:
+        readiness = {}
+    return _apply_summaries(pulls, summaries, readiness)
 
 
-def _apply_summaries(pulls: list[dict], summaries: dict[int, dict]) -> list[dict]:
+def _apply_summaries(
+    pulls: list[dict], summaries: dict[int, dict],
+    readiness: dict[int, str | None] | None = None,
+) -> list[dict]:
     """Write the enrichment fields onto every row.
 
     A row with no summary gets ``None`` — NOT ``0`` / empty counts. The distinction
@@ -1737,9 +1978,20 @@ def _apply_summaries(pulls: list[dict], summaries: dict[int, dict]) -> list[dict
     changes, no checks") and the unbounded list cache would keep serving that
     until a manual refresh. ``None`` says "unknown", which the card renders as
     absent and :func:`enrichment_complete` reports so the route can skip caching.
+
+    ``readiness`` comes from the SEPARATE :func:`fetch_pr_readiness` call and is
+    applied independently of ``summaries``: either can fail on its own, and a row can
+    legitimately have a diff size but unknown readiness (or the reverse).
     """
+    ready = readiness or {}
     for pr in pulls:
         number = pr.get("number")
+        # Readiness first, and OUTSIDE the summary branch — the two calls fail
+        # independently, so a row with no summary can still have a known merge state.
+        # Always assigned so the key exists even when unknown: absent is falsy, i.e.
+        # indistinguishable from "not ready", which would put the row back into the
+        # auto-merge batch the provider refuses.
+        pr["mergeable_state"] = ready.get(number) if isinstance(number, int) else None
         extra = summaries.get(number) if isinstance(number, int) else None
         if not extra:
             pr["additions"] = None
@@ -1748,6 +2000,9 @@ def _apply_summaries(pulls: list[dict], summaries: dict[int, dict]) -> list[dict
             pr["checks_state"] = None
             pr["checks_counts"] = None
             pr["checks_truncated"] = False
+            # `mergeable_state` was already set above from the independent readiness
+            # call — do NOT clear it here; that call may well have succeeded.
+            pr["mergeable"] = None
             # NOT cleared: an un-enriched row keeps whatever head sha its source
             # gave it. The LIST path already carries one from `_PR_JQ`, and blanking
             # it here on a failed GraphQL call would take bulk approve away from
@@ -1762,6 +2017,23 @@ def _apply_summaries(pulls: list[dict], summaries: dict[int, dict]) -> list[dict
         # this is the one call that already walks the head commit anyway.
         if not pr.get("head_sha"):
             pr["head_sha"] = extra.get("head_sha")
+        # `mergeable` is "no merge CONFLICTS" — NOT "ready to merge". A PR with
+        # unsatisfied required reviews is `mergeable: true` with
+        # `mergeable_state: "blocked"`, which is why the readiness gate keys off the
+        # latter (set above, from its own call).
+        pr["mergeable"] = extra.get("mergeable")
+        # A row whose live state disagrees with its cached one is corrected HERE, which
+        # is the closest read to the action. #1265 was armed for auto-merge from a row
+        # cached while it was still open, and GitHub answered "already merged".
+        live_state = extra.get("pr_state")
+        if live_state:
+            pr["state"] = live_state
+            # Written TOGETHER with the state, never separately: the two are one fact in
+            # REST's shape, and a `closed` with no `merged_at` is the red
+            # closed-unmerged icon. Only ever fills a gap — a row that already carries a
+            # timestamp keeps it.
+            if extra.get("pr_merged_at") and not pr.get("merged_at"):
+                pr["merged_at"] = extra.get("pr_merged_at")
         pr["checks_state"] = extra.get("checks_state")
         pr["checks_counts"] = extra.get("checks_counts") or {b: 0 for b in _CHECK_BUCKETS}
         pr["checks_truncated"] = bool(extra.get("checks_truncated"))

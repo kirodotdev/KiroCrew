@@ -5,13 +5,18 @@ import { providerTerms } from '../../lib/links'
 import { useIssueRadar } from '../../context'
 import ReadOnlyTag, { isReadOnly } from '../../components/ReadOnlyTag'
 import type { GeneralAnchor } from '../../lib/types'
+import { Toggle } from '../../../../components/ui'
+import {
+  DETAIL_POLL_CHOICES_MS, LIST_POLL_CHOICES_MS, STALE_TIME_CHOICES_MS,
+} from '../../lib/format'
+import { fmtUnit } from '../../../../i18n/format'
 
 import { i18nT } from '../../../../i18n/t'
 /** General (app-wide) settings — full width. The GitHub identity and the list
  * of connected repos. Each repo card jumps to that repo's own settings page.
  * `anchor` scrolls to the requested sub-section when the rail asks for it. */
 export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
-  const { me, repos, onAddRepo, openSettings, active } = useIssueRadar()
+  const { me, repos, onAddRepo, openSettings, active, refreshPrefs, setRefreshPrefs } = useIssueRadar()
   // The account shown is the one on the ACTIVE repo's provider — `me` is fetched
   // per provider, so naming the wrong CLI here would contradict the login above it.
   const terms = providerTerms(active)
@@ -54,6 +59,52 @@ export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
         </div>
       </section>
 
+      <section className="mb-10 scroll-mt-8">
+        <SectionHeader title={i18nT('apps.issueRadar.views.settings.generalSettings.refresh_section')} />
+        <div className="rounded-xl border border-border bg-bg-elevated shadow-sm p-5">
+          <p className="text-[13px] text-muted mb-4">
+            {i18nT('apps.issueRadar.views.settings.generalSettings.refresh_intro', {
+              provider: terms.providerName,
+            })}
+          </p>
+          <div className="space-y-3">
+            <IntervalRow
+              label={i18nT('apps.issueRadar.views.settings.generalSettings.list_refresh')}
+              hint={i18nT('apps.issueRadar.views.settings.generalSettings.list_refresh_hint')}
+              value={refreshPrefs.listPollMs}
+              choices={LIST_POLL_CHOICES_MS}
+              onChange={(listPollMs) => setRefreshPrefs({ listPollMs })}
+            />
+            <IntervalRow
+              label={i18nT('apps.issueRadar.views.settings.generalSettings.detail_refresh')}
+              hint={i18nT('apps.issueRadar.views.settings.generalSettings.detail_refresh_hint')}
+              value={refreshPrefs.detailPollMs}
+              choices={DETAIL_POLL_CHOICES_MS}
+              onChange={(detailPollMs) => setRefreshPrefs({ detailPollMs })}
+            />
+            <IntervalRow
+              label={i18nT('apps.issueRadar.views.settings.generalSettings.cache_for')}
+              hint={i18nT('apps.issueRadar.views.settings.generalSettings.cache_for_hint')}
+              value={refreshPrefs.staleTimeMs}
+              choices={STALE_TIME_CHOICES_MS}
+              onChange={(staleTimeMs) => setRefreshPrefs({ staleTimeMs })}
+            />
+            <ToggleRow
+              label={i18nT('apps.issueRadar.views.settings.generalSettings.poll_in_background')}
+              hint={i18nT('apps.issueRadar.views.settings.generalSettings.poll_in_background_hint')}
+              checked={refreshPrefs.pollInBackground}
+              onChange={(pollInBackground) => setRefreshPrefs({ pollInBackground })}
+            />
+            <ToggleRow
+              label={i18nT('apps.issueRadar.views.settings.generalSettings.prefetch_pulls')}
+              hint={i18nT('apps.issueRadar.views.settings.generalSettings.prefetch_pulls_hint')}
+              checked={refreshPrefs.prefetchPulls}
+              onChange={(prefetchPulls) => setRefreshPrefs({ prefetchPulls })}
+            />
+          </div>
+        </div>
+      </section>
+
       <section ref={reposRef} className="scroll-mt-8">
         <SectionHeader title={i18nT('apps.issueRadar.views.settings.generalSettings.repositories')} hint={`${repos.length} connected`} />
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -88,6 +139,75 @@ export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
       </section>
     </div>
   )
+}
+
+/**
+ * A labelled interval picker.
+ *
+ * The options are a fixed set rather than a free number input: a too-low interval
+ * does not degrade gracefully — a fully-paginated list fetch on a large repo is tens
+ * of requests, so a few seconds would exhaust the provider's hourly budget and take
+ * the app down with 403s. The offered set keeps the worst case inside it.
+ */
+function IntervalRow({ label, hint, value, choices, onChange }: {
+  label: string
+  hint: string
+  value: number
+  choices: readonly number[]
+  onChange: (ms: number) => void
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="min-w-0">
+        <div className="text-[13px] font-medium">{label}</div>
+        <div className="text-[12px] text-muted mt-0.5">{hint}</div>
+      </div>
+      <select
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label={label}
+        className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring flex-shrink-0"
+      >
+        {choices.map((ms) => (
+          <option key={ms} value={ms}>{intervalLabel(ms)}</option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
+/** A labelled on/off row, using the same switch idiom as the rest of Settings. */
+function ToggleRow({ label, hint, checked, onChange }: {
+  label: string
+  hint: string
+  checked: boolean
+  onChange: (on: boolean) => void
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="min-w-0">
+        <div className="text-[13px] font-medium">{label}</div>
+        <div className="text-[12px] text-muted mt-0.5">{hint}</div>
+      </div>
+      <div className="flex-shrink-0 pt-0.5">
+        <Toggle checked={checked} onChange={onChange} label={label} />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * A duration as user-facing copy — locale-formatted, never hand-assembled.
+ *
+ * `fmtUnit` rather than a template literal: Latin digits are wrong for `bn`, and
+ * "30s"/"2m" are unit-formatted quantities, not prose. `0` is its own catalog string
+ * because "cache for 0 seconds" is a MODE ("always refetch"), not a duration.
+ */
+function intervalLabel(ms: number): string {
+  if (ms === 0) return i18nT('apps.issueRadar.views.settings.generalSettings.always_refetch')
+  return ms % 60_000 === 0
+    ? fmtUnit(ms / 60_000, 'minute', { unitDisplay: 'short' })
+    : fmtUnit(ms / 1_000, 'second', { unitDisplay: 'short' })
 }
 
 function SectionHeader({ title, hint }: { title: string; hint?: string }) {

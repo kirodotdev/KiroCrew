@@ -170,6 +170,19 @@
         },
         "refSheet": {
           "issue": "Issue"
+        },
+        "prBulkBar": {
+          "auto_merge_n_one": "Auto-merge {{count}}",
+          "auto_merge_n_other": "Auto-merge {{count}}",
+          "auto_merge_none_pending": "None of the selected pull requests are waiting on checks — auto-merge only applies to one that is not mergeable yet",
+          "merge_halted_one": "{{count}} remaining pull request was not attempted.",
+          "merge_halted_other": "{{count}} remaining pull requests were not attempted.",
+          "merge_ready_hint": "Merge the selected pull requests that are already ready — one at a time, each pinned to the commit shown on its row. Stops at the first refusal.",
+          "merge_ready_one": "Merge {{count}} ready",
+          "merge_ready_other": "Merge {{count}} ready",
+          "merge_warning_one": "This merges {{count}} pull request now. It cannot be undone.",
+          "merge_warning_other": "This merges {{count}} pull requests now, one at a time. It cannot be undone.",
+          "merged_ok": "merged"
         }
       },
       "connectPanel": {
@@ -212,6 +225,21 @@
             "watch_this_repo_in_the_background_and_post_a_kir": "Watch this repo in the background and post a KiroCrew notification whenever a new issue is opened.",
             "which_labels_mark_newcomer_friendly_work_so_issu": "Which labels mark newcomer-friendly work, so Issue Radar can surface issues to route to first-time contributors.",
             "which_labels_mean_an_issue_still_needs_triage_dr": "Which labels mean an issue still needs triage. Drives the Overview's “Untriaged” count and the needs-attention queue."
+          },
+          "generalSettings": {
+            "always_refetch": "Always refetch",
+            "cache_for": "Use cached data for",
+            "cache_for_hint": "How long a fetched list counts as current, so reopening the app paints instantly instead of waiting.",
+            "detail_refresh": "Detail refresh",
+            "detail_refresh_hint": "How often an open issue or pull request re-reads. Closed items always back off.",
+            "list_refresh": "List refresh",
+            "list_refresh_hint": "How often the issue and pull-request lists re-read.",
+            "poll_in_background": "Keep refreshing in background tabs",
+            "poll_in_background_hint": "Off means a hidden tab stops refreshing and is stale when you return. On keeps it current, at a constant API cost.",
+            "prefetch_pulls": "Load pull requests on open",
+            "prefetch_pulls_hint": "Loads the pull-request list as soon as the app opens, so the first visit is instant. Costs one fetch even if you never open it.",
+            "refresh_intro": "How often Issue Radar re-reads from {{provider}}. Shorter intervals feel more live but spend more of your hourly API budget.",
+            "refresh_section": "Refresh"
           }
         },
         "tagging": {

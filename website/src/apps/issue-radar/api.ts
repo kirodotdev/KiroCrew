@@ -92,6 +92,25 @@ export interface PullRequest {
   /** True when the PR has more checks than one API page, so `checks_counts` is
    * incomplete and the card must show the aggregate rollup instead. */
   checks_truncated?: boolean
+  /**
+   * Merge READINESS, in the same vocabulary as the detail pane's `mergeable_state`
+   * (GitHub's `mergeable_state` / GraphQL's lowercased `mergeStateStatus`).
+   *
+   * On the LIST row because a bulk action cannot otherwise tell the two merge verbs
+   * apart: `clean` means mergeable NOW (GitHub *refuses* to arm auto-merge — "Pull
+   * request is in clean status"), while `blocked`/`behind`/`unstable` mean not yet,
+   * which is what auto-merge is for. Without it the bulk bar offered auto-merge for
+   * every ticked row and GitHub rejected each ready one individually.
+   *
+   * `null` / absent means UNKNOWN — GitHub computes mergeability asynchronously, so a
+   * cold read answers `unknown`. Treat it as "cannot tell", never as "not ready": a
+   * gate that cannot tell must refuse rather than guess.
+   */
+  mergeable_state?: string | null
+  /** Whether the PR has no merge CONFLICTS. Deliberately NOT "ready to merge" —
+   * a PR with unsatisfied required reviews is `mergeable: true` with
+   * `mergeable_state: 'blocked'`. `null` means unknown. */
+  mergeable?: boolean | null
   body?: string
 }
 

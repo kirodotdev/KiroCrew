@@ -24,24 +24,11 @@ import {
   Check, CircleSlash, CircleDot, MessageSquarePlus, GitMerge, X, Loader2, AlertTriangle,
 } from 'lucide-react'
 import { Btn } from '../../../components/ui'
-import { usePrActions, PR_ACTION } from '../lib/prActions'
+import { usePrActions, PR_ACTION, isMergeReady } from '../lib/prActions'
 import { providerTerms, isGitlab } from '../lib/links'
 import type { PrDetailData, PullRequest, RepoRef } from '../api'
 
 import { i18nT } from '../../../i18n/t'
-
-/** Provider merge-state values that mean the PR's protections are SATISFIED.
- *
- * Mirrors the server's `_MERGE_ALLOWED_STATES`. `unstable` is deliberately absent: it
- * does not distinguish a failing REQUIRED check from a failing optional one, so it
- * cannot be read as "protections satisfied" — and a gate that cannot tell must refuse.
- * `blocked`, `behind`, `dirty`, `draft` and `unknown` are absent for the same reason.
- * So is GitLab's LEGACY `can_be_merged`, which comes from the old `merge_status` field
- * and reports only "no conflicts" — it knows nothing about unmet approvals or a red
- * required pipeline, so admitting it would reproduce the hole this set closes. The
- * modern `mergeable` (`detailed_merge_status`) does imply those rules are met.
- * Such a PR is still one click from auto-merge, which lets the provider decide. */
-const MERGE_READY_STATES = new Set(['clean', 'has_hooks', 'mergeable'])
 
 /** Which composer is open, if any. `null` means the bar is showing its buttons. */
 type Composer = 'approve' | 'request_changes' | 'comment' | null
@@ -149,7 +136,7 @@ export default function PrActionsBar({
   //
   // The head sha is required too: the merge is PINNED to the commit this pane
   // rendered, so a push landing in between is refused rather than merged.
-  const mergeable = MERGE_READY_STATES.has((detail?.mergeable_state ?? '').toLowerCase())
+  const mergeable = isMergeReady(detail?.mergeable_state)
     && detail?.mergeable === true
     && !(detail?.draft ?? pull.draft ?? false)
     && Boolean(detail?.head_sha)
