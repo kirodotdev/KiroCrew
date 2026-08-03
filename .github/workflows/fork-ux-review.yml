@@ -147,7 +147,15 @@ jobs:
           # past the cap and still pass. Fetch the PR head history as OBJECTS only
           # (never checked out — the working tree stays the trusted base, so no
           # fork file/symlink is materialized) and diff locally, which has no cap.
-          git -c http.extraheader="AUTHORIZATION: bearer $GH_TOKEN" \
+          # GitHub's git smart-HTTP transport authenticates with BASIC auth
+          # (base64 of "x-access-token:$GITHUB_TOKEN"); the `bearer` scheme is
+          # rejected, so git falls back to an interactive username prompt and
+          # dies with "could not read Username" in CI. This mirrors how
+          # actions/checkout injects its credential. The header value is never
+          # logged and the raw token stays masked.
+          auth_b64="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth_b64"  # mask the derived header so it can never surface in logs
+          git -c http.extraheader="AUTHORIZATION: basic $auth_b64" \
             fetch --no-tags --quiet origin "refs/pull/$PR/head" \
             || { echo "::error::could not fetch PR head history for #$PR"; exit 1; }
           # Pin to the exact CI-reviewed head SHA; fail closed if it is missing
