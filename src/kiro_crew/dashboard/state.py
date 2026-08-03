@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import tempfile
 import threading
 import time
@@ -284,6 +285,185 @@ _UNSAFE_SHELL_RE = re.compile(r">|`|\$\(|<\(|(?<!&)&(?!&)")
 # a sink, smuggling a real-file write past the unsafe-shell check.
 _DEVNULL_REDIR_RE = re.compile(r"(?:\d*>>?|&>)\s*/dev/null(?![\w./-])|\d*>&\d+")
 
+# ── Side effects reached through an allowlisted read-only verb ──
+#
+# The allowlist above names a verb and is matched as a prefix, so it vouches
+# for every flag, subcommand and operand that verb accepts. Some of those
+# write a file, change a ref or launch another program — and none of it goes
+# through a shell redirect, so `_UNSAFE_SHELL_RE` never sees it.
+#
+# The tables are keyed by verb because the same spelling is harmless
+# elsewhere: `ls -o` is a long listing format and `grep -o` prints only the
+# match, while `sort -o FILE` truncates and writes FILE.
+
+# Flags that make the program write a file named on its own command line.
+_WRITE_FLAGS: dict[str, tuple[str, ...]] = {
+    "sort": ("-o", "--output"),
+    "tree": ("-o", "--output"),
+    "file": ("-C", "--compile"),
+    "uniq": ("-o",),
+    "git diff": ("--output",),
+    "git show": ("--output",),
+    "git log": ("--output",),
+}
+
+# Flags that hand control to a program the repository names, not the caller:
+# an external diff driver comes from the repo's config or .gitattributes.
+_EXEC_FLAGS: dict[str, tuple[str, ...]] = {
+    "git diff": ("--ext-diff",),
+    "git show": ("--ext-diff",),
+    "git log": ("--ext-diff",),
+}
+
+# `git branch` and `git tag` each carry a read mode and a write mode under one
+# subcommand, so the prefix match admits the destructive spellings. Some of
+# these also open `$EDITOR`, which runs a program of the environment's
+# choosing: `git branch --edit-description` always does, and `git tag <name>`
+# does whenever `tag.gpgSign` or `tag.forceSignAnnotated` is set.
+_GIT_REF_WRITE_FLAGS: dict[str, tuple[str, ...]] = {
+    "branch": (
+        "-d",
+        "-D",
+        "--delete",
+        "-m",
+        "-M",
+        "--move",
+        "-c",
+        "-C",
+        "--copy",
+        "-f",
+        "--force",
+        "-u",
+        "--set-upstream",
+        "--set-upstream-to",
+        "--unset-upstream",
+        "--edit-description",
+    ),
+    "tag": (
+        "-d",
+        "--delete",
+        "-a",
+        "--annotate",
+        "-s",
+        "--sign",
+        "-m",
+        "--message",
+        "-F",
+        "--file",
+        "-f",
+        "--force",
+        "--cleanup",
+    ),
+}
+
+# Read-only `git branch`/`git tag` flags that consume the following token, so
+# a bare operand after one of them is that flag's value rather than the name
+# of a ref to create.
+_GIT_REF_VALUE_FLAGS: frozenset[str] = frozenset(
+    (
+        "-l",
+        "--list",
+        "-n",
+        "--contains",
+        "--no-contains",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+        "--format",
+        "--sort",
+        "--color",
+    )
+)
+
+# `git remote` subcommands that rewrite remote configuration. `set-url` is the
+# sharpest: it repoints the remote, so later fetches and pushes go elsewhere.
+_GIT_REMOTE_WRITE_SUBCOMMANDS: frozenset[str] = frozenset(
+    ("add", "remove", "rm", "rename", "set-url", "set-head", "set-branches", "prune", "update")
+)
+
+
+def _matched_flag(tokens: list[str], flags: tuple[str, ...]) -> str:
+    """Return the first token in *tokens* that supplies one of *flags*.
+
+    Matches the flag on its own (``-o``), joined to its value (``--output=x``)
+    and bundled into a short-option cluster (``-uo`` supplies ``-o``), so the
+    check cannot be stepped around by respelling the same flag.
+    """
+    shorts = {f[1] for f in flags if len(f) == 2 and f[0] == "-"}
+    for tok in tokens:
+        if tok in flags:
+            return tok
+        for flag in flags:
+            if tok.startswith(flag + "="):
+                return flag
+        if shorts and len(tok) > 1 and tok[0] == "-" and tok[1] != "-":
+            for ch in tok[1:]:
+                if ch in shorts:
+                    return "-" + ch
+    return ""
+
+
+def _side_effect_reason(segment: str) -> str:
+    """Reason *segment* has a side effect, despite naming a read-only verb.
+
+    Returns "" when the segment is genuinely read-only. Called after the verb
+    has cleared the allowlist, because the allowlist only decides *which
+    program* runs — not what the rest of the command line asks it to do.
+    """
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        # Cannot recover argv, so cannot vouch for the operands.
+        return "quoting cannot be resolved"
+    if not tokens:
+        return ""
+    # The verb is matched case-insensitively, like the allowlist does, so an
+    # unusual spelling cannot step past the table. Flags keep their case,
+    # because for these programs the case carries the meaning.
+    verb = tokens[0].rsplit("/", 1)[-1].lower()
+    args = tokens[1:]
+
+    # The allowlist names `git <subcommand>`, so that is the unit to key on.
+    key = verb
+    if verb == "git" and args:
+        subcommand = args[0].lower()
+        key = f"git {subcommand}"
+        args = args[1:]
+
+        if subcommand in _GIT_REF_WRITE_FLAGS:
+            hit = _matched_flag(args, _GIT_REF_WRITE_FLAGS[subcommand])
+            if hit:
+                return f"'git {subcommand} {hit}' changes a ref"
+            # A bare operand names a ref to create, unless it is the value of
+            # a read-only flag.
+            previous = ""
+            for tok in args:
+                if tok.startswith("-"):
+                    previous = tok
+                    continue
+                if previous in _GIT_REF_VALUE_FLAGS:
+                    previous = ""
+                    continue
+                return f"'git {subcommand} {tok}' creates a ref"
+
+        if subcommand == "remote" and args and args[0] in _GIT_REMOTE_WRITE_SUBCOMMANDS:
+            return f"'git remote {args[0]}' rewrites remote configuration"
+
+    hit = _matched_flag(args, _WRITE_FLAGS.get(key, ()))
+    if hit:
+        return f"'{key} {hit}' writes a file"
+    hit = _matched_flag(args, _EXEC_FLAGS.get(key, ()))
+    if hit:
+        return f"'{key} {hit}' runs a program named by the repository"
+
+    # `uniq INPUT OUTPUT` writes its second operand.
+    if verb == "uniq":
+        operands = [tok for tok in args if not tok.startswith("-")]
+        if len(operands) > 1:
+            return "'uniq INPUT OUTPUT' writes its second operand"
+
+    return ""
+
 
 def _classify_bash(cmd: str) -> str:
     """Single source of truth for read-only bash classification.
@@ -308,7 +488,12 @@ def _classify_bash(cmd: str) -> str:
         pipe_parts = [p.strip() for p in part.split("|") if p.strip()]
         if not pipe_parts:
             return "unsafe shell pattern"
-        first = pipe_parts[0].strip().lower()
+        # The verb is compared case-insensitively, but the side-effect check
+        # below needs the original spelling: flags are case-sensitive, and the
+        # two cases can mean opposite things (`file -C` compiles a magic file,
+        # `file -c` only prints one).
+        head = pipe_parts[0].strip()
+        first = head.lower()
         if not (
             first.endswith("--help")
             or first.endswith("--version")
@@ -316,10 +501,21 @@ def _classify_bash(cmd: str) -> str:
         ):
             base = first.split()[0] if first.split() else first
             return f"command '{base}' is not on the read-only allowlist"
+        # Clearing the allowlist only settles which program runs. The rest of
+        # the command line can still write a file, change a ref or start
+        # another program.
+        side_effect = _side_effect_reason(head)
+        if side_effect:
+            return f"not read-only: {side_effect}"
         for target in pipe_parts[1:]:
             if not _READ_ONLY_PIPE_RE.match(target):
                 tgt = target.split()[0] if target.split() else target
                 return f"pipe target '{tgt}' is not a read-only filter"
+            # The pipe allowlist matches only the leading verb, so a filter's
+            # own output flag (`sort -o FILE`) needs the same check.
+            side_effect = _side_effect_reason(target)
+            if side_effect:
+                return f"pipe target is not read-only: {side_effect}"
     return ""
 
 
