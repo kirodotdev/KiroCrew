@@ -154,7 +154,9 @@ def minimal_env(**extra: str) -> dict[str, str]:
 # Env keys that let git present the gateway's *ambient* identity to a remote:
 # the SSH agent socket, and any GIT_SSH / GIT_SSH_COMMAND override that could
 # route auth through the owner's keys. Stripped for index-originated clones.
-_GIT_CREDENTIAL_ENV_KEYS = frozenset({"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND"})
+_GIT_CREDENTIAL_ENV_KEYS = frozenset(
+    {"SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND"}
+)
 
 
 def anonymous_git_env(**extra: str) -> dict[str, str]:
@@ -676,9 +678,7 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
         return _merge_manifest(entry, cached)
 
     # Fetch from repo
-    manifest = await _fetch_app_manifest(
-        repo, branch, subdirectory, app_name=name, git_url=git_url
-    )
+    manifest = await _fetch_app_manifest(repo, branch, subdirectory, app_name=name, git_url=git_url)
     if manifest:
         await asyncio.to_thread(_write_manifest_cache, name, manifest)
         return _merge_manifest(entry, manifest)
@@ -750,7 +750,9 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     # Screenshots dark — convert repo-relative paths to blob proxy URLs
     screenshots_dark = manifest.get("screenshotsDark", [])
     if screenshots_dark and repo:
-        result["screenshotsDark"] = [f"/api/apps/blob?repo={repo}&path={p}" for p in screenshots_dark]
+        result["screenshotsDark"] = [
+            f"/api/apps/blob?repo={repo}&path={p}" for p in screenshots_dark
+        ]
 
     # Hero images — convert repo-relative paths to blob proxy URLs
     hero = manifest.get("heroImage", "")
@@ -957,9 +959,7 @@ async def _communicate_with_timeout(
         return await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         try:
-            await platform_compat.kill_process_tree_async(
-                proc.pid, platform_compat.SIGKILL
-            )
+            await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
         except OSError:
             proc.kill()
         await proc.wait()
@@ -1298,9 +1298,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
         # Read the (possibly stale) prior index up front so we know which
         # per-app manifest caches this registry contributed, even if the
         # refetch changes/removes some entries.
-        prior = await asyncio.to_thread(
-            _read_external_registry_cache, name, ignore_ttl=True
-        )
+        prior = await asyncio.to_thread(_read_external_registry_cache, name, ignore_ttl=True)
         # Fetch-then-swap: the cache is overwritten only on a successful fetch.
         entries = await _fetch_and_cache_external_registry(reg)
         if entries is None:
@@ -1315,9 +1313,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
             if isinstance(entry_name, str) and entry_name:
                 manifest_names.add(entry_name)
         for entry_name in manifest_names:
-            await asyncio.to_thread(
-                _expire_cache_file, _manifest_cache_path(entry_name)
-            )
+            await asyncio.to_thread(_expire_cache_file, _manifest_cache_path(entry_name))
         refreshed.append(name)
         results.append({"name": name, "ok": True})
 
@@ -1379,9 +1375,7 @@ async def list_registry() -> list[dict[str, Any]]:
         detect_cmd = entry.get("detectInstalled", "")
         if not detect_cmd:
             continue
-        denied = app_execution_denied(
-            name, action="registry_detect_installed", caller="registry"
-        )
+        denied = app_execution_denied(name, action="registry_detect_installed", caller="registry")
         if denied:
             logger.debug("Skipping registry detectInstalled for %s: %s", name, denied)
             continue
@@ -1549,18 +1543,14 @@ async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
     # The build timeout path never blocks the event loop on taskkill.exe.
     # POSIX branch stays inline (os.killpg is non-blocking).
     try:
-        await platform_compat.kill_process_tree_async(
-            proc.pid, platform_compat.SIGTERM
-        )
+        await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGTERM)
     except OSError:
         pass
     try:
         await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_PERIOD)
     except asyncio.TimeoutError:
         try:
-            await platform_compat.kill_process_tree_async(
-                proc.pid, platform_compat.SIGKILL
-            )
+            await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
         except OSError:
             proc.kill()
         await proc.wait()
@@ -1679,6 +1669,7 @@ async def _clone_build_app(
     branch: str = "main",
     *,
     index_originated: bool = False,
+    subdirectory: str = "",
 ) -> dict[str, Any]:
     """Clone an app repo and run its build, returning the source directory.
 
@@ -1698,7 +1689,12 @@ async def _clone_build_app(
     # registration, and backend startup — so nested acquisition here would
     # deadlock (asyncio.Lock is not reentrant).
     return await _clone_build_app_locked(
-        git_url, app_name, log_lines, branch=branch, index_originated=index_originated
+        git_url,
+        app_name,
+        log_lines,
+        branch=branch,
+        index_originated=index_originated,
+        subdirectory=subdirectory,
     )
 
 
@@ -1709,6 +1705,7 @@ async def _clone_build_app_locked(
     branch: str = "main",
     *,
     index_originated: bool = False,
+    subdirectory: str = "",
 ) -> dict[str, Any]:
     """Inner implementation of _clone_build_app, called under per-app lock."""
     if not _looks_like_git_url(git_url):
@@ -1725,7 +1722,34 @@ async def _clone_build_app_locked(
     if clone_err is not None:
         return clone_err
 
-    result = await _run_app_build(pkg_dir, app_name, log_lines)
+    # Build in the directory that actually HOLDS the package, not the clone root.
+    #
+    # A monorepo registry entry declares `subdirectory`, and that was joined only AFTER
+    # this build ran — so `_run_app_build` looked for pyproject.toml/package.json at the
+    # clone root, found none, logged "No build step detected — using source as-is", and
+    # returned ok=True having installed nothing. The app's own pyproject.toml was never
+    # seen. A silent success is the worst shape for this: `setup.onInstall` does get
+    # `cwd=app_source`, so an app could paper over it with a script, which is exactly how
+    # a bug like this stays hidden.
+    #
+    # Containment is re-checked here rather than trusted from the caller: `subdirectory`
+    # is untrusted index content, this function is reachable on its own, and a value that
+    # escapes the clone root must not choose the directory we run a build command in. On
+    # an unsafe value we fall back to the clone root — the previous behaviour — rather
+    # than failing, because the caller performs its own containment check immediately
+    # after and returns the precise error.
+    build_dir = pkg_dir
+    if subdirectory:
+        contained = _contained_join(pkg_dir, subdirectory)
+        if contained is not None:
+            build_dir = contained
+        else:
+            log_lines.append(
+                f"subdirectory {subdirectory!r} escapes the clone root — "
+                "building at the root instead"
+            )
+
+    result = await _run_app_build(build_dir, app_name, log_lines)
     if result["ok"]:
         result["pkg_dir"] = pkg_dir
     return result
@@ -1770,16 +1794,32 @@ async def _run_app_build(
         or (build_dir / "setup.py").is_file()
         or (build_dir / "requirements.txt").is_file()
     ):
-        pip = shutil.which("pip") or shutil.which("pip3")
-        if pip:
-            if (build_dir / "requirements.txt").is_file() and not (
-                (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
-            ):
-                build_cmds.append([pip, "install", "-r", "requirements.txt"])
-            else:
-                build_cmds.append([pip, "install", "."])
+        # `sys.executable -m pip`, NOT `shutil.which("pip")`.
+        #
+        # A Python app has to land in the interpreter that will IMPORT it — the one
+        # running this gateway. `which("pip")` resolves to whatever pip is first on
+        # PATH, which is routinely a different interpreter: `bin/kirocrew` execs
+        # `.venv/bin/kirocrew` WITHOUT putting the venv's `bin/` on PATH, and
+        # `service/common.py::service_path()` prepends `~/.local/bin` ahead of it. So the
+        # build pip was whatever the user happened to have.
+        #
+        # The failure is SILENT, which is why it survived. Measured on a host whose first
+        # pip was 3.7 and whose gateway venv was 3.12: with a version-incompatible pip the
+        # install failed loudly, but with a *compatible-but-different* pip (3.10) it
+        # reported "Successfully installed", the build step reported success, and the
+        # package landed in `~/.local/lib/python3.10/site-packages` — invisible to the
+        # gateway, with `ENABLE_USER_SITE = False` in a venv so there is no fallback. The
+        # app installs, the entry point never appears, and nothing anywhere says why.
+        #
+        # Our own packages only fail loudly because they declare `requires-python`; a
+        # third-party app without that constraint fails silently on EVERY mismatch.
+        pip_cmd = [sys.executable, "-m", "pip"]
+        if (build_dir / "requirements.txt").is_file() and not (
+            (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
+        ):
+            build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
         else:
-            log_lines.append("pip not found on PATH — skipping Python build step")
+            build_cmds.append([*pip_cmd, "install", "."])
 
     if not build_cmds:
         log_lines.append("No build step detected — using source as-is")
@@ -1888,17 +1928,13 @@ async def install_from_registry(
     # Fetch the app's manifest for platform info and install script. This is a
     # read-only metadata fetch (git archive of app.json), safe to do before the
     # admission gate so a correctly-signed manifest can be passed to it.
-    manifest = await _fetch_app_manifest(
-        repo, branch, subdirectory, app_name=name, git_url=git_url
-    )
+    manifest = await _fetch_app_manifest(repo, branch, subdirectory, app_name=name, git_url=git_url)
 
     # Admission: gate AFTER the manifest fetch (so a signed manifest is verified)
     # but BEFORE the repo is cloned and setup.onInstall runs, so a banned /
     # non-allowlisted / unsigned app is never cloned nor its install script run.
     admission_manifest = AppManifest.from_dict(manifest) if manifest else None
-    denied = app_admission_denied(
-        name, manifest=admission_manifest, action="install_from_registry"
-    )
+    denied = app_admission_denied(name, manifest=admission_manifest, action="install_from_registry")
     if denied:
         sel().log_api_access(
             caller="app_install_from_registry",
@@ -1951,9 +1987,7 @@ async def install_from_registry(
 
     # detectInstalled, clone/build, dependency setup, and onInstall are all
     # executable third-party surfaces and share the same explicit admission.
-    execution_denied = app_execution_denied(
-        name, action="registry_install", caller="registry"
-    )
+    execution_denied = app_execution_denied(name, action="registry_install", caller="registry")
     if execution_denied:
         return {
             "ok": False,
@@ -1998,6 +2032,9 @@ async def install_from_registry(
             log_lines,
             branch=branch,
             index_originated=index_originated,
+            # Passed so the BUILD runs where the package is. The containment check
+            # below is still authoritative for choosing app.json's directory.
+            subdirectory=subdirectory,
         )
         if not build_result["ok"]:
             return {**build_result, "log": "\n".join(log_lines)}

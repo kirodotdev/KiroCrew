@@ -36,9 +36,7 @@ from kiro_crew.apps.registry import (
 @pytest.fixture(autouse=True)
 def _explicit_registry_execution_admission(monkeypatch):
     """Registry tests exercise admitted installs unless they say otherwise."""
-    monkeypatch.setattr(
-        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
-    )
+    monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
 
 
 @pytest.fixture()
@@ -717,8 +715,12 @@ class TestRegistryInstallAdmission:
         from kiro_crew.apps.manifest import AppManifest
 
         data = {
-            "name": name, "version": "1.0.0", "displayName": name,
-            "description": "d", "author": "tester", "signer": signer,
+            "name": name,
+            "version": "1.0.0",
+            "displayName": name,
+            "description": "d",
+            "author": "tester",
+            "signer": signer,
         }
         m = AppManifest.from_dict(data)
         data["signature"] = hmac.new(
@@ -731,22 +733,34 @@ class TestRegistryInstallAdmission:
         from kiro_crew.apps.registry import install_from_registry
 
         secret = "s3cr3t"
-        self._write_policy(reg_home, {
-            "mode": "enforce", "require_signature": True,
-            "approved": ["signed-reg"], "trust_keys": {"acme": secret},
-        })
+        self._write_policy(
+            reg_home,
+            {
+                "mode": "enforce",
+                "require_signature": True,
+                "approved": ["signed-reg"],
+                "trust_keys": {"acme": secret},
+            },
+        )
         manifest = self._signed_manifest("signed-reg", secret)
-        with patch(
-            "kiro_crew.apps.registry.get_registry_app",
-            return_value={"name": "signed-reg", "repo": "https://example.com/SignedRepo.git",
-                          "branch": "mainline"},
-        ), patch(
-            "kiro_crew.apps.registry._fetch_app_manifest",
-            new=AsyncMock(return_value=manifest),
-        ), patch(
-            "kiro_crew.apps.registry._clone_build_app",
-            new=AsyncMock(return_value={"ok": False, "error": "stop-after-admission"}),
-        ) as mock_build:
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={
+                    "name": "signed-reg",
+                    "repo": "https://example.com/SignedRepo.git",
+                    "branch": "mainline",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value=manifest),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=AsyncMock(return_value={"ok": False, "error": "stop-after-admission"}),
+            ) as mock_build,
+        ):
             result = await install_from_registry("signed-reg")
         # Admission passed (signed manifest verified) — flow proceeded to the
         # clone/build step, which we stub to stop right after admission.
@@ -757,21 +771,33 @@ class TestRegistryInstallAdmission:
     async def test_unsigned_app_denied_under_require_signature(self, reg_home):
         from kiro_crew.apps.registry import install_from_registry
 
-        self._write_policy(reg_home, {
-            "mode": "enforce", "require_signature": True,
-            "approved": ["unsigned-reg"], "trust_keys": {"acme": "s3cr3t"},
-        })
-        with patch(
-            "kiro_crew.apps.registry.get_registry_app",
-            return_value={"name": "unsigned-reg", "repo": "https://example.com/UnsignedRepo.git",
-                          "branch": "mainline"},
-        ), patch(
-            "kiro_crew.apps.registry._fetch_app_manifest",
-            new=AsyncMock(return_value={"name": "unsigned-reg", "version": "1.0.0"}),
-        ), patch(
-            "kiro_crew.apps.registry._clone_build_app",
-            new=AsyncMock(return_value={"ok": True, "pkg_dir": reg_home}),
-        ) as mock_build:
+        self._write_policy(
+            reg_home,
+            {
+                "mode": "enforce",
+                "require_signature": True,
+                "approved": ["unsigned-reg"],
+                "trust_keys": {"acme": "s3cr3t"},
+            },
+        )
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={
+                    "name": "unsigned-reg",
+                    "repo": "https://example.com/UnsignedRepo.git",
+                    "branch": "mainline",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value={"name": "unsigned-reg", "version": "1.0.0"}),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=AsyncMock(return_value={"ok": True, "pkg_dir": reg_home}),
+            ) as mock_build,
+        ):
             result = await install_from_registry("unsigned-reg")
         # Denied at the gate — the app is never cloned/built.
         assert not result["ok"]
@@ -1068,6 +1094,7 @@ class TestRefreshRegistries:
         # A hostile external-registry entry name must never resolve outside the
         # manifest cache dir (GPT 5.6 HIGH: `../../config` -> config.json unlink).
         import kiro_crew.apps.registry as _reg  # module attr = the patched dir
+
         cache_root = _reg._manifest_cache_dir().resolve()
         for hostile in ("../../config", "../../../etc/passwd", "a/b/c", "..%2F..%2Fconfig"):
             resolved = _manifest_cache_path(hostile).resolve()
@@ -1197,9 +1224,7 @@ class TestFetchGitBlobSsrfGate:
         from kiro_crew.apps import routes
 
         # A malicious external index resolved this repo to a loopback URL.
-        monkeypatch.setattr(
-            routes, "_registry_git_url", lambda repo: "https://127.0.0.1:9/x"
-        )
+        monkeypatch.setattr(routes, "_registry_git_url", lambda repo: "https://127.0.0.1:9/x")
         # Guard: if the gate failed, this would raise instead of returning False.
 
         def _boom(*a, **k):
@@ -1231,25 +1256,31 @@ class TestInstallPathCredentialPosture:
 
         captured = {}
 
-        async def _fake_clone_build(git_url, name, log_lines, branch="main", *, index_originated=False):
+        async def _fake_clone_build(
+            git_url, name, log_lines, branch="main", *, index_originated=False, **_extra
+        ):
             captured["index_originated"] = index_originated
             return {"ok": False, "error": "stop-after-clone-dispatch"}
 
-        with patch(
-            "kiro_crew.apps.registry.get_registry_app",
-            # Entry carries the external-index provenance marker.
-            return_value={
-                "name": "acme-app",
-                "repo": "https://github.com/acme/private-sibling.git",
-                "branch": "main",
-                "_registry": "acme",
-            },
-        ), patch(
-            "kiro_crew.apps.registry._fetch_app_manifest",
-            new=AsyncMock(return_value={"name": "acme-app", "version": "1.0.0"}),
-        ), patch(
-            "kiro_crew.apps.registry._clone_build_app",
-            new=_fake_clone_build,
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                # Entry carries the external-index provenance marker.
+                return_value={
+                    "name": "acme-app",
+                    "repo": "https://github.com/acme/private-sibling.git",
+                    "branch": "main",
+                    "_registry": "acme",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value={"name": "acme-app", "version": "1.0.0"}),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=_fake_clone_build,
+            ),
         ):
             await install_from_registry("acme-app")
 
@@ -1261,24 +1292,30 @@ class TestInstallPathCredentialPosture:
 
         captured = {}
 
-        async def _fake_clone_build(git_url, name, log_lines, branch="main", *, index_originated=False):
+        async def _fake_clone_build(
+            git_url, name, log_lines, branch="main", *, index_originated=False, **_extra
+        ):
             captured["index_originated"] = index_originated
             return {"ok": False, "error": "stop-after-clone-dispatch"}
 
-        with patch(
-            "kiro_crew.apps.registry.get_registry_app",
-            # Bundled/curated entry — no ``_registry`` marker.
-            return_value={
-                "name": "bundled-app",
-                "repo": "https://github.com/kirodotdev/bundled-app.git",
-                "branch": "main",
-            },
-        ), patch(
-            "kiro_crew.apps.registry._fetch_app_manifest",
-            new=AsyncMock(return_value={"name": "bundled-app", "version": "1.0.0"}),
-        ), patch(
-            "kiro_crew.apps.registry._clone_build_app",
-            new=_fake_clone_build,
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                # Bundled/curated entry — no ``_registry`` marker.
+                return_value={
+                    "name": "bundled-app",
+                    "repo": "https://github.com/kirodotdev/bundled-app.git",
+                    "branch": "main",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value={"name": "bundled-app", "version": "1.0.0"}),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=_fake_clone_build,
+            ),
         ):
             await install_from_registry("bundled-app")
 
@@ -1307,12 +1344,10 @@ class TestInstallPathCredentialPosture:
             return _FakeProc()
 
         dest = tmp_path / "clone-dest"  # does not exist → fresh-clone path
-        with patch(
-            "kiro_crew.apps.registry.is_clone_host_trusted", return_value=True
-        ), patch(
-            "kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv
-        ), patch.object(
-            _asyncio, "create_subprocess_exec", new=_fake_exec
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch.object(_asyncio, "create_subprocess_exec", new=_fake_exec),
         ):
             err = await reg._git_clone_or_pull(
                 "https://github.com/acme/private-sibling.git",
@@ -1358,12 +1393,10 @@ class TestInstallPathCredentialPosture:
 
         url = "https://github.com/kirodotdev/bundled-app.git"
         dest = tmp_path / "clone-dest"
-        with patch(
-            "kiro_crew.apps.registry.is_clone_host_trusted", return_value=True
-        ), patch(
-            "kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv
-        ), patch.object(
-            _asyncio, "create_subprocess_exec", new=_fake_exec
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=_fake_wrap_argv),
+            patch.object(_asyncio, "create_subprocess_exec", new=_fake_exec),
         ):
             err = await reg._git_clone_or_pull(url, "main", dest, [], index_originated=False)
 
@@ -1484,21 +1517,25 @@ class TestRegistrySubdirTraversalGate:
         (outside / "app.json").write_text('{"name": "evil"}', encoding="utf-8")
         os.symlink(outside, pkg_dir / "sub")
 
-        with patch(
-            "kiro_crew.apps.registry.get_registry_app",
-            return_value={
-                "name": "evil-app",
-                "repo": "https://github.com/acme/apps.git",
-                "branch": "main",
-                "subdirectory": "sub",
-                "_registry": "acme",
-            },
-        ), patch(
-            "kiro_crew.apps.registry._fetch_app_manifest",
-            new=AsyncMock(return_value={"name": "evil-app", "version": "1.0.0"}),
-        ), patch(
-            "kiro_crew.apps.registry._clone_build_app",
-            new=AsyncMock(return_value={"ok": True, "pkg_dir": pkg_dir}),
+        with (
+            patch(
+                "kiro_crew.apps.registry.get_registry_app",
+                return_value={
+                    "name": "evil-app",
+                    "repo": "https://github.com/acme/apps.git",
+                    "branch": "main",
+                    "subdirectory": "sub",
+                    "_registry": "acme",
+                },
+            ),
+            patch(
+                "kiro_crew.apps.registry._fetch_app_manifest",
+                new=AsyncMock(return_value={"name": "evil-app", "version": "1.0.0"}),
+            ),
+            patch(
+                "kiro_crew.apps.registry._clone_build_app",
+                new=AsyncMock(return_value={"ok": True, "pkg_dir": pkg_dir}),
+            ),
         ):
             result = await install_from_registry("evil-app")
 
