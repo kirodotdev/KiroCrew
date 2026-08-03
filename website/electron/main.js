@@ -51,6 +51,7 @@ const {
   createPermissionCheckHandler,
 } = require("./permission-handler");
 const { createWindowOpenHandler } = require("./external-scheme");
+const { resolveThemeSource } = require("./native-theme");
 const { initAutoUpdate } = require("./auto-update");
 const {
   classifyBundleLocation,
@@ -768,12 +769,38 @@ async function getModalCSS() {
 
 // ── Window ──
 
+// Mirror the dashboard's dark/light MODE PREFERENCE onto Chromium's native
+// theme, so native chrome (tab bar, context menus, DevTools, macOS window
+// frame) matches the dashboard.
+//
+// Reads `data-mode-pref` (the preference), NOT `data-mode` (the resolved
+// mode). `themeSource = 'dark' | 'light'` does not only restyle native chrome:
+// it also OVERRIDES `prefers-color-scheme` in every renderer, which is the
+// media query the dashboard's Auto mode resolves through. Feeding the resolved
+// mode back in therefore pinned that query to whatever Auto happened to
+// resolve at first load, and OS appearance changes stopped propagating — Auto
+// froze. Electron's own docs prescribe exactly this mapping:
+//   Follow OS -> 'system', Dark -> 'dark', Light -> 'light'.
+//
+// `data-mode-pref` is absent on a dashboard build older than the field, so an
+// unrecognised value falls back to the resolved mode: the pre-fix behaviour for
+// explicit dark/light (correct), and no worse than before for Auto.
 function syncNativeTheme(view, win) {
   if (win.isDestroyed()) return;
   view.webContents.executeJavaScript(
-    `document.documentElement.dataset.mode || ""`
-  ).then(mode => {
-    if (mode === "dark" || mode === "light") nativeTheme.themeSource = mode;
+    `JSON.stringify({` +
+      `pref: document.documentElement.dataset.modePref || "",` +
+      `mode: document.documentElement.dataset.mode || ""` +
+    `})`
+  ).then(raw => {
+    let pref = "";
+    let mode = "";
+    try {
+      const parsed = JSON.parse(raw);
+      pref = parsed.pref || "";
+      mode = parsed.mode || "";
+    } catch { return; }
+    nativeTheme.themeSource = resolveThemeSource(pref, mode);
   }).catch(() => {});
 }
 
@@ -1966,6 +1993,17 @@ app.whenReady().then(async () => {
   ipcMain.on("theme-accent-changed", (_event, hex) => {
     if (typeof hex === "string" && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex)) {
       store.set("themeAccent", hex);
+    }
+  });
+
+  // The renderer reports its dark/light mode PREFERENCE whenever it changes (see
+  // useTheme.tsx). Pushed rather than only pulled on window focus so that
+  // switching back to Auto un-pins `prefers-color-scheme` right away — while it
+  // stays pinned, Auto cannot see the OS appearance at all. Unrecognised values
+  // are ignored; the focus/load pull remains the fallback.
+  ipcMain.on("theme-mode-changed", (_event, pref) => {
+    if (pref === "system" || pref === "dark" || pref === "light") {
+      nativeTheme.themeSource = resolveThemeSource(pref, "");
     }
   });
 

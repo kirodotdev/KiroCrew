@@ -144,7 +144,7 @@ function resolveMode(pref: ModePreference): ResolvedMode {
   return pref === 'system' ? getSystemMode() : pref
 }
 
-function applyTheme(colorTheme: ColorTheme, mode: ResolvedMode) {
+function applyTheme(colorTheme: ColorTheme, mode: ResolvedMode, pref: ModePreference) {
   const el = document.documentElement
   if (colorTheme.startsWith('custom-')) {
     el.dataset.theme = `${colorTheme}-${mode}`
@@ -152,6 +152,13 @@ function applyTheme(colorTheme: ColorTheme, mode: ResolvedMode) {
     el.dataset.theme = colorTheme === 'emerald' ? mode : `${colorTheme}-${mode}`
   }
   el.dataset.mode = mode
+  // The PREFERENCE, exposed separately from the resolved mode because the two
+  // mean different things to the Electron shell. `data-mode` is what to paint;
+  // `data-mode-pref` is whether the user asked to follow the OS. main.js maps
+  // this onto `nativeTheme.themeSource`, which must stay `system` under Auto —
+  // pinning it to dark/light also pins `prefers-color-scheme` in every renderer,
+  // which is the media query Auto resolves through. See syncNativeTheme.
+  el.dataset.modePref = pref
 }
 
 // Allowlist of allowed CSS custom property names for themes.
@@ -937,9 +944,21 @@ function useThemeState(): ThemeContextValue {
   }, [bootData, themeBootFetched])
 
   useEffect(() => {
-    applyTheme(colorTheme, resolved)
+    applyTheme(colorTheme, resolved, mode)
     bumpThemeVersion()
-  }, [resolved, colorTheme, bumpThemeVersion])
+  }, [resolved, colorTheme, mode, bumpThemeVersion])
+
+  // Tell the Electron shell which mode PREFERENCE is active, so it can set
+  // `nativeTheme.themeSource` to match ('system' under Auto). Pushed on change
+  // rather than only pulled on window focus so switching Dark → Auto un-pins
+  // `prefers-color-scheme` immediately; Chromium then fires a change event on
+  // the media query below if the effective value moved. No-op in a browser.
+  useEffect(() => {
+    const bridge = (window as unknown as {
+      electronAPI?: { setThemeMode?: (pref: string) => void }
+    }).electronAPI
+    bridge?.setThemeMode?.(mode)
+  }, [mode])
 
   // Report the resolved accent to the Electron shell (if present) so the NEXT
   // launch's boot splash (loading.html) paints in the user's chosen colour.

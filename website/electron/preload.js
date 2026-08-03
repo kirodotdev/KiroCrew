@@ -23,6 +23,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // boot splash (loading.html) can paint in the user's chosen colour. Read back
   // by main.js and injected as a query param — see showLoadingThenConnect.
   setThemeAccent: (hex) => ipcRenderer.send("theme-accent-changed", String(hex || "")),
+  // Report the user's dark/light mode PREFERENCE ("system" | "dark" | "light")
+  // so main.js can set `nativeTheme.themeSource` to match. Must be the
+  // preference, not the resolved mode: pinning themeSource to dark/light also
+  // pins `prefers-color-scheme`, which is what Auto resolves through.
+  setThemeMode: (pref) => ipcRenderer.send("theme-mode-changed", String(pref || "")),
   // Dev mode IPC: renderer signals main process to show/hide DevTools menu item.
   setDevMode: (enabled) => ipcRenderer.send("dev-mode-changed", !!enabled),
   // App-menu navigation: main.js sends an in-app path ("/settings",
