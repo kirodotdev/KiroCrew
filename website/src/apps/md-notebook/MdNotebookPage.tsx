@@ -19,12 +19,15 @@ import {
   Plus,
   RefreshCw,
 } from 'lucide-react'
+import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
 import {
   ACCENT,
+  AUTO_COMMIT_MINS,
   CHANGES_POLL_MS,
   COLUMN_MAX_WIDTH,
   COLUMN_PAD_X,
+  DEFAULT_AUTO_COMMIT,
   DEFAULT_AUTO_SYNC_MINS,
   DEFAULT_SORT,
   DEFAULT_SYNC_SHORTCUT,
@@ -38,6 +41,7 @@ import {
   PANEL_MIN_WIDTH,
   SAVE_DEBOUNCE_MS,
   SORTS,
+  pinnedKey,
 } from './constants'
 import { MDNB_CSS } from './styles'
 import { listViewLabel, paneViewLabel, sortLabel, syncedAgoLabel } from './labels'
@@ -45,19 +49,23 @@ import { notesApi } from './api'
 import { InlineTitle } from './BlockEditor'
 import { Preview } from './Preview'
 import { ConnectVault } from './ConnectVault'
+import { ConfirmDialog } from './ConfirmDialog'
+import { InlineLink } from './bits'
 import { SettingsBar, SettingsPage } from './SettingsPage'
 import Clickable from '../../components/Clickable'
-import { NoteRow, renderTree } from './NoteRow'
+import { NoteRow, flattenVisibleNotes, orderNotes, renderTree } from './NoteRow'
 import {
   FM_RE,
   agoBucket,
   buildTree,
   loadPref,
   matchesShortcut,
+  neighborAfterDelete,
   savePref,
   shiftListItem,
+  targetsSameNote,
 } from './utils'
-import type { Backlink, EditRange, Note, SearchHit, Shortcut, Vault } from './types'
+import type { Backlink, EditRange, Note, NoteActions, SearchHit, Shortcut, Vault } from './types'
 
 /** Backend capabilities this UI bundle needs. */
 const REQUIRED_FEATURES = [
@@ -69,6 +77,14 @@ const REQUIRED_FEATURES = [
   'pat',
   'newNote',
   'move',
+  'duplicate',
+  'localOnly',
+  'autoCommit',
+  // The delete flow depends on both: the note is MOVED to `.trash` rather than
+  // unlinked, and the confirmation's inline link reveals that folder. Without
+  // them the row offers no delete button at all (see `canTrash`).
+  'trash',
+  'trashOpen',
   'knowledge',
   'pickFolder',
 ]
@@ -106,6 +122,22 @@ export default function MdNotebookPage() {
   const [fileConflict, setFileConflict] = useState<{ mtime: number; disk: string } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [auth, setAuth] = useState({ hasPat: false, hasGhAuth: false })
+  // Pinned note paths for the ACTIVE vault, and the row (if any) being renamed
+  // inline from its hover action bar.
+  const [pinned, setPinned] = useState<Set<string>>(new Set())
+  const [renamingPath, setRenamingPath] = useState<string | null>(null)
+  // The note awaiting delete confirmation, and the one whose DELETE is in flight.
+  const [confirmDelete, setConfirmDelete] = useState<{ path: string; title: string } | null>(null)
+  // Identified by VAULT + PATH, never a bare path. A path here is vault-RELATIVE,
+  // so a note at the same path in another vault would match a bare one: while a
+  // delete was in flight in vault A, vault B's `One.md` would render dimmed with
+  // a `deleting` badge and refuse to open, and the edit guard below would swallow
+  // its keystrokes — in a vault this delete never touched.
+  const [deleting, setDeleting] = useState<{ vault: string | null; path: string } | null>(null)
+  // Mirror of `deleting` for the edit guard below. React state is async, so
+  // a keystroke landing in the same tick as the confirmation would still see the
+  // old value; a ref is what the guard can trust.
+  const deletingRef = useRef<{ vault: string | null; path: string } | null>(null)
 
   const [mode, setMode] = useState<'rendered' | 'raw'>(() =>
     loadPref<'rendered' | 'raw'>(LS.view, 'rendered'),
@@ -129,6 +161,9 @@ export default function MdNotebookPage() {
   const [autoSyncMins, setAutoSyncMins] = useState(() =>
     loadPref<number>(LS.autoSyncMins, DEFAULT_AUTO_SYNC_MINS),
   )
+  const [autoCommit, setAutoCommit] = useState(() =>
+    loadPref<boolean>(LS.autoCommit, DEFAULT_AUTO_COMMIT),
+  )
   const [syncShortcut, setSyncShortcut] = useState<Shortcut>(() =>
     loadPref<Shortcut>(LS.syncShortcut, DEFAULT_SYNC_SHORTCUT),
   )
@@ -149,6 +184,31 @@ export default function MdNotebookPage() {
     setSyncShortcut(sc)
     savePref(LS.syncShortcut, sc)
   }, [])
+  const setAutoCommitPref = useCallback((on: boolean) => {
+    setAutoCommit(on)
+    savePref(LS.autoCommit, on)
+  }, [])
+  // Feedback for the trash link in the delete dialog. Nothing is shown on
+  // success — the file manager coming to the front IS the result.
+  const [trashMsg, setTrashMsg] = useState<string | null>(null)
+  const openTrash = useCallback(async () => {
+    setTrashMsg(null)
+    try {
+      const r = await notesApi.openTrash(vaultRef.current)
+      // No folder yet: nothing has ever been deleted from this vault. Say so
+      // rather than creating an empty folder just to have something to open.
+      if (r.empty) setTrashMsg(i18nT('apps.mdNotebook.trash.empty'))
+    } catch (e) {
+      const code = (e as { body?: { code?: string } }).body?.code
+      setTrashMsg(
+        code === 'folder_open_unsupported'
+          ? i18nT('apps.mdNotebook.trash.unsupported')
+          : i18nT('apps.mdNotebook.trash.failed', {
+              message: e instanceof Error ? e.message : String(e),
+            }),
+      )
+    }
+  }, [])
   const [lastSync, setLastSync] = useState<number | null>(null)
 
   const saveTimer = useRef<number | null>(null)
@@ -162,6 +222,18 @@ export default function MdNotebookPage() {
   // overwrite the editor after a later open (note B), which would discard B's
   // unsaved edit. Only the latest request may apply its result.
   const openSeqRef = useRef(0)
+  /**
+   * True while the note that is OPEN RIGHT NOW has a DELETE in flight.
+   *
+   * Both halves of the identity are compared, because `deletingRef` holds a
+   * vault-relative path: matching on path alone would report `true` for a
+   * same-named note in a different vault and make the callers below drop that
+   * note's edits.
+   */
+  const openNoteIsDeleting = useCallback(
+    () => targetsSameNote(deletingRef.current, vaultRef.current, pathRef.current),
+    [],
+  )
   useEffect(() => {
     dirtyRef.current = dirty
   }, [dirty])
@@ -202,6 +274,10 @@ export default function MdNotebookPage() {
     const missing = REQUIRED_FEATURES.filter(f => !(health.features ?? []).includes(f))
     return missing.length ? missing : null
   }, [health])
+  // POSITIVE confirmation, not "not yet known": while health is still loading
+  // this is false, so a delete cannot be offered before the backend has said it
+  // trashes rather than unlinks.
+  const canTrash = (health?.features ?? []).includes('trash')
 
   const loadVaults = useCallback(async () => {
     try {
@@ -243,6 +319,15 @@ export default function MdNotebookPage() {
       saveTimer.current = null
     }
     if (!pathRef.current || !dirtyRef.current) return
+    // The note this flush is persisting, as a VAULT + PATH pair. A save can still
+    // be in flight when the user deletes that note from the row action bar, and
+    // the conflict handler below must be able to tell "the open note changed on
+    // disk" from "the note I was saving is gone because I just deleted it".
+    // The vault half is not optional: a path here is vault-RELATIVE, so on a
+    // switch to another vault holding the same name a path-only comparison passes
+    // and the banner offers "Use the file on disk" against the NEW vault's buffer.
+    const savingPath = pathRef.current
+    const saving = { vault: vaultRef.current, path: savingPath }
     try {
       // Save until what landed matches what the editor holds. `contentRef` can
       // move while the request is in flight, and the debounce timer was
@@ -251,10 +336,15 @@ export default function MdNotebookPage() {
       // typist cannot spin here; whatever is left stays dirty for the next
       // debounce to pick up.
       for (let attempt = 0; attempt < 3; attempt++) {
+        // The CONTENT is re-read live each attempt — that is the point of the
+        // loop. The TARGET is the captured pair, never the live refs: a vault
+        // switch or a rename during the round trip would otherwise redirect
+        // attempt 2 at whatever is open by then, writing this note's text
+        // somewhere the user never asked for.
         const sent = contentRef.current
         const res = await notesApi.saveNote(
-          vaultRef.current,
-          pathRef.current,
+          saving.vault,
+          saving.path,
           sent,
           mtimeRef.current ?? undefined,
         )
@@ -264,12 +354,21 @@ export default function MdNotebookPage() {
           dirtyRef.current = false
           break
         }
+        // The buffer moved on. Only keep retrying while it is still THIS note in
+        // THIS vault; otherwise the dirty flag being cleared below would belong to
+        // a different buffer entirely.
+        if (!targetsSameNote(saving, vaultRef.current, pathRef.current)) return
       }
     } catch (e) {
       const body = (e as { body?: { code?: string; mtime?: number; disk?: string } }).body
       if (body?.code === 'ESTALE') {
         // The note changed on disk since it was opened. Surface both versions
-        // rather than clobbering either.
+        // rather than clobbering either — but ONLY while that note is still
+        // open. Deleting a note mid-flush also lands here (the backend refuses
+        // to resurrect it and returns the recreate sentinel), and showing the
+        // banner then would offer "Keep my version" for a note the user just
+        // deleted — accepting it would put the file back.
+        if (!targetsSameNote(saving, vaultRef.current, pathRef.current)) return
         setFileConflict({ mtime: body.mtime ?? 0, disk: body.disk ?? '' })
       } else {
         setError(e instanceof Error ? e.message : String(e))
@@ -303,6 +402,20 @@ export default function MdNotebookPage() {
       // note/vault and the next save would write it there — discarding the
       // newer note's unsaved edit. Only the latest open may apply.
       if (vaultRef.current !== requested || openSeqRef.current !== seq) return
+      // The buffer went dirty WHILE this read was in flight — the user typed, or
+      // a flush-then-mutate handler (sync, autosave) is mid-write. Applying disk
+      // content now would overwrite those keystrokes, and a retrying `flushSave`
+      // would then persist the disk text it just read. Sequence alone cannot see
+      // this: no later open happened, so the read is still "current".
+      //
+      // Unconditional on purpose — NOT `&& pathRef.current === path`. The common
+      // shape is cross-note: click B, then type before B's read lands. Those
+      // keystrokes go to A (the pane still shows it, and `pathRef` is repointed
+      // only below), so a path comparison is FALSE exactly when the loss is real,
+      // and A's text would be replaced by B's with its save timer left a no-op.
+      // Refusing means the click does not take effect and the user clicks again —
+      // the same trade the identical guard above the read already makes.
+      if (dirtyRef.current) return
       pathRef.current = path
       setActivePath(path)
       savePref(LS.openNote, path)
@@ -326,6 +439,10 @@ export default function MdNotebookPage() {
     if (!activeVaultId) return
     savePref(LS.activeVault, activeVaultId)
     setLastSync(loadPref<number | null>(`mdnb-last-sync-${activeVaultId}`, null))
+    // Pins are per-vault, so they are re-read here rather than carried over —
+    // a path pinned in one vault means nothing in another.
+    setPinned(new Set(loadPref<string[]>(pinnedKey(activeVaultId), [])))
+    setRenamingPath(null)
     void loadNotes()
   }, [activeVaultId, loadNotes])
 
@@ -341,6 +458,14 @@ export default function MdNotebookPage() {
   /** Edit the note body, debouncing the save. */
   const edit = useCallback(
     (next: string) => {
+      // Refuse edits to a note whose delete is already in flight. The editor
+      // stays mounted for the round trip (the row, not the pane, shows the
+      // pending state), so on a slow vault a keystroke can land after the
+      // confirmation — and the completion handler then cancels the save and
+      // clears the buffer, so the text would exist nowhere: not on disk, not in
+      // `.trash`. Dropping the keystroke is the coherent outcome; the note is on
+      // its way out, and the alternative is a pending save that recreates it.
+      if (openNoteIsDeleting()) return
       setContent(next)
       contentRef.current = next
       setDirty(true)
@@ -350,7 +475,7 @@ export default function MdNotebookPage() {
         void flushSave().then(() => loadNotes())
       }, SAVE_DEBOUNCE_MS)
     },
-    [flushSave, loadNotes],
+    [flushSave, loadNotes, openNoteIsDeleting],
   )
 
   // Mark the note dirty WITHOUT committing content — fired on the first
@@ -358,9 +483,12 @@ export default function MdNotebookPage() {
   // dirtyRef so a capture-phase sync shortcut bails out (it reloads only when
   // clean) instead of reloading the note and discarding the in-progress edit.
   const markDirty = useCallback(() => {
+    // Same guard as `edit`: a block editor's first keystroke must not mark a
+    // note dirty while its delete is in flight.
+    if (openNoteIsDeleting()) return
     setDirty(true)
     dirtyRef.current = true
-  }, [])
+  }, [openNoteIsDeleting])
 
   // ---- block editing ----------------------------------------------------
   // Preview strips frontmatter, so its line indices are body-relative; the
@@ -443,6 +571,10 @@ export default function MdNotebookPage() {
     async (id: string) => {
       setVaultSelOpen(false)
       if (id === vaultRef.current) return
+      // Invalidate any in-flight note read before flushing — see `removeNote`
+      // for why: a read resolving mid-flush repoints `contentRef` at disk content
+      // and the retry loop then persists THAT, dropping the pending edit.
+      openSeqRef.current += 1
       if (dirtyRef.current) await flushSave()
       // Still dirty means the write failed — typically a stale-write conflict
       // waiting on the user to pick a version. Switching clears the editor, so
@@ -450,6 +582,12 @@ export default function MdNotebookPage() {
       if (dirtyRef.current) return
       vaultRef.current = id
       setActiveVaultId(id)
+      // Drop the row state keyed by a vault-RELATIVE path. Carried across a
+      // switch, an open confirmation or an inline rename input would re-target a
+      // same-named note in the NEW vault, and confirming would act on a note the
+      // user never chose.
+      setConfirmDelete(null)
+      setRenamingPath(null)
       setActivePath(null)
       pathRef.current = null
       setContent('')
@@ -470,18 +608,82 @@ export default function MdNotebookPage() {
     }
   }, [loadNotes, openNote])
 
+  /**
+   * Persist a new pinned set for the ACTIVE vault. Pins are per-vault and local
+   * to this machine — see `pinnedKey` for why they are not written into the note.
+   */
+  const writePinned = useCallback((next: Set<string>) => {
+    setPinned(next)
+    if (vaultRef.current) savePref(pinnedKey(vaultRef.current), [...next])
+  }, [])
+
+  const isPinned = useCallback((path: string) => pinned.has(path), [pinned])
+
+  const tree = useMemo(() => buildTree(notes), [notes])
+
+  /**
+   * The note paths in the order the panel is rendering them right now. Declared
+   * here (above the actions that consume it) because "the next note down" is a
+   * property of the VIEW, not of the note list: the three modes order
+   * differently, and a collapsed folder's notes are off screen entirely.
+   */
+  const visibleNotePaths = useMemo(() => {
+    if (query.trim()) return results.map(r => r.path)
+    if (view === 'list') return orderNotes(notes, SORTS[sortKey].cmp, isPinned).map(n => n.path)
+    return flattenVisibleNotes(tree, SORTS[sortKey].cmp, isPinned, collapsed)
+  }, [query, results, view, notes, sortKey, isPinned, tree, collapsed])
+
+  const togglePin = useCallback(
+    (path: string) => {
+      const next = new Set(pinned)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      writePinned(next)
+    },
+    [pinned, writePinned],
+  )
+
+  /** Follow a pin across a move/rename, or drop it when the note is deleted. */
+  const repointPin = useCallback(
+    (vault: string | null, from: string, to: string | null) => {
+      // The vault is an ARGUMENT, not a read of `vaultRef`: this runs after an
+      // await, and the pin list is stored per vault. Reading the ref here would
+      // write vault A's pin change into vault B's key after a switch — or
+      // rewrite B's own pin at the same relative path. Read-modify-write goes
+      // through storage rather than `prev`, because the in-memory `pinned` set
+      // belongs to whichever vault is active now, which may not be this one.
+      if (!vault) return
+      const key = pinnedKey(vault)
+      const stored = new Set(loadPref<string[]>(key, []))
+      if (!stored.has(from)) return
+      stored.delete(from)
+      if (to) stored.add(to)
+      savePref(key, [...stored])
+      // Only touch React state while this vault is still the one on screen.
+      if (vaultRef.current === vault) setPinned(new Set(stored))
+    },
+    [],
+  )
+
   const relocate = useCallback(
     async (from: string, to: string) => {
       if (!to || to === from) return
+      // Captured before any await: every completion step below is scoped to the
+      // vault that owned the note, since both the request and the pin list are.
+      const vault = vaultRef.current
       try {
         // Flush edits at the OLD path first, then retarget — otherwise a stray
         // autosave would recreate the file we just moved away from.
+        // Same in-flight-read invalidation as `removeNote` before the flush.
+        openSeqRef.current += 1
         if (pathRef.current === from && dirtyRef.current) await flushSave()
         // A failed flush leaves the editor dirty against the OLD path. Renaming
         // now would retarget it to `to` without ever reconciling that content,
         // so a later save could overwrite the moved file from a stale base.
         if (pathRef.current === from && dirtyRef.current) return
-        await notesApi.moveNote(vaultRef.current, from, to)
+        await notesApi.moveNote(vault, from, to)
+        repointPin(vault, from, to)
+        if (vaultRef.current !== vault) return
         if (pathRef.current === from) {
           pathRef.current = to
           setActivePath(to)
@@ -493,7 +695,7 @@ export default function MdNotebookPage() {
         setError(e instanceof Error ? e.message : String(e))
       }
     },
-    [flushSave, loadNotes, openNote],
+    [flushSave, loadNotes, openNote, repointPin],
   )
 
   /** File a note into `folder` ('' = vault root), keeping its filename. */
@@ -521,11 +723,127 @@ export default function MdNotebookPage() {
     [relocate],
   )
 
+  /** Copy a note beside itself and open the copy. */
+  const duplicateNote = useCallback(
+    async (path: string) => {
+      const vault = vaultRef.current
+      try {
+        // Persist a pending edit first: the backend copies what is ON DISK, so
+        // duplicating mid-debounce would silently drop what was just typed.
+        if (pathRef.current === path && dirtyRef.current) {
+          // Same in-flight-read invalidation as `removeNote` before the flush.
+          openSeqRef.current += 1
+          await flushSave()
+          if (dirtyRef.current) return
+        }
+        const { path: copy } = await notesApi.duplicateNote(vault, path)
+        // A vault switch while the copy was in flight would make the reload and
+        // the open below act on the WRONG vault — `copy` is a vault-relative
+        // path, so opening it elsewhere reads a different note or 404s.
+        if (vaultRef.current !== vault) return
+        await loadNotes()
+        await openNote(copy)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    },
+    [flushSave, loadNotes, openNote],
+  )
+
+  /** Delete a note. The confirmation dialog is the caller's gate, not this. */
+  const removeNote = useCallback(
+    async (path: string) => {
+      const vault = vaultRef.current
+      // ONE delete at a time, ACROSS vaults. `deletingRef` holds a single entry,
+      // so starting a second delete while the first is in flight reassigns it —
+      // which silently re-opens the edit guard below for the FIRST note, and that
+      // note's completion then clears the editor and cancels the save, discarding
+      // whatever was typed in the gap. That is true of a delete in another vault
+      // too, so the refusal stays global even though the identity below is
+      // vault-scoped. Refused, not queued: the row's `deleting` badge shows why.
+      if (deletingRef.current !== null) return
+      // Invalidate any in-flight note read FIRST, before the flush below — not
+      // just before the DELETE. `openNote` claims its sequence and then awaits;
+      // a read that resolves during the flush would still be current and would
+      // repoint `contentRef`/`mtimeRef` at disk content mid-write. `flushSave`
+      // retries while `contentRef` keeps moving, so it would then persist the
+      // DISK text and clear the dirty flag — dropping the very pending edit this
+      // flush exists to save. Bumping here costs nothing: a superseded read has
+      // no result worth applying either way.
+      openSeqRef.current += 1
+      // Persist a pending edit BEFORE the note is trashed. The save is debounced
+      // by SAVE_DEBOUNCE_MS, so typing and then confirming the dialog inside that
+      // window would trash the STALE file on disk and then clear the buffer — the
+      // last edit would exist nowhere, not even in `.trash`, which is what makes
+      // a delete recoverable in the first place.
+      if (pathRef.current === path && dirtyRef.current) {
+        await flushSave()
+        // Still dirty means the write was refused — an ESTALE conflict awaiting
+        // the user's decision. Deleting now would trash the disk version and drop
+        // their unreconciled text with it, so leave the note (and the banner) be.
+        if (dirtyRef.current) {
+          return
+        }
+      }
+      // Where to land afterwards, resolved from the order on screen BEFORE the
+      // row disappears — the next note down, else the one above.
+      const wasOpen = pathRef.current === path
+      const next = wasOpen ? neighborAfterDelete(visibleNotePaths, path) : null
+      setDeleting({ vault, path })
+      deletingRef.current = { vault, path }
+      try {
+        await notesApi.deleteNote(vault, path)
+        // Scope every mutation below to the vault that owned the note. The user
+        // can switch vaults while the DELETE is in flight, and `pathRef` holds a
+        // VAULT-RELATIVE path — a note at the same path in the new vault would
+        // match, so this would cancel that note's pending save and clear its
+        // editor, discarding an edit in a vault this delete never touched. The
+        // pin write is scoped for the same reason.
+        if (vaultRef.current !== vault) return
+        if (pathRef.current === path) {
+          // Cancel the debounced save BEFORE clearing the editor: a pending
+          // flush would otherwise write the note straight back to disk and
+          // resurrect the file that was just deleted.
+          if (saveTimer.current) {
+            window.clearTimeout(saveTimer.current)
+            saveTimer.current = null
+          }
+          setDirty(false)
+          dirtyRef.current = false
+          pathRef.current = null
+          setActivePath(null)
+          setContent('')
+          contentRef.current = ''
+          setBacklinks([])
+          setEditBlock(null)
+          setFileConflict(null)
+          savePref(LS.openNote, null)
+        }
+        repointPin(vault, path, null)
+        await loadNotes()
+        // Open the neighbour only after the listing refreshed, so the note being
+        // opened is one the panel still knows about.
+        if (next && vaultRef.current === vault) await openNote(next)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        // Clear unconditionally: on failure the row must become interactive
+        // again, and on success it is gone from the list anyway.
+        setDeleting(prev => (prev?.vault === vault && prev.path === path ? null : prev))
+        const d = deletingRef.current
+        if (d?.vault === vault && d.path === path) deletingRef.current = null
+      }
+    },
+    [flushSave, loadNotes, openNote, repointPin, visibleNotePaths],
+  )
+
   const forgetVault = useCallback(
     async (id: string) => {
       // Forgetting the ACTIVE vault clears the editor below, so persist first —
       // and stop if the save could not land, exactly as switching does.
       if (id === vaultRef.current && dirtyRef.current) {
+        // Same in-flight-read invalidation as `removeNote` before the flush.
+        openSeqRef.current += 1
         await flushSave()
         if (dirtyRef.current) return
       }
@@ -626,6 +944,50 @@ export default function MdNotebookPage() {
     return () => window.clearInterval(id)
   }, [autoSync, autoSyncMins, activeVaultId])
 
+  // Periodic autosave: commit pending edits to LOCAL git history, never push.
+  // Separate from auto sync on purpose — a commit stays on this machine, so it is
+  // safe to do unasked and defaults ON, while pushing to a remote remains an
+  // explicit choice. The note file itself is already written to disk by the
+  // editor's 1s debounce; this is what gives the user version history without
+  // pressing anything.
+  const runAutoCommit = useCallback(async () => {
+    if (!vaultRef.current) return
+    // A block editor holds its draft in local state until commit/blur, and the
+    // reload below would unmount it and lose the typed text. Skip this cycle.
+    if (editBlock) return
+    const vault = vaultRef.current
+    try {
+      if (dirtyRef.current) await flushSave()
+      // A failed save (an ESTALE conflict awaiting the user's decision) leaves
+      // `dirty` set. Committing now would record the on-disk version while the
+      // user's unreconciled edit sits in the editor.
+      if (dirtyRef.current) return
+      const { result } = await notesApi.commit(vault)
+      // Only touch the listing when something was actually committed — the
+      // pending badges are what change. A quiet tick must stay invisible.
+      if (result.committed.length && vaultRef.current === vault) await loadNotes()
+    } catch {
+      // Deliberately silent: an autosave the user did not ask for must not throw
+      // a banner over their writing. A real problem surfaces the moment they
+      // press the button themselves, which reports errors normally.
+    }
+  }, [editBlock, flushSave, loadNotes])
+
+  const runAutoCommitRef = useRef(runAutoCommit)
+  useEffect(() => {
+    runAutoCommitRef.current = runAutoCommit
+  }, [runAutoCommit])
+  useEffect(() => {
+    if (!autoCommit || !activeVaultId) return
+    // Read-only vaults refuse writes server-side; do not poke them every cycle.
+    if (vaults?.find(v => v.id === activeVaultId)?.readOnly) return
+    const id = window.setInterval(
+      () => void runAutoCommitRef.current(),
+      AUTO_COMMIT_MINS * 60_000,
+    )
+    return () => window.clearInterval(id)
+  }, [autoCommit, activeVaultId, vaults])
+
   // External-change poll: refresh the listing, and the open note if it moved.
   useEffect(() => {
     if (!activeVaultId) return
@@ -679,7 +1041,41 @@ export default function MdNotebookPage() {
     }
   }, [query, activeVaultId])
 
-  const tree = useMemo(() => buildTree(notes), [notes])
+  /** Row-level affordances, bundled so the tree renderer takes one prop. */
+  const noteActions = useMemo<NoteActions>(
+    () => ({
+      isPinned,
+      onTogglePin: togglePin,
+      onDuplicate: p => void duplicateNote(p),
+      // Offered ONLY when the backend confirms it moves notes to `.trash`. An
+      // older bundle's DELETE unlinks the file, and the confirmation this opens
+      // promises the note is restorable from `.trash` — so without the capability
+      // the honest UI has no delete button at all, and the stale-backend banner
+      // names `trash` as the reason.
+      onDelete: canTrash ? (p, t) => setConfirmDelete({ path: p, title: t }) : undefined,
+      onMove: moveNote,
+      renamingPath,
+      // Scoped to the vault on screen: `deleting.path` is vault-relative, so
+      // handing it over unscoped would dim a same-named row in another vault and
+      // refuse to open it while an unrelated delete was in flight.
+      deletingPath: deleting?.vault === activeVaultId ? deleting.path : null,
+      onRenameStart: setRenamingPath,
+      onRenameEnd: () => setRenamingPath(null),
+      onRename: renameNote,
+    }),
+    [
+      isPinned,
+      togglePin,
+      duplicateNote,
+      moveNote,
+      renamingPath,
+      deleting,
+      activeVaultId,
+      renameNote,
+      canTrash,
+    ],
+  )
+
   const toggle = useCallback(
     (name: string) =>
       setCollapsed(prev => {
@@ -754,12 +1150,22 @@ export default function MdNotebookPage() {
   }
 
   const activeVault = vaults.find(v => v.id === activeVaultId) ?? vaults[0]
+  // `pending` means "differs from the last commit", which is only actionable when
+  // there is a remote the note has not reached yet. On a local-only vault it has
+  // no destination, clears itself on the next autosave, and reads as "not saved"
+  // — so the row shows nothing.
+  const showSyncBadge = !activeVault?.localOnly
   const ago = lastSync ? agoBucket(lastSync) : null
+  // A local-only vault has no remote, so the button commits to local git history
+  // and nothing else — label it for what it does, and drop the "Synced N ago"
+  // reading, which would claim a backup that never happened.
   const syncLabel = syncing
     ? i18nT('apps.mdNotebook.sync.syncing')
-    : ago === null
-      ? i18nT('apps.mdNotebook.sync.action')
-      : syncedAgoLabel(ago.unit, ago.value)
+    : activeVault?.localOnly
+      ? i18nT('apps.mdNotebook.sync.localAction')
+      : ago === null
+        ? i18nT('apps.mdNotebook.sync.action')
+        : syncedAgoLabel(ago.unit, ago.value)
 
   return (
     <div
@@ -774,6 +1180,49 @@ export default function MdNotebookPage() {
       }}
     >
       <style>{MDNB_CSS}</style>
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title={i18nT('apps.mdNotebook.row.deleteTitle', { title: confirmDelete.title })}
+          // `<Trans>` rather than a plain string: `.trash` inside the sentence is a
+          // link that opens the folder, and the app hides that folder from its own
+          // listing, so this is the user's only way in at the moment they need it.
+          // One catalog key with a `<trash>` tag keeps the sentence whole for
+          // translators instead of splitting it around the link.
+          body={
+            <Trans
+              i18nKey="apps.mdNotebook.row.deleteConfirm"
+              components={{
+                trash: (
+                  <InlineLink
+                    onClick={() => void openTrash()}
+                    title={i18nT('apps.mdNotebook.trash.open')}
+                  />
+                ),
+              }}
+            />
+          }
+          // Only messages live here now: the two cases where clicking the link
+          // produces nothing visible (no folder yet, no file manager on the host).
+          footer={
+            trashMsg && (
+              <div style={{ fontSize: '11px', color: 'var(--muted)' }}>{trashMsg}</div>
+            )
+          }
+          confirmLabel={i18nT('apps.mdNotebook.row.deleteAction')}
+          cancelLabel={i18nT('apps.mdNotebook.connect.cancel')}
+          onCancel={() => {
+            setTrashMsg(null)
+            setConfirmDelete(null)
+          }}
+          onConfirm={() => {
+            const target = confirmDelete.path
+            setTrashMsg(null)
+            setConfirmDelete(null)
+            void removeNote(target)
+          }}
+        />
+      )}
 
       {/* Floating panel toggle: stays put when the panel hides. */}
       <button
@@ -875,6 +1324,20 @@ export default function MdNotebookPage() {
                   transition: 'transform .15s',
                 }}
               />
+            </button>
+            {/* New note, at the top level of the vault — outside every folder.
+                It lives here rather than beside the document controls because
+                creating a note is a navigation act on this list, and "outside
+                all folders" only reads as a location next to the tree. */}
+            <button
+              type="button"
+              onClick={() => void newNote()}
+              aria-label={i18nT('apps.mdNotebook.panel.newRootNote')}
+              title={i18nT('apps.mdNotebook.panel.newRootNote')}
+              style={{ ...iconBtn, marginLeft: 'auto' }}
+              className="mdnb-act"
+            >
+              <Plus size={16} />
             </button>
             {vaultSelOpen && (
               <div
@@ -1124,6 +1587,7 @@ export default function MdNotebookPage() {
                       }}
                       active={!settingsOpen && r.path === activePath}
                       onOpen={p => void openNote(p)}
+                      actions={noteActions}
                     />
                   ))
                 : (
@@ -1132,14 +1596,14 @@ export default function MdNotebookPage() {
                     </div>
                   )
               : view === 'list'
-                ? [...notes]
-                    .sort(SORTS[sortKey].cmp)
-                    .map(n => (
+                ? orderNotes(notes, SORTS[sortKey].cmp, isPinned).map(n => (
                       <NoteRow
                         key={n.path}
                         note={n}
                         active={!settingsOpen && n.path === activePath}
                         onOpen={p => void openNote(p)}
+                        showSyncBadge={showSyncBadge}
+                        actions={noteActions}
                         showFolder
                       />
                     ))
@@ -1148,8 +1612,9 @@ export default function MdNotebookPage() {
                     onOpen: p => void openNote(p),
                     collapsed,
                     toggle,
+                    showSyncBadge,
                     cmp: SORTS[sortKey].cmp,
-                    onMove: moveNote,
+                    actions: noteActions,
                   })}
           </div>
 
@@ -1179,6 +1644,7 @@ export default function MdNotebookPage() {
           hasGhAuth={auth.hasGhAuth}
           autoSync={autoSync}
           autoSyncMins={autoSyncMins}
+          autoCommit={autoCommit}
           shortcut={syncShortcut}
           onClose={() => setSettingsOpen(false)}
           onSwitchVault={id => {
@@ -1194,6 +1660,7 @@ export default function MdNotebookPage() {
           onSetKnowledge={setVaultKnowledge}
           onAutoSync={setAutoSyncPref}
           onAutoSyncMins={setAutoSyncMinsPref}
+          onAutoCommit={setAutoCommitPref}
           onSetShortcut={setSyncShortcutPref}
           onRecordingChange={on => {
             recordingShortcutRef.current = on
@@ -1213,15 +1680,6 @@ export default function MdNotebookPage() {
               alignItems: 'center',
             }}
           >
-            <button
-              type="button"
-              onClick={() => void newNote()}
-              aria-label={i18nT('apps.mdNotebook.header.newNote')}
-              title={i18nT('apps.mdNotebook.header.newNote')}
-              style={iconBtn}
-            >
-              <Plus size={16} />
-            </button>
             {/* Rendered / raw switch */}
             <div
               style={{
@@ -1265,6 +1723,11 @@ export default function MdNotebookPage() {
               type="button"
               onClick={() => void runSync()}
               disabled={syncing}
+              title={
+                activeVault?.localOnly
+                  ? i18nT('apps.mdNotebook.sync.localTitle')
+                  : undefined
+              }
               style={{
                 display: 'flex',
                 alignItems: 'center',

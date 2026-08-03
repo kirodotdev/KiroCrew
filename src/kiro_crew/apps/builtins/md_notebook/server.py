@@ -125,6 +125,11 @@ FEATURES = [
     "pat",
     "newNote",
     "move",
+    "duplicate",
+    "trash",
+    "localOnly",
+    "autoCommit",
+    "trashOpen",
     "knowledge",
     "pickFolder",
 ]
@@ -183,6 +188,14 @@ _vaults_lock = asyncio.Lock()
 MAX_UNTITLED = 1000
 # Native folder picker.
 PICK_FOLDER_TIMEOUT_SEC = 120
+# Revealing a folder in the OS file manager. Absolute paths, never resolved from
+# PATH: the front of PATH is agent-writable, so a `open`/`xdg-open` shim planted
+# there would be what this launches.
+REVEAL_TIMEOUT_SEC = 20
+REVEAL_BINARIES = {
+    "darwin": "/usr/bin/open",
+    "linux": "/usr/bin/xdg-open",
+}
 PICK_FOLDER_SCRIPT = "\n".join(
     [
         "activate",
@@ -355,6 +368,25 @@ def _find_gh() -> Optional[str]:
     return None
 
 
+def _trusted_env() -> dict[str, str]:
+    """The current environment with PATH pinned to trusted system directories.
+
+    Every subprocess this module spawns dispatches to child helpers that are
+    resolved through PATH, and the gateway's inherited PATH can carry an
+    agent-writable entry (`~/.local/bin` is the usual one). Pinning it means a
+    planted helper cannot ride along on an action the user initiated. Same pin, and
+    the same reason, as `run_git` — see `git_ops.TRUSTED_PATH`.
+
+    Only PATH is replaced: the rest of the environment is what lets these tools
+    reach the running desktop session (DISPLAY, DBUS_SESSION_BUS_ADDRESS, XDG_*).
+    Windows keeps the inherited PATH, where helpers live beside their install.
+    """
+    env = dict(os.environ)
+    if os.name == "posix":
+        env["PATH"] = git_ops.TRUSTED_PATH
+    return env
+
+
 def _gh_token_sync() -> Optional[str]:
     """Mint a token from the gh CLI login. Never persisted to disk."""
     if time.monotonic() - _gh_cache["at"] < GH_TOKEN_TTL_SEC:
@@ -369,6 +401,7 @@ def _gh_token_sync() -> Optional[str]:
                 text=True,
                 timeout=GH_TIMEOUT_SEC,
                 check=False,
+                env=_trusted_env(),
             )
             if proc.returncode == 0:
                 value = proc.stdout.strip() or None
@@ -422,6 +455,85 @@ async def vault_path(vault: dict[str, Any], rel: Optional[str] = None) -> Path:
         return safe_join(root, rel) if rel else root
 
     return await asyncio.to_thread(_resolve)
+
+
+def require_note_path(rel: Any, field: str = "path") -> str:
+    """Validate a caller-supplied path as one this app is allowed to touch.
+
+    Containment is not enough. ``safe_join`` / ``vault_mutation_path`` only prove
+    the path stays INSIDE the vault, and a vault contains far more than notes: a
+    delete of ``.git/config`` is contained, and would move the repository's
+    configuration into ``.trash/config.md``, breaking the vault (and its remote
+    binding) for every later operation. Save, move and duplicate reach the same
+    places.
+
+    So the addressable surface is pinned to the LISTED surface — the same two rules
+    the note walk applies (see ``_scan``): every component must be undotted, and the
+    file must end in ``.md``. That excludes `.git/`, `.trash/` and dotfiles by
+    construction rather than by naming them, so a future dotted directory is
+    covered without another edit.
+
+    Raises ``ApiError`` 400; callers pass ``field`` so the message names the
+    parameter the caller actually sent (``from`` / ``to`` on a move).
+    """
+    if not rel or not isinstance(rel, str):
+        raise ApiError(f"{field} is required", 400, code="path_required")
+    parts = PurePosixPath(rel.replace("\\", "/")).parts
+    if not parts or any(p.startswith(".") for p in parts):
+        raise ApiError(
+            f"{field} must not contain a dotted path component",
+            400,
+            code="path_not_a_note",
+        )
+    if not parts[-1].lower().endswith(".md"):
+        raise ApiError(f"{field} must be a .md note", 400, code="path_not_a_note")
+    return rel
+
+
+def require_folder_path(folder: Any) -> Optional[str]:
+    """Validate an optional caller-supplied FOLDER (the new-note target).
+
+    Same undotted rule as `require_note_path`, without the `.md` requirement: a
+    folder is not a note. Without it a new note could be created inside `.git`.
+    """
+    if folder is None or folder == "":
+        return None
+    if not isinstance(folder, str):
+        raise ApiError("folder must be a string", 400, code="path_not_a_note")
+    parts = PurePosixPath(folder.replace("\\", "/")).parts
+    if any(p.startswith(".") for p in parts):
+        raise ApiError(
+            "folder must not contain a dotted path component",
+            400,
+            code="path_not_a_note",
+        )
+    return folder
+
+
+async def trash_dir_path(vault: dict[str, Any]) -> Path:
+    """The vault's `.trash` directory, refusing it if the entry is a SYMLINK.
+
+    `vault_mutation_path` proves containment, which is not enough here. A cloned or
+    attached repo can carry `.trash -> public` (git stores symlinks), and a target
+    INSIDE the vault passes containment — then `mkdir(exist_ok=True)` follows the
+    link and `os.replace` lands the deleted note under `public/`. `git_ops.status()`
+    filters paths beginning `.trash/`, so a note now living at `public/One.md` is
+    staged and pushed to the remote: the delete flow's one promise, that a trashed
+    note never leaves the machine, is broken without leaving the vault at all.
+
+    So any symlink is refused, escaping or not. `lstat` via `is_symlink()` is the
+    only test that can see it — `exists()` and `is_dir()` both follow the link.
+    """
+    trash_dir = await vault_mutation_path(vault, git_ops.TRASH_DIR)
+    if await asyncio.to_thread(trash_dir.is_symlink):
+        raise ApiError(
+            f"this vault's {git_ops.TRASH_DIR} is a symlink — refusing to use it, "
+            "because a trashed note would be written somewhere the app does not "
+            "keep out of git",
+            400,
+            code="trash_is_symlink",
+        )
+    return trash_dir
 
 
 async def vault_mutation_path(vault: dict[str, Any], rel: str) -> Path:
@@ -1021,9 +1133,7 @@ async def api_notes(request: web.Request) -> web.Response:
 
 async def api_note_read(request: web.Request) -> web.Response:
     vault = await require_vault(request)
-    rel = request.query.get("path")
-    if not rel:
-        raise ApiError("path is required", 400, code="path_required")
+    rel = require_note_path(request.query.get("path"))
     abs_path = await vault_path(vault, rel)
     try:
         # Snapshot the mtime BEFORE reading the content. If an external atomic
@@ -1060,9 +1170,9 @@ async def api_note_save(request: web.Request) -> web.Response:
     vault = await require_vault(request)
     require_writable(vault)
     body = await json_body(request)
-    rel = body.get("path")
+    rel = require_note_path(body.get("path"))
     content = body.get("content")
-    if not rel or not isinstance(content, str):
+    if not isinstance(content, str):
         raise ApiError("path and content required", 400, code="path_and_content_required")
     # Use the LEXICAL in-vault path (not safe_join's realpath): a note that is a
     # symlink — e.g. a cloned `alias.md -> .git/config` — must not have its save
@@ -1138,23 +1248,63 @@ async def api_note_save(request: web.Request) -> web.Response:
 
 
 async def api_note_delete(request: web.Request) -> web.Response:
+    """Move a note into the vault's local trash. Nothing is unlinked.
+
+    A hard unlink is unrecoverable for a note the user never committed, which is
+    the common case for something written today and deleted an hour later. Moving
+    it into ``.trash`` inside the vault keeps it recoverable from Finder without
+    depending on git, and ``git_ops`` excludes that folder from every status read
+    and from staging, so a deleted note is never pushed to the remote.
+    """
     vault = await require_vault(request)
     require_writable(vault)
-    rel = request.query.get("path")
-    if not rel:
-        raise ApiError("path is required", 400, code="path_required")
+    rel = require_note_path(request.query.get("path"))
     abs_path = await vault_mutation_path(vault, rel)
+    # Refuses a vault-supplied `.trash` symlink outright — see `trash_dir_path`.
+    trash_dir = await trash_dir_path(vault)
+    name = notes_mod.note_basename(rel.replace("\\", "/"))
+
+    def _to_trash() -> str:
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        for n in range(1, MAX_UNTITLED):
+            candidate = trash_dir / (f"{name}.md" if n == 1 else f"{name} {n}.md")
+            try:
+                # Reserve the name atomically before moving onto it. A bare
+                # `exists()` check would be a TOCTOU window, and `os.replace`
+                # silently OVERWRITES — two deletes of same-named notes from
+                # different folders would leave only the second in the trash.
+                fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            except FileExistsError:
+                continue
+            os.close(fd)
+            try:
+                # `replace`, not `rename`: the reserved placeholder is in the
+                # way. Neither follows a final-component symlink, so an in-vault
+                # alias is moved as the link it is.
+                os.replace(abs_path, candidate)
+            except OSError:
+                # The source was gone (or unmovable) — do not leave the empty
+                # placeholder behind as a phantom trash entry.
+                with contextlib.suppress(OSError):
+                    os.unlink(candidate)
+                raise
+            return candidate.name
+        raise ApiError("could not find a free name in the trash", 409, code="no_free_note_name")
+
     # Share the note's save lock: a concurrent debounced save could otherwise
-    # recreate the note right after the unlink.
+    # recreate the note right after it is moved away.
     async with _save_lock(str(abs_path)):
         try:
-            await asyncio.to_thread(os.unlink, abs_path)
+            trashed = await asyncio.to_thread(_to_trash)
         except FileNotFoundError as exc:
             raise ApiError(f"no such note: {rel}", 404, code="no_such_note") from exc
     mark_self_write(abs_path)
-    cache = await get_cache(vault)
-    cache["index"].remove(rel)
-    return web.json_response({"ok": True})
+    mark_self_write(trash_dir / trashed)
+    # Rebuild rather than drop one index entry: the deleted note's own
+    # [[wikilinks]] disappear with it, so every note it pointed at keeps a
+    # backlink to a note that no longer exists until the next rebuild.
+    await rebuild_cache(vault)
+    return web.json_response({"ok": True, "trashed": f"{git_ops.TRASH_DIR}/{trashed}"})
 
 
 async def api_note_new(request: web.Request) -> web.Response:
@@ -1167,7 +1317,7 @@ async def api_note_new(request: web.Request) -> web.Response:
     vault = await require_vault(request)
     require_writable(vault)
     body = await json_body(request)
-    folder = body.get("folder")
+    folder = require_folder_path(body.get("folder"))
     directory = await vault_path(vault, folder or None)
 
     def _create_unique() -> tuple[str, str]:
@@ -1182,15 +1332,16 @@ async def api_note_new(request: web.Request) -> web.Response:
         directory.mkdir(parents=True, exist_ok=True)
         for n in range(1, MAX_UNTITLED):
             name = "Untitled.md" if n == 1 else f"Untitled {n}.md"
-            title = re.sub(r"\.md$", "", name)
-            content = f"# {title}\n"
             try:
                 fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
             except FileExistsError:
                 continue
-            with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
-                fh.write(content)
-            return name, content
+            # Created EMPTY. Seeding `# <name>` gave every new note an H1 the user
+            # then had to delete: the filename already IS the title (`note_title`
+            # falls back to the basename), so the heading was a duplicate that
+            # rendered as a headline and did not track a later rename.
+            os.close(fd)
+            return name, ""
         raise ApiError("could not find a free note name", 409, code="no_free_note_name")
 
     name, content = await asyncio.to_thread(_create_unique)
@@ -1203,14 +1354,79 @@ async def api_note_new(request: web.Request) -> web.Response:
     return web.json_response({"path": rel})
 
 
+async def api_note_duplicate(request: web.Request) -> web.Response:
+    """Copy a note beside itself under a guaranteed-free name.
+
+    Server-side for the same reason ``/api/note/new`` is: the free name is found
+    and the file created in one exclusive step, so two quick clicks cannot
+    collide or overwrite a file the UI's cached listing did not know about.
+    """
+    vault = await require_vault(request)
+    require_writable(vault)
+    body = await json_body(request)
+    src_rel = require_note_path(body.get("path"))
+    src = await vault_path(vault, src_rel)
+    # Read through the central sensitive-path gate, not open(). A `.md` entry in
+    # an attached vault can be a symlink aimed at a private key; copying it would
+    # land that content INSIDE the vault, where the search index would serve it
+    # and the next sync's `git add -A` would push it to the remote.
+    content = await read_note_text(src)
+    if content is None:
+        raise ApiError(f"no such note: {src_rel}", 404, code="no_such_note")
+    # Normalize the separator BEFORE deriving the name and folder. `safe_join`
+    # accepts a Windows-style "dir\note.md" (it normalizes internally to validate
+    # containment), but `rfind("/")` would then find no separator and
+    # `note_basename` would keep the backslash — so the copy landed at the vault
+    # ROOT named "dir\note copy.md" on POSIX, while pathlib reads that same name
+    # as a subdirectory on Windows. One request, two different destinations.
+    rel_posix = src_rel.replace("\\", "/")
+    stem = notes_mod.note_basename(rel_posix)
+    folder = rel_posix[: rel_posix.rfind("/")] if "/" in rel_posix else ""
+    # Resolve the destination directory from the validated relative folder, so
+    # the copy can only ever be written beside its source inside the vault.
+    directory = await vault_path(vault, folder or None)
+
+    def _create_unique() -> str:
+        for n in range(1, MAX_UNTITLED):
+            name = f"{stem} copy.md" if n == 1 else f"{stem} copy {n}.md"
+            try:
+                fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            except FileExistsError:
+                continue
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+                    fh.write(content)
+            except OSError:
+                # The file already exists at this point (O_EXCL created it), so a
+                # write that dies partway — ENOSPC, EIO, a full quota — would
+                # leave a TRUNCATED copy behind: visible in the listing, indexed
+                # by search, and pushed to the remote by the next sync. Remove it
+                # and let the error surface instead.
+                with contextlib.suppress(OSError):
+                    os.unlink(directory / name)
+                raise
+            return name
+        raise ApiError("could not find a free note name", 409, code="no_free_note_name")
+
+    name = await asyncio.to_thread(_create_unique)
+    rel = f"{folder}/{name}" if folder else name
+    mark_self_write(directory / name)
+    # Rebuild rather than patch: the copy inherits the source's [[wikilinks]], and
+    # backlink identity is path-based, so an incremental index add would leave
+    # every linked target's backlink list missing the copy until some unrelated
+    # rebuild. `api_note_move` rebuilds for exactly this reason; `api_note_new`
+    # can patch only because a new note is empty and links to nothing.
+    await rebuild_cache(vault)
+    return web.json_response({"path": rel})
+
+
 async def api_note_move(request: web.Request) -> web.Response:
     """Move or rename a note. Refuses to overwrite an existing file."""
     vault = await require_vault(request)
     require_writable(vault)
     body = await json_body(request)
-    src_rel, dst_rel = body.get("from"), body.get("to")
-    if not src_rel or not dst_rel:
-        raise ApiError("from and to are required", 400, code="from_and_to_required")
+    src_rel = require_note_path(body.get("from"), "from")
+    dst_rel = require_note_path(body.get("to"), "to")
     if src_rel == dst_rel:
         return web.json_response({"ok": True, "path": dst_rel})
     src = await vault_mutation_path(vault, src_rel)
@@ -1254,9 +1470,110 @@ async def api_sync(request: web.Request) -> web.Response:
         trusted_remote=vault.get("remoteUrl"),
         # Refuse if the vault's `.git` pointer was redirected since clone/attach.
         trusted_gitdir=vault.get("gitDir"),
+        # Attached from a repo with no remote: commit locally, never push.
+        local_only=bool(vault.get("localOnly")),
     )
     await rebuild_cache(vault)
     return web.json_response({"result": result})
+
+
+async def api_commit(request: web.Request) -> web.Response:
+    """Commit pending edits to the vault's LOCAL git history. Never pushes.
+
+    This backs the periodic autosave. Notes are already on disk within a second
+    of typing (the editor's debounced save), so what this adds is version
+    history the user did not have to ask for — and because it never reaches a
+    remote, doing it unprompted cannot send anything anywhere.
+    """
+    vault = await require_vault(request)
+    # Committing writes to the repository, so a read-only vault must not reach it.
+    require_writable(vault)
+    result = await git_ops.sync(
+        vault["localPath"],
+        branch=vault.get("branch"),
+        subfolder=vault.get("subfolder"),
+        # Refuse if the vault's `.git` pointer was redirected since clone/attach:
+        # that decides WHICH repository these commits land in. The remote checks
+        # are skipped inside sync() for a commit-only run — nothing is pushed.
+        trusted_gitdir=vault.get("gitDir"),
+        commit_only=True,
+    )
+    await rebuild_cache(vault)
+    return web.json_response({"result": result})
+
+
+def _reveal_binary() -> Optional[str]:
+    """The absolute file-manager binary for this platform, or None.
+
+    Existence-checked rather than assumed: a minimal Linux container has no
+    `xdg-open`, and a missing binary must read as "not supported here" rather
+    than a 500.
+    """
+    if sys.platform.startswith("win"):
+        return "explorer"  # handled via os.startfile, never spawned
+    binary = REVEAL_BINARIES.get("darwin" if sys.platform == "darwin" else "linux")
+    return binary if binary and os.path.isfile(binary) else None
+
+
+def _reveal_folder_sync(path: str) -> None:
+    """Open a directory in the OS file manager.
+
+    The path is computed by the caller from the vault descriptor — never taken
+    from the request — and the argv is a fixed binary plus that one path, with no
+    shell. Blocking, so callers offload it.
+    """
+    if sys.platform.startswith("win"):
+        os.startfile(path)  # type: ignore[attr-defined]  # noqa: S606 — Windows-only API
+        return
+    binary = _reveal_binary()
+    if not binary:
+        raise ApiError(
+            "opening a folder is not supported on this system",
+            501,
+            code="folder_open_unsupported",
+        )
+    # `xdg-open` is a SHELL SCRIPT that dispatches to whichever helper it finds on
+    # PATH — `gio`, `gvfs-open`, `exo-open`, `kde-open`, `dbus-send` — so a planted
+    # `gio` in an agent-writable PATH entry would execute the moment the user clicks
+    # the delete dialog's `.trash` link, a click they have every reason to trust.
+    proc = subprocess.run(
+        [binary, path],
+        capture_output=True,
+        text=True,
+        timeout=REVEAL_TIMEOUT_SEC,
+        check=False,
+        env=_trusted_env(),
+    )
+    if proc.returncode != 0:
+        raise ApiError("could not open the folder", 500, code="folder_open_failed")
+
+
+async def api_trash_open(request: web.Request) -> web.Response:
+    """Reveal the vault's local `.trash` in the OS file manager.
+
+    The trash is a dotted directory the app deliberately hides from its own
+    listing and search, which left the delete dialog's "you can restore it from
+    there" promise with no way to act on it. This is that way.
+
+    Takes no path: the directory is derived from the vault descriptor through
+    `vault_mutation_path`, so nothing a caller sends can point this at another
+    folder. An absent trash is reported, not created — no note has been deleted
+    yet, and conjuring an empty folder to show would be a lie about the state.
+    """
+    vault = await require_vault(request)
+    trash_dir = await trash_dir_path(vault)
+    if not await asyncio.to_thread(trash_dir.is_dir):
+        return web.json_response(
+            {"ok": True, "opened": False, "empty": True, "path": str(trash_dir)}
+        )
+    if _reveal_binary() is None:
+        raise ApiError(
+            "opening a folder is not supported on this system",
+            501,
+            code="folder_open_unsupported",
+        )
+    await asyncio.to_thread(_reveal_folder_sync, str(trash_dir))
+    return web.json_response({"ok": True, "opened": True, "empty": False, "path": str(trash_dir)})
 
 
 async def api_search(request: web.Request) -> web.Response:
@@ -1280,6 +1597,7 @@ def _pick_folder_sync() -> Optional[str]:
         text=True,
         timeout=PICK_FOLDER_TIMEOUT_SEC,
         check=False,
+        env=_trusted_env(),
     )
     if proc.returncode != 0:
         raise ApiError("could not open the folder chooser", 500, code="folder_chooser_failed")
@@ -1329,8 +1647,11 @@ def create_app() -> web.Application:
     app.router.add_put("/api/note", api_note_save)
     app.router.add_delete("/api/note", api_note_delete)
     app.router.add_post("/api/note/new", api_note_new)
+    app.router.add_post("/api/note/duplicate", api_note_duplicate)
     app.router.add_post("/api/note/move", api_note_move)
     app.router.add_post("/api/sync", api_sync)
+    app.router.add_post("/api/commit", api_commit)
+    app.router.add_post("/api/trash/open", api_trash_open)
     app.router.add_get("/api/search", api_search)
     app.router.add_post("/api/pick-folder", api_pick_folder)
     return app

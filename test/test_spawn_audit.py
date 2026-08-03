@@ -197,6 +197,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Fixed argv `osascript -e <constant AppleScript>` for the macOS folder
         # picker; the script is a module constant with nothing substituted in.
         "apps/builtins/md_notebook/server.py::_pick_folder_sync",
+        # Fixed argv `<file manager> <dir>` to reveal a vault's `.trash` in
+        # Finder / the desktop file manager. No shell. The binary is an absolute
+        # module constant (`/usr/bin/open`, `/usr/bin/xdg-open`) resolved from a
+        # platform map and existence-checked — deliberately NOT from PATH, whose
+        # front is agent-writable and could hold an `open` shim. The single
+        # argument is not caller-supplied: `api_trash_open` takes no path and
+        # derives the directory from the vault descriptor via
+        # `vault_mutation_path`, which rejects `..`, absolute values and any
+        # symlink escaping the vault, so the argv cannot be pointed elsewhere.
+        "apps/builtins/md_notebook/server.py::_reveal_folder_sync",
         # Issue Radar GitLab access — the glab counterpart of _gh_run, and benign
         # for the same reasons, with ONE extra agent-reachable input that gh does
         # not have: the HOST.

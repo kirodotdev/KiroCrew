@@ -8,12 +8,13 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Folder as FolderIcon, Settings, X } from 'lucide-react'
+import { Folder as FolderIcon, GitBranch, Settings, X } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import {
   ACCENT,
   ACCENT_BG,
   ACCENT_FG,
+  AUTO_COMMIT_MINS,
   COLUMN_MAX_WIDTH,
   COLUMN_PAD_X,
   DEFAULT_SYNC_SHORTCUT,
@@ -23,8 +24,8 @@ import {
   MIN_AUTO_SYNC_MINS,
 } from './constants'
 import Clickable from '../../components/Clickable'
-import { GithubIcon, Switch } from './bits'
-import { knowledgeRegister, knowledgeUnregister } from './api'
+import { GithubIcon, Switch, TextLink } from './bits'
+import { knowledgeRegister, knowledgeUnregister, notesApi } from './api'
 import { formatShortcut } from './utils'
 import type { Shortcut, Vault } from './types'
 
@@ -54,6 +55,7 @@ export interface SettingsPageProps {
   hasGhAuth: boolean
   autoSync: boolean
   autoSyncMins: number
+  autoCommit: boolean
   shortcut: Shortcut
   onClose: () => void
   onSwitchVault: (id: string) => void
@@ -63,6 +65,7 @@ export interface SettingsPageProps {
   onSetKnowledge: (id: string, on: boolean, sourceId?: string) => Promise<void>
   onAutoSync: (on: boolean) => void
   onAutoSyncMins: (n: number) => void
+  onAutoCommit: (on: boolean) => void
   onSetShortcut: (sc: Shortcut) => void
   onRecordingChange: (on: boolean) => void
 }
@@ -74,6 +77,7 @@ export function SettingsPage({
   hasGhAuth,
   autoSync,
   autoSyncMins,
+  autoCommit,
   shortcut,
   onClose,
   onSwitchVault,
@@ -83,6 +87,7 @@ export function SettingsPage({
   onSetKnowledge,
   onAutoSync,
   onAutoSyncMins,
+  onAutoCommit,
   onSetShortcut,
   onRecordingChange,
 }: SettingsPageProps) {
@@ -94,6 +99,32 @@ export function SettingsPage({
   const [knowledgeMsg, setKnowledgeMsg] = useState<
     Record<string, { text: string; error?: boolean } | null>
   >({})
+  // Scoped per vault for the same reason as knowledgeMsg: one vault's "trash is
+  // empty" must not appear under another's row.
+  const [trashMsg, setTrashMsg] = useState<Record<string, string | null>>({})
+
+  // Nothing is reported on success — the file manager coming to the front is the
+  // result. Only the two cases with no visible effect get a message.
+  const revealTrash = useCallback(async (vault: Vault) => {
+    setTrashMsg(prev => ({ ...prev, [vault.id]: null }))
+    try {
+      const r = await notesApi.openTrash(vault.id)
+      if (r.empty) {
+        setTrashMsg(prev => ({ ...prev, [vault.id]: i18nT('apps.mdNotebook.trash.empty') }))
+      }
+    } catch (e) {
+      const code = (e as { body?: { code?: string } }).body?.code
+      setTrashMsg(prev => ({
+        ...prev,
+        [vault.id]:
+          code === 'folder_open_unsupported'
+            ? i18nT('apps.mdNotebook.trash.unsupported')
+            : i18nT('apps.mdNotebook.trash.failed', {
+                message: e instanceof Error ? e.message : String(e),
+              }),
+      }))
+    }
+  }, [])
   const [knowledgeBusy, setKnowledgeBusy] = useState<string | null>(null)
   const [confirmForget, setConfirmForget] = useState<string | null>(null)
   const [recording, setRecording] = useState(false)
@@ -370,7 +401,9 @@ export function SettingsPage({
                           {v.localPath}
                         </span>
                       </div>
-                      {/* Repo · branch · subfolder, prefixed with the GitHub mark. */}
+                      {/* Repo · branch · subfolder — or, with no remote, the
+                          branch alone under a git mark instead of the GitHub
+                          one, since nothing about this vault is on GitHub. */}
                       <div
                         style={{
                           display: 'flex',
@@ -382,7 +415,7 @@ export function SettingsPage({
                           minWidth: 0,
                         }}
                       >
-                        <GithubIcon size={12} />
+                        {v.localOnly ? <GitBranch size={12} /> : <GithubIcon size={12} />}
                         <span
                           style={{
                             overflow: 'hidden',
@@ -390,8 +423,28 @@ export function SettingsPage({
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {`${v.repo} · ${v.branch}${v.subfolder ? ` · /${v.subfolder}` : ''}`}
+                          {`${
+                            v.localOnly ? i18nT('apps.mdNotebook.settings.noRemote') : v.repo
+                          } · ${v.branch}${v.subfolder ? ` · /${v.subfolder}` : ''}`}
                         </span>
+                      </div>
+                      {/* The deleted-notes folder is dotted, so it is invisible in
+                          this app's listing AND in Finder's default view. This is
+                          the only place a user can get to it without knowing the
+                          path. Per-vault, because each vault has its own. */}
+                      <div style={{ marginTop: '4px' }}>
+                        <TextLink
+                          label={i18nT('apps.mdNotebook.trash.open')}
+                          onClick={() => void revealTrash(v)}
+                          title={`${v.localPath}${v.subfolder ? `/${v.subfolder}` : ''}/.trash`}
+                        />
+                        {trashMsg[v.id] && (
+                          <div
+                            style={{ marginTop: '3px', fontSize: '11px', color: 'var(--muted)' }}
+                          >
+                            {trashMsg[v.id]}
+                          </div>
+                        )}
                       </div>
                     </div>
                     {v.id !== activeVaultId && (
@@ -584,6 +637,30 @@ export function SettingsPage({
           {/* ---- sync ---- */}
           <div>
             <div style={sectionLabel}>{i18nT('apps.mdNotebook.settings.syncSection')}</div>
+            {/* Autosave first: it is on by default and it is what most people
+                mean by "save", so it reads before the remote-facing option. */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '10px',
+                marginBottom: '16px',
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '13px', fontWeight: 500 }}>
+                  {i18nT('apps.mdNotebook.settings.autoCommit')}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>
+                  {i18nT('apps.mdNotebook.settings.autoCommitHelp', { n: AUTO_COMMIT_MINS })}
+                </div>
+              </div>
+              <Switch
+                on={autoCommit}
+                onChange={onAutoCommit}
+                label={i18nT('apps.mdNotebook.settings.autoCommit')}
+              />
+            </div>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: '13px', fontWeight: 500 }}>

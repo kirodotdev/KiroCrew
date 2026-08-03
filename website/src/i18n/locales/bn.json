@@ -1655,7 +1655,8 @@
     "mdNotebook": {
       "title": "নোট",
       "badge": {
-        "pending": "অপেক্ষমাণ"
+        "pending": "অপেক্ষমাণ",
+        "deleting": "মুছে ফেলা হচ্ছে"
       },
       "boot": {
         "loading": "লোড হচ্ছে…",
@@ -1679,7 +1680,6 @@
         "renameHint": "এই নোটের নাম বদলাতে ক্লিক করুন"
       },
       "header": {
-        "newNote": "নতুন নোট",
         "view_rendered": "রেন্ডার করা",
         "view_raw": "Markdown সোর্স"
       },
@@ -1695,7 +1695,8 @@
         "sortSection": "এভাবে সাজান",
         "view_folders": "ফোল্ডার",
         "view_list": "সরল তালিকা",
-        "noMatches": "কিছু মেলেনি"
+        "noMatches": "কিছু মেলেনি",
+        "newRootNote": "শীর্ষ স্তরে নতুন নোট"
       },
       "sort": {
         "modifiedNewOld": "পরিবর্তিত — নতুন থেকে পুরোনো",
@@ -1711,7 +1712,9 @@
         "justNow": "এইমাত্র সিঙ্ক হয়েছে",
         "ago_m": "{{n}} মিনিট আগে সিঙ্ক",
         "ago_h": "{{n}} ঘণ্টা আগে সিঙ্ক",
-        "ago_d": "{{n}} দিন আগে সিঙ্ক"
+        "ago_d": "{{n}} দিন আগে সিঙ্ক",
+        "localAction": "স্থানীয়ভাবে সংরক্ষণ",
+        "localTitle": "পরিবর্তনগুলো এই ভল্টের স্থানীয় git ইতিহাসে কমিট করুন। এই ভল্টের কোনো রিমোট নেই, তাই কিছুই পুশ করা হয় না।"
       },
       "knowledge": {
         "label": "Kiro Crew জ্ঞানে সিঙ্ক করুন",
@@ -1741,7 +1744,8 @@
         "localFolderPlaceholder": "~/Developer/my-notes",
         "repoUrlPlaceholder": "https://github.com/you/notes",
         "tokenPlaceholder": "github_pat_…",
-        "subfolderPlaceholder": "notes"
+        "subfolderPlaceholder": "notes",
+        "attachNoRemoteHelp": "git রিমোট নেই? সেটাও চলবে — ভল্ট একইভাবে কাজ করে এবং নোটগুলো এই মেশিনেই থাকে।"
       },
       "settings": {
         "title": "সেটিংস",
@@ -1783,7 +1787,27 @@
         "shortcutHelpRecording": "যে কীগুলি চান চাপুন — বাতিলে Esc।",
         "recording": "রেকর্ডিং…",
         "reset": "রিসেট",
-        "shortcutNeedsModifier": "অন্তত ⌘, Ctrl বা ⌥ ব্যবহার করুন — একা একটি অক্ষর টাইপ করার সময় চালু হয়ে যাবে।"
+        "shortcutNeedsModifier": "অন্তত ⌘, Ctrl বা ⌥ ব্যবহার করুন — একা একটি অক্ষর টাইপ করার সময় চালু হয়ে যাবে।",
+        "noRemote": "কোনো রিমোট নেই",
+        "autoCommit": "ইতিহাসে স্বয়ংক্রিয় সংরক্ষণ",
+        "autoCommitHelp": "প্রতি {{n}} মিনিটে আপনার সম্পাদনা ভল্টের স্থানীয় git ইতিহাসে কমিট করে, তাই আপনাকে কখনও হাতে সংরক্ষণ করতে হয় না। কোনো রিমোটে কিছুই পুশ করা হয় না।"
+      },
+      "row": {
+        "pin": "নোট পিন করুন",
+        "unpin": "নোট আনপিন করুন",
+        "duplicate": "নোটের অনুলিপি তৈরি করুন",
+        "rename": "নোটের নাম পরিবর্তন করুন",
+        "delete": "নোট মুছুন",
+        "renameField": "নোটের নাম",
+        "deleteConfirm": "আপনি এটি <trash>.trash</trash> থেকে ফিরিয়ে আনতে পারবেন। ট্র্যাশের নোট রিমোটের সাথে সিঙ্ক হয় না।",
+        "deleteTitle": "“{{title}}” ট্র্যাশে সরাবেন?",
+        "deleteAction": "মুছুন"
+      },
+      "trash": {
+        "open": ".trash ফোল্ডার খুলুন",
+        "empty": "এই ভল্ট থেকে এখনও কিছু মুছে ফেলা হয়নি, তাই কোনো .trash ফোল্ডার নেই।",
+        "unsupported": "এই সিস্টেমে ফোল্ডার খোলা সমর্থিত নয়।",
+        "failed": "ফোল্ডার খোলা যায়নি: {{message}}"
       }
     }
   },

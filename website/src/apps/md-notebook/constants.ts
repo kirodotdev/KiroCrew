@@ -23,8 +23,17 @@ export const LS = {
   view: 'mdnb-view',
   autoSync: 'mdnb-auto-sync',
   autoSyncMins: 'mdnb-auto-sync-mins',
+  autoCommit: 'mdnb-auto-commit',
   syncShortcut: 'mdnb-sync-shortcut',
 } as const
+
+/**
+ * Pinned notes are a per-vault preference, so the key carries the vault id.
+ * Local to this machine on purpose: the pin is a reading aid for THIS device's
+ * sidebar, and writing it into the note (frontmatter) would commit a UI
+ * preference into the user's git history on the next sync.
+ */
+export const pinnedKey = (vaultId: string): string => `mdnb-pinned-${vaultId}`
 
 /**
  * Sort options for the notes list. Keys are persisted, so renaming one resets
@@ -52,6 +61,19 @@ export const DEFAULT_SYNC_SHORTCUT: Shortcut = {
 export const DEFAULT_AUTO_SYNC_MINS = 10
 export const MIN_AUTO_SYNC_MINS = 1
 export const MAX_AUTO_SYNC_MINS = 1440
+/**
+ * Auto-commit is ON by default; auto-sync is not. A commit is local, private and
+ * reversible, so doing it unasked costs the user nothing — whereas an unasked
+ * push sends their notes to a remote, which has to stay a deliberate choice.
+ */
+export const DEFAULT_AUTO_COMMIT = true
+/**
+ * Autosave cadence. Not user-configurable: a local commit is cheap and private,
+ * and a knob here would only invite a value that loses history. The editor's own
+ * 1s debounce is what protects the file on disk — this interval only decides how
+ * finely that work is sliced into git history.
+ */
+export const AUTO_COMMIT_MINS = 5
 
 /** Left panel drag bounds. */
 export const PANEL_MIN_WIDTH = 180

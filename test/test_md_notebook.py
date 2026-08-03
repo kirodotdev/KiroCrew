@@ -300,6 +300,541 @@ async def test_attach_existing_checkout(fixtures) -> None:
 
 
 @pytest.mark.asyncio
+async def test_attach_accepts_a_repo_with_no_remote(fixtures, tmp_path: Path) -> None:
+    """A `git init` folder with no origin is a valid local-only vault.
+
+    Requiring a remote made the most ordinary local notes folder unusable, and
+    the app's own features (listing, search, trash, local history) need no
+    remote at all.
+    """
+    server_mod, _remote, _seed = fixtures
+    local = tmp_path / "local-only"
+    local.mkdir()
+    _git("init", "-b", "main", ".", cwd=local)
+    _git("config", "user.email", "test@example.invalid", cwd=local)
+    _git("config", "user.name", "Test", cwd=local)
+    (local / "Solo.md").write_text("# Solo\n", encoding="utf-8")
+    _git("add", "-A", cwd=local)
+    _git("commit", "-m", "seed", cwd=local)
+
+    async with signed_client(server_mod) as client:
+        status, body = await client.post("/api/vaults/attach", {"path": str(local)})
+        assert status == 200, body
+        vault = body["vault"]
+        assert vault["localOnly"] is True
+        assert vault["remoteUrl"] is None
+        assert vault["repo"] == ""
+        # Falls back to the folder name, since there is no repo name to take.
+        assert vault["name"] == "local-only"
+        # And the notes are readable like any other vault.
+        paths = [n["path"] for n in (await client.get("/api/notes"))[1]["notes"]]
+        assert "Solo.md" in paths
+
+
+@pytest.mark.asyncio
+async def test_sync_on_a_local_only_vault_commits_without_pushing(
+    fixtures, tmp_path: Path
+) -> None:
+    """Sync degrades to a local commit: no fetch, no push, no error."""
+    server_mod, _remote, _seed = fixtures
+    local = tmp_path / "local-only"
+    local.mkdir()
+    _git("init", "-b", "main", ".", cwd=local)
+    _git("config", "user.email", "test@example.invalid", cwd=local)
+    _git("config", "user.name", "Test", cwd=local)
+    (local / "Solo.md").write_text("# Solo\n", encoding="utf-8")
+    _git("add", "-A", cwd=local)
+    _git("commit", "-m", "seed", cwd=local)
+
+    async with signed_client(server_mod) as client:
+        assert (await client.post("/api/vaults/attach", {"path": str(local)}))[0] == 200
+        assert (
+            await client.put("/api/note", {"path": "Solo.md", "content": "# Solo\n\nedited\n"})
+        )[0] == 200
+        status, body = await client.post("/api/sync")
+        assert status == 200, body
+        result = body["result"]
+        assert result["localOnly"] is True
+        assert result["pushed"] is False
+        assert result["conflicts"] == []
+        assert [c["path"] for c in result["committed"]] == ["Solo.md"]
+        # The edit really is in local history, and the tree is clean after.
+        assert "edited" in _git("show", "HEAD:Solo.md", cwd=local)
+        assert _git("status", "--porcelain", cwd=local) == ""
+
+
+@pytest.mark.asyncio
+async def test_local_only_sync_refuses_a_remote_that_appeared_later(
+    fixtures, tmp_path: Path
+) -> None:
+    """`.git/config` is agent-writable, so an origin appearing after attach is
+    not a user decision — refusing is what keeps note history from being pushed
+    to a remote the vault was never connected to."""
+    server_mod, remote, _seed = fixtures
+    local = tmp_path / "local-only"
+    local.mkdir()
+    _git("init", "-b", "main", ".", cwd=local)
+    _git("config", "user.email", "test@example.invalid", cwd=local)
+    _git("config", "user.name", "Test", cwd=local)
+    (local / "Solo.md").write_text("# Solo\n", encoding="utf-8")
+    _git("add", "-A", cwd=local)
+    _git("commit", "-m", "seed", cwd=local)
+
+    async with signed_client(server_mod) as client:
+        assert (await client.post("/api/vaults/attach", {"path": str(local)}))[0] == 200
+        _git("remote", "add", "origin", str(remote), cwd=local)
+        status, body = await client.post("/api/sync")
+        assert status >= 400, body
+        assert "no git remote" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_commit_route_saves_to_local_history_without_pushing(fixtures) -> None:
+    """The periodic autosave: pending edits reach local git history, and the
+    remote is left exactly where it was."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        remote_before = _git("rev-parse", "HEAD", cwd=Path(remote))
+        assert (
+            await client.put("/api/note", {"path": "One.md", "content": "# One\n\nautosaved\n"})
+        )[0] == 200
+        status, body = await client.post("/api/commit")
+        assert status == 200, body
+        result = body["result"]
+        assert result["commitOnly"] is True
+        assert result["pushed"] is False
+        assert [c["path"] for c in result["committed"]] == ["One.md"]
+        assert "autosaved" in _git("show", "HEAD:One.md", cwd=root)
+        # Nothing left the machine.
+        assert _git("rev-parse", "HEAD", cwd=Path(remote)) == remote_before
+
+
+@pytest.mark.asyncio
+async def test_autosave_leaves_a_partially_staged_note_alone(fixtures) -> None:
+    """A note staged with `git add -p` holds content the user deliberately held back.
+
+    Autosave's `git add` would overwrite that index entry with the full working copy
+    and commit it, so text they kept out of the commit is committed by a timer they
+    never triggered. Other notes in the same tick must still be saved, and an
+    explicit Sync must still take it.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        (root / "One.md").write_text("# One\n\nstaged line\n", encoding="utf-8")
+        _git("add", "One.md", cwd=root)
+        staged_blob = _git("rev-parse", ":One.md", cwd=root)
+        (root / "One.md").write_text("# One\n\nstaged line\nheld back\n", encoding="utf-8")
+        # An unrelated note changed in the same tick.
+        put = await client.put("/api/note", {"path": "Two.md", "content": "# Two\n\nedited\n"})
+        assert put[0] == 200, put
+
+        status, body = await client.post("/api/commit")
+        assert status == 200, body
+        # Two.md saved; One.md left for the user's own commit.
+        assert [c["path"] for c in body["result"]["committed"]] == ["Two.md"]
+        assert "held back" not in _git("show", "HEAD:One.md", cwd=root)
+        # The staging boundary is intact: the index still holds THEIR revision.
+        assert _git("rev-parse", ":One.md", cwd=root) == staged_blob
+
+        # A deliberate Sync is the user choosing the moment, so it takes it.
+        sync_status, sync_body = await client.post("/api/sync")
+        assert sync_status == 200, sync_body
+        assert "held back" in _git("show", "HEAD:One.md", cwd=root)
+
+
+@pytest.mark.asyncio
+async def test_autosave_leaves_a_fully_staged_note_in_its_pending_commit(fixtures) -> None:
+    """A FULLY staged note is a file the user put into a commit they are composing.
+
+    No content would be lost, but `git commit -- <path>` commits that path ALONE,
+    lifting it out of the multi-file commit being assembled — the composition is
+    destroyed silently. So the filter tests "is it staged", not "does the index
+    differ from the working tree".
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        # A multi-file commit in progress: a note and a sibling file, both staged
+        # with the working tree matching the index (no `add -p` divergence).
+        (root / "One.md").write_text("# One\n\nfor my commit\n", encoding="utf-8")
+        (root / "notes.txt").write_text("part of the same commit\n", encoding="utf-8")
+        _git("add", "One.md", "notes.txt", cwd=root)
+        head_before = _git("rev-parse", "HEAD", cwd=root)
+        # An unrelated note changed in the same tick, so the tick is not a no-op.
+        put = await client.put("/api/note", {"path": "Two.md", "content": "# Two\n\nedited\n"})
+        assert put[0] == 200, put
+
+        status, body = await client.post("/api/commit")
+        assert status == 200, body
+        assert [c["path"] for c in body["result"]["committed"]] == ["Two.md"]
+        # One.md is still theirs to commit: absent from HEAD, still staged.
+        assert "for my commit" not in _git("show", "HEAD:One.md", cwd=root)
+        assert _git("rev-parse", "HEAD", cwd=root) != head_before
+        staged_now = _git("diff", "--cached", "--name-only", cwd=root).split()
+        assert sorted(staged_now) == ["One.md", "notes.txt"]
+
+
+@pytest.mark.asyncio
+async def test_commit_route_is_a_no_op_on_a_clean_vault(fixtures) -> None:
+    """An autosave tick with nothing to save must not create an empty commit."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        before = _git("rev-parse", "HEAD", cwd=Path(vault["localPath"]))
+        status, body = await client.post("/api/commit")
+        assert status == 200, body
+        assert body["result"]["committed"] == []
+        assert _git("rev-parse", "HEAD", cwd=Path(vault["localPath"])) == before
+
+
+@pytest.mark.asyncio
+async def test_commit_route_still_works_when_the_remote_drifted(fixtures) -> None:
+    """Autosave must not stop because the user repointed their own remote.
+
+    An explicit sync refuses a drifted remote (it would push to an unexpected
+    place); a commit-only run cannot push at all, so blocking it would only cost
+    the user their history.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        _git("remote", "set-url", "origin", "https://example.invalid/other.git", cwd=root)
+        assert (
+            await client.put("/api/note", {"path": "One.md", "content": "# One\n\nstill saved\n"})
+        )[0] == 200
+        status, body = await client.post("/api/commit")
+        assert status == 200, body
+        assert [c["path"] for c in body["result"]["committed"]] == ["One.md"]
+        # ...while the pushing path refuses exactly this situation.
+        sync_status, sync_body = await client.post("/api/sync")
+        assert sync_status >= 400, sync_body
+        assert "trusted URL" in sync_body["error"]
+
+
+@pytest.mark.asyncio
+async def test_every_path_route_refuses_non_note_paths(fixtures) -> None:
+    """Containment is not enough: a vault holds far more than notes.
+
+    `.git/config` is INSIDE the vault, so `safe_join` allows it. A delete would move
+    the repository's configuration to `.trash/config.md` — breaking the vault and its
+    remote binding for every later operation — and save/move/duplicate reach the same
+    places. The addressable surface is pinned to the LISTED surface: undotted
+    components, `.md` suffix.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        before = (root / ".git" / "config").read_text(encoding="utf-8")
+
+        # Every route that takes a caller-supplied path, with the same payload.
+        assert (await client.get("/api/note?path=.git/config"))[0] == 400
+        assert (await client.delete("/api/note?path=.git/config"))[0] == 400
+        assert (await client.put("/api/note", {"path": ".git/config", "content": "x"}))[0] == 400
+        assert (await client.post("/api/note/duplicate", {"path": ".git/config"}))[0] == 400
+        assert (await client.post("/api/note/move", {"from": ".git/config", "to": "x.md"}))[0] == 400
+        assert (
+            await client.post("/api/note/move", {"from": "One.md", "to": ".git/config"})
+        )[0] == 400
+        # A note-shaped name inside a dotted directory is refused too — the rule is
+        # the component, not the extension alone.
+        assert (await client.delete("/api/note?path=.trash/One.md"))[0] == 400
+        # ...and a new note cannot be created into a dotted folder.
+        assert (await client.post("/api/note/new", {"folder": ".git"}))[0] == 400
+
+        # Nothing moved, nothing was written, and the vault still works.
+        assert (root / ".git" / "config").read_text(encoding="utf-8") == before
+        assert not (root / git_ops.TRASH_DIR).exists()
+        assert (await client.get("/api/notes"))[0] == 200
+
+
+@pytest.mark.asyncio
+async def test_reveal_pins_path_so_a_planted_helper_cannot_run(monkeypatch) -> None:
+    """`xdg-open` dispatches through PATH, so PATH must not be the inherited one.
+
+    It is a shell script that runs whichever of `gio` / `gvfs-open` / `exo-open` it
+    finds first. The gateway's PATH can include an agent-writable directory such as
+    `~/.local/bin`, so a planted `gio` there would execute with the backend's
+    environment the moment the user clicks the delete dialog's `.trash` link.
+    """
+    if os.name != "posix":
+        pytest.skip("PATH is deliberately left inherited on Windows")
+    from kiro_crew.apps.builtins.md_notebook import server as server_mod
+
+    captured: dict[str, Any] = {}
+
+    def fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
+        captured["argv"] = argv
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(server_mod, "_reveal_binary", lambda: "/usr/bin/true")
+    monkeypatch.setenv("PATH", f"/tmp/planted{os.pathsep}/usr/bin")
+    monkeypatch.setattr(server_mod.subprocess, "run", fake_run)
+
+    server_mod._reveal_folder_sync("/tmp")
+
+    assert captured["env"]["PATH"] == git_ops.TRUSTED_PATH
+    assert "/tmp/planted" not in captured["env"]["PATH"]
+    # Only PATH is replaced — the session variables the file manager needs to
+    # reach the running desktop must survive.
+    monkeypatch.setenv("DISPLAY", ":0")
+    server_mod._reveal_folder_sync("/tmp")
+    assert captured["env"]["DISPLAY"] == ":0"
+
+
+def test_every_spawn_in_this_module_pins_path() -> None:
+    """The pin is an invariant of the module, not of one call site.
+
+    `_gh_token_sync` (mints a token), `_reveal_folder_sync` and `_pick_folder_sync`
+    all spawn a POSIX process that resolves child helpers through PATH. A new
+    `subprocess.run` added without `env=_trusted_env()` would silently reopen the
+    hole, so the count is asserted rather than left to review.
+    """
+    from kiro_crew.apps.builtins.md_notebook import server as server_mod
+
+    source = Path(server_mod.__file__).read_text(encoding="utf-8")
+    assert source.count("subprocess.run(") == source.count("env=_trusted_env(),")
+
+
+@pytest.mark.asyncio
+async def test_trash_open_reports_an_absent_trash_instead_of_creating_one(fixtures) -> None:
+    """Nothing deleted yet: say so rather than conjuring an empty folder.
+
+    Creating the directory just to have something to reveal would also be the one
+    write this read-shaped route makes.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        status, body = await client.post("/api/trash/open")
+        assert status == 200, body
+        assert body["empty"] is True
+        assert body["opened"] is False
+        assert body["path"].endswith(git_ops.TRASH_DIR)
+        assert not (Path(vault["localPath"]) / git_ops.TRASH_DIR).exists()
+
+
+@pytest.mark.asyncio
+async def test_trash_open_reveals_the_vaults_own_trash(fixtures, monkeypatch) -> None:
+    """After a delete, the route hands the vault's OWN trash to the file manager.
+
+    The reveal is stubbed — a real one would open Finder during the test run. What
+    is asserted is the path the route chose, because that is the security-relevant
+    part: the request carries no path, so this must be derived from the vault.
+    """
+    server_mod, remote, _seed = fixtures
+    async with signed_client(server_mod) as client:
+        vault = await _clone(client, remote)
+        assert (await client.delete("/api/note?path=One.md"))[0] == 200
+        revealed: list[str] = []
+        monkeypatch.setattr(server_mod, "_reveal_binary", lambda: "/usr/bin/true")
+        monkeypatch.setattr(server_mod, "_reveal_folder_sync", revealed.append)
+        status, body = await client.post("/api/trash/open")
+        assert status == 200, body
+        assert body["opened"] is True
+        expected = str(Path(vault["localPath"]) / git_ops.TRASH_DIR)
+        assert revealed == [expected]
+        assert body["path"] == expected
+
+
+@pytest.mark.asyncio
+async def test_trash_open_of_a_scoped_vault_stays_inside_the_scope(
+    fixtures, monkeypatch
+) -> None:
+    """A subfolder-scoped vault's trash lives in the SCOPE, not the repo root —
+    the same containment every other note path follows."""
+    server_mod, remote, _seed = fixtures
+    async with signed_client(server_mod) as client:
+        vault = await _clone(client, remote, subfolder="sub")
+        assert (await client.delete("/api/note?path=Two.md"))[0] == 200
+        revealed: list[str] = []
+        monkeypatch.setattr(server_mod, "_reveal_binary", lambda: "/usr/bin/true")
+        monkeypatch.setattr(server_mod, "_reveal_folder_sync", revealed.append)
+        status, body = await client.post("/api/trash/open")
+        assert status == 200, body
+        assert revealed == [str(Path(vault["localPath"]) / "sub" / git_ops.TRASH_DIR)]
+
+
+@pytest.mark.asyncio
+async def test_trash_open_says_unsupported_when_no_file_manager_exists(
+    fixtures, monkeypatch
+) -> None:
+    """A minimal Linux container has no xdg-open: that is a 501 the UI explains,
+    not a 500."""
+    server_mod, remote, _seed = fixtures
+    async with signed_client(server_mod) as client:
+        await _clone(client, remote)
+        assert (await client.delete("/api/note?path=One.md"))[0] == 200
+        monkeypatch.setattr(server_mod, "_reveal_binary", lambda: None)
+        status, body = await client.post("/api/trash/open")
+        assert status == 501, body
+        assert body["code"] == "folder_open_unsupported"
+
+
+@pytest.mark.asyncio
+async def test_autosave_commits_notes_only(fixtures) -> None:
+    """An UNATTENDED commit must not capture whatever else sits in the vault.
+
+    A user who drops a temporary secret into the vault and means to remove it
+    before syncing would otherwise find a timer had already written it into local
+    history — and the next push puts that blob on the remote for good.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        (root / "secrets.env").write_text("AWS_SECRET=hunter2\n", encoding="utf-8")
+        assert (
+            await client.put("/api/note", {"path": "One.md", "content": "# One\n\nedited\n"})
+        )[0] == 200
+
+        status, body = await client.post("/api/commit")
+        assert status == 200, body
+        assert [c["path"] for c in body["result"]["committed"]] == ["One.md"]
+        # The note is in history; the stray file is still only on disk.
+        assert "edited" in _git("show", "HEAD:One.md", cwd=root)
+        tracked = _git("ls-files", cwd=root)
+        assert "secrets.env" not in tracked
+        assert _git("status", "--porcelain", cwd=root).strip() == "?? secrets.env"
+
+
+@pytest.mark.asyncio
+async def test_explicit_sync_still_commits_the_whole_scope(fixtures) -> None:
+    """The narrowing above is for the TIMER only — a user-initiated sync keeps its
+    existing whole-scope behaviour, because the user chose that moment."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        (root / "attachment.png").write_bytes(b"\x89PNG\r\n")
+        status, body = await client.post("/api/sync")
+        assert status == 200, body
+        assert "attachment.png" in [c["path"] for c in body["result"]["committed"]]
+
+
+@pytest.mark.asyncio
+async def test_autosave_of_a_scoped_vault_stays_in_scope(fixtures) -> None:
+    """Notes-only staging names each path individually; they must all still be
+    inside the vault's subfolder scope."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote, subfolder="sub")
+        root = Path(vault["localPath"])
+        (root / "Outside.md").write_text("# outside the scope\n", encoding="utf-8")
+        assert (
+            await client.put("/api/note", {"path": "Two.md", "content": "---\ntitle: Two\n---\n\nx\n"})
+        )[0] == 200
+
+        status, body = await client.post("/api/commit")
+        assert status == 200, body
+        assert [c["path"] for c in body["result"]["committed"]] == ["sub/Two.md"]
+        assert "Outside.md" not in _git("ls-files", cwd=root)
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_an_in_vault_trash_symlink(fixtures) -> None:
+    """Containment is not the test for `.trash` — being a symlink at all is.
+
+    A clone can carry `.trash -> public`, whose target is INSIDE the vault, so the
+    escape check passes. `mkdir(exist_ok=True)` then follows the link and the note
+    lands at `public/One.md` — a path `git_ops.status()` does not filter (it filters
+    the `.trash/` prefix), so the next sync commits and pushes the deleted note. The
+    promise that a trashed note never leaves the machine breaks without the write
+    ever leaving the vault.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        (root / "public").mkdir()
+        (root / git_ops.TRASH_DIR).symlink_to("public")
+
+        status, body = await client.delete("/api/note?path=One.md")
+        assert status >= 400, body
+        assert "symlink" in body["error"]
+        # The note stayed put and nothing was written through the link.
+        assert (root / "One.md").exists()
+        assert list((root / "public").iterdir()) == []
+        # The reveal route refuses it for the same reason, rather than opening
+        # whatever the link points at.
+        open_status, open_body = await client.post("/api/trash/open", {})
+        assert open_status >= 400, open_body
+        assert "symlink" in open_body["error"]
+
+
+@pytest.mark.asyncio
+async def test_trashing_a_symlink_leaves_its_target_alone(fixtures) -> None:
+    """A trashed alias is moved as the LINK, never followed.
+
+    `os.replace` does not follow a final-component symlink, so deleting an in-vault
+    alias moves the link entry and leaves the note it points at — and that note's
+    mtime — completely alone.
+    """
+    server_mod, remote, _seed = fixtures
+    async with signed_client(server_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        target = root / "One.md"
+        ancient = time.time() - 900 * 86400
+        os.utime(target, (ancient, ancient))
+        alias = root / "Alias.md"
+        alias.symlink_to("One.md")
+
+        assert (await client.delete("/api/note?path=Alias.md"))[0] == 200
+        trashed = root / git_ops.TRASH_DIR / "Alias.md"
+        # The link moved as itself, and the target it pointed at is untouched.
+        assert trashed.is_symlink()
+        assert target.exists()
+        assert abs(target.stat().st_mtime - ancient) < 2
+
+        # The note itself is still a normal note, and the alias is gone from the
+        # listing (the walk prunes dotted directories).
+        paths = [n["path"] for n in (await client.get("/api/notes"))[1]["notes"]]
+        assert "One.md" in paths
+        assert "Alias.md" not in paths
+
+
+@pytest.mark.asyncio
+async def test_sync_never_stages_a_pre_existing_trash(fixtures) -> None:
+    """An attached vault can arrive with an Obsidian `.trash/` that this app never
+    put there. Nothing writes a git ignore rule for it, so staging exactly the paths
+    `status()` reported — which filters the trash — is the ONLY thing keeping that
+    folder out of the commit and off the remote. A scope-wide `add -A` would sweep
+    it up and push notes the user deleted elsewhere."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        trash = root / git_ops.TRASH_DIR
+        trash.mkdir(parents=True, exist_ok=True)
+        (trash / "secret.md").write_text("private, deleted in Obsidian\n", encoding="utf-8")
+        # No delete has happened, so nothing has written the exclude entry yet.
+        exclude = root / ".git" / "info" / "exclude"
+        assert not exclude.exists() or git_ops.TRASH_DIR not in exclude.read_text(
+            encoding="utf-8"
+        )
+        assert (
+            await client.put("/api/note", {"path": "One.md", "content": "# One\n\nedit\n"})
+        )[0] == 200
+
+        status, body = await client.post("/api/sync")
+        assert status == 200, body
+        committed = [c["path"] for c in body["result"]["committed"]]
+        assert committed == ["One.md"]
+        assert not any(git_ops.TRASH_DIR in p for p in committed)
+        # Nothing under .trash ever entered the index.
+        assert git_ops.TRASH_DIR not in _git("ls-files", cwd=root)
+        assert (trash / "secret.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_attach_rejects_non_repo(fixtures, tmp_path: Path) -> None:
     server_mod, _remote, _seed = fixtures
     async with signed_client(server_mod) as client:
@@ -845,7 +1380,13 @@ async def test_new_note_names_are_unique(fixtures) -> None:
         assert first == "Untitled.md"
         assert second == "Untitled 2.md"
         _, read = await client.get(f"/api/note?path={first}")
-        assert read["content"] == "# Untitled\n"
+        # Created empty: the filename is already the title (`note_title` falls back
+        # to the basename), so a seeded `# Untitled` heading was a duplicate the
+        # user had to delete — and it did not follow a later rename.
+        assert read["content"] == ""
+        # ...and the listing still names it, from the filename alone.
+        titles = {n["path"]: n["title"] for n in (await client.get("/api/notes"))[1]["notes"]}
+        assert titles[first] == "Untitled"
 
 
 @pytest.mark.asyncio
@@ -856,6 +1397,235 @@ async def test_new_note_in_folder(fixtures) -> None:
         status, body = await client.post("/api/note/new", {"folder": "sub"})
         assert status == 200
         assert body["path"] == "sub/Untitled.md"
+
+
+@pytest.mark.asyncio
+async def test_delete_moves_the_note_into_the_local_trash(fixtures) -> None:
+    """Delete is recoverable: the file lands in .trash, not the void."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        before = (root / "One.md").read_text(encoding="utf-8")
+        status, body = await client.delete("/api/note?path=One.md")
+        assert status == 200, body
+        assert body["trashed"] == ".trash/One.md"
+        assert not (root / "One.md").exists()
+        assert (root / ".trash" / "One.md").read_text(encoding="utf-8") == before
+        # And it is gone from the listing — the walk prunes dotted directories.
+        paths = [n["path"] for n in (await client.get("/api/notes"))[1]["notes"]]
+        assert "One.md" not in paths
+        assert not any(p.startswith(".trash") for p in paths)
+
+
+@pytest.mark.asyncio
+async def test_trash_does_not_overwrite_a_same_named_note(fixtures) -> None:
+    """Two notes with one filename in different folders both survive deletion."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        (root / "sub" / "One.md").write_text("# nested one\n", encoding="utf-8")
+        assert (await client.delete("/api/note?path=One.md"))[1]["trashed"] == ".trash/One.md"
+        second = (await client.delete("/api/note?path=sub/One.md"))[1]["trashed"]
+        assert second == ".trash/One 2.md"
+        assert (root / ".trash" / "One 2.md").read_text(encoding="utf-8") == "# nested one\n"
+
+
+@pytest.mark.asyncio
+async def test_sync_refuses_rather_than_pushing_a_subset(fixtures) -> None:
+    """An explicit Sync must not commit only part of what the user asked for.
+
+    `status()` reports a rename as TWO entries — old path deleted, new path added —
+    and the argv cap slices a path-sorted list, so the cutoff can fall between them.
+    Pushing only the deletion half makes the note look deleted to every other clone
+    while the UI reports success. The autosave keeps the cap (it pushes nothing, and
+    the next tick repairs a split), so it must still succeed here.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        remote_before = _git("rev-parse", "HEAD", cwd=Path(remote))
+        for n in range(git_ops.MAX_STAGED_PATHS + 1):
+            (root / f"bulk-{n:04d}.md").write_text(f"# Bulk {n}\n", encoding="utf-8")
+
+        status, body = await client.post("/api/sync")
+        assert status >= 400, body
+        assert str(git_ops.MAX_STAGED_PATHS) in body["error"]
+        # Nothing was committed locally and nothing reached the remote.
+        assert _git("rev-parse", "HEAD", cwd=Path(remote)) == remote_before
+
+        # The autosave still drains them in batches — capped, never refused.
+        commit_status, commit_body = await client.post("/api/commit")
+        assert commit_status == 200, commit_body
+        assert len(commit_body["result"]["committed"]) == git_ops.MAX_STAGED_PATHS
+        second_status, second_body = await client.post("/api/commit")
+        assert second_status == 200, second_body
+        assert len(second_body["result"]["committed"]) == 1
+        # Drained, so a Sync is possible again.
+        assert (await client.post("/api/sync"))[0] == 200
+
+
+@pytest.mark.asyncio
+async def test_sync_never_commits_the_trash(fixtures) -> None:
+    """A deleted note must not be pushed to the remote.
+
+    `git add -A` stages from the working tree rather than from the status list,
+    so the pathspec exclusion is what actually enforces this.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        await _clone(client, remote)
+        assert (await client.delete("/api/note?path=One.md"))[0] == 200
+        status, body = await client.post("/api/sync")
+        assert status == 200, body
+        committed = [c["path"] for c in body["result"]["committed"]]
+        assert not any(".trash" in p for p in committed)
+        assert "One.md" in committed  # the deletion itself IS committed
+        # Nothing under .trash reached the index at any point.
+        tracked = _git("ls-files", cwd=Path(_seed))
+        assert ".trash" not in tracked
+
+
+@pytest.mark.asyncio
+async def test_delete_refreshes_backlinks(fixtures) -> None:
+    """Deleting a linking note drops the backlink it contributed."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        await _clone(client, remote)
+        # One.md links to [[Two]]; deleting it must leave Two with no backlinks.
+        assert (await client.delete("/api/note?path=One.md"))[0] == 200
+        _, target = await client.get("/api/note?path=sub/Two.md")
+        assert target["backlinks"] == []
+
+
+@pytest.mark.asyncio
+async def test_sync_works_when_the_vault_already_ignores_the_trash(fixtures) -> None:
+    """The Obsidian case: `.trash/` is in the vault's own .gitignore.
+
+    Regression for a real break. Keeping the trash out via an `:(exclude,literal)`
+    pathspec made `git add` treat `.trash` as an EXPLICITLY named ignored path and
+    fail the whole add ("use -f if you really want to add them", exit 1) — so sync
+    died in precisely the vaults most likely to have a trash folder already. No
+    pathspec names the trash now: staging lists only the paths `status()` reported,
+    and `status()` filters it out.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        (root / ".gitignore").write_text(".trash/\n", encoding="utf-8")
+        assert (await client.delete("/api/note?path=One.md"))[0] == 200
+        # An edit alongside the delete, which is what the user was syncing.
+        status, body = await client.put(
+            "/api/note", {"path": "sub/Two.md", "content": "---\ntitle: Two\n---\n\nedited\n"}
+        )
+        assert status == 200, body
+        status, body = await client.post("/api/sync")
+        assert status == 200, body
+        committed = [c["path"] for c in body["result"]["committed"]]
+        assert "sub/Two.md" in committed
+        assert not any(".trash" in p for p in committed)
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_a_trash_symlink_escaping_the_vault(fixtures, tmp_path) -> None:
+    """A vault-supplied `.trash` symlink must not redirect the move out of the vault."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (root / ".trash").symlink_to(outside, target_is_directory=True)
+        status, body = await client.delete("/api/note?path=One.md")
+        assert status == 400, body
+        assert "escapes vault" in body["error"]
+        # The note stayed put and nothing was written outside the vault.
+        assert (root / "One.md").exists()
+        assert list(outside.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_note_copies_content_beside_the_source(fixtures) -> None:
+    """A copy lands in the source's folder, keeping its body."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        await _clone(client, remote)
+        status, body = await client.post("/api/note/duplicate", {"path": "sub/Two.md"})
+        assert status == 200, body
+        assert body["path"] == "sub/Two copy.md"
+        _, read = await client.get("/api/note?path=sub/Two copy.md")
+        assert read["content"] == "---\ntitle: Two\n---\n\nbody #tag\n"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_note_names_are_unique(fixtures) -> None:
+    """Two quick duplications must not collide, or overwrite the first copy."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        await _clone(client, remote)
+        first = (await client.post("/api/note/duplicate", {"path": "One.md"}))[1]["path"]
+        second = (await client.post("/api/note/duplicate", {"path": "One.md"}))[1]["path"]
+        assert first == "One copy.md"
+        assert second == "One copy 2.md"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_note_requires_an_existing_note(fixtures) -> None:
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        await _clone(client, remote)
+        status, body = await client.post("/api/note/duplicate", {"path": "Nope.md"})
+        assert status == 404, body
+        assert (await client.post("/api/note/duplicate", {}))[0] == 400
+
+
+@pytest.mark.asyncio
+async def test_duplicate_note_refuses_a_path_outside_the_vault(fixtures) -> None:
+    """Containment is checked on the source, so the copy cannot import a file."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        await _clone(client, remote)
+        status, _ = await client.post("/api/note/duplicate", {"path": "../outside.md"})
+        assert status == 400
+
+
+@pytest.mark.asyncio
+async def test_duplicate_note_normalizes_a_windows_separator(fixtures) -> None:
+    """A backslash path names the same note on every OS, so the copy lands beside it.
+
+    ``safe_join`` normalizes the separator to validate containment, so the SOURCE
+    resolves either way. Deriving the copy's name from the raw string did not:
+    the backslash survived into the filename, so the copy landed at the vault
+    root on POSIX and in a subdirectory on Windows.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        status, body = await client.post("/api/note/duplicate", {"path": "sub\\Two.md"})
+        assert status == 200, body
+        assert body["path"] == "sub/Two copy.md"
+        assert (Path(vault["localPath"]) / "sub" / "Two copy.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_note_refreshes_backlinks(fixtures) -> None:
+    """The copy inherits the source's wikilinks, so its targets gain a backlink.
+
+    An incremental index add would keep search working while leaving every linked
+    target's backlink list missing the copy until an unrelated cache rebuild.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        await _clone(client, remote)
+        # One.md links to [[Two]]; the copy carries that link too.
+        status, body = await client.post("/api/note/duplicate", {"path": "One.md"})
+        assert status == 200, body
+        _, target = await client.get("/api/note?path=sub/Two.md")
+        sources = sorted(b["sourcePath"] for b in target["backlinks"])
+        assert sources == ["One copy.md", "One.md"]
 
 
 @pytest.mark.asyncio

@@ -1655,7 +1655,8 @@
     "mdNotebook": {
       "title": "नोट्स",
       "badge": {
-        "pending": "लंबित"
+        "pending": "लंबित",
+        "deleting": "हटाया जा रहा है"
       },
       "boot": {
         "loading": "लोड हो रहा है…",
@@ -1679,7 +1680,6 @@
         "renameHint": "इस नोट का नाम बदलने के लिए क्लिक करें"
       },
       "header": {
-        "newNote": "नया नोट",
         "view_rendered": "रेंडर किया गया",
         "view_raw": "Markdown स्रोत"
       },
@@ -1695,7 +1695,8 @@
         "sortSection": "इससे क्रमबद्ध करें",
         "view_folders": "फ़ोल्डर",
         "view_list": "सपाट सूची",
-        "noMatches": "कोई मिलान नहीं"
+        "noMatches": "कोई मिलान नहीं",
+        "newRootNote": "शीर्ष स्तर पर नया नोट"
       },
       "sort": {
         "modifiedNewOld": "संशोधित — नए से पुराने",
@@ -1711,7 +1712,9 @@
         "justNow": "अभी सिंक हुआ",
         "ago_m": "{{n}} मिनट पहले सिंक हुआ",
         "ago_h": "{{n}} घंटे पहले सिंक हुआ",
-        "ago_d": "{{n}} दिन पहले सिंक हुआ"
+        "ago_d": "{{n}} दिन पहले सिंक हुआ",
+        "localAction": "स्थानीय रूप से सहेजें",
+        "localTitle": "बदलावों को इस वॉल्ट की स्थानीय git हिस्ट्री में कमिट करें। इस वॉल्ट का कोई रिमोट नहीं है, इसलिए कुछ भी पुश नहीं किया जाता।"
       },
       "knowledge": {
         "label": "Kiro Crew ज्ञान से सिंक करें",
@@ -1741,7 +1744,8 @@
         "localFolderPlaceholder": "~/Developer/my-notes",
         "repoUrlPlaceholder": "https://github.com/you/notes",
         "tokenPlaceholder": "github_pat_…",
-        "subfolderPlaceholder": "notes"
+        "subfolderPlaceholder": "notes",
+        "attachNoRemoteHelp": "git रिमोट नहीं है? यह भी चलेगा — वॉल्ट वैसे ही काम करता है और नोट्स इसी मशीन पर रहते हैं।"
       },
       "settings": {
         "title": "सेटिंग्स",
@@ -1783,7 +1787,27 @@
         "shortcutHelpRecording": "जो कुंजियाँ चाहिए वे दबाएँ — रद्द करने के लिए Esc.",
         "recording": "रिकॉर्डिंग…",
         "reset": "रीसेट",
-        "shortcutNeedsModifier": "कम से कम ⌘, Ctrl या ⌥ में से एक का प्रयोग करें — केवल अक्षर टाइप करते समय चल जाएगा."
+        "shortcutNeedsModifier": "कम से कम ⌘, Ctrl या ⌥ में से एक का प्रयोग करें — केवल अक्षर टाइप करते समय चल जाएगा.",
+        "noRemote": "कोई रिमोट नहीं",
+        "autoCommit": "हिस्ट्री में ऑटो-सेव",
+        "autoCommitHelp": "हर {{n}} मिनट में तुम्हारे बदलाव वॉल्ट की स्थानीय git हिस्ट्री में कमिट करता है, ताकि हाथ से सेव करने की ज़रूरत न पड़े। किसी रिमोट पर कुछ भी पुश नहीं होता।"
+      },
+      "row": {
+        "pin": "नोट पिन करें",
+        "unpin": "नोट अनपिन करें",
+        "duplicate": "नोट की प्रतिलिपि बनाएँ",
+        "rename": "नोट का नाम बदलें",
+        "delete": "नोट हटाएँ",
+        "renameField": "नोट का नाम",
+        "deleteConfirm": "तुम इसे <trash>.trash</trash> से वापस ला सकते हो। ट्रैश में रखे नोट रिमोट के साथ सिंक नहीं होते।",
+        "deleteTitle": "“{{title}}” को ट्रैश में ले जाएँ?",
+        "deleteAction": "हटाएँ"
+      },
+      "trash": {
+        "open": ".trash फ़ोल्डर खोलें",
+        "empty": "इस वॉल्ट से अभी तक कुछ भी नहीं हटाया गया है, इसलिए कोई .trash फ़ोल्डर नहीं है।",
+        "unsupported": "इस सिस्टम पर फ़ोल्डर खोलना समर्थित नहीं है।",
+        "failed": "फ़ोल्डर नहीं खुल सका: {{message}}"
       }
     }
   },

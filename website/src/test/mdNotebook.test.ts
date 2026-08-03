@@ -15,12 +15,16 @@ import {
   indentPx,
   isEmptyListItem,
   matchesShortcut,
+  neighborAfterDelete,
   noteBasename,
   relTime,
+  targetsSameNote,
+  rowBadge,
   shiftListItem,
   vaultContentPath,
 } from '../apps/md-notebook/utils'
 import { inline } from '../apps/md-notebook/Preview'
+import { flattenVisibleNotes, orderNotes } from '../apps/md-notebook/NoteRow'
 import type { Note } from '../apps/md-notebook/types'
 
 describe('md-notebook/indentPx', () => {
@@ -205,6 +209,111 @@ describe('md-notebook/misc helpers', () => {
 })
 
 
+describe('md-notebook/orderNotes', () => {
+  const note = (path: string, modifiedAt = 0): Note => ({
+    path,
+    title: path,
+    modifiedAt,
+    syncStatus: 'synced',
+  })
+  const byName = (a: Note, b: Note) => a.title.localeCompare(b.title)
+
+  it('floats pinned notes above the rest', () => {
+    const notes = [note('a.md'), note('b.md'), note('c.md')]
+    const order = orderNotes(notes, byName, p => p === 'c.md').map(n => n.path)
+    expect(order).toEqual(['c.md', 'a.md', 'b.md'])
+  })
+
+  it('keeps the chosen sort inside each group', () => {
+    const notes = [note('b.md'), note('a.md'), note('d.md'), note('c.md')]
+    const pinned = new Set(['d.md', 'b.md'])
+    const order = orderNotes(notes, byName, p => pinned.has(p)).map(n => n.path)
+    expect(order).toEqual(['b.md', 'd.md', 'a.md', 'c.md'])
+  })
+
+  it('does not mutate the input list', () => {
+    const notes = [note('b.md'), note('a.md')]
+    orderNotes(notes, byName, () => false)
+    expect(notes.map(n => n.path)).toEqual(['b.md', 'a.md'])
+  })
+
+  it('is a no-op ordering when nothing is pinned', () => {
+    const notes = [note('b.md'), note('a.md')]
+    expect(orderNotes(notes, byName, () => false).map(n => n.path)).toEqual(['a.md', 'b.md'])
+  })
+})
+
+describe('md-notebook/neighborAfterDelete', () => {
+  const visible = ['a.md', 'b.md', 'c.md']
+
+  it('lands on the next note down', () => {
+    expect(neighborAfterDelete(visible, 'a.md')).toBe('b.md')
+    expect(neighborAfterDelete(visible, 'b.md')).toBe('c.md')
+  })
+
+  it('falls back to the note above when the deleted one was last', () => {
+    expect(neighborAfterDelete(visible, 'c.md')).toBe('b.md')
+  })
+
+  it('returns null for the only note, so the caller shows the empty state', () => {
+    expect(neighborAfterDelete(['only.md'], 'only.md')).toBeNull()
+  })
+
+  it('returns null when the note is not on screen at all', () => {
+    // A note inside a collapsed folder, or filtered out by search.
+    expect(neighborAfterDelete(visible, 'hidden.md')).toBeNull()
+  })
+})
+
+describe('md-notebook/flattenVisibleNotes', () => {
+  const note = (path: string): Note => ({
+    path,
+    title: path.split('/').pop() ?? path,
+    modifiedAt: 0,
+    syncStatus: 'synced',
+  })
+  const byName = (a: Note, b: Note) => a.title.localeCompare(b.title)
+  const none = () => false
+  const tree = buildTree([
+    note('root-b.md'),
+    note('root-a.md'),
+    note('sub/y.md'),
+    note('sub/x.md'),
+    note('sub/deep/z.md'),
+  ])
+
+  it('walks folders depth-first before this level, matching renderTree', () => {
+    expect(flattenVisibleNotes(tree, byName, none, new Set())).toEqual([
+      'sub/deep/z.md',
+      'sub/x.md',
+      'sub/y.md',
+      'root-a.md',
+      'root-b.md',
+    ])
+  })
+
+  it('omits a collapsed folder entirely — its notes are off screen', () => {
+    expect(flattenVisibleNotes(tree, byName, none, new Set(['sub']))).toEqual([
+      'root-a.md',
+      'root-b.md',
+    ])
+  })
+
+  it('omits only the collapsed level, keeping its parent visible', () => {
+    expect(flattenVisibleNotes(tree, byName, none, new Set(['sub/deep']))).toEqual([
+      'sub/x.md',
+      'sub/y.md',
+      'root-a.md',
+      'root-b.md',
+    ])
+  })
+
+  it('puts pinned notes first within their own folder', () => {
+    const order = flattenVisibleNotes(tree, byName, p => p === 'root-b.md', new Set())
+    expect(order).toEqual(['sub/deep/z.md', 'sub/x.md', 'sub/y.md', 'root-b.md', 'root-a.md'])
+  })
+})
+
 describe('markdown link sanitization', () => {
   // A note is ordinary text a user can paste or sync from a shared vault, so a
   // `javascript:` href would run script in the dashboard's own origin.
@@ -233,5 +342,62 @@ describe('markdown link sanitization', () => {
     const els = render(md)
     const hrefs = els.map(e => e.props?.href).filter(Boolean)
     expect(hrefs.length).toBe(1)
+  })
+})
+
+describe('md-notebook/rowBadge', () => {
+  it('shows pending only when the vault has a remote', () => {
+    const modified = { deleting: false, syncStatus: 'pending' }
+    expect(rowBadge({ ...modified, showSyncBadge: true })).toBe('pending')
+    // A vault with no remote has nowhere for the note to be pending TO, and the
+    // badge there reads as "not saved" — which is backwards, since it only
+    // appears once the file has reached disk.
+    expect(rowBadge({ ...modified, showSyncBadge: false })).toBeNull()
+  })
+
+  it('shows nothing for an unmodified note either way', () => {
+    expect(rowBadge({ deleting: false, syncStatus: 'synced', showSyncBadge: true })).toBeNull()
+    expect(rowBadge({ deleting: false, syncStatus: 'synced', showSyncBadge: false })).toBeNull()
+  })
+
+  it('lets an in-flight delete win, remote or not', () => {
+    // The delete indicator shares this slot and is the newer fact about the
+    // note, so suppressing the sync badge must not suppress it too.
+    expect(rowBadge({ deleting: true, syncStatus: 'pending', showSyncBadge: true })).toBe(
+      'deleting',
+    )
+    expect(rowBadge({ deleting: true, syncStatus: 'synced', showSyncBadge: false })).toBe(
+      'deleting',
+    )
+  })
+})
+
+describe('md-notebook/targetsSameNote', () => {
+  const captured = { vault: 'vault-a', path: 'One.md' }
+
+  it('matches only the vault the captured identity came from', () => {
+    expect(targetsSameNote(captured, 'vault-a', 'One.md')).toBe(true)
+    // The whole point: a note path is vault-RELATIVE, so two vaults can each
+    // hold `One.md`. Matching on path alone would make vault B's note look like
+    // the one being deleted (keystrokes swallowed, row un-openable) or like the
+    // one being saved (the conflict banner offering "use the file on disk"
+    // against a buffer from a vault the save never touched).
+    expect(targetsSameNote(captured, 'vault-b', 'One.md')).toBe(false)
+  })
+
+  it('does not match a different note in the same vault', () => {
+    expect(targetsSameNote(captured, 'vault-a', 'Two.md')).toBe(false)
+  })
+
+  it('is false with nothing captured, and with no note open', () => {
+    expect(targetsSameNote(null, 'vault-a', 'One.md')).toBe(false)
+    expect(targetsSameNote(captured, 'vault-a', null)).toBe(false)
+  })
+
+  it('treats the default (null) vault as its own identity', () => {
+    // `activeVaultId` is `string | null`; null means "the backend's default
+    // vault", which is a real target rather than "unknown".
+    expect(targetsSameNote({ vault: null, path: 'One.md' }, null, 'One.md')).toBe(true)
+    expect(targetsSameNote({ vault: null, path: 'One.md' }, 'vault-a', 'One.md')).toBe(false)
   })
 })

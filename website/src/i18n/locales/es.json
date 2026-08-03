@@ -1682,7 +1682,8 @@
     "mdNotebook": {
       "title": "Notas",
       "badge": {
-        "pending": "pendiente"
+        "pending": "pendiente",
+        "deleting": "eliminando"
       },
       "boot": {
         "loading": "Cargando…",
@@ -1706,7 +1707,6 @@
         "renameHint": "Haz clic para renombrar esta nota"
       },
       "header": {
-        "newNote": "Nueva nota",
         "view_rendered": "Renderizado",
         "view_raw": "Código Markdown"
       },
@@ -1722,7 +1722,8 @@
         "sortSection": "Ordenar por",
         "view_folders": "Carpetas",
         "view_list": "Lista plana",
-        "noMatches": "Sin resultados"
+        "noMatches": "Sin resultados",
+        "newRootNote": "Nota nueva en el nivel superior"
       },
       "sort": {
         "modifiedNewOld": "Modificación: de nueva a antigua",
@@ -1738,7 +1739,9 @@
         "justNow": "Sincronizado ahora mismo",
         "ago_m": "Sincronizado hace {{n}} min",
         "ago_h": "Sincronizado hace {{n}} h",
-        "ago_d": "Sincronizado hace {{n}} d"
+        "ago_d": "Sincronizado hace {{n}} d",
+        "localAction": "Guardar en local",
+        "localTitle": "Confirma los cambios en el historial de git local de este vault. Este vault no tiene remoto, así que no se envía nada."
       },
       "knowledge": {
         "label": "Sincronizar con el conocimiento de Kiro Crew",
@@ -1768,7 +1771,8 @@
         "localFolderPlaceholder": "~/Developer/my-notes",
         "repoUrlPlaceholder": "https://github.com/you/notes",
         "tokenPlaceholder": "github_pat_…",
-        "subfolderPlaceholder": "notes"
+        "subfolderPlaceholder": "notes",
+        "attachNoRemoteHelp": "¿Sin remoto de git? También funciona: el vault se comporta igual y las notas se quedan en este equipo."
       },
       "settings": {
         "title": "Ajustes",
@@ -1810,7 +1814,27 @@
         "shortcutHelpRecording": "Pulsa las teclas que quieras usar; Esc para cancelar.",
         "recording": "Grabando…",
         "reset": "Restablecer",
-        "shortcutNeedsModifier": "Usa al menos ⌘, Ctrl o ⌥: una letra sola se activaría al escribir."
+        "shortcutNeedsModifier": "Usa al menos ⌘, Ctrl o ⌥: una letra sola se activaría al escribir.",
+        "noRemote": "Sin remoto",
+        "autoCommit": "Guardado automático en el historial",
+        "autoCommitHelp": "Confirma tus cambios en el historial de git local del vault cada {{n}} minutos, así nunca tienes que guardar a mano. No se envía nada a un remoto."
+      },
+      "row": {
+        "pin": "Fijar nota",
+        "unpin": "No fijar la nota",
+        "duplicate": "Duplicar nota",
+        "rename": "Cambiar el nombre de la nota",
+        "delete": "Eliminar nota",
+        "renameField": "Nombre de la nota",
+        "deleteConfirm": "Puedes restaurarla desde <trash>.trash</trash>. Las notas en la papelera no se sincronizan con el remoto.",
+        "deleteTitle": "¿Mover “{{title}}” a la papelera?",
+        "deleteAction": "Eliminar"
+      },
+      "trash": {
+        "open": "Abrir la carpeta .trash",
+        "empty": "Todavía no se ha eliminado nada de este vault, así que no hay carpeta .trash.",
+        "unsupported": "Abrir una carpeta no es compatible con este sistema.",
+        "failed": "No se pudo abrir la carpeta: {{message}}"
       }
     }
   },

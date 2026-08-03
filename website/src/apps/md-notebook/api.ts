@@ -105,10 +105,28 @@ export const notesApi = {
   newNote: (vault: string | null, folder?: string) =>
     mdnbCall<{ path: string }>('POST', mdnbVaultQuery('/note/new', vault), { folder }),
 
+  duplicateNote: (vault: string | null, path: string) =>
+    mdnbCall<{ path: string }>('POST', mdnbVaultQuery('/note/duplicate', vault), { path }),
+
   moveNote: (vault: string | null, from: string, to: string) =>
     mdnbCall<{ ok: boolean; path: string }>('POST', mdnbVaultQuery('/note/move', vault), { from, to }),
 
   sync: (vault: string | null) => mdnbCall<{ result: SyncResult }>('POST', mdnbVaultQuery('/sync', vault)),
+
+  /** Commit pending edits to local git history only — never pushes. */
+  commit: (vault: string | null) =>
+    mdnbCall<{ result: SyncResult }>('POST', mdnbVaultQuery('/commit', vault)),
+
+  /**
+   * Reveal the vault's `.trash` in the OS file manager. Sends no path — the
+   * backend derives the directory from the vault, so this cannot open anything
+   * else. `empty: true` means nothing has been deleted yet and no folder exists.
+   */
+  openTrash: (vault: string | null) =>
+    mdnbCall<{ opened: boolean; empty: boolean; path: string }>(
+      'POST',
+      mdnbVaultQuery('/trash/open', vault),
+    ),
 
   search: (vault: string | null, q: string) =>
     mdnbCall<{ results: SearchHit[] }>('GET', mdnbVaultQuery(`/search?q=${encodeURIComponent(q)}`, vault)),

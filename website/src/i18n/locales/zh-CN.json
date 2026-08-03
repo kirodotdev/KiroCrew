@@ -1628,7 +1628,8 @@
     "mdNotebook": {
       "title": "笔记",
       "badge": {
-        "pending": "待同步"
+        "pending": "待同步",
+        "deleting": "删除中"
       },
       "boot": {
         "loading": "加载中…",
@@ -1652,7 +1653,6 @@
         "renameHint": "点击重命名此笔记"
       },
       "header": {
-        "newNote": "新建笔记",
         "view_rendered": "渲染视图",
         "view_raw": "Markdown 源码"
       },
@@ -1668,7 +1668,8 @@
         "sortSection": "排序方式",
         "view_folders": "文件夹",
         "view_list": "平铺列表",
-        "noMatches": "无匹配结果"
+        "noMatches": "无匹配结果",
+        "newRootNote": "在顶层新建笔记"
       },
       "sort": {
         "modifiedNewOld": "修改时间 —— 由新到旧",
@@ -1684,7 +1685,9 @@
         "justNow": "刚刚同步",
         "ago_m": "{{n}} 分钟前同步",
         "ago_h": "{{n}} 小时前同步",
-        "ago_d": "{{n}} 天前同步"
+        "ago_d": "{{n}} 天前同步",
+        "localAction": "保存到本地",
+        "localTitle": "将更改提交到此保险库的本地 git 历史。此保险库没有远程仓库，因此不会推送任何内容。"
       },
       "knowledge": {
         "label": "同步到 Kiro Crew 知识库",
@@ -1714,7 +1717,8 @@
         "localFolderPlaceholder": "~/Developer/my-notes",
         "repoUrlPlaceholder": "https://github.com/you/notes",
         "tokenPlaceholder": "github_pat_…",
-        "subfolderPlaceholder": "notes"
+        "subfolderPlaceholder": "notes",
+        "attachNoRemoteHelp": "没有 git 远程仓库？同样可以使用——保险库行为不变，笔记只保留在这台机器上。"
       },
       "settings": {
         "title": "设置",
@@ -1756,7 +1760,27 @@
         "shortcutHelpRecording": "按下想使用的按键 —— Esc 取消。",
         "recording": "录制中…",
         "reset": "重置",
-        "shortcutNeedsModifier": "请至少使用 ⌘、Ctrl 或 ⌥ 之一 —— 单个字母会在输入时触发。"
+        "shortcutNeedsModifier": "请至少使用 ⌘、Ctrl 或 ⌥ 之一 —— 单个字母会在输入时触发。",
+        "noRemote": "无远程仓库",
+        "autoCommit": "自动保存到历史",
+        "autoCommitHelp": "每 {{n}} 分钟将你的编辑提交到保险库的本地 git 历史，无需手动保存。不会推送到任何远程仓库。"
+      },
+      "row": {
+        "pin": "固定笔记",
+        "unpin": "取消固定笔记",
+        "duplicate": "复制笔记",
+        "rename": "重命名笔记",
+        "delete": "删除笔记",
+        "renameField": "笔记名称",
+        "deleteConfirm": "你可以从 <trash>.trash</trash> 中恢复它。回收站中的笔记不会同步到远程仓库。",
+        "deleteTitle": "将“{{title}}”移到回收站？",
+        "deleteAction": "删除"
+      },
+      "trash": {
+        "open": "打开 .trash 文件夹",
+        "empty": "还没有从此保险库删除过任何内容，因此没有 .trash 文件夹。",
+        "unsupported": "此系统不支持打开文件夹。",
+        "failed": "无法打开文件夹：{{message}}"
       }
     }
   },

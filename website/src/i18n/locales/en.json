@@ -1256,7 +1256,8 @@
     "mdNotebook": {
       "title": "Notes",
       "badge": {
-        "pending": "pending"
+        "pending": "pending",
+        "deleting": "deleting"
       },
       "boot": {
         "loading": "Loading…",
@@ -1280,7 +1281,6 @@
         "renameHint": "Click to rename this note"
       },
       "header": {
-        "newNote": "New note",
         "view_rendered": "Rendered",
         "view_raw": "Markdown source"
       },
@@ -1296,7 +1296,8 @@
         "sortSection": "Sort by",
         "view_folders": "Folders",
         "view_list": "Flat list",
-        "noMatches": "No matches"
+        "noMatches": "No matches",
+        "newRootNote": "New note at the top level"
       },
       "sort": {
         "modifiedNewOld": "Modified — new to old",
@@ -1312,7 +1313,9 @@
         "justNow": "Synced just now",
         "ago_m": "Synced {{n}}m ago",
         "ago_h": "Synced {{n}}h ago",
-        "ago_d": "Synced {{n}}d ago"
+        "ago_d": "Synced {{n}}d ago",
+        "localAction": "Save locally",
+        "localTitle": "Commit changes to this vault's local git history. This vault has no remote, so nothing is pushed."
       },
       "knowledge": {
         "label": "Sync to Kiro Crew knowledge",
@@ -1342,7 +1345,8 @@
         "localFolderPlaceholder": "~/Developer/my-notes",
         "repoUrlPlaceholder": "https://github.com/you/notes",
         "tokenPlaceholder": "github_pat_…",
-        "subfolderPlaceholder": "notes"
+        "subfolderPlaceholder": "notes",
+        "attachNoRemoteHelp": "No git remote? That works too — the vault behaves the same and the notes stay on this machine."
       },
       "settings": {
         "title": "Settings",
@@ -1384,7 +1388,26 @@
         "shortcutHelpRecording": "Press the keys you want to use — Esc to cancel.",
         "recording": "Recording…",
         "reset": "Reset",
-        "shortcutNeedsModifier": "Use at least one of ⌘, Ctrl or ⌥ — a plain letter would fire while you type."
+        "shortcutNeedsModifier": "Use at least one of ⌘, Ctrl or ⌥ — a plain letter would fire while you type.",
+        "noRemote": "No remote",
+        "autoCommit": "Autosave to history",
+        "autoCommitHelp": "Commits your edits to the vault's local git history every {{n}} minutes, so you never have to save by hand. Nothing is pushed to a remote."
+      },
+      "row": {
+        "pin": "Pin note",
+        "unpin": "Unpin note",
+        "duplicate": "Duplicate note",
+        "rename": "Rename note",
+        "delete": "Delete note",
+        "renameField": "Note name",
+        "deleteTitle": "Move “{{title}}” to trash?",
+        "deleteAction": "Delete"
+      },
+      "trash": {
+        "open": "Open the .trash folder",
+        "empty": "Nothing has been deleted from this vault yet, so there is no .trash folder.",
+        "unsupported": "Opening a folder is not supported on this system.",
+        "failed": "Could not open the folder: {{message}}"
       }
     }
   },

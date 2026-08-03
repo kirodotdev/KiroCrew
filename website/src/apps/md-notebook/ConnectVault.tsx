@@ -164,6 +164,13 @@ export function ConnectVault({
             ? i18nT('apps.mdNotebook.connect.attachHelp')
             : i18nT('apps.mdNotebook.connect.cloneHelp')}
         </div>
+        {/* A folder with no git remote is a supported case, not an error — say so
+            here rather than letting the user discover it by failing to attach. */}
+        {attaching && (
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+            {i18nT('apps.mdNotebook.connect.attachNoRemoteHelp')}
+          </div>
+        )}
 
         {attaching ? (
           <label style={label} htmlFor="mdnb-localFolder">

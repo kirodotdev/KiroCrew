@@ -178,6 +178,66 @@ export function loadPref<T>(key: string, fallback: T): T {
 }
 
 /** Persist a JSON value, ignoring quota or privacy-mode failures. */
+/**
+ * The note the panel should open after `path` is deleted: the next one DOWN in
+ * the visible order, or the one above when the deleted note was last. Returns
+ * null when it was the only note, so the caller falls back to the empty state.
+ *
+ * Takes the VISIBLE order rather than the raw note list, because "next" has to
+ * mean what the user sees — folders view, flat list and search results order
+ * differently, and a collapsed folder's notes are not candidates at all.
+ */
+export function neighborAfterDelete(
+  visible: readonly string[],
+  path: string,
+): string | null {
+  const i = visible.indexOf(path)
+  if (i === -1) return null
+  return visible[i + 1] ?? visible[i - 1] ?? null
+}
+
+/**
+ * Whether a captured note identity still refers to the note open right now.
+ *
+ * BOTH halves are compared because a note path is vault-RELATIVE: two vaults can
+ * each hold `One.md`. Matching on path alone reports vault A's note as being
+ * vault B's identically-named one, and every caller here is an async completion
+ * deciding whether to touch the live editor — so a false match drops keystrokes,
+ * renders an unrelated row un-openable, or offers "use the file on disk" against
+ * a buffer from a different vault.
+ *
+ * Used by the in-flight DELETE guard and the in-flight SAVE conflict guard.
+ */
+export function targetsSameNote(
+  captured: { vault: string | null; path: string } | null,
+  vault: string | null,
+  path: string | null,
+): boolean {
+  if (!captured || path === null) return false
+  return captured.vault === vault && captured.path === path
+}
+
+/**
+ * Which badge a note row shows, if any — the one slot on the row that means
+ * "state of this file".
+ *
+ * `deleting` wins: it is the newer, more relevant fact than how the file
+ * compares to git. `pending` is suppressed entirely when the vault has no remote
+ * (`showSyncBadge` false): "differs from the last commit" is not a state the user
+ * can act on there, it clears itself on the next autosave, and left visible it
+ * reads as "not saved" — the opposite of the truth, since the badge only appears
+ * once the file has reached disk.
+ */
+export function rowBadge(input: {
+  deleting: boolean
+  syncStatus: string
+  showSyncBadge: boolean
+}): 'deleting' | 'pending' | null {
+  if (input.deleting) return 'deleting'
+  if (!input.showSyncBadge || input.syncStatus === 'synced') return null
+  return 'pending'
+}
+
 export function savePref(key: string, value: unknown): void {
   try {
     localStorage.setItem(key, JSON.stringify(value))

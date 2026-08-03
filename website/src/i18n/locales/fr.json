@@ -1682,7 +1682,8 @@
     "mdNotebook": {
       "title": "Notes",
       "badge": {
-        "pending": "en attente"
+        "pending": "en attente",
+        "deleting": "suppression"
       },
       "boot": {
         "loading": "Chargement…",
@@ -1706,7 +1707,6 @@
         "renameHint": "Cliquez pour renommer cette note"
       },
       "header": {
-        "newNote": "Nouvelle note",
         "view_rendered": "Rendu",
         "view_raw": "Source Markdown"
       },
@@ -1722,7 +1722,8 @@
         "sortSection": "Trier par",
         "view_folders": "Dossiers",
         "view_list": "Liste simple",
-        "noMatches": "Aucun résultat"
+        "noMatches": "Aucun résultat",
+        "newRootNote": "Nouvelle note au niveau supérieur"
       },
       "sort": {
         "modifiedNewOld": "Modification — du plus récent au plus ancien",
@@ -1738,7 +1739,9 @@
         "justNow": "Synchronisé à l’instant",
         "ago_m": "Synchronisé il y a {{n}} min",
         "ago_h": "Synchronisé il y a {{n}} h",
-        "ago_d": "Synchronisé il y a {{n}} j"
+        "ago_d": "Synchronisé il y a {{n}} j",
+        "localAction": "Enregistrer en local",
+        "localTitle": "Valider les modifications dans l'historique git local de ce coffre. Ce coffre n'a pas de dépôt distant, rien n'est donc poussé."
       },
       "knowledge": {
         "label": "Synchroniser avec les connaissances Kiro Crew",
@@ -1768,7 +1771,8 @@
         "localFolderPlaceholder": "~/Developer/my-notes",
         "repoUrlPlaceholder": "https://github.com/you/notes",
         "tokenPlaceholder": "github_pat_…",
-        "subfolderPlaceholder": "notes"
+        "subfolderPlaceholder": "notes",
+        "attachNoRemoteHelp": "Pas de dépôt distant ? Cela fonctionne aussi — le coffre se comporte de la même façon et les notes restent sur cette machine."
       },
       "settings": {
         "title": "Réglages",
@@ -1810,7 +1814,27 @@
         "shortcutHelpRecording": "Appuyez sur les touches souhaitées — Échap pour annuler.",
         "recording": "Enregistrement…",
         "reset": "Réinitialiser",
-        "shortcutNeedsModifier": "Utilisez au moins ⌘, Ctrl ou ⌥ — une simple lettre se déclencherait pendant la saisie."
+        "shortcutNeedsModifier": "Utilisez au moins ⌘, Ctrl ou ⌥ — une simple lettre se déclencherait pendant la saisie.",
+        "noRemote": "Aucun dépôt distant",
+        "autoCommit": "Enregistrement auto dans l'historique",
+        "autoCommitHelp": "Valide vos modifications dans l'historique git local du coffre toutes les {{n}} minutes, pour ne jamais avoir à enregistrer à la main. Rien n'est poussé vers un dépôt distant."
+      },
+      "row": {
+        "pin": "Épingler la note",
+        "unpin": "Détacher la note",
+        "duplicate": "Dupliquer la note",
+        "rename": "Renommer la note",
+        "delete": "Supprimer la note",
+        "renameField": "Nom de la note",
+        "deleteConfirm": "Vous pouvez la restaurer depuis <trash>.trash</trash>. Les notes dans la corbeille ne sont pas synchronisées avec le dépôt distant.",
+        "deleteTitle": "Déplacer « {{title}} » vers la corbeille ?",
+        "deleteAction": "Supprimer"
+      },
+      "trash": {
+        "open": "Ouvrir le dossier .trash",
+        "empty": "Rien n'a encore été supprimé de ce coffre, il n'y a donc pas de dossier .trash.",
+        "unsupported": "L'ouverture d'un dossier n'est pas prise en charge sur ce système.",
+        "failed": "Impossible d'ouvrir le dossier : {{message}}"
       }
     }
   },

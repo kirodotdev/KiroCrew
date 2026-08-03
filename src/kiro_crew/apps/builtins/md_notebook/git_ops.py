@@ -34,6 +34,28 @@ logger = logging.getLogger(__name__)
 DEFAULT_AUTHOR_NAME = "md-notebook"
 DEFAULT_AUTHOR_EMAIL = "noreply@md-notebook.local"
 
+#: Cap on the number of paths one commit names in an argv. Staging is per-path
+#: (never a directory-wide `add -A`), so a first sweep over a large vault would
+#: otherwise risk exceeding the OS argument limit. Only the AUTOSAVE truncates to
+#: it — the remainder lands on the next tick, and nothing was pushed. A
+#: user-initiated Sync REFUSES instead of committing a subset, because a rename is
+#: two entries and pushing only its deletion half would look like a deleted note.
+MAX_STAGED_PATHS = 500
+
+# Local trash folder inside the vault, holding notes the user deleted from the
+# app. Named the way Obsidian names it, and dotted for two reasons: the note
+# walk prunes dotted directories, so a trashed note never reappears in the
+# listing, and `git status --porcelain` still reports it — which is why every
+# git read and write below filters it out explicitly. It must NEVER reach the
+# remote: a deleted note pushed to the repo defeats the point of deleting it.
+TRASH_DIR = ".trash"
+
+
+def in_trash(path: str) -> bool:
+    """True when a vault-relative path lies inside the local trash folder."""
+    return TRASH_DIR in path.replace("\\", "/").split("/")
+
+
 # Seconds before a git invocation is abandoned. Network operations (clone,
 # fetch, push) get the longer budget.
 GIT_TIMEOUT_SEC = 30
@@ -266,12 +288,14 @@ def _git_bin() -> str:
     )
 
 
-#: PATH handed to git subprocesses so git's OWN child helpers (ssh for ssh://
-#: remotes, credential helpers, git-remote-*) resolve from trusted system
-#: directories rather than an agent-writable entry inherited from the gateway's
-#: PATH. POSIX only — on Windows (test runners) git's helpers live beside the
-#: install, so the inherited PATH is kept there.
-_TRUSTED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+#: PATH handed to POSIX subprocesses that dispatch to child helpers, so those
+#: helpers resolve from trusted system directories rather than an agent-writable
+#: entry inherited from the gateway's PATH. Two callers need it: git (ssh for
+#: ssh:// remotes, credential helpers, git-remote-*) and the file-manager reveal
+#: in `server.py` (`xdg-open` is a shell script that searches PATH for `gio`,
+#: `gvfs-open`, `exo-open`, ...). POSIX only — on Windows (test runners) git's
+#: helpers live beside the install, so the inherited PATH is kept there.
+TRUSTED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
 
 async def run_git(
@@ -299,7 +323,7 @@ async def run_git(
         # Pin PATH so git's own child helpers (ssh, credential helpers,
         # git-remote-*) resolve from trusted system dirs, not an agent-writable
         # entry inherited from the gateway's PATH.
-        env["PATH"] = _TRUSTED_PATH
+        env["PATH"] = TRUSTED_PATH
     proc = await asyncio.create_subprocess_exec(
         _git_bin(),
         *args,
@@ -453,7 +477,9 @@ async def attach_vault(
     """Adopt an existing local git working tree as a vault — no second copy.
 
     Reads the repo's own remote and current branch so sync targets exactly what
-    the user's git already tracks.
+    the user's git already tracks. A repo with NO remote is accepted and marked
+    ``localOnly``: sync then commits to local history and never fetches or
+    pushes.
     """
     path = Path(dir_)
 
@@ -480,18 +506,24 @@ async def attach_vault(
     if not has_subfolder:
         raise AttachError(f"Subfolder not found in repo: {subfolder}", "ENOSUB")
 
+    # A repo with no remote is a valid vault: notes live in local git history
+    # and sync degrades to a local commit. Requiring a remote made the common
+    # `git init` scratch folder unusable for no benefit.
     url = await _remote_url(dir_)
-    if not url:
-        raise AttachError(f"Repository has no remote.origin.url: {dir_}", "ENOREMOTE")
 
     branch = await _current_branch(dir_) or "main"
     vault: dict[str, Any] = {
         "id": vault_id,
-        "name": name or repo_name(url) or path.name,
-        "repo": repo_slug(url),
+        "name": name or (repo_name(url) if url else "") or path.name,
+        "repo": repo_slug(url) if url else "",
         "localPath": dir_,
         "branch": branch,
         "readOnly": read_only,
+        # Recorded explicitly rather than inferred from a null `remoteUrl`,
+        # because `.git/config` is agent-writable: an origin appearing later is
+        # not a user decision this app can assume, so sync refuses instead of
+        # silently starting to push the user's notes to it.
+        "localOnly": url is None,
         # The remote as it stood at attach time — sync refuses if it is later
         # repointed in the vault's agent-writable .git/config.
         "remoteUrl": url,
@@ -560,7 +592,12 @@ async def status(dir_: str, subfolder: Optional[str] = None) -> list[FileChange]
 
     if prefix:
         changes = [c for c in changes if c.path.startswith(prefix)]
-    return changes
+    # The local trash lives inside the vault, so git sees it. Filtering here
+    # keeps a trashed note out of the commit message and out of the notes
+    # listing's pending badge; `auto_commit` additionally excludes it from the
+    # pathspec, because `add -A` stages from the working tree and never consults
+    # this list.
+    return [c for c in changes if not in_trash(c.path)]
 
 
 def _commit_message(changes: list[FileChange]) -> str:
@@ -570,11 +607,48 @@ def _commit_message(changes: list[FileChange]) -> str:
     return f"Update {len(changes)} files"
 
 
+async def _drop_staged(dir_: str, changes: list[FileChange]) -> list[FileChange]:
+    """Remove paths that are STAGED relative to HEAD.
+
+    A vault is an ordinary git repository the user can also drive from a terminal,
+    and a staged path is a commit they are composing by hand. The unattended
+    autosave must not touch it, in either of two ways:
+
+    * PARTIALLY staged (``git add -p``) — ``git add`` would overwrite the index
+      entry with the full working copy and commit it, so content the user
+      deliberately held back is committed by a timer they never triggered.
+    * FULLY staged — ``git commit -- <path>`` commits that path ALONE, lifting it
+      out of the multi-file commit the user was assembling. No content is lost, but
+      the composition is, and they cannot tell it happened until they look at the
+      log.
+
+    So the test is simply "is it staged", not "does the index differ from the
+    working tree": intent, not divergence. Only the UNATTENDED path filters — a
+    deliberate Sync still stages everything, because the user chose the moment.
+
+    Excluding just those paths (rather than skipping the whole tick) keeps autosave
+    working for every other note, and a held-back path resumes as soon as the
+    user's own commit lands.
+    """
+    if not changes:
+        return changes
+    pathspec = ["--", *(f":(literal){c.path}" for c in changes)]
+    # `--cached` is index-vs-HEAD: exactly "the user has staged this".
+    _, staged_out, _ = await run_git(
+        ["diff", "--no-ext-diff", "--cached", "--name-only", "-z", *pathspec], dir_
+    )
+    staged = {p for p in staged_out.split("\0") if p}
+    if not staged:
+        return changes
+    return [c for c in changes if c.path not in staged]
+
+
 async def auto_commit(
     dir_: str,
     message: Optional[str] = None,
     *,
     subfolder: Optional[str] = None,
+    notes_only: bool = False,
     author_name: str = DEFAULT_AUTHOR_NAME,
     author_email: str = DEFAULT_AUTHOR_EMAIL,
 ) -> dict[str, Any]:
@@ -584,15 +658,53 @@ async def auto_commit(
     unscoped ``add -A`` would sweep in everything else in the repository — a
     vault scoped to ``notes/`` inside a repo the user also works in would commit
     and push that unrelated work under a note-shaped commit message.
+
+    ``notes_only`` narrows staging further, to exactly the changed ``.md`` files
+    the user has not staged for a commit of their own (see ``_drop_staged``), and
+    is what the periodic autosave uses. Without it an UNATTENDED commit would
+    capture any file that happens to sit in the vault — a temporary secret a user
+    dropped there and meant to delete before syncing would be recorded in local
+    history by a timer they never triggered, and the next push would put that blob
+    on the remote permanently. A deliberate Sync stages every change `status()`
+    reported; the difference is that the user chose the moment.
     """
     changes = await status(dir_, subfolder)
+    if notes_only:
+        changes = [c for c in changes if c.path.lower().endswith(".md")]
+        changes = await _drop_staged(dir_, changes)
+    if not notes_only and len(changes) > MAX_STAGED_PATHS:
+        # A user-initiated Sync must not silently commit a SUBSET. `status()`
+        # reports a rename as two independent entries — the old path deleted, the
+        # new one added (see `status`) — and the slice below sorts by path, so the
+        # cutoff can fall between them. Committing and PUSHING only the deletion
+        # half makes the note look deleted to every other clone, while the UI
+        # reports the sync as a success. The autosave keeps the cap (it commits
+        # locally and pushes nothing, so a split rename is repaired by the next
+        # tick), but here the honest outcome is to refuse and say why.
+        raise GitError(
+            f"this vault has {len(changes)} changed files, more than the "
+            f"{MAX_STAGED_PATHS} one sync can stage at once. Autosave is working "
+            "through them in batches — sync again once the count is lower, or "
+            "commit them yourself with git"
+        )
+    # Bounded so a huge first sweep cannot build an argv past the OS limit. Only
+    # the autosave reaches this: the remainder is picked up by the next tick, a
+    # delay rather than a loss, and nothing has been pushed.
+    changes = sorted(changes, key=lambda c: c.path)[:MAX_STAGED_PATHS]
     if not changes:
         return {"oid": None, "message": "", "committed": []}
 
-    # `:(literal)` disables Git pathspec magic: without it a subfolder like
-    # `:(top,glob)**` would be read as a magic pathspec and `git add -A` would
-    # stage (and this commit would push) unrelated work elsewhere in the repo.
-    pathspec = ["--", f":(literal){subfolder.rstrip('/')}"] if subfolder else []
+    # Stage EXACTLY the paths `status()` reported, named individually — never a
+    # directory-wide `add -A`. `status()` filters the trash out (see `in_trash`),
+    # so this is what keeps the trash — including a PRE-EXISTING Obsidian one in a
+    # freshly attached vault — out of every commit. It is the ONLY mechanism doing
+    # that: nothing writes a git ignore rule for `.trash/`, so a directory-wide add
+    # would sweep it up and push it.
+    #
+    # `:(literal)` disables Git pathspec magic on every one: a note filename is
+    # user-controlled, and a name like `:(top,glob)**` read as a magic pathspec
+    # would widen the add to unrelated work elsewhere in the repository.
+    pathspec = ["--", *(f":(literal){c.path}" for c in changes)]
     await run_git(["add", "-A", *pathspec], dir_)
     final_message = message or _commit_message(changes)
     ident = [
@@ -737,6 +849,8 @@ async def sync(
     subfolder: Optional[str] = None,
     trusted_remote: Optional[str] = None,
     trusted_gitdir: Optional[str] = None,
+    local_only: bool = False,
+    commit_only: bool = False,
     author_name: str = DEFAULT_AUTHOR_NAME,
     author_email: str = DEFAULT_AUTHOR_EMAIL,
 ) -> dict[str, Any]:
@@ -746,6 +860,14 @@ async def sync(
     working tree keeps the local content, and the result carries every
     conflicted path with both the local and remote versions for the UI to
     present.
+
+    ``local_only`` is a vault attached from a repo with no remote: the run stops
+    after the commit — there is nothing to fetch, merge or push.
+
+    ``commit_only`` stops after the commit for ANY vault. It backs the periodic
+    autosave, so it deliberately skips the remote-identity checks: nothing it
+    does can reach a remote, and a vault whose remote drifted must still get its
+    edits into local history rather than silently stop saving.
     """
     # Validate before ANY git call: `target` is passed as a positional to
     # `fetch`/`merge`/`push`, so a persisted branch like `--upload-pack=<prog>`
@@ -755,24 +877,41 @@ async def sync(
     # committing HEAD and pushing the stale stored `main` would land the feature
     # commits on the wrong remote branch. Sync the branch the user is on.
     target = validate_ref(await _current_branch(dir_) or branch or "main")
-    remote_url = await _remote_url(dir_)
-    if not remote_url:
-        raise GitError(f"No remote.origin.url configured for {dir_}")
+    # Remote identity is only load-bearing for a run that can PUSH. A
+    # `commit_only` run cannot, so it skips these checks entirely — otherwise a
+    # user who repointed their own remote in git would find autosave has stopped
+    # writing history, which is the opposite of a safety property.
+    if not commit_only:
+        origin_urls = await _all_origin_urls(dir_)
+        if local_only:
+            # This vault was attached from a repo with NO remote, so a configured
+            # origin now means `.git/config` changed since. That file is
+            # agent-writable, so treat it as untrusted rather than as the user
+            # opting in to a remote — pushing note history to it is exactly the
+            # exfiltration the trusted-remote check below exists to prevent.
+            if origin_urls:
+                raise GitError(
+                    "this vault was attached with no git remote, but one is configured "
+                    "now — refusing to push to a remote it was not connected with"
+                )
+        elif not origin_urls:
+            raise GitError(f"No remote.origin.url configured for {dir_}")
 
-    # Refuse to sync if the vault's git remote no longer matches the URL it was
-    # created/attached with. A vault's `.git/config` is agent-writable, so a
-    # prompt-injected agent could repoint `remote.origin.url` (or `pushurl`) at
-    # an attacker and have auto-sync upload the note history there. The trusted
-    # URL is persisted in vaults.json, which is behind the sensitive-path floor.
-    if trusted_remote is not None:
-        trusted = _norm_remote(trusted_remote)
-        effective = await _all_origin_urls(dir_)
-        if not effective or any(_norm_remote(u) != trusted for u in effective):
-            raise GitError(
-                "this vault's git remote URL no longer matches the trusted URL it "
-                "was created with — refusing to sync to avoid pushing to an "
-                "unexpected remote"
-            )
+        # Refuse to sync if the vault's git remote no longer matches the URL it
+        # was created/attached with. A vault's `.git/config` is agent-writable,
+        # so a prompt-injected agent could repoint `remote.origin.url` (or
+        # `pushurl`) at an attacker and have auto-sync upload the note history
+        # there. The trusted URL is persisted in vaults.json, which is behind the
+        # sensitive-path floor.
+        if trusted_remote is not None:
+            trusted = _norm_remote(trusted_remote)
+            effective = await _all_origin_urls(dir_)
+            if not effective or any(_norm_remote(u) != trusted for u in effective):
+                raise GitError(
+                    "this vault's git remote URL no longer matches the trusted URL it "
+                    "was created with — refusing to sync to avoid pushing to an "
+                    "unexpected remote"
+                )
 
     # A worktree/submodule checkout stores `.git` as a file pointing at the real
     # git dir. An agent could rewrite that pointer to redirect commit/push into
@@ -804,9 +943,31 @@ async def sync(
     committed: list[dict[str, str]] = []
     if pending:
         result = await auto_commit(
-            dir_, subfolder=subfolder, author_name=author_name, author_email=author_email
+            dir_,
+            subfolder=subfolder,
+            # An UNATTENDED commit stages only notes. A user-initiated Sync keeps
+            # staging the whole scope, because the user chose that moment; a timer
+            # did not, and a stray file in the vault must not enter history — and
+            # then the remote — without them deciding to send it.
+            notes_only=commit_only,
+            author_name=author_name,
+            author_email=author_email,
         )
         committed = result["committed"]
+
+    # A local-only vault has nowhere to fetch from or push to, and a commit-only
+    # run is asked to stop here. The commit above IS the whole operation, so
+    # return before any network step rather than letting `fetch origin` fail on a
+    # remote that does not exist.
+    if local_only or commit_only:
+        return {
+            "pushed": False,
+            "pulled": False,
+            "committed": committed,
+            "conflicts": [],
+            "localOnly": local_only,
+            "commitOnly": commit_only,
+        }
 
     # 2. Fetch the remote tip.
     await run_git(

@@ -488,6 +488,11 @@
         "wait_repo": "Cloning the repo and listing its routes…",
         "wait_url": "Loading the page and following its links…"
       }
+    },
+    "mdNotebook": {
+      "row": {
+        "deleteConfirm": "You can restore it from <trash>.trash</trash>. Trashed notes aren't synced to the remote."
+      }
     }
   },
   "components": {

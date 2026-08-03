@@ -1655,7 +1655,8 @@
     "mdNotebook": {
       "title": "Notizen",
       "badge": {
-        "pending": "ausstehend"
+        "pending": "ausstehend",
+        "deleting": "wird gelöscht"
       },
       "boot": {
         "loading": "Wird geladen…",
@@ -1679,7 +1680,6 @@
         "renameHint": "Klicken, um diese Notiz umzubenennen"
       },
       "header": {
-        "newNote": "Neue Notiz",
         "view_rendered": "Gerendert",
         "view_raw": "Markdown-Quelltext"
       },
@@ -1695,7 +1695,8 @@
         "sortSection": "Sortieren nach",
         "view_folders": "Ordner",
         "view_list": "Flache Liste",
-        "noMatches": "Keine Treffer"
+        "noMatches": "Keine Treffer",
+        "newRootNote": "Neue Notiz auf oberster Ebene"
       },
       "sort": {
         "modifiedNewOld": "Geändert – neu nach alt",
@@ -1711,7 +1712,9 @@
         "justNow": "Gerade synchronisiert",
         "ago_m": "Vor {{n}} Min. synchronisiert",
         "ago_h": "Vor {{n}} Std. synchronisiert",
-        "ago_d": "Vor {{n}} T. synchronisiert"
+        "ago_d": "Vor {{n}} T. synchronisiert",
+        "localAction": "Lokal speichern",
+        "localTitle": "Änderungen in die lokale Git-Historie dieses Vaults committen. Dieser Vault hat kein Remote, es wird also nichts gepusht."
       },
       "knowledge": {
         "label": "Mit Kiro Crew Wissen synchronisieren",
@@ -1741,7 +1744,8 @@
         "localFolderPlaceholder": "~/Developer/my-notes",
         "repoUrlPlaceholder": "https://github.com/you/notes",
         "tokenPlaceholder": "github_pat_…",
-        "subfolderPlaceholder": "notes"
+        "subfolderPlaceholder": "notes",
+        "attachNoRemoteHelp": "Kein Git-Remote? Das funktioniert auch — der Vault verhält sich gleich und die Notizen bleiben auf diesem Rechner."
       },
       "settings": {
         "title": "Einstellungen",
@@ -1783,7 +1787,27 @@
         "shortcutHelpRecording": "Drücke die gewünschten Tasten – Esc bricht ab.",
         "recording": "Aufnahme…",
         "reset": "Zurücksetzen",
-        "shortcutNeedsModifier": "Verwende mindestens ⌘, Ctrl oder ⌥ – ein einzelner Buchstabe würde beim Tippen auslösen."
+        "shortcutNeedsModifier": "Verwende mindestens ⌘, Ctrl oder ⌥ – ein einzelner Buchstabe würde beim Tippen auslösen.",
+        "noRemote": "Kein Remote",
+        "autoCommit": "Automatisch in Historie speichern",
+        "autoCommitHelp": "Committet deine Änderungen alle {{n}} Minuten in die lokale Git-Historie des Vaults, damit du nie manuell speichern musst. Es wird nichts an ein Remote gepusht."
+      },
+      "row": {
+        "pin": "Notiz anpinnen",
+        "unpin": "Notiz abpinnen",
+        "duplicate": "Notiz duplizieren",
+        "rename": "Notiz umbenennen",
+        "delete": "Notiz löschen",
+        "renameField": "Notizname",
+        "deleteConfirm": "Du kannst sie aus <trash>.trash</trash> wiederherstellen. Notizen im Papierkorb werden nicht mit dem Remote synchronisiert.",
+        "deleteTitle": "„{{title}}“ in den Papierkorb verschieben?",
+        "deleteAction": "Löschen"
+      },
+      "trash": {
+        "open": ".trash-Ordner öffnen",
+        "empty": "Aus diesem Vault wurde noch nichts gelöscht, daher gibt es keinen .trash-Ordner.",
+        "unsupported": "Das Öffnen eines Ordners wird auf diesem System nicht unterstützt.",
+        "failed": "Ordner konnte nicht geöffnet werden: {{message}}"
       }
     }
   },
