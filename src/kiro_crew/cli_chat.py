@@ -16,7 +16,6 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     ConfigReadError,
     build_provider_factory,
-    config_dir,
     config_path,
     read_config_for_update,
     write_config_atomically,
@@ -114,11 +113,6 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     await provider.start()
 
     if message:
-        # Short one-time notice for single-message mode
-        notice_file = Path(config_dir()) / ".tui_notice_shown"
-        if not notice_file.exists():
-            print("💡 Try `kirocrew tui` for a richer experience.", file=sys.stderr)
-            notice_file.touch()
         await _send_and_print(provider, message)
     else:
         await _interactive(provider, cfg)
@@ -153,14 +147,6 @@ async def _interactive(provider: LLMProvider, cfg: KiroCrewConfig) -> None:
     print(BANNER)
     print(DATA_WARNING)
     print()
-
-    # One-time TUI migration notice
-    notice_file = Path(config_dir()) / ".tui_notice_shown"
-    if not notice_file.exists():
-        print("💡 Try `kirocrew tui` for a full-featured terminal UI with")
-        print("   syntax highlighting, tool approval, sessions, and more.")
-        print("   `kirocrew chat` will be merged into `kirocrew tui` in a future version.\n")
-        notice_file.touch()
 
     print("Type your message (Ctrl+D or 'exit' to quit)\n")
 
