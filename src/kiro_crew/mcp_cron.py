@@ -1026,8 +1026,24 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             for d in skip_dates:
                 if not is_valid_skip_date(d):
                     return f"Error: invalid skip_date: {redact(str(d))!r} (expected YYYY-MM-DD)"
+        thread_ts = (args.get("thread_ts") or "").strip() or None
+        # Resolve EVERY first-save field before the single locked add_job() so
+        # the job is persisted fully-formed in one transaction (#391) -- no
+        # create-then-mutate + second unlocked _save() window that a crash or a
+        # concurrent reader could capture as a job missing its agent_id/model.
+        # Bool fields are enforced by validation.py CRON_ADD_SCHEMA (FieldSpec
+        # ... bool), so a non-bool falls back to the field default rather than
+        # being coerced from a raw-truthy value.
+        agent = args.get("agent", "")
+        silent = args.get("silent", False)
+        approval_mode = args.get("approval_mode", "")
+        session_key = _resolve_session_key()
+        persistent_session = args.get("persistent_session")
+        minimal_context = args.get("minimal_context")
+        hide_in_chat = args.get("hide_in_chat")
+        strict_schedule = args.get("strict_schedule")
+        timeout_val = args.get("timeout", 0)
         try:
-            thread_ts = (args.get("thread_ts") or "").strip() or None
             job = svc.add_job(
                 name=n,
                 message=msg,
@@ -1039,66 +1055,25 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 delete_after_run=bool(at_ts),
                 timezone=tz,
                 skip_dates=skip_dates,
+                agent_id=agent or "",
+                approval_mode=approval_mode or "",
+                model=model_arg,
+                silent=bool(silent),
+                strict_schedule=strict_schedule if isinstance(strict_schedule, bool) else False,
+                hide_in_chat=hide_in_chat if isinstance(hide_in_chat, bool) else False,
+                command=command or "",
+                script=script or "",
+                persistent_session=(
+                    persistent_session if isinstance(persistent_session, bool) else True
+                ),
+                session_key=session_key,
+                minimal_context=minimal_context if isinstance(minimal_context, bool) else False,
+                timeout=timeout_val or 0,
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
         except ValueError as e:
             return f"Error: {e}"
-        agent = args.get("agent", "")
-        silent = args.get("silent", False)
-        approval_mode = args.get("approval_mode", "")
-        session_key = _resolve_session_key()
-        if agent:
-            job.agent_id = agent
-        if silent:
-            job.silent = True
-        if approval_mode:
-            job.approval_mode = approval_mode
-        if model_arg:
-            job.model = model_arg
-        if session_key:
-            job.session_key = session_key
-        # timezone/skip_dates are persisted by add_job's first _save() above.
-        # persistent_session: only override the default (True) when explicitly provided.
-        # Type is enforced by validation.py CRON_ADD_SCHEMA (FieldSpec ... bool),
-        # so we do NOT accept raw-truthy values here — only a real bool.
-        persistent_session = args.get("persistent_session")
-        persistent_session_explicit = isinstance(persistent_session, bool)
-        if isinstance(persistent_session, bool):
-            job.persistent_session = persistent_session
-        minimal_context = args.get("minimal_context")
-        minimal_context_explicit = isinstance(minimal_context, bool)
-        if isinstance(minimal_context, bool):
-            job.minimal_context = minimal_context
-        hide_in_chat = args.get("hide_in_chat")
-        hide_in_chat_explicit = isinstance(hide_in_chat, bool)
-        if isinstance(hide_in_chat, bool):
-            job.hide_in_chat = hide_in_chat
-        strict_schedule = args.get("strict_schedule")
-        strict_schedule_explicit = isinstance(strict_schedule, bool)
-        if isinstance(strict_schedule, bool):
-            job.strict_schedule = strict_schedule
-        if script:
-            job.script = script
-        if command:
-            job.command = command
-        timeout_val = args.get("timeout", 0)
-        if timeout_val:
-            job.timeout = timeout_val
-        if (
-            agent
-            or silent
-            or approval_mode
-            or model_arg
-            or session_key
-            or persistent_session_explicit
-            or minimal_context_explicit
-            or hide_in_chat_explicit
-            or strict_schedule_explicit
-            or script
-            or command
-        ):
-            svc._save()
         sched_str = format_schedule(job.schedule)
         sel().log_api_access(
             caller="mcp",

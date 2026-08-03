@@ -243,7 +243,9 @@ class TestCronApprovalModeValidation:
                 {"name": "test", "message": "go", "every": 300, "approval_mode": "auto"},
             )
         assert "v1" in result
-        assert job.approval_mode == "auto"
+        # #391: approval_mode is folded into add_job's single locked save, not
+        # mutated onto the returned job -- assert it was passed INTO add_job.
+        assert mock_svc.return_value.add_job.call_args.kwargs["approval_mode"] == "auto"
 
     def test_valid_empty(self) -> None:
         with patch("kiro_crew.mcp_cron.CronService") as mock_svc:

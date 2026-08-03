@@ -885,6 +885,24 @@ def _infer_source(session_key: str) -> str:
         return "heartbeat"
     if session_key == "cli_chat":
         return "cli"
+    # Namespaced messaging channels carry their transport as the first key
+    # segment (``{channel}:{agent}:...`` per messaging/link.build_dm_session_key,
+    # or a ``{channel}_`` prefix). Match the SAME set context._runtime_display_name
+    # uses (#979) so SEL attribution and the display name stay in lockstep.
+    # Bare/legacy Slack keys (thread timestamps like ``C08...:thread``) have no
+    # namespace prefix and correctly retain the historical ``slack`` fallback.
+    lowered_key = session_key.lower()
+    for namespace in (
+        "discord",
+        "telegram",
+        "wecom",
+        "weixin",
+        "webex",
+        "teams",
+        "slack",
+    ):
+        if lowered_key.startswith((f"{namespace}:", f"{namespace}_")):
+            return namespace
     return "slack"
 
 
@@ -898,6 +916,12 @@ _AUDIT_SOURCES: tuple[str, ...] = (
     "background",
     "heartbeat",
     "cli",
+    "discord",
+    "telegram",
+    "wecom",
+    "weixin",
+    "webex",
+    "teams",
     "slack",
 )
 

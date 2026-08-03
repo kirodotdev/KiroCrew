@@ -685,6 +685,12 @@ _AUDIT_SURFACE_DETAIL: dict[str, str] = {
     "background": "Background maintenance work",
     "heartbeat": "Liveness / watchdog activity",
     "cli": "Terminal chat sessions",
+    "discord": "Discord messages, approvals, and owner-authorization decisions",
+    "telegram": "Telegram messages, approvals, and owner-authorization decisions",
+    "wecom": "WeCom messages, approvals, and owner-authorization decisions",
+    "weixin": "Weixin messages, approvals, and owner-authorization decisions",
+    "webex": "Webex messages, approvals, and owner-authorization decisions",
+    "teams": "Microsoft Teams messages, approvals, and owner-authorization decisions",
     "host": "In-process governance checks not driven by a user-facing surface",
     "unknown": "Events that carry no surface signal (classified rather than misattributed)",
 }

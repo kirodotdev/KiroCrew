@@ -578,6 +578,12 @@ class TestOmissionDetection:
             "_bg": "background",
             "_hb": "heartbeat",
             "cli_chat": "cli",
+            "discord:1": "discord",
+            "telegram:1": "telegram",
+            "wecom:1": "wecom",
+            "weixin:1": "weixin",
+            "webex:1": "webex",
+            "teams:1": "teams",
             "C123:456.789": "slack",
         }
         for key, expected in probes.items():

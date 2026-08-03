@@ -216,3 +216,93 @@ class TestCronAddModel:
         svc2 = CronService(base_dir=tmp_path)
         updated = next(j for j in svc2.list_jobs() if j.id == job.id)
         assert updated.model == "glm-4.7"
+
+
+class TestCronAddPersistenceOwner:
+    """#391: the MCP create path folds ALL first-save fields into add_job's
+    single locked _save(), instead of the old create-then-mutate + second
+    unlocked _save() (which could persist a job missing its agent_id/model)."""
+
+    def test_cron_add_persists_all_fields_in_one_save(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:slot9")
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+
+        from kiro_crew.cron import CronService
+
+        # Count _save() calls made during the create. The old fold path saved
+        # TWICE (add_job's first save + the post-hoc svc._save()); the fix saves
+        # exactly once on a fresh (empty) home.
+        save_calls = {"n": 0}
+        orig_save = CronService._save
+
+        def counting_save(self):
+            save_calls["n"] += 1
+            return orig_save(self)
+
+        monkeypatch.setattr(CronService, "_save", counting_save)
+
+        job_name = f"owner-{uuid.uuid4().hex[:8]}"
+        result = _call_tool_inner(
+            "cron_add",
+            {
+                "name": job_name,
+                "message": "go",
+                "every": 120,
+                "agent": "kirocrew",
+                "model": "sonnet",
+                "silent": True,
+                "approval_mode": "auto",
+                "minimal_context": True,
+                "timeout": 45,
+            },
+        )
+        assert "Added job" in result
+        # Single locked persist — the second unlocked _save() is gone.
+        assert save_calls["n"] == 1
+
+        svc = CronService(base_dir=tmp_path)
+        matching = [j for j in svc.list_jobs() if j.name == job_name]
+        assert len(matching) == 1
+        job = matching[0]
+        assert job.agent_id == "kirocrew"
+        assert job.model != ""
+        assert job.silent is True
+        assert job.approval_mode == "auto"
+        assert job.minimal_context is True
+        assert job.timeout == 45
+        assert job.session_key == "dashboard:slot9"
+
+    def test_cron_add_explicit_null_fields_do_not_abort(self, monkeypatch, tmp_path):
+        """An explicit null optional field (normalized to None by validate_field)
+        must not abort creation or persist JSON null -- the always-pass fold
+        normalizes falsy values back to '' (regression guard for the
+        conditional-set -> always-pass conversion)."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+
+        job_name = f"nullfields-{uuid.uuid4().hex[:8]}"
+        result = _call_tool_inner(
+            "cron_add",
+            {
+                "name": job_name,
+                "message": "go",
+                "every": 120,
+                "approval_mode": None,
+                "agent": None,
+                "command": None,
+                "script": None,
+            },
+        )
+        assert "Added job" in result
+        assert "Invalid approval_mode" not in result
+
+        from kiro_crew.cron import CronService
+
+        matching = [j for j in CronService(base_dir=tmp_path).list_jobs() if j.name == job_name]
+        assert len(matching) == 1
+        job = matching[0]
+        assert job.approval_mode == ""
+        assert job.agent_id == ""
+        assert job.command == ""
+        assert job.script == ""

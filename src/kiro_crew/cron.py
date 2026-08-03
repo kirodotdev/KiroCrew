@@ -1116,6 +1116,9 @@ class CronService:
         agent_sequence: list[str] | None = None,
         env: dict[str, str] | None = None,
         persistent_session: bool = True,
+        session_key: str = "",
+        minimal_context: bool = False,
+        timeout: int = 0,
     ) -> CronJob:
         """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -1132,7 +1135,10 @@ class CronService:
         (``agent_id``/``model``/``silent``/``strict_schedule``/``hide_in_chat``,
         ``command``/``script``/``agent_sequence``/``env``/``persistent_session``)
         into the same single locked build+persist, totalizing over all fields
-        the "fully-formed on first save" invariant.
+        into the same single locked build+persist, totalizing over all fields
+        the "fully-formed on first save" invariant. The MCP create path folds
+        ``session_key``/``minimal_context``/``timeout`` here too, replacing its
+        former create-then-mutate plus second unlocked ``_save()``.
 
         Synchronous variant: the lock+save runs INLINE and so must only be
         called from a loop-less context (CLI / MCP server process / a worker
@@ -1167,6 +1173,9 @@ class CronService:
             agent_sequence=agent_sequence,
             env=env,
             persistent_session=persistent_session,
+            session_key=session_key,
+            minimal_context=minimal_context,
+            timeout=timeout,
         )
         self._persist_add_locked(job)
         self._arm_timer()
@@ -1214,6 +1223,9 @@ class CronService:
         agent_sequence: list[str] | None = None,
         env: dict[str, str] | None = None,
         persistent_session: bool = True,
+        session_key: str = "",
+        minimal_context: bool = False,
+        timeout: int = 0,
     ) -> CronJob:
         """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
 
@@ -1273,6 +1285,9 @@ class CronService:
             agent_sequence=list(agent_sequence) if agent_sequence else [],
             env=dict(env) if env else {},
             persistent_session=persistent_session,
+            session_key=session_key,
+            minimal_context=minimal_context,
+            timeout=timeout,
         )
 
     def _persist_add_locked(self, job: CronJob) -> None:
@@ -1313,6 +1328,9 @@ class CronService:
         agent_sequence: list[str] | None = None,
         env: dict[str, str] | None = None,
         persistent_session: bool = True,
+        session_key: str = "",
+        minimal_context: bool = False,
+        timeout: int = 0,
     ) -> CronJob:
         """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
 
@@ -1355,6 +1373,9 @@ class CronService:
             agent_sequence=agent_sequence,
             env=env,
             persistent_session=persistent_session,
+            session_key=session_key,
+            minimal_context=minimal_context,
+            timeout=timeout,
         )
         await asyncio.to_thread(self._persist_add_locked, job)
         self._arm_timer()
