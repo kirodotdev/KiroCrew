@@ -3455,6 +3455,7 @@
       "snapshot_failed": "快照失败",
       "snapshot_the_current_content_as_a_new_version_an": "把当前内容快照为新版本并发布",
       "snapshot_to_publish": "创建快照以发布",
+      "star": "加星标",
       "tag": "标签…",
       "tag_2": "标签",
       "this_artifact_is_regenerated_by_a_cron_job_your": "此工件由定时任务重新生成。修改会保留在版本历史中，但下次运行会创建更新版本，覆盖此处保存的内容。",

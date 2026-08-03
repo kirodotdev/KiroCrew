@@ -99,6 +99,57 @@ describe('ArtifactsPage', () => {
     expect(starBtn).toHaveAttribute('aria-pressed', 'true')
   })
 
+  // The star used to exist ONLY in the table view, while the Starred filter and
+  // the Starred StatCard applied to BOTH views — so in the default gallery you
+  // could filter by starred without being able to star anything. `pinned` is
+  // also the retention control (prune_auto_widgets only sweeps unpinned
+  // records), so the gallery could not keep an artifact either.
+  it('exposes the star on masonry cards in the default gallery view', async () => {
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
+      artifacts: [mkArtifact('cr-queue', { pinned: false })],
+    })
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact('cr-queue', { pinned: false }))
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
+    // No table in play — this is the card, not the row.
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    const starBtn = screen.getByLabelText('Star artifact')
+    expect(starBtn).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('stars an artifact from a masonry card without opening it', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
+      artifacts: [mkArtifact('cr-queue', { pinned: false })],
+    })
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact('cr-queue', { pinned: false }))
+    vi.mocked(api).setArtifactPinned = vi.fn().mockResolvedValue({})
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
+
+    await user.click(screen.getByLabelText('Star artifact'))
+
+    await waitFor(() => expect(vi.mocked(api).setArtifactPinned).toHaveBeenCalledWith('cr-queue', true))
+    // The card body is itself a click target that navigates; the star must
+    // stopPropagation so starring never doubles as "open this artifact".
+    expect(window.location.pathname).not.toContain('cr-queue')
+  })
+
+  it('unstars an already-starred masonry card', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
+      artifacts: [mkArtifact('cr-queue', { pinned: true })],
+    })
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact('cr-queue', { pinned: true }))
+    vi.mocked(api).setArtifactPinned = vi.fn().mockResolvedValue({})
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
+
+    await user.click(screen.getByLabelText('Remove star from artifact'))
+
+    await waitFor(() => expect(vi.mocked(api).setArtifactPinned).toHaveBeenCalledWith('cr-queue', false))
+  })
+
   it('filters by name search', async () => {
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
       artifacts: [

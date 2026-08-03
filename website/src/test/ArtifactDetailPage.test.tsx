@@ -937,4 +937,113 @@ describe('ArtifactDetailPage', () => {
       expect(notice.className).not.toContain('text-danger')
     })
   })
+
+  // `pinned` is record-level and is the retention control: prune_auto_widgets
+  // only sweeps unpinned records. The library exposed it on rows and cards but
+  // NOT here — the page where you read an artifact and decide to keep it.
+  describe('star (pinned) chip', () => {
+    beforeEach(() => {
+      vi.mocked(api).artifactVersions = vi
+        .fn()
+        .mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
+    })
+
+    it('renders an unpressed star for an unpinned artifact', async () => {
+      vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ pinned: false }))
+      renderRoute()
+      await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+      const star = screen.getByLabelText('Star artifact')
+      expect(star).toHaveAttribute('aria-pressed', 'false')
+    })
+
+    it('labels the chip "Starred" and presses it for a pinned artifact', async () => {
+      vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ pinned: true }))
+      renderRoute()
+      await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+      const star = screen.getByLabelText('Remove star from artifact')
+      expect(star).toHaveAttribute('aria-pressed', 'true')
+      expect(star).toHaveTextContent('Starred')
+    })
+
+    it('stars via setArtifactPinned without refetching the artifact content', async () => {
+      vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ pinned: false }))
+      vi.mocked(api).setArtifactPinned = vi.fn().mockResolvedValue({})
+      renderRoute()
+      await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+      const callsBefore = vi.mocked(api).artifact.mock.calls.length
+
+      fireEvent.click(screen.getByLabelText('Star artifact'))
+
+      await waitFor(() =>
+        expect(vi.mocked(api).setArtifactPinned).toHaveBeenCalledWith('cr-queue', true),
+      )
+      // The chip flips from the patched cache, not from a re-read.
+      await waitFor(() =>
+        expect(screen.getByLabelText('Remove star from artifact')).toBeInTheDocument(),
+      )
+      // Refetching ['artifact', slug] would move an open editor's baseline under a
+      // stale buffer and let the next Save overwrite an agent's update — the exact
+      // hazard useWebSocket's isArtifactEditing branch withholds that invalidation
+      // to avoid. `pinned` is record-level, so nothing needs re-reading.
+      expect(vi.mocked(api).artifact.mock.calls.length).toBe(callsBefore)
+    })
+
+    it('does not refetch content while the editor is open', async () => {
+      // jsdom cannot drive the Monaco editor, so this asserts the mechanism the
+      // hazard runs through rather than the buffer itself: while editing, a star
+      // toggle must not re-read ['artifact', slug]. A refetch there moves the
+      // editor's baseline under a stale buffer and the next Save silently
+      // overwrites whatever landed server-side — which is why useWebSocket's
+      // isArtifactEditing branch withholds that same invalidation.
+      vi.mocked(api).artifact = vi
+        .fn()
+        .mockResolvedValue(mkArtifact({ kind: 'markdown', content: '# v1', pinned: false }))
+      vi.mocked(api).setArtifactPinned = vi.fn().mockResolvedValue({})
+      renderRoute()
+      await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+
+      fireEvent.click(screen.getByTitle('Edit content'))
+      const callsWhileEditing = vi.mocked(api).artifact.mock.calls.length
+
+      fireEvent.click(screen.getByLabelText('Star artifact'))
+      await waitFor(() =>
+        expect(vi.mocked(api).setArtifactPinned).toHaveBeenCalledWith('cr-queue', true),
+      )
+
+      expect(vi.mocked(api).artifact.mock.calls.length).toBe(callsWhileEditing)
+    })
+
+    it('surfaces a failed toggle instead of silently reverting', async () => {
+      vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ pinned: false }))
+      vi.mocked(api).setArtifactPinned = vi.fn().mockRejectedValue(new Error('pin refused'))
+      renderRoute()
+      await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+
+      fireEvent.click(screen.getByLabelText('Star artifact'))
+
+      await waitFor(() => expect(screen.getByText(/pin refused/i)).toBeInTheDocument())
+      // Still unpinned and still clickable — not stuck in the pending state.
+      expect(screen.getByLabelText('Star artifact')).not.toBeDisabled()
+    })
+
+    it('hides the chip while viewing a historical version', async () => {
+      // A version snapshot does not carry the live record-level `pinned`, so
+      // rendering the chip there could show a stale star for state the user
+      // cannot meaningfully toggle from that view.
+      vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ pinned: true }))
+      vi.mocked(api).artifactVersion = vi
+        .fn()
+        .mockResolvedValue(mkArtifact({ version: 1, content: '<div>v1 body</div>' }))
+      renderRoute()
+      await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+      expect(screen.getByLabelText('Remove star from artifact')).toBeInTheDocument()
+
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: '1' } })
+
+      await waitFor(() =>
+        expect(screen.queryByLabelText('Remove star from artifact')).not.toBeInTheDocument(),
+      )
+      expect(screen.queryByLabelText('Star artifact')).not.toBeInTheDocument()
+    })
+  })
 })

@@ -3551,6 +3551,7 @@
       "snapshot_failed": "Échec de l’instantané",
       "snapshot_the_current_content_as_a_new_version_an": "Capturer le contenu actuel comme nouvelle version et le publier",
       "snapshot_to_publish": "Publier un instantané",
+      "star": "Ajouter aux favoris",
       "tag": "étiquette…",
       "tag_2": "étiquette",
       "this_artifact_is_regenerated_by_a_cron_job_your": "cet artefact est régénéré par une tâche cron. Vos modifications seront conservées dans l'historique des versions, mais la prochaine exécution cron créera une version plus récente qui remplacera ce que vous enregistrez ici.",

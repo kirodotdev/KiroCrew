@@ -3551,6 +3551,7 @@
       "snapshot_failed": "Snapshot non riuscito",
       "snapshot_the_current_content_as_a_new_version_an": "Acquisisci il contenuto attuale come nuova versione e pubblicalo",
       "snapshot_to_publish": "Snapshot da pubblicare",
+      "star": "Aggiungi ai preferiti",
       "tag": "tag…",
       "tag_2": "tag",
       "this_artifact_is_regenerated_by_a_cron_job_your": "questo artefatto viene rigenerato da un job cron. Le tue modifiche verranno conservate nella cronologia delle versioni, ma la prossima esecuzione del cron creerà una versione più recente che sovrascriverà ciò che salvi qui.",

@@ -3551,6 +3551,7 @@
       "snapshot_failed": "Falha ao criar o snapshot",
       "snapshot_the_current_content_as_a_new_version_an": "Criar um instantâneo do conteúdo atual como uma nova versão e publicá-lo",
       "snapshot_to_publish": "Criar snapshot para publicar",
+      "star": "Favoritar",
       "tag": "tag…",
       "tag_2": "tag",
       "this_artifact_is_regenerated_by_a_cron_job_your": "este artefato é regerado por um job de cron. Suas edições serão preservadas no histórico de versões, mas a próxima execução do cron criará uma versão mais recente que substituirá o que você salvar aqui.",

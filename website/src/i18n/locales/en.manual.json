@@ -1172,6 +1172,7 @@
       "show_comments": "Show comments",
       "snapshot_failed": "Snapshot failed",
       "snapshot_to_publish": "Snapshot to publish",
+      "star": "Star",
       "this_artifact_was_deleted": "This artifact was deleted.",
       "toggle_agent_chat": "Toggle agent chat"
     },

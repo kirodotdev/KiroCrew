@@ -3551,6 +3551,7 @@
       "snapshot_failed": "Error al crear la instantánea",
       "snapshot_the_current_content_as_a_new_version_an": "Captura el contenido actual como una nueva versión y publícala",
       "snapshot_to_publish": "Capturar para publicar",
+      "star": "Destacar",
       "tag": "etiqueta…",
       "tag_2": "etiqueta",
       "this_artifact_is_regenerated_by_a_cron_job_your": "este artefacto lo regenera una tarea cron. Tus ediciones se conservarán en el historial de versiones, pero la próxima ejecución del cron creará una versión más reciente que anulará lo que guardes aquí.",

@@ -3503,6 +3503,7 @@
       "snapshot_failed": "Snapshot fehlgeschlagen",
       "snapshot_the_current_content_as_a_new_version_an": "Den aktuellen Inhalt als neue Version erfassen und veröffentlichen",
       "snapshot_to_publish": "Snapshot zum Veröffentlichen erstellen",
+      "star": "Markieren",
       "tag": "Tag…",
       "tag_2": "Tag",
       "this_artifact_is_regenerated_by_a_cron_job_your": "Dieses Artefakt wird von einem Cron-Job neu erstellt. Ihre Änderungen bleiben im Versionsverlauf erhalten, aber die nächste Cron-Ausführung erstellt eine neuere Version, die überschreibt, was Sie hier speichern.",

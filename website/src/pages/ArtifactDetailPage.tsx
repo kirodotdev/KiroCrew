@@ -3,7 +3,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import WebAppArtifactCard from '../components/WebAppArtifactCard'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, AlertTriangle, ArrowUp, Camera, ExternalLink, Download, GitFork, Pencil, RefreshCw, X, AlertCircle, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Folder as FolderIcon } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, ArrowUp, Camera, ExternalLink, Download, GitFork, Pencil, RefreshCw, X, AlertCircle, RotateCcw, Plus, Sparkles, MessageSquare, Monitor, Undo2, Upload, Star, Folder as FolderIcon } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
 import { useAppDispatch, useAppSelector } from '../store'
@@ -430,6 +430,42 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     if (!artifact) return
     updateTagsMut(artifact.tags.filter(t => t !== tag))
   }, [artifact, updateTagsMut])
+
+  // ── Star (pinned) ─────────────────────────────────────────────────────────
+  // `pinned` is record-level, not per-version, and it is the RETENTION control:
+  // ArtifactStore.prune_auto_widgets only sweeps records that are unpinned, so
+  // starring an auto-registered widget is what keeps it. The library already
+  // exposes this on rows and cards; the detail page is where you actually read
+  // an artifact and decide whether to keep it, so it belongs here too.
+  const [pinning, setPinning] = useState(false)
+  const togglePin = useCallback(async () => {
+    if (!artifact || pinning) return
+    const next = !artifact.pinned
+    setSaveError(null)
+    setPinning(true)
+    try {
+      await api.setArtifactPinned(artifact.slug, next)
+      // Patch the cached record in place — do NOT invalidate ['artifact', slug].
+      // A refetch pulls whatever content is now on the server into the cache, and
+      // useWebSocket deliberately withholds exactly that invalidation while an
+      // edit buffer is open (see the isArtifactEditing branch): moving the
+      // editor's baseline under a stale buffer makes the next Save overwrite an
+      // agent's update, silently. `pinned` is a record-level boolean, so there is
+      // nothing to re-read — mirror the library's pinMut, which likewise only
+      // invalidates the list.
+      queryClient.setQueryData(
+        ['artifact', slug],
+        (old: Artifact | undefined) => (old ? { ...old, pinned: next } : old),
+      )
+      // The list carries the star column, the Starred filter and the Starred
+      // StatCard, and holds no edit buffer, so it refetches normally.
+      await queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPinning(false)
+    }
+  }, [artifact, pinning, queryClient, slug])
 
   // ── Edit / save / cancel / revert handlers ────────────────────────────────
   const startEditing = useCallback(() => {
@@ -1131,6 +1167,29 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           )}
           <Badge variant="aim">{artifact.kind}</Badge>
           <FolderChip artifact={artifact} />
+          {/* Only on the current version: a version snapshot does not carry the
+            * live record-level `pinned`, so rendering it there could show a
+            * stale star for state the user cannot meaningfully toggle. */}
+          {isCurrent && (
+            <button
+              type="button"
+              onClick={togglePin}
+              disabled={pinning}
+              className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border transition-colors cursor-pointer disabled:cursor-default ${
+                artifact.pinned
+                  ? 'bg-accent/10 border-accent text-accent'
+                  : 'bg-bg-elevated border-border text-muted hover:text-accent hover:border-accent'
+              }`}
+              title={artifact.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_save_to_library')}
+              aria-label={artifact.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
+              aria-pressed={!!artifact.pinned}
+            >
+              {pinning
+                ? <RefreshCw size={10} className="animate-spin" />
+                : <Star size={10} className={artifact.pinned ? 'fill-current' : ''} />}
+              {artifact.pinned ? i18nT('pages.artifactsPage.starred') : i18nT('pages.artifactDetailPage.star')}
+            </button>
+          )}
           {artifact.tags.map((t) => (
             <span key={t} className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-bg-elevated border border-border text-muted group">
               {t}

@@ -108,6 +108,8 @@ type LibCtx = {
   onOpen: (slug: string) => void
   onDelete: (a: Artifact) => void
   deletingSlug: string | null
+  onTogglePin: (a: Artifact) => void
+  pinningSlug: string | null
 }
 
 /** Responsive column count from the container width (~300px target column). */
@@ -693,7 +695,7 @@ function FolderBreadcrumbBar({ folders, currentFolderId, onNavigate }: {
 
 /** A single masonry card. Rendered by VirtuosoMasonry for each artifact. */
 function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
-  const { onOpen, onDelete, deletingSlug } = context
+  const { onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug } = context
   // The list payload omits `content` (metadata only). Fetch the full artifact
   // lazily so the preview can render — virtualization means only on-screen
   // cards fetch, and the ['artifact', slug] key shares cache with the detail page.
@@ -765,6 +767,25 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
         <div className="flex items-center justify-between mt-2">
           <span className="text-[11px] text-muted">{i18nT('pages.artifactsPage.v')}{a.version} · {_timeAgo(isoToTs(a.updated_at))}</span>
           <div className="flex items-center gap-1">
+            {/* Star sits FIRST: it is persistent state (and the retention
+              * control that exempts an auto-registered widget from
+              * prune_auto_widgets), so it reads apart from the one-shot
+              * pop-out / delete actions that follow. Not overlaid on the
+              * thumbnail — that layer is pointer-events-none so clicks fall
+              * through to the card's onClick. */}
+            <button
+              type="button"
+              disabled={pinningSlug === a.slug}
+              onClick={(e) => { e.stopPropagation(); onTogglePin(a) }}
+              className={`p-1 rounded transition-colors cursor-pointer bg-transparent border-none disabled:cursor-default ${a.pinned ? 'text-accent' : 'text-muted hover:text-accent'}`}
+              title={a.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_save_to_library')}
+              aria-label={a.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
+              aria-pressed={!!a.pinned}
+            >
+              {pinningSlug === a.slug
+                ? <Loader2 size={13} className="animate-spin" />
+                : <Star size={13} className={a.pinned ? 'fill-current' : ''} />}
+            </button>
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); openPopout(a.slug, a.name) }}
@@ -807,16 +828,20 @@ function LibraryMasonry({
   onOpen,
   onDelete,
   deletingSlug,
+  onTogglePin,
+  pinningSlug,
 }: {
   entries: GridEntry[]
   onOpen: (slug: string) => void
   onDelete: (a: Artifact) => void
   deletingSlug: string | null
+  onTogglePin: (a: Artifact) => void
+  pinningSlug: string | null
 }) {
   const [ref, cols] = useColumnCount(300)
   const context = useMemo<LibCtx>(
-    () => ({ onOpen, onDelete, deletingSlug }),
-    [onOpen, onDelete, deletingSlug],
+    () => ({ onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug }),
+    [onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug],
   )
   // Below this count, render a content-sized CSS-columns masonry so the
   // gallery takes only the height its cards need — no reserved blank space.
@@ -1624,7 +1649,17 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
 
   const pinMut = useMutation({
     mutationFn: ({ slug, pinned }: { slug: string; pinned: boolean }) => api.setArtifactPinned(slug, pinned),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['artifacts'] }),
+    onSuccess: (_data, { slug, pinned }) => {
+      // Patch the detail entry too, so opening the artifact right after starring
+      // shows the new state instead of a stale chip for up to staleTime. Same
+      // shape-preserving spread useArtifactFolders uses — never invalidate this
+      // key for a pin: a content refetch can move an open editor's baseline.
+      qc.setQueryData(
+        ['artifact', slug],
+        (old: Artifact | undefined) => (old ? { ...old, pinned } : old),
+      )
+      qc.invalidateQueries({ queryKey: ['artifacts'] })
+    },
   })
   const handleTogglePin = useCallback((a: Artifact) => {
     pinMut.mutate({ slug: a.slug, pinned: !a.pinned })
@@ -1864,6 +1899,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 onOpen={handleOpen}
                 onDelete={handleDelete}
                 deletingSlug={deleteMut.isPending ? (deleteMut.variables as string) : null}
+                onTogglePin={handleTogglePin}
+                pinningSlug={pinningSlug}
               />
             ) : filtersActive ? (
               <LibraryTable
