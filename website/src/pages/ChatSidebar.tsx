@@ -63,6 +63,7 @@ import {
   isWithinRecentWindow,
 } from './recentWindow'
 import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
+import { focusSiblingSessionRow } from './chat/sessionRowNav'
 
 import { i18nT } from '../i18n/t'
 import { compareText, fmtDateFields } from '../i18n/format'
@@ -1968,7 +1969,11 @@ function ChatSidebar({
               const isActive = activeSlot === s.key
               const nextIsActive = i < childSlots.length - 1 && activeSlot === childSlots[i + 1].key
               const showDivider = i < childSlots.length - 1 && !isActive && !nextIsActive
-              return renderSessionRow(s, 1, showDivider, `${columnId}:${folder.id}`)
+              // `scope` stays per-folder so the Framer layoutId and the inline
+              // rename target remain unique, but the arrow rove is scoped to the
+              // COLUMN: a board column's foldered and ungrouped rows are one
+              // visible list, so ArrowDown has to cross the folder boundary.
+              return renderSessionRow(s, 1, showDivider, `${columnId}:${folder.id}`, columnId)
             })}
           </div>
         </FolderBody>
@@ -1979,7 +1984,7 @@ function ChatSidebar({
   // scope namespaces the Framer layoutId per render location. A multi-tag slot
   // can render in several columns at once; same layoutId in one LayoutGroup
   // collides (Framer paints one, hides the rest). Distinct scope = distinct id.
-  const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list') => {
+  const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope) => {
     // Flat view shares the tree's layoutId namespace so Framer Motion treats a
     // row as the SAME element across the view toggle and animates it from its
     // tree position into the flat lane (and back). Safe: the two views are
@@ -2083,9 +2088,31 @@ function ChatSidebar({
           {...offlineProps(connected, 'switch sessions')}
           role="button"
           tabIndex={0}
+          data-session-row={s.key}
+          data-session-scope={navScope}
           aria-current={isActive ? 'true' : undefined}
           aria-disabled={!connected}
           onKeyDown={e => {
+            // ArrowUp/ArrowDown rove focus through the rows of THIS list (see
+            // chat/sessionRowNav for why the rove is scope-bounded and clamped).
+            // Focus-only, so walking the list doesn't load every session on the
+            // way — Enter/Space below still switches. Bare arrows only: the
+            // modified forms belong to other gestures (Alt+←/→ cycles sessions,
+            // ⌘/Ctrl+arrow is OS text/scroll movement), and Shift is left free.
+            // Skipped while a drag is in flight so dnd-kit keeps the arrows for
+            // moving the dragged row, and skipped for a keystroke aimed at an
+            // inner control so the rename input keeps its own caret keys.
+            const roveStep = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0
+            if (roveStep !== 0 && !activeDrag && !e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey
+                && (e.target as HTMLElement) === e.currentTarget) {
+              // Only claim the keystroke when focus actually moved; at the list
+              // edge it falls through and still scrolls the list.
+              if (focusSiblingSessionRow(e.currentTarget as HTMLElement, roveStep)) {
+                e.preventDefault()
+                e.stopPropagation()
+              }
+              return
+            }
             // WCAG 2.1.1: session rows must be operable via keyboard.
             // Enter/Space activates the row (same as click). Other keys are
             // forwarded to dnd-kit's listener (this prop appears after the
