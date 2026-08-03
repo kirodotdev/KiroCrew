@@ -577,12 +577,16 @@ All dashboard pages MUST follow this consistent layout pattern. Do NOT invent cu
 <>
   <PageHeader title="PageName" subtitle="Short description" />
   <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-    {/* StatCard row → Cards with tables/forms */}
+    {/* optional StatCard row → Cards with tables/forms */}
   </div>
 </>
 ```
 
-**Stat cards** — summary metrics at the top of every page:
+**Stat cards** — OPTIONAL summary metrics above the content. Add a row only when
+a number is not already visible in the content below it (a rolled-up total, a
+rate, an error count). Do NOT add one that restates `items.length` for a list
+rendered on the same screen: it costs ~90px above the fold and carries no action.
+A page with no stat card row is conformant.
 ```tsx
 <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
   <StatCard label="Total" value={count} accent />

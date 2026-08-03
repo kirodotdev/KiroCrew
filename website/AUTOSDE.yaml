@@ -89,12 +89,18 @@ custom-rules:
       Required structure:
       1. `<PageHeader title="..." subtitle="..." />` at top
       2. `<div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">` as content container
-      3. `StatCard` row for summary metrics
-      4. `Card` + `CardTitle` + `InfoTip` for data sections
-      5. `table-striped` tables with standard header style
-      6. `Input`, `Btn`, `SendBtn`, `SearchInput` — never raw HTML elements
-      7. `Badge` for status indicators — never raw colored text
-      8. `EmptyState` when lists are empty
+      3. `Card` + `CardTitle` + `InfoTip` for data sections
+      4. `table-striped` tables with standard header style
+      5. `Input`, `Btn`, `SendBtn`, `SearchInput` — never raw HTML elements
+      6. `Badge` for status indicators — never raw colored text
+      7. `EmptyState` when lists are empty
+
+      Optional: a `StatCard` row for summary metrics, directly below the content
+      container. Use it when a number is NOT already visible in the content
+      below it (a rolled-up total, a rate, an error count) — not to restate
+      `items.length` for a list rendered on the same screen. A row of derived
+      counts above the list costs ~90px above the fold and carries no action, so
+      a page omitting the row is CONFORMANT: do not flag its absence.
 
       Do NOT use `<div className="p-6 max-w-[960px] mx-auto">` — this is the old pattern.
 
