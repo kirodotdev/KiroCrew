@@ -2264,6 +2264,14 @@
       "toggle_additional_prompt": "अतिरिक्त प्रॉम्प्ट टॉगल करें",
       "write_a_comment": "टिप्पणी लिखें…"
     },
+    "commentThreadPopover": {
+      "close": "बंद करें",
+      "comment_one": "{{count}} टिप्पणी",
+      "comment_other": "{{count}} टिप्पणियाँ",
+      "comment_thread": "टिप्पणी थ्रेड",
+      "reply": "उत्तर दें…",
+      "reply_2": "उत्तर दें"
+    },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "पूरे आर्टिफ़ैक्ट पर टिप्पणी जोड़ें…",
       "add_comment": "टिप्पणी जोड़ें",
@@ -2301,14 +2309,6 @@
       "failed_to_sync_to_provider": "प्रोवाइडर से सिंक नहीं हो सका",
       "pending_sync_to_provider": "प्रोवाइडर से सिंक लंबित"
     },
-    "commentThreadPopover": {
-      "close": "बंद करें",
-      "comment_one": "{{count}} टिप्पणी",
-      "comment_other": "{{count}} टिप्पणियाँ",
-      "comment_thread": "टिप्पणी थ्रेड",
-      "reply": "उत्तर दें…",
-      "reply_2": "उत्तर दें"
-    },
     "computerUseLiveView": {
       "close": "बंद करें",
       "close_live_desktop_view": "लाइव डेस्कटॉप व्यू बंद करें",
@@ -2342,6 +2342,9 @@
     "detailPanel": {
       "close_panel": "पैनल बंद करें",
       "resize_panel": "पैनल का आकार बदलें"
+    },
+    "dialog": {
+      "close": "बंद करें"
     },
     "diffBlock": {
       "collapse": "▲ समेटें",
@@ -2514,16 +2517,6 @@
       "comment_unread_one": "{{count}} टिप्पणी · अपठित",
       "comment_unread_other": "{{count}} टिप्पणियाँ · अपठित"
     },
-    "instancesViewport": {
-      "connecting": "कनेक्ट हो रहा है…",
-      "connection_error": "कनेक्शन त्रुटि",
-      "disconnected": "डिस्कनेक्ट हो गया",
-      "loading_pane": "फलक लोड हो रहा है…",
-      "pane_failed_to_load": "पेन लोड नहीं हो सका",
-      "retry": "फिर से प्रयास करें",
-      "the_tunnel_looks_connected_but_the_remote_dashbo": "टनल कनेक्टेड लग रहा है लेकिन रिमोट डैशबोर्ड कभी लोड नहीं हुआ। यह\n                  रीस्टार्ट हो रहा हो सकता है — फिर कोशिश करें, या ऊपर टैब बदलें।",
-      "this_tab_stays_until_you_disconnect_the_instance": "यह टैब तब तक बना रहता है जब तक आप सेटिंग्स → इंस्टेंस में इंस्टेंस को डिस्कनेक्ट नहीं करते।"
-    },
     "instanceTabBar": {
       "connected": "कनेक्टेड",
       "connected_refreshing": "कनेक्टेड · रिफ़्रेश हो रहा है…",
@@ -2534,6 +2527,16 @@
       "tunnel_connected": "टनल कनेक्ट हो गया।",
       "tunnel_connecting": "टनल कनेक्ट हो रहा है…",
       "tunnel_error": "टनल त्रुटि"
+    },
+    "instancesViewport": {
+      "connecting": "कनेक्ट हो रहा है…",
+      "connection_error": "कनेक्शन त्रुटि",
+      "disconnected": "डिस्कनेक्ट हो गया",
+      "loading_pane": "फलक लोड हो रहा है…",
+      "pane_failed_to_load": "पेन लोड नहीं हो सका",
+      "retry": "फिर से प्रयास करें",
+      "the_tunnel_looks_connected_but_the_remote_dashbo": "टनल कनेक्टेड लग रहा है लेकिन रिमोट डैशबोर्ड कभी लोड नहीं हुआ। यह\n                  रीस्टार्ट हो रहा हो सकता है — फिर कोशिश करें, या ऊपर टैब बदलें।",
+      "this_tab_stays_until_you_disconnect_the_instance": "यह टैब तब तक बना रहता है जब तक आप सेटिंग्स → इंस्टेंस में इंस्टेंस को डिस्कनेक्ट नहीं करते।"
     },
     "issuePanel": {
       "add_to_chat": "चैट में जोड़ें",
@@ -2684,6 +2687,11 @@
       "waiting_for_sign_in": "साइन-इन की प्रतीक्षा…",
       "we_could_not_check_kiro_cli": "हम Kiro CLI की जाँच नहीं कर सके।",
       "your_crew_is_almost_ready": "आपका क्रू लगभग तैयार है।"
+    },
+    "linkPreview": {
+      "copied": "कॉपी हो गया",
+      "copy_url": "URL कॉपी करें",
+      "copy_url_of": "{{name}} का URL कॉपी करें"
     },
     "linkedSurfacesSection": {
       "confirm_release": "इस सेशन को {{label}} से अलग करें?\n\nवहाँ भेजे गए संदेश अब यहाँ नहीं आएँगे, और जवाब वहाँ नहीं पहुँचेंगे। आप उस चैनल से !sessions का उपयोग करके इसे फिर से जोड़ सकते हैं।",
@@ -3152,6 +3160,12 @@
       "sub_agent_result_one": "{{count}} सब-एजेंट परिणाम",
       "sub_agent_result_other": "{{count}} सब-एजेंट परिणाम"
     },
+    "readingWidthToggle": {
+      "label_full": "प",
+      "label_md": "म",
+      "title_full": "पूरी चौड़ाई",
+      "title_md": "मध्यम चौड़ाई"
+    },
     "reasoningEffortDropdown": {
       "effort": "प्रयास",
       "faster": "तेज़",
@@ -3381,6 +3395,35 @@
       "post_reminder_in_slack": "Slack में रिमाइंडर पोस्ट करें",
       "send_to_slack": "Slack पर भेजें",
       "unlink_from_slack": "Slack से अनलिंक करें"
+    },
+    "slashCommandMenu": {
+      "desc_agent": "सक्रिय एजेंट बदलें या प्रबंधित करें",
+      "desc_changelog": "रिलीज़ चेंजलॉग दिखाएँ",
+      "desc_chat": "चैट सत्र सहेजें या लोड करें",
+      "desc_clear": "बातचीत का इतिहास साफ़ करें",
+      "desc_code": "कोड इंटेलिजेंस टूल खोलें",
+      "desc_compact": "कॉन्टेक्स्ट ख़ाली करने के लिए बातचीत संक्षिप्त करें",
+      "desc_context": "कॉन्टेक्स्ट फ़ाइलें और टोकन उपयोग प्रबंधित करें",
+      "desc_editor": "अपना प्रॉम्प्ट किसी बाहरी एडिटर में लिखें",
+      "desc_exit": "चैट सत्र से बाहर निकलें",
+      "desc_experiment": "प्रयोगात्मक फ़ीचर चालू/बंद करें",
+      "desc_help": "उपलब्ध कमांड दिखाएँ",
+      "desc_hooks": "कॉन्फ़िगर किए गए कॉन्टेक्स्ट हुक देखें",
+      "desc_issue": "कोई इश्यू या बग रिपोर्ट करें",
+      "desc_kb": "ज्ञान लाइब्रेरी खोजें",
+      "desc_logdump": "सत्र के लॉग किसी फ़ाइल में डंप करें",
+      "desc_mcp": "कॉन्फ़िगर किए गए MCP सर्वर दिखाएँ",
+      "desc_model": "मौजूदा मॉडल दिखाएँ या बदलें",
+      "desc_onboarding": "सेटअप इंपोर्ट और स्वागत टूर दोबारा चलाएँ",
+      "desc_paste": "क्लिपबोर्ड से कोई इमेज पेस्ट करें",
+      "desc_prompts": "सहेजे गए प्रॉम्प्ट और एजेंट SOP सूचीबद्ध करें या चलाएँ",
+      "desc_quit": "चैट सत्र छोड़ें",
+      "desc_reply": "असिस्टेंट के आख़िरी मैसेज का जवाब दें",
+      "desc_side": "साइड बातचीत पैनल खोलें",
+      "desc_tangent": "टैंजेंट बातचीत शुरू करें",
+      "desc_todos": "कार्य सूची दिखाएँ या प्रबंधित करें",
+      "desc_tools": "उपलब्ध टूल दिखाएँ",
+      "desc_usage": "बिलिंग और उपयोग की जानकारी दिखाएँ"
     },
     "slotTagPopover": {
       "assign_tags": "टैग असाइन करें",
@@ -3676,46 +3719,6 @@
       "select": "चुनें",
       "workspace_name": "वर्कस्पेस का नाम",
       "workspace_name_2": "workspace-name"
-    },
-    "linkPreview": {
-      "copied": "कॉपी हो गया",
-      "copy_url": "URL कॉपी करें",
-      "copy_url_of": "{{name}} का URL कॉपी करें"
-    },
-    "readingWidthToggle": {
-      "label_full": "प",
-      "label_md": "म",
-      "title_full": "पूरी चौड़ाई",
-      "title_md": "मध्यम चौड़ाई"
-    },
-    "slashCommandMenu": {
-      "desc_agent": "सक्रिय एजेंट बदलें या प्रबंधित करें",
-      "desc_changelog": "रिलीज़ चेंजलॉग दिखाएँ",
-      "desc_chat": "चैट सत्र सहेजें या लोड करें",
-      "desc_clear": "बातचीत का इतिहास साफ़ करें",
-      "desc_code": "कोड इंटेलिजेंस टूल खोलें",
-      "desc_compact": "कॉन्टेक्स्ट ख़ाली करने के लिए बातचीत संक्षिप्त करें",
-      "desc_context": "कॉन्टेक्स्ट फ़ाइलें और टोकन उपयोग प्रबंधित करें",
-      "desc_editor": "अपना प्रॉम्प्ट किसी बाहरी एडिटर में लिखें",
-      "desc_exit": "चैट सत्र से बाहर निकलें",
-      "desc_experiment": "प्रयोगात्मक फ़ीचर चालू/बंद करें",
-      "desc_help": "उपलब्ध कमांड दिखाएँ",
-      "desc_hooks": "कॉन्फ़िगर किए गए कॉन्टेक्स्ट हुक देखें",
-      "desc_issue": "कोई इश्यू या बग रिपोर्ट करें",
-      "desc_kb": "ज्ञान लाइब्रेरी खोजें",
-      "desc_logdump": "सत्र के लॉग किसी फ़ाइल में डंप करें",
-      "desc_mcp": "कॉन्फ़िगर किए गए MCP सर्वर दिखाएँ",
-      "desc_model": "मौजूदा मॉडल दिखाएँ या बदलें",
-      "desc_onboarding": "सेटअप इंपोर्ट और स्वागत टूर दोबारा चलाएँ",
-      "desc_paste": "क्लिपबोर्ड से कोई इमेज पेस्ट करें",
-      "desc_prompts": "सहेजे गए प्रॉम्प्ट और एजेंट SOP सूचीबद्ध करें या चलाएँ",
-      "desc_quit": "चैट सत्र छोड़ें",
-      "desc_reply": "असिस्टेंट के आख़िरी मैसेज का जवाब दें",
-      "desc_side": "साइड बातचीत पैनल खोलें",
-      "desc_tangent": "टैंजेंट बातचीत शुरू करें",
-      "desc_todos": "कार्य सूची दिखाएँ या प्रबंधित करें",
-      "desc_tools": "उपलब्ध टूल दिखाएँ",
-      "desc_usage": "बिलिंग और उपयोग की जानकारी दिखाएँ"
     }
   },
   "hooks": {
@@ -5436,7 +5439,6 @@
       "also_used_by_these_crews": "{{crews}} भी इसे इस्तेमाल करते हैं। एक ही स्टोर साझा करने वाले Crew एक-दूसरे की फ़ाइलें और मेमोरी पढ़ सकते हैं।",
       "cancel": "रद्द करें",
       "chat_with_this_crew": "इस Crew से चैट करें",
-      "close_dialog": "डायलॉग बंद करें",
       "copy_from_optional": "यहाँ से कॉपी करें (वैकल्पिक)",
       "copy_from_workspace": "वर्कस्पेस से कॉपी करें",
       "copy_the_contents_of_an_existing_workspace_into": "किसी मौजूदा वर्कस्पेस की सामग्री नए वर्कस्पेस में कॉपी करें। नए सिरे से शुरू करने के लिए '— none —' ही रहने दें।",
@@ -5447,6 +5449,7 @@
       "create_workspace": "वर्कस्पेस बनाएं",
       "create_your_first_crew": "अपना पहला Crew बनाओ",
       "creating": "बनाया जा रहा है…",
+      "crew_column": "क्रू",
       "danger_zone": "ख़तरे का ज़ोन",
       "default_2": "डिफ़ॉल्ट",
       "delete_crew": "Crew हटाएं",
@@ -5475,6 +5478,7 @@
       "new_workspace_action": "+ नया वर्कस्पेस…",
       "no_crews_match_your_filter": "तुम्हारे फ़िल्टर से कोई crew मेल नहीं खाता",
       "no_crews_yet": "अभी कोई Crew नहीं",
+      "no_description": "कोई विवरण नहीं",
       "no_pin_anywhere_the_backend_chooses": "यहाँ या टेम्पलेट में कुछ नहीं चुना गया, इसलिए KiroCrew खुद एक चुन लेता है।",
       "none": "— कोई नहीं —",
       "pinned_on_this_crew": "इसी Crew के लिए चुना गया।",
@@ -5485,6 +5489,10 @@
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew के अंदर वह उपडायरेक्टरी जहाँ यह वर्कस्पेस अपना डेटा (चैट इतिहास, सीख, प्रोजेक्ट) रखता है। हर वर्कस्पेस को अपनी अलग डायरेक्टरी मिलती है।",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "यह Crew जिस शुरुआती सेटअप से चलता है — इसके टूल, कनेक्शन और हिदायतें।",
       "used_for_all_new_chats": "सभी नई चैट के लिए इस्तेमाल होता है",
+      "view_cards": "कार्ड",
+      "view_cards_tooltip": "विस्तृत कार्ड, जो दिखाते हैं कि हर क्रू क्या उपयोग करता है",
+      "view_list": "सूची",
+      "view_list_tooltip": "संक्षिप्त तालिका, प्रति क्रू एक पंक्ति",
       "which_store_its_lessons_and_history_are_written": "इस Crew की सीख और इतिहास कहाँ सहेजे जाते हैं। इसे बदलने पर Crew खाली मेमोरी से शुरू करता है; पुरानी मेमोरी बनी रहती है।",
       "workspace": "वर्कस्पेस",
       "workspace_2": "वर्कस्पेस",

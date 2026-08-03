@@ -1746,6 +1746,9 @@
       "close_panel": "Close panel",
       "resize_panel": "Resize panel"
     },
+    "dialog": {
+      "close": "Close"
+    },
     "diffBlock": {
       "collapse": "▲ collapse",
       "context_lines": "context lines",
@@ -3671,7 +3674,6 @@
       "also_used_by_these_crews": "Also used by {{crews}}. Crews that share a store can read each other’s files and memory.",
       "cancel": "Cancel",
       "chat_with_this_crew": "Chat with this crew",
-      "close_dialog": "Close dialog",
       "copy_from_optional": "Copy from (optional)",
       "copy_from_workspace": "Copy from workspace",
       "create": "Create",
@@ -3680,6 +3682,7 @@
       "create_agent": "Create Crew",
       "create_workspace": "Create Workspace",
       "create_your_first_crew": "Create your first crew",
+      "crew_column": "Crew",
       "danger_zone": "Danger zone",
       "default_2": "default",
       "delete_crew": "Delete crew",
@@ -3703,6 +3706,7 @@
       "new_workspace_action": "+ New workspace…",
       "no_crews_match_your_filter": "No crews match your filter",
       "no_crews_yet": "No crews yet",
+      "no_description": "No description",
       "no_pin_anywhere_the_backend_chooses": "nothing chosen here or on the template, so KiroCrew picks one for you.",
       "none": "— none —",
       "pinned_on_this_crew": "chosen for this crew.",
@@ -3712,6 +3716,10 @@
       "shared_lower": "shared",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "The starting setup this crew uses — its tools, connections and instructions.",
       "used_for_all_new_chats": "Used for all new chats",
+      "view_cards": "Cards",
+      "view_cards_tooltip": "Roomy cards showing what each crew uses",
+      "view_list": "List",
+      "view_list_tooltip": "Compact table, one row per crew",
       "which_store_its_lessons_and_history_are_written": "Where this crew’s lessons and history are saved. Switch it and the crew starts from a blank memory; the old one is kept.",
       "workspace": "workspace",
       "workspace_2": "Workspace",

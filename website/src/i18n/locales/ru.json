@@ -2338,6 +2338,16 @@
       "toggle_additional_prompt": "Показать/скрыть дополнительный промпт",
       "write_a_comment": "Напишите комментарий…"
     },
+    "commentThreadPopover": {
+      "close": "Закрыть",
+      "comment_few": "{{count}} комментария",
+      "comment_many": "{{count}} комментариев",
+      "comment_one": "{{count}} комментарий",
+      "comment_other": "{{count}} комментария",
+      "comment_thread": "Ветка комментариев",
+      "reply": "Ответить…",
+      "reply_2": "Ответить"
+    },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "Добавить комментарий ко всему артефакту…",
       "add_comment": "Добавить комментарий",
@@ -2375,16 +2385,6 @@
       "failed_to_sync_to_provider": "Не удалось синхронизировать с провайдером",
       "pending_sync_to_provider": "Ожидает синхронизации с провайдером"
     },
-    "commentThreadPopover": {
-      "close": "Закрыть",
-      "comment_few": "{{count}} комментария",
-      "comment_many": "{{count}} комментариев",
-      "comment_one": "{{count}} комментарий",
-      "comment_other": "{{count}} комментария",
-      "comment_thread": "Ветка комментариев",
-      "reply": "Ответить…",
-      "reply_2": "Ответить"
-    },
     "computerUseLiveView": {
       "close": "Закрыть",
       "close_live_desktop_view": "Закрыть живой вид рабочего стола",
@@ -2418,6 +2418,9 @@
     "detailPanel": {
       "close_panel": "Закрыть панель",
       "resize_panel": "Изменить размер панели"
+    },
+    "dialog": {
+      "close": "Закрыть"
     },
     "diffBlock": {
       "collapse": "▲ свернуть",
@@ -2602,16 +2605,6 @@
       "comment_unread_one": "{{count}} комментарий · не прочитано",
       "comment_unread_other": "{{count}} комментария · не прочитано"
     },
-    "instancesViewport": {
-      "connecting": "Подключение…",
-      "connection_error": "Ошибка подключения",
-      "disconnected": "Отключено",
-      "loading_pane": "Загрузка панели…",
-      "pane_failed_to_load": "Не удалось загрузить панель",
-      "retry": "Повторить",
-      "the_tunnel_looks_connected_but_the_remote_dashbo": "Туннель подключён, но удалённая панель так и не загрузилась. Возможно, она\n                  перезапускается — повторите попытку или переключите вкладки выше.",
-      "this_tab_stays_until_you_disconnect_the_instance": "Эта вкладка останется, пока вы не отключите инстанс в «Настройки → Инстансы»."
-    },
     "instanceTabBar": {
       "connected": "подключено",
       "connected_refreshing": "подключено · обновление…",
@@ -2622,6 +2615,16 @@
       "tunnel_connected": "Туннель подключён.",
       "tunnel_connecting": "Туннель подключается…",
       "tunnel_error": "ошибка туннеля"
+    },
+    "instancesViewport": {
+      "connecting": "Подключение…",
+      "connection_error": "Ошибка подключения",
+      "disconnected": "Отключено",
+      "loading_pane": "Загрузка панели…",
+      "pane_failed_to_load": "Не удалось загрузить панель",
+      "retry": "Повторить",
+      "the_tunnel_looks_connected_but_the_remote_dashbo": "Туннель подключён, но удалённая панель так и не загрузилась. Возможно, она\n                  перезапускается — повторите попытку или переключите вкладки выше.",
+      "this_tab_stays_until_you_disconnect_the_instance": "Эта вкладка останется, пока вы не отключите инстанс в «Настройки → Инстансы»."
     },
     "issuePanel": {
       "add_to_chat": "Добавить в чат",
@@ -2772,6 +2775,11 @@
       "waiting_for_sign_in": "Ожидание входа…",
       "we_could_not_check_kiro_cli": "Нам не удалось проверить Kiro CLI.",
       "your_crew_is_almost_ready": "Ваш экипаж почти готов."
+    },
+    "linkPreview": {
+      "copied": "Скопировано",
+      "copy_url": "Копировать URL",
+      "copy_url_of": "Копировать URL для {{name}}"
     },
     "linkedSurfacesSection": {
       "confirm_release": "Отвязать эту сессию от {{label}}?\n\nСообщения, отправленные туда, перестанут поступать сюда, а ответы — доставляться туда. Вы сможете снова привязать её командой !sessions из того канала.",
@@ -3248,6 +3256,12 @@
       "sub_agent_result_one": "{{count}} результат субагента",
       "sub_agent_result_other": "{{count}} результата субагентов"
     },
+    "readingWidthToggle": {
+      "label_full": "П",
+      "label_md": "С",
+      "title_full": "Полная ширина",
+      "title_md": "Средняя ширина"
+    },
     "reasoningEffortDropdown": {
       "effort": "Глубина",
       "faster": "Быстрее",
@@ -3479,6 +3493,35 @@
       "post_reminder_in_slack": "Опубликовать напоминание в Slack",
       "send_to_slack": "Отправить в Slack",
       "unlink_from_slack": "Отвязать от Slack"
+    },
+    "slashCommandMenu": {
+      "desc_agent": "Переключить активного агента или управлять им",
+      "desc_changelog": "Показать журнал изменений версии",
+      "desc_chat": "Сохранить или загрузить сессию чата",
+      "desc_clear": "Очистить историю переписки",
+      "desc_code": "Открыть инструменты анализа кода",
+      "desc_compact": "Сжать переписку, чтобы освободить контекст",
+      "desc_context": "Управлять файлами контекста и расходом токенов",
+      "desc_editor": "Составить промпт во внешнем редакторе",
+      "desc_exit": "Выйти из сессии чата",
+      "desc_experiment": "Включить или отключить экспериментальные функции",
+      "desc_help": "Показать доступные команды",
+      "desc_hooks": "Посмотреть настроенные хуки контекста",
+      "desc_issue": "Сообщить о проблеме или ошибке",
+      "desc_kb": "Поиск по библиотеке знаний",
+      "desc_logdump": "Выгрузить логи сессии в файл",
+      "desc_mcp": "Показать настроенные серверы MCP",
+      "desc_model": "Показать или сменить текущую модель",
+      "desc_onboarding": "Повторить импорт настроек и вводный тур",
+      "desc_paste": "Вставить изображение из буфера обмена",
+      "desc_prompts": "Показать или вызвать сохранённые промпты и регламенты агента",
+      "desc_quit": "Завершить сессию чата",
+      "desc_reply": "Ответить на последнее сообщение ассистента",
+      "desc_side": "Открыть панель параллельной переписки",
+      "desc_tangent": "Начать ответвление переписки",
+      "desc_todos": "Показать список задач или управлять им",
+      "desc_tools": "Показать доступные инструменты",
+      "desc_usage": "Показать сведения о биллинге и расходе"
     },
     "slotTagPopover": {
       "assign_tags": "Назначить теги",
@@ -3774,46 +3817,6 @@
       "select": "Выбрать",
       "workspace_name": "Название рабочей области",
       "workspace_name_2": "workspace-name"
-    },
-    "linkPreview": {
-      "copied": "Скопировано",
-      "copy_url": "Копировать URL",
-      "copy_url_of": "Копировать URL для {{name}}"
-    },
-    "readingWidthToggle": {
-      "label_full": "П",
-      "label_md": "С",
-      "title_full": "Полная ширина",
-      "title_md": "Средняя ширина"
-    },
-    "slashCommandMenu": {
-      "desc_agent": "Переключить активного агента или управлять им",
-      "desc_changelog": "Показать журнал изменений версии",
-      "desc_chat": "Сохранить или загрузить сессию чата",
-      "desc_clear": "Очистить историю переписки",
-      "desc_code": "Открыть инструменты анализа кода",
-      "desc_compact": "Сжать переписку, чтобы освободить контекст",
-      "desc_context": "Управлять файлами контекста и расходом токенов",
-      "desc_editor": "Составить промпт во внешнем редакторе",
-      "desc_exit": "Выйти из сессии чата",
-      "desc_experiment": "Включить или отключить экспериментальные функции",
-      "desc_help": "Показать доступные команды",
-      "desc_hooks": "Посмотреть настроенные хуки контекста",
-      "desc_issue": "Сообщить о проблеме или ошибке",
-      "desc_kb": "Поиск по библиотеке знаний",
-      "desc_logdump": "Выгрузить логи сессии в файл",
-      "desc_mcp": "Показать настроенные серверы MCP",
-      "desc_model": "Показать или сменить текущую модель",
-      "desc_onboarding": "Повторить импорт настроек и вводный тур",
-      "desc_paste": "Вставить изображение из буфера обмена",
-      "desc_prompts": "Показать или вызвать сохранённые промпты и регламенты агента",
-      "desc_quit": "Завершить сессию чата",
-      "desc_reply": "Ответить на последнее сообщение ассистента",
-      "desc_side": "Открыть панель параллельной переписки",
-      "desc_tangent": "Начать ответвление переписки",
-      "desc_todos": "Показать список задач или управлять им",
-      "desc_tools": "Показать доступные инструменты",
-      "desc_usage": "Показать сведения о биллинге и расходе"
     }
   },
   "hooks": {
@@ -5576,7 +5579,6 @@
       "also_used_by_these_crews": "Также используется: {{crews}}. Crew с общим хранилищем могут читать файлы и память друг друга.",
       "cancel": "Отмена",
       "chat_with_this_crew": "Общаться с этой crew",
-      "close_dialog": "Закрыть диалог",
       "copy_from_optional": "Копировать из (необязательно)",
       "copy_from_workspace": "Копировать из рабочей области",
       "copy_the_contents_of_an_existing_workspace_into": "Копировать содержимое существующей рабочей области в новую. Оставь «— нет —», чтобы начать с нуля.",
@@ -5587,6 +5589,7 @@
       "create_workspace": "Создать рабочую область",
       "create_your_first_crew": "Создай свою первую crew",
       "creating": "Создание…",
+      "crew_column": "Команда",
       "danger_zone": "Опасная зона",
       "default_2": "по умолчанию",
       "delete_crew": "Удалить crew",
@@ -5615,6 +5618,7 @@
       "new_workspace_action": "+ Новая рабочая область…",
       "no_crews_match_your_filter": "Нет crew, подходящих под фильтр",
       "no_crews_yet": "Пока нет ни одной crew",
+      "no_description": "Без описания",
       "no_pin_anywhere_the_backend_chooses": "ни здесь, ни в шаблоне ничего не выбрано, поэтому KiroCrew выбирает сам.",
       "none": "— нет —",
       "pinned_on_this_crew": "выбрана для этой crew.",
@@ -5625,6 +5629,10 @@
       "subdirectory_inside_kiro_crew_where_this_workspa": "Подкаталог внутри ~/.kiro/crew, где эта рабочая область хранит свои данные (историю чатов, уроки, проекты). У каждой рабочей области свой изолированный каталог.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "Начальная настройка, с которой работает эта crew — её инструменты, подключения и инструкции.",
       "used_for_all_new_chats": "Используется для всех новых чатов",
+      "view_cards": "Карточки",
+      "view_cards_tooltip": "Просторные карточки с ресурсами каждой команды",
+      "view_list": "Список",
+      "view_list_tooltip": "Компактная таблица, по одной строке на команду",
       "which_store_its_lessons_and_history_are_written": "Где сохраняются уроки и история этой crew. Если сменить, crew начнёт с пустой памяти; старая сохранится.",
       "workspace": "рабочая область",
       "workspace_2": "Рабочая область",

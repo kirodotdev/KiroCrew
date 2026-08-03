@@ -2301,6 +2301,15 @@
       "toggle_additional_prompt": "Afficher/masquer le prompt supplémentaire",
       "write_a_comment": "Écrire un commentaire…"
     },
+    "commentThreadPopover": {
+      "close": "Fermer",
+      "comment_many": "{{count}} commentaires",
+      "comment_one": "{{count}} commentaire",
+      "comment_other": "{{count}} commentaires",
+      "comment_thread": "Fil de commentaires",
+      "reply": "Répondre…",
+      "reply_2": "Répondre"
+    },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "Ajouter un commentaire sur l'ensemble de l'artefact…",
       "add_comment": "Ajouter un commentaire",
@@ -2338,15 +2347,6 @@
       "failed_to_sync_to_provider": "Échec de la synchronisation avec le fournisseur",
       "pending_sync_to_provider": "Synchronisation avec le fournisseur en attente"
     },
-    "commentThreadPopover": {
-      "close": "Fermer",
-      "comment_many": "{{count}} commentaires",
-      "comment_one": "{{count}} commentaire",
-      "comment_other": "{{count}} commentaires",
-      "comment_thread": "Fil de commentaires",
-      "reply": "Répondre…",
-      "reply_2": "Répondre"
-    },
     "computerUseLiveView": {
       "close": "Fermer",
       "close_live_desktop_view": "Fermer la vue du bureau en direct",
@@ -2380,6 +2380,9 @@
     "detailPanel": {
       "close_panel": "Fermer le panneau",
       "resize_panel": "Redimensionner le panneau"
+    },
+    "dialog": {
+      "close": "Fermer"
     },
     "diffBlock": {
       "collapse": "▲ réduire",
@@ -2558,16 +2561,6 @@
       "comment_unread_one": "{{count}} commentaire · non lu",
       "comment_unread_other": "{{count}} commentaires · non lus"
     },
-    "instancesViewport": {
-      "connecting": "Connexion…",
-      "connection_error": "Erreur de connexion",
-      "disconnected": "Déconnecté",
-      "loading_pane": "Chargement du volet…",
-      "pane_failed_to_load": "Échec du chargement du volet",
-      "retry": "Réessayer",
-      "the_tunnel_looks_connected_but_the_remote_dashbo": "Le tunnel semble connecté, mais le tableau de bord distant ne s'est jamais chargé. Il est peut-être\n                  en cours de redémarrage — réessayez ou changez d'onglet ci-dessus.",
-      "this_tab_stays_until_you_disconnect_the_instance": "Cet onglet reste affiché jusqu'à ce que vous déconnectiez l'instance dans Paramètres → Instances."
-    },
     "instanceTabBar": {
       "connected": "connecté",
       "connected_refreshing": "connecté · actualisation…",
@@ -2578,6 +2571,16 @@
       "tunnel_connected": "Tunnel connecté.",
       "tunnel_connecting": "Connexion du tunnel…",
       "tunnel_error": "erreur de tunnel"
+    },
+    "instancesViewport": {
+      "connecting": "Connexion…",
+      "connection_error": "Erreur de connexion",
+      "disconnected": "Déconnecté",
+      "loading_pane": "Chargement du volet…",
+      "pane_failed_to_load": "Échec du chargement du volet",
+      "retry": "Réessayer",
+      "the_tunnel_looks_connected_but_the_remote_dashbo": "Le tunnel semble connecté, mais le tableau de bord distant ne s'est jamais chargé. Il est peut-être\n                  en cours de redémarrage — réessayez ou changez d'onglet ci-dessus.",
+      "this_tab_stays_until_you_disconnect_the_instance": "Cet onglet reste affiché jusqu'à ce que vous déconnectiez l'instance dans Paramètres → Instances."
     },
     "issuePanel": {
       "add_to_chat": "Ajouter au chat",
@@ -2728,6 +2731,11 @@
       "waiting_for_sign_in": "En attente de la connexion…",
       "we_could_not_check_kiro_cli": "Nous n'avons pas pu vérifier Kiro CLI.",
       "your_crew_is_almost_ready": "Votre équipe est presque prête."
+    },
+    "linkPreview": {
+      "copied": "Copié",
+      "copy_url": "Copier l’URL",
+      "copy_url_of": "Copier l’URL de {{name}}"
     },
     "linkedSurfacesSection": {
       "confirm_release": "Dissocier cette session de {{label}} ?\n\nLes messages envoyés là-bas n'arriveront plus ici et les réponses n'y seront plus transmises. Tu peux la rattacher avec !sessions depuis ce canal.",
@@ -3200,6 +3208,12 @@
       "sub_agent_result_one": "{{count}} résultat de sous-agent",
       "sub_agent_result_other": "{{count}} résultats de sous-agent"
     },
+    "readingWidthToggle": {
+      "label_full": "P",
+      "label_md": "M",
+      "title_full": "Pleine largeur",
+      "title_md": "Largeur moyenne"
+    },
     "reasoningEffortDropdown": {
       "effort": "Effort",
       "faster": "Plus rapide",
@@ -3430,6 +3444,35 @@
       "post_reminder_in_slack": "Publier un rappel dans Slack",
       "send_to_slack": "Envoyer vers Slack",
       "unlink_from_slack": "Dissocier de Slack"
+    },
+    "slashCommandMenu": {
+      "desc_agent": "Changer ou gérer l’agent actif",
+      "desc_changelog": "Afficher le journal des modifications de la version",
+      "desc_chat": "Enregistrer ou charger une session de chat",
+      "desc_clear": "Effacer l’historique de la conversation",
+      "desc_code": "Ouvrir les outils d’intelligence de code",
+      "desc_compact": "Compacter la conversation pour libérer du contexte",
+      "desc_context": "Gérer les fichiers de contexte et l’utilisation des jetons",
+      "desc_editor": "Rédiger ton prompt dans un éditeur externe",
+      "desc_exit": "Sortir de la session de chat",
+      "desc_experiment": "Activer ou désactiver les fonctionnalités expérimentales",
+      "desc_help": "Afficher les commandes disponibles",
+      "desc_hooks": "Voir les hooks de contexte configurés",
+      "desc_issue": "Signaler un problème ou un bug",
+      "desc_kb": "Rechercher dans la bibliothèque de connaissances",
+      "desc_logdump": "Exporter les journaux de la session vers un fichier",
+      "desc_mcp": "Afficher les serveurs MCP configurés",
+      "desc_model": "Afficher ou changer le modèle actuel",
+      "desc_onboarding": "Rejouer l’import de configuration et la visite de bienvenue",
+      "desc_paste": "Coller une image depuis le presse-papiers",
+      "desc_prompts": "Lister ou invoquer les prompts enregistrés et les SOP d’agent",
+      "desc_quit": "Quitter la session de chat",
+      "desc_reply": "Répondre au dernier message de l’assistant",
+      "desc_side": "Ouvrir un panneau de conversation annexe",
+      "desc_tangent": "Démarrer une conversation en aparté",
+      "desc_todos": "Afficher ou gérer la liste des tâches",
+      "desc_tools": "Afficher les outils disponibles",
+      "desc_usage": "Afficher les informations de facturation et d’utilisation"
     },
     "slotTagPopover": {
       "assign_tags": "Attribuer des étiquettes",
@@ -3725,46 +3768,6 @@
       "select": "Sélectionner",
       "workspace_name": "Nom de l'espace de travail",
       "workspace_name_2": "workspace-name"
-    },
-    "linkPreview": {
-      "copied": "Copié",
-      "copy_url": "Copier l’URL",
-      "copy_url_of": "Copier l’URL de {{name}}"
-    },
-    "readingWidthToggle": {
-      "label_full": "P",
-      "label_md": "M",
-      "title_full": "Pleine largeur",
-      "title_md": "Largeur moyenne"
-    },
-    "slashCommandMenu": {
-      "desc_agent": "Changer ou gérer l’agent actif",
-      "desc_changelog": "Afficher le journal des modifications de la version",
-      "desc_chat": "Enregistrer ou charger une session de chat",
-      "desc_clear": "Effacer l’historique de la conversation",
-      "desc_code": "Ouvrir les outils d’intelligence de code",
-      "desc_compact": "Compacter la conversation pour libérer du contexte",
-      "desc_context": "Gérer les fichiers de contexte et l’utilisation des jetons",
-      "desc_editor": "Rédiger ton prompt dans un éditeur externe",
-      "desc_exit": "Sortir de la session de chat",
-      "desc_experiment": "Activer ou désactiver les fonctionnalités expérimentales",
-      "desc_help": "Afficher les commandes disponibles",
-      "desc_hooks": "Voir les hooks de contexte configurés",
-      "desc_issue": "Signaler un problème ou un bug",
-      "desc_kb": "Rechercher dans la bibliothèque de connaissances",
-      "desc_logdump": "Exporter les journaux de la session vers un fichier",
-      "desc_mcp": "Afficher les serveurs MCP configurés",
-      "desc_model": "Afficher ou changer le modèle actuel",
-      "desc_onboarding": "Rejouer l’import de configuration et la visite de bienvenue",
-      "desc_paste": "Coller une image depuis le presse-papiers",
-      "desc_prompts": "Lister ou invoquer les prompts enregistrés et les SOP d’agent",
-      "desc_quit": "Quitter la session de chat",
-      "desc_reply": "Répondre au dernier message de l’assistant",
-      "desc_side": "Ouvrir un panneau de conversation annexe",
-      "desc_tangent": "Démarrer une conversation en aparté",
-      "desc_todos": "Afficher ou gérer la liste des tâches",
-      "desc_tools": "Afficher les outils disponibles",
-      "desc_usage": "Afficher les informations de facturation et d’utilisation"
     }
   },
   "hooks": {
@@ -5506,7 +5509,6 @@
       "also_used_by_these_crews": "Aussi utilisé par {{crews}}. Les crews qui partagent un stockage peuvent lire les fichiers et la mémoire des autres.",
       "cancel": "Annuler",
       "chat_with_this_crew": "Discuter avec ce crew",
-      "close_dialog": "Fermer la boîte de dialogue",
       "copy_from_optional": "Copier depuis (facultatif)",
       "copy_from_workspace": "Copier depuis l'espace de travail",
       "copy_the_contents_of_an_existing_workspace_into": "Copie le contenu d’un espace de travail existant dans le nouveau. Laisse « — none — » pour partir de zéro.",
@@ -5517,6 +5519,7 @@
       "create_workspace": "Créer un espace de travail",
       "create_your_first_crew": "Crée ton premier crew",
       "creating": "Création…",
+      "crew_column": "Équipe",
       "danger_zone": "Zone de danger",
       "default_2": "par défaut",
       "delete_crew": "Supprimer le crew",
@@ -5545,6 +5548,7 @@
       "new_workspace_action": "+ Nouvel espace de travail…",
       "no_crews_match_your_filter": "Aucun crew ne correspond à ton filtre",
       "no_crews_yet": "Pas encore de crew",
+      "no_description": "Aucune description",
       "no_pin_anywhere_the_backend_chooses": "rien de choisi ici ni sur le modèle, donc KiroCrew en choisit un pour toi.",
       "none": "— aucun —",
       "pinned_on_this_crew": "choisi pour ce crew.",
@@ -5555,6 +5559,10 @@
       "subdirectory_inside_kiro_crew_where_this_workspa": "Sous-répertoire dans ~/.kiro/crew où cet espace de travail stocke ses données (historique des chats, leçons, projets). Chaque espace de travail dispose de son propre répertoire isolé.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "La configuration de départ de ce crew — ses outils, ses connexions et ses instructions.",
       "used_for_all_new_chats": "Utilisé pour tous les nouveaux chats",
+      "view_cards": "Cartes",
+      "view_cards_tooltip": "Cartes aérées montrant ce qu’utilise chaque équipe",
+      "view_list": "Liste",
+      "view_list_tooltip": "Tableau compact, une ligne par équipe",
       "which_store_its_lessons_and_history_are_written": "Là où les leçons et l’historique de ce crew sont enregistrés. Si tu le changes, le crew repart d’une mémoire vide ; l’ancienne est conservée.",
       "workspace": "espace de travail",
       "workspace_2": "Espace de travail",

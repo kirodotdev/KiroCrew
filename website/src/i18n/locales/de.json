@@ -2264,6 +2264,14 @@
       "toggle_additional_prompt": "Zusätzlichen Prompt umschalten",
       "write_a_comment": "Kommentar schreiben…"
     },
+    "commentThreadPopover": {
+      "close": "Schließen",
+      "comment_one": "{{count}} Kommentar",
+      "comment_other": "{{count}} Kommentare",
+      "comment_thread": "Kommentar-Thread",
+      "reply": "Antworten…",
+      "reply_2": "Antworten"
+    },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "Kommentar zum gesamten Artefakt hinzufügen…",
       "add_comment": "Kommentar hinzufügen",
@@ -2301,14 +2309,6 @@
       "failed_to_sync_to_provider": "Synchronisierung mit dem Anbieter fehlgeschlagen",
       "pending_sync_to_provider": "Synchronisierung mit dem Anbieter ausstehend"
     },
-    "commentThreadPopover": {
-      "close": "Schließen",
-      "comment_one": "{{count}} Kommentar",
-      "comment_other": "{{count}} Kommentare",
-      "comment_thread": "Kommentar-Thread",
-      "reply": "Antworten…",
-      "reply_2": "Antworten"
-    },
     "computerUseLiveView": {
       "close": "Schließen",
       "close_live_desktop_view": "Live-Desktop-Ansicht schließen",
@@ -2342,6 +2342,9 @@
     "detailPanel": {
       "close_panel": "Panel schließen",
       "resize_panel": "Größe des Panels ändern"
+    },
+    "dialog": {
+      "close": "Schließen"
     },
     "diffBlock": {
       "collapse": "▲ einklappen",
@@ -2514,16 +2517,6 @@
       "comment_unread_one": "{{count}} Kommentar · ungelesen",
       "comment_unread_other": "{{count}} Kommentare · ungelesen"
     },
-    "instancesViewport": {
-      "connecting": "Wird verbunden…",
-      "connection_error": "Verbindungsfehler",
-      "disconnected": "Getrennt",
-      "loading_pane": "Bereich wird geladen…",
-      "pane_failed_to_load": "Bereich konnte nicht geladen werden",
-      "retry": "Wiederholen",
-      "the_tunnel_looks_connected_but_the_remote_dashbo": "Der Tunnel scheint verbunden zu sein, aber das Remote-Dashboard wurde nie geladen. Es startet möglicherweise\n                  neu — versuchen Sie es erneut oder wechseln Sie oben die Tabs.",
-      "this_tab_stays_until_you_disconnect_the_instance": "Dieser Tab bleibt, bis Sie die Instanz unter Einstellungen → Instanzen trennen."
-    },
     "instanceTabBar": {
       "connected": "verbunden",
       "connected_refreshing": "verbunden · wird aktualisiert…",
@@ -2534,6 +2527,16 @@
       "tunnel_connected": "Tunnel verbunden.",
       "tunnel_connecting": "Tunnel wird verbunden…",
       "tunnel_error": "Tunnel-Fehler"
+    },
+    "instancesViewport": {
+      "connecting": "Wird verbunden…",
+      "connection_error": "Verbindungsfehler",
+      "disconnected": "Getrennt",
+      "loading_pane": "Bereich wird geladen…",
+      "pane_failed_to_load": "Bereich konnte nicht geladen werden",
+      "retry": "Wiederholen",
+      "the_tunnel_looks_connected_but_the_remote_dashbo": "Der Tunnel scheint verbunden zu sein, aber das Remote-Dashboard wurde nie geladen. Es startet möglicherweise\n                  neu — versuchen Sie es erneut oder wechseln Sie oben die Tabs.",
+      "this_tab_stays_until_you_disconnect_the_instance": "Dieser Tab bleibt, bis Sie die Instanz unter Einstellungen → Instanzen trennen."
     },
     "issuePanel": {
       "add_to_chat": "Zum Chat hinzufügen",
@@ -2684,6 +2687,11 @@
       "waiting_for_sign_in": "Warten auf Anmeldung…",
       "we_could_not_check_kiro_cli": "Wir konnten Kiro CLI nicht prüfen.",
       "your_crew_is_almost_ready": "Ihre Crew ist fast bereit."
+    },
+    "linkPreview": {
+      "copied": "Kopiert",
+      "copy_url": "URL kopieren",
+      "copy_url_of": "URL von {{name}} kopieren"
     },
     "linkedSurfacesSection": {
       "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Du kannst sie mit !sessions aus diesem Kanal erneut verbinden.",
@@ -3152,6 +3160,12 @@
       "sub_agent_result_one": "{{count}} Subagenten-Ergebnis",
       "sub_agent_result_other": "{{count}} Subagenten-Ergebnisse"
     },
+    "readingWidthToggle": {
+      "label_full": "V",
+      "label_md": "M",
+      "title_full": "Volle Breite",
+      "title_md": "Mittlere Breite"
+    },
     "reasoningEffortDropdown": {
       "effort": "Aufwand",
       "faster": "Schneller",
@@ -3381,6 +3395,35 @@
       "post_reminder_in_slack": "Erinnerung in Slack posten",
       "send_to_slack": "An Slack senden",
       "unlink_from_slack": "Verknüpfung mit Slack aufheben"
+    },
+    "slashCommandMenu": {
+      "desc_agent": "Aktiven Agenten wechseln oder verwalten",
+      "desc_changelog": "Das Änderungsprotokoll der Version anzeigen",
+      "desc_chat": "Eine Chat-Sitzung speichern oder laden",
+      "desc_clear": "Unterhaltungsverlauf löschen",
+      "desc_code": "Werkzeuge für Code-Intelligenz öffnen",
+      "desc_compact": "Unterhaltung verdichten, um Kontext freizugeben",
+      "desc_context": "Kontextdateien und Tokenverbrauch verwalten",
+      "desc_editor": "Deinen Prompt in einem externen Editor schreiben",
+      "desc_exit": "Die Chat-Sitzung verlassen",
+      "desc_experiment": "Experimentelle Funktionen umschalten",
+      "desc_help": "Verfügbare Befehle anzeigen",
+      "desc_hooks": "Konfigurierte Kontext-Hooks ansehen",
+      "desc_issue": "Ein Problem oder einen Fehler melden",
+      "desc_kb": "Wissensbibliothek durchsuchen",
+      "desc_logdump": "Sitzungsprotokolle in eine Datei schreiben",
+      "desc_mcp": "Konfigurierte MCP-Server anzeigen",
+      "desc_model": "Aktuelles Modell anzeigen oder wechseln",
+      "desc_onboarding": "Einrichtungsimport und Willkommenstour erneut durchlaufen",
+      "desc_paste": "Ein Bild aus der Zwischenablage einfügen",
+      "desc_prompts": "Gespeicherte Prompts & Agenten-SOPs auflisten oder aufrufen",
+      "desc_quit": "Die Chat-Sitzung beenden",
+      "desc_reply": "Auf die letzte Assistentennachricht antworten",
+      "desc_side": "Ein Nebenchat-Panel öffnen",
+      "desc_tangent": "Eine Nebenunterhaltung starten",
+      "desc_todos": "Aufgabenliste anzeigen oder verwalten",
+      "desc_tools": "Verfügbare Werkzeuge anzeigen",
+      "desc_usage": "Abrechnungs- und Nutzungsinformationen anzeigen"
     },
     "slotTagPopover": {
       "assign_tags": "Tags zuweisen",
@@ -3676,46 +3719,6 @@
       "select": "Auswählen",
       "workspace_name": "Workspace-Name",
       "workspace_name_2": "workspace-name"
-    },
-    "linkPreview": {
-      "copied": "Kopiert",
-      "copy_url": "URL kopieren",
-      "copy_url_of": "URL von {{name}} kopieren"
-    },
-    "readingWidthToggle": {
-      "label_full": "V",
-      "label_md": "M",
-      "title_full": "Volle Breite",
-      "title_md": "Mittlere Breite"
-    },
-    "slashCommandMenu": {
-      "desc_agent": "Aktiven Agenten wechseln oder verwalten",
-      "desc_changelog": "Das Änderungsprotokoll der Version anzeigen",
-      "desc_chat": "Eine Chat-Sitzung speichern oder laden",
-      "desc_clear": "Unterhaltungsverlauf löschen",
-      "desc_code": "Werkzeuge für Code-Intelligenz öffnen",
-      "desc_compact": "Unterhaltung verdichten, um Kontext freizugeben",
-      "desc_context": "Kontextdateien und Tokenverbrauch verwalten",
-      "desc_editor": "Deinen Prompt in einem externen Editor schreiben",
-      "desc_exit": "Die Chat-Sitzung verlassen",
-      "desc_experiment": "Experimentelle Funktionen umschalten",
-      "desc_help": "Verfügbare Befehle anzeigen",
-      "desc_hooks": "Konfigurierte Kontext-Hooks ansehen",
-      "desc_issue": "Ein Problem oder einen Fehler melden",
-      "desc_kb": "Wissensbibliothek durchsuchen",
-      "desc_logdump": "Sitzungsprotokolle in eine Datei schreiben",
-      "desc_mcp": "Konfigurierte MCP-Server anzeigen",
-      "desc_model": "Aktuelles Modell anzeigen oder wechseln",
-      "desc_onboarding": "Einrichtungsimport und Willkommenstour erneut durchlaufen",
-      "desc_paste": "Ein Bild aus der Zwischenablage einfügen",
-      "desc_prompts": "Gespeicherte Prompts & Agenten-SOPs auflisten oder aufrufen",
-      "desc_quit": "Die Chat-Sitzung beenden",
-      "desc_reply": "Auf die letzte Assistentennachricht antworten",
-      "desc_side": "Ein Nebenchat-Panel öffnen",
-      "desc_tangent": "Eine Nebenunterhaltung starten",
-      "desc_todos": "Aufgabenliste anzeigen oder verwalten",
-      "desc_tools": "Verfügbare Werkzeuge anzeigen",
-      "desc_usage": "Abrechnungs- und Nutzungsinformationen anzeigen"
     }
   },
   "hooks": {
@@ -5436,7 +5439,6 @@
       "also_used_by_these_crews": "Wird auch von {{crews}} verwendet. Crews mit gemeinsamem Speicher können die Dateien und die Erinnerung der anderen lesen.",
       "cancel": "Abbrechen",
       "chat_with_this_crew": "Mit dieser Crew chatten",
-      "close_dialog": "Dialog schließen",
       "copy_from_optional": "Kopieren von (optional)",
       "copy_from_workspace": "Aus Workspace kopieren",
       "copy_the_contents_of_an_existing_workspace_into": "Kopiert den Inhalt eines bestehenden Workspace in den neuen. Auf „— keine —“ belassen, um neu zu beginnen.",
@@ -5447,6 +5449,7 @@
       "create_workspace": "Workspace erstellen",
       "create_your_first_crew": "Erstelle deine erste Crew",
       "creating": "Wird erstellt…",
+      "crew_column": "Crew",
       "danger_zone": "Gefahrenzone",
       "default_2": "Standard",
       "delete_crew": "Crew löschen",
@@ -5475,6 +5478,7 @@
       "new_workspace_action": "+ Neuer Workspace…",
       "no_crews_match_your_filter": "Keine Crew passt zu deinem Filter",
       "no_crews_yet": "Noch keine Crews",
+      "no_description": "Keine Beschreibung",
       "no_pin_anywhere_the_backend_chooses": "hier und in der Vorlage ist nichts ausgewählt, also wählt KiroCrew eins für dich aus.",
       "none": "— keine —",
       "pinned_on_this_crew": "für diese Crew ausgewählt.",
@@ -5485,6 +5489,10 @@
       "subdirectory_inside_kiro_crew_where_this_workspa": "Unterverzeichnis in ~/.kiro/crew, in dem dieser Workspace seine Daten speichert (Chat-Verlauf, Lektionen, Projekte). Jeder Workspace erhält sein eigenes isoliertes Verzeichnis.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "Die Grundeinstellung, mit der diese Crew startet — ihre Tools, ihre Verbindungen und ihre Anweisungen.",
       "used_for_all_new_chats": "Wird für alle neuen Chats verwendet",
+      "view_cards": "Karten",
+      "view_cards_tooltip": "Großzügige Karten mit den Ressourcen jeder Crew",
+      "view_list": "Liste",
+      "view_list_tooltip": "Kompakte Tabelle, eine Zeile pro Crew",
       "which_store_its_lessons_and_history_are_written": "Wo die Lektionen und der Verlauf dieser Crew gespeichert werden. Wenn du das wechselst, startet die Crew mit leerer Erinnerung; die alte bleibt erhalten.",
       "workspace": "Workspace",
       "workspace_2": "Workspace",

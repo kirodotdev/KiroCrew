@@ -1,17 +1,21 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Boxes, FolderOpen, Database, Sparkles, Plus, MessageSquare, Users, Star } from 'lucide-react'
+import { Boxes, FolderOpen, Database, Sparkles, Plus, MessageSquare, Users, Star, LayoutGrid, Rows3 } from 'lucide-react'
 import Clickable from '../components/Clickable'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
 import { api } from '../api/client'
 import { useProvider } from '../providers'
-import { Card, CardTitle, Btn, SendBtn, Input, Badge, SearchInput, PageHeader, EmptyState } from '../components/ui'
+import { Btn, SendBtn, Input, Badge, SearchInput, PageHeader, EmptyState } from '../components/ui'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
+import {
+  Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from '../components/ui/dialog'
+import SegmentedControl from '../components/SegmentedControl'
 import InfoTip from '../components/InfoTip'
-import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
+import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 import SimpleSelect from '../components/SimpleSelect'
-import SideSheet from '../components/SideSheet'
 import CrewAvatar from '../components/CrewAvatar'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
@@ -47,8 +51,26 @@ interface AgentUpdatePayload {
  *  select shows this as a real option; the backend normalizes it back to ''. */
 const INHERIT_MODEL = 'auto'
 
-/** Which crew the editor panel is pointed at. `null` = closed. */
+/** Which crew the editor dialog is pointed at. `null` = closed. */
 type SheetTarget = { mode: 'create' } | { mode: 'edit'; name: string } | null
+
+/** Roster layout. `cards` is the roomy grid, `list` the compact table. */
+type CrewView = 'cards' | 'list'
+
+/** Where the roster layout is remembered. Mirrors `mc-artifacts-view`, which is
+ *  how the Artifacts page persists the same grid/table choice — one convention
+ *  for both surfaces rather than a second scheme for this one. */
+const VIEW_KEY = 'mc-crews-view'
+
+/** Read the remembered layout. Guarded because `localStorage` throws outright
+ *  in a partitioned/blocked-storage context rather than returning null. */
+function readStoredView(): CrewView {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'cards'
+  } catch {
+    return 'cards'
+  }
+}
 
 /**
  * Which of a crew's two stores another crew also points at. Drives a specific
@@ -57,8 +79,15 @@ type SheetTarget = { mode: 'create' } | { mode: 'edit'; name: string } | null
  */
 type SharedKind = 'none' | 'memory' | 'files' | 'both'
 
-/* ── Workspace Creation Modal ── */
-function WorkspaceModal({
+/* ── Workspace Creation Dialog (a nested Radix layer inside the crew editor) ── */
+
+/** The form itself, mounted only while the dialog is open.
+ *
+ *  Split out from `WorkspaceModal` on purpose: Radix unmounts `DialogContent`'s
+ *  children on close, so keeping the state HERE resets a half-typed workspace
+ *  name between openings for free. Hoisting it into the parent (which stays
+ *  mounted so Radix can run its own close transition) would persist it. */
+function WorkspaceForm({
   workspaceOptions,
   onCreated,
   onClose,
@@ -73,10 +102,6 @@ function WorkspaceModal({
   const [copyFrom, setCopyFrom] = useState('')
   const [wsError, setWsError] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const dialogRef = useRef<HTMLDivElement>(null)
-  // Owns the keyboard while open: the sheet underneath pauses its own trap, so
-  // this dialog must supply focus-in, focus-restore, Escape and Tab cycling.
-  useDialogFocusTrap(dialogRef, onClose)
 
   // Auto-fill directory from workspace name (unless user manually edited it)
   const handleNameChange = (v: string) => {
@@ -106,18 +131,11 @@ function WorkspaceModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
-      <Clickable aria-label={i18nT('pages.kiroCrewAgentsPage.close_dialog')} className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={i18nT('pages.kiroCrewAgentsPage.create_workspace')}
-        tabIndex={-1}
-        className="relative z-10 w-full max-w-md outline-none"
-      >
-        <Card className="!mb-0">
-          <CardTitle>{i18nT('pages.kiroCrewAgentsPage.create_workspace')}</CardTitle>
+    <>
+      <DialogHeader>
+        <DialogTitle>{i18nT('pages.kiroCrewAgentsPage.create_workspace')}</DialogTitle>
+      </DialogHeader>
+      <DialogBody>
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1">
@@ -151,14 +169,44 @@ function WorkspaceModal({
             />
           </div>
           {wsError && <div className="text-danger text-[13px]">{wsError}</div>}
-          <div className="flex gap-2 justify-end mt-1">
-            <Btn onClick={onClose}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
-            <SendBtn onClick={submit} disabled={submitting}>{submitting ? i18nT('pages.kiroCrewAgentsPage.creating') : i18nT('pages.kiroCrewAgentsPage.create')}</SendBtn>
-          </div>
         </div>
-      </Card>
-      </div>
-    </div>
+      </DialogBody>
+      <DialogFooter>
+        <Btn onClick={onClose}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
+        <SendBtn onClick={submit} disabled={submitting}>{submitting ? i18nT('pages.kiroCrewAgentsPage.creating') : i18nT('pages.kiroCrewAgentsPage.create')}</SendBtn>
+      </DialogFooter>
+    </>
+  )
+}
+
+function WorkspaceModal({
+  open,
+  workspaceOptions,
+  onCreated,
+  onClose,
+}: {
+  open: boolean
+  workspaceOptions: string[]
+  onCreated: (name: string) => void
+  onClose: () => void
+}) {
+  /* Kept MOUNTED and driven by `open`, rather than conditionally rendered.
+     Radix tracks dismissable layers in a global stack, and tearing this whole
+     subtree out the instant it closes skipped the layer's own deregistration —
+     the editor underneath was then left believing it was no longer the top
+     layer, so Escape stopped closing it. Verified in a real browser
+     (scripts/verify-crews-dialog-select.mjs), which is the only place the bug
+     showed: happy-dom does not reproduce it.
+
+     `z-[110]` because both layers are centered overlays and the editor's own
+     content sits at z-[101]; at an equal z-index this would render behind its
+     own opener. */
+  return (
+    <Dialog open={open} onOpenChange={next => { if (!next) onClose() }}>
+      <DialogContent maxWidth={448} className="z-[110]" aria-label={i18nT('pages.kiroCrewAgentsPage.create_workspace')}>
+        <WorkspaceForm workspaceOptions={workspaceOptions} onCreated={onCreated} onClose={onClose} />
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -187,7 +235,11 @@ function Binding({ icon, label, value, muted, note }: {
       <span className="text-muted">{icon}</span>
       <span className="min-w-0">
         <span className="block text-[10px] uppercase tracking-wider text-muted">{label}</span>
-        <span className="block truncate text-[12px]">
+        {/* `pr-0.5` is load-bearing with `truncate`: an italic glyph leans past
+            its own advance width, and `overflow:hidden` clips that overhang
+            rather than showing an ellipsis — "Inherited" rendered as
+            "Inheritea". Two pixels of gutter is enough for the lean. */}
+        <span className="block truncate pr-0.5 text-[12px]">
           <span className={muted ? 'italic text-muted' : 'font-mono text-text'}>{value}</span>
           {note && <span className="ml-1.5 text-[11px] text-warn">{note}</span>}
         </span>
@@ -261,6 +313,7 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
   const sharedNote = i18nT('pages.kiroCrewAgentsPage.shared_lower')
   const filesShared = shared === 'files' || shared === 'both'
   const memoryShared = shared === 'memory' || shared === 'both'
+  const desc = describeCrew(agent, isDefault)
   return (
     <Clickable
       onClick={onOpen}
@@ -272,11 +325,13 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
     >
       <div className="flex items-center gap-3">
         <CrewAvatar seed={agent.name} size={38} />
-        {/* Fixed two-line height. Badges are slightly taller than plain text,
-            so cards carrying a `default`/`Shared` badge would otherwise push
-            their binding grid lower than a card without one, and the row would
-            read as ragged. */}
-        <div className="flex h-[42px] min-w-0 flex-1 flex-col justify-center">
+        {/* Fixed height for the whole header block. Badges are slightly taller
+            than plain text, so cards carrying a `default` badge would otherwise
+            push their binding grid lower than a card without one, and the row
+            would read as ragged. Sized for one name line plus TWO description
+            lines: 20px + 34px, and the description reserves its 34px whether or
+            not it fills them. */}
+        <div className="flex h-[54px] min-w-0 flex-1 flex-col justify-center">
           {/* Kept to a single line: a wrapping badge row made this header one
               line taller than its neighbours', which knocked the binding grids
               out of alignment across the row. The name truncates and the
@@ -286,10 +341,19 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
             {isDefault && <Badge variant="ok" className="shrink-0">{i18nT('pages.kiroCrewAgentsPage.default_2')}</Badge>}
             {agent.source && agent.source !== 'kirocrew' && <SourceBadge source={agent.source} />}
           </div>
+          {/* Two lines rather than one. A crew description is a sentence about
+              what the crew is FOR, and a single truncated line cut nearly all
+              of them mid-word. `line-clamp-2` with an explicit line-height and
+              a matching fixed height: without the fixed height the clamp leaks
+              a sliver of a third line at some font sizes, and cards with a
+              one-line description sit shorter than their neighbours. The full
+              text stays reachable via the native tooltip and the list view. */}
           <div className="mt-0.5 min-w-0">
-            <span className="block truncate text-[12px] text-muted">
-              {agent.description
-                || (isDefault ? i18nT('pages.kiroCrewAgentsPage.used_for_all_new_chats') : '\u00a0')}
+            <span
+              className={`line-clamp-2 h-[34px] text-[12px] leading-[17px] text-muted ${desc.placeholder ? 'italic' : ''}`}
+              title={desc.placeholder ? undefined : desc.text}
+            >
+              {desc.text}
             </span>
           </div>
         </div>
@@ -306,6 +370,93 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
         />
       </div>
     </Clickable>
+  )
+}
+
+/**
+ * What a crew's description line shows, so the card and the row cannot drift.
+ *
+ * A crew with no description read as blank in the card but italic "No
+ * description" in the row, i.e. the same crew looked different per view. The
+ * default crew keeps its own hint instead — that line is what tells a first-run
+ * user why this crew matters, and a test asserts it.
+ *
+ * Returns `text` plus whether it is real copy: a placeholder must render italic
+ * and must NOT become a tooltip, or every empty crew advertises a blank bubble.
+ */
+function describeCrew(agent: KiroCrewAgent, isDefault: boolean): { text: string; placeholder: boolean } {
+  if (agent.description) return { text: agent.description, placeholder: false }
+  if (isDefault) return { text: i18nT('pages.kiroCrewAgentsPage.used_for_all_new_chats'), placeholder: true }
+  return { text: i18nT('pages.kiroCrewAgentsPage.no_description'), placeholder: true }
+}
+
+/** One crew as a table row. The row opens the editor; the accessible target is
+ *  the real button in the name cell, so table semantics stay intact — a `<tr>`
+ *  given `role="button"` stops being announced as a row at all. */
+function CrewRow({ agent, isDefault, shared, onOpen }: {
+  agent: KiroCrewAgent
+  isDefault: boolean
+  shared: SharedKind
+  onOpen: () => void
+}) {
+  const sharedNote = i18nT('pages.kiroCrewAgentsPage.shared_lower')
+  const filesShared = shared === 'files' || shared === 'both'
+  const memoryShared = shared === 'memory' || shared === 'both'
+  const desc = describeCrew(agent, isDefault)
+  return (
+    <TableRow
+      data-testid="crew-row"
+      className={`cursor-pointer ${isDefault ? 'bg-accent-subtle/30' : ''}`}
+      // Convenience only: the whole row is a click target, but a click that
+      // landed on the name control must not fire this too or the editor would be
+      // asked to open twice for one gesture. Reuses the focus trap's FOCUSABLE
+      // selector rather than spelling out a second list: `Clickable` renders a
+      // `div[role=button][tabindex=0]`, so a hand-written `closest('button')`
+      // would silently never match it, and one definition of "interactive
+      // element" cannot drift out of step with itself.
+      onClick={e => { if (!(e.target as HTMLElement).closest(FOCUSABLE)) onOpen() }}
+    >
+      <TableCell>
+        <div className="flex items-center gap-2.5 min-w-0">
+          <CrewAvatar seed={agent.name} size={28} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <Clickable
+                onClick={onOpen}
+                aria-label={i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: agent.name })}
+                className="truncate rounded font-mono text-[12.5px] font-semibold text-text-strong focus-ring"
+              >
+                {agent.name}
+              </Clickable>
+              {isDefault && <Badge variant="ok" className="shrink-0">{i18nT('pages.kiroCrewAgentsPage.default_2')}</Badge>}
+              {agent.source && agent.source !== 'kirocrew' && <SourceBadge source={agent.source} />}
+            </div>
+            {/* One line here is the point of this view — the row is wide, so a
+                single line already carries far more of the sentence than the
+                card's clamp does, and the full text is in the tooltip. Same
+                fallback chain as the card (see describeCrew). */}
+            <span
+              className={`block max-w-[380px] truncate text-[11.5px] text-muted ${desc.placeholder ? 'italic' : ''}`}
+              title={desc.placeholder ? undefined : desc.text}
+            >
+              {desc.text}
+            </span>
+          </div>
+        </div>
+      </TableCell>
+      <TableCell className="font-mono text-muted">{agent.kiro_agent}</TableCell>
+      <TableCell className="font-mono text-muted">
+        {agent.workspace}
+        {filesShared && <Badge variant="warn" className="ml-1.5">{sharedNote}</Badge>}
+      </TableCell>
+      <TableCell className="font-mono text-muted">
+        {agent.memory_store}
+        {memoryShared && <Badge variant="warn" className="ml-1.5">{sharedNote}</Badge>}
+      </TableCell>
+      <TableCell className={`font-mono ${agent.model ? 'text-muted' : 'italic text-muted'}`}>
+        {agent.model || i18nT('pages.kiroCrewAgentsPage.inherited')}
+      </TableCell>
+    </TableRow>
   )
 }
 
@@ -353,6 +504,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   ]
 
   const [filter, setFilter] = useState('')
+  const [view, setView] = useState<CrewView>(readStoredView)
   const [error, setError] = useState('')
   const [sheet, setSheet] = useState<SheetTarget>(null)
   const [name, setName] = useState('')
@@ -370,6 +522,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (confirmDelete) confirmRef.current?.scrollIntoView({ block: 'nearest' })
   }, [confirmDelete])
   const [wsModalOpen, setWsModalOpen] = useState(false)
+
+  /** Remember the layout across visits. Wrapped because `localStorage` can throw
+   *  outright (blocked/partitioned storage) — losing the preference is fine,
+   *  taking the roster down with it is not. */
+  const pickView = useCallback((v: CrewView) => {
+    setView(v)
+    try { localStorage.setItem(VIEW_KEY, v) } catch { /* preference is best-effort */ }
+  }, [])
 
   const editing = sheet?.mode === 'edit' ? sheet.name : ''
   const editingAgent = agents.find(a => a.name === editing)
@@ -587,6 +747,36 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               onChange={e => setFilter(e.target.value)}
             />
           )}
+          {/* Same control and the same persistence convention as the Artifacts
+              page — NOT the same labels. Artifacts says "Gallery"/"Table"
+              because its grid really is a preview gallery; a crew card is not a
+              preview, so this reads "Cards"/"List". Hidden on an empty roster
+              for the reason the filter is: there is no layout to choose.
+              `collapse={false}` because this sits in a `flex-wrap` toolbar whose
+              width the control itself contributes to — the responsive
+              measurement would be circular and drop it to a dropdown. */}
+          {agents.length > 0 && (
+            <SegmentedControl<CrewView>
+              layoutId="crews-view"
+              collapse={false}
+              value={view}
+              onChange={pickView}
+              segments={[
+                {
+                  key: 'cards',
+                  label: i18nT('pages.kiroCrewAgentsPage.view_cards'),
+                  icon: <LayoutGrid size={13} />,
+                  tooltip: i18nT('pages.kiroCrewAgentsPage.view_cards_tooltip'),
+                },
+                {
+                  key: 'list',
+                  label: i18nT('pages.kiroCrewAgentsPage.view_list'),
+                  icon: <Rows3 size={13} />,
+                  tooltip: i18nT('pages.kiroCrewAgentsPage.view_list_tooltip'),
+                },
+              ]}
+            />
+          )}
           <div className="flex-1" />
           <SendBtn onClick={openCreate} data-testid="new-crew">
             <Plus className="lucide-inline" aria-hidden="true" />
@@ -610,6 +800,31 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             icon={<Users className="lucide-inline" aria-hidden="true" />}
             title={i18nT('pages.kiroCrewAgentsPage.no_crews_match_your_filter')}
           />
+        ) : view === 'list' ? (
+          <div className="rounded-lg border border-border bg-card">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead>{i18nT('pages.kiroCrewAgentsPage.crew_column')}</TableHead>
+                  <TableHead>{provider.labels.agentTemplateField}</TableHead>
+                  <TableHead>{i18nT('pages.kiroCrewAgentsPage.workspace_2')}</TableHead>
+                  <TableHead>{i18nT('pages.kiroCrewAgentsPage.memory_store')}</TableHead>
+                  <TableHead>{i18nT('pages.kiroCrewAgentsPage.model')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map(a => (
+                  <CrewRow
+                    key={a.name}
+                    agent={a}
+                    isDefault={a.name === defaultAgent}
+                    shared={sharedKind(a)}
+                    onOpen={() => openEdit(a)}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         ) : (
           <div className="grid gap-3.5 grid-cols-[repeat(auto-fill,minmax(290px,1fr))]">
             {filtered.map(a => (
@@ -635,46 +850,35 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
         )}
       </div>
 
-      <SideSheet
-        open={!!sheet}
-        onClose={closeSheet}
-        paused={wsModalOpen}
-        width={520}
-        label={creating ? i18nT('pages.kiroCrewAgentsPage.create_a_new_crew') : i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: editing })}
-        header={
-          <>
-            {!creating && <CrewAvatar seed={editing} size={38} />}
-            <div className="min-w-0 flex-1">
-              <div className="font-mono text-[15px] font-semibold text-text-strong">
-                {creating ? i18nT('pages.kiroCrewAgentsPage.create_agent') : editing}
-              </div>
-              {!creating && editingAgent?.source && (
-                <div className="mt-0.5"><SourceBadge source={editingAgent.source} /></div>
-              )}
-            </div>
-          </>
-        }
-        headerActions={!creating && (
-          <Btn onClick={() => chatWith(editing)}>
-            <MessageSquare className="lucide-inline" aria-hidden="true" />
-            {i18nT('pages.kiroCrewAgentsPage.chat_with_this_crew')}
-          </Btn>
-        )}
-        footer={
-          <>
-            {error && <span className="text-[13px] text-danger">{error}</span>}
-            <div className="flex-1" />
-            <Btn onClick={closeSheet}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
-            {creating ? (
-              <SendBtn onClick={create} disabled={sheetBusy}>
-                {createMut.isPending ? i18nT('pages.kiroCrewAgentsPage.creating') : i18nT('pages.kiroCrewAgentsPage.create')}
-              </SendBtn>
-            ) : (
-              <SendBtn onClick={saveEdit} disabled={sheetBusy}>{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
+      <Dialog open={!!sheet} onOpenChange={next => { if (!next) closeSheet() }}>
+        <DialogContent
+          maxWidth={560}
+          /* The visible title is just the crew name, which is not a usable
+             accessible name on its own — it has to say what you are doing to it.
+             An explicit aria-label outranks Radix's aria-labelledby, and the
+             DialogTitle still has to EXIST or Radix warns. */
+          aria-label={creating ? i18nT('pages.kiroCrewAgentsPage.create_a_new_crew') : i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: editing })}
+          /* Radix closes on an outside pointerdown and on Escape. Dismissing
+             mid-write is DELIBERATELY still allowed: the sheetEpoch/settleFor
+             machinery below exists to make the abandoned write land harmlessly,
+             and suppressing it would break that. */
+        >
+          <DialogHeader>
+            {!creating && <CrewAvatar seed={editing} size={28} />}
+            <DialogTitle className="font-mono">
+              {creating ? i18nT('pages.kiroCrewAgentsPage.create_agent') : editing}
+            </DialogTitle>
+            {!creating && editingAgent?.source && <SourceBadge source={editingAgent.source} />}
+            {!creating && (
+              <Btn className="ml-auto" onClick={() => chatWith(editing)}>
+                <MessageSquare className="lucide-inline" aria-hidden="true" />
+                {i18nT('pages.kiroCrewAgentsPage.chat_with_this_crew')}
+              </Btn>
             )}
-          </>
-        }
-      >
+          </DialogHeader>
+
+          <DialogBody>
+            <div className="flex flex-col gap-6">
         {creating && (
           <section className="flex flex-col gap-3">
             <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.identity')}</h3>
@@ -759,15 +963,33 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             </div>
           </section>
         )}
-      </SideSheet>
+            </div>
+          </DialogBody>
 
-      {wsModalOpen && (
-        <WorkspaceModal
-          workspaceOptions={workspaceOptions}
-          onCreated={handleWsCreated}
-          onClose={() => setWsModalOpen(false)}
-        />
-      )}
+          <DialogFooter>
+            {error && <span className="mr-auto text-[13px] text-danger">{error}</span>}
+            <Btn onClick={closeSheet}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
+            {creating ? (
+              <SendBtn onClick={create} disabled={sheetBusy}>
+                {createMut.isPending ? i18nT('pages.kiroCrewAgentsPage.creating') : i18nT('pages.kiroCrewAgentsPage.create')}
+              </SendBtn>
+            ) : (
+              <SendBtn onClick={saveEdit} disabled={sheetBusy}>{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
+            )}
+          </DialogFooter>
+
+          {/* Nested INSIDE the editor's DialogContent so Radix treats it as a
+              stacked layer of the same dialog tree — that is what makes Escape
+              close only this one and focus return to the editor afterwards.
+              Always mounted; `open` drives it (see WorkspaceModal). */}
+          <WorkspaceModal
+            open={wsModalOpen}
+            workspaceOptions={workspaceOptions}
+            onCreated={handleWsCreated}
+            onClose={() => setWsModalOpen(false)}
+          />
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

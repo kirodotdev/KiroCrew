@@ -2264,6 +2264,14 @@
       "toggle_additional_prompt": "অতিরিক্ত প্রম্পট চালু/বন্ধ করুন",
       "write_a_comment": "একটি মন্তব্য লিখুন…"
     },
+    "commentThreadPopover": {
+      "close": "বন্ধ করুন",
+      "comment_one": "{{count}}টি মন্তব্য",
+      "comment_other": "{{count}}টি মন্তব্য",
+      "comment_thread": "মন্তব্য থ্রেড",
+      "reply": "উত্তর দিন…",
+      "reply_2": "উত্তর"
+    },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "সম্পূর্ণ আর্টিফ্যাক্টে একটি মন্তব্য যোগ করুন…",
       "add_comment": "মন্তব্য যোগ করুন",
@@ -2301,14 +2309,6 @@
       "failed_to_sync_to_provider": "প্রোভাইডারে সিঙ্ক করা যায়নি",
       "pending_sync_to_provider": "প্রোভাইডারে সিঙ্ক হওয়ার অপেক্ষায়"
     },
-    "commentThreadPopover": {
-      "close": "বন্ধ করুন",
-      "comment_one": "{{count}}টি মন্তব্য",
-      "comment_other": "{{count}}টি মন্তব্য",
-      "comment_thread": "মন্তব্য থ্রেড",
-      "reply": "উত্তর দিন…",
-      "reply_2": "উত্তর"
-    },
     "computerUseLiveView": {
       "close": "বন্ধ করো",
       "close_live_desktop_view": "লাইভ ডেস্কটপ ভিউ বন্ধ করো",
@@ -2342,6 +2342,9 @@
     "detailPanel": {
       "close_panel": "প্যানেল বন্ধ করুন",
       "resize_panel": "প্যানেলের আকার বদলান"
+    },
+    "dialog": {
+      "close": "বন্ধ করুন"
     },
     "diffBlock": {
       "collapse": "▲ সংকুচিত করুন",
@@ -2514,16 +2517,6 @@
       "comment_unread_one": "{{count}}টি মন্তব্য · অপঠিত",
       "comment_unread_other": "{{count}}টি মন্তব্য · অপঠিত"
     },
-    "instancesViewport": {
-      "connecting": "কানেক্ট হচ্ছে…",
-      "connection_error": "কানেকশন ত্রুটি",
-      "disconnected": "বিচ্ছিন্ন",
-      "loading_pane": "প্যান লোড হচ্ছে…",
-      "pane_failed_to_load": "পেন লোড করা যায়নি",
-      "retry": "পুনরায় চেষ্টা করুন",
-      "the_tunnel_looks_connected_but_the_remote_dashbo": "টানেল সংযুক্ত বলে মনে হচ্ছে, কিন্তু রিমোট ড্যাশবোর্ড কখনও লোড হয়নি। এটি হয়তো\n                  রিস্টার্ট হচ্ছে — পুনরায় চেষ্টা করুন, বা উপরের ট্যাব বদলান।",
-      "this_tab_stays_until_you_disconnect_the_instance": "সেটিংস → ইনস্ট্যান্স-এ গিয়ে ইনস্ট্যান্সটি সংযোগ বিচ্ছিন্ন না করা পর্যন্ত এই ট্যাবটি থেকে যাবে।"
-    },
     "instanceTabBar": {
       "connected": "সংযুক্ত",
       "connected_refreshing": "সংযুক্ত · রিফ্রেশ হচ্ছে…",
@@ -2534,6 +2527,16 @@
       "tunnel_connected": "টানেল সংযুক্ত।",
       "tunnel_connecting": "টানেল কানেক্ট হচ্ছে…",
       "tunnel_error": "টানেল ত্রুটি"
+    },
+    "instancesViewport": {
+      "connecting": "কানেক্ট হচ্ছে…",
+      "connection_error": "কানেকশন ত্রুটি",
+      "disconnected": "বিচ্ছিন্ন",
+      "loading_pane": "প্যান লোড হচ্ছে…",
+      "pane_failed_to_load": "পেন লোড করা যায়নি",
+      "retry": "পুনরায় চেষ্টা করুন",
+      "the_tunnel_looks_connected_but_the_remote_dashbo": "টানেল সংযুক্ত বলে মনে হচ্ছে, কিন্তু রিমোট ড্যাশবোর্ড কখনও লোড হয়নি। এটি হয়তো\n                  রিস্টার্ট হচ্ছে — পুনরায় চেষ্টা করুন, বা উপরের ট্যাব বদলান।",
+      "this_tab_stays_until_you_disconnect_the_instance": "সেটিংস → ইনস্ট্যান্স-এ গিয়ে ইনস্ট্যান্সটি সংযোগ বিচ্ছিন্ন না করা পর্যন্ত এই ট্যাবটি থেকে যাবে।"
     },
     "issuePanel": {
       "add_to_chat": "চ্যাটে যোগ করো",
@@ -2684,6 +2687,11 @@
       "waiting_for_sign_in": "সাইন-ইনের অপেক্ষায়…",
       "we_could_not_check_kiro_cli": "আমরা Kiro CLI পরীক্ষা করতে পারিনি।",
       "your_crew_is_almost_ready": "আপনার ক্রু প্রায় প্রস্তুত।"
+    },
+    "linkPreview": {
+      "copied": "কপি করা হয়েছে",
+      "copy_url": "URL কপি করুন",
+      "copy_url_of": "{{name}} এর URL কপি করুন"
     },
     "linkedSurfacesSection": {
       "confirm_release": "এই সেশনটি {{label}} থেকে বিচ্ছিন্ন করবেন?\n\nসেখানে পাঠানো বার্তা আর এখানে আসবে না, এবং উত্তরও সেখানে পৌঁছাবে না। ওই চ্যানেল থেকে !sessions ব্যবহার করে আবার সংযুক্ত করতে পারবেন।",
@@ -3152,6 +3160,12 @@
       "sub_agent_result_one": "{{count}}টি সাবএজেন্ট ফলাফল",
       "sub_agent_result_other": "{{count}}টি সাবএজেন্ট ফলাফল"
     },
+    "readingWidthToggle": {
+      "label_full": "প",
+      "label_md": "ম",
+      "title_full": "পূর্ণ প্রস্থ",
+      "title_md": "মধ্যম প্রস্থ"
+    },
     "reasoningEffortDropdown": {
       "effort": "প্রচেষ্টা",
       "faster": "দ্রুততর",
@@ -3381,6 +3395,35 @@
       "post_reminder_in_slack": "Slack-এ রিমাইন্ডার পোস্ট করুন",
       "send_to_slack": "Slack-এ পাঠান",
       "unlink_from_slack": "Slack থেকে আনলিঙ্ক করুন"
+    },
+    "slashCommandMenu": {
+      "desc_agent": "সক্রিয় এজেন্ট বদলাও বা পরিচালনা করো",
+      "desc_changelog": "রিলিজ চেঞ্জলগ দেখাও",
+      "desc_chat": "একটি চ্যাট সেশন সেভ বা লোড করো",
+      "desc_clear": "কথাবার্তার ইতিহাস মুছে দাও",
+      "desc_code": "কোড ইন্টেলিজেন্স টুল খোলো",
+      "desc_compact": "কনটেক্সট খালি করতে কথাবার্তা সংক্ষিপ্ত করো",
+      "desc_context": "কনটেক্সট ফাইল আর টোকেন ব্যবহার পরিচালনা করো",
+      "desc_editor": "বাইরের কোনো এডিটরে তোমার প্রম্পট লেখো",
+      "desc_exit": "চ্যাট সেশন থেকে বেরিয়ে যাও",
+      "desc_experiment": "পরীক্ষামূলক ফিচার চালু বা বন্ধ করো",
+      "desc_help": "যে কমান্ডগুলো আছে তা দেখাও",
+      "desc_hooks": "কনফিগার করা কনটেক্সট হুক দেখো",
+      "desc_issue": "কোনো সমস্যা বা বাগ জানাও",
+      "desc_kb": "জ্ঞানভান্ডারে খোঁজো",
+      "desc_logdump": "সেশনের লগ একটি ফাইলে ডাম্প করো",
+      "desc_mcp": "কনফিগার করা MCP সার্ভার দেখাও",
+      "desc_model": "চলতি মডেল দেখাও বা বদলাও",
+      "desc_onboarding": "সেটআপ ইমপোর্ট আর স্বাগত ট্যুর আবার চালাও",
+      "desc_paste": "ক্লিপবোর্ড থেকে একটি ছবি পেস্ট করো",
+      "desc_prompts": "সেভ করা প্রম্পট ও এজেন্ট SOP দেখাও বা চালাও",
+      "desc_quit": "চ্যাট সেশন বন্ধ করো",
+      "desc_reply": "সহকারীর শেষ মেসেজে উত্তর দাও",
+      "desc_side": "পাশে একটি কথাবার্তার প্যানেল খোলো",
+      "desc_tangent": "একটি ট্যানজেন্ট কথাবার্তা শুরু করো",
+      "desc_todos": "টাস্কের তালিকা দেখাও বা পরিচালনা করো",
+      "desc_tools": "যে টুলগুলো আছে তা দেখাও",
+      "desc_usage": "বিলিং আর ব্যবহারের তথ্য দেখাও"
     },
     "slotTagPopover": {
       "assign_tags": "ট্যাগ নির্ধারণ করুন",
@@ -3676,46 +3719,6 @@
       "select": "নির্বাচন করুন",
       "workspace_name": "ওয়ার্কস্পেসের নাম",
       "workspace_name_2": "workspace-name"
-    },
-    "linkPreview": {
-      "copied": "কপি করা হয়েছে",
-      "copy_url": "URL কপি করুন",
-      "copy_url_of": "{{name}} এর URL কপি করুন"
-    },
-    "readingWidthToggle": {
-      "label_full": "প",
-      "label_md": "ম",
-      "title_full": "পূর্ণ প্রস্থ",
-      "title_md": "মধ্যম প্রস্থ"
-    },
-    "slashCommandMenu": {
-      "desc_agent": "সক্রিয় এজেন্ট বদলাও বা পরিচালনা করো",
-      "desc_changelog": "রিলিজ চেঞ্জলগ দেখাও",
-      "desc_chat": "একটি চ্যাট সেশন সেভ বা লোড করো",
-      "desc_clear": "কথাবার্তার ইতিহাস মুছে দাও",
-      "desc_code": "কোড ইন্টেলিজেন্স টুল খোলো",
-      "desc_compact": "কনটেক্সট খালি করতে কথাবার্তা সংক্ষিপ্ত করো",
-      "desc_context": "কনটেক্সট ফাইল আর টোকেন ব্যবহার পরিচালনা করো",
-      "desc_editor": "বাইরের কোনো এডিটরে তোমার প্রম্পট লেখো",
-      "desc_exit": "চ্যাট সেশন থেকে বেরিয়ে যাও",
-      "desc_experiment": "পরীক্ষামূলক ফিচার চালু বা বন্ধ করো",
-      "desc_help": "যে কমান্ডগুলো আছে তা দেখাও",
-      "desc_hooks": "কনফিগার করা কনটেক্সট হুক দেখো",
-      "desc_issue": "কোনো সমস্যা বা বাগ জানাও",
-      "desc_kb": "জ্ঞানভান্ডারে খোঁজো",
-      "desc_logdump": "সেশনের লগ একটি ফাইলে ডাম্প করো",
-      "desc_mcp": "কনফিগার করা MCP সার্ভার দেখাও",
-      "desc_model": "চলতি মডেল দেখাও বা বদলাও",
-      "desc_onboarding": "সেটআপ ইমপোর্ট আর স্বাগত ট্যুর আবার চালাও",
-      "desc_paste": "ক্লিপবোর্ড থেকে একটি ছবি পেস্ট করো",
-      "desc_prompts": "সেভ করা প্রম্পট ও এজেন্ট SOP দেখাও বা চালাও",
-      "desc_quit": "চ্যাট সেশন বন্ধ করো",
-      "desc_reply": "সহকারীর শেষ মেসেজে উত্তর দাও",
-      "desc_side": "পাশে একটি কথাবার্তার প্যানেল খোলো",
-      "desc_tangent": "একটি ট্যানজেন্ট কথাবার্তা শুরু করো",
-      "desc_todos": "টাস্কের তালিকা দেখাও বা পরিচালনা করো",
-      "desc_tools": "যে টুলগুলো আছে তা দেখাও",
-      "desc_usage": "বিলিং আর ব্যবহারের তথ্য দেখাও"
     }
   },
   "hooks": {
@@ -5436,7 +5439,6 @@
       "also_used_by_these_crews": "{{crews}}-ও এটি ব্যবহার করে। একই স্টোর ভাগ করা Crew একে অন্যের ফাইল ও মেমরি পড়তে পারে।",
       "cancel": "বাতিল",
       "chat_with_this_crew": "এই Crew-এর সঙ্গে চ্যাট করুন",
-      "close_dialog": "ডায়ালগ বন্ধ করুন",
       "copy_from_optional": "কোথা থেকে কপি করবেন (ঐচ্ছিক)",
       "copy_from_workspace": "ওয়ার্কস্পেস থেকে কপি করুন",
       "copy_the_contents_of_an_existing_workspace_into": "কোনো বিদ্যমান ওয়ার্কস্পেসের বিষয়বস্তু নতুনটিতে কপি করো। একেবারে নতুন করে শুরু করতে '— none —' রেখে দাও।",
@@ -5447,6 +5449,7 @@
       "create_workspace": "ওয়ার্কস্পেস তৈরি করুন",
       "create_your_first_crew": "আপনার প্রথম Crew তৈরি করুন",
       "creating": "তৈরি হচ্ছে…",
+      "crew_column": "ক্রু",
       "danger_zone": "বিপজ্জনক অংশ",
       "default_2": "ডিফল্ট",
       "delete_crew": "Crew মুছে ফেলুন",
@@ -5475,6 +5478,7 @@
       "new_workspace_action": "+ নতুন ওয়ার্কস্পেস…",
       "no_crews_match_your_filter": "আপনার ফিল্টারের সঙ্গে কোনো crew মেলে না",
       "no_crews_yet": "এখনো কোনো Crew নেই",
+      "no_description": "কোনো বিবরণ নেই",
       "no_pin_anywhere_the_backend_chooses": "এখানে বা টেমপ্লেটে কিছুই বেছে নেওয়া হয়নি, তাই KiroCrew নিজেই একটি বেছে নেয়।",
       "none": "— কোনোটি নয় —",
       "pinned_on_this_crew": "এই Crew-এর জন্য বেছে নেওয়া।",
@@ -5485,6 +5489,10 @@
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew-এর ভিতরের সাবডিরেক্টরি, যেখানে এই ওয়ার্কস্পেস তার ডেটা রাখে (চ্যাট ইতিহাস, শিক্ষা, প্রজেক্ট)। প্রতিটি ওয়ার্কস্পেস নিজের আলাদা ডিরেক্টরি পায়।",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "এই Crew যে শুরুর সেটআপ ব্যবহার করে — এর টুল, সংযোগ ও নির্দেশনা।",
       "used_for_all_new_chats": "সব নতুন চ্যাটে ব্যবহার হয়",
+      "view_cards": "কার্ড",
+      "view_cards_tooltip": "প্রশস্ত কার্ড, প্রতিটি ক্রু যা ব্যবহার করে তা দেখায়",
+      "view_list": "তালিকা",
+      "view_list_tooltip": "সংক্ষিপ্ত টেবিল, প্রতি ক্রু একটি সারি",
       "which_store_its_lessons_and_history_are_written": "এই Crew-এর শিক্ষা ও ইতিহাস কোথায় জমা হয়। বদলালে Crew খালি মেমরি থেকে শুরু করে; পুরোনো মেমরি রাখা হয়।",
       "workspace": "ওয়ার্কস্পেস",
       "workspace_2": "ওয়ার্কস্পেস",

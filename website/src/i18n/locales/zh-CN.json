@@ -2227,6 +2227,13 @@
       "toggle_additional_prompt": "切换附加提示词",
       "write_a_comment": "写下评论…"
     },
+    "commentThreadPopover": {
+      "close": "关闭",
+      "comment_other": "{{count}} 条评论",
+      "comment_thread": "评论话题",
+      "reply": "回复…",
+      "reply_2": "回复"
+    },
     "commentsSidebar": {
       "add_a_comment_on_the_whole_artifact": "对整个工件添加评论…",
       "add_comment": "添加评论",
@@ -2264,13 +2271,6 @@
       "failed_to_sync_to_provider": "同步到平台失败",
       "pending_sync_to_provider": "等待同步到平台"
     },
-    "commentThreadPopover": {
-      "close": "关闭",
-      "comment_other": "{{count}} 条评论",
-      "comment_thread": "评论话题",
-      "reply": "回复…",
-      "reply_2": "回复"
-    },
     "computerUseLiveView": {
       "close": "关闭",
       "close_live_desktop_view": "关闭实时桌面视图",
@@ -2304,6 +2304,9 @@
     "detailPanel": {
       "close_panel": "关闭面板",
       "resize_panel": "调整面板大小"
+    },
+    "dialog": {
+      "close": "关闭"
     },
     "diffBlock": {
       "collapse": "▲ 折叠",
@@ -2470,16 +2473,6 @@
       "comment_other": "{{count}} 条评论",
       "comment_unread_other": "{{count}} 条评论 · 未读"
     },
-    "instancesViewport": {
-      "connecting": "正在连接…",
-      "connection_error": "连接错误",
-      "disconnected": "已断开连接",
-      "loading_pane": "正在加载窗格…",
-      "pane_failed_to_load": "窗格加载失败",
-      "retry": "重试",
-      "the_tunnel_looks_connected_but_the_remote_dashbo": "隧道看起来已连接，但远程仪表板始终未加载。它可能正在\n                  重启 — 请重试，或切换上方的标签页。",
-      "this_tab_stays_until_you_disconnect_the_instance": "此标签页会一直保留，直到你在“设置 → 实例”中断开此实例。"
-    },
     "instanceTabBar": {
       "connected": "已连接",
       "connected_refreshing": "已连接 · 刷新中…",
@@ -2490,6 +2483,16 @@
       "tunnel_connected": "隧道已连接。",
       "tunnel_connecting": "隧道连接中…",
       "tunnel_error": "隧道错误"
+    },
+    "instancesViewport": {
+      "connecting": "正在连接…",
+      "connection_error": "连接错误",
+      "disconnected": "已断开连接",
+      "loading_pane": "正在加载窗格…",
+      "pane_failed_to_load": "窗格加载失败",
+      "retry": "重试",
+      "the_tunnel_looks_connected_but_the_remote_dashbo": "隧道看起来已连接，但远程仪表板始终未加载。它可能正在\n                  重启 — 请重试，或切换上方的标签页。",
+      "this_tab_stays_until_you_disconnect_the_instance": "此标签页会一直保留，直到你在“设置 → 实例”中断开此实例。"
     },
     "issuePanel": {
       "add_to_chat": "添加到聊天",
@@ -2640,6 +2643,11 @@
       "waiting_for_sign_in": "等待登录…",
       "we_could_not_check_kiro_cli": "我们无法检查 Kiro CLI。",
       "your_crew_is_almost_ready": "你的 crew 即将就绪。"
+    },
+    "linkPreview": {
+      "copied": "已复制",
+      "copy_url": "复制网址",
+      "copy_url_of": "复制 {{name}} 的网址"
     },
     "linkedSurfacesSection": {
       "confirm_release": "解除此会话与 {{label}} 的关联？\n\n那里发送的消息将不再到达此处，回复也将不再发送到那里。你可以在该频道使用 !sessions 重新关联。",
@@ -3104,6 +3112,12 @@
       "send_now": "立即发送",
       "sub_agent_result_other": "{{count}} 个子代理结果"
     },
+    "readingWidthToggle": {
+      "label_full": "全",
+      "label_md": "中",
+      "title_full": "全宽",
+      "title_md": "中等宽度"
+    },
     "reasoningEffortDropdown": {
       "effort": "强度",
       "faster": "更快",
@@ -3332,6 +3346,35 @@
       "post_reminder_in_slack": "在 Slack 中发布提醒",
       "send_to_slack": "发送到 Slack",
       "unlink_from_slack": "取消与 Slack 的关联"
+    },
+    "slashCommandMenu": {
+      "desc_agent": "切换或管理当前代理",
+      "desc_changelog": "显示版本更新日志",
+      "desc_chat": "保存或加载聊天会话",
+      "desc_clear": "清除对话历史",
+      "desc_code": "打开代码智能工具",
+      "desc_compact": "压缩对话以释放上下文",
+      "desc_context": "管理上下文文件和 token 用量",
+      "desc_editor": "在外部编辑器中撰写提示词",
+      "desc_exit": "退出聊天会话",
+      "desc_experiment": "开关实验性功能",
+      "desc_help": "显示可用命令",
+      "desc_hooks": "查看已配置的上下文钩子",
+      "desc_issue": "报告问题或缺陷",
+      "desc_kb": "搜索知识库",
+      "desc_logdump": "把会话日志导出到文件",
+      "desc_mcp": "显示已配置的 MCP 服务器",
+      "desc_model": "显示或切换当前模型",
+      "desc_onboarding": "重放设置导入和欢迎引导",
+      "desc_paste": "从剪贴板粘贴图片",
+      "desc_prompts": "列出或调用已保存的提示词与代理 SOP",
+      "desc_quit": "结束聊天会话",
+      "desc_reply": "回复最后一条助手消息",
+      "desc_side": "打开旁支对话面板",
+      "desc_tangent": "开始一段支线对话",
+      "desc_todos": "显示或管理任务清单",
+      "desc_tools": "显示可用工具",
+      "desc_usage": "显示计费和用量信息"
     },
     "slotTagPopover": {
       "assign_tags": "分配标签",
@@ -3627,46 +3670,6 @@
       "select": "选择",
       "workspace_name": "工作区名称",
       "workspace_name_2": "workspace-name"
-    },
-    "linkPreview": {
-      "copied": "已复制",
-      "copy_url": "复制网址",
-      "copy_url_of": "复制 {{name}} 的网址"
-    },
-    "readingWidthToggle": {
-      "label_full": "全",
-      "label_md": "中",
-      "title_full": "全宽",
-      "title_md": "中等宽度"
-    },
-    "slashCommandMenu": {
-      "desc_agent": "切换或管理当前代理",
-      "desc_changelog": "显示版本更新日志",
-      "desc_chat": "保存或加载聊天会话",
-      "desc_clear": "清除对话历史",
-      "desc_code": "打开代码智能工具",
-      "desc_compact": "压缩对话以释放上下文",
-      "desc_context": "管理上下文文件和 token 用量",
-      "desc_editor": "在外部编辑器中撰写提示词",
-      "desc_exit": "退出聊天会话",
-      "desc_experiment": "开关实验性功能",
-      "desc_help": "显示可用命令",
-      "desc_hooks": "查看已配置的上下文钩子",
-      "desc_issue": "报告问题或缺陷",
-      "desc_kb": "搜索知识库",
-      "desc_logdump": "把会话日志导出到文件",
-      "desc_mcp": "显示已配置的 MCP 服务器",
-      "desc_model": "显示或切换当前模型",
-      "desc_onboarding": "重放设置导入和欢迎引导",
-      "desc_paste": "从剪贴板粘贴图片",
-      "desc_prompts": "列出或调用已保存的提示词与代理 SOP",
-      "desc_quit": "结束聊天会话",
-      "desc_reply": "回复最后一条助手消息",
-      "desc_side": "打开旁支对话面板",
-      "desc_tangent": "开始一段支线对话",
-      "desc_todos": "显示或管理任务清单",
-      "desc_tools": "显示可用工具",
-      "desc_usage": "显示计费和用量信息"
     }
   },
   "hooks": {
@@ -5366,7 +5369,6 @@
       "also_used_by_these_crews": "{{crews}} 也在用。共用一个存储的 Crew 可以互相读取对方的文件和记忆。",
       "cancel": "取消",
       "chat_with_this_crew": "与此 Crew 聊天",
-      "close_dialog": "关闭对话框",
       "copy_from_optional": "复制来源（可选）",
       "copy_from_workspace": "从工作区复制",
       "copy_the_contents_of_an_existing_workspace_into": "把已有工作区的内容复制到新工作区。保持“— 无 —”则从空白开始。",
@@ -5377,6 +5379,7 @@
       "create_workspace": "创建工作区",
       "create_your_first_crew": "创建你的第一个 Crew",
       "creating": "正在创建…",
+      "crew_column": "小队",
       "danger_zone": "危险操作区",
       "default_2": "默认",
       "delete_crew": "删除 Crew",
@@ -5405,6 +5408,7 @@
       "new_workspace_action": "+ 新建工作区…",
       "no_crews_match_your_filter": "没有符合筛选条件的 Crew",
       "no_crews_yet": "还没有 Crew",
+      "no_description": "无描述",
       "no_pin_anywhere_the_backend_chooses": "这里和模板里都没有选定，所以由 KiroCrew 替你挑一个。",
       "none": "— 无 —",
       "pinned_on_this_crew": "为这个 Crew 选定。",
@@ -5415,6 +5419,10 @@
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew 下用于存放此工作区数据（聊天历史、经验、项目）的子目录。每个工作区都有各自独立的目录。",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "这个 Crew 的起始设置 — 自带的工具、连接和指令。",
       "used_for_all_new_chats": "所有新对话都用它",
+      "view_cards": "卡片",
+      "view_cards_tooltip": "宽松卡片，显示每个小队使用的内容",
+      "view_list": "列表",
+      "view_list_tooltip": "紧凑表格，每个小队一行",
       "which_store_its_lessons_and_history_are_written": "这个 Crew 的经验和历史保存在哪里。换成别的以后，它会从空白记忆开始；旧记忆会保留。",
       "workspace": "工作区",
       "workspace_2": "工作区",
