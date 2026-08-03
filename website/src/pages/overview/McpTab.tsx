@@ -11,6 +11,7 @@ import McpCustomServerModal from '../../components/McpCustomServerModal'
 import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
+import { connectionProviderForServer } from '../connections/registry'
 
 import { i18nT } from '../../i18n/t'
 async function fetchServers(): Promise<McpServer[]> {
@@ -87,7 +88,11 @@ function ScopeBadge({
   )
 }
 
-export default function McpTab() {
+interface McpTabProps {
+  onManagedProviderClick?: (slug: string) => void
+}
+
+export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
   const provider = useProvider()
   const queryClient = useQueryClient()
   const [mcpFilter, setMcpFilter] = useState('')
@@ -335,6 +340,7 @@ export default function McpTab() {
             const eff = effectivePresence(s, p)
             const base = s.presence || DEFAULT_PRESENCE
             const hasToolOverrides = pendingTools[s.name] && Object.keys(pendingTools[s.name]).length > 0
+            const managedProvider = connectionProviderForServer(s)
             const rowBorder = pendingUninstall
               ? 'border-l-2 border-[var(--danger)]'
               : (hasPendingScopeChange(s, p) || hasToolOverrides)
@@ -343,8 +349,26 @@ export default function McpTab() {
             return (
               <tr key={s.name} className={`hover:bg-bg-hover transition-colors align-top ${rowBorder}`} style={{ opacity: pendingUninstall ? 0.5 : 1 }}>
                 <td className="px-2.5 py-2 border-b border-border text-sm min-w-[180px]">
-                  <code className={`font-semibold ${pendingUninstall ? 'line-through' : ''}`}>{s.name}</code><br/>
-                  <span className="text-muted text-[12px] block truncate max-w-[240px]" title={s.command}>{s.command || (s as McpServer & {url?: string}).url || '—'}</span>
+                  <div className="flex items-center gap-1.5">
+                    <code className={`font-semibold ${pendingUninstall ? 'line-through' : ''}`}>{s.name}</code>
+                    {managedProvider && (onManagedProviderClick ? (
+                      <button
+                        type="button"
+                        className="border-none bg-transparent p-0 cursor-pointer"
+                        onClick={() => onManagedProviderClick(managedProvider.slug)}
+                        aria-label={i18nT('pages.connectionsPage.open_managed_connection', { provider: managedProvider.name })}
+                      >
+                        <Badge variant="aim" className="text-[10px] px-1.5 py-0.5 font-body">
+                          {i18nT('pages.connectionsPage.managed_by_connections')}
+                        </Badge>
+                      </button>
+                    ) : (
+                      <Badge variant="aim" className="text-[10px] px-1.5 py-0.5 font-body">
+                        {i18nT('pages.connectionsPage.managed_by_connections')}
+                      </Badge>
+                    ))}
+                  </div>
+                  <span className="text-muted text-[12px] block truncate max-w-[240px]" title={s.command}>{s.command || s.url || '—'}</span>
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">
                   <ScopeBadge

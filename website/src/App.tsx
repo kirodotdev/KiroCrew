@@ -2223,9 +2223,10 @@ export default function App() {
             <Route path="/knowledge" element={<ErrorBoundary><KnowledgePage /></ErrorBoundary>} />
             <Route path="/overview" element={<Navigate to="/settings?tab=overview" replace />} />
             <Route path="/schedule" element={<SchedulePage />} />
-            {/* Agents merged into the Agent Capabilities panel (first tab). */}
+            {/* Agents and Connections live in the Agent Capabilities panel. */}
             <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />
+            <Route path="/connections" element={<Navigate to="/capabilities?tab=mcp" replace />} />
             <Route path="/tasks" element={<TasksRedirect />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/hooks" element={<HooksPage />} />

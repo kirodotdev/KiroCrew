@@ -73,4 +73,14 @@ describe('McpTab restructure', () => {
     // Uninstall stays in the table (per-row action), not in the modal.
     expect(screen.getAllByRole('button', { name: 'Uninstall' })).toHaveLength(2)
   })
+
+  it('badges a registry-managed remote server', async () => {
+    mockApi.mcpServers.mockResolvedValue([{
+      ...server('notion'),
+      command: '',
+      url: 'https://mcp.notion.com/mcp',
+    }])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('Managed by Connections')).toBeInTheDocument())
+  })
 })

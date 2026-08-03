@@ -232,9 +232,13 @@ export interface McpScopePresence {
 
 export interface McpServer {
   name: string; command: string; args?: string[]
+  url?: string
   status: string; error?: string; tools?: string[]
   source: string; enabled: boolean; disabledTools?: string[]
   presence?: McpScopePresence
+  /** Optional status-enrichment fields supplied by newer runtimes. */
+  accountLabel?: string
+  connectedSince?: string
   /** True when the entry lives in KiroCrew's own mcp.json — the scope the
    *  Edit JSON action reads and writes (consent-disabled rows included). */
   kirocrewManaged?: boolean

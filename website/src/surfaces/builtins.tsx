@@ -124,7 +124,7 @@ registerBuiltinSurface({
 // ── Bottom ─────────────────────────────────────────────────────────────────
 // Agents + Capabilities merged into one bottom-pinned "Agent Capabilities"
 // destination. The /capabilities secondary panel hosts Crews (bindings),
-// Agent Templates, Integrations (MCP), Skills, Hooks, and Prompts;
+// Agent Templates, Connections, Skills, Hooks, and Prompts;
 // /agents redirects there (see App.tsx routes).
 //
 // Icon: the Kiro ghost brand mark (not a Lucide glyph) — this row is the
