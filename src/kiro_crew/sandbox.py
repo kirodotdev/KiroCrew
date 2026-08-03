@@ -15,6 +15,26 @@ OS mechanism is unavailable (logged as warning).
 
 Config: ``"sandbox": "auto" | "off"`` in ``~/.kiro/crew/config.json``.
 ``"auto"`` (default) uses namespace sandbox on Linux, seatbelt on macOS.
+
+Pre-exec hardlink scan (Linux launcher, Step 7): before ``exec`` the launcher
+walks the agent CWD and ``/tmp`` for files with ``st_nlink > 1`` whose
+``(st_dev, st_ino)`` matches a protected credential inode - a hardlink planted
+outside the namespace keeps the credential inode reachable after the bind-mount
+hides its original path. The walk is bounded by ``_HARDLINK_SCAN_BUDGET`` files
+*per root* (``_scan_credential_hardlinks``), so a large CWD can never consume
+the budget that ``/tmp`` - the shared, world-writable root the check exists to
+guard - needs. Budget exhaustion is a DELIBERATE, observable escalate: a
+distinguishable ``sandbox: WARN hardlink scan INCOMPLETE`` diagnostic is written
+to stderr (captured by the parent gateway) naming the root and count, then
+``exec`` proceeds. It does NOT fail closed. Failing closed would turn an
+environment condition (a long-lived host accumulating unrelated ``/tmp`` junk,
+which happens with zero attacker involvement) into a guaranteed agent-spawn
+outage on every launch, which operators would work around by disabling the
+sandbox entirely - a strictly worse security posture. Escalate replaces the
+prior *silent* pass-through (which was indistinguishable from a clean scan) with
+a loud, auditable one, and the per-root budget closes the reported bypass where
+a large CWD left ``/tmp`` unscanned. A legitimate user with a genuinely huge
+``/tmp`` sees the agent spawn normally plus one WARN line per truncated root.
 """
 
 from __future__ import annotations
@@ -24,6 +44,7 @@ import ctypes
 import ctypes.util
 import errno
 import functools
+import inspect
 import json
 import logging
 import os
@@ -759,6 +780,67 @@ def _probe_sandbox_exec() -> bool:
 
 # ── Backend: Linux namespace sandbox ──
 
+# Per-root file budget for the pre-exec hardlink scan (Step 7). Bounds the
+# number of ``lstat`` calls per scan root so a huge tree cannot add unbounded
+# per-spawn latency. It is applied INDEPENDENTLY to each root (see
+# ``_scan_credential_hardlinks``) so the agent CWD can never starve the ``/tmp``
+# scan. Exhausting it escalates (loud diagnostic) rather than silently passing;
+# see the module docstring for why this is a deliberate fail-open, not
+# fail-closed.
+_HARDLINK_SCAN_BUDGET = 10000
+
+
+def _scan_credential_hardlinks(scan_roots, protected_inodes, max_scan):
+    """Scan each root for hardlinks to protected credential inodes.
+
+    Walks every root in *scan_roots* (depth <= 5) looking for files whose
+    ``st_nlink > 1`` and whose ``(st_dev, st_ino)`` is in *protected_inodes* -
+    the signature of a hardlink planted outside the namespace to keep a
+    credential inode reachable after the bind-mount hides its original path.
+
+    Each root receives its OWN independent *max_scan* budget, so a large first
+    root (the agent CWD) can never consume the budget of a later one (``/tmp``,
+    the shared world-writable root this check exists to guard). This closes the
+    bypass where a big worktree left ``/tmp`` completely unscanned.
+
+    Returns ``(dangerous_links, truncated_roots)``. ``truncated_roots`` is a
+    list of ``(root, examined)`` pairs whose walk hit the budget and is
+    therefore INCOMPLETE - a value the caller can distinguish from a clean scan
+    (empty list) so budget exhaustion is never silently read as "no dangerous
+    hardlinks found". This function is stdlib-only (``os`` + builtins) because
+    its source is injected verbatim into the sandbox launcher subprocess.
+    """
+    dangerous_links = []
+    truncated_roots = []
+    for scan_root in scan_roots:
+        if not os.path.isdir(scan_root):
+            continue
+        examined = 0
+        truncated = False
+        for root2, dirs2, files2 in os.walk(scan_root):
+            # Depth limit: max 5 levels below the root.
+            if root2[len(scan_root) :].count(os.sep) > 5:
+                dirs2.clear()
+                continue
+            for fn2 in files2:
+                if examined >= max_scan:
+                    # A budget hit means files remain UNEXAMINED for this root.
+                    truncated = True
+                    break
+                examined += 1
+                fp2 = os.path.join(root2, fn2)
+                try:
+                    st2 = os.lstat(fp2)
+                    if st2.st_nlink > 1 and (st2.st_dev, st2.st_ino) in protected_inodes:
+                        dangerous_links.append(fp2)
+                except OSError:
+                    pass
+            if truncated:
+                break
+        if truncated:
+            truncated_roots.append((scan_root, examined))
+    return dangerous_links, truncated_roots
+
 
 def _resolve_agent_executable(executable: str) -> str:
     """Resolve *executable* through the active edition before sandboxing.
@@ -881,6 +963,11 @@ def _build_launcher_script(
     strict_host_key_opt = (
         " -o StrictHostKeyChecking=accept-new" if _ssh_supports_accept_new() else ""
     )
+    # Inject the hardlink-scan helper verbatim so the launcher subprocess (which
+    # runs stdlib-only, cannot import kiro_crew) shares a single source of truth
+    # with the unit-tested module-level function.
+    scan_func_src = inspect.getsource(_scan_credential_hardlinks)
+    scan_budget = _HARDLINK_SCAN_BUDGET
 
     return f'''#!/usr/bin/env python3
 """Namespace sandbox launcher — spawned by KiroCrew."""
@@ -930,6 +1017,7 @@ SSH_DIR = {ssh_dir}
 SSH_KNOWN_HOSTS = {ssh_known_hosts}
 HIDE_SSH = {hide_ssh}
 
+{scan_func_src}
 def main():
     argv = sys.argv[1:]
     if not argv:
@@ -1249,37 +1337,25 @@ def main():
                 pass
 
         if _protected_inodes:
-            _scan_count = 0
-            _MAX_SCAN = 10000
-            _dangerous_links = []
             _cwd = os.getcwd()
-            for _scan_root in (_cwd, "/tmp"):
-                if not os.path.isdir(_scan_root):
-                    continue
-                for _root2, _dirs2, _files2 in os.walk(_scan_root):
-                    # Depth limit: max 5 levels
-                    _depth = _root2[len(_scan_root):].count(os.sep)
-                    if _depth > 5:
-                        _dirs2.clear()
-                        continue
-                    for _fn2 in _files2:
-                        _scan_count += 1
-                        if _scan_count > _MAX_SCAN:
-                            break
-                        _fp2 = os.path.join(_root2, _fn2)
-                        try:
-                            _st2 = os.lstat(_fp2)
-                            if _st2.st_nlink > 1:
-                                if (_st2.st_dev, _st2.st_ino) in _protected_inodes:
-                                    _dangerous_links.append(_fp2)
-                        except OSError:
-                            pass
-                    if _scan_count > _MAX_SCAN:
-                        break
+            _dangerous_links, _truncated_roots = _scan_credential_hardlinks(
+                (_cwd, "/tmp"), _protected_inodes, {scan_budget}
+            )
+            for _troot, _texamined in _truncated_roots:
+                # DELIBERATE escalate (see module docstring): budget exhaustion
+                # means this credential-hardlink guard is INCOMPLETE for _troot.
+                # Emit a distinguishable diagnostic the parent gateway captures
+                # (never a silent pass-through) and proceed - failing closed here
+                # would brick every spawn on any host with a large /tmp.
+                sys.stderr.write(
+                    "sandbox: WARN hardlink scan INCOMPLETE for root=%s "
+                    "(examined=%d budget=%d); credential-hardlink check truncated, "
+                    "proceeding\\n" % (_troot, _texamined, {scan_budget})
+                )
             if _dangerous_links:
                 sys.exit(
-                    f"sandbox: BLOCKED — found hardlink(s) to protected credential "
-                    f"inodes: {{_dangerous_links[:5]}}. Remove them before running."
+                    "sandbox: BLOCKED — found hardlink(s) to protected credential "
+                    "inodes: %s. Remove them before running." % (_dangerous_links[:5],)
                 )
 
         os.execvp(argv[0], argv)
