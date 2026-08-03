@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import stat as stat_module
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,6 +121,7 @@ from kiro_crew.hooks import (
     _normalize_tool_name,
     _tool_matches,
     fire_tool_hooks,
+    safe_read_file,
     validate_file_path,
 )
 from kiro_crew.llm_helpers import (
@@ -387,6 +389,10 @@ def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
 
 _WRITE_COMMANDS = frozenset({"create", "strReplace", "insert"})
 _MAX_SNAPSHOT = 200_000  # cap per-file snapshot to bound message meta size
+# Reconstruction reads the whole file synchronously on the event loop; past
+# this size the stored snapshot is truncated to _MAX_SNAPSHOT anyway, so
+# reconstruction declines instead of stalling the loop on a huge file.
+_MAX_RECONSTRUCT_BYTES = 2_000_000
 
 
 def _truncate_snapshot(content: str) -> str:
@@ -422,6 +428,102 @@ def _safe_read_snapshot(path: str) -> str | None:
         return None
 
 
+def _reconstruct_str_replace_before(path: str, raw_params: dict) -> str | None:
+    """Reconstruct the FULL-FILE before-content for a strReplace edit.
+
+    kiro-cli's ACP diff content block carries only the replaced FRAGMENT as
+    ``oldText`` for strReplace — not the whole file. Using it verbatim as the
+    before-snapshot made the chip diff a one-line fragment against the
+    full-file after, counting the entire file as additions (regression from
+    the #920 race fix, which correctly assumed full-file ``oldText`` for
+    create but not for strReplace).
+
+    Instead, read the file from disk and classify it by testing BOTH
+    hypotheses explicitly, reconstructing only when exactly one is plausible
+    (needle presence alone proves nothing — ``oldStr`` can re-form across
+    the replacement seam, e.g. ``oldStr="ab", newStr="a", before="abb"`` →
+    after ``"ab"``):
+
+    * ``newStr`` absent → post-write excluded (post-write content always
+      contains ``newStr``); pre-write proven iff ``oldStr`` occurs exactly
+      once (the tool refuses ambiguous ``oldStr``).
+    * ``newStr`` present but not unique (overlap-safe ``find()==rfind()``)
+      → post-write can neither be excluded nor reversed → decline.
+    * ``newStr`` unique → the single reversal candidate decides: candidate
+      tool-consistent AND pre-write plausible → undecidable, decline (seam
+      shapes); consistent only → reverse; inconsistent with pre-write
+      plausible → pre-write proven (post-write excluded).
+
+    Returns None when reconstruction isn't provable (missing/empty params —
+    including an empty ``newStr`` deletion, whose position in the after-state
+    is unrecoverable — ``replaceAll`` edits, where oldStr uniqueness is not
+    enforced and reversal would over-revert pre-existing ``newStr``
+    occurrences, non-regular or oversized files (``_MAX_RECONSTRUCT_BYTES``),
+    unreadable files, or an undecidable/implausible state); the caller then
+    falls through to the pre-existing source-priority chain.
+    """
+    old_str = raw_params.get("oldStr")
+    new_str = raw_params.get("newStr")
+    if not isinstance(old_str, str) or not isinstance(new_str, str) or not old_str or not new_str:
+        return None
+    if raw_params.get("replaceAll"):
+        # replaceAll is the one mode where strReplace does NOT enforce oldStr
+        # uniqueness, so the pre-write proof below doesn't hold and reversing
+        # every newStr occurrence over-reverts any that pre-existed the edit
+        # (server review finding: fabricated counts). Position/count is
+        # unrecoverable — decline and fall through to the fragment chain.
+        return None
+    try:
+        # Bound the read (server review findings): only regular files —
+        # /dev/zero and FIFOs stat as 0 bytes but read unboundedly — and
+        # only up to _MAX_RECONSTRUCT_BYTES (re-checked after the read,
+        # since stat() races with an external writer growing the file).
+        st = Path(path).expanduser().stat()
+        if not stat_module.S_ISREG(st.st_mode) or st.st_size > _MAX_RECONSTRUCT_BYTES:
+            return None
+        # Read through hooks.safe_read_file — the symlink-safe chokepoint
+        # (re-checks the RESOLVED target + O_NOFOLLOW open, closing the
+        # validate→read TOCTOU window; AWS-33/AWS-62). Raw content, no
+        # truncation: the cap must apply AFTER the reverse substitution or
+        # the needle could be cut mid-file. PermissionError (sensitive
+        # target / symlink race) and ordinary read errors both decline via
+        # the except-fallback — file-chip capture must never block a turn.
+        content = safe_read_file(path)
+    except Exception:
+        return None
+    if len(content) > _MAX_RECONSTRUCT_BYTES:
+        # Re-check after the read: the stat() gate above races with an
+        # external writer growing the file, and the substring scans below
+        # are O(n) — keep them bounded.
+        return None
+    pre_write_plausible = content.count(old_str) == 1
+    # Post-write content ALWAYS contains newStr (the edit just inserted it),
+    # so newStr absent excludes post-write entirely.
+    if new_str not in content:
+        return content if pre_write_plausible else None
+    # newStr present but NOT unique (overlap-safe: find()==rfind()):
+    # post-write can neither be excluded (any occurrence could be the edit
+    # site) nor reversed (ambiguous). Server review finding: strReplace
+    # "ab"→"a" on "aabb" → "aab" looks pre-write-plausible (one "ab") but
+    # IS post-write — classifying it pre-write recorded the after as the
+    # before and erased the edit from the chip. Decline.
+    if content.count(new_str) != 1 or content.find(new_str) != content.rfind(new_str):
+        return None
+    # newStr unique: the single possible reversal candidate decides.
+    candidate = content.replace(new_str, old_str, 1)
+    post_write_consistent = candidate.count(old_str) == 1
+    if post_write_consistent and pre_write_plausible:
+        return None  # seam shapes: valid as both states — undecidable
+    if post_write_consistent:
+        return candidate
+    if pre_write_plausible:
+        # Post-write EXCLUDED (its only possible edit site is
+        # tool-inconsistent), so pre-write is proven even with newStr
+        # coincidentally present in the file.
+        return content
+    return None
+
+
 def _snapshot_write_target(
     raw_params: dict | None,
     diff_old_text: str | None = None,
@@ -429,11 +531,18 @@ def _snapshot_write_target(
 ) -> dict | None:
     """Return {"path", "content"} of a file before modification for write tools.
 
-    Prefers the authoritative ``diff_old_text`` from the ACP diff content block
-    (kiro-cli's in-band before-text) over a disk read, because by the time we
-    process the event the write has already landed on disk (the auto-approved
-    path is a one-way notification — kiro-cli does NOT wait for the dashboard
-    to drain its asyncio.Queue before executing the write).
+    For strReplace, FIRST reconstructs the full-file before via
+    ``_reconstruct_str_replace_before`` (disk read + reverse substitution),
+    because the ACP diff content block's ``oldText`` is only the replaced
+    fragment for that command.
+
+    Otherwise prefers the authoritative ``diff_old_text`` from the ACP diff
+    content block (kiro-cli's in-band before-text) over a disk read, because
+    by the time we process the event the write has already landed on disk
+    (the auto-approved path is a one-way notification — kiro-cli does NOT
+    wait for the dashboard to drain its asyncio.Queue before executing the
+    write). For create the content block IS full-file: ``""`` for a new
+    file, the entire previous content for an overwrite.
 
     Falls back to a disk read only when no content block is present
     (``diff_old_text is None``), which is the correct path for the
@@ -456,6 +565,15 @@ def _snapshot_write_target(
     # by the LLM-tool intercept layer, so the security boundary is identical.
     if validate_file_path(path) is None:
         return None
+
+    # strReplace: the content block's oldText is only the replaced fragment,
+    # never the full file — reconstruct the true full-file before from disk +
+    # reverse substitution. Falls through to the generic chain when
+    # reconstruction is impossible.
+    if cmd == "strReplace":
+        before_full = _reconstruct_str_replace_before(path, raw_params)
+        if before_full is not None:
+            return {"path": path, "content": _truncate_snapshot(before_full)}
 
     # Prefer authoritative content-block before-text when available.
     if diff_old_text is not None:
@@ -3083,7 +3201,10 @@ async def _run_chat(
                 # flushed to assistant message meta in _flush_file_changes on turn end.
                 # Prefer the in-band diff_old_text from the ACP content block
                 # (authoritative) over a disk read which races with the write.
-                _file_snapshot = _snapshot_write_target(
+                # Offloaded: strReplace reconstruction reads the file from
+                # disk, and a slow/hung filesystem must not stall the loop.
+                _file_snapshot = await asyncio.to_thread(
+                    _snapshot_write_target,
                     event.raw_tool_params,
                     diff_old_text=event.diff_old_text,
                     diff_path=event.diff_path,
@@ -3228,8 +3349,10 @@ async def _run_chat(
                     # taken there; this is the first event with the file path.
                     # Prefer the in-band diff_old_text from the ACP content
                     # block (authoritative) over a disk read which races with
-                    # the write.
-                    _file_snapshot_upd = _snapshot_write_target(
+                    # the write. Offloaded: reconstruction reads from disk and
+                    # a slow/hung filesystem must not stall the loop.
+                    _file_snapshot_upd = await asyncio.to_thread(
+                        _snapshot_write_target,
                         event.raw_tool_params,
                         diff_old_text=event.diff_old_text,
                         diff_path=event.diff_path,
@@ -4554,9 +4677,7 @@ async def _run_chat(
             if is_claude_backend(client):
                 msg = "✅ Conversation compacted."
                 _append_compaction_notice(state, slot, msg)
-                state.broadcast_context_usage(
-                    slot.key, _context_usage_payload(slot.key, client)
-                )
+                state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
             else:
                 # Tell frontend to show compacting state and disable input
                 logger.info("Deferred compaction: waiting for compaction result")

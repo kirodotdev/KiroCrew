@@ -361,6 +361,274 @@ class TestContentBlockBeforeText:
         assert result["content"] == "before edit\n"
 
 
+class TestStrReplaceFullBeforeReconstruction:
+    """The strReplace fragment-before bug (chips counting the whole file as
+    additions).
+
+    kiro-cli's diff content block ``oldText`` for strReplace is only the
+    replaced FRAGMENT. The #920 race fix preferred it as the before-snapshot,
+    so the chip diffed a fragment against the full-file after and rendered
+    every line as an addition (observed live: a 1-line edit in a 12-line file
+    showed +13 −1). The fix reconstructs the full before from the post-write
+    disk content by reverse-applying the oldStr→newStr substitution.
+    """
+
+    BEFORE = "line 1\nline 2 OLD\nline 3\nline 4\n"
+    AFTER = "line 1\nline 2 NEW\nline 3\nline 4\n"
+
+    def test_post_write_reverse_substitution(self, tmp_path: Path):
+        """Auto-approved path: disk already has AFTER; reconstruct BEFORE."""
+        f = tmp_path / "app.py"
+        f.write_text(self.AFTER)
+        result = _snapshot_write_target(
+            {
+                "command": "strReplace",
+                "path": str(f),
+                "oldStr": "line 2 OLD",
+                "newStr": "line 2 NEW",
+            },
+            diff_old_text="line 2 OLD",  # fragment, NOT the full file
+            diff_path=str(f),
+        )
+        assert result is not None
+        # Full-file before — not the one-line fragment.
+        assert result["content"] == self.BEFORE
+
+    def test_pre_write_disk_is_before(self, tmp_path: Path):
+        """Blocking permission path: disk still has BEFORE; use it as-is."""
+        f = tmp_path / "app.py"
+        f.write_text(self.BEFORE)
+        result = _snapshot_write_target(
+            {
+                "command": "strReplace",
+                "path": str(f),
+                "oldStr": "line 2 OLD",
+                "newStr": "line 2 NEW",
+            },
+            diff_old_text="line 2 OLD",
+            diff_path=str(f),
+        )
+        assert result is not None
+        assert result["content"] == self.BEFORE
+
+    def test_replace_all_declines_reconstruction(self, tmp_path: Path):
+        """Server review finding: replaceAll doesn't enforce oldStr
+        uniqueness, so reversing every newStr occurrence over-reverts any
+        that pre-existed (NEW\\nOLD\\nOLD edited with replaceAll fabricated
+        +3/−3 instead of +2/−2). Reconstruction declines; fragment chain
+        applies."""
+        f = tmp_path / "multi.txt"
+        f.write_text("NEW\nmiddle\nNEW\n")
+        result = _snapshot_write_target(
+            {
+                "command": "strReplace",
+                "path": str(f),
+                "oldStr": "OLD",
+                "newStr": "NEW",
+                "replaceAll": True,
+            },
+            diff_old_text="OLD",
+            diff_path=str(f),
+        )
+        assert result is not None
+        # Fell through to the fragment (diff_old_text) chain.
+        assert result["content"] == "OLD"
+
+    def test_old_str_substring_of_new_str_declines(self, tmp_path: Path):
+        """Append-style edit, post-write: oldStr ⊂ newStr means the disk
+        content is ALSO a valid pre-write state (oldStr occurs exactly once
+        in it) — genuinely undecidable, so reconstruction declines rather
+        than guessing post-write as the earlier branch order did."""
+        f = tmp_path / "append.txt"
+        f.write_text("head\nvalue = 1  # tuned\ntail\n")
+        result = _snapshot_write_target(
+            {
+                "command": "strReplace",
+                "path": str(f),
+                "oldStr": "value = 1",
+                "newStr": "value = 1  # tuned",
+            },
+            diff_old_text="value = 1",
+            diff_path=str(f),
+        )
+        assert result is not None
+        # Fell through to the fragment (diff_old_text) chain.
+        assert result["content"] == "value = 1"
+
+    def test_empty_new_str_deletion_falls_back_to_fragment(self, tmp_path: Path):
+        """Deletion (newStr == ''): the removed text's position in the
+        after-state is unrecoverable, so reconstruction declines and the
+        pre-existing diff_old_text chain applies."""
+        f = tmp_path / "del.txt"
+        f.write_text("line 1\nline 3\n")
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f), "oldStr": "line 2\n", "newStr": ""},
+            diff_old_text="line 2\n",
+            diff_path=str(f),
+        )
+        assert result is not None
+        assert result["content"] == "line 2\n"
+
+    def test_ambiguous_new_str_declines_reconstruction(self, tmp_path: Path):
+        """Full-scope review finding: post-write content with MULTIPLE newStr
+        occurrences (newStr pre-existed elsewhere) makes the edit site
+        ambiguous — reversing an arbitrary occurrence attributed the edit to
+        the wrong line. Reconstruction declines; fragment chain applies."""
+        f = tmp_path / "ambig.txt"
+        f.write_text("NEW\nNEW\n")  # true before was "NEW\nOLD\n" — unknowable
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f), "oldStr": "OLD", "newStr": "NEW"},
+            diff_old_text="OLD",
+            diff_path=str(f),
+        )
+        assert result is not None
+        # Fell through to the fragment (diff_old_text) chain.
+        assert result["content"] == "OLD"
+
+    def test_post_write_masquerading_as_pre_write_declines(self, tmp_path: Path):
+        """Server review finding: strReplace("ab"→"a") on "aabb" yields "aab",
+        which contains exactly one "ab" and so looks pre-write-plausible —
+        but it IS the post-write state. Classifying it pre-write recorded
+        the after as the before and erased the edit from the chip. With
+        newStr present and non-unique, post-write cannot be excluded →
+        decline."""
+        f = tmp_path / "masquerade.txt"
+        f.write_text("aab")  # after of strReplace("ab"→"a") on "aabb"
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f), "oldStr": "ab", "newStr": "a"},
+            diff_old_text="ab",
+            diff_path=str(f),
+        )
+        assert result is not None
+        # Fell through to the fragment (diff_old_text) chain — NOT "aab".
+        assert result["content"] == "ab"
+
+    def test_seam_reformation_declines(self, tmp_path: Path):
+        """Server review finding: oldStr can re-form across the replacement
+        seam (oldStr='ab', newStr='a', before='abb' → after='ab'), making
+        the disk content valid as BOTH states. Dual-hypothesis
+        classification declines instead of misclassifying as pre-write."""
+        f = tmp_path / "seam.txt"
+        f.write_text("ab")  # after-state of the seam edit; also a valid before
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f), "oldStr": "ab", "newStr": "a"},
+            diff_old_text="ab",
+            diff_path=str(f),
+        )
+        assert result is not None
+        # Fell through to the fragment (diff_old_text) chain.
+        assert result["content"] == "ab"
+
+    def test_special_file_declines(self):
+        """Server review finding: /dev/zero stats as 0 bytes but reads
+        unboundedly — the S_ISREG gate declines non-regular files before
+        any read."""
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": "/dev/zero", "oldStr": "OLD", "newStr": "NEW"},
+            diff_old_text="OLD",
+            diff_path="/dev/zero",
+        )
+        assert result is not None
+        assert result["content"] == "OLD"
+
+    def test_post_read_size_recheck_declines(self, tmp_path: Path, monkeypatch):
+        """The stat() gate races with an external writer growing the file;
+        the post-read length re-check keeps the substring scans bounded."""
+        import kiro_crew.dashboard.chat_runner as cr
+
+        f = tmp_path / "grown.txt"
+        f.write_text("NEW\n")  # passes the stat gate
+        monkeypatch.setattr(
+            cr, "safe_read_file", lambda _p: "x" * (cr._MAX_RECONSTRUCT_BYTES + 1) + "NEW"
+        )
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f), "oldStr": "OLD", "newStr": "NEW"},
+            diff_old_text="OLD",
+            diff_path=str(f),
+        )
+        assert result is not None
+        assert result["content"] == "OLD"
+
+    def test_missing_file_falls_back_to_fragment(self, tmp_path: Path):
+        """Unreadable/missing file: reconstruction declines, diff_old_text
+        chain applies (never raises)."""
+        ghost = tmp_path / "ghost.txt"
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(ghost), "oldStr": "a", "newStr": "b"},
+            diff_old_text="a",
+            diff_path=str(ghost),
+        )
+        assert result is not None
+        assert result["content"] == "a"
+
+    def test_reconstructed_before_is_truncated(self, tmp_path: Path):
+        """Truncation applies AFTER reconstruction so the needle can't be cut
+        mid-file, but the meta-size cap still holds."""
+        f = tmp_path / "huge.txt"
+        f.write_text("x" * (_MAX_SNAPSHOT + 500) + "NEW")
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f), "oldStr": "OLD", "newStr": "NEW"},
+            diff_old_text="OLD",
+            diff_path=str(f),
+        )
+        assert result is not None
+        assert "(truncated at" in result["content"]
+        assert len(result["content"]) < _MAX_SNAPSHOT + 500
+
+    def test_pre_write_with_coincidental_new_str_is_before(self, tmp_path: Path):
+        """Server review finding: pre-write file containing BOTH needles
+        (newStr coincidentally pre-exists) must classify as before —
+        reversing the unrelated newStr occurrence fabricated a changed line.
+        oldStr present with oldStr ⊄ newStr PROVES pre-write (strReplace
+        consumes every oldStr occurrence)."""
+        f = tmp_path / "both.txt"
+        f.write_text("NEW\nOLD\n")
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f), "oldStr": "OLD", "newStr": "NEW"},
+            diff_old_text="OLD",
+            diff_path=str(f),
+        )
+        assert result is not None
+        # Disk content returned unchanged — NOT "OLD\nOLD\n".
+        assert result["content"] == "NEW\nOLD\n"
+
+    def test_pre_write_append_edit_uses_disk_as_before(self, tmp_path: Path):
+        """oldStr ⊂ newStr shape, write not yet landed: third branch returns
+        the disk content as the before."""
+        f = tmp_path / "append-pre.txt"
+        f.write_text("head\nvalue = 1\ntail\n")
+        result = _snapshot_write_target(
+            {
+                "command": "strReplace",
+                "path": str(f),
+                "oldStr": "value = 1",
+                "newStr": "value = 1  # tuned",
+            },
+            diff_old_text="value = 1",
+            diff_path=str(f),
+        )
+        assert result is not None
+        assert result["content"] == "head\nvalue = 1\ntail\n"
+
+    def test_oversized_file_declines_reconstruction(self, tmp_path: Path, monkeypatch):
+        """Server review finding: the synchronous reconstruction read runs on
+        the event loop — files past _MAX_RECONSTRUCT_BYTES decline and fall
+        through to the fragment chain instead of stalling the loop."""
+        import kiro_crew.dashboard.chat_runner as cr
+
+        f = tmp_path / "big.txt"
+        f.write_text("payload NEW payload\n")
+        monkeypatch.setattr(cr, "_MAX_RECONSTRUCT_BYTES", 4)
+        result = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f), "oldStr": "OLD", "newStr": "NEW"},
+            diff_old_text="OLD",
+            diff_path=str(f),
+        )
+        assert result is not None
+        # Fell through to the fragment (diff_old_text) chain.
+        assert result["content"] == "OLD"
+
+
 class TestNoOpPassThrough:
     """No-op entries (before == after) are surfaced, not dropped.
 
