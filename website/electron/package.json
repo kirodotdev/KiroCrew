@@ -15,9 +15,10 @@
     "electron-updater": "^6.8.9"
   },
   "devDependencies": {
-    "@electron/notarize": "^2.5.0",
-    "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
+    "@electron/notarize": "^3.1.1",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-builder-squirrel-windows": "^26.15.3"
   },
   "overrides": {
     "fast-uri": "3.1.4",

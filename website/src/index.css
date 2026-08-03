@@ -1057,9 +1057,15 @@
 /* ── Base ── */
 @layer base {
   *{box-sizing:border-box;margin:0;padding:0}
+  /* overscroll-behavior-y lives on `html`, NOT `body`: from Chromium 140 the
+     viewport propagates overscroll-behavior from the ROOT element, so a `body`
+     declaration is ignored and the macOS rubber-band bounce returns. Keep it
+     here or the "no document bounce" behaviour App.tsx relies on silently
+     regresses on Electron >= 41 / Chrome >= 140. */
+  html{overscroll-behavior-y:none}
   html,body,#root{height:100%}
   body{font:400 0.875rem/1.55 var(--font-body);letter-spacing:normal;background:var(--bg);color:var(--text);
-    -webkit-font-smoothing:antialiased;overflow-x:hidden;overflow-y:auto;overscroll-behavior-y:none;
+    -webkit-font-smoothing:antialiased;overflow-x:hidden;overflow-y:auto;
     transition:background-color .25s ease,color .25s ease}
   /* The dashboard shell is height-locked (h-screen + overflow-hidden), so the
      document has no reason to scroll on those routes. Lock it. A third-party

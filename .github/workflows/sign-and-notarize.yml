@@ -135,7 +135,7 @@ jobs:
         run: |
           # Dedicated venv: `pip install --user` is refused by PEP 668
           # (externally-managed-environment) on Homebrew/Deadsnakes-managed
-          # runner Pythons -- macos-14 enforces it today, ubuntu images will.
+          # runner Pythons -- macos-15 enforces it today, ubuntu images will.
           # Symlink only the awscurl binary onto PATH so the venv's python
           # never shadows the system python3 used by later steps.
           python3 -m venv "$RUNNER_TEMP/awscurl-venv"
@@ -210,7 +210,7 @@ jobs:
     # Skip cleanly (rather than fail) when signing is not configured
     # (fork / repo without signing-service secrets) -- there is nothing to notarize.
     if: needs.sign.outputs.signed_zip_key != ''
-    runs-on: macos-14
+    runs-on: macos-15
     # Worst-case wait budget: two notarytool submissions (app, then DMG)
     # at up to 30m each, plus the CDSigner DMG sign task poll at up to 15m
     # = 75m of pure waiting. The budget must also cover checkout, installs,
@@ -247,7 +247,7 @@ jobs:
 
       # Install the CDSigner SigV4 client BEFORE AWS credentials are
       # configured (same supply-chain ordering as the sign job). Same
-      # PEP 668-safe venv recipe: macos-14's Homebrew python3 refuses
+      # PEP 668-safe venv recipe: macos-15's Homebrew python3 refuses
       # `pip install --user` with externally-managed-environment.
       - name: Install awscurl (SigV4 client for CDSigner)
         run: |

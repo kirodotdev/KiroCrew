@@ -57,7 +57,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             # 'unsigned-' prefix: this artifact is an inter-job handoff to the
             # sign job, NOT an installable deliverable. Humans should download
             # only the KiroCrew-notarized-* artifact. GitHub shows all uploaded
@@ -67,7 +67,15 @@ jobs:
             # On macOS, `make desktop` builds the universal app by default:
             # universal Electron shell + both per-arch PBS backends in one
             # DMG. The x86_64 backend slice builds and gates under Rosetta 2,
-            # which GitHub's arm64 macOS runners (macos-14) ship preinstalled.
+            # which GitHub's arm64 macOS runners (macos-15) ship preinstalled.
+            # VERIFIED, not assumed: the runner-images manifests never mention
+            # Rosetta -- not even for macos-14, where it demonstrably works --
+            # so this was probed directly. macos-14/15/26 all report
+            # `arch -x86_64 uname -m` -> x86_64 and can host an x86_64
+            # interpreter. macos-15 is the chosen target because it also keeps
+            # OpenSSL 1.1.1w (same as macos-14); macos-26 jumps to OpenSSL
+            # 3.6.x + clang 21, which the PyInstaller backend has not been
+            # validated against.
           - os: ubuntu-22.04
             artifact-name: build-linux-x64
     steps:
@@ -75,7 +83,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: website/package-lock.json
 
@@ -92,7 +100,7 @@ jobs:
         # Explicit bash on both legs: sed -i.bak / rm -f are bash-isms.
         shell: bash
         run: |
-          # BSD-sed-compatible -i.bak form: this step runs on macos-14 too.
+          # BSD-sed-compatible -i.bak form: this step runs on macos-15 too.
           sed -i.bak "s/__version__ = \".*\"/__version__ = \"${STAMP_VERSION}\"/" src/kiro_crew/__init__.py
           rm -f src/kiro_crew/__init__.py.bak
           # Stamp the Electron app: app.getVersion() (from the bundle's
