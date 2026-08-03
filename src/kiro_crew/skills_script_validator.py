@@ -80,6 +80,19 @@ _BANNED_ATTR_CALLS = {
     "rmtree",                                 # shutil.rmtree
     "Popen", "run", "call", "check_call", "check_output",  # subprocess.*
     "import_module",                          # importlib.import_module
+    # Process replacement and creation that lives on ``os``. The module itself
+    # cannot be banned — a skill legitimately needs os.path/os.environ — so the
+    # specific calls are named instead: os.exec* replaces this process with a
+    # program of the script's choosing, os.spawn*/posix_spawn start one
+    # alongside, and os.fork/forkpty duplicate the interpreter. Each reaches
+    # arbitrary execution without ever naming ``subprocess``. These names are
+    # matched on the attribute alone (see ``_ast_findings``), which is why only
+    # os-specific spellings belong here — a common name like ``load`` would
+    # collide with ``json.load``.
+    "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
+    "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp",
+    "spawnvpe", "posix_spawn", "posix_spawnp",
+    "fork", "forkpty", "openpty",
     # asyncio egress primitives — high-level stream/server openers and their
     # loop-level equivalents. Banned by attribute name (alias-proof) so a script
     # can't reach a remote host via ``asyncio.open_connection()`` etc. while the
@@ -92,7 +105,26 @@ _BANNED_ATTR_CALLS = {
 
 # Import roots that enable dynamic code / process exec (alias-proof: matched on
 # the imported module, not on the call site).
-_DANGEROUS_IMPORT_ROOTS = {"subprocess", "ctypes", "importlib"}
+#
+# Banning the root rather than the call is what keeps these precise. The
+# call-site check matches an attribute name against every module, so putting
+# ``load``/``loads`` there would reject ``json.load`` as readily as
+# ``pickle.load``; banning the ``pickle`` import instead reaches the same
+# payload and leaves the safe parsers alone.
+#
+#   pty            allocates a terminal and runs a program in it — an
+#                  interactive shell, which a denylist keyed on ``subprocess``
+#                  never sees
+#   pickle,        unpickling calls ``__reduce__`` on the incoming bytes, so
+#   marshal        loading attacker-controlled data is execution, not parsing
+#   multiprocessing  Process(target=...).start() runs a callable in a new
+#                  interpreter, so the payload need not be a string command
+#   runpy          executes a module or a file as ``__main__``
+#   code           evaluates source in a live interpreter — exec by another name
+_DANGEROUS_IMPORT_ROOTS = {
+    "subprocess", "ctypes", "importlib",
+    "pty", "pickle", "marshal", "multiprocessing", "runpy", "code",
+}
 # Module roots whose banned attributes are dangerous even when merely referenced
 # (assigned/aliased) rather than called directly (``f = os.remove``).
 _DANGEROUS_ATTR_ROOTS = {"os", "shutil", "subprocess", "importlib", "ctypes"}

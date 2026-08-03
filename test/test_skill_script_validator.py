@@ -225,3 +225,119 @@ def test_rejects_getattr_on_dangerous_module():
     ok, findings = validate_skill_script("run.py", "import os\ngetattr(os, 'remove')('/tmp/y')\n")
     assert ok is False
     assert any("getattr" in f for f in findings)
+
+
+def test_rejects_os_process_replacement():
+    """`os.exec*` replaces this process with a program the script chose.
+
+    ``os`` cannot be banned as an import root — a skill needs os.path and
+    os.environ — so these calls are named individually. A denylist that only
+    knew ``subprocess`` never saw them.
+    """
+    for src in (
+        "import os\nos.execve('/bin/sh', ['/bin/sh'], {})\n",
+        "import os\nos.execv('/bin/sh', ['sh'])\n",
+        "import os\nos.execvp('sh', ['sh'])\n",
+        "import os\nos.execl('/bin/sh', 'sh')\n",
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, src
+        assert any("exec" in f for f in findings), findings
+
+
+def test_rejects_os_process_creation():
+    """`os.spawn*` / `posix_spawn` start a program alongside this one."""
+    for src in (
+        "import os\nos.spawnl(os.P_NOWAIT, '/bin/sh', 'sh')\n",
+        "import os\nos.spawnv(os.P_NOWAIT, '/bin/sh', ['sh'])\n",
+        "import os\nos.posix_spawn('/bin/sh', ['sh'], {})\n",
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, src
+
+
+def test_rejects_os_fork():
+    """`os.fork` / `forkpty` duplicate the interpreter."""
+    for src in (
+        "import os\nos.fork()\n",
+        "import os\nos.forkpty()\n",
+        "import os\nos.openpty()\n",
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, src
+
+
+def test_rejects_pty_import():
+    """`pty.spawn` allocates a terminal and runs a program in it."""
+    ok, findings = validate_skill_script("run.py", "import pty\npty.spawn('/bin/bash')\n")
+    assert ok is False
+    assert any("dangerous import" in f for f in findings)
+
+
+def test_rejects_unsafe_deserialization():
+    """Unpickling calls ``__reduce__`` on the incoming bytes — that is execution.
+
+    Banned on the import root rather than the attribute name: the call-site
+    check matches an attribute against every module, so banning ``load`` there
+    would reject ``json.load`` too (see
+    ``test_safe_parsers_are_not_flagged_as_deserialization``).
+    """
+    for src in (
+        "import pickle\npickle.loads(b'x')\n",
+        "import marshal\nmarshal.loads(b'x')\n",
+        "from pickle import loads\nloads(b'x')\n",
+        "import pickle as p\np.loads(b'x')\n",
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, src
+
+
+def test_rejects_multiprocessing():
+    """`Process(target=...)` runs a callable in a new interpreter.
+
+    The payload is a callable rather than a command string, so nothing a
+    string-oriented denylist matches ever appears.
+    """
+    ok, findings = validate_skill_script(
+        "run.py", "import multiprocessing\nmultiprocessing.Process(target=print).start()\n"
+    )
+    assert ok is False
+    assert any("dangerous import" in f for f in findings)
+
+
+def test_rejects_runpy_and_code():
+    """`runpy` runs a module as __main__; `code` evaluates source live."""
+    for src in (
+        "import runpy\nrunpy.run_module('http.server')\n",
+        "import runpy\nrunpy.run_path('/tmp/x.py')\n",
+        "import code\ncode.InteractiveInterpreter().runsource('1')\n",
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, src
+
+
+def test_safe_parsers_are_not_flagged_as_deserialization():
+    """The guard against unsafe loaders must not reach the safe ones.
+
+    This is why ``pickle``/``marshal`` are banned as import roots instead of
+    adding ``load``/``loads`` to the attribute denylist, which is matched
+    against every module.
+    """
+    for src in (
+        "import json\nd = json.loads('{}')\n",
+        "import json\nwith open('f') as h:\n    d = json.load(h)\n",
+        "import tomllib\nwith open('f', 'rb') as h:\n    d = tomllib.load(h)\n",
+        "import csv\nwith open('f') as h:\n    rows = list(csv.reader(h))\n",
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is True, (src, findings)
+        assert findings == []
+
+
+def test_benign_os_use_still_passes():
+    """Naming os.exec*/spawn*/fork must not cost a skill os.path or os.environ."""
+    ok, findings = validate_skill_script(
+        "run.py",
+        "import os\np = os.path.join('a', 'b')\nv = os.environ.get('LANG')\nprint(p, v)\n",
+    )
+    assert ok is True and findings == []
