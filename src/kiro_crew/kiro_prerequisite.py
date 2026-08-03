@@ -664,9 +664,7 @@ def _project_identity_database(source: Path, destination: Path) -> bool:
                     if not table_rows:
                         continue
                     placeholders = ",".join("?" * len(table_rows[0]))
-                    staged.executemany(
-                        f'INSERT INTO "{table}" VALUES ({placeholders})', table_rows
-                    )
+                    staged.executemany(f'INSERT INTO "{table}" VALUES ({placeholders})', table_rows)
     except sqlite3.Error:
         with contextlib.suppress(OSError):
             os.unlink(str(destination))
@@ -744,10 +742,27 @@ def _auth_store_mappings(
 
 
 def _ensure_auth_staging_parent(home: Path) -> Path:
-    """Create the fixed sandbox-hidden parent before agent sessions can start."""
+    """Create the fixed sandbox-hidden parent before agent sessions can start.
+
+    If the staging path exists but is not a usable directory (a stray regular
+    file, a dangling symlink, or a symlink to a directory), move it aside to a
+    timestamped quarantine name and recreate the directory fresh.  The stray
+    content is never deleted - it might be user data.
+    """
 
     staging_parent = home / _AUTH_STAGING_RELATIVE
-    staging_parent.mkdir(parents=True, exist_ok=True)
+    # Quarantine a non-directory entry BEFORE mkdir so the call cannot raise
+    # FileExistsError.  lexists catches dangling symlinks that exist on disk
+    # but whose target is gone (where .exists() returns False).
+    if staging_parent.is_symlink() or (staging_parent.exists() and not staging_parent.is_dir()):
+        _quarantine_stray_staging_path(staging_parent)
+    try:
+        staging_parent.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError):
+        # Race or an entry that slipped past the pre-check (e.g. a component
+        # of the parent chain is a file).  Quarantine and retry once.
+        _quarantine_stray_staging_path(staging_parent)
+        staging_parent.mkdir(parents=True, exist_ok=True)
     if staging_parent.is_symlink() or not staging_parent.is_dir():
         raise OSError("Kiro auth staging root is not a private directory")
     if platform_compat.IS_POSIX:
@@ -755,6 +770,36 @@ def _ensure_auth_staging_parent(home: Path) -> Path:
     else:
         platform_compat.restrict_to_owner(str(staging_parent))
     return staging_parent
+
+
+def _quarantine_stray_staging_path(path: Path) -> None:
+    """Move a non-directory staging path aside with a WARNING log line."""
+
+    timestamp = time.strftime("%Y%m%dT%H%M%S")
+    quarantine_name = f"{path.name}.corrupt-{timestamp}"
+    quarantine_dest = path.parent / quarantine_name
+    # Ensure the parent directory exists so rename can succeed.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.rename(quarantine_dest)
+    except OSError as exc:
+        logger.error(
+            "Cannot quarantine stray auth staging path %s: %s - "
+            "remove it manually to restore gateway boot",
+            path,
+            exc,
+        )
+        raise OSError(
+            f"Kiro auth staging path {path} is not a directory and could "
+            f"not be quarantined: {exc}"
+        ) from exc
+    logger.warning(
+        "Quarantined non-directory auth staging path %s -> %s; "
+        "the gateway will recreate the directory. If you need the "
+        "original content, find it at the quarantine path.",
+        path,
+        quarantine_dest,
+    )
 
 
 def _prepare_auth_workspace(
@@ -2025,9 +2070,7 @@ class KiroPrerequisiteService:
             # cannot even resolve itself without its real-home registry — so the
             # isolated probe reported such CLIs signed-out even though a real
             # session authenticates fine.
-            whoami = await self._audited_identity_probe(
-                self._viable_binary, isolate_home=False
-            )
+            whoami = await self._audited_identity_probe(self._viable_binary, isolate_home=False)
             if whoami.ok:
                 await asyncio.to_thread(self._mark_setup_complete)
             self._status = PrerequisiteStatus(
