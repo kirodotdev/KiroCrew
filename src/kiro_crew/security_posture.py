@@ -596,6 +596,27 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "abort a send when redaction would alter the content — not egress.)",
     ),
     (
+        "MCP custom server specs",
+        "dashboard/handlers/mcp_custom.py",
+        "Editable MCP server specs returned by the dashboard HTTP API to the browser. "
+        "Configured header values receive credential redaction only before they cross "
+        "that boundary.",
+    ),
+    (
+        "MCP probe results",
+        "dashboard/handlers/mcp.py",
+        "Cached MCP probe results returned by the dashboard HTTP API to the browser. "
+        "Configured header values and reflected credentials in probe errors receive "
+        "redaction before they cross that boundary.",
+    ),
+    (
+        "MCP server metadata",
+        "mcp_discovery.py",
+        "McpServerInfo.to_dict() is the serialization boundary for every dashboard "
+        "MCP listing; header values and reflected credentials in probe errors are "
+        "redacted there before the payload leaves the backend.",
+    ),
+    (
         "MCP app tool results",
         "dashboard/handlers/mcp_apps.py",
         "Recursively redacts every string leaf of an MCP app's tool result before "
@@ -802,7 +823,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/discover.py",
         "dashboard/handlers/hooks.py",
         "dashboard/handlers/knowledge.py",
-        "dashboard/handlers/mcp.py",
         "dashboard/handlers/memory.py",
         "dashboard/handlers/optimizer.py",
         "dashboard/handlers/prompts.py",
@@ -820,7 +840,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "knowledge/ingestion.py",
         "mcp_core.py",
         "mcp_cron.py",
-        "mcp_discovery.py",
         "mcp_gateway/backend.py",
         "workflows/agent_exec.py",
         "workflows/agent_pool.py",

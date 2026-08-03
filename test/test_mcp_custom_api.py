@@ -430,6 +430,61 @@ class TestCustomGet:
         finally:
             await client.close()
 
+    async def test_redacted_headers_round_trip_without_overwriting_values(
+        self, sandbox, fake_sel
+    ):
+        raw_headers = {
+            "Authorization": "Bearer custom-secret",
+            "X-Api-Key": "custom-api-key",
+        }
+        entry = {"url": "https://mcp.example.com/sse", "headers": raw_headers}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/remote")
+            assert resp.status == 200
+            body = await resp.json()
+            assert set(body["spec"]["headers"]) == set(raw_headers)
+            assert set(body["spec"]["headers"].values()) == {"[REDACTED: credential]"}
+            assert "custom-secret" not in json.dumps(body)
+            assert "custom-api-key" not in json.dumps(body)
+
+            resp = await client.put(
+                "/api/mcp/custom/remote", json={"spec": body["spec"]}
+            )
+            assert resp.status == 200
+            assert _written(sandbox)["remote"]["headers"] == raw_headers
+        finally:
+            await client.close()
+
+    async def test_url_change_with_stored_headers_is_refused(self, sandbox, fake_sel):
+        """A credential is scoped to the host it was typed for.
+
+        The PUT restore path puts the on-disk header values back verbatim, so
+        accepting a url-only edit would silently point the stored secret at a
+        different origin and the next probe would send it there.
+        """
+        raw_headers = {"Authorization": "Bearer custom-secret"}
+        entry = {"url": "https://old.example.com/sse", "headers": raw_headers}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/remote")
+            assert resp.status == 200
+            spec = (await resp.json())["spec"]
+
+            spec["url"] = "https://new.example.net/sse"
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload["code"] == "url_change_with_stored_headers"
+            # Nothing was written: the secret still sits beside its own host.
+            written = _written(sandbox)["remote"]
+            assert written["url"] == "https://old.example.com/sse"
+            assert written["headers"] == raw_headers
+        finally:
+            await client.close()
+
     async def test_unknown_404_and_bad_name_400(self, sandbox, fake_sel):
         client = await _client()
         try:

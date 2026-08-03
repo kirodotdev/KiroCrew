@@ -81,7 +81,7 @@ class TestMcpServerInfo:
         assert info.error == ""
         assert info.source == "agent"
 
-    def test_remote_server_fields(self) -> None:
+    def test_remote_server_fields_redact_header_values(self) -> None:
         info = McpServerInfo(
             name="deepwiki",
             url="https://mcp.deepwiki.com/mcp",
@@ -91,7 +91,8 @@ class TestMcpServerInfo:
         assert info.command == ""
         d = info.to_dict()
         assert d["url"] == "https://mcp.deepwiki.com/mcp"
-        assert d["headers"] == {"Authorization": "Bearer tok"}
+        assert d["headers"] == {"Authorization": "[REDACTED: credential]"}
+        assert "Bearer tok" not in json.dumps(d)
 
     def test_is_remote_false_for_local(self) -> None:
         info = McpServerInfo(name="x", command="cmd")

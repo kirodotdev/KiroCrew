@@ -401,9 +401,11 @@ export interface McpCustomSpec {
   args?: string[]
   env?: Record<string, string>
   url?: string
+  /** Present on existing remote entries; read responses redact every value. */
+  headers?: Record<string, string>
 }
 
-/** GET /api/mcp/custom/{name} — full editable spec (env included). */
+/** GET /api/mcp/custom/{name} — editable spec; header values are redacted. */
 export interface McpCustomSpecResponse {
   name: string
   spec: McpCustomSpec
@@ -422,6 +424,8 @@ export interface McpScopePresence {
 export interface McpServer {
   name: string; command: string; args?: string[]
   url?: string
+  /** Header names are preserved, but read responses redact every value. */
+  headers?: Record<string, string>
   status: string; error?: string; tools?: string[]
   source: string; enabled: boolean; disabledTools?: string[]
   presence?: McpScopePresence
