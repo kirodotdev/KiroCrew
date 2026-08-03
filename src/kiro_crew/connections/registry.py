@@ -7,6 +7,7 @@ import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, TypedDict, cast
+from urllib.parse import urlsplit
 
 
 class SmokeFixture(TypedDict):
@@ -14,6 +15,14 @@ class SmokeFixture(TypedDict):
 
     tool: str
     args: dict[str, Any]
+
+
+class L0Expectations(TypedDict):
+    """OAuth discovery properties asserted by the account-free L0 probe."""
+
+    authorization_server_origin: str
+    dcr: bool
+    pkce: bool
 
 
 class Provider(TypedDict):
@@ -28,6 +37,7 @@ class Provider(TypedDict):
     docs_url: str
     gotcha_copy: str
     smoke_fixture: SmokeFixture
+    l0_expectations: L0Expectations
     launch_gate_passed: bool
     vendor_approval_pending: bool
 
@@ -48,10 +58,12 @@ _PROVIDER_FIELDS = {
     "docs_url",
     "gotcha_copy",
     "smoke_fixture",
+    "l0_expectations",
     "launch_gate_passed",
     "vendor_approval_pending",
 }
 _SMOKE_FIXTURE_FIELDS = {"tool", "args"}
+_L0_EXPECTATION_FIELDS = {"authorization_server_origin", "dcr", "pkce"}
 
 
 def _validation_error(index: int, message: str) -> RegistryValidationError:
@@ -103,6 +115,40 @@ def _validate_provider(raw: object, index: int) -> Provider:
     if not isinstance(fixture["args"], dict):
         raise _validation_error(index, "smoke_fixture.args must be an object")
 
+    expectations = raw["l0_expectations"]
+    if not isinstance(expectations, dict) or set(expectations) != _L0_EXPECTATION_FIELDS:
+        raise _validation_error(
+            index,
+            "l0_expectations must contain exactly authorization_server_origin, dcr, and pkce",
+        )
+    for field in ("dcr", "pkce"):
+        if not isinstance(expectations[field], bool):
+            raise _validation_error(index, f"l0_expectations.{field} must be a boolean")
+    authorization_origin = expectations["authorization_server_origin"]
+    if not isinstance(authorization_origin, str):
+        raise _validation_error(
+            index, "l0_expectations.authorization_server_origin must be an HTTPS origin"
+        )
+    try:
+        authorization_parts = urlsplit(authorization_origin)
+        authorization_parts.port
+    except ValueError as error:
+        raise _validation_error(
+            index, "l0_expectations.authorization_server_origin must be an HTTPS origin"
+        ) from error
+    if (
+        authorization_parts.scheme != "https"
+        or authorization_parts.hostname is None
+        or authorization_parts.username is not None
+        or authorization_parts.password is not None
+        or authorization_parts.path not in ("", "/")
+        or authorization_parts.query
+        or authorization_parts.fragment
+    ):
+        raise _validation_error(
+            index, "l0_expectations.authorization_server_origin must be an HTTPS origin"
+        )
+
     for field in ("launch_gate_passed", "vendor_approval_pending"):
         if not isinstance(raw[field], bool):
             raise _validation_error(index, f"{field} must be a boolean")
@@ -153,6 +199,12 @@ def _copy_provider(provider: Provider) -> Provider:
     """Keep callers from mutating the process-wide validated registry."""
 
     return cast(Provider, deepcopy(provider))
+
+
+def get_all_registry_providers() -> list[Provider]:
+    """Return every registry entry, including launch-gated and vendor-blocked entries."""
+
+    return [_copy_provider(provider) for provider in _PROVIDERS]
 
 
 def get_all_providers() -> list[Provider]:

@@ -287,6 +287,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # imports none of the AX/capture modules (asserted in
         # test_computer_use_overlay.py::test_the_renderer_never_reaches_into_the_ax_or_capture_surface).
         "computer_use/overlay.py::_spawn",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run``
+        # (attribute ``run`` on base ``asyncio``). This only drives the
+        # in-process ``run_probe`` coroutine from the loop-less CLI entry point;
+        # network I/O is performed by aiohttp in the same process and no child
+        # process is created. Same classification as the other ``asyncio.run``
+        # sites in this list.
+        "connections/l0_probe.py::main",
         "cloud/source.py::_git_tracked_files",
         "cloud/source.py::_tracked_tree_is_dirty",
         "cloud/source.py::_use_git_archive",

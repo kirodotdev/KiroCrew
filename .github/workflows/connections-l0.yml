@@ -1,0 +1,47 @@
+name: Connections L0 Probe
+
+on:
+  schedule:
+    - cron: "20 7 * * *" # Daily 07:20 UTC, between release and OTA nightlies
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: connections-l0
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Probe official MCP metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e .
+
+      - name: Run account-free metadata probe
+        run: python -m kiro_crew.connections.l0_probe --report connections-l0-report.json
+
+      - name: Upload metadata report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: connections-l0-report
+          path: connections-l0-report.json
+          if-no-files-found: error
+          retention-days: 14
