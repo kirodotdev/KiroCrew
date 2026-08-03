@@ -2045,16 +2045,10 @@
       "waiting_for_approval_address": "Waiting for the approval address… it appears here when the agent next connects — send any chat message to start authorization now."
     },
     "agentsPage": {
-      "agent_templates_grouped_by_package_update_and_un": "Agent templates grouped by package. Update and uninstall at package level. Individual agents can be deleted (removes config file).",
       "consumption_for_current_billing_period": "{{provider}} consumption for the current billing period. Cached 10 min.",
       "context_window_usage_tip": "Live context window utilization per active {{label}} session. Custom agents show their configured model. Compaction triggers at 90%.",
       "default": "Default",
-      "default_for_new_sessions": "Default for new sessions",
-      "delete_agent": "Delete {{name}}",
-      "delete_subagent": "Delete subagent {{id}}",
-      "remove_default_agent": "Remove default agent",
-      "set_as_default": "Set as default",
-      "set_as_default_agent": "Set as default agent"
+      "delete_subagent": "Delete subagent {{id}}"
     },
     "appDetailPage": {
       "app_not_found_2": "App \"{{name}}\" not found",

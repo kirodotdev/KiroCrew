@@ -1143,9 +1143,76 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         "kirocrew-lite.json",
                     ):
                         return web.json_response({"error": "cannot delete kirocrew"}, status=400)
-                    f.unlink()
+                    # The dashboard withholds delete for a template that is the
+                    # kiro-cli fallback or is bound to a crew, but a client-side
+                    # check cannot be race-free: its view of the config is a
+                    # cached snapshot, so a crew bound (or the fallback moved)
+                    # between render and click still reaches this handler. Only
+                    # a check that reads config UNDER THE SAME LOCK the writers
+                    # take makes the invariant hold, so this is the authority
+                    # and the UI is now just the early, friendlier signal.
+                    async with _get_config_lock():
+                        # Off-thread: this runs while the config lock is HELD, so a
+                        # synchronous read stalls the event loop AND queues every
+                        # other config writer behind a disk read. `to_thread` is the
+                        # idiom already used for this in core.py / files.py.
+                        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                        # Every identifier this file answers to. The match above
+                        # accepts EITHER the JSON's own "name" or the filename
+                        # stem, so a request naming one leaves the other out of
+                        # `name` -- and config may well record the one omitted.
+                        #
+                        # `declared` goes through `spec_str`, the helper this file
+                        # already uses on the GET path: `~/.kiro/agents` is a
+                        # SHARED directory and a structured `name` (an ACP-style
+                        # `{"id": ...}`) is observed in the wild. It is reachable
+                        # here via the `f.stem == name` arm of the match, and an
+                        # unhashable set member turns this into a TypeError --
+                        # which the `except (JSONDecodeError, OSError)` below does
+                        # NOT catch, so it escapes as HTTP 500 on a delete that
+                        # should have succeeded or returned a 409.
+                        declared = spec_str(data, "name")
+                        aliases = {name, f.stem}
+                        if declared:
+                            aliases.add(declared)
+                        # Both fields are checked because the two readers disagree:
+                        # `agent.default_agent` is the kiro-cli fallback, while
+                        # top-level `default_agent` is what /api/config/default-agent
+                        # (the picker on this very page) writes. Guarding only one
+                        # leaves the other free to dangle.
+                        if aliases & {cfg.agent.default_agent, cfg.default_agent}:
+                            return web.json_response(
+                                {
+                                    "error": (
+                                        f"Cannot delete '{name}': it is the default agent used "
+                                        "when nothing names a template. Change the default first."
+                                    ),
+                                    "code": "agent_is_default",
+                                },
+                                status=409,
+                            )
+                        bound = sorted(
+                            crew
+                            for crew, crew_cfg in cfg.agents.items()
+                            if crew_cfg.kiro_agent in aliases
+                        )
+                        if bound:
+                            return web.json_response(
+                                {
+                                    "error": (
+                                        f"Cannot delete '{name}': still used by "
+                                        f"{', '.join(bound)}. Repoint or remove them first."
+                                    ),
+                                    "code": "agent_in_use",
+                                },
+                                status=409,
+                            )
+                        f.unlink()
                     clear_list_agents_cache()
-                    agent_state.prune(data.get("name") or name)
+                    # Same reason `declared` goes through `spec_str` above:
+                    # `prune` is typed `str` and a structured `name` would reach
+                    # it through the `or`.
+                    agent_state.prune(declared or name)
                     state.push_refresh("agents")
                     return web.json_response({"ok": True})
                 if request.method == "PATCH" and patch_body is not None:
