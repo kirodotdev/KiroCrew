@@ -4408,6 +4408,19 @@ _NORMALIZER_READ_VERBS: frozenset[str] = frozenset(
 )
 
 
+# ── Hardlink/symlink creation verbs ──
+# A hardlink (or symlink) to a credential file "flattens" it onto a benign,
+# non-sensitive alias: `ln ~/.npmrc ./x` then reading `./x` exposes the token
+# while dodging the path-based read matcher (GPT review, PR #1339 — standard
+# sandbox mode does NOT bind-mask credential paths, so the command gate is the
+# only line there). We do NOT block link/linkat at the syscall layer (that
+# banned npm cacache's internal fs.link and every benign hardlink); instead we
+# treat an AGENT-ISSUED link command like a read and resolve its operands
+# through is_sensitive_path(), so linking a sensitive SOURCE is refused at the
+# same fidelity as reading it. npm's own fs.link() never transits this gate.
+_LINK_CREATE_VERBS: frozenset[str] = frozenset({"ln", "link"})
+
+
 def is_sensitive_bash_command(command: str) -> str | None:
     """Check if a bash command reads sensitive paths, accesses IMDS, or leaks env creds.
 
@@ -4472,18 +4485,18 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     if not tokens:
         return None
 
-    # Check if any token resolves to a known read verb (by basename, so
-    # /usr/bin/cat is recognized as "cat").
-    has_read_verb = False
+    # Check if any token resolves to a known read verb or hardlink/symlink
+    # creation verb (by basename, so /usr/bin/cat is recognized as "cat").
+    has_relevant_verb = False
     for token in tokens:
         if not token:
             continue
         basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS:
-            has_read_verb = True
+        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
+            has_relevant_verb = True
             break
 
-    if not has_read_verb:
+    if not has_relevant_verb:
         return None
 
     # Route each path-like token through is_sensitive_path()
@@ -4493,9 +4506,9 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
         # Skip flags
         if token.startswith("-"):
             continue
-        # Skip tokens that ARE the read verb itself
+        # Skip tokens that ARE the verb itself
         basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS:
+        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
             continue
         # Only check tokens that look like filesystem paths
         if not _is_path_like(token):

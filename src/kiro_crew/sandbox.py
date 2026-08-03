@@ -1111,9 +1111,33 @@ def main():
                 sys.exit("sandbox: BLOCKED — failed to set NO_NEW_PRIVS (prctl returned %d)" % _ret)
 
         # ── Step 6: Install seccomp-BPF filter ──
-        # Deny mount/umount2/unshare/setns/pivot_root/link/linkat to prevent
-        # the sandboxed process from undoing bind-mounts or creating hardlinks
-        # to protected credential inodes.
+        # Deny mount/umount2/unshare/setns/pivot_root to prevent the sandboxed
+        # process from undoing the credential bind-mounts (namespace escape).
+        #
+        # NOTE: link/linkat were previously denied here to block hardlinking a
+        # credential inode out past its bind-mount (pentest finding #9). That
+        # deny has been removed; the vector is covered without a blanket syscall
+        # ban (which broke npm cacache / pnpm / ln for no gain). Masking is
+        # per-level: strict bind-masks its dir/file list PLUS ~/.ssh; cc masks
+        # the same MINUS ~/.ssh; standard masks only _STANDARD_DIRS (.gnupg,
+        # .gpg, .config/gcloud, .azure, .docker, crew-auth-staging). For a file
+        # that IS masked the credential inode has no reachable path, so no link
+        # source exists. For a file left UNMASKED at a given level (~/.ssh under
+        # cc; .aws/.ssh/_CC_FILES under standard) there is no privilege delta:
+        # it is already directly readable, so the command gate
+        # (security.is_sensitive_bash_command) is the control for BOTH reading
+        # and hardlinking it — the gate now resolves an agent-issued ln/link/cp
+        # source through is_sensitive_path(), refusing a link to a credential
+        # source at the same fidelity as a read (closing the "flatten onto a
+        # benign alias" bypass, GPT review PR #1339). npm's own fs.link() is a
+        # syscall and never transits that gate. seccomp cannot path-scope link
+        # (BPF cannot dereference the pathname pointer), so a syscall-layer form
+        # could only be all-or-nothing. NOTE: the Step-7 pre-exec nlink scan is
+        # NOT relied on here — it stats paths AFTER the masks, so it sees mask
+        # inodes, not real credential inodes. For AppSec (pre-existing / out of
+        # scope): that Step-7 gap; a hardlink alias is durable and symlink-
+        # resolution-invisible; and `mv` is not yet gate-covered. AppSec
+        # re-review required — this edits a pentest remediation.
         #
         # Additionally deny kill(-1, sig) — the signal BROADCAST that reaches
         # every same-uid process on the host (gateway, other sessions). This
@@ -1141,16 +1165,16 @@ def main():
             _BPF_K = 0x00
             _BPF_RET = 0x06
             # Syscall numbers (x86_64): mount=165, umount2=166, unshare=272,
-            # setns=308, pivot_root=155, link=86, linkat=265, kill=62
+            # setns=308, pivot_root=155, kill=62
             # aarch64: mount=40, umount2=39, unshare=97, setns=268,
-            # pivot_root=41, link=N/A(use linkat=37), linkat=37, kill=129
+            # pivot_root=41, kill=129
             import platform as _plat
             _machine = _plat.machine()
             if _machine == "x86_64":
-                _DENY_SYSCALLS = (165, 166, 272, 308, 155, 86, 265)
+                _DENY_SYSCALLS = (165, 166, 272, 308, 155)
                 _KILL_NR = 62
             elif _machine == "aarch64":
-                _DENY_SYSCALLS = (40, 39, 97, 268, 41, 37)
+                _DENY_SYSCALLS = (40, 39, 97, 268, 41)
                 _KILL_NR = 129
             else:
                 _DENY_SYSCALLS = ()  # unknown arch — skip seccomp

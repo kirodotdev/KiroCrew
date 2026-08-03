@@ -2335,6 +2335,30 @@ class TestIsSensitiveBashCommand:
         assert is_sensitive_bash_command("ln -sf ./dist/app ./app") is None
         assert is_sensitive_bash_command("ln -s ../src/main.py main.py") is None
 
+    # ── Hardlink-flatten bypass (GPT review, PR #1339) ──
+
+    def test_hardlink_to_sensitive_source_blocked(self) -> None:
+        # A HARDLINK (ln without -s, or the `link` coreutil) to a credential
+        # source flattens it onto a benign alias, dodging the path-based read
+        # matcher in standard mode (which does not bind-mask). The link verbs
+        # now route their operands through is_sensitive_path() like a read.
+        assert is_sensitive_bash_command("ln ~/.aws/credentials ws/x") is not None
+        assert is_sensitive_bash_command("link ~/.ssh/id_rsa ws/k") is not None
+
+    def test_hardlink_obfuscated_source_blocked(self) -> None:
+        # Quote-obfuscation defeats the literal regex first-pass; the normalizer
+        # (now triggered by `ln`/`link`) strips the empty quotes, expands ~, and
+        # resolves the source through is_sensitive_path(). These forms are
+        # caught ONLY via the normalizer, so they exercise the new code path for
+        # both verbs.
+        assert is_sensitive_bash_command('ln ~/.aw""s/credentials ws/x') is not None
+        assert is_sensitive_bash_command('link ~/.ss""h/id_rsa ws/k') is not None
+
+    def test_hardlink_benign_source_allowed(self) -> None:
+        # npm cacache / workspace-internal hardlinks must stay allowed.
+        assert is_sensitive_bash_command("ln node_modules/.cache/blob pkg/dep") is None
+        assert is_sensitive_bash_command("ln ./dist/a ./b") is None
+
     def test_base64_gnupg(self) -> None:
         result = is_sensitive_bash_command("base64 ~/.gnupg/secring.gpg")
         assert "blocked" in result.lower()

@@ -268,6 +268,22 @@ class TestBuildLauncherScript:
         assert ".aws" in script
         assert ".gnupg" in script
 
+    def test_strict_script_denies_namespace_escape_not_hardlinks(self):
+        """Linux seccomp deny list must contain the namespace-escape syscalls
+        (mount/umount2/unshare/setns/pivot_root) and must NOT contain
+        link/linkat -- hardlink containment is the bind-mask's job, and a
+        blanket link ban broke hardlink-using build tools (npm cacache). Guards
+        against an accidental re-add of link/linkat or drop of an escape
+        syscall (pentest finding #9 remediation)."""
+        script = _build_launcher_script("strict")
+        # x86_64: mount=165 umount2=166 unshare=272 setns=308 pivot_root=155
+        assert "_DENY_SYSCALLS = (165, 166, 272, 308, 155)" in script
+        # aarch64: mount=40 umount2=39 unshare=97 setns=268 pivot_root=41
+        assert "_DENY_SYSCALLS = (40, 39, 97, 268, 41)" in script
+        # link=86/linkat=265 (x86_64) and linkat=37 (aarch64) must be gone
+        assert "308, 155, 86, 265)" not in script
+        assert "268, 41, 37)" not in script
+
     def test_standard_script_excludes_aws(self):
         script = _build_launcher_script("standard")
         # Standard dirs don't include .aws
