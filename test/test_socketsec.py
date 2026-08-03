@@ -192,9 +192,9 @@ def test_check_peer_is_self_dispatches_to_the_macos_mechanism(
     rationale "there is no macOS CI job to catch a wrong implementation". The
     macOS job added in this change removes that premise, and LOCAL_PEERCRED is
     now wired -- so on a Mac this socketpair peer IS us and the answer is MATCH.
-    That is not a relaxation: MISMATCH still refuses, and UNVERIFIABLE still
-    routes to the filesystem gate because macOS stays out of
-    PEER_IDENTITY_SUPPORTED.
+    That is not a relaxation. It is the mechanism macOS was subsequently
+    promoted into PEER_IDENTITY_SUPPORTED on the strength of, so on a Mac an
+    UNVERIFIABLE lookup now refuses rather than deferring to the filesystem gate.
 
     On any other POSIX platform without SO_PEERCRED there genuinely is no
     mechanism, so UNVERIFIABLE remains correct there.
@@ -219,12 +219,31 @@ def test_check_peer_is_self_dispatches_to_the_macos_mechanism(
 
 
 def test_peer_identity_supported_matches_the_platform() -> None:
+    """Every supported platform fails closed, each via its OWN mechanism.
+
+    Asserting the flag alone would pass even if a platform qualified through the
+    wrong branch, so each arm also pins the mechanism it is supposed to qualify
+    by. macOS in particular must qualify through LOCAL_PEERCRED and NOT through
+    a stray SO_PEERCRED: Darwin does not have that option, so seeing it here
+    would mean the constant resolution is wrong rather than that macOS grew a
+    Linux API.
+
+    The macOS arm asserted ``False`` until the real-hardware canary
+    (test_macos_check_matches_a_socket_we_connected_to_ourselves) was enforced by
+    node id on the macOS job. Flipping it back is a security regression on Linux
+    and Windows terms, so change it only with equivalent evidence.
+    """
     if pc.IS_WINDOWS:
         assert socketsec.PEER_IDENTITY_SUPPORTED is True
     elif pc.IS_MACOS:
-        assert socketsec.PEER_IDENTITY_SUPPORTED is False
+        assert socketsec.PEER_IDENTITY_SUPPORTED is True
+        assert socketsec._SO_PEERCRED is None, (
+            "macOS must qualify via LOCAL_PEERCRED; a non-None SO_PEERCRED here "
+            "means the platform constants resolved wrongly"
+        )
     else:
         assert socketsec.PEER_IDENTITY_SUPPORTED is True
+        assert socketsec._SO_PEERCRED is not None
 
 
 # --- Handle / socket resolution ----------------------------------------------
@@ -603,21 +622,6 @@ def test_macos_peercred_getsockopt_failure_degrades() -> None:
     """ENOTCONN / EINVAL from the kernel is a failure to verify, not a refusal."""
     sock = _fake_sock(OSError(57, "Socket is not connected"))
     assert socketsec._macos_check_peer_is_self(sock) is PeerCredResult.UNVERIFIABLE
-
-
-def test_macos_stays_out_of_peer_identity_supported() -> None:
-    """The caller must NOT fail closed on UNVERIFIABLE for macOS.
-
-    Pins the deliberate asymmetry: gatewayd refuses anything that is not MATCH
-    when PEER_IDENTITY_SUPPORTED is true, so admitting macOS to that set would
-    turn every failed lookup into a rejection -- the exact shape of the Windows
-    impersonation defect that denied 100% of connections. Promotion is a
-    follow-up gated on real-hardware evidence, so this test should be UPDATED
-    deliberately, never deleted casually.
-    """
-    if not pc.IS_MACOS:
-        pytest.skip("asserts the macOS value of a platform-resolved constant")
-    assert socketsec.PEER_IDENTITY_SUPPORTED is False
 
 
 @pytest.mark.skipif(not pc.IS_MACOS, reason="exercises the real Darwin getsockopt")

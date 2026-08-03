@@ -246,9 +246,29 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop]" --group dev
 
+      # The macOS peer-identity check is admission-gating: gatewayd refuses any
+      # connection that is not MATCH, so this canary -- a real transport.serve /
+      # connect round trip asserting MATCH on real Darwin hardware -- is the ONLY
+      # evidence that the gate admits its own peer. `pytest -q` does not name
+      # passing tests and a skip exits 0, so a canary that quietly stopped running
+      # (a changed skipif, a collection change) would leave this job green while
+      # the gate it proves went unverified. That is the same blindness that let
+      # four mutation-verified tests sit unrun inside conftest's Windows
+      # collect_ignore. Run it by node id and fail unless it actually PASSED.
+      - name: Assert the macOS peer-identity canary runs (not skipped)
+        run: |
+          set -o pipefail
+          pytest -v -n0 --no-cov --timeout=120 \
+            "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves" \
+            | tee canary.log
+          grep -q "1 passed" canary.log || {
+            echo "::error::macOS peer-identity canary did not PASS (skipped or not collected)"
+            exit 1
+          }
+
       - name: Run gateway + platform suites
         run: |
-          pytest -q --timeout=180 --no-cov \
+          pytest -q -rs --timeout=180 --no-cov \
             test/test_mcp_gateway_*.py \
             test/test_socketsec.py \
             test/test_platform_compat.py \
