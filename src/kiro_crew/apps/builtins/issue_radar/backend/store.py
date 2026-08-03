@@ -518,17 +518,18 @@ def add_connected_repo(
     the UI can badge Read/Write access without a live call; updates it on
     reconnect if a fresh value is supplied.
 
-    Identity is CASE-INSENSITIVE for the owner/repo pair. GitHub names are
-    case-preserving but not case-sensitive, so ``acme/widget`` and ``Acme/Widget``
-    are one repo -- a case-sensitive match would append a second entry for it, and
-    that duplicate would carry its own independent caches and triage settings. The
-    first spelling connected stays the stored one, so existing entries are never
+    Identity follows the provider's own case semantics (see :func:`_same_repo`).
+    GitHub names are case-preserving but not case-sensitive, so ``acme/widget``
+    and ``Acme/Widget`` are one repo -- a case-sensitive match would append a
+    second entry with its own independent caches and triage settings; the first
+    spelling connected stays the stored one, so existing entries are never
     rewritten.
 
-    GitLab project paths ARE case-sensitive, but folding case here would only ever
-    merge two entries a user cannot distinguish in the UI anyway, and treating the
-    two providers differently would mean two identity rules to keep in sync. The
-    conservative single rule is kept.
+    GitLab project paths ARE case-sensitive, so ``group/Project`` and
+    ``group/project`` are distinct projects and are stored as distinct entries --
+    matching how the provider API and cache paths resolve them. Folding case for
+    GitLab would let the authorization gate admit a case-variant of a connected
+    project that the data-plane then resolves to a different project.
     """
     with _config_lock(root):
         config = read_config(root)
@@ -552,10 +553,41 @@ def add_connected_repo(
         write_config(config, root)
 
 
+# Providers whose owner/repo names are case-INSENSITIVE at the source. GitHub
+# names are case-preserving but not case-sensitive, so ``acme/widget`` and
+# ``Acme/Widget`` address the same repository. GitLab project paths ARE
+# case-sensitive: ``group/Project`` and ``group/project`` are different projects
+# on the server. Any provider not listed here is matched case-SENSITIVELY -- the
+# fail-safe default for an authorization gate, so an unknown/self-managed
+# provider never silently widens the allowlist to case-variants.
+_CASE_INSENSITIVE_NAME_PROVIDERS = frozenset({"github"})
+
+
+def _name_matches(a: str, b: str, provider: str) -> bool:
+    """Compare two owner/repo name segments using ``provider``'s case semantics.
+
+    Load-bearing for authorization: the gate MUST interpret the name exactly as
+    the data-plane does. The data-plane (``repo_data_dir`` and the provider API
+    call -- e.g. ``gitlab_client.project_path`` which addresses the raw-case
+    slug) is case-sensitive for GitLab, so casefolding here would let a
+    case-variant of a connected GitLab project pass the gate and then resolve to
+    a DIFFERENT project under the owner's credentials.
+    """
+    if provider.lower() in _CASE_INSENSITIVE_NAME_PROVIDERS:
+        return a.casefold() == b.casefold()
+    return a == b
+
+
 def _same_repo(
     entry: dict, owner: str, repo: str, *, provider: str = "github", host: str = "github.com"
 ) -> bool:
-    """Provider-, host-, and case-insensitive-name identity for a config entry.
+    """Provider-, host-, and provider-aware-case identity for a config entry.
+
+    Name case sensitivity follows the provider (see :func:`_name_matches`):
+    case-insensitive for GitHub, case-sensitive for GitLab and any other
+    provider. This keeps the authorization gate's interpretation of owner/repo
+    identical to the data-plane's, so a case-variant of a connected GitLab
+    project is NOT authorized against a different project.
 
     An entry missing ``provider``/``host`` predates GitLab support and therefore
     means public GitHub; it is treated as such rather than as a non-match, so
@@ -566,8 +598,8 @@ def _same_repo(
     return (
         entry_provider == provider.lower()
         and entry_host == host.lower()
-        and str(entry.get("owner", "")).casefold() == owner.casefold()
-        and str(entry.get("repo", "")).casefold() == repo.casefold()
+        and _name_matches(str(entry.get("owner", "")), owner, entry_provider)
+        and _name_matches(str(entry.get("repo", "")), repo, entry_provider)
     )
 
 

@@ -417,6 +417,59 @@ class TestConnectedIdentity(unittest.TestCase):
         gl = store.read_repo_settings("g", "p", self.root, provider="gitlab", host="gitlab.com")
         self.assertEqual(gl["triage_labels"], [])
 
+    def test_gate_rejects_case_variant_gitlab_project(self):
+        # GitLab project paths are case-sensitive: group/Project and
+        # group/project are DIFFERENT projects. The gate must not authorize a
+        # request for a case-variant the owner never connected -- otherwise the
+        # raw-case data-plane (project_path + cache dir) would resolve it to a
+        # different project under the owner's credentials.
+        store.add_connected_repo(
+            "group", "project", provider="gitlab", host="gitlab.com", root=self.root
+        )
+        self.assertTrue(
+            store.is_repo_connected(
+                "group", "project", self.root, provider="gitlab", host="gitlab.com"
+            )
+        )
+        for owner, repo in (("group", "Project"), ("Group", "project"), ("GROUP", "PROJECT")):
+            self.assertFalse(
+                store.is_repo_connected(
+                    owner, repo, self.root, provider="gitlab", host="gitlab.com"
+                ),
+                f"case-variant {owner}/{repo} must NOT be authorized for GitLab",
+            )
+            self.assertIsNone(
+                store.find_connected_repo(
+                    owner, repo, self.root, provider="gitlab", host="gitlab.com"
+                )
+            )
+
+    def test_gate_still_case_insensitive_for_github(self):
+        # GitHub names are case-preserving but not case-sensitive, so a
+        # case-variant of a connected GitHub repo MUST still authorize.
+        store.add_connected_repo("Acme", "Widget", root=self.root)
+        for owner, repo in (("acme", "widget"), ("ACME", "WIDGET"), ("Acme", "Widget")):
+            self.assertTrue(
+                store.is_repo_connected(owner, repo, self.root),
+                f"case-variant {owner}/{repo} must remain authorized for GitHub",
+            )
+
+    def test_case_variant_gitlab_projects_stored_as_distinct_entries(self):
+        # Because GitLab is case-sensitive, connecting group/Project after
+        # group/project yields two entries, not a dedup collision.
+        store.add_connected_repo(
+            "group", "project", provider="gitlab", host="gitlab.com", root=self.root
+        )
+        store.add_connected_repo(
+            "group", "Project", provider="gitlab", host="gitlab.com", root=self.root
+        )
+        gitlab_entries = [
+            r
+            for r in store.list_connected_repos(self.root)
+            if r.get("provider") == "gitlab"
+        ]
+        self.assertEqual(len(gitlab_entries), 2)
+
 
 class TestNormalization(unittest.TestCase):
     def test_issue_row_matches_the_github_shape(self):
