@@ -16,6 +16,7 @@ from kiro_crew.security import (
     audit_bash_exfiltration,
     is_sensitive_bash_command,
     is_sensitive_path,
+    oauth_url_contains_credential,
     redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
@@ -1484,6 +1485,203 @@ class TestBuiltinDenyPatterns:
         from kiro_crew.security import is_denied
 
         assert is_denied("cr --summary 'Fix test discovery'") is None
+
+
+class TestOAuthAuthorizationUrlRedaction:
+    """OAuth entropy is exempt only in the dedicated ACP banner-safety path."""
+
+    STATE = "opaque-state-123"
+    CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+    BARE_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    BARE_AWS_SECRET_ALNUM = "wJalrXUtnFEMIxK7MDENGybPxRfiCYEXAMPLEKEY"
+    GITHUB_TOKEN = "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
+    NOTION_URL = (
+        "https://api.notion.com/v1/oauth/authorize"
+        "?client_id=client123&response_type=code"
+        f"&state={STATE}&code_challenge={CHALLENGE}"
+        "&code_challenge_method=S256"
+    )
+
+    @staticmethod
+    def _assert_general_redactors_remove_secret(url: str, secret: str) -> None:
+        text = f"Model output: {url}"
+        for redactor in (redact_credentials, redact_exfiltration_urls):
+            cleaned, warnings = redactor(text)
+            assert secret not in cleaned
+            assert warnings
+
+    def test_exact_notion_authorize_url_passes_banner_only(self) -> None:
+        assert len(self.CHALLENGE) == 43
+        assert oauth_url_contains_credential(self.NOTION_URL) is False
+
+        # The generic URL redactor handles arbitrary model/agent text and does
+        # not inherit the banner-only OAuth entropy carve-out.
+        cleaned, warnings = redact_exfiltration_urls(self.NOTION_URL)
+        assert cleaned != self.NOTION_URL
+        assert warnings
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            NOTION_URL.replace("api.notion.com", "evil.example", 1),
+            NOTION_URL.replace("api.notion.com", "api.notion.com.evil.example", 1),
+            NOTION_URL.replace("/v1/oauth/authorize", "/v1/oauth/authorize/extra", 1),
+            NOTION_URL.replace("api.notion.com", "api.notion.com:443", 1),
+            NOTION_URL.replace("https://", "http://", 1),
+        ],
+        ids=[
+            "unapproved-host",
+            "suffix-host",
+            "path-prefix",
+            "explicit-port",
+            "http-scheme",
+        ],
+    )
+    def test_unapproved_endpoint_fails_closed(self, url: str) -> None:
+        assert oauth_url_contains_credential(url) is True
+
+    def test_userinfo_embedded_token_fails_closed(self) -> None:
+        url = (
+            f"https://{self.GITHUB_TOKEN}@api.notion.com/v1/oauth/authorize"
+            "?state=ok"
+        )
+        assert oauth_url_contains_credential(url) is True
+        cleaned, warnings = redact_credentials(url)
+        assert self.GITHUB_TOKEN not in cleaned
+        assert warnings
+
+    def test_backslash_authority_spoof_fails_closed(self) -> None:
+        url = r"https://evil.com\@api.notion.com/v1/oauth/authorize?state=ok"
+        assert oauth_url_contains_credential(url) is True
+
+    def test_bare_aws_secret_in_hostname_fails_closed(self) -> None:
+        assert len(self.BARE_AWS_SECRET_ALNUM) == 40
+        url = (
+            f"https://{self.BARE_AWS_SECRET_ALNUM}.example/oauth/authorize"
+            "?state=ok"
+        )
+        assert oauth_url_contains_credential(url) is True
+
+    def test_bare_aws_secret_in_fragment_fails_closed(self) -> None:
+        assert len(self.BARE_AWS_SECRET) == 40
+        url = f"{self.NOTION_URL}#{self.BARE_AWS_SECRET}"
+        assert oauth_url_contains_credential(url) is True
+
+    @pytest.mark.parametrize(
+        "suffix",
+        [
+            ";session=ok?state=ok",
+            "?state=ok#continue",
+        ],
+        ids=["path-params", "fragment"],
+    )
+    def test_path_params_and_fragments_fail_closed(self, suffix: str) -> None:
+        url = "https://api.notion.com/v1/oauth/authorize" + suffix
+        assert oauth_url_contains_credential(url) is True
+
+    def test_unknown_query_parameter_with_secret_fails_closed(self) -> None:
+        url = self.NOTION_URL + f"&session_blob={self.GITHUB_TOKEN}"
+        assert oauth_url_contains_credential(url) is True
+        self._assert_general_redactors_remove_secret(url, self.GITHUB_TOKEN)
+
+    def test_duplicate_value_in_standard_and_unknown_param_fails_closed(self) -> None:
+        url = self.NOTION_URL + f"&session_blob={self.CHALLENGE}"
+        assert oauth_url_contains_credential(url) is True
+        cleaned, warnings = redact_exfiltration_urls(url)
+        assert cleaned != url
+        assert warnings
+
+    @pytest.mark.parametrize(
+        "credential",
+        [
+            "AKIA" "IOSFODNN7EXAMPLE",
+            GITHUB_TOKEN,
+        ],
+        ids=["aws-access-key", "github-token"],
+    )
+    def test_fixed_credential_inside_state_fails_closed(self, credential: str) -> None:
+        url = self.NOTION_URL.replace(self.STATE, f"prefix{credential}suffix", 1)
+        assert oauth_url_contains_credential(url) is True
+        self._assert_general_redactors_remove_secret(url, credential)
+
+    def test_once_percent_decoded_fixed_credential_fails_closed(self) -> None:
+        encoded_token = "%67%68%70%5F" + self.GITHUB_TOKEN.removeprefix("ghp_")
+        url = self.NOTION_URL.replace(self.STATE, encoded_token, 1)
+        assert oauth_url_contains_credential(url) is True
+
+    def test_base64_encoded_credential_inside_state_fails_closed(self) -> None:
+        encoded = base64.b64encode(self.GITHUB_TOKEN.encode()).decode()
+        url = self.NOTION_URL.replace(self.STATE, encoded, 1)
+        assert oauth_url_contains_credential(url) is True
+        self._assert_general_redactors_remove_secret(url, encoded)
+
+    def test_bare_aws_secret_inside_state_fails_closed_everywhere(self) -> None:
+        assert len(self.BARE_AWS_SECRET) == 40
+        url = self.NOTION_URL.replace(self.STATE, self.BARE_AWS_SECRET, 1)
+        assert oauth_url_contains_credential(url) is True
+        self._assert_general_redactors_remove_secret(url, self.BARE_AWS_SECRET)
+
+    def test_pkce_challenge_wrapping_bare_aws_secret_fails_closed(self) -> None:
+        alphanumeric_secret = "wJalrXUtnFEMIxK7MDENGybPxRfiCYEXAMPLEKEY"
+        challenge = alphanumeric_secret + "abc"
+        assert len(alphanumeric_secret) == 40
+        assert len(challenge) == 43
+        assert challenge.isalnum()
+
+        url = self.NOTION_URL.replace(self.CHALLENGE, challenge, 1)
+        assert oauth_url_contains_credential(url) is True
+
+    def test_bare_aws_secret_in_path_without_query_fails_closed(self) -> None:
+        url = f"https://attacker.example/-{self.BARE_AWS_SECRET}"
+        assert "?" not in url
+        assert oauth_url_contains_credential(url) is True
+
+    @pytest.mark.parametrize(
+        "encoded_header",
+        [
+            "-----BEGIN+RSA+PRIVATE+KEY-----",
+            "-----%42%45%47%49%4E%20RSA%20PRIVATE%20KEY-----",
+        ],
+        ids=["form-encoded-spaces", "percent-encoded-header"],
+    )
+    def test_encoded_pem_header_in_path_fails_closed_everywhere(
+        self, encoded_header: str
+    ) -> None:
+        url = f"https://attacker.example/upload/{encoded_header}/c2hvcnQ"
+        assert oauth_url_contains_credential(url) is True
+
+        scan_warnings = scan_exfiltration_urls(url)
+        assert scan_warnings
+
+        cleaned, redact_warnings = redact_exfiltration_urls(url)
+        assert url not in cleaned
+        assert redact_warnings == scan_warnings
+
+    def test_multiply_percent_encoded_credential_in_path_fails_closed(
+        self,
+    ) -> None:
+        """A single decode pass leaves a double-encoded payload intact
+        ("%2542" -> "%42" -> "B"), so the scan decodes until stable."""
+        from urllib.parse import quote
+
+        once = quote("-----BEGIN RSA PRIVATE KEY-----", safe="-")
+        for encoded in (once, quote(once, safe="-"), quote(quote(once, safe="-"), safe="-")):
+            url = f"https://attacker.example/upload/{encoded}/x"
+            assert oauth_url_contains_credential(url) is True
+
+            scan_warnings = scan_exfiltration_urls(url)
+            assert scan_warnings
+
+            cleaned, redact_warnings = redact_exfiltration_urls(url)
+            assert url not in cleaned
+            assert redact_warnings == scan_warnings
+
+    def test_heavy_percent_encoding_in_standard_param_fails_closed(self) -> None:
+        url = self.NOTION_URL.replace(self.STATE, "%41" * 25, 1)
+        assert oauth_url_contains_credential(url) is True
+        cleaned, warnings = redact_exfiltration_urls(url)
+        assert cleaned != url
+        assert warnings
 
 
 class TestRedactExfiltrationUrls:

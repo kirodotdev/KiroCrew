@@ -28,7 +28,11 @@ from kiro_crew.dashboard.state import (
     parse_cls_meta,
 )
 from kiro_crew.hooks import safe_read_file
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    oauth_url_contains_credential,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.sel import SecurityEvent, sel
 from kiro_crew.validation import (
     MAX_TOOL_NAME_LEN,
@@ -531,13 +535,10 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
                 #      consent URL never carries credential patterns; presence of
                 #      one means it's tampered/bogus.
                 #
-                # The generic EXFIL heuristic is deliberately NOT applied, matching
-                # `_oauth_url_contains_credential` (chat_runner.py), whose docstring
-                # says it omits the long-query heuristic because that heuristic
-                # "would reject every real OAuth URL". test/oauth_url_corpus.py is
-                # the contract: real provider URLs routinely exceed 200 query chars
-                # and carry a 43-char base64url `code_challenge`, so the exfil
-                # heuristic fires on all of them.
+                # The exfiltration gate is parameter-aware: standard high-entropy
+                # OAuth values are exempt only at exact code-owned endpoints, while
+                # fixed/encoded credentials, heavy percent encoding, and unknown
+                # params remain fail-closed.
                 #
                 # This function runs on the EMIT path (_prepare_messages), which
                 # serves the slot-detail endpoint that the frontend refetches on
@@ -549,8 +550,7 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
                 # aligned is what prevents that.
                 lower = v.lower()
                 safe_scheme = lower.startswith("https://") or lower.startswith("http://")
-                _, hit_cred = redact_credentials(v)
-                out[k] = v if (safe_scheme and not hit_cred) else ""
+                out[k] = v if (safe_scheme and not oauth_url_contains_credential(v)) else ""
             else:
                 out[k] = _redact_value(v)
         return out
