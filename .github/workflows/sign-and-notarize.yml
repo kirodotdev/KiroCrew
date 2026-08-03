@@ -84,6 +84,7 @@ jobs:
   sign:
     name: Sign with signing service (${{ inputs.channel }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # OIDC subject alignment: tag-triggered callers (release.yml) present
     # ref:refs/tags/<tag>, which the signing role does not trust. The prod
     # environment switches the subject to environment:prod, which it does.

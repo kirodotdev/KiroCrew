@@ -51,6 +51,7 @@ jobs:
   publish-installer:
     name: Publish cli.sh
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Upstream only. Forks pushing to their own main have no publish role and
     # nothing to publish to; skipping at the JOB level (rather than gating each
     # step on a secret) is what keeps the fail-closed behaviour below honest.

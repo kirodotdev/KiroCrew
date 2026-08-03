@@ -39,6 +39,7 @@ jobs:
   publish-cli:
     name: Publish CLI wheel (${{ inputs.channel }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # REQUIRED for tag-triggered (release) runs: the signing role's OIDC trust
     # accepts exactly two subjects -- ref:refs/heads/main and environment:prod.
     # Nightly runs on main's ref and passes bare, which masked this gap until the

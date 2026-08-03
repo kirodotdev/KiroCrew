@@ -28,6 +28,7 @@ jobs:
   design-review:
     name: Design Review
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Same-repo PRs only (not forks): fork PRs have no OIDC/secrets access, and
     # this keeps budget abuse / prompt-injection / secret-exfil out — mirrors
     # the fork guard in codex-review.yml.

@@ -23,6 +23,7 @@ jobs:
   scrub-lint:
     name: De-Amazon Scrub Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # Full history is fetched lazily by the script only for the (skipped)
@@ -37,6 +38,7 @@ jobs:
   backend-lint:
     name: Backend Lint & Type Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ["3.10", "3.12"]
@@ -83,6 +85,7 @@ jobs:
   backend-test:
     name: Backend Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       # Don't cancel sibling shards when one fails -- we want the full failure
       # picture across the suite, not just the first shard to break.
@@ -170,6 +173,8 @@ jobs:
   backend-test-windows:
     name: Backend Tests (Windows)
     runs-on: windows-latest
+    # windows-latest runs the same shards measurably slower than POSIX.
+    timeout-minutes: 40
     strategy:
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
@@ -254,6 +259,7 @@ jobs:
     name: Coverage Combine
     needs: backend-test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -313,6 +319,7 @@ jobs:
   coverage-gate:
     name: Coverage Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [coverage-combine, frontend-test]
     # Always run so the required check emits a real verdict. Without
     # `if: always()`, a failing OR skipped dependency would SKIP this job, and
@@ -395,6 +402,7 @@ jobs:
   frontend-lint:
     name: Frontend Lint & Type Check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -530,6 +538,7 @@ jobs:
   cfn-lint:
     name: CloudFormation Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -548,6 +557,8 @@ jobs:
   frontend-test:
     name: Frontend Tests
     runs-on: ubuntu-latest
+    # vitest + coverage is the longest ubuntu job (~23 min observed max).
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

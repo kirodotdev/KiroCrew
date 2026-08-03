@@ -80,6 +80,7 @@ jobs:
   arbiter:
     name: Arbiter
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write
@@ -587,6 +588,7 @@ jobs:
     needs: arbiter
     if: always() && needs.arbiter.outputs.published == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       actions: write
       contents: read

@@ -39,6 +39,7 @@ jobs:
   label:
     name: Sync merge-conflict label
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Sync "merge conflict" label across open pull requests
         env:

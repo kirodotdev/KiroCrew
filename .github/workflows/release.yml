@@ -26,6 +26,7 @@ jobs:
   version:
     name: Derive Version + Channel
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.channel.outputs.version }}
       channel: ${{ steps.channel.outputs.channel }}
@@ -196,6 +197,7 @@ jobs:
     name: Create GitHub Release
     needs: [version, sign-and-notarize]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:

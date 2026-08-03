@@ -12,6 +12,7 @@ jobs:
   autosde-rules:
     name: Automated Rule Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -162,6 +163,7 @@ jobs:
   inclusive-language:
     name: Inclusive Language
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -231,6 +233,7 @@ jobs:
   sast:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     container:
       image: semgrep/semgrep:1.78
     steps:
@@ -256,6 +259,7 @@ jobs:
   pr-hygiene:
     name: PR Hygiene
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

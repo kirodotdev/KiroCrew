@@ -126,6 +126,7 @@ jobs:
     # startup. Comparing to true always produces a boolean.
     continue-on-error: ${{ inputs.soft_fail == true }}
     runs-on: windows-latest
+    timeout-minutes: 60
     # Publishing callers pass use_prod_environment: true -- REQUIRED, because
     # the signing role's OIDC trust accepts exactly two subjects
     # (ref:refs/heads/main and environment:prod) and tag-triggered release runs

@@ -46,6 +46,7 @@ jobs:
   guard:
     name: Fork workflow-change guard
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # FORK ONLY, both event shapes. Same-repo PRs are unaffected.
     if: >-
       ( github.event_name == 'workflow_run'
@@ -130,6 +131,7 @@ jobs:
   strip-stale-override:
     name: Strip stale workflow-change override
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: >-
       github.event_name == 'pull_request_target'
       && github.event.action == 'synchronize'

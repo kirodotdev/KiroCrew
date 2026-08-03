@@ -26,6 +26,7 @@ jobs:
   version:
     name: Compute Nightly Version
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       nightly_version: ${{ steps.stamp.outputs.version }}
       wheel_version: ${{ steps.stamp.outputs.wheel_version }}

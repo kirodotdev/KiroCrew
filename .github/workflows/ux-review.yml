@@ -37,6 +37,9 @@ jobs:
   ux-review:
     name: UX Review
     runs-on: ubuntu-latest
+    # Model-call latency has a fat tail: ~18 min observed max, and a killed
+    # review surfaces as a RED required check, so keep generous headroom.
+    timeout-minutes: 60
     # Same-repo PRs only (not forks): fork PRs have no OIDC/secrets access, and
     # this keeps budget abuse / prompt-injection / secret-exfil out — mirrors
     # the fork guard in design-review.yml / codex-review.yml.

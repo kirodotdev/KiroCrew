@@ -34,6 +34,7 @@ jobs:
       github.event.issue.pull_request != null
       && startsWith(github.event.comment.body, '/ai-review override ')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Validate and record the decision
         id: context
