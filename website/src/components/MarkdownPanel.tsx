@@ -555,7 +555,21 @@ let diffThemesRegistered = false
 function DiffEditorBlock({ diffMode, lang, originalContent, content, dark, diffActiveRef, handleChange, editing, lineNums, wordWrap, autocomplete, onSelect, flush, sideBySide = true }: {
   diffMode: boolean; lang: string; originalContent: string; content: string; dark: boolean
   diffActiveRef: React.MutableRefObject<boolean>; handleChange: (v: string) => void; editing: boolean; lineNums: boolean; wordWrap: boolean; autocomplete: boolean
-  /** Monaco renderSideBySide — false = unified inline diff. */
+  /**
+   * Monaco renderSideBySide — false = unified inline diff.
+   *
+   * Paired with `useInlineViewWhenSpaceIsLimited: false` in the editor options.
+   * Monaco silently overrides renderSideBySide when the editor is narrower than
+   * renderSideBySideInlineBreakpoint (default 900px), because
+   * useInlineViewWhenSpaceIsLimited defaults to true. This panel hosts its diff
+   * in the chat side panel and the file explorer's pane, both well under 900px
+   * at every usable width, so the split-view toggle appeared to do nothing —
+   * the editor always fell back to the inline view. Opting out keeps
+   * renderSideBySide authoritative: the toggle is an explicit user choice and
+   * Monaco should not second-guess it on width. Side-by-side in a narrow pane
+   * is cramped, but it is what the user asked for, and each side scrolls
+   * horizontally.
+   */
   sideBySide?: boolean
   /** Drop the rounded border box — host surface frames the content. */
   flush?: boolean
@@ -597,7 +611,7 @@ function DiffEditorBlock({ diffMode, lang, originalContent, content, dark, diffA
                 onSelectRef.current?.(text.trim(), rect)
               }, 10)
             })
-          }} options={{ minimap: { enabled: false }, readOnly: !editing, renderSideBySide: sideBySide, renderValidationDecorations: 'off', guides: { indentation: false }, stickyScroll: { enabled: false }, renderLineHighlight: 'none', scrollBeyondLastLine: false, fontSize: 13, lineNumbers: lineNums ? 'on' : 'off', wordWrap: wordWrap ? 'on' : 'off', quickSuggestions: autocomplete, automaticLayout: true, hover: { enabled: editing } }} />
+          }} options={{ minimap: { enabled: false }, readOnly: !editing, renderSideBySide: sideBySide, useInlineViewWhenSpaceIsLimited: false, renderValidationDecorations: 'off', guides: { indentation: false }, stickyScroll: { enabled: false }, renderLineHighlight: 'none', scrollBeyondLastLine: false, fontSize: 13, lineNumbers: lineNums ? 'on' : 'off', wordWrap: wordWrap ? 'on' : 'off', quickSuggestions: autocomplete, automaticLayout: true, hover: { enabled: editing } }} />
       </Suspense>
     </div>
   )
@@ -1375,7 +1389,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               >{editing ? i18nT('components.markdownPanel.view_preview') : i18nT('components.markdownPanel.view_source')}</button>
             )}
             {!isRichType && diffMode && (
-              <button className={barIconBtn(!diffSplit)} onClick={() => setDiffSplit(!diffSplit)} title={diffSplit ? i18nT('components.markdownPanel.switch_to_unified_view') : i18nT('components.markdownPanel.switch_to_split_view')} aria-label={diffSplit ? i18nT('components.markdownPanel.switch_to_unified_view') : i18nT('components.markdownPanel.switch_to_split_view')} aria-pressed={!diffSplit}><Columns2 size={14} /></button>
+              <button className={barIconBtn(diffSplit)} onClick={() => setDiffSplit(!diffSplit)} title={diffSplit ? i18nT('components.markdownPanel.switch_to_unified_view') : i18nT('components.markdownPanel.switch_to_split_view')} aria-label={diffSplit ? i18nT('components.markdownPanel.switch_to_unified_view') : i18nT('components.markdownPanel.switch_to_split_view')} aria-pressed={diffSplit}><Columns2 size={14} /></button>
             )}
             {!isRichType && (
               <button className={barIconBtn(diffMode)} onClick={toggleDiffMode} title={i18nT('components.markdownPanel.toggle_diff_view')} aria-label={i18nT('components.markdownPanel.toggle_diff_view')} aria-pressed={diffMode}><FileDiff size={14} /></button>
