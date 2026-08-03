@@ -119,11 +119,11 @@ USER_MAX_LEN = 20
 # legacy bare thread_ts form persists in older session maps, conversation logs,
 # and callers — distinct from the "slack:<chan>:<ts>" delivery-target form —
 # so callers that authorize by session key must accept both the bare shape and
-# the ``slack:`` prefix (see ``is_slack_ns`` in ``api_lessons_create``).
+# the ``slack:`` prefix (see ``is_channel_ns`` in ``api_lessons_create``).
 #
 # Use the explicit ASCII class ``[0-9]`` (not ``\d``): in Python 3 ``\d`` also
 # matches non-ASCII Unicode decimal digits (Arabic-Indic ٠-٩, Devanagari ०-९,
-# etc.). Because this pattern gates an authorization decision (``is_slack_ns``
+# etc.). Because this pattern gates an authorization decision (``is_channel_ns``
 # in ``api_lessons_create``), ``\d`` would let a crafted key built from Unicode
 # digits pass as a Slack thread_ts, matching the ASCII-only intent of the other
 # patterns in this file (e.g. ``CHANNEL_ID_RE``).

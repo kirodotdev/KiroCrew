@@ -523,7 +523,7 @@ def test_channel_id_re(channel_id, valid):
 def test_slack_thread_ts_re_ascii_only(session_key, valid):
     """The pattern must accept ASCII-digit Slack timestamps and reject
     everything else — including Unicode-digit lookalikes, since the match
-    gates slack_namespace authorization in api_lessons_create."""
+    gates channel_namespace authorization in api_lessons_create."""
     assert bool(SLACK_THREAD_TS_RE.match(session_key)) == valid
 
 
