@@ -11,9 +11,13 @@
     "Sync (pull main and rebuild) or rebase a branch without leaving the dashboard",
     "'Prune merged' refuses to delete a worktree with uncommitted or untracked work rather than discarding it",
     "Stream pod logs and mint pod access tokens from the UI",
-    "Built for people developing KiroCrew itself — not needed for everyday use"
+    "Built for people developing KiroCrew itself — not needed for everyday use",
+    "Pods and Make Live need Linux systemd --user; the fleet view, PR status, sync, rebase and prune work on any platform"
   ],
   "defaultEnabled": false,
+  "platform": {
+    "os": ["linux"]
+  },
   "permissions": {
     "api": ["/apps/dev-fleet/api", "/apps/dev-fleet/api/*"],
     "network": true,

@@ -22,6 +22,7 @@ import urllib.request
 from pathlib import Path
 
 from kiro_crew.platform_compat import IS_LINUX
+from kiro_crew.pod import provision as prov
 from kiro_crew.pod.config import PodConfig
 
 # Pod names become systemd instance names and path segments; keep them strict.
@@ -518,7 +519,7 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
         # PATH" probe — resolves the machine-wide shim instead of the checkout
         # under test, so the pod silently exercises the global install and stays
         # coupled to a symlink it does not own.
-        "PATH": os.pathsep.join([str(checkout / ".venv" / "bin"), cfg.gateway_path]),
+        "PATH": os.pathsep.join([str(prov.venv_bin_dir(checkout)), cfg.gateway_path]),
     }
     for key in [
         k
@@ -599,7 +600,7 @@ def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
             f"from inside a kirocrew checkout first"
         )
     checkout = Path(checkout_str).expanduser()
-    bin_path = checkout / ".venv" / "bin" / "kirocrew"
+    bin_path = prov.venv_bin(checkout)
     if not (bin_path.exists() and os.access(bin_path, os.X_OK)):
         raise PodError(f"no kirocrew venv at {bin_path} (provision {name} first)")
     env = build_pod_env(cfg, cfg.home_dir(name), derive_port(cfg, name), checkout)
@@ -792,7 +793,7 @@ def boot(cfg: PodConfig, name: str) -> int:
         return 3
     checkout = Path(checkout_str).expanduser()
     home_dir = cfg.home_dir(name)
-    bin_path = checkout / ".venv" / "bin" / "kirocrew"
+    bin_path = prov.venv_bin(checkout)
 
     if not (bin_path.exists() and os.access(bin_path, os.X_OK)):
         print(f"FATAL: no kirocrew venv at {bin_path} (provision {name} first)")

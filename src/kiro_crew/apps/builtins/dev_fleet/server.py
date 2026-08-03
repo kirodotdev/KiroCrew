@@ -207,6 +207,15 @@ def _build_pending() -> bool:
 
 
 # --- pod availability ---
+# Two distinct flags, because they gate different things:
+#   _POD_IMPORTED  — the ``kiro_crew.pod`` modules are importable, so the
+#                    PLATFORM-NEUTRAL helpers (``prov.has_venv`` /
+#                    ``prov.has_dist``, both plain filesystem checks) may be
+#                    called. True on every platform unless the import failed.
+#   _POD_AVAILABLE — pods can actually RUN here, i.e. Linux with ``systemctl``.
+# Conflating the two used to report every worktree as "not built" off Linux,
+# even though the build state is knowable everywhere.
+_POD_IMPORTED = False
 _POD_AVAILABLE = False
 _POD_ERROR = ""
 try:
@@ -214,15 +223,23 @@ try:
     from kiro_crew.pod import runtime as rt
     from kiro_crew.pod.config import PodConfig
 
+    _POD_IMPORTED = True
     # Pods are systemd --user units — they can only exist on Linux with
     # systemctl present. On other platforms skip pod-state checks entirely
     # instead of failing closed on every removal.
     if sys.platform == "linux" and shutil.which("systemctl"):
         _POD_AVAILABLE = True
+    elif sys.platform != "linux":
+        _POD_ERROR = (
+            f"Pods are Linux systemd --user units; this host is {sys.platform}. "
+            "Preview a worktree with ./dev-backend.sh instead."
+        )
     else:
-        _POD_ERROR = "pods require Linux systemd (systemctl not available)"
+        _POD_ERROR = (
+            "Pods require `systemctl --user`, but no `systemctl` was found on PATH."
+        )
 except ImportError as exc:
-    _POD_ERROR = str(exc)
+    _POD_ERROR = f"the pod subsystem could not be imported: {exc}"
 
 
 # --- async run tracking ---
@@ -1355,9 +1372,24 @@ async def _build_fleet() -> dict:
         health = None
         has_venv = False
         has_dist = False
+        loop = asyncio.get_running_loop()
+        # Build state is a plain filesystem check (``.venv`` binary present /
+        # ``static/dist`` directory present) and is therefore knowable on EVERY
+        # platform — report it even where pods cannot run, so the Fleet view
+        # still tells the truth about which worktrees are built.
+        if _POD_IMPORTED and not is_main:
+            try:
+                has_venv = await loop.run_in_executor(
+                    subprocess_executor(), prov.has_venv, Path(path)
+                )
+                has_dist = await loop.run_in_executor(
+                    subprocess_executor(), prov.has_dist, Path(path)
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        # Pod state, by contrast, only exists where pods can run.
         if _POD_AVAILABLE and cfg and not is_main:
             try:
-                loop = asyncio.get_running_loop()
                 active = await loop.run_in_executor(
                     subprocess_executor(), rt.active_names, cfg
                 )
@@ -1369,12 +1401,6 @@ async def _build_fleet() -> dict:
                     health = await loop.run_in_executor(
                         subprocess_executor(), rt.health, port, 2
                     )
-                has_venv = await loop.run_in_executor(
-                    subprocess_executor(), prov.has_venv, Path(path)
-                )
-                has_dist = await loop.run_in_executor(
-                    subprocess_executor(), prov.has_dist, Path(path)
-                )
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1422,6 +1448,12 @@ async def _build_fleet() -> dict:
         "sync_run_id": _SYNC_RID,
         "build_pending": _build_pending(),
         "gateway_service_active": await _gateway_service_active(),
+        # Whether pods can run on THIS host, and if not, why. Previously
+        # _POD_ERROR was computed and then never read by anything, so a
+        # non-Linux user saw pod controls that silently failed with no
+        # explanation. The UI uses these to disable those controls and say why.
+        "pods_available": _POD_AVAILABLE,
+        "pods_unavailable_reason": _POD_ERROR or None,
     }
 
 

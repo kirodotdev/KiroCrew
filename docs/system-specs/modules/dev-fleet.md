@@ -492,12 +492,52 @@ All user-visible output passes through `redact_credentials()` and
 
 ## Platform Behavior
 
-- **Linux only** — pod integration requires systemd (systemctl, journalctl)
-- **macOS** — worktree management works; pod operations degrade (import fails gracefully)
+The app declares `platform.os: ["linux"]` in `app.json`. That declaration is
+**informational** — `installMode` is the default `"server"`, and the App Store's
+platform gate only refuses `installMode: "client"` apps — so the app still
+installs and enables anywhere. What it buys is an honest App Store detail page
+(which renders the requirement) instead of the previous silence, where an absent
+`platform` block defaulted to `["macos", "linux"]` and advertised macOS support
+the app does not have.
+
+Two separate capability flags drive the degradation, because they gate different
+things:
+
+| Flag | Meaning | True when |
+|---|---|---|
+| `_POD_IMPORTED` | the `kiro_crew.pod` modules imported, so its platform-neutral helpers are callable | the import succeeded (any platform) |
+| `_POD_AVAILABLE` | pods can actually **run** here | Linux **and** `systemctl` on PATH |
+
+Conflating the two used to report every worktree as "not built" off Linux, since
+the `prov.has_venv` / `prov.has_dist` calls — plain filesystem checks — sat
+behind the pod-runnable gate. Build state is now computed on every platform.
+
+`GET /api/fleet` reports host support so the UI can explain itself rather than
+offering controls that fail:
+
+| Field | Meaning |
+|---|---|
+| `pods_available` | `_POD_AVAILABLE` — whether pods can run on this host |
+| `pods_unavailable_reason` | the human-readable reason, or `null` when pods are available |
+
+Before this existed, the reason string was computed into `_POD_ERROR` and then
+**never read by anything** — a non-Linux user saw pod controls that silently
+failed with no explanation.
+
+Per-platform behavior:
+
+- **Linux + systemd `--user`** — everything works.
+- **macOS / Windows / Linux without `systemctl`** — the Fleet view, per-branch PR
+  status, commit counts, disk usage, Provision, Sync (pull main + rebuild),
+  Rebase and Prune all work. The UI shows a notice carrying
+  `pods_unavailable_reason` and hides the actions that cannot work: Spin up /
+  Restart / Stop pod, Open, QA + video, and Make Live. Provision is **not**
+  hidden — `kirocrew pod provision` does not touch systemd, so building a
+  worktree's venv + dist works anywhere.
 - **Make Live** — Linux + systemd `--user` only; refuses on non-systemd hosts
-  (`no_systemd`) and on SYSTEM-unit installs (`no_user_unit`)
+  (`no_systemd`) and on SYSTEM-unit installs (`no_user_unit`).
 - **git** and **gh** CLI required for full functionality; missing binaries produce
-  graceful degradation via OSError catch in `_run_cmd`
+  graceful degradation via OSError catch in `_run_cmd`.
 
 ## Bundled Skills
 

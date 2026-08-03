@@ -22,6 +22,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from kiro_crew import platform_compat
+
 
 def _say(msg: str) -> None:
     """Progress goes to STDERR so a ``pod up --json`` stdout stays pure JSON."""
@@ -41,8 +43,25 @@ def _find_python(version: str = "3.12") -> str | None:
     return shutil.which(f"python{version}")
 
 
+def venv_bin_dir(checkout: Path) -> Path:
+    """Directory holding the worktree venv's console scripts.
+
+    POSIX venvs use ``.venv/bin``, Windows ``.venv\\Scripts``. This is the ONE
+    place that knows the layout — :func:`venv_bin` and the pod runtime both
+    derive from it, so a built worktree is judged the same way everywhere.
+    """
+    return checkout / ".venv" / ("Scripts" if platform_compat.IS_WINDOWS else "bin")
+
+
 def venv_bin(checkout: Path) -> Path:
-    return checkout / ".venv" / "bin" / "kirocrew"
+    """Path to the worktree venv's ``kirocrew`` entry point.
+
+    Booting a pod is Linux-only, but :func:`has_venv` is called on EVERY
+    platform to report build state in the Dev Fleet view — so a POSIX-only path
+    here would report a perfectly built Windows worktree as unbuilt.
+    """
+    name = "kirocrew.exe" if platform_compat.IS_WINDOWS else "kirocrew"
+    return venv_bin_dir(checkout) / name
 
 
 def dist_dir(checkout: Path) -> Path:
@@ -81,7 +100,7 @@ def ensure_venv(checkout: Path) -> bool:
     venv_dir = checkout / ".venv"
     if _run([py, "-m", "venv", str(venv_dir)], checkout) != 0:
         return False
-    pip = venv_dir / "bin" / "pip"
+    pip = venv_bin_dir(checkout) / ("pip.exe" if platform_compat.IS_WINDOWS else "pip")
     # Upgrade pip first — `pip install --group` (PEP 735) needs pip >= 25.1, and a
     # fresh `python -m venv` ships an older pip on many hosts.
     _run([str(pip), "install", "--quiet", "--upgrade", "pip"], checkout)

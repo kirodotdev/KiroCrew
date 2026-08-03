@@ -9,6 +9,7 @@ import json
 import os
 import textwrap
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,6 +18,7 @@ from aiohttp import web  # noqa: F401  (used by builtin re-shell tests)
 from aiohttp.test_utils import TestClient, TestServer  # noqa: F401
 
 import kiro_crew.apps.builtins.dev_fleet.server as mod
+from kiro_crew import platform_compat
 
 
 # --- worktree porcelain parsing ---
@@ -3196,6 +3198,94 @@ async def test_build_fleet_payload_has_context_fields():
     # main row still present and carries empty context (no crash)
     assert rows["main"]["summary"] is None
     assert rows["main"]["issues"] == []
+
+
+# =============================================================================
+# Non-Linux honesty: the fleet payload must DISCLOSE that pods cannot run here,
+# and must still report build state (a plain filesystem fact).
+# =============================================================================
+async def _fleet_with(worktrees, **patches):
+    """Build a fleet payload with everything external stubbed out."""
+    ginfo = {
+        "branch": "feat/x", "head": "abc1234", "dirty": False,
+        "ahead": 0, "behind": 0, "last_updated_at": 111,
+    }
+    defaults = {
+        "_live_worktree_path": AsyncMock(return_value=None),
+        "_discover_worktrees": AsyncMock(return_value=worktrees),
+        "_git_info": AsyncMock(return_value=ginfo),
+        "_pr_status_cached": AsyncMock(return_value=None),
+        "_git_ahead": AsyncMock(return_value=0),
+        "_context_cached": AsyncMock(
+            return_value={"issues": [], "tickets": [], "summary": None}
+        ),
+        "_gateway_service_active": AsyncMock(return_value=False),
+    }
+    with ExitStack() as stack:
+        for attr, repl in defaults.items():
+            stack.enter_context(patch.object(mod, attr, repl))
+        for attr, value in patches.items():
+            stack.enter_context(patch.object(mod, attr, value))
+        return await mod._build_fleet()
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_discloses_why_pods_are_unavailable():
+    """_POD_ERROR used to be computed and then read by NOTHING, so a non-Linux
+    user got pod controls that silently failed. It must reach the payload."""
+    reason = "Pods are Linux systemd --user units; this host is darwin."
+    fleet = await _fleet_with(
+        [{"path": "/repo", "branch": "main", "is_main": True}],
+        _POD_AVAILABLE=False,
+        _POD_ERROR=reason,
+        _load_cfg=lambda: None,
+    )
+    assert fleet["pods_available"] is False
+    assert fleet["pods_unavailable_reason"] == reason
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_reports_no_reason_when_pods_work():
+    fleet = await _fleet_with(
+        [{"path": "/repo", "branch": "main", "is_main": True}],
+        _POD_AVAILABLE=True,
+        _POD_ERROR="",
+        _load_cfg=lambda: None,
+    )
+    assert fleet["pods_available"] is True
+    assert fleet["pods_unavailable_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_build_state_is_reported_even_where_pods_cannot_run(tmp_path):
+    """Regression: has_venv/has_dist sat behind the pod-runnable gate, so every
+    worktree showed as "not built" off Linux even when it was fully built.
+    They are plain filesystem checks — knowable on every platform."""
+    wt = tmp_path / "repo-wt-built"
+    binp = wt / ".venv" / ("Scripts" if platform_compat.IS_WINDOWS else "bin")
+    binp.mkdir(parents=True)
+    exe = binp / ("kirocrew.exe" if platform_compat.IS_WINDOWS else "kirocrew")
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    (wt / "src" / "kiro_crew" / "static" / "dist").mkdir(parents=True)
+
+    fleet = await _fleet_with(
+        [
+            {"path": str(tmp_path / "repo"), "branch": "main", "is_main": True},
+            {"path": str(wt), "branch": "feat/x", "is_main": False},
+        ],
+        # Pods cannot run, and _load_cfg therefore yields no config — the exact
+        # state a macOS or Windows host is in.
+        _POD_AVAILABLE=False,
+        _POD_ERROR="pods require Linux systemd",
+        _load_cfg=lambda: None,
+    )
+    row = {w["name"]: w for w in fleet["worktrees"]}["repo-wt-built"]
+    assert row["has_venv"] is True
+    assert row["has_dist"] is True
+    # Pod state stays false — it genuinely cannot be known here.
+    assert row["running"] is False
+    assert row["port"] is None
 
 
 # =============================================================================

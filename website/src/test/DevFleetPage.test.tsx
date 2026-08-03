@@ -353,6 +353,78 @@ describe('DevFleetPage', () => {
     expect(screen.queryByText('Make live')).toBeNull()
   })
 
+  // --- pods unavailable on this host (non-Linux / no systemctl) ---
+  // Before pods_available existed, the backend computed a reason string and
+  // never sent it, so these controls rendered and silently failed.
+  const FLEET_NO_PODS = {
+    pods_available: false,
+    pods_unavailable_reason: 'Pods are Linux systemd --user units; this host is darwin. Preview a worktree with ./dev-backend.sh instead.',
+    worktrees: [
+      { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+      { name: 'feature-x', is_main: false, running: false, has_dist: true, behind: 0, path: '/wt/feature-x' },
+    ],
+  }
+
+  function mockFleet(payload: unknown) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+  }
+
+  it('explains WHY pods are unavailable instead of failing silently', async () => {
+    mockFleet(FLEET_NO_PODS)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    expect(screen.getByText('Pods are unavailable on this host.')).toBeInTheDocument()
+    // The backend's reason is surfaced verbatim, including the suggested fix.
+    expect(screen.getByText(/this host is darwin/)).toBeInTheDocument()
+    expect(screen.getByText(/dev-backend\.sh/)).toBeInTheDocument()
+  })
+
+  it('hides pod-dependent row actions when pods cannot run, but keeps the rest', async () => {
+    mockFleet(FLEET_NO_PODS)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('More actions'))
+    // Rebase is platform-neutral and stays -> proves the menu really opened.
+    expect(await screen.findByText('Rebase onto main')).toBeInTheDocument()
+    for (const gone of ['Spin up pod', 'Make live', 'QA + video', 'Stop pod', 'Restart pod']) {
+      expect(screen.queryByText(gone)).toBeNull()
+    }
+  })
+
+  it('keeps Provision available without pods (pod provision never touches systemd)', async () => {
+    mockFleet({
+      ...FLEET_NO_PODS,
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+        { name: 'unbuilt', is_main: false, running: false, has_dist: false, behind: 0, path: '/wt/unbuilt' },
+      ],
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unbuilt')).toBeInTheDocument())
+    expect(screen.getByText('Provision')).toBeInTheDocument()
+  })
+
+  it('keeps pod actions when the backend omits pods_available (older backend)', async () => {
+    // Absent field must not be read as "unsupported" — that would silently
+    // strip pod controls from a perfectly capable Linux host.
+    mockFleet({
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+        { name: 'feature-x', is_main: false, running: false, has_dist: true, behind: 0, path: '/wt/feature-x' },
+      ],
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    expect(screen.queryByText('Pods are unavailable on this host.')).toBeNull()
+    fireEvent.click(screen.getByLabelText('More actions'))
+    expect(await screen.findByText('Spin up pod')).toBeInTheDocument()
+  })
+
   it('shows an inline "Make live" on the MAIN row when main is NOT live (switch back after cutover)', async () => {
     // A feature worktree is live; main is dormant (is_live:false). The main
     // row must offer Make live so the operator can cut back to main.
