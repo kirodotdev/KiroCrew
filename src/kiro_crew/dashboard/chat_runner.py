@@ -1510,8 +1510,19 @@ def _flush_segment(
     assistant_text: str,
     *,
     broadcast: bool = True,
+    quiet_persist: bool = False,
 ) -> None:
-    """Finalize current text block as a segment and persist it."""
+    """Finalize current text block as a segment and persist it.
+
+    ``quiet_persist`` additionally suppresses the per-message ``chat_message``
+    broadcast that ``slot.append`` emits for the finalized assistant message.
+    Used ONLY by the mid-turn steer cut: at that boundary every client has
+    already finalized its streaming message (optimistic freeze on the
+    initiating tab, steer_push freeze on the others), so a broadcast here
+    would render a DUPLICATE copy of the pre-steer text below the steer
+    bubble. Normal end-of-segment flushes keep the broadcast — there the
+    clients still hold a live streaming message for it to reconcile into.
+    """
 
     # Remove trailing chunk messages (they belong to this segment).
     # Also pull aside any stop_event interleaved with this segment's chunks
@@ -1552,7 +1563,7 @@ def _flush_segment(
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;
     # the chat_segment event tells it to finalize streaming → assistant.
-    slot.append("assistant", redacted, "msg msg-a")
+    slot.append("assistant", redacted, "msg msg-a", broadcast=not quiet_persist)
     last_msg: dict = slot.messages[-1]
     # If a regenerate is pending, attach the stashed variants to this fresh assistant message.
     if slot._pending_variants:
@@ -2251,6 +2262,11 @@ async def _run_chat(
         return injected
 
     assistant_text = ""
+    # Initialized HERE (not with the other turn-state flags below) because
+    # _steer_segment_cut declares it nonlocal — mypy requires the binding to
+    # exist textually before the nested def. Semantics unchanged: nothing
+    # touches it between here and the flag block.
+    _produced_visible_output = False
     last_heartbeat = time.time()
     chunk_seq = 0
     in_tool_group = False
@@ -2284,6 +2300,50 @@ async def _run_chat(
         wire = _thinkred.flush()
         if wire:
             state.broadcast_ws("chat_thinking", {"slot": slot.key, "content": wire})
+
+    def _steer_segment_cut() -> None:
+        """Finalize the accumulated text as a segment at a mid-turn steer.
+
+        Published on the slot (next to ``_acp_client``) so the dashboard steer
+        handler can cut the segment right BEFORE it persists the steer user
+        message. Without the cut, kiro-cli keeps the segment open across the
+        steer, so ``_flush_segment`` at end-of-segment appends the WHOLE text
+        (pre-steer + post-steer) BELOW the steer bubble — the reply the user
+        watched stream above their steer jumps to the bottom when the chat_done
+        refresh rebuilds from server history — and the pre-steer ``chunk``
+        entries are stranded above the bubble forever (the trailing-run walk in
+        ``_flush_segment`` stops at the first non-chunk message).
+
+        ``broadcast=False``: the initiating tab already froze its streaming
+        message when it pushed the optimistic bubble, and other tabs freeze on
+        the ``steer_push`` echo (appendSlotMessage finalize-on-steer). A
+        chat_segment broadcast here could instead finalize a NEWER post-steer
+        streaming message that raced ahead on the initiating tab.
+
+        Sync on purpose — the handler and this turn share the event loop, so
+        the flush cannot interleave with chunk processing.
+        """
+        nonlocal assistant_text, _produced_visible_output
+        # Drop the wire redactor's withheld tail instead of emitting it: a
+        # chat_chunk broadcast here would arrive AFTER the clients froze their
+        # streaming message at the steer boundary, opening a phantom streaming
+        # bubble below the steer card. No text is lost — assistant_text
+        # accumulates the full segment independently of the wire buffer, and
+        # _flush_segment persists (and re-redacts) that full text.
+        _wsred.reset()
+        if assistant_text.strip():
+            # quiet_persist: the clients already hold this text in their
+            # frozen (pre-steer) message; the append's chat_message broadcast
+            # would render a duplicate copy below the steer bubble.
+            _flush_segment(state, slot, assistant_text, broadcast=False, quiet_persist=True)
+            # The flushed segment IS visible output. Every other mid-turn site
+            # that resets assistant_text (compaction, clear, agent switch,
+            # /compact) sets this flag too; without it, a turn that streamed
+            # text, got steered, and then ended with no further text would hit
+            # the empty-response branch and requeue the ORIGINAL prompt —
+            # re-running its side effects.
+            _produced_visible_output = True
+        assistant_text = ""
 
     # Partial-output guard for transient-5xx retry: flipped True once ANY
     # assistant token streams or a tool call fires this turn. A transient
@@ -2336,7 +2396,6 @@ async def _run_chat(
     needs_session_reset = False
     _auth_required = False
     saw_compaction = False
-    _produced_visible_output = False
     _turn_tool_calls = 0  # tool dispatches this turn (refusal diagnostic)
     _retrying_empty = False
     # Recoverable tool refusals (host-gate policy deny / read-only bash gate)
@@ -2554,6 +2613,10 @@ async def _run_chat(
         # (the dashboard steer handler) can reach the running session's client
         # to inject a mid-turn steer. Cleared in the finally below.
         slot._acp_client = getattr(client, "client", None)
+        # Companion steer handle: lets the steer handler cut the current text
+        # segment at the steer boundary (see _steer_segment_cut). Same
+        # lifecycle as _acp_client.
+        slot._steer_segment_cut = _steer_segment_cut
         # Backfill slot.model from provider if user didn't explicitly set one.
         # AcpProvider stores the resolved model on client._model. For claude_code
         # that is a provider id; map it back to the canonical registry key so it
@@ -5193,6 +5256,9 @@ async def _run_chat(
         # Steer handle: turn is over, drop the live client ref so a late steer
         # can't target a dead session (the route also re-checks running state).
         slot._acp_client = None
+        # Same lifecycle for the segment-cut handle: a late steer must not
+        # flush into a finished turn's (already-flushed) locals.
+        slot._steer_segment_cut = None
         # Ensure file changes always surface, even on cancel/error. Wrapped so
         # a raise here cannot skip the re-arm below and re-introduce the orphan
         # bug this fix prevents.

@@ -845,6 +845,7 @@ class _ChatSlot:
         "_browse_mode",
         "_side",
         "_acp_client",
+        "_steer_segment_cut",
         "_native_subagent_tracker",
         "_native_subagent_output",
         "_pending_steers",
@@ -1060,6 +1061,16 @@ class _ChatSlot:
         # dashboard steer handler) reach the running session's client to inject
         # a mid-turn steer. None when idle.
         self._acp_client = None
+        # Sync callable published by _run_chat alongside _acp_client (cleared in
+        # the same finally): flushes the turn's accumulated text as a finalized
+        # assistant segment NOW. The steer handler calls it right BEFORE
+        # persisting the steer user message, so the transcript order is
+        # [assistant(pre-steer), user(steer), assistant(post-steer)] — matching
+        # what the client rendered live — instead of the whole segment landing
+        # BELOW the steer bubble at end-of-turn (and stranding the pre-steer
+        # chunk entries above it, which _flush_segment's trailing-run walk could
+        # then never reclaim). None when idle.
+        self._steer_segment_cut: Callable[[], None] | None = None
         # Native kiro-cli subagents run inside the parent ACP turn. Keep their
         # live and terminal state on the slot so reconnects can hydrate cards.
         self._native_subagent_tracker: dict[str, dict[str, Any]] = {}

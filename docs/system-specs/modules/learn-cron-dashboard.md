@@ -523,6 +523,51 @@ A pending tool approval has **two** pieces of state that must stay in lockstep: 
 
 **Runner backstop totality**: `outcome` is pre-seeded to `"rejected"` before the approval `await`, because the `finally` runs on *every* exit including `CancelledError` (slot deletion and cleanup endpoints cancel `slot.task`). Assigning it only inside `try`/`except` would raise `UnboundLocalError` from the `finally`, replacing the cancellation with a spurious exception and skipping both the message marking and the Slack prompt cleanup.
 
+### Mid-Turn Steer (dashboard transcript contract)
+
+A steer (`POST /api/chat` with `steer: true` while the slot is running) injects
+the message into the in-flight turn via kiro-cli `_session/steer`. kiro-cli does
+NOT end the current text segment at the steer, so both sides of the boundary
+must be handled explicitly or the transcript disagrees with what the user
+watched stream (the "stuck streaming marker" bug: the live streaming message is
+stranded ABOVE the steer bubble, the rest of the segment streams into it there,
+and the finalized reply jumps BELOW the bubble when the `chat_done` refresh
+rebuilds from server history).
+
+**Backend — segment cut at the steer boundary.** `_run_chat` publishes a sync
+closure on the slot (`slot._steer_segment_cut`, same lifecycle as
+`slot._acp_client`: set at turn start, cleared in the turn's `finally`). The
+steer handler calls it right BEFORE `slot.append("user", …, meta={"steer": True})`,
+so the accumulated segment text is flushed as its own assistant message and the
+persisted order is `[assistant(pre-steer), user(steer), assistant(post-steer)]`
+— identical to the live view. The cut persists SILENTLY: `broadcast=False`
+(no `chat_segment`), `quiet_persist=True` (no per-message `chat_message` from
+the append), and the wire redactor's withheld tail is dropped via
+`_wsred.reset()` rather than emitted (no late `chat_chunk`). At the cut
+boundary every client has already finalized its streaming message — the
+initiating tab froze at optimistic-push time, other tabs freeze on the
+`steer_push` echo — so any of those events would materialize a duplicate copy
+of the pre-steer text (or a phantom streaming bubble) below the steer bubble.
+No text is lost: `assistant_text` accumulates independently of the wire
+buffer and is re-redacted at persist. The cut also sets
+`_produced_visible_output` (the flushed segment is visible output; without it
+a stream→steer→quiet-end turn would trip the empty-response requeue). The cut
+is best-effort (a failure logs and never loses the steer) and also prevents the
+chunk-entry leak: without it, `_flush_segment`'s trailing-run walk stops at the
+mid-run steer user message and the pre-steer `chunk` entries stay in
+`slot.messages` for the life of the process.
+
+**Frontend — finalize-on-steer.** Every path that INSERTS a steer bubble first
+finalizes the live `streaming` message in place via `finalizeTrailingStreaming`
+(streaming → assistant; placeholder-only content is dropped, same rule as the
+`_segment` handlers, which share the helper): the optimistic push
+(`appendMessage`, `meta.steer`), a pane-scoped optimistic push, and the
+`steer_push` echo when no optimistic bubble exists to reconcile (another tab /
+scene-interaction steered). The reconcile path deliberately does NOT freeze — by
+echo time a new post-steer streaming message may be live below the bubble and
+must keep streaming. Pinned by `test_chat_steer.py` (cut ordering, cut-failure
+resilience) and the `finalize-on-steer` describe in `chatSlice.test.ts`.
+
 ### Agent Questions (`ask_question`)
 
 `ask_question` is **non-blocking** as of issue #755: the tool renders a question card in the caller's own chat window and the agent ENDS its turn — it no longer holds the turn open on a server-side wait resolving to an answer map. User-facing documentation lives in `src/kiro_crew/docs/agent-questions.md`; this section is the contract.

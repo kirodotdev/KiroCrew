@@ -266,6 +266,26 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                         return web.json_response({"ok": True, "queued": True})
                 if steered:
                     _ts = datetime.now(timezone.utc).isoformat()
+                    # Cut the in-flight text segment at the steer boundary
+                    # BEFORE persisting the user message, so the transcript
+                    # reads [assistant(pre-steer), user(steer), …] — the same
+                    # order the client rendered live. Without this the whole
+                    # segment lands BELOW the steer bubble at end-of-turn and
+                    # the chat_done refresh visibly reorders the reply (and the
+                    # pre-steer chunk entries are stranded in slot.messages —
+                    # _flush_segment's trailing-run walk stops at this user
+                    # message). Best-effort: a cut failure must never lose the
+                    # steer itself.
+                    _cut = slot._steer_segment_cut
+                    if _cut is not None:
+                        try:
+                            _cut()
+                        except Exception:
+                            logger.warning(
+                                "steer segment cut failed for slot %s",
+                                slot.key,
+                                exc_info=True,
+                            )
                     # Sanitize: same chain as the queue path.
                     _sanitized, _ = redact_exfiltration_urls(message)
                     _sanitized, _ = redact_credentials(_sanitized)

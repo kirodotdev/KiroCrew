@@ -29,6 +29,37 @@ const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has
 let bornKeySeq = 0
 const mintBornKey = (): string => `born-${Date.now()}-${bornKeySeq++}`
 
+/** Finalize the most recent live `streaming` message in place (streaming →
+ *  assistant), or drop it entirely when its content is a trivial placeholder
+ *  the model emits before tool calls ("...", "…", "---", ". . .", etc.).
+ *  Only patterns EXCLUSIVELY composed of 2+ repeated punctuation/whitespace
+ *  chars are dropped — never single characters, which could be the start of
+ *  legitimate content (list markers, etc.).
+ *
+ *  Shared by the two segment-finalize paths (active `sseChatMessage` and
+ *  background `applyMessageToArray`) AND the steer insertion paths: a mid-turn
+ *  steer bubble must never be pushed BELOW a live streaming message, or the
+ *  chunk reducer (which scans backwards for the last `streaming` role) keeps
+ *  streaming the rest of the segment into the stranded bubble ABOVE the steer
+ *  card — the "streaming marker stuck at the steer point" bug. Freezing first
+ *  means pre-steer text stays above the bubble and the next chunk opens a
+ *  fresh streaming message below it. */
+const finalizeTrailingStreaming = (msgs: ChatMessage[]) => {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'streaming') {
+      const raw = msgs[i].content
+      const isPlaceholder = !raw || (/^[\s.\-…·•–—]{2,}$/.test(raw) && /[.\-…·•–—]/.test(raw)) || raw === '…'
+      if (isPlaceholder) {
+        msgs.splice(i, 1)
+      } else {
+        msgs[i].role = 'assistant'
+        msgs[i].rawText = msgs[i].content
+      }
+      break
+    }
+  }
+}
+
 /** The three keys that can pollute `Object.prototype` when used to index a
  *  plain-object map (`obj[key] = ...`). Slot ids, subagent ids, run ids, and
  *  session keys all flow in from WebSocket action payloads; a crafted payload
@@ -389,14 +420,7 @@ function applyNonActiveFrame(
     return
   }
   if (role === '_segment') {
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'streaming') {
-        const raw = msgs[i].content
-        const isPlaceholder = !raw || (/^[\s.\-…·•–—]{2,}$/.test(raw) && /[.\-…·•–—]/.test(raw)) || raw === '…'
-        if (isPlaceholder) { msgs.splice(i, 1) } else { msgs[i].role = 'assistant'; msgs[i].rawText = msgs[i].content }
-        break
-      }
-    }
+    finalizeTrailingStreaming(msgs)
     return
   }
   if (role === 'chunk') {
@@ -1066,7 +1090,18 @@ const chatSlice = createSlice({
         delete state.slotContextTokens[safeKey(slot)]
       }
     },
-    appendMessage(state, action: PayloadAction<ChatMessage>) { state.messages.push(action.payload) },
+    appendMessage(state, action: PayloadAction<ChatMessage>) {
+      // Finalize-on-steer: a mid-turn steer bubble (ChatPage steer(), meta.steer)
+      // must freeze the live streaming message BEFORE it is pushed, or the
+      // chunk reducer keeps appending the rest of the segment into the stranded
+      // streaming message ABOVE the bubble (stuck streaming marker at the steer
+      // point). The backend cuts the segment at the same boundary (see
+      // _run_chat's steer segment cut), so the frozen order matches the
+      // persisted transcript and the chat_done refresh doesn't reorder it.
+      const m = action.payload
+      if (m.role === 'user' && m.meta?.steer) finalizeTrailingStreaming(state.messages)
+      state.messages.push(m)
+    },
     /** Optimistically append a message to a specific slot's store — global
      *  `messages` when it's the active slot, else `slotMessages[slot]`. Lets a
      *  grid pane show a just-sent user message immediately in the right place. */
@@ -1115,6 +1150,19 @@ const chatSlice = createSlice({
           delete (bubble.meta as Record<string, unknown>).optimistic
           return
         }
+        // No optimistic bubble to reconcile — this tab did not initiate the
+        // steer (another tab / a scene-interaction steer). Finalize-on-steer
+        // before pushing, same as appendMessage: inserting the bubble below a
+        // live streaming message strands the streaming marker above it. Only
+        // done on the insert path — after a reconcile a NEW post-steer
+        // streaming message may already be live below the bubble, and freezing
+        // it here would wrongly finalize the in-flight stream.
+        finalizeTrailingStreaming(msgs)
+      }
+      // Optimistic steer bubble from a pane-scoped composer: same freeze as the
+      // appendMessage (active-slot) path.
+      if (message.role === 'user' && message.meta?.steer && message.meta?.optimistic) {
+        finalizeTrailingStreaming(msgs)
       }
       msgs.push(message)
     },
@@ -1784,24 +1832,7 @@ const chatSlice = createSlice({
       }
       // WS segment — finalize streaming into assistant without resetting sequence or slot state
       if (role === '_segment') {
-        for (let i = state.messages.length - 1; i >= 0; i--) {
-          if (state.messages[i].role === 'streaming') {
-            // Drop trivially meaningless placeholder content that the model
-            // emits before tool calls ("...", "…", "---", ". . .", etc.).
-            // Only drop patterns that are EXCLUSIVELY composed of 2+ repeated
-            // punctuation/whitespace chars — never single characters which could
-            // be the start of legitimate content (list markers, etc.).
-            const raw = state.messages[i].content
-            const isPlaceholder = !raw || (/^[\s.\-…·•–—]{2,}$/.test(raw) && /[.\-…·•–—]/.test(raw)) || raw === '…'
-            if (isPlaceholder) {
-              state.messages.splice(i, 1)
-            } else {
-              state.messages[i].role = 'assistant'
-              state.messages[i].rawText = state.messages[i].content
-            }
-            break
-          }
-        }
+        finalizeTrailingStreaming(state.messages)
         return
       }
       // WS chunk — accumulate into streaming message, preserve rawText
