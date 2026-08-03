@@ -2291,7 +2291,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const pinFoldRef = useRef<HTMLDivElement | null>(null)
   const pinCardRef = useRef<HTMLDivElement | null>(null)
   const pinEnabledRef = useRef(true)
-  const [pinned, setPinned] = useState<{ idx: number; text: string; raw: string; full: string; images: string[]; push: number; bannerH: number } | null>(null)
+  const [pinned, setPinned] = useState<{ idx: number; ts?: string; text: string; raw: string; full: string; images: string[]; push: number; bannerH: number } | null>(null)
   const [pinExpanded, setPinExpanded] = useState(false)
   // Collapsed card height — the hand-off line is derived from it, so it must be
   // known even while nothing is pinned (no card mounted to measure). Seeded with
@@ -2369,9 +2369,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // once per animation frame during a scroll, so a fresh object (or a fresh
     // `images` array) would re-render the banner on every one of them.
     setPinned(prev => (prev && prev.idx === pinIdx && prev.push === push
-      && prev.raw === full && prev.bannerH === bannerH)
+      && prev.raw === full && prev.bannerH === bannerH && prev.ts === pinItem.msg.ts)
       ? prev
-      : { idx: pinIdx, text, raw: full, full: promptBody(full), images: promptImages(full), push, bannerH })
+      : { idx: pinIdx, ts: pinItem.msg.ts, text, raw: full, full: promptBody(full), images: promptImages(full), push, bannerH })
   }, [scrollerRef])
   // rAF-throttle the per-scroll recompute: updatePinnedPrompt does a
   // querySelectorAll + getBoundingClientRect loop (a forced layout read), and a
@@ -3797,11 +3797,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
 
   // Keep the ref in sync so handleRangeChanged / updatePinnedPrompt
-  // read the latest displayItems. useEffect rather than render-body
-  // mutation keeps us in line with React's rules of render (no side
-  // effects) — the one-tick lag is irrelevant because callbacks fire
-  // after commit, by which point the ref has caught up.
-  useEffect(() => { displayItemsRef.current = displayItems }, [displayItems])
+  // read the latest displayItems. useLayoutEffect (not useEffect): the DOM's
+  // `data-display-index` attributes are updated at commit, but a scroll rAF can
+  // fire before React flushes a PASSIVE effect — so with useEffect the pin
+  // recompute could read fresh DOM indices against a stale list, mis-deriving
+  // `pinned.idx` by one row (the row-hide is identity-keyed as a second guard,
+  // see below). A layout effect runs in the commit phase, before that rAF, so
+  // the ref is caught up by the time the recompute reads it. Still a passive
+  // side effect, not render-body mutation, so React's rules of render hold.
+  useLayoutEffect(() => { displayItemsRef.current = displayItems }, [displayItems])
 
   // Pinned prompt: keep the enablement ref in sync (updatePinnedPrompt is declared
   // above chatConfig and reads it through a ref), and recompute after the list
@@ -4778,7 +4782,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   // appears to simply stop travelling and stick. A row is only ever
                   // hidden once it is entirely behind the band, so a tall prompt
                   // never leaves a visible hole above the response.
-                  visibility: pinned?.idx === displayIdx ? 'hidden' : undefined,
+                  //
+                  // Match by message IDENTITY (ts), not display index. `pinned.idx`
+                  // is computed in a scroll rAF against `displayItemsRef`, which is
+                  // refreshed in a layout effect — but a streaming append or a turn
+                  // regroup can still shift the list between that read and this
+                  // render, leaving `pinned.idx` pointing one row off. When it did,
+                  // the WRONG row was hidden and the real pinned bubble painted
+                  // alongside the banner — the "two stacked boxes" bug. The ts is
+                  // stable across any index shift, so it hides the right row every
+                  // frame; fall back to the index only for a message with no ts.
+                  visibility: (pinned && (pinned.ts != null
+                    ? (item.kind === 'single' && item.msg.ts === pinned.ts)
+                    : pinned.idx === displayIdx)) ? 'hidden' : undefined,
                 }}>{item.kind === 'group' ? (() => {
                 const unresolvedGroupPerms = item.msgs.filter(m => m.role === 'permission' && !m.meta?.resolved)
                 if (item.msgs.every(m => m.role === 'permission')) return null
