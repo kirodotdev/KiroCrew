@@ -5564,6 +5564,10 @@
       "user": "пользовательский"
     },
     "kiroCrewAgentsPage": {
+      "routing": "Routing",
+      "triggers": "Triggers",
+      "triggers_hint": "When to route to this crew — free-text guidance the orchestrator reads to pick it. Leave empty to exclude this crew from automatic selection.",
+      "triggers_placeholder": "e.g. incidents, prod outages, pager escalations",
       "a_unique_identifier_for_this_workspace_agents_re": "Уникальный идентификатор этой рабочей области. Агенты ссылаются на рабочие области по имени.",
       "agents": "Crew",
       "also_used_by_these_crews": "Также используется: {{crews}}. Crew с общим хранилищем могут читать файлы и память друг друга.",

@@ -289,6 +289,7 @@ describe('crew editor — create', () => {
         kiro_agent: 'kirocrew',
         workspace: 'default',
         memory_store: 'default',
+        triggers: '',
       }),
     )
   })
@@ -306,8 +307,25 @@ describe('crew editor — save', () => {
       kiro_agent: 'oncall-agent',
       workspace: 'oncall',
       memory_store: 'oncall-mem',
+      triggers: '',
       model: 'claude-opus-5',
     })
+  })
+
+  it('sends edited routing triggers', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+
+    fireEvent.change(within(sheet).getByLabelText('Triggers'), {
+      target: { value: 'incident, prod outage' },
+    })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith(
+      'oncall',
+      expect.objectContaining({ triggers: 'incident, prod outage' }),
+    )
   })
 
   it('does not touch the default from the editor at all', async () => {

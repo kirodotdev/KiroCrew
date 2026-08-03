@@ -5424,6 +5424,10 @@
       "user": "ব্যবহারকারী"
     },
     "kiroCrewAgentsPage": {
+      "routing": "Routing",
+      "triggers": "Triggers",
+      "triggers_hint": "When to route to this crew — free-text guidance the orchestrator reads to pick it. Leave empty to exclude this crew from automatic selection.",
+      "triggers_placeholder": "e.g. incidents, prod outages, pager escalations",
       "a_unique_identifier_for_this_workspace_agents_re": "এই ওয়ার্কস্পেসের জন্য একটি অনন্য শনাক্তকারী। এজেন্ট নাম দিয়ে ওয়ার্কস্পেস উল্লেখ করে।",
       "agents": "Crews",
       "also_used_by_these_crews": "{{crews}}-ও এটি ব্যবহার করে। একই স্টোর ভাগ করা Crew একে অন্যের ফাইল ও মেমরি পড়তে পারে।",

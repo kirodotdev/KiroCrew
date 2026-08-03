@@ -41,7 +41,12 @@ from kiro_crew import platform_compat, session_directive
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.artifacts import _infer_kind
 from kiro_crew.autonudge import binding_key_for
-from kiro_crew.config.loader import KiroCrewConfig, config_dir, outbox_dir
+from kiro_crew.config.loader import (
+    KiroCrewConfig,
+    config_dir,
+    outbox_dir,
+    resolve_agent_bindings,
+)
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS, summarize_result
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW
@@ -105,6 +110,7 @@ from kiro_crew.validation import (
     MONITOR_UPDATE_SCHEMA,
     REGISTER_HOOK_SCHEMA,
     SEARCH_CHAT_HISTORY_SCHEMA,
+    SELECT_CREW_SCHEMA,
     SET_PROJECT_SCHEMA,
     SKILL_SEARCH_SCHEMA,
     SPAWN_CONTINUE_SCHEMA,
@@ -617,6 +623,33 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["seconds", "reason"],
+            },
+        },
+        {
+            "name": "select_crew",
+            "description": (
+                "Orchestrator crew routing. Call with NO argument to get the roster of "
+                "selectable crews (name + triggers) so you can decide whether a specialist "
+                "crew fits the task better than handling it yourself. Call with `crew` set "
+                "to a roster name to bind it: returns the crew's resolved {workspace, "
+                "memory_store, kiro_agent, model}, which you then run via "
+                "spawn_run(agent=<crew>). Selection rules: (1) pick a crew ONLY when its "
+                "triggers clearly and specifically match the task with high confidence; "
+                "(2) if no crew is a strong match, do NOT route — fall back to the default "
+                "crew (default_agent); (3) crews without triggers are omitted from the "
+                "roster and are never auto-selected."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "crew": {
+                        "type": "string",
+                        "description": (
+                            "Crew name to bind. Omit or leave empty to list the roster instead."
+                        ),
+                    },
+                },
+                "required": [],
             },
         },
         {
@@ -3209,6 +3242,60 @@ def _format_anchor(anchor: dict) -> str:
     return f' [on: "{head}" [TRUNCATED: {omitted} chars omitted' f'{offset_info}] "{tail}"]'
 
 
+def _do_select_crew(crew: str) -> str:
+    """Orchestrator crew routing (the select_crew tool body).
+
+    Empty ``crew`` → JSON roster of *selectable* crews: those with a non-empty
+    ``triggers`` (a crew with no triggers is not a routing candidate at all),
+    excluding the default crew (the caller itself). The response also carries
+    ``default_agent`` and explicit guidance so the model selects only on a
+    high-confidence match and otherwise falls back to the default crew. A named
+    crew → validate it exists, resolve its bindings, and return the bound
+    {workspace, memory_store, kiro_agent, model}. An unknown name returns a JSON
+    ``error`` with the available names.
+    """
+    cfg = KiroCrewConfig.load()
+    default = cfg.default_agent
+    if not crew:
+        roster = [
+            {"name": n, "triggers": c.triggers}
+            for n, c in cfg.agents.items()
+            if n != default and c.triggers.strip()
+        ]
+        return json.dumps(
+            {
+                "default_agent": default,
+                "crews": roster,
+                "guidance": (
+                    "Select a crew ONLY when its triggers clearly and specifically "
+                    "match the task with high confidence. If no crew is a strong "
+                    "match (or the list is empty), do NOT route — use the default "
+                    "crew. Crews without triggers are intentionally omitted."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if crew not in cfg.agents:
+        available = ", ".join(sorted(cfg.agents)) or "(none)"
+        return json.dumps(
+            {"error": f"unknown crew '{crew}'", "available": available},
+            ensure_ascii=False,
+        )
+    b = resolve_agent_bindings(cfg, crew)
+    return json.dumps(
+        {
+            "crew": crew,
+            "bound": {
+                "kiro_agent": b.kiro_agent,
+                "workspace": str(b.workspace_dir),
+                "memory_store": b.memory_store_name,
+                "model": cfg.agents[crew].model,
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     if name == "spawn_run":
         # Re-validate to make schema enforcement visible at the extraction point.
@@ -3898,6 +3985,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             outcome="success",
         )
         return f"Waited {seconds}s. Resuming: {reason_safe}"
+
+    if name == "select_crew":
+        args = validate_tool_args(args, SELECT_CREW_SCHEMA)
+        return _do_select_crew(str(args.get("crew") or ""))
 
     if name == "register_hook":
 

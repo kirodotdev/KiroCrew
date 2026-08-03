@@ -1941,6 +1941,15 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta("Description", "Human-readable agent description."),
     )
+    triggers: str = field(
+        default="",
+        metadata=_meta(
+            "Triggers",
+            "Routing intent for orchestrator crew selection: free-text 'when to "
+            "use this crew' guidance the main agent reads via select_crew. A crew "
+            "with no triggers is not offered for selection.",
+        ),
+    )
     source: str = field(
         default="kirocrew",
         metadata=_meta("Source", "Agent origin: kirocrew or builtin."),
@@ -4135,12 +4144,16 @@ class KiroCrewConfig:
                     # raise AttributeError from the resolver instead of simply
                     # being ignored.
                     raw_model = entry.get("model", "")
+                    # Same guard as model: a non-string triggers (e.g. `1`) must
+                    # not survive load — select_crew's roster calls .strip() on it.
+                    raw_triggers = entry.get("triggers", "")
                     agents[name] = KiroCrewAgentConfig(
                         kiro_agent=entry.get("kiro_agent", ""),
                         workspace=entry.get("workspace", "default"),
                         memory_store=entry.get("memory_store", "default"),
                         model=raw_model if isinstance(raw_model, str) else "",
                         description=entry.get("description", ""),
+                        triggers=raw_triggers if isinstance(raw_triggers, str) else "",
                         source=entry.get("source", "kirocrew"),
                     )
 

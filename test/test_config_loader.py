@@ -3665,3 +3665,26 @@ class TestUnsatisfiableSubagentCwdRoots(unittest.TestCase):
             cfg.agent.subagent_cwd_allowed_roots,
             "field default and fallback must not drift apart again",
         )
+
+
+def test_agent_triggers_load() -> None:
+    """`triggers` loads from config verbatim; a crew without triggers has ''."""
+    cfg = _load_from_dict(
+        {
+            "agents": {
+                "oncall": {"kiro_agent": "kirocrew", "triggers": "incident, outage"},
+                "research": {"kiro_agent": "kirocrew", "description": "deep research crew"},
+                "weird": {"kiro_agent": "kirocrew", "triggers": 1},
+            },
+            "default_agent": "oncall",
+            "workspaces": {"default": {"dir": "workspace"}},
+        }
+    )
+    # Explicit triggers load verbatim.
+    assert cfg.agents["oncall"].triggers == "incident, outage"
+    # A crew that defines no triggers keeps an empty string — it is not a routing
+    # candidate (no fallback to the description).
+    assert cfg.agents["research"].triggers == ""
+    # A non-string triggers value is normalized to "" on load (never survives to
+    # select_crew's .strip()).
+    assert cfg.agents["weird"].triggers == ""

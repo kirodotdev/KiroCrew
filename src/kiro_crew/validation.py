@@ -1938,6 +1938,23 @@ REGISTER_HOOK_SCHEMA = ToolSchema(
     ],
 )
 
+# select_crew: `crew` is optional — omitted/empty returns the roster. When
+# present it is NOT pattern-validated here: crew creation only strips the name
+# (agents.py), so names may contain spaces/dots; the deny-by-default gate is the
+# `crew not in cfg.agents` membership check in _do_select_crew, not a regex.
+SELECT_CREW_SCHEMA = ToolSchema(
+    tool_name="select_crew",
+    fields=[
+        FieldSpec(
+            "crew",
+            str,
+            required=False,
+            max_len=MAX_SHORT_STRING,
+            default="",
+        ),
+    ],
+)
+
 # ── Tool Schemas (Slack Reactions) ──
 
 # Slack emoji names: alphanumeric, underscores, hyphens, and plus signs

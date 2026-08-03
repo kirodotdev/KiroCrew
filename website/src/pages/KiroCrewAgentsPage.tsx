@@ -29,6 +29,7 @@ interface CreatePayload {
   kiro_agent: string
   workspace: string
   memory_store: string
+  triggers: string
 }
 
 /** Editable fields sent when updating an existing agent binding. */
@@ -36,6 +37,8 @@ interface AgentUpdatePayload {
   kiro_agent: string
   workspace: string
   memory_store: string
+  /** Free-text routing intent for orchestrator crew selection. */
+  triggers: string
   /** '' = inherit (the kiro template's pin, then the global fallback). */
   model: string
 }
@@ -356,6 +359,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [kiroAgent, setKiroAgent] = useState('kirocrew')
   const [workspace, setWorkspace] = useState('default')
   const [memoryStore, setMemoryStore] = useState('default')
+  const [triggers, setTriggers] = useState('')
   const [editModel, setEditModel] = useState(INHERIT_MODEL)
   const [confirmDelete, setConfirmDelete] = useState(false)
   /** The armed confirm row, scrolled into view when it appears: the danger zone
@@ -383,6 +387,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setError('')
     setConfirmDelete(false)
     setName(''); setKiroAgent('kirocrew'); setWorkspace('default'); setMemoryStore('default')
+    setTriggers('')
     setSheet({ mode: 'create' })
   }, [])
 
@@ -391,6 +396,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setError('')
     setConfirmDelete(false)
     setKiroAgent(a.kiro_agent); setWorkspace(a.workspace); setMemoryStore(a.memory_store)
+    setTriggers(a.triggers || '')
     setEditModel(a.model || INHERIT_MODEL)
     setSheet({ mode: 'edit', name: a.name })
   }, [defaultAgent])
@@ -455,7 +461,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setError('')
     const n = name.trim()
     if (!n) { setError(i18nT('pages.kiroCrewAgentsPage.name_is_required')); return }
-    createMut.mutate({ name: n, kiro_agent: kiroAgent, workspace, memory_store: memoryStore, epoch: sheetEpoch.current })
+    createMut.mutate({ name: n, kiro_agent: kiroAgent, workspace, memory_store: memoryStore, triggers, epoch: sheetEpoch.current })
   }
 
   const saveEdit = () => {
@@ -468,6 +474,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
         kiro_agent: kiroAgent,
         workspace,
         memory_store: memoryStore,
+        triggers,
         // INHERIT_MODEL is normalized to '' server-side; send it verbatim so
         // clearing a pin is a real write rather than a skipped field.
         model: editModel,
@@ -676,6 +683,18 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             </Field>
           </section>
         )}
+
+        <section className="flex flex-col gap-3">
+          <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.routing')}</h3>
+          <Field label={i18nT('pages.kiroCrewAgentsPage.triggers')} hint={i18nT('pages.kiroCrewAgentsPage.triggers_hint')}>
+            <Input
+              placeholder={i18nT('pages.kiroCrewAgentsPage.triggers_placeholder')}
+              value={triggers}
+              onChange={e => setTriggers(e.target.value)}
+              aria-label={i18nT('pages.kiroCrewAgentsPage.triggers')}
+            />
+          </Field>
+        </section>
 
         <section className="flex flex-col gap-3">
           <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.runtime_binding')}</h3>

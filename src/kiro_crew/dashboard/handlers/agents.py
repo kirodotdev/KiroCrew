@@ -1306,6 +1306,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             # string the backend then rejects as an unknown model id.
             model=normalize_agent_model(body.get("model")),
             description=body.get("description", ""),
+            triggers=body.get("triggers", ""),
             source=body.get("source", "kirocrew"),
         )
         cfg.save()
@@ -1351,6 +1352,9 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "description" in body:
             agent.description = body["description"]
             changed.append("description")
+        if "triggers" in body:
+            agent.triggers = body["triggers"]
+            changed.append("triggers")
         if "source" in body:
             agent.source = body["source"]
             changed.append("source")

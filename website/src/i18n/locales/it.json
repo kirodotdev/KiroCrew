@@ -5494,6 +5494,10 @@
       "user": "utente"
     },
     "kiroCrewAgentsPage": {
+      "routing": "Routing",
+      "triggers": "Triggers",
+      "triggers_hint": "When to route to this crew — free-text guidance the orchestrator reads to pick it. Leave empty to exclude this crew from automatic selection.",
+      "triggers_placeholder": "e.g. incidents, prod outages, pager escalations",
       "a_unique_identifier_for_this_workspace_agents_re": "Un identificatore univoco per questo workspace. Gli agenti fanno riferimento ai workspace tramite il nome.",
       "agents": "Crews",
       "also_used_by_these_crews": "Usato anche da {{crews}}. I crew che condividono un archivio possono leggere i file e la memoria degli altri.",

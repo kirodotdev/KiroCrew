@@ -17,6 +17,9 @@ export interface KiroCrewAgent {
    *  the global fallback). Optional: older payloads predate the field. */
   model?: string
   description: string
+  /** Free-text routing intent read by the orchestrator's select_crew. Optional:
+   *  older payloads predate the field, and it falls back to `description`. */
+  triggers?: string
   source: string
 }
 

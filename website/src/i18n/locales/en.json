@@ -3663,6 +3663,10 @@
       "user": "user"
     },
     "kiroCrewAgentsPage": {
+      "routing": "Routing",
+      "triggers": "Triggers",
+      "triggers_hint": "When to route to this crew — free-text guidance the orchestrator reads to pick it. Leave empty to exclude this crew from automatic selection.",
+      "triggers_placeholder": "e.g. incidents, prod outages, pager escalations",
       "agents": "Crews",
       "also_used_by_these_crews": "Also used by {{crews}}. Crews that share a store can read each other’s files and memory.",
       "cancel": "Cancel",
