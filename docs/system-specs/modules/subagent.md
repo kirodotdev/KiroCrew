@@ -519,6 +519,32 @@ Request: `{"task": "..."}`
 Response: `{"id": "abc123", "task": "...", "status": "spawned"}`
 Errors: 400 (missing task), 429 (capacity reached), 503 (subagents not available)
 
+### Steering a running run: `POST /api/spawn/{id}/steer`
+
+`SubagentManager.steer_run(agent_id, message)` injects `message` into a run's
+in-flight turn. It returns `(ok, detail)` with a typed `detail` on refusal, and
+the handler maps each to an HTTP code:
+
+| `detail` | HTTP | Meaning |
+|---|---|---|
+| `not_found` | 404 | No run with this id (`_agents` miss). |
+| `not_running: ...` | 409 | Run finished — use `spawn_continue`. |
+| `session_starting: ...` | 503 | **Transient.** The run exists and is executing but its session has not registered yet. Retryable. |
+| `no_session` | 502 | Session registered but not steerable (no provider / no `steer`). |
+| other | 502 | Provider-reported steer failure. |
+
+**Spawn-return-to-registration race**: `spawn_run` returns the run id the instant
+the record lands in `_agents`, but the session/provider is only registered later
+inside `_run_inner` (after spawn approval and `get_or_create`). A steer landing in
+that window used to fail with a bare `no_session`, indistinguishable from a real
+failure, so callers gave up instead of retrying. `steer_run` now waits on the
+run's real registration signal — `SubagentInfo._session_ready` (an `asyncio.Event`
+set once the provider is established in `_run_inner`, and unconditionally in
+`_run`'s teardown so a waiter never blocks past the run's lifetime) — bounded by
+`_STEER_SESSION_WAIT_SECS` (10 s). Within the cap the steer simply succeeds once
+the session comes up; past it, it returns the typed, retryable `session_starting`
+rather than a bare `no_session`. No sleeps: the wait is on the event, not a timer.
+
 ### Handler keywords (instant, no LLM)
 
 User-typed `spawn <task>`, `bg <task>`, `spawn list`, `spawn status` are intercepted by the handler for instant execution.

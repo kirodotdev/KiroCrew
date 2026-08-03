@@ -240,6 +240,16 @@ _REPORT_DRAIN_TIMEOUT = (
 )
 _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
+# Max seconds steer_run waits for a just-spawned run's session to register
+# before returning the typed, retryable ``session_starting``. spawn_run returns
+# the run id the instant the record lands in ``_agents``, but the session/
+# provider is only registered later inside ``_run_inner`` (after spawn approval
+# and get_or_create). A steer landing in that window used to fail with a bare
+# ``no_session``; instead it now waits on the real registration signal
+# (``SubagentInfo._session_ready``) up to this bound so the common case (a fast
+# spawn) simply succeeds. Kept short so the caller's tool turn is never blocked
+# for long — a slower start still returns a typed retry hint rather than hanging.
+_STEER_SESSION_WAIT_SECS = 10.0
 
 # Continuation prompt sent when a transient backend error interrupted a turn
 # AFTER output had already streamed. Mirrors the main path's post-token
@@ -921,6 +931,15 @@ class SubagentInfo:
     # on the _shared_provider directly.
     _session_sharing: bool = False
     _shared_provider: Any = None  # AcpSessionProvider when _session_sharing=True
+    # Registration signal: set once _run_inner has established this run's
+    # session/provider (either the shared-runtime provider on ``_shared_provider``
+    # or a session registered in SessionManager), and unconditionally in
+    # ``_run``'s teardown so a waiter never blocks past the run's real lifetime.
+    # ``steer_run`` awaits it (bounded by ``_STEER_SESSION_WAIT_SECS``) to close
+    # the spawn-return-to-registration race instead of failing with a bare
+    # ``no_session``. Created without a bound loop (asyncio.Event, py3.10+); the
+    # first ``wait()``/``set()`` binds it to the running loop.
+    _session_ready: asyncio.Event = field(default_factory=asyncio.Event)
     # ── Turn-resilience state (subagent parity with the main-agent guards) ──
     # True when the user explicitly stopped this agent (DELETE /api/spawn/{id}).
     # Renders as a neutral "stopped" terminal state (not an error) and
@@ -2917,27 +2936,63 @@ class SubagentManager:
             conversation_key=conv_key,
         )
 
+    def _resolve_run_provider(self, info: "SubagentInfo") -> Any:
+        """Return the steerable provider for run *info*, or None if unresolved.
+
+        Shared-runtime runs steer through ``_shared_provider``; dedicated runs
+        look the session up in SessionManager. Returns None while the session
+        has not registered yet (the spawn-return-to-registration window) — the
+        caller distinguishes that transient state from a genuine failure.
+        """
+        if info._session_sharing and info._shared_provider is not None:
+            return info._shared_provider
+        session_key = info.conversation_key or f"subagent:{info.id}"
+        return self._sessions.get_provider(session_key)
+
     async def steer_run(self, agent_id: str, message: str) -> tuple[bool, str]:
         """Inject *message* into the RUNNING turn of run *agent_id*.
 
         Returns ``(ok, detail)``. Typed detail values on refusal:
         ``not_found`` (unknown id), ``not_running`` (run finished — use
-        spawn_continue), ``no_session`` (session not reachable), or the
+        spawn_continue), ``session_starting`` (the run exists and is executing
+        but its session has not registered yet — transient, retry in a few
+        seconds), ``no_session`` (session registered but not steerable), or the
         provider's failure reason.
+
+        A steer landing in the spawn-return-to-registration window waits on the
+        run's real registration signal (``_session_ready``) up to
+        ``_STEER_SESSION_WAIT_SECS`` before falling back to ``session_starting``,
+        so the common case (a fast spawn) simply succeeds rather than failing.
         """
         info = self._agents.get(agent_id)
         if info is None:
             return False, "not_found"
         if info.done:
             return False, "not_running: run finished — use spawn_continue"
-        provider: Any = None
-        if info._session_sharing and info._shared_provider is not None:
-            provider = info._shared_provider
-        else:
-            session_key = info.conversation_key or f"subagent:{info.id}"
-            provider = self._sessions.get_provider(session_key)
+        provider = self._resolve_run_provider(info)
         if provider is None or not hasattr(provider, "steer"):
-            return False, "no_session"
+            # The run is registered in _agents and not done, but its session may
+            # simply not have registered yet (spawn returns the id before
+            # _run_inner reaches get_or_create). Wait on the real registration
+            # signal, bounded, instead of failing blind — this removes the race
+            # for the common case where the session comes up within the cap.
+            if not info._session_ready.is_set():
+                try:
+                    await asyncio.wait_for(
+                        info._session_ready.wait(), timeout=_STEER_SESSION_WAIT_SECS
+                    )
+                except asyncio.TimeoutError:
+                    return False, (
+                        "session_starting: subagent session not registered yet"
+                        " — retry in a few seconds"
+                    )
+                # Registration (or teardown) fired: re-check terminal state and
+                # re-resolve the provider before steering.
+                if info.done:
+                    return False, "not_running: run finished — use spawn_continue"
+                provider = self._resolve_run_provider(info)
+            if provider is None or not hasattr(provider, "steer"):
+                return False, "no_session"
         try:
             ok = await provider.steer(message)
         except Exception as exc:  # pragma: no cover - provider-specific
@@ -3423,6 +3478,11 @@ class SubagentManager:
                 self._write_tombstone(info, "error")
             logger.exception("Subagent %s failed", info.id)
         finally:
+            # Release the registration signal unconditionally: a run that failed
+            # or was cancelled BEFORE reaching provider setup never set it, and a
+            # steer_run waiting on it must wake now (it re-checks info.done and
+            # returns not_running) rather than blocking the full wait cap.
+            info._session_ready.set()
             # Guard 3 of 3 — the terminal REPORT, owned by the finalize claim.
             # Taken (and the report task SPAWNED) before the teardown awaits
             # below, so a cancellation landing anywhere in teardown cannot
@@ -3878,6 +3938,10 @@ class SubagentManager:
                 )
             # Detect CC provider to skip permission event loop
             is_cc = self._is_cc_provider(client)
+        # The session/provider is now registered (shared arm set
+        # ``_shared_provider``; dedicated arm registered it in SessionManager):
+        # wake any steer_run waiting on the spawn-return-to-registration race.
+        info._session_ready.set()
         # Intentionally check info.agent (not resolved `agent`) so only
         # explicitly requested agents skip _SYSTEM_PREFIX (defense-in-depth).
         named_agent = bool(info.agent and _AGENT_NAME_RE.fullmatch(info.agent))

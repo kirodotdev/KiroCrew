@@ -15,6 +15,7 @@ Covers the hibernate-first lifecycle slice:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -309,9 +310,77 @@ class TestSteerRun:
         sessions = _mock_sessions()
         sessions.get_provider = MagicMock(return_value=None)
         manager = _manager(sessions)
-        manager._agents["a1"] = SubagentInfo(id="a1", task="t")
+        # Registration is DONE (_session_ready set) but the provider is
+        # unreachable — a genuine no_session, not the startup race.
+        info = SubagentInfo(id="a1", task="t")
+        info._session_ready.set()
+        manager._agents["a1"] = info
         ok, detail = await manager.steer_run("a1", "hi")
         assert not ok and detail == "no_session"
+
+    @pytest.mark.asyncio
+    async def test_steer_before_registration_waits_then_succeeds(self) -> None:
+        # Drives the spawn-return-to-registration race deterministically: the
+        # run is in _agents and executing, but its session is not registered
+        # yet (_session_ready unset, get_provider returns None). The steer must
+        # NOT fail with a bare no_session — it parks on the registration signal.
+        sessions = _mock_sessions()
+        sessions.get_provider = MagicMock(return_value=None)
+        manager = _manager(sessions)
+        info = SubagentInfo(id="a1", task="t")
+        manager._agents["a1"] = info
+
+        task = asyncio.create_task(manager.steer_run("a1", "course correct"))
+        # One scheduler pass lets steer_run run its synchronous prologue and
+        # park on info._session_ready.wait(); everything before that await is
+        # non-blocking, so after a single yield the task is deterministically
+        # waiting rather than returned.
+        await asyncio.sleep(0)
+        assert not task.done()  # did not return no_session; it is waiting
+
+        # Registration completes: provider becomes reachable and the signal fires.
+        provider = AsyncMock()
+        provider.steer = AsyncMock(return_value=True)
+        sessions.get_provider = MagicMock(return_value=provider)
+        info._session_ready.set()
+
+        with patch("kiro_crew.subagent.sel"):
+            ok, detail = await task
+        assert ok and detail == "ok"
+        provider.steer.assert_awaited_once_with("course correct")
+
+    @pytest.mark.asyncio
+    async def test_steer_times_out_to_session_starting(self) -> None:
+        # Registration never completes within the (tiny, patched) cap: the
+        # steer returns the typed, retryable session_starting rather than a
+        # bare no_session. The event is never set, so the timeout is certain.
+        sessions = _mock_sessions()
+        sessions.get_provider = MagicMock(return_value=None)
+        manager = _manager(sessions)
+        manager._agents["a1"] = SubagentInfo(id="a1", task="t")
+        with patch("kiro_crew.subagent._STEER_SESSION_WAIT_SECS", 0.01):
+            ok, detail = await manager.steer_run("a1", "hi")
+        assert not ok and detail.startswith("session_starting")
+
+    @pytest.mark.asyncio
+    async def test_steer_wakes_as_not_running_if_run_ended_while_waiting(self) -> None:
+        # If the run finishes during the wait (teardown sets _session_ready
+        # unconditionally), the woken steer re-checks terminal state and
+        # reports not_running instead of steering a dead session.
+        sessions = _mock_sessions()
+        sessions.get_provider = MagicMock(return_value=None)
+        manager = _manager(sessions)
+        info = SubagentInfo(id="a1", task="t")
+        manager._agents["a1"] = info
+
+        task = asyncio.create_task(manager.steer_run("a1", "hi"))
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        info.done = True  # run ended
+        info._session_ready.set()  # teardown wakes the waiter
+        ok, detail = await task
+        assert not ok and detail.startswith("not_running")
 
 
 # ── release_conversation + TTL sweep ──
