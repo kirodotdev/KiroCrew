@@ -342,6 +342,60 @@ export function scanDocument(opts) {
 
   const clip = s => (s.length > 90 ? `${s.slice(0, 87)}…` : s)
 
+  /**
+   * Where in the SOURCE this element came from — `[{ file, line }, ...]`, nearest
+   * first, empty when it cannot be determined.
+   *
+   * A DOM path (`div:nth(1)>div>div:nth(1)>button:nth(0)`) says where a finding is on
+   * screen and nothing about where to edit. The DEV bundle this gate is required to
+   * render already carries the answer: the JSX dev transform bakes a `fileName` /
+   * `lineNumber` into every element, and React hangs it on the fiber as
+   * `_debugSource`. Measured on this build: 14,005 of them.
+   *
+   * The chain matters, not just the leaf, but the LEAF COMES FIRST. Measured both ways:
+   * for a string written inline — `<span title="Filter these runs">` in
+   * `ProjectsPage.tsx:355` — the element's own `_debugSource` is already the answer, and
+   * `_debugOwner` walks OUTWARD into route and app wrappers (`App.tsx:2223`,
+   * `BuiltinAppRoute.tsx:28`) that tell the author nothing. For a string passed into a
+   * shared component — `"Chat"` rendering from `components/settings.tsx:241` but written
+   * at `pages/settings/DisplayPanel.tsx:167` — the answer is one hop out. Inline is much
+   * the commoner case, so the leaf leads and the owners follow as `via` lines; the
+   * second entry is the answer in the pass-through case.
+   *
+   * Deliberately NOT using `fiber.type.name` for a component name: this is a build,
+   * so those are minified (`<ySt>`, `<bhe>`). The file/line survives because it is a
+   * string literal the transform wrote, not an identifier the minifier renames.
+   *
+   * `_debugSource` is React-internal and React 19 removes it (this repo is on 18.3.1).
+   * When it is gone this returns `[]` and the caller SAYS so rather than quietly
+   * falling back to the DOM path, because a gate that silently loses its most useful
+   * output is how the DOM-path-only version survived this long.
+   */
+  const sourceChain = el => {
+    let fiber = null
+    for (const k in el) {
+      if (k.charCodeAt(0) === 95 && k.startsWith('__reactFiber$')) { fiber = el[k]; break }
+    }
+    const chain = []
+    let guard = 0
+    while (fiber && chain.length < 3 && guard++ < 60) {
+      const src = fiber._debugSource
+      if (src && src.fileName) {
+        // Absolute paths are baked in at build time, so they name the BUILD machine's
+        // layout ("/local/home/.../kc-minw0/website/src/..."). Repo-relative is what a
+        // reader can act on and all a CI log should disclose.
+        const file = String(src.fileName).replace(/^.*?\/website\//, '')
+        const entry = `${file}:${src.lineNumber}`
+        if (!chain.includes(entry)) chain.push(entry)
+      }
+      fiber = fiber._debugOwner
+    }
+    return chain
+  }
+
+  /** Both coordinates of a finding: where it is on screen, and where it is in git. */
+  const at = el => ({ path: describe(el), source: sourceChain(el) })
+
   // -- 1/2. inline runs: fragments + plain-Latin leaks -----------------------
 
   const isInline = node => {
@@ -367,7 +421,7 @@ export function scanDocument(opts) {
       if (mode === 'pseudo') {
         for (const frag of graded.fragments) {
           push({
-            kind: 'fragment', signature: frag.signal, path: describe(el),
+            kind: 'fragment', signature: frag.signal, ...at(el),
             text: clip(text), detail: frag.detail,
             fix: frag.signal === 'multi-unit'
               ? 'Merge the adjacent catalog keys into one key with {{vars}} — see AGENTS.md "merge, not join".'
@@ -376,7 +430,7 @@ export function scanDocument(opts) {
         }
         for (const leak of graded.leaks) {
           push({
-            kind: 'latin-leak', signature: 'untranslated-text', path: describe(el),
+            kind: 'latin-leak', signature: 'untranslated-text', ...at(el),
             text: clip(text), detail: leak,
             fix: `Extract "${leak}" into the catalog and render it with t().`,
           })
@@ -398,7 +452,7 @@ export function scanDocument(opts) {
       const graded = gradeRun(v, opts)
       for (const leak of graded.leaks) {
         push({
-          kind: 'latin-leak', signature: 'untranslated-attribute', path: describe(el),
+          kind: 'latin-leak', signature: 'untranslated-attribute', ...at(el),
           text: clip(`@${attr}=${v}`), detail: leak,
           fix: `Extract the ${attr} text into the catalog and render it with t().`,
         })
@@ -424,7 +478,7 @@ export function scanDocument(opts) {
       if (!/\s/.test(text.trim())) continue
       for (const v of dntViolations(text, opts.dnt)) {
         push({
-          kind: 'dnt', signature: 'dnt-mangled', path: describe(parent),
+          kind: 'dnt', signature: 'dnt-mangled', ...at(parent),
           text: clip(text), detail: `${v.term} rendered as ${v.found}`,
           fix: `Restore "${v.term}" verbatim in this catalog value — it is on the do-not-translate list.`,
         })
@@ -505,7 +559,7 @@ export function scanDocument(opts) {
     const parentCs = el.parentElement ? getComputedStyle(el.parentElement) : null
     if (ellipsis && parentCs && /flex/.test(parentCs.display) && cs.minWidth === 'auto') {
       push({
-        kind: 'layout', signature: 'ellipsis-with-flex-parent', path: describe(el),
+        kind: 'layout', signature: 'ellipsis-with-flex-parent', ...at(el),
         text: clip(source), ratio: Number(ratio.toFixed(2)), fixedAncestor: fixedAncestor(el),
         fix: 'Add `min-w-0` to this flex child — text-overflow:ellipsis cannot apply while min-width is auto.',
       })
@@ -531,7 +585,7 @@ export function scanDocument(opts) {
       fix = 'Remove `whitespace-nowrap`, or give the container room for the longest locale.'
     }
     push({
-      kind: 'layout', signature, path: describe(el), text: clip(source),
+      kind: 'layout', signature, ...at(el), text: clip(source),
       ratio: Number(ratio.toFixed(2)), budget, fixedAncestor: fixedAncestor(el), fix,
     })
   }
@@ -545,7 +599,7 @@ export function scanDocument(opts) {
     if (r.width === 0) continue
     if (r.right <= window.innerWidth + 1 && r.left >= -1) continue
     push({
-      kind: 'layout', signature: 'fixed-overlay-off-viewport', path: describe(el),
+      kind: 'layout', signature: 'fixed-overlay-off-viewport', ...at(el),
       text: clip((el.textContent || '').trim()),
       ratio: Number((r.width / window.innerWidth).toFixed(2)), fixedAncestor: '',
       fix: 'A fixed overlay extends past the viewport in this locale — clamp its max-width or flip its anchor side.',

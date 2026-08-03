@@ -55,7 +55,8 @@
  *
  * Both diff-scoped gates store nothing: they read the base ref out of git, which
  * already holds yesterday's number. They are skipped, loudly, only when
- * `I18N_BASE_REF` is unset — a push to `main`, where there is no branch to diff.
+ * `I18N_BASE_REF` is unset — a bare local run. CI always supplies it: the base
+ * branch on a PR, and the commit the push replaced on a push to `main`.
  *
  * When the ceiling reaches 0, delete it and assert `[]` directly, which is the
  * phase's stated acceptance gate ("zero bare `toLocale*`/`localeCompare` outside
@@ -96,10 +97,10 @@ const PREFIX = 'website/src/'
  *
  * Kept TIGHT against the live count on purpose. Upward-only means an improving
  * branch never has to edit this line, so the only cost of tightening it is paid
- * once, here — and the slack is what the ceiling would otherwise hand to a push
- * to `main`, where `I18N_BASE_REF` is empty and the two diff-scoped gates below
- * skip, leaving this number as the only guard. A ceiling well above live is not a
- * ceiling, it is an unread constant.
+ * once, here. It is no longer the last line of defence on a push to `main` — CI
+ * supplies a base commit there too, so the two diff-scoped gates below run — but
+ * slack in a ceiling is still slack a merge-conflict resolution can spend, and a
+ * ceiling well above live is not a ceiling, it is an unread constant.
  *
  * `AGENTS.md` § "A ratchet may only be upward-only if a DIFF-SCOPED gate covers
  * the same defect" is the governing rule, and zero is the goal: at 0 this gets
@@ -182,8 +183,8 @@ function scanTree(files: string[]): Map<string, number[]> {
 /**
  * Files this branch touched, and which of their lines it wrote.
  *
- * `null` means there is genuinely nothing to diff against — a push to `main`,
- * where `I18N_BASE_REF` is unset. A ref that IS configured but cannot be
+ * `null` means there is genuinely nothing to diff against — a bare local run with
+ * `I18N_BASE_REF` unset. A ref that IS configured but cannot be
  * resolved throws instead, because a gate that cannot run must fail, not pass.
  */
 function diffScope(): { added: Record<string, Set<number> | typeof ALL_LINES>; baseOf: (rel: string) => string | null } | null {
@@ -315,7 +316,7 @@ describe('formatting follows the app language', () => {
     const scope = diffScope()
     if (scope === null) {
       // The sibling `.mjs` gates print this. A test that returns silently is a gate
-      // nobody can tell ran — reached on a push to `main` and on a bare local run.
+      // nobody can tell ran — reached on a bare local run, never in CI.
       console.log('[added-lines] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
       return
     }
@@ -336,7 +337,7 @@ describe('formatting follows the app language', () => {
     const scope = diffScope()
     if (scope === null) {
       // The sibling `.mjs` gates print this. A test that returns silently is a gate
-      // nobody can tell ran — reached on a push to `main` and on a bare local run.
+      // nobody can tell ran — reached on a bare local run, never in CI.
       console.log('[vs-base] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
       return
     }

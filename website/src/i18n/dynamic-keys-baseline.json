@@ -1,5 +1,5 @@
 {
-  "_comment": "Translation call sites whose key CANNOT be resolved statically, per file. Generated — regenerate with `node scripts/check-i18n-keys.mjs --update`. This is the coverage statement for the key-reference gate: every site listed here is one the gate cannot check. Ratchet DOWN by rewriting the site as an `as const` map access (see `UPDATE_ERROR_KEYS` in pages/settings/AboutPanel.tsx); never raise it.",
+  "_comment": "Translation call sites whose key CANNOT be resolved statically, per file. Generated \u2014 regenerate with `node scripts/check-i18n-keys.mjs --update`. This is the coverage statement for the key-reference gate: every site listed here is one the gate cannot check. REPORT ONLY: no run fails because this number moved, in either direction. It used to fail BOTH ways, so improving a file broke CI until someone committed a new count to a file every branch shares. Rewrite a site as an `as const` map access to shrink it (see `UPDATE_ERROR_KEYS` in pages/settings/AboutPanel.tsx). NOTE the residual gap: a dynamic site has no literal to count, so `[added-lines]` cannot see it and nothing diff-scoped covers this population today -- see website/AGENTS.md and #1004.",
   "_total": 1,
   "files": {
     "surfaces/registry.ts": 1

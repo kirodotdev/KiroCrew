@@ -94,7 +94,7 @@ const MERGE = process.argv.includes('--merge')
  * strings are unextracted today, so a hard `--check` would fail on arrival and get
  * disabled. `--baseline=N` fails only ABOVE N. Lower it when convenient, never
  * raise it — but a count below N is tolerated rather than failed, because the
- * literal lives in `package.json` and forcing every improving branch to edit that
+ * literal lives in `scripts/lib/i18n-gate-table.mjs` and forcing every improving branch to edit
  * one line makes it a conflict between all of them. Temporary; see issue #1004.
  */
 const BASELINE_ARG = process.argv.find((a) => a.startsWith('--baseline='))
@@ -575,24 +575,27 @@ if (CHECK) {
   // DESIGN (a module-level `i18nT()` would freeze the boot language), and
   // name-collision files are deliberately left alone. The gate is only about
   // strings this codemod would have extracted and nobody has.
+  // REPORT, not a gate. One aggregate over the whole repo, so another branch can push it
+  // past the ceiling without touching your files — and then the failure names no diff
+  // anyone can fix. `[added-lines]` in check-i18n-strings.mjs covers the same population
+  // against the base ref, where every finding is attributable to the branch that wrote it.
   if (total > BASELINE) {
-    console.error(
-      `\n${total} unextracted user-visible string(s) across ${stats.changedFiles} file(s), `
-      + `above the baseline of ${BASELINE}.\n`
-      + `Run \`node scripts/i18n-codemod.mjs\` locally to extract them, review the diff,\n`
-      + `and commit the updated catalog with your change.`,
+    console.log(
+      `\n[extractable] REPORT: ${total} unextracted user-visible string(s) across `
+      + `${stats.changedFiles} file(s),\n`
+      + `${total - BASELINE} above the baseline of ${BASELINE}. This does NOT fail the run —\n`
+      + 'an aggregate cannot be charged to one diff. Run `node scripts/i18n-codemod.mjs`\n'
+      + 'locally to extract them, review the diff, and commit the updated catalog.',
     )
-    process.exit(1)
-  }
-  if (total < BASELINE) {
+  } else if (total < BASELINE) {
     // Deliberately NOT a failure. Requiring `--baseline=N` to be lowered in
-    // `package.json` on every improvement makes that one line a merge conflict
+    // the gate table on every improvement makes that one line a merge conflict
     // between every parallel i18n branch, and each merge to `main` invalidates it
     // in all the others. Lower it when the tree is quiet. Temporary — see
     // `check-i18n-strings.mjs`'s header and issue #1004.
     console.log(
       `\n${total} unextracted string(s) — below the baseline of ${BASELINE}. `
-      + `Optional: set --baseline=${total} in package.json to tighten the gate.`,
+      + `Optional: set --baseline=${total} in scripts/lib/i18n-gate-table.mjs to tighten the gate.`,
     )
   } else {
     console.log(`\nOK: ${total} unextracted string(s), at the baseline of ${BASELINE}.`)

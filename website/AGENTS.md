@@ -300,15 +300,59 @@ declaration site, and the ordering.
 ### The gates
 
 `npm run i18n:check` is the whole chain, and it runs in CI as part of
-**Frontend Lint & Type Check**. Run it locally before pushing:
+**Frontend Lint & Type Check**. Run it locally before pushing.
 
-| Gate | Catches |
-|---|---|
-| `gen-pseudolocale.mjs --check` | `en-XA.json` is stale relative to its generator |
-| `i18n-codemod.mjs --check` | a new literal in markup the codemod could have extracted |
-| `i18n-plural-codemod.mjs --check` | a plural suffix concatenated outside `i18nT()` |
-| `check-source-strings.mjs` | source-string quality, scoped to **only the keys your branch adds** |
-| `check-i18n-strings.mjs` | `no-literal-string` at `mode:'all'`, per-file, via `eslint.i18n.config.js` |
+It is a RUNNER (`scripts/i18n-check.mjs`), not a `&&` chain, and that matters: `&&`
+short-circuits, so a PR only ever learned about its FIRST failing gate and paid another
+~5-minute CI round to discover the next. The runner executes all six scripts, then
+reports the eleven checks they contain in one table. Each script's raw output is folded
+into its own collapsed group, so nothing is lost.
+
+The table is split by the only question an author has — **is this mine to fix?**
+
+| Check | Scope | Fails when | Catches |
+|---|---|---|---|
+| `[added-lines]` | diff | any | a user-visible literal on a line THIS BRANCH WROTE |
+| `[vs-base]` | diff | any | a file you touched holds more untranslated strings than at the base |
+| `[source-strings]` | diff | any | poor copy among **only the keys your branch adds** |
+| `[changed-values]` | diff | any | catalog QA over every value the branch added or changed, all languages |
+| `[key-refs]` | repo | any | a `t('key')` naming a key that does not exist — renders the raw key to a user |
+| `[plurals]` | repo | any | a plural suffix concatenated outside `i18nT()` |
+| `[pseudolocale]` | repo | any | `en-XA.json` stale relative to its generator |
+| `[dynamic-keys]` | repo | never (report) | a call site whose key cannot be resolved statically |
+| `[extractable]` | repo | never (report) | a literal in markup the codemod could have extracted |
+| `[untranslated]` | repo | never (report) | per-file ceilings over the frozen debt in `untranslated-baseline.json` |
+| `[allcaps]` | repo | never (report) | strings inside ALL-CAPS module constants, which the per-file ceilings do not see (`untranslated-strict-baseline.json`) |
+
+**Only two kinds of check can fail this step.** A `diff`-scoped one, because a finding on
+a line you wrote is yours and there is no number to raise. And a whole-repo **hard zero**,
+because a hard zero has no ceiling to inherit — a dangling key reference or a stale
+`en-XA.json` is always somebody's diff.
+
+Every other whole-repo number is **report only**. A stored total is written by whichever
+branch measured it last, so another branch can push it past its ceiling without touching
+your files — and then the failure names no diff anyone can fix. That is not theoretical:
+`main` sat at 1120 against its own ALL-CAPS ceiling of 1118 within minutes of #1099
+setting it, and every open PR inherited the red. The same shape turned eleven PRs red in
+the `PrivacyPanel` incident and again in `projects.latent`. `[dynamic-keys]` was the worst
+of them, failing when the number went DOWN as well as up, so improving a file broke CI
+until someone committed a new count to a file every branch shares.
+
+The debt is still measured and still printed on every run — the numbers are how the
+remediation gets planned. They just do not gate. What enforces the same populations is the
+diff-scoped half: `[added-lines]` covers everything `[untranslated]`, `[extractable]` and
+`[allcaps]` count, against the base ref rather than a committed number.
+
+**One population is now uncovered, and it is `[dynamic-keys]`.** The other three demotions
+handed their population to `[added-lines]`, which counts untranslated *literals*. A
+dynamic site — `i18nT(labelKey)` where the key is a variable — has no literal to count, so
+`[added-lines]` cannot see it, and `[key-refs]` is static-only by construction: the whole
+point of the dynamic ledger is that those sites are the ones it cannot verify. The only
+residual cover is the render gate's `[vs-base]` under `en-XA`, and only for surfaces its
+harness actually mounts. So this demotion traded a merge-conflict generator — a ratchet
+that failed when a file IMPROVED — for an uncovered class, knowingly. Closing it needs a
+base-ref-anchored per-file dynamic-site diff, the same shape as `[vs-base]`; tracked in
+#1004.
 
 `eslint.i18n.config.js` is a deliberately separate ESLint invocation with
 `--no-inline-config`, so an i18n finding cannot be silenced with an inline
@@ -330,14 +374,16 @@ wrote**, including copy you did not author but merely shared a line with;
 languages. `[added-lines]` is the real coverage gate — wrap the literal, or exclude
 it by shape in `eslint.i18n.config.js` if it is genuinely not copy.
 
-*Ledgers, upward-only.* Going over fails; going under is silent and does **not**
-require you to commit the lower number. So **do not re-snapshot a baseline just
-because your change improved it** — leaving it alone is correct, and it keeps the
-file from conflicting with every other branch in flight. The ledgers:
-`untranslated-baseline.json` (a per-file ceiling, and also the remaining worklist),
-the `--baseline=N` literal in the `i18n:check` script, the `CEILINGS` map in
-`qa.test.ts`, and `dynamic-keys-baseline.json`. The goal for each is zero, at which
-point the ledger is deleted and its gate becomes unconditional.
+*Ledgers.* Never re-snapshot one just because your change improved it — leaving it
+alone is correct, and it keeps the file from conflicting with every other branch in
+flight. Only ONE still fails when it is exceeded: the `CEILINGS` map in `qa.test.ts`.
+The other three are **report only** — `untranslated-baseline.json` (a per-file ceiling,
+and the remaining worklist), the `--baseline=N` literal in
+`scripts/lib/i18n-gate-table.mjs`, and `dynamic-keys-baseline.json`. A whole-repo total
+is written by whichever branch measured it last, so another branch can push it past its
+number without touching your files; the diff-scoped checks enforce the same populations
+against the base ref. The goal for each is still zero, at which point the ledger is
+deleted and its gate becomes unconditional.
 
 A few AST ratchets are still exact (`.toBe`) because no diff-scoped check can
 replace an AST-counted site: the `BASELINE` consts in `deadKeys.test.ts`,
@@ -371,12 +417,12 @@ committed number can always be re-snapshotted past.
 |---|---|---|
 | untranslated strings, per file | `src/i18n/untranslated-baseline.json` | `check-i18n-strings.mjs` **[added-lines]** — a literal on a line you wrote |
 | catalog QA violations, per check | `CEILINGS` in `src/i18n/qa.test.ts` | `check-source-strings.mjs` **[changed-values]** — QA on any value you added or changed |
-| unextracted JSX strings | `--baseline=N` in `package.json` | **[added-lines]** — same population, no ledger |
+| unextracted JSX strings | `--baseline=N` in `scripts/lib/i18n-gate-table.mjs` | **[added-lines]** — same population, no ledger |
 | host-locale calls | `BASELINE` in `src/i18n/localeFormatting.test.ts` | that file's own **[added-lines]** / **[vs-base]** — a `toLocale*`/`localeCompare` on a line you wrote, or a touched file whose count grew vs the base ref |
-| render-time defects, per surface | `src/i18n/render-baseline.json` | `check-i18n-render.mjs` **[vs-base]** — renders the base commit and fails on any per-surface increase |
+| render-time defects, per surface | `src/i18n/render-baseline.json` | `check-i18n-render.mjs` **[vs-base]** — renders the base commit and fails on any per-surface increase. This one is not merely relaxed: the number is a REPORT, and decides a run in exactly one case — when no base commit was available to diff (see below) |
 | untranslated strings inside ALL-CAPS constants | `src/i18n/untranslated-strict-baseline.json` (one aggregate) | **[added-lines]** — same population, per line |
 
-For these four, a decrease is reported and tolerated: you do not re-snapshot anything,
+For these six, a decrease is reported and tolerated: you do not re-snapshot anything,
 and a change that improves one of these numbers without editing it will pass.
 
 `eslint-plugin-i18next` exempts every literal under an ALL-CAPS variable declarator, which
@@ -397,18 +443,66 @@ recovers; `eslint.i18n.strict.config.js` is the config the diff-scoped gates run
   get their own aggregate instead, so the class has a number to drive to zero.
 
 **Still exact in both directions, because nothing diff-scoped covers them:**
-`deadKeys.test.ts`, `glossary.test.ts` (DNT), and `check-i18n-keys.mjs`'s dynamic-site
-counts. Improving one of these *does* require lowering its number in the same change.
+`deadKeys.test.ts` and `glossary.test.ts` (DNT). Improving one of these *does* require
+lowering its number in the same change. `check-i18n-keys.mjs`'s dynamic-site counts used
+to be on this list and are now report-only — see the gap named under "Only two kinds of
+check can fail this step": nothing diff-scoped covers them either, so that demotion
+traded a merge-conflict generator for an uncovered population, deliberately.
 They are single literals touched by roughly one PR at a time, so they were never the
 contention problem, and relaxing them would have bought nothing at the cost of real
 slack. If you add a diff-scoped gate for one of them, it may move to the table above.
 
+**A total is not a diff, and cannot be asked of one.** A stored count is written by
+whichever branch measured it last, so two branches that never touch the same file can
+combine after merge into a number neither of them produced — and then the failure names
+no diff that anyone can fix. That happened to the render gate: #1107 recorded
+`projects.latent: 16` measured on its own base, #985 independently added one `truncate`
+with no `min-w-0` to the Projects rail, and once both merged `main` measured 24 against
+16. Every open PR inherited a red gate over a defect none of their diffs introduced.
+So the render gate's number is a REPORT — printed both above and below reality, with
+`[vs-base]` deciding the run. It decides a run in exactly one case: when there was no
+base commit to diff, where it is all that is left and the alternative is exiting 0
+having checked nothing. The other whole-repo counts were demoted the same way — only
+`qa.test.ts`'s `CEILINGS` and the two exact AST ratchets still fail on a stored number,
+and converting those is tracked in #1004.
+
+**Every path to `main` supplies a base, so the diff always has something to bite on.**
+A PR is measured against its base branch; a push to `main` is measured against the commit
+it replaced (`ci.yml` passes `github.event.before` through
+`.github/scripts/resolve-i18n-base.sh`). That is what makes it safe for a total to be a
+report: the two-branch interaction above is still caught, as a `main`-push diff naming
+the merge that produced it. **A run with no base at all is the one case where the total
+decides the run** — see `scripts/lib/render-verdict.mjs`'s `totalIsFallback`. A gate must
+not exit 0 having checked nothing, so where there is no diff the weaker check runs.
+
+Three gaps in that claim, named rather than papered over:
+
+- **`main` verdicts are sampled, not per-commit.** `ci.yml`'s concurrency group permits one
+  pending run and GitHub evicts it when a newer one queues, so with a ~19min run and a
+  ~1.4min median merge gap most `main` commits never get their own verdict. A commit whose
+  run was evicted has its delta fall between two `github.event.before` boundaries and is
+  never diffed by anything. Closing this needs lossless `main` runs (a per-SHA concurrency
+  group, or a base resolved from the last successful run) — tracked in #1004.
+- **A PR whose base is not `main` never runs `ci.yml` at all.** `pull_request:
+  branches: [main]` filters on the base branch, so a stacked PR gets no render gate until
+  it is re-based onto `main`. Its content first meets a diff on the sampled `main`-push path.
+- **`over-budget-truncation` is not fully deterministic.** It compares a measured
+  truncation RATIO against a budget, so a label sitting within ~10% of its budget can flip
+  between runs as font metrics settle. Observed: `artifacts.layout` reported `0 -> 2` on
+  the `Gallery` (1.87x vs a 1.7x budget) and `Table` (1.97x vs 1.9x) segments of
+  `components/SegmentedControl.tsx`, then `PASS` on an immediate re-run of the same two
+  commits. Before chasing a `[vs-base]` failure on this signature alone, re-run it — and
+  if a label is genuinely near its budget, widen the container rather than the budget.
+- **`[vs-base]` is blind to dependency drift by construction.** `buildBaseBundle` symlinks
+  HEAD's `node_modules` rather than installing the base's, so a lockfile bump is measured
+  with the new dependency set on both sides.
+
 **Keep a relaxed ceiling TIGHT against its live count.** Upward-only means an improving
-branch never has to edit the number, so tightening costs one line once — and on a push
-to `main` the diff-scoped gates skip (`I18N_BASE_REF` is empty there by design), leaving
-the ceiling as the only guard. Slack in a ceiling is slack that a merge-conflict
-resolution can spend. Each relaxed gate reports its own decrease so the drift is visible
-in CI output rather than discovered later.
+branch never has to edit the number, so tightening costs one line once, and each relaxed
+gate reports its own decrease so the drift is visible in CI output rather than discovered
+later. Tight ceilings are no longer load-bearing for `main` — the diff-scoped gates run
+there too now — but slack in a ceiling is still slack that a merge-conflict resolution
+can spend.
 
 **The ultimate goal is zero for every number on either list.** That is what makes an
 upward-only ceiling a convergence rather than a loosening: at 0 there is nothing left to
@@ -471,17 +565,27 @@ Four things to know before you touch it:
    (`GitHub` → `ĞìţĤùƀ`), so asserting them under `en-XA` would report all 19 as mangled.
    It is zero-tolerance, and it deliberately accepts an all-lowercase hit as the command
    (`git push`, `docker run`) rather than a mangled product name.
-4. **Enforcement is `[vs-base]`, not the ledger.** The gate renders the BASE commit
-   with the same scanner and fails on any per-surface increase, reading no committed
-   number — so there is nothing to re-snapshot and nothing to absorb a regression
-   with. `src/i18n/render-baseline.json` (three buckets: `text`, `layout`, `latent`,
-   keyed per surface, upward-only) is a **debt record and the push-to-`main` backstop**,
-   where there is no base to diff against. It is allowed to sit above reality; a
-   decrease is reported, never required. Goal is 0 for every entry.
+4. **`[vs-base]` decides the run; the record decides only when there is no base.** The
+   gate renders the BASE commit with the same scanner and fails on any per-surface
+   increase, reading no committed number — so there is nothing to re-snapshot and
+   nothing to absorb a regression with. `src/i18n/render-baseline.json` (three buckets:
+   `text`, `layout`, `latent`, keyed per surface) is a **debt record**, printed above
+   and below reality alike; goal is 0 for every entry.
+   It decides a run in exactly ONE case: a run that had no base commit to diff, where
+   the record is all that is left and the alternative is exiting 0 having checked
+   nothing but DNT. Both a PR and a push to `main` normally supply a base (the base
+   branch, and the commit the push replaced), so that case is a bare local run or a
+   branch-creation push. `scripts/lib/render-verdict.mjs`'s `totalIsFallback` is the
+   flag, and it is deliberately NOT set by the three opt-outs (`--no-vs-base`,
+   `--surface`/`--locale`, `--update`) which asked for a report and keep getting one.
 
-   Per-surface keys alone would *not* have satisfied the rule at the top of this
-   section. A finer ledger only shrinks the range you can trade within — it is still a
-   committed number, and `--update` still absorbs anything. The measured proof: inflate
+   Why it is a report the rest of the time: a total is not attributable to a diff.
+   #1107 recorded
+   `projects.latent: 16` measured on its own base while #985 independently added one
+   `min-w-0`-less `truncate` to the Projects rail; after both merged, `main` measured 24
+   against 16 and every open PR inherited a failure its own diff had not caused. Finer
+   per-surface keys did not prevent that and could not — they only shrink the range you
+   can trade within. The measured proof that the diff is the stronger check: inflate
    `settings-about.text` from 28 to 100, add 18 real defects, and the ledger reports an
    *improvement* while `[vs-base]` fails with `28 -> 46 (+18)`.
 
@@ -499,8 +603,10 @@ no repo state, needs no cleanup, and works on CI's shallow checkout.
 
 **Regenerate the ledger on Linux + the pinned Chromium, not on your laptop.** `layout` and
 `latent` are pixel measurements, so they depend on the platform's font metrics and on which
-faces are installed. A macOS-regenerated ledger will not match CI, and if it lands *lower*
-than CI measures, `main` goes red on a file nobody edited. `[vs-base]` is immune (both
+faces are installed. A macOS-regenerated ledger will not match CI, and one that lands
+*lower* than CI measures silently understates the debt — CI prints an `above the debt
+record` report and still exits 0, so nobody is forced to notice. It only fails a run in the
+one case where there was no base commit to diff. `[vs-base]` is immune either way (both
 sides are measured in the same run on the same box), which is another reason it carries
 enforcement — but `--update` is not. Use the same image CI does:
 
