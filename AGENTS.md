@@ -168,7 +168,11 @@ When creating task specifications:
 
 Set `KIROCREW_HOME=.kirocrew-dev` to use an isolated data directory in the repo root (gitignored). This keeps dev data (contacts, lessons, config) separate from your real `~/.kiro/crew`. Data files are visible in the IDE for easy inspection.
 
-Set `KIROCREW_PORT=6777` so dev and production gateways can run side by side. Pass the same env var to `./dev-frontend.sh` so the Vite proxy points at the dev backend.
+**One-terminal launcher:** `./dev-fullstack.sh` starts the whole stack — the live-source backend (`dev-backend.sh`, port 6777, `.kirocrew-dev` home), the Vite dev server proxying to it, and a ready-to-open authenticated Vite URL. Ctrl+C tears both down.
+
+Manual flow, if you want the pieces in separate terminals:
+
+Set `KIROCREW_PORT=6777` so dev and production gateways can run side by side. Pass the same env var to Vite (`cd website && KIROCREW_PORT=6777 npm run dev`) so the proxy points at the dev backend.
 
 To authenticate the Vite dev server (port 3000) against the dev gateway (port 6777):
 
