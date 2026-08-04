@@ -223,6 +223,30 @@ def test_publish_relocate_roots_parsed_and_round_trips():
     assert reloaded.publish.relocate_roots == ["/srv/shared"]
 
 
+def test_agent_spawn_min_memory_gb_parsed_and_round_trips():
+    # Regression: agent.spawn_min_memory_gb was declared + consumed (the
+    # subagent admission gate) and emitted by to_dict(), but NOT parsed in
+    # load(), so an operator value was silently ignored (stuck at the 4.0
+    # default) and overwritten on the next save().
+    loaded = _load_from_dict({"agent": {"spawn_min_memory_gb": 9.5}})
+    assert loaded.agent.spawn_min_memory_gb == 9.5
+    # Survives a to_dict() -> load() round-trip.
+    reloaded = _load_from_dict(loaded.to_dict())
+    assert reloaded.agent.spawn_min_memory_gb == 9.5
+
+
+def test_slack_home_tab_sessions_per_kind_parsed_and_round_trips():
+    # Regression: slack.home_tab_sessions_per_kind was declared + consumed (the
+    # Slack Home Tab per-category cap) and emitted by to_dict(), but NOT parsed
+    # in load(), so an operator value was silently ignored (stuck at 5) and
+    # overwritten on the next save().
+    loaded = _load_from_dict({"slack": {"home_tab_sessions_per_kind": 42}})
+    assert loaded.slack.home_tab_sessions_per_kind == 42
+    # Survives a to_dict() -> load() round-trip.
+    reloaded = _load_from_dict(loaded.to_dict())
+    assert reloaded.slack.home_tab_sessions_per_kind == 42
+
+
 class TestMalformedConfigValuesNeverCrashLoad:
     """Round-2 hardening: several config parse sites coerced values with a bare
     .upper()/int()/list()/set()/.items() and no guard. jsonschema is optional
