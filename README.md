@@ -158,7 +158,7 @@ Discord.
 | **Unattended autonomy** | Run scheduled agent work or deterministic scripts and commands without a model call. Monitor work until it is done, or react to messaging events and authenticated webhooks without someone at the terminal. *"Every weekday at 9, summarize the open work I should review"* becomes a timezone-aware recurring job delivered to the surface you choose. |
 | **Delegation** | Spawn isolated subagents for parallel work and bring their results back into the parent conversation. *"Research these three options in parallel and recommend one"* fans out to isolated subagents and synthesizes the tradeoffs. |
 | **Work where you choose** | Work directly in the desktop app or web dashboard, or continue through the CLI and any connected messaging surface without moving the agent runtime or its state. |
-| **Installable apps** | Add focused interfaces and domain workflows through dashboard pages, scoped Gateway APIs, events, and lifecycle hooks. |
+| **Installable Apps** | Add focused interfaces and domain workflows through dashboard pages, scoped Gateway APIs, events, and lifecycle hooks. |
 | **Extensible tools** | Add MCP servers, markdown skills, and hooks without changing the core runtime. |
 | **Visible execution** | Watch tool calls, subagent progress, context usage, approvals, schedules, memory, and logs from the dashboard. |
 | **Defense in depth** | Combine tool approvals, OS sandboxing, sensitive-path checks, credential redaction, deny rules, audit events, and governance profiles. |
@@ -318,7 +318,7 @@ See [Installing and Building](docs/install.md) for wheels, desktop builds,
 Windows, optional voice dependencies, and manual setup.
 
 **Choose where Kiro Crew runs.** The current deployment model keeps the Gateway,
-agent session runtime, ACP processes, and state together on one host. Your apps
+agent session runtime, ACP processes, and state together on one host. Your Apps
 and chat surfaces connect to that Gateway.
 
 | Deployment | How to run it | Where Kiro Crew and its state live |
@@ -434,9 +434,11 @@ instance id is stable, so those attributes all describe the *same* copy and
 together they narrowed the group any one install blends into far more than any
 single field suggests.
 
-We report this as **Daily Active Instances** rather than "users": with no account
-system there is no way to resolve a copy to a person, so one person running
-Kiro Crew on three machines counts as three.
+We report this as **Daily Active Crews** rather than "users": Kiro Crew has
+no account system of its own, and the Kiro sign-in that `kiro-cli` uses for
+model access is never read or sent. There is no way to resolve a copy to a
+person, so one person running Kiro Crew on three machines counts as three
+Crews.
 
 **Never sent:** your prompts, model responses, file contents, file paths, repo
 or branch names, credentials, environment variables, hostname, username, or IP
