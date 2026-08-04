@@ -110,6 +110,18 @@ class InstalledApp:
         ""  # noqa: N815  — target standalone app: "registry:{name}" or "standalone:{name}"
     )
     dev: bool = False  # dev mode: no-store UI serving + file-watch live reload
+    # Structured install provenance, recorded for registry installs (see
+    # ``set_app_provenance``).  ``source`` alone is a bare ``registry:<name>``
+    # marker that re-resolves by name, so a same-named entry from a different
+    # registry source could answer for this app; these fields pin WHICH source it
+    # actually came from.  ``sourceUrl`` is the presence discriminator: empty
+    # means a legacy record installed before provenance was captured (an empty
+    # ``sourceRegistry`` is meaningful on its own — it denotes the bundled
+    # catalog rather than a configured external registry).
+    sourceUrl: str = ""  # noqa: N815  — git URL this app was installed from
+    sourceRegistry: str = ""  # noqa: N815  — external registry id; "" = bundled catalog
+    sourceCommit: str = ""  # noqa: N815  — commit SHA resolved in the source clone
+    sourceSigner: str = ""  # noqa: N815  — verified signer id; "" = no verified signature
 
     def validate_fields(self) -> list[str]:
         """Validate classification field values. Returns error list (empty = valid)."""
@@ -141,6 +153,10 @@ class InstalledApp:
             schemaVersion=int(data.get("schemaVersion", 1)),
             migratedTo=str(data.get("migratedTo", "")),
             dev=bool(data.get("dev", False)),
+            sourceUrl=str(data.get("sourceUrl", "")),
+            sourceRegistry=str(data.get("sourceRegistry", "")),
+            sourceCommit=str(data.get("sourceCommit", "")),
+            sourceSigner=str(data.get("sourceSigner", "")),
         )
         # Migrate old "managed" field to new classification fields
         if inst.schemaVersion < 2 and "origin" not in data:
@@ -1023,6 +1039,47 @@ def set_app_source(name: str, source: str) -> bool:
         return False
     meta.source = source
     _write_installed(name, meta)
+    return True
+
+
+def set_app_provenance(
+    name: str,
+    *,
+    source: str,
+    url: str,
+    registry: str = "",
+    commit: str = "",
+    signer: str = "",
+) -> bool:
+    """Record the full install provenance of a registry-installed app.
+
+    Superset of :func:`set_app_source`: alongside the bare ``registry:<name>``
+    marker it persists WHICH source the app actually came from (*url* plus the
+    originating external *registry* id, empty for the bundled catalog), the
+    *commit* resolved in that source clone, and the verified *signer* if the
+    admission layer verified one.  Updates resolve from these fields instead of
+    re-looking-up the bare name, so a same-named entry published by a different
+    registry source cannot capture an installed app's updates.
+
+    Uses ``dataclasses.replace`` so every other persisted field (``enabled``,
+    ``dev``, ``origin``, ...) carries forward untouched.
+
+    Returns True if the update succeeded, False if the app is not installed.
+    """
+    meta = _read_installed(name)
+    if not meta:
+        return False
+    _write_installed(
+        name,
+        replace(
+            meta,
+            source=source,
+            sourceUrl=url,
+            sourceRegistry=registry,
+            sourceCommit=commit,
+            sourceSigner=signer,
+        ),
+    )
     return True
 
 

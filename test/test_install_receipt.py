@@ -323,7 +323,7 @@ async def _run_registry_install(
         "update_app",
         lambda _source: AppResult(ok=True, name="issue-radar", message="updated"),
     )
-    monkeypatch.setattr(registry, "set_app_source", lambda *_a, **_k: True)
+    monkeypatch.setattr(registry, "set_app_provenance", lambda *_a, **_k: True)
 
     dispatched: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr(

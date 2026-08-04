@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps import install_receipt
-from kiro_crew.apps.admission import app_admission_denied
+from kiro_crew.apps.admission import app_admission_denied, verified_signer
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.manager import (
     get_app,
@@ -50,7 +50,7 @@ from kiro_crew.apps.manager import (
 )
 from kiro_crew.apps.manager import list_apps as list_installed_apps
 from kiro_crew.apps.manager import (
-    set_app_source,
+    set_app_provenance,
     update_app,
 )
 from kiro_crew.apps.manifest import AppManifest
@@ -70,6 +70,9 @@ logger = logging.getLogger(__name__)
 
 # Source type prefix for registry-installed apps.
 SOURCE_REGISTRY_PREFIX = "registry:"
+
+# A git object name: sha1 (40 hex) or sha256 (64 hex) repository format.
+_COMMIT_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
 class StreamingLogLines(list):
@@ -297,10 +300,15 @@ def _entry_git_url(entry: dict[str, Any]) -> str:
 
     Prefers an explicit ``gitUrl`` field.  Falls back to the legacy ``repo``
     field (which may itself contain a full URL).  Returns an empty string if
-    neither yields something that looks cloneable.
+    neither yields something that looks cloneable — including when an
+    index-controlled value is not a string at all (an object-valued ``gitUrl``
+    from a malformed external index must degrade to "no URL", never crash the
+    caller).
     """
-    url = (entry.get("gitUrl") or entry.get("repo") or "").strip()
-    return url
+    raw = entry.get("gitUrl") or entry.get("repo") or ""
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip()
 
 
 def _sel_credential_grant(operation: str, git_url: str) -> None:
@@ -1600,6 +1608,79 @@ def get_registry_app(name: str) -> dict[str, Any] | None:
     return None
 
 
+def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
+    """Every catalog row named *name*: bundled first, then each configured
+    registry in config order.
+
+    :func:`get_registry_app` returns only the FIRST match, which is precisely
+    what lets a same-named row from another source answer for an app installed
+    from somewhere else.  Provenance-pinned resolution needs the full candidate
+    set so it can select the row the app is actually pinned to.
+    """
+    candidates = [
+        entry
+        for entry in _load_registry_file()
+        if isinstance(entry, dict) and entry.get("name") == name
+    ]
+    from kiro_crew.config.loader import (
+        KiroCrewConfig,  # circular import: loader.py imports from apps/ at module level; deferring avoids ImportError
+    )
+
+    for reg in KiroCrewConfig.load().registries:
+        cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+        for entry in cached or []:
+            if isinstance(entry, dict) and entry.get("name") == name:
+                candidates.append(entry)
+    return candidates
+
+
+def _pinned_registry_entry(name: str, meta: dict[str, Any]) -> dict[str, Any] | None:
+    """Select the catalog row an installed app's recorded provenance pins it to.
+
+    A row matches only when BOTH the clone URL and the originating registry id
+    equal what was recorded at install time, so neither a row that reuses the
+    name on a different repo nor a different registry publishing the same
+    name/URL pair can stand in for the pinned source.  Returns None when no
+    candidate matches.
+    """
+    want_url = str(meta.get("sourceUrl", "") or "")
+    want_registry = str(meta.get("sourceRegistry", "") or "")
+    for entry in _registry_app_candidates(name):
+        if _entry_git_url(entry) != want_url:
+            continue
+        if str(entry.get("_registry", "") or "") != want_registry:
+            continue
+        return entry
+    return None
+
+
+def _resolve_install_entry(name: str) -> tuple[dict[str, Any] | None, str]:
+    """Resolve the catalog row that ``install_from_registry`` may act on.
+
+    Fresh installs — and legacy records that predate provenance capture, which
+    carry only the bare ``registry:<name>`` marker — keep the historical
+    first-match-wins :func:`get_registry_app` lookup, so no migration is needed
+    and today's behaviour is unchanged for them.  An installed app that DOES
+    carry provenance is pinned to it: its update must come from the source it was
+    installed from, never from whichever same-named row happens to resolve first.
+
+    Blocking (reads installed metadata, config, and index caches) — call it off
+    the event loop.  Returns ``(entry, error)``; a non-empty *error* means the
+    caller must refuse, and must NOT fall back to a bare-name lookup.
+    """
+    meta = get_app(name) or {}
+    pinned_url = str(meta.get("sourceUrl", "") or "")
+    if not pinned_url:
+        return get_registry_app(name), ""
+    entry = _pinned_registry_entry(name, meta)
+    if entry is None:
+        return None, (
+            f"app {name!r} was installed from {pinned_url} and no registry entry "
+            f"currently offers that source — refusing to update it from a different source"
+        )
+    return entry, ""
+
+
 def _external_registry_app_by_repo(repo: str) -> dict[str, Any] | None:
     """Look up an app entry by repo across the user's external (federated)
     registries, reading local sync caches only (``ignore_ttl`` so a stale index
@@ -1691,6 +1772,110 @@ def _app_sources_dir() -> Path:
 def app_source_dir(name: str) -> Path:
     """Return ~/.kiro/crew/app-sources/{name}/ — persistent clone directory."""
     return _app_sources_dir() / name
+
+
+def _resolved_clone_commit(clone_root: Path) -> str:
+    """Return the commit SHA checked out in *clone_root*, or ``""`` if unknown.
+
+    Reads git's own on-disk refs rather than spawning ``git rev-parse``: the SHA
+    is recorded as provenance only, so resolving it must not add a subprocess —
+    nor a new failure mode — to the install path.  Every read failure degrades to
+    ``""`` (provenance without a commit) instead of failing the install.
+    """
+    git_dir = clone_root / ".git"
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if not head.startswith("ref:"):
+        # Detached HEAD holds the SHA directly.
+        return head if _COMMIT_SHA_RE.match(head) else ""
+    ref = head[len("ref:") :].strip()
+    # git writes this file, not the cloned repo — belt-and-braces so a ref can
+    # never be read as a path outside the clone's own .git directory.
+    if not ref or ref.startswith("/") or ".." in ref.split("/"):
+        return ""
+    try:
+        loose = (git_dir / ref).read_text(encoding="utf-8").strip()
+        if _COMMIT_SHA_RE.match(loose):
+            return loose
+    except OSError:
+        pass
+    # A repacked clone keeps no loose ref file.
+    try:
+        for line in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == ref and _COMMIT_SHA_RE.match(parts[0]):
+                return parts[0]
+    except OSError:
+        pass
+    return ""
+
+
+async def _refuse_identity_mismatch(
+    entry_name: str,
+    cloned_name: str,
+    repo: str,
+    clone_root: Path,
+    log_lines: list[str],
+    *,
+    created_this_run: bool,
+    pre_pull_commit: str = "",
+    manifest_relpath: str = "app.json",
+    manifest_snapshot: bytes | None = None,
+    restore_from: Path | None = None,
+) -> dict[str, Any]:
+    """Abort an install whose cloned repo claims a different app name.
+
+    A checkout **created by this run** is deleted so the squatting source (and
+    any build output) leaves no residue in the entry's ``app-sources/`` slot — a
+    leftover would also be preferred by :func:`_fetch_app_manifest` on the next
+    listing, letting a refused repo keep answering as this app.  Nothing has
+    been written under ``~/.kiro/crew/apps/`` at this point, so removing the
+    fresh clone leaves the machine exactly as it was before the install.
+
+    A checkout that **pre-existed** (the update path — ``git pull`` brought in a
+    commit whose manifest renamed itself, or a build/script rewrote it in the
+    working tree) is the installed app's source workspace, so it is preserved —
+    but rolled back to its last-good state (``git reset --keep`` to the
+    pre-pull commit plus a manifest restore from HEAD, both edit-preserving):
+    left at the renamed manifest, the prefetch would re-read it and re-reject
+    every retry before a fixed remote could ever be pulled.
+    """
+    declared = cloned_name or "<missing>"
+    if not created_this_run:
+        log_lines.append(
+            "Preserving pre-existing source checkout (rolled back to its "
+            "last-good state): the refused update installed nothing, and the "
+            "workspace belongs to the already-installed app"
+        )
+    await _unpoison_rejected_checkout(
+        entry_name,
+        clone_root,
+        log_lines,
+        checkout_preexisted=not created_this_run,
+        pre_pull_commit=pre_pull_commit,
+        manifest_relpath=manifest_relpath,
+        manifest_snapshot=manifest_snapshot,
+        restore_from=restore_from,
+    )
+    error = (
+        f"registry entry {entry_name!r} resolves to a repo whose app.json declares "
+        f"{declared!r} — refusing to install an app under an identity that differs "
+        f"from its registry entry"
+    )
+    log_lines.append(f"Refusing install: {error}")
+    try:
+        sel().log_api_access(
+            caller="app_install_from_registry",
+            operation="identity_mismatch",
+            outcome="rejected",
+            resources=f"name={entry_name!r} declared={declared!r} repo={repo}",
+            error="cloned manifest name does not match registry entry name",
+        )
+    except Exception as exc:  # an audit failure must never mask the refusal
+        logger.debug("SEL audit failed for %s identity mismatch: %s", entry_name, exc)
+    return {"ok": False, "name": entry_name, "error": error, "log": "\n".join(log_lines)}
 
 
 # ---------------------------------------------------------------------------
@@ -1974,6 +2159,10 @@ async def _git_clone_or_pull(
 
     if dest.is_dir() and (dest / ".git").is_dir():
         # Already cloned from the verified origin — fetch and fast-forward.
+        # (The origin-mismatch gate above guarantees this checkout's origin is
+        # byte-identical to git_url: a mismatched checkout was moved aside and
+        # never reused, so the fetch source and the provenance record are the
+        # same URL by construction.)
         log_lines.append(f"Updating {git_url} (branch: {branch})...")
         # Route through wrap_argv (OS sandbox) THEN cgroup_scope_argv, matching
         # the fresh-clone path below — the cgroup DoS ceiling is the outermost
@@ -1997,12 +2186,21 @@ async def _git_clone_or_pull(
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
             log_lines.append(stdout.decode(errors="replace").strip())
             if proc.returncode != 0:
-                log_lines.append(
-                    f"git pull failed (exit {proc.returncode}), building with existing code"
-                )
+                # Fail closed: installing whatever the checkout happens to hold
+                # while persisting the catalog URL as its provenance would
+                # record a source the installed code was never fetched from.
+                log_lines.append(f"git pull failed (exit {proc.returncode}) — aborting")
+                return {
+                    "ok": False,
+                    "error": f"git pull failed (exit {proc.returncode}); not installing stale code",
+                }
         except asyncio.TimeoutError:
             await _kill_process_group(proc)
-            log_lines.append("git pull timed out, building with existing code")
+            log_lines.append("git pull timed out — aborting")
+            return {
+                "ok": False,
+                "error": "git pull timed out; not installing stale code",
+            }
         return None
 
     # Fresh clone.
@@ -2110,27 +2308,148 @@ async def _clone_build_app(
     branch: str = "main",
     *,
     index_originated: bool = False,
+    subdirectory: str = "",
+    entry_repo: str = "",
 ) -> dict[str, Any]:
-    """Clone an app repo and run its build, returning the source directory.
+    """Clone an app repo, gate its identity, then run its build.
 
     Source is cloned to ``~/.kiro/crew/app-sources/{app_name}/`` (persistent;
-    survives reboots and is reused for updates).  After clone/pull, the app's
-    declared build commands run via :func:`_run_app_build`.
+    survives reboots and is reused for updates).  **The identity gate runs
+    BETWEEN clone and build**: the cloned ``app.json`` (under *subdirectory*
+    when set) must declare *app_name* before :func:`_run_app_build` executes —
+    build ecosystems run repo-authored lifecycle scripts (an npm ``preinstall``,
+    a ``setup.py``), so validating only after the build would let a mismatched
+    repo execute code despite the refusal.
 
     *index_originated* is forwarded to :func:`_git_clone_or_pull` to pick the
     credential posture (credential-free + strict sandbox for repos whose URL
     came from an external registry index — see that function's docstring).
 
     Returns ``{"ok": True, "pkg_dir": <Path>}`` on success or
-    ``{"ok": False, "error": ...}`` on failure.
+    ``{"ok": False, "error": ...}`` on failure/refusal.
     """
     # Lock-free: the caller (route handler) holds app_lifecycle_lock(name)
     # across the complete lifecycle transaction — clone/build, copy,
     # registration, and backend startup — so nested acquisition here would
     # deadlock (asyncio.Lock is not reentrant).
     return await _clone_build_app_locked(
-        git_url, app_name, log_lines, branch=branch, index_originated=index_originated
+        git_url,
+        app_name,
+        log_lines,
+        branch=branch,
+        index_originated=index_originated,
+        subdirectory=subdirectory,
+        entry_repo=entry_repo,
     )
+
+
+async def _unpoison_rejected_checkout(
+    app_name: str,
+    pkg_dir: Path,
+    log_lines: list[str],
+    *,
+    checkout_preexisted: bool,
+    pre_pull_commit: str,
+    manifest_relpath: str = "app.json",
+    manifest_snapshot: bytes | None = None,
+    restore_from: Path | None = None,
+) -> None:
+    """Un-poison a checkout after an identity/admission rejection.
+
+    The prefetch prefers the local checkout, so a checkout left sitting at a
+    rejected state makes every retry re-reject at prefetch before it could
+    ever pull a fixed remote — a permanently stuck app.
+
+    A checkout created THIS RUN is deleted (no residue) and, when the run
+    replaced a moved-aside previous checkout (*restore_from*), that previous
+    checkout is renamed back into the slot — otherwise the rejection would
+    leave the slot empty and strand the user's old workspace as a
+    sweeper-doomed ``.stale-*`` sibling.
+
+    A pre-existing workspace is rolled back to its pre-pull commit with
+    ``git reset --keep`` (preserves uncommitted local edits; aborts on
+    conflict), then the manifest is restored to its exact pre-update
+    working-tree bytes (*manifest_snapshot*) — undoing whatever the pull,
+    build, or ``onInstall`` script did to ``app.json`` WITHOUT discarding the
+    user's own uncommitted manifest edits. Only when no snapshot exists does
+    it fall back to ``git --literal-pathspecs checkout --`` from HEAD
+    (literal pathspecs keep an index-controlled subdirectory from being
+    parsed as pathspec magic). Best-effort throughout: a cleanup failure is
+    logged, never raised — the refusal it follows must stand regardless.
+    """
+    if not checkout_preexisted:
+        await asyncio.to_thread(shutil.rmtree, pkg_dir, ignore_errors=True)
+        if restore_from is not None:
+            try:
+                await asyncio.to_thread(restore_from.rename, pkg_dir)
+                log_lines.append(
+                    "Restored the previous checkout after rejecting the replacement clone"
+                )
+            except OSError as exc:
+                log_lines.append(
+                    f"WARNING: could not restore the previous checkout from "
+                    f"{restore_from.name}: {exc}; it is retained there for manual recovery"
+                )
+        return
+
+    async def _run_git(argv: list[str]) -> int:
+        cmd, _cleanup = wrap_argv(argv, mode="standard")
+        cmd = cgroup_scope_argv(cmd)
+        proc = await create_subprocess_limited(
+            *cmd,
+            cwd=str(pkg_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            env=minimal_env(),
+        )
+        # Tree-killing timeout: a bare wait_for would abandon a slow git
+        # process still running, letting it race (and overwrite) the manifest
+        # restore that follows.
+        await _communicate_with_timeout(proc, timeout=15)
+        return proc.returncode or 0
+
+    try:
+        if pre_pull_commit:
+            rc = await _run_git(["git", "reset", "--keep", pre_pull_commit])
+            if rc == 0:
+                log_lines.append(
+                    f"Rolled checkout back to pre-update commit {pre_pull_commit[:12]}"
+                )
+            else:
+                log_lines.append(
+                    "WARNING: could not roll the checkout back; "
+                    "a retry may keep rejecting until the source is repaired"
+                )
+    except (asyncio.TimeoutError, OSError, RuntimeError) as exc:
+        # RuntimeError covers SandboxUnavailableError from wrap_argv — cleanup
+        # is best-effort and must never mask the refusal it follows.
+        logger.debug("post-rejection rollback failed for %s: %s", app_name, exc)
+    try:
+        # Restore the manifest regardless — in its OWN guarded block so a
+        # reset failure above cannot skip it: a build step or install script
+        # rewriting app.json is a WORKING-TREE edit the reset cannot undo
+        # (HEAD never moved), and app.json is the poison vector the next
+        # prefetch reads.
+        if manifest_snapshot is not None:
+            await asyncio.to_thread(
+                (pkg_dir / manifest_relpath).write_bytes, manifest_snapshot
+            )
+            log_lines.append(
+                f"Restored {manifest_relpath} to its exact pre-update contents"
+            )
+        else:
+            rc = await _run_git(
+                ["git", "--literal-pathspecs", "checkout", "--", manifest_relpath]
+            )
+            if rc != 0:
+                log_lines.append(
+                    f"WARNING: could not restore {manifest_relpath}; "
+                    "a retry may keep rejecting until the source is repaired"
+                )
+    except (asyncio.TimeoutError, OSError, RuntimeError) as exc:
+        logger.debug("post-rejection manifest restore failed for %s: %s", app_name, exc)
 
 
 async def _clone_build_app_locked(
@@ -2140,6 +2459,8 @@ async def _clone_build_app_locked(
     branch: str = "main",
     *,
     index_originated: bool = False,
+    subdirectory: str = "",
+    entry_repo: str = "",
 ) -> dict[str, Any]:
     """Inner implementation of _clone_build_app, called under per-app lock."""
     if not _looks_like_git_url(git_url):
@@ -2151,6 +2472,31 @@ async def _clone_build_app_locked(
 
     pkg_dir = app_source_dir(app_name)
     pending_cleanup: list[Path] = []
+    # Captured BEFORE the clone so a refusal below can tell a checkout this run
+    # created (delete: no residue) from a pre-existing app workspace (preserve).
+    checkout_preexisted = (pkg_dir / ".git").is_dir()
+    # And the pre-pull commit, so an admission rejection can ROLL BACK a
+    # pre-existing checkout: the prefetch prefers the local checkout, so a
+    # checkout left sitting at a policy-rejected commit would make every retry
+    # reject at prefetch before the pull could ever fetch a fixed remote.
+    pre_pull_commit = (
+        await asyncio.to_thread(_resolved_clone_commit, pkg_dir)
+        if checkout_preexisted
+        else ""
+    )
+    # And the manifest's exact pre-update WORKING-TREE bytes (which may carry
+    # the user's uncommitted local edits): a rejection restores THIS snapshot,
+    # so cleanup undoes whatever the pull/build/script did to app.json without
+    # discarding the user's own edits the way a checkout-from-HEAD would.
+    manifest_rel = f"{subdirectory}/app.json" if subdirectory else "app.json"
+    pre_update_manifest: bytes | None = None
+    if checkout_preexisted:
+        try:
+            pre_update_manifest = await asyncio.to_thread(
+                (pkg_dir / manifest_rel).read_bytes
+            )
+        except OSError:
+            pre_update_manifest = None
     clone_err = await _git_clone_or_pull(
         git_url,
         branch,
@@ -2161,10 +2507,108 @@ async def _clone_build_app_locked(
     )
     if clone_err is not None:
         return clone_err
+    if pending_cleanup:
+        # The origin-mismatch gate moved the old checkout aside and FRESH-CLONED
+        # into pkg_dir: whatever pre-existed is now a .stale-* sibling, and the
+        # directory at pkg_dir was created THIS RUN. The pre-clone snapshot
+        # above describes the moved-aside (different-origin) history — using it
+        # would make a later rejection try to reset the new clone to a commit
+        # from another repository, or preserve a squatting clone as if it were
+        # the user's workspace. Cleanup state must describe the ACTIVE checkout;
+        # the moved-aside path is kept so a rejection can put the previous
+        # checkout BACK instead of leaving the slot empty and the old workspace
+        # stranded as a sweeper-doomed .stale-* sibling.
+        checkout_preexisted = False
+        pre_pull_commit = ""
+        pre_update_manifest = None
+
+    # IDENTITY GATE — before the build, so a repo whose app.json declares a
+    # different name never gets to run npm/pip lifecycle scripts. Fail-closed:
+    # a missing or unparseable app.json (or name) is a mismatch, not a pass.
+    app_source = pkg_dir
+    if subdirectory:
+        contained = _contained_join(pkg_dir, subdirectory)
+        if contained is None:
+            return {
+                "ok": False,
+                "name": app_name,
+                "error": f"unsafe subdirectory {subdirectory!r} escapes the app source root",
+            }
+        app_source = contained
+    cloned_manifest: dict[str, Any] | None = None
+    try:
+        parsed = json.loads(
+            await asyncio.to_thread((app_source / "app.json").read_text, "utf-8")
+        )
+        if isinstance(parsed, dict):
+            cloned_manifest = parsed
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.debug("cloned app.json for %s is unreadable pre-build: %s", app_name, exc)
+    cloned_name = str((cloned_manifest or {}).get("name", "") or "")
+    if cloned_manifest is None or cloned_name != app_name:
+        return await _refuse_identity_mismatch(
+            app_name,
+            cloned_name,
+            entry_repo or git_url,
+            pkg_dir,
+            log_lines,
+            created_this_run=not checkout_preexisted,
+            pre_pull_commit=pre_pull_commit,
+            manifest_relpath=manifest_rel,
+            manifest_snapshot=pre_update_manifest,
+            restore_from=(pending_cleanup[0] if pending_cleanup else None),
+        )
+
+    # ADMISSION GATE, second pass — on the CLONED manifest. The first pass ran
+    # on the pre-clone prefetch, but the repository can advance between the two
+    # reads: a signed preview can resolve to an unsigned (or newly banned)
+    # manifest at clone time, and under a require-signature policy that content
+    # must not build or install. Same fail-closed policy call, different
+    # artifact.
+    denied = app_admission_denied(
+        app_name,
+        manifest=AppManifest.from_dict(cloned_manifest),
+        action="install_from_registry",
+    )
+    if denied:
+        log_lines.append(f"Refusing install: blocked by admission policy: {denied}")
+        try:
+            sel().log_api_access(
+                caller="app_install_from_registry",
+                operation="admission_cloned",
+                outcome="rejected",
+                resources=f"name={app_name!r}",
+                error=denied,
+            )
+        except Exception as exc:  # an audit failure must never mask the refusal
+            logger.debug("SEL audit failed for %s cloned admission: %s", app_name, exc)
+        # Un-poison the checkout so the rejection is retryable (see helper).
+        await _unpoison_rejected_checkout(
+            app_name,
+            pkg_dir,
+            log_lines,
+            checkout_preexisted=checkout_preexisted,
+            pre_pull_commit=pre_pull_commit,
+            manifest_relpath=manifest_rel,
+            manifest_snapshot=pre_update_manifest,
+            restore_from=(pending_cleanup[0] if pending_cleanup else None),
+        )
+        return {
+            "ok": False,
+            "name": app_name,
+            "error": f"blocked by admission policy: {denied}",
+        }
 
     result = await _run_app_build(pkg_dir, app_name, log_lines)
     if result["ok"]:
         result["pkg_dir"] = pkg_dir
+        # Surface the pre-clone checkout state so the caller's LATER gates
+        # (post-build / post-script admission) can un-poison the checkout with
+        # the same delete-fresh / roll-back-pre-existing semantics this
+        # function applies at the cloned-admission gate above.
+        result["_checkout_preexisted"] = checkout_preexisted
+        result["_pre_pull_commit"] = pre_pull_commit
+        result["_pre_update_manifest"] = pre_update_manifest
         # Do NOT delete moved-aside checkouts — even after a successful
         # install transaction the user may want to recover local edits from
         # the old checkout.  Surface the paths so the caller can log them.
@@ -2318,11 +2762,27 @@ async def install_from_registry(
     3. Build it (npm/pip, auto-detected) then run the install script from
        app.json if any (timeout: 300s)
     4. For kirocrew-managed: call install_app() or update_app()
-    5. Store ``registry:<name>`` as source for future updates
+    5. Store ``registry:<name>`` plus structured provenance (source URL,
+       originating registry, resolved commit, verified signer) for future updates
 
     Returns a dict with ok, name, message/error, and log output.
     """
-    entry = get_registry_app(name)
+    # An already-installed app that carries provenance may only be re-installed
+    # (updated) from the source it came from; fresh installs and legacy records
+    # keep the historical bare-name lookup. Blocking reads → off the loop.
+    entry, pin_error = await asyncio.to_thread(_resolve_install_entry, name)
+    if pin_error:
+        try:
+            sel().log_api_access(
+                caller="app_install_from_registry",
+                operation="provenance_mismatch",
+                outcome="rejected",
+                resources=f"name={name!r}",
+                error=pin_error,
+            )
+        except Exception as exc:  # an audit failure must never mask the refusal
+            logger.debug("SEL audit failed for %s provenance mismatch: %s", name, exc)
+        return {"ok": False, "name": name, "error": pin_error}
     if not entry:
         return {"ok": False, "error": f"app {name!r} not found in registry"}
 
@@ -2360,6 +2820,11 @@ async def install_from_registry(
     # explicitly designated the repo), but an external-index entry never becomes
     # an official-catalog entry — install receipts must not fire for it.
     official_entry = not index_originated
+    # The originating external registry id, recorded as provenance. Empty means
+    # the bundled (KiroCrew-shipped) catalog, which is itself a distinct source.
+    # Captured BEFORE the owner-designated carve-out (same reasoning as above):
+    # the entry still came from that external registry, and provenance must say so.
+    source_registry = str(entry.get("_registry", "") or "")
     if index_originated and await asyncio.to_thread(_is_owner_designated_repo, entry):
         index_originated = False
         _sel_credential_grant("install_from_registry", _entry_git_url(entry) or "")
@@ -2398,6 +2863,11 @@ async def install_from_registry(
             error=denied,
         )
         return {"ok": False, "name": name, "error": f"blocked by admission policy: {denied}"}
+
+    # NOTE: the provenance signer is computed LATER, from the identity-checked
+    # CLONED manifest — not from this pre-clone prefetch. An update can pull a
+    # commit whose manifest is no longer signed (or signed by someone else);
+    # provenance must record the artifact actually installed, not the preview.
 
     # Platform compatibility check — if the app requires a specific OS and
     # KiroCrew is running on an incompatible platform, return client install
@@ -2483,18 +2953,24 @@ async def install_from_registry(
 
         # Step 1: Clone the app repo and build it (npm/pip auto-detected).
         # `git clone` handles fetch + branch checkout; a subsequent install
-        # run fast-forwards the existing clone instead of re-cloning.
+        # run fast-forwards the existing clone instead of re-cloning. The
+        # cleanup state for later gates (_checkout_preexisted /
+        # _pre_pull_commit) rides on build_result — it describes the ACTIVE
+        # checkout, accounting for a move-aside re-clone.
         build_result = await _clone_build_app(
             git_url,
             name,
             log_lines,
             branch=branch,
             index_originated=index_originated,
+            subdirectory=subdirectory,
+            entry_repo=repo,
         )
         if not build_result["ok"]:
             return {**build_result, "log": "\n".join(log_lines)}
 
         app_source = build_result["pkg_dir"]
+        clone_root = app_source
         if subdirectory:
             # ``subdirectory`` is untrusted index-controlled content. Join it
             # under the cloned source root with symlink-resolving containment so
@@ -2510,35 +2986,105 @@ async def install_from_registry(
                 }
             app_source = contained
 
-        if not (app_source / "app.json").is_file():
-            return {
-                "ok": False,
-                "name": name,
-                "error": f"app.json not found in {app_source}",
-                "log": "\n".join(log_lines),
-            }
+        # NOTE: a missing app.json is handled by the identity gate below
+        # (fail-closed: unreadable manifest == mismatch), so a build step that
+        # DELETES the manifest still goes through the refusal path and its
+        # checkout cleanup rather than returning early with a poisoned tree.
 
-        # Read install script from the cloned repo's app.json.
+        # Read the cloned repo's app.json once: it decides both the app's
+        # IDENTITY and its install script.
         # Trust model: curated registry entry → cloned repo → app.json
         # (maintained by the app author).  The install script has the same
         # trust level as any code you clone and build locally.
-        install_script = ""
+        manifest_data: dict[str, Any] | None = None
         try:
             manifest_raw = await asyncio.to_thread(
                 (app_source / "app.json").read_text,
                 "utf-8",
             )
-            manifest_data = json.loads(manifest_raw)
-            install_script = (manifest_data.get("setup") or {}).get("onInstall", "")
-        except (json.JSONDecodeError, OSError):
-            pass
+            parsed = json.loads(manifest_raw)
+            if isinstance(parsed, dict):
+                manifest_data = parsed
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.debug("cloned app.json for %s is unreadable: %s", name, exc)
+
+        # IDENTITY GATE, second pass: the primary gate already ran inside
+        # _clone_build_app BEFORE the build (so a mismatched repo never executes
+        # npm/pip lifecycle scripts). This re-check catches the remaining
+        # window — a build step that REWRITES app.json to a different name —
+        # and stays fail-closed: a missing or unparseable name is a mismatch,
+        # not a pass. ``install_app``/``update_app`` derive the installed
+        # identity from this manifest, so it must still match the entry here.
+        if manifest_data is None or str(manifest_data.get("name", "") or "") != name:
+            return await _refuse_identity_mismatch(
+                name,
+                str((manifest_data or {}).get("name", "") or ""),
+                repo,
+                clone_root,
+                log_lines,
+                created_this_run=not bool(build_result.get("_checkout_preexisted")),
+                pre_pull_commit=str(build_result.get("_pre_pull_commit", "") or ""),
+                manifest_relpath=(f"{subdirectory}/app.json" if subdirectory else "app.json"),
+                manifest_snapshot=build_result.get("_pre_update_manifest"),
+                restore_from=next(
+                    iter(build_result.get("_pending_stale_cleanup") or []), None
+                ),
+            )
+
+        # ADMISSION GATE, third pass — the post-build manifest is what
+        # install_app/update_app will actually register, and a build step can
+        # rewrite app.json; a manifest that no longer satisfies the admission
+        # policy (e.g. signature required and now absent) must not install.
+        denied = app_admission_denied(
+            name,
+            manifest=AppManifest.from_dict(manifest_data),
+            action="install_from_registry",
+        )
+        if denied:
+            log_lines.append(f"Refusing install: blocked by admission policy: {denied}")
+            try:
+                sel().log_api_access(
+                    caller="app_install_from_registry",
+                    operation="admission_postbuild",
+                    outcome="rejected",
+                    resources=f"name={name!r}",
+                    error=denied,
+                )
+            except Exception as exc:  # audit failure must never mask the refusal
+                logger.debug("SEL audit failed for %s post-build admission: %s", name, exc)
+            # Same retry-poisoning hazard as the cloned-admission gate: the
+            # checkout sits at the rejected commit and the prefetch prefers it,
+            # so clean up with the same delete-fresh/roll-back semantics.
+            await _unpoison_rejected_checkout(
+                name,
+                app_source_dir(name),
+                log_lines,
+                checkout_preexisted=bool(build_result.get("_checkout_preexisted")),
+                pre_pull_commit=str(build_result.get("_pre_pull_commit", "") or ""),
+                manifest_relpath=(f"{subdirectory}/app.json" if subdirectory else "app.json"),
+                manifest_snapshot=build_result.get("_pre_update_manifest"),
+                restore_from=next(
+                    iter(build_result.get("_pending_stale_cleanup") or []), None
+                ),
+            )
+            return {
+                "ok": False,
+                "name": name,
+                "error": f"blocked by admission policy: {denied}",
+                "log": "\n".join(log_lines),
+            }
+
+        # NOTE: the provenance commit AND signer are both resolved AFTER the
+        # install-script block below — onInstall runs with write access to the
+        # checkout and can advance it to another commit or swap the manifest;
+        # provenance must record the state that actually registers.
+
+        install_script = (manifest_data.get("setup") or {}).get("onInstall", "")
 
         # Step 2: Run install script
         if install_script:
             log_lines.append(f"Running install script: {install_script}")
             # Sandboxed via wrap_argv(); consider migrating to AcpClient._spawn() for full OS-level isolation.
-            # Trust model: curated registry entry → cloned repo → app.json
-            # (maintained by the app author, same trust as any code you build locally).
             # SEL audit event emitted below for traceability.
             logger.info(
                 "Executing sandboxed install script for app %s from repo %s",
@@ -2600,8 +3146,119 @@ async def install_from_registry(
                     "log": "\n".join(log_lines),
                 }
 
+            # Reap any SURVIVING descendants of the script's process group
+            # before the final gates re-read app.json: a backgrounded child
+            # (`nohup evil &`) outlives the shell's clean exit and could
+            # rewrite the manifest AFTER the re-read below but before
+            # install_app registers it — the exact TOCTOU the final pass
+            # exists to close. The shell itself already exited, so anything
+            # still in the group is a detached straggler with no legitimate
+            # claim to keep running.
+            #
+            # POSIX: signal the KNOWN group id directly — the script was
+            # spawned with start_new_session, so its pgid equals proc.pid by
+            # construction, and the group outlives its (already-reaped)
+            # leader. Resolving the group via getpgid(proc.pid) would raise
+            # ProcessLookupError once the leader is reaped, silently skipping
+            # the very stragglers this exists to kill. The pid>1 guard keeps
+            # the killpg broadcast-safe (never signal group 0/1/self).
+            # Windows: taskkill /T on the root pid via the platform shim.
+            try:
+                if platform_compat.IS_POSIX:
+                    if type(proc.pid) is int and proc.pid > 1:
+                        await asyncio.to_thread(
+                            os.killpg, proc.pid, platform_compat.SIGKILL
+                        )
+                else:
+                    await platform_compat.kill_process_tree_async(
+                        proc.pid, platform_compat.SIGKILL
+                    )
+            except OSError:
+                # Empty group (no stragglers) — the common case.
+                pass
+
+            # IDENTITY + ADMISSION, final pass — the install script just ran
+            # with write access to the checkout and can rewrite app.json, and
+            # install_app/update_app/register_external_app re-read that file
+            # from disk. Whatever is on disk NOW is what gets registered, so it
+            # must pass the same fail-closed gates as the post-build read.
+            manifest_data = None
+            try:
+                parsed = json.loads(
+                    await asyncio.to_thread((app_source / "app.json").read_text, "utf-8")
+                )
+                if isinstance(parsed, dict):
+                    manifest_data = parsed
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.debug("post-script app.json for %s is unreadable: %s", name, exc)
+            if manifest_data is None or str(manifest_data.get("name", "") or "") != name:
+                return await _refuse_identity_mismatch(
+                    name,
+                    str((manifest_data or {}).get("name", "") or ""),
+                    repo,
+                    clone_root,
+                    log_lines,
+                    created_this_run=not bool(build_result.get("_checkout_preexisted")),
+                    pre_pull_commit=str(build_result.get("_pre_pull_commit", "") or ""),
+                    manifest_relpath=(f"{subdirectory}/app.json" if subdirectory else "app.json"),
+                    manifest_snapshot=build_result.get("_pre_update_manifest"),
+                    restore_from=next(
+                        iter(build_result.get("_pending_stale_cleanup") or []), None
+                    ),
+                )
+            denied = app_admission_denied(
+                name,
+                manifest=AppManifest.from_dict(manifest_data),
+                action="install_from_registry",
+            )
+            if denied:
+                log_lines.append(f"Refusing install: blocked by admission policy: {denied}")
+                try:
+                    sel().log_api_access(
+                        caller="app_install_from_registry",
+                        operation="admission_postscript",
+                        outcome="rejected",
+                        resources=f"name={name!r}",
+                        error=denied,
+                    )
+                except Exception as exc:  # audit failure must never mask the refusal
+                    logger.debug("SEL audit failed for %s post-script admission: %s", name, exc)
+                # onInstall ran with write access to the checkout, so this
+                # denial leaves it poisoned exactly like the earlier gates —
+                # apply the same delete-fresh/roll-back cleanup so a retry
+                # can pull a fixed remote instead of re-rejecting at prefetch.
+                await _unpoison_rejected_checkout(
+                    name,
+                    app_source_dir(name),
+                    log_lines,
+                    checkout_preexisted=bool(build_result.get("_checkout_preexisted")),
+                    pre_pull_commit=str(build_result.get("_pre_pull_commit", "") or ""),
+                    manifest_relpath=(f"{subdirectory}/app.json" if subdirectory else "app.json"),
+                    manifest_snapshot=build_result.get("_pre_update_manifest"),
+                    restore_from=next(
+                        iter(build_result.get("_pending_stale_cleanup") or []), None
+                    ),
+                )
+                return {
+                    "ok": False,
+                    "name": name,
+                    "error": f"blocked by admission policy: {denied}",
+                    "log": "\n".join(log_lines),
+                }
+
+        # Provenance is pinned from the FINAL state — after the build, the
+        # install script, and the last identity/admission gates: the exact
+        # commit the checkout sits at, and whoever signed the manifest that
+        # actually registers. Resolving either any earlier would let onInstall
+        # advance the checkout or swap the manifest and have provenance record
+        # a predecessor. Purely observational: never denies; unsigned yields "".
+        source_commit = await asyncio.to_thread(_resolved_clone_commit, clone_root)
+        source_signer = await asyncio.to_thread(
+            verified_signer, AppManifest.from_dict(manifest_data)
+        )
+
         # Step 3: Resolve dependencies (if declared in manifest)
-        deps_data = (manifest_data or {}).get("dependencies") if manifest_data else None
+        deps_data = manifest_data.get("dependencies")
         if deps_data and isinstance(deps_data, dict):
             from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
             from kiro_crew.apps.manifest import Dependencies as _Deps
@@ -2622,24 +3279,29 @@ async def install_from_registry(
             # Pre-register with manifest from the cloned repo so the app
             # appears in Installed tab immediately (with openCommand, icon, etc.)
             # The app will update its own registration on next launch.
-            manifest_data_raw = None
-            try:
-                manifest_data_raw = json.loads((app_source / "app.json").read_text("utf-8"))
-            except (json.JSONDecodeError, OSError):
-                pass
-
+            # ``manifest_data`` is the identity-checked read from above — reusing
+            # it avoids a second read that could see different bytes.
             from kiro_crew.apps.manager import register_external_app
 
-            display = (manifest_data_raw or {}).get("displayName", name)
-            version = (manifest_data_raw or {}).get("version", "0.0.0")
-            register_external_app(
+            display = manifest_data.get("displayName", name)
+            version = manifest_data.get("version", "0.0.0")
+            reg_result = register_external_app(
                 name=name,
                 version=version,
                 display_name=display,
                 source=f"{SOURCE_REGISTRY_PREFIX}{name}",
-                manifest_data=manifest_data_raw,
+                manifest_data=manifest_data,
                 origin="registry",
             )
+            if reg_result.ok:
+                set_app_provenance(
+                    name,
+                    source=f"{SOURCE_REGISTRY_PREFIX}{name}",
+                    url=git_url,
+                    registry=source_registry,
+                    commit=source_commit,
+                    signer=source_signer,
+                )
 
             log_lines.append("Pre-registered from cloned manifest (self-managed)")
             log_lines.append("App will update its own registration on next launch")
@@ -2680,9 +3342,20 @@ async def install_from_registry(
             result = await asyncio.to_thread(install_app, str(app_source))
         log_lines.append(result.message or result.error or "done")
 
-        # Mark source as registry-installed
+        # Record the source marker plus structured provenance, so a later update
+        # resolves the source this install actually came from rather than
+        # whichever entry happens to answer to the bare name. This is also what
+        # self-heals a legacy record: its next successful update writes the full
+        # provenance it was missing.
         if result.ok:
-            set_app_source(result.name, f"{SOURCE_REGISTRY_PREFIX}{name}")
+            set_app_provenance(
+                result.name,
+                source=f"{SOURCE_REGISTRY_PREFIX}{name}",
+                url=git_url,
+                registry=source_registry,
+                commit=source_commit,
+                signer=source_signer,
+            )
             # Retain moved-aside checkouts so the user can recover local
             # edits; they will be swept after _STALE_CHECKOUT_RETENTION_DAYS.
             for _stale in build_result.get("_pending_stale_cleanup") or []:

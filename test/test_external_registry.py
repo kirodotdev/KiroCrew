@@ -1261,7 +1261,7 @@ class TestInstallPathCredentialPosture:
         captured = {}
 
         async def _fake_clone_build(
-            git_url, name, log_lines, branch="main", *, index_originated=False
+            git_url, name, log_lines, branch="main", *, index_originated=False, **kwargs
         ):
             captured["index_originated"] = index_originated
             return {"ok": False, "error": "stop-after-clone-dispatch"}
@@ -1297,7 +1297,7 @@ class TestInstallPathCredentialPosture:
         captured = {}
 
         async def _fake_clone_build(
-            git_url, name, log_lines, branch="main", *, index_originated=False
+            git_url, name, log_lines, branch="main", *, index_originated=False, **kwargs
         ):
             captured["index_originated"] = index_originated
             return {"ok": False, "error": "stop-after-clone-dispatch"}
@@ -1433,7 +1433,7 @@ class TestSameRepoCredentialCarveOut:
         captured = {}
 
         async def _fake_clone_build(
-            git_url, name, log_lines, branch="main", *, index_originated=False
+            git_url, name, log_lines, branch="main", *, index_originated=False, **kwargs
         ):
             captured["index_originated"] = index_originated
             return {"ok": False, "error": "stop-after-clone-dispatch"}
@@ -1483,7 +1483,7 @@ class TestSameRepoCredentialCarveOut:
         captured = {}
 
         async def _fake_clone_build(
-            git_url, name, log_lines, branch="main", *, index_originated=False
+            git_url, name, log_lines, branch="main", *, index_originated=False, **kwargs
         ):
             captured["index_originated"] = index_originated
             return {"ok": False, "error": "stop-after-clone-dispatch"}
@@ -1534,7 +1534,7 @@ class TestSameRepoCredentialCarveOut:
         captured = {}
 
         async def _fake_clone_build(
-            git_url, name, log_lines, branch="main", *, index_originated=False
+            git_url, name, log_lines, branch="main", *, index_originated=False, **kwargs
         ):
             captured["index_originated"] = index_originated
             return {"ok": False, "error": "stop-after-clone-dispatch"}
@@ -3176,6 +3176,9 @@ class TestInstallScriptFailurePreservesStaleCheckout:
         async def _fake_create_subprocess(*args, **kwargs):
             pkg_dir.mkdir(parents=True, exist_ok=True)
             (pkg_dir / ".git").mkdir(exist_ok=True)
+            # A real clone materializes the manifest; the identity gate reads
+            # it fail-closed before the build, so the fake must provide it.
+            (pkg_dir / "app.json").write_text('{"name": "testapp"}', encoding="utf-8")
             return _SuccessProc()
 
         with (
@@ -3228,7 +3231,9 @@ class TestInstallScriptFailurePreservesStaleCheckout:
         # entry, simulating the origin-mismatch → move-aside → clone success flow.
         app_source = tmp_path / "app-source"
         app_source.mkdir()
-        (app_source / "app.json").write_text('{"setup": {"onInstall": "exit 1"}}', encoding="utf-8")
+        (app_source / "app.json").write_text(
+            '{"name": "testapp", "setup": {"onInstall": "exit 1"}}', encoding="utf-8"
+        )
 
         async def _fake_clone_build(git_url, app_name, log_lines, branch="main", **kwargs):
             return {
@@ -3322,7 +3327,7 @@ class TestSuccessPathRetainsStaleCheckout:
         )
 
         async def _fake_clone_build(
-            git_url, name, log_lines, *, branch="main", index_originated=False
+            git_url, name, log_lines, *, branch="main", index_originated=False, **kwargs
         ):
             return {
                 "ok": True,
@@ -3500,7 +3505,7 @@ class TestStaleCheckoutSweep:
             sweep_called.append(True)
 
         async def _fake_clone_build(
-            git_url, name, log_lines, *, branch="main", index_originated=False
+            git_url, name, log_lines, *, branch="main", index_originated=False, **kwargs
         ):
             return {"ok": False, "error": "deliberate failure for test"}
 

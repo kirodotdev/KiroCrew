@@ -181,6 +181,22 @@ def _signature_valid(manifest: "AppManifest", policy: AppAdmissionPolicy) -> boo
     return hmac.compare_digest(expected.encode("ascii"), signature.encode("utf-8", "ignore"))
 
 
+def verified_signer(manifest: "AppManifest | None") -> str:
+    """Return the signer id when *manifest* carries a signature this fleet can
+    verify, else ``""`` (unsigned, unknown signer, or a signature that failed).
+
+    Read-only observation of the same check :func:`app_admission_denied` runs —
+    it does NOT change whether a signature is *required*, and it never denies.
+    Callers use it to record WHO signed an app they are about to install;
+    ``""`` simply means the provenance carries no verified signer.
+    """
+    if manifest is None:
+        return ""
+    if not _signature_valid(manifest, load_app_admission_policy()):
+        return ""
+    return str(getattr(manifest, "signer", "") or "")
+
+
 def app_admission_denied(
     name: str,
     manifest: "AppManifest | None" = None,
