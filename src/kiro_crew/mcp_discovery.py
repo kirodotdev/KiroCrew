@@ -276,7 +276,7 @@ class McpServerInfo:
     env: dict[str, str] = field(default_factory=dict)
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
-    status: str = "unknown"  # unknown | ok | error | probing | outdated
+    status: str = "unknown"  # unknown | ok | error | probing | outdated | disabled
     tools: list[str] = field(default_factory=list)
     error: str = ""
     source: str = "agent"  # agent | mcp.json | discovered  (legacy field, prefer presence)
@@ -288,9 +288,13 @@ class McpServerInfo:
         }
     )
     disabled_tools: list[str] = field(default_factory=list)
-    # True for a row surfaced from a scope entry carrying ``disabled: true``
-    # (consent-disabled installs/custom adds). Disabled rows are NEVER probed
-    # — probing spawns the server process, which is what consent gates.
+    # True when ANY scope's entry for this server carries ``disabled: true``
+    # (a consent-disabled install/custom add, or a server the user switched off
+    # in the dashboard — ``/api/mcp/toggle`` writes the flag into the Kiro-global
+    # ``mcp.json``). Disabled rows are NEVER probed — probing spawns the server
+    # process, which is what consent gates. The refusal is enforced inside
+    # ``probe_server`` itself, so setting this flag is sufficient no matter which
+    # entry point does the probing.
     disabled: bool = False
 
     @property
@@ -679,6 +683,32 @@ def list_servers() -> list[McpServerInfo]:
         canonical_servers[canon] = chosen
     servers = canonical_servers
 
+    # 3c. Consent is per SCOPE: a ``disabled: true`` ANYWHERE withholds the
+    #     spawn, not only the branch above that INTRODUCES a Kiro-Crew-scope row
+    #     which exists nowhere else. ``/api/mcp/toggle`` writes the flag into the
+    #     Kiro-global ``mcp.json``, and a row that step 1 already introduced from
+    #     the agent config would otherwise keep ``disabled = False`` and stay
+    #     probeable: the user switches a server off in the dashboard and
+    #     discovery still spawns it.
+    #
+    #     Runs AFTER 3b so both sides are canonical. Scope dicts are keyed by the
+    #     RAW name, so a server configured as ``npm:@playwright/mcp`` is reported
+    #     as ``playwright-mcp`` — matching before canonicalization would miss the
+    #     raw-keyed disable whenever the agent config retained the canonical row.
+    #
+    #     Only ever SETS the flag, so scope priority is irrelevant: one disable
+    #     is enough, and no scope can re-enable what another disabled. The flag
+    #     now IS the safety property (``probe_server`` refuses on it), which is
+    #     why populating it correctly matters more than when each caller filtered
+    #     rows for itself.
+    for scope_specs in by_source.values():
+        for raw_name, spec in scope_specs.items():
+            if not isinstance(spec, dict) or not spec.get("disabled"):
+                continue
+            row = servers.get(mcp_server_alias(raw_name))
+            if row is not None:
+                row.disabled = True
+
     # 4. Merge cached probe results
     for s in servers.values():
         status, tools, error = _get_cached(s.name)
@@ -865,7 +895,32 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
     """Probe a single MCP server by spawning it and sending initialize.
 
     Updates server.status and server.tools in place and returns it.
+
+    A consent-disabled server is refused HERE, ahead of the local/remote
+    dispatch, because probing is the act that runs it: the local branch spawns
+    the command and the remote branch opens the connection. Enforcement used to
+    live in each caller (``probe_all`` filtered disabled rows before building
+    coroutines), which made the guarantee only as good as the newest call
+    site's memory — so a second entry point had to restate the check or become
+    a way around the consent gate. Keeping the rule in the one function every
+    probe must pass through removes that whole class; callers keep their own
+    filters and error surfaces as behaviour and UX, not as the safety property.
     """
+    if server.disabled:
+        server.status = "disabled"
+        # Truthy rather than ``is True``: a hand-built McpServerInfo may carry
+        # anything here, and any non-empty value should withhold the spawn.
+        #
+        # No probe ran, so there is nothing to record — deliberately NOT
+        # calling _cache_probe(). That cache is keyed by name and shared with
+        # ``GET /api/mcp`` via _get_cached(), so writing an empty "disabled"
+        # entry would erase the tool list a real probe stored before the user
+        # disabled the server. ``tools`` is left untouched for the same reason
+        # (last known list, still worth showing); ``error`` is cleared because
+        # a stale probe failure is not why this returned.
+        server.error = ""
+        return server
+
     if server.is_remote:
         return await _probe_remote(server)
 
@@ -1099,7 +1154,18 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
             probe_pid = proc.pid
             if isinstance(probe_pid, int) and probe_pid > 1:
                 try:
-                    platform_compat.kill_process_tree(probe_pid, platform_compat.SIGKILL)
+                    # OFF the event loop: on Windows kill_process_tree shells
+                    # out to ``taskkill /T /F`` via a blocking
+                    # ``subprocess.run``. Awaited inline it stalls the loop for
+                    # the whole spawn+kill of taskkill — once per failed probe,
+                    # and ``probe_all`` fans out across every configured server,
+                    # so a discovery pass with several unreachable servers
+                    # serializes that many process spawns onto the loop and the
+                    # dashboard's health check starts dropping. The POSIX branch
+                    # above is a bare ``killpg`` syscall and needs no offload.
+                    await asyncio.to_thread(
+                        platform_compat.kill_process_tree, probe_pid, platform_compat.SIGKILL
+                    )
                 except (ProcessLookupError, OSError):
                     logger.debug(
                         "Probe tree reap failed for %s (pid %s)",
@@ -1124,6 +1190,12 @@ async def probe_all() -> list[McpServerInfo]:
 
     Consent-disabled rows are excluded: probing spawns the server process,
     and a disabled server must never run until the user enables it.
+
+    ``probe_server`` now refuses a disabled server on its own, so this filter
+    is defense-in-depth (the idiom ``sync_to_agent_config`` already uses) plus
+    the thing that shapes the RESULT: disabled rows are left out of the
+    returned list entirely rather than reported with ``status="disabled"``,
+    which is the response shape ``GET /api/mcp/probe`` has always had.
     """
     servers = [s for s in list_servers() if not s.disabled]
     # Keep the warn-once ledger bounded by the config rather than by config
