@@ -106,7 +106,14 @@ def _python3_bin_dir() -> str:
 
 _WHISPER_SEARCH_PATHS = [
     os.path.expanduser("~/.local/bin/whisper"),
-    "/usr/local/bin/whisper",
+    # Homebrew prefixes: a GUI-launched gateway inherits a minimal PATH
+    # (/usr/bin:/bin:/usr/sbin:/sbin) with no Homebrew, so shutil.which("whisper")
+    # misses a `brew install`ed binary. Probing the prefixes directly — the same
+    # reason _MLX_WHISPER_SEARCH_PATHS and _BREW_CANDIDATE_PATHS list them — is
+    # what keeps STT available without depending on the ensure_ffmpeg_in_path()
+    # PATH side effect happening to run first.
+    "/opt/homebrew/bin/whisper",  # Apple Silicon macOS
+    "/usr/local/bin/whisper",  # Intel macOS / Linuxbrew-less installs
     "/usr/bin/whisper",
 ]
 

@@ -4534,7 +4534,8 @@
       "update_ready": "Aktualisierung bereit"
     },
     "voiceDictationPanel": {
-      "esc_to_stop_enter_to_send": "Esc zum Stoppen, Enter zum Senden",
+      "esc_to_cancel_click_mic_to_finish": "Esc zum Abbrechen, Mikrofon klicken zum Beenden",
+      "esc_to_cancel_enter_to_send": "Esc zum Abbrechen, Enter zum Senden",
       "listening": "Hört zu"
     },
     "voiceDisabledModal": {

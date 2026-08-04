@@ -30,9 +30,14 @@ describe('VoiceDictationPanel', () => {
     expect(screen.getByText('Listening')).toBeTruthy()
   })
 
-  it('advertises the keyboard affordances that actually exist', () => {
+  it('advertises the keyboard affordances that actually exist (batch: click the mic to finish)', () => {
     render(<VoiceDictationPanel sampleRef={sampleRef} value="" />)
-    expect(screen.getByText('Esc to stop, Enter to send')).toBeTruthy()
+    expect(screen.getByText('Esc to cancel, click the mic to finish')).toBeTruthy()
+  })
+
+  it('promises Enter-to-send only in streaming mode (live transcript in composer)', () => {
+    render(<VoiceDictationPanel sampleRef={sampleRef} value="" streaming />)
+    expect(screen.getByText('Esc to cancel, Enter to send')).toBeTruthy()
   })
 
   it('renders the whole value as committed when there is no partial', () => {

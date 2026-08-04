@@ -5,7 +5,7 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 // always false and no WebSocket/Transcribe session is involved.
 vi.mock('../hooks/useStreamingStt', () => ({
   streamingSupported: false,
-  useStreamingStt: () => ({ recording: false, start: vi.fn(), stop: vi.fn() }),
+  useStreamingStt: () => ({ recording: false, start: vi.fn(), stop: vi.fn(), cancel: vi.fn() }),
 }))
 
 interface FakeTrack { stop: ReturnType<typeof vi.fn>; readyState: string; label: string }

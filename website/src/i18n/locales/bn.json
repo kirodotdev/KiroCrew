@@ -4534,7 +4534,8 @@
       "update_ready": "আপডেট প্রস্তুত"
     },
     "voiceDictationPanel": {
-      "esc_to_stop_enter_to_send": "থামাতে Esc, পাঠাতে Enter",
+      "esc_to_cancel_click_mic_to_finish": "বাতিল করতে Esc, শেষ করতে মাইকে ক্লিক করুন",
+      "esc_to_cancel_enter_to_send": "বাতিল করতে Esc, পাঠাতে Enter",
       "listening": "শোনা হচ্ছে"
     },
     "voiceDisabledModal": {

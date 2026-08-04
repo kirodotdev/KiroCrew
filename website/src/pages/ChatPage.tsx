@@ -1497,6 +1497,52 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // re-render every child that receives `toggleVoice` (see comment above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voice.recording, voice.transcribing, voice.toggle, sttEnabled, sttConfigLoaded, sttAvailable])
+  // Cancel (discard) the in-progress dictation — Esc. Batch simply drops the
+  // pending audio (the hook's onstop skips transcription), so nothing lands in
+  // the composer. Streaming additionally disarms the draining final AND removes
+  // the live dictated region from the composer at the frozenInputRef boundary:
+  // onPartial rebuilt the value as `frozen [+ separator] + partial`, so we drop
+  // exactly that region — preserving the pre-dictation text verbatim (including
+  // its own trailing whitespace) AND any suffix typed after the dictation. When
+  // the region can't be verified (the user replaced/edited it), leave the
+  // composer unchanged rather than restoring the snapshot and losing that edit.
+  // Uses voiceRef.current (not `voice`) so this prop stays referentially stable
+  // and does not re-render the composer every render — matching toggleVoice.
+  const cancelVoice = useCallback(() => {
+    if (streamEnabledRef.current) {
+      sttDisarmedRef.current = true
+      // Remove the dictated region at the frozenInputRef boundary, preserving
+      // the pre-dictation text EXACTLY (including its own trailing whitespace)
+      // and any suffix the user typed after the dictation. onPartial rebuilt the
+      // composer as `frozen [+ ' ' separator] + partial`, so reconstruct that
+      // exact region and drop only it — never a blanket trailing-space strip.
+      const cur = inputRef.current ?? ''
+      const frozen = frozenInputRef.current
+      const p = voiceRef.current.partial
+      if (frozen !== null && p) {
+        const sep = frozen === '' || frozen.endsWith(' ') ? '' : ' '
+        const dictated = frozen + sep + p
+        if (cur.startsWith(dictated)) {
+          // The ONLY verifiable case: the composer still begins with exactly the
+          // region onPartial wrote (frozen + separator + partial). Drop that
+          // region and keep the frozen prefix verbatim + any suffix the user
+          // typed after the dictation.
+          setInput(frozen + cur.slice(dictated.length))
+        }
+        // else: the dictated region can't be verified exactly — the user edited
+        // or replaced it (e.g. deleted the separator, or typed their own text
+        // that merely ends in the same word as the partial). Leave the composer
+        // UNCHANGED: a suffix-match heuristic here would delete user-authored
+        // text ("say hello" -> "say"). The disarm above still drops the draining
+        // final, so no dictation is committed; at worst the visible partial
+        // lingers for the user to clear.
+      }
+      // (frozen===null, or no current partial: nothing verifiably removable —
+      // leave the composer as-is rather than risk clobbering user text.)
+      frozenInputRef.current = null
+    }
+    voiceRef.current.cancel()
+  }, [])
   // Stop any in-flight recording and clear the streaming prefix when the user
   // switches slots. The mic is a single shared device, so a recording can't
   // follow the user to another session; a BATCH transcript is still delivered
@@ -5034,9 +5080,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               voiceDeviceSwitchIsLive={voiceOwned && voice.deviceSwitchIsLive}
               onClearVoiceError={voice.clearError}
               voiceDictationPanel={sttDictationPanel}
+              voiceStreaming={voice.streamEnabled}
               voiceSampleRef={voice.sampleRef}
               voicePartial={voiceOwned ? voice.partial : ''}
               onVoiceToggle={voiceInputSupported ? toggleVoice : undefined}
+              onVoiceCancel={voiceInputSupported ? cancelVoice : undefined}
               onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
               agentName={currentSlot?.agent || 'default'}
               agentSource={installedAgents.find(a => a.name === (currentSlot?.agent || 'default'))?.source}

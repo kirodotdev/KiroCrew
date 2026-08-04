@@ -4534,7 +4534,8 @@
       "update_ready": "अपडेट तैयार"
     },
     "voiceDictationPanel": {
-      "esc_to_stop_enter_to_send": "रोकने के लिए Esc, भेजने के लिए Enter",
+      "esc_to_cancel_click_mic_to_finish": "रद्द करने के लिए Esc, समाप्त करने के लिए माइक पर क्लिक करें",
+      "esc_to_cancel_enter_to_send": "रद्द करने के लिए Esc, भेजने के लिए Enter",
       "listening": "सुन रहा है"
     },
     "voiceDisabledModal": {

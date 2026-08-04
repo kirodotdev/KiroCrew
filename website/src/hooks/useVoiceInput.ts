@@ -58,6 +58,17 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
   const mediaRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const startingRef = useRef(false)
+  // Set by cancel() to tell the pending MediaRecorder.onstop to DROP its audio
+  // instead of transcribing it — how Esc discards a batch dictation. A ref (not
+  // state) because onstop reads it synchronously at fire time, after cancel()
+  // has already returned.
+  const discardRef = useRef(false)
+  // Monotonic per-recording token. Bumped when a new batch recorder is created;
+  // each recorder's onstop closes over its own value. If a newer recording has
+  // bumped it by the time an onstop fires (user cancelled then immediately
+  // restarted, and the async onstop is late), that onstop is SUPERSEDED and must
+  // not touch the shared meter/chunks/ownership — they belong to the new session.
+  const recordingEpochRef = useRef(0)
   const levelStopRef = useRef<(() => void) | null>(null)
   // Pre-warm: a mic stream acquired on pointer-down (before the click toggles
   // recording) so capture can begin instantly. getUserMedia + the first audio
@@ -100,7 +111,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
   // Destructure individual members so downstream useCallback deps track
   // stable references (start/stop/recording) instead of the hook's
   // always-new return object literal, preventing memoization churn.
-  const { recording: streamRecording, start: streamStart, stop: streamStop, switchDevice: streamSwitchDevice } = useStreamingStt({
+  const { recording: streamRecording, start: streamStart, stop: streamStop, switchDevice: streamSwitchDevice, cancel: streamCancel } = useStreamingStt({
     onPartial: streamOnPartial,
     onFinal: streamOnFinal,
     onError: setError,
@@ -271,13 +282,27 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
       const mimeType = pickMimeType()
       const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
       chunksRef.current = []
+      // This recording's token; a stale prior discard flag must not carry over.
+      discardRef.current = false
+      const myEpoch = ++recordingEpochRef.current
       mr.ondataavailable = e => { if (e.data.size) chunksRef.current.push(e.data) }
       mr.onstop = async () => {
+        // Superseded by a newer recording — stop only THIS recorder's own tracks
+        // and bow out. Touching the shared meter/level/chunks/ownership here would
+        // clobber the new session (cancel-then-immediate-restart race).
+        if (recordingEpochRef.current !== myEpoch) {
+          stream?.getTracks().forEach(t => t.stop())
+          return
+        }
         levelStopRef.current?.()
         levelStopRef.current = null
         setLevel(0)
         setDeviceLabel('')
         stream?.getTracks().forEach(t => t.stop())
+        // Cancelled (Esc): capture is already torn down above; drop the audio
+        // without transcribing so an abandoned dictation never lands in the
+        // composer. Clicking the mic remains the commit path.
+        if (discardRef.current) { discardRef.current = false; chunksRef.current = []; setSessionOwner(null); return }
         const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm'
         const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' })
         if (blob.size < 100) { setSessionOwner(null); return }
@@ -337,6 +362,29 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
     setRecording(false)
   }, [streamEnabled, streamStop])
 
+  // Cancel (discard) — end capture WITHOUT transcribing. Esc routes here so a
+  // mistaken or abandoned dictation is thrown away instead of committed; the
+  // mic button stays the commit (stop + transcribe) path. Batch: flag the
+  // pending onstop to drop its blob before it reaches the transcriber. Streaming:
+  // stop the socket and clear the live hypothesis — the caller additionally
+  // disarms the draining final and restores the pre-dictation composer text.
+  const cancel = useCallback(() => {
+    if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
+    setPartial('')
+    if (streamEnabled) { streamCancel(); setSessionOwner(null); return }
+    if (mediaRef.current?.state === 'recording') {
+      // onstop drops the blob (see discardRef) and tears down the meter + stream.
+      discardRef.current = true
+      mediaRef.current.stop()
+      mediaRef.current = null
+    } else {
+      // Pressed before capture began (prewarm only) — release the warm mic.
+      releaseWarm()
+    }
+    setRecording(false)
+    setSessionOwner(null)
+  }, [streamEnabled, streamCancel, releaseWarm])
+
   const isRecording = streamEnabled ? streamRecording : recording
   const toggle = useCallback(() => { if (isRecording) stop(); else start() }, [isRecording, start, stop])
 
@@ -381,5 +429,5 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
   /** True when `switchDevice` takes effect immediately rather than next recording. */
   const deviceSwitchIsLive = streamEnabled && streamRecording
 
-  return { recording: isRecording, transcribing, sessionOwner, streamEnabled, toggle, prewarm, error, level, deviceLabel, clearError, partial, sampleRef, switchDevice, deviceSwitchIsLive }
+  return { recording: isRecording, transcribing, sessionOwner, streamEnabled, toggle, cancel, prewarm, error, level, deviceLabel, clearError, partial, sampleRef, switchDevice, deviceSwitchIsLive }
 }
