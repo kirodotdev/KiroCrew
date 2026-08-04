@@ -12,7 +12,7 @@ from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.context_management import OrchestrationTracker
-from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
@@ -168,6 +168,7 @@ async def _stage_loop(
     )
 
     _paused = False
+    _cancelled = False
     # Mark the ENTIRE stage-execution lifetime, not each _run_chat call. A
     # stage turn can queue a recovery/continue turn (empty-response re-queue,
     # stale/tool-stall recovery) that runs slightly later on the same slot; a
@@ -175,6 +176,12 @@ async def _stage_loop(
     # plan-shaped output re-arm/re-count the plan (GPT finding). The flag is
     # cleared once in the outer `finally` when the loop actually exits (pause,
     # completion, break, or error) — so a later Cancel + re-plan can arm again.
+    #
+    # It ALSO gates mid-plan message handling: while set, api_chat queues a user
+    # message (chip card) even when slot.task is momentarily idle between stages,
+    # and _start_next_queued_turn HOLDS user messages (recovery/system still
+    # drain) so they never run concurrently with the plan — handed off in the
+    # finally once the plan ends.
     slot._in_stage_execution = True
     try:
         for stage_idx in range(start_idx, total):
@@ -513,6 +520,12 @@ async def _stage_loop(
                         resources=f"slot={slot.key},stages={total}",
                     )
                 )
+    except asyncio.CancelledError:
+        # Hard stop / slot deletion: do NOT hand off queued work below (the slot
+        # is being torn down and a started turn would run orphaned). Mark it and
+        # re-raise so the task ends cancelled.
+        _cancelled = True
+        raise
     finally:
         # Clear the stage-execution guard exactly once, when the loop exits
         # (pause / completion / break / error). This spans any queued recovery
@@ -522,12 +535,37 @@ async def _stage_loop(
             "Stage loop end: slot=%s current_stage=%s/%s stopping=%s auto_run=%s",
             slot.key, tracker.current_stage, total, slot._stopping, slot._auto_run,
         )
-        if not _paused:
-            slot.append("done", "", "done")
-            state.broadcast_ws("chat_done", {"slot": slot.key})
-        # Always clean up task so the slot is available for the next
-        # "Go" click (paused) or new messages (completed).
-        slot.task = None
+        # Hand off any messages the user queued while the plan ran (held via the
+        # _in_stage_execution gate in _start_next_queued_turn — now cleared above).
+        # If one starts it owns slot.task, so skip the idle-close; a cancelled loop
+        # skips the handoff entirely (queue preserved for the torn-down slot).
+        # ``state._slots.get(...) is slot`` guards a slot DELETED mid-plan (slot.task
+        # is None between stages, so deletion isn't blocked): never launch a turn on
+        # a slot that is no longer registered. ``not slot._last_turn_auth_required``
+        # mirrors _run_chat's own guard: a signed-out CLI holds the queue for
+        # post-login resume instead of popping it into another auth failure.
+        # ``not slot.running`` defers entirely to a turn a stage's _run_chat may
+        # have already started (e.g. a refusal-recovery continuation): that live
+        # task owns slot.task and will drain the queue + emit chat_done itself, so
+        # we must not start a second turn or clobber/idle-close over it.
+        _next_started = False
+        if (
+            not _cancelled
+            and not slot.running
+            and not slot._last_turn_auth_required
+            and state._slots.get(slot.key) is slot
+            and slot._queue
+            and not slot._stopping
+        ):
+            state.push_slots_update()
+            _next_started = await _start_next_queued_turn(state, slot)
+        if not _next_started and not slot.running:
+            if not _paused:
+                slot.append("done", "", "done")
+                state.broadcast_ws("chat_done", {"slot": slot.key})
+            # Clean up task so the slot is available for the next "Go" click
+            # (paused) or new messages (completed).
+            slot.task = None
         state.push_slots_update()
 
 

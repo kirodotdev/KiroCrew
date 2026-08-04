@@ -233,7 +233,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         slot.theme_consent = theme_consent
         slot.theme_consent_sha = theme_consent_sha
 
-    if slot.running:
+    if slot.running or slot._in_stage_execution:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
         # inner AcpClient that _run_chat published on the slot. Fire-and-forget —
@@ -241,6 +241,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # (EVENT_STEER_CONSUMED). If steer is requested but unavailable (no live
         # client / unsupported backend / RPC error), fall through to the queue
         # path so the user's text is NEVER silently dropped.
+        #
+        # ``slot._in_stage_execution`` extends this to autopilot: during a multi-stage
+        # plan ``slot.running`` briefly reads False between stages (each stage's
+        # _run_chat closes its own turn), so a mid-plan message would otherwise
+        # start a concurrent turn. The orchestrating flag keeps it on the queue
+        # path (steer is unavailable between stages, so it falls through to the
+        # queue below and is held until the plan ends).
         if body.get("steer") and message:
             _client = slot._acp_client
             if _client is not None and getattr(_client, "supports_steer", False):

@@ -1101,7 +1101,12 @@ export const selectComposerBusy = (state: RootState, slot: string | null): boole
   if (selectSlotStreamState(state, slot) !== 'idle') return true
   if (slot === state.chat.activeSlot && state.chat.slotRunning) return true
   if (selectSlotSubagentsActive(state, slot)) return true
-  return !!state.dashboard.slots.find((sl) => sl.key === slot)?.subagents_running
+  const dashSlot = state.dashboard.slots.find((sl) => sl.key === slot)
+  // A running autopilot plan keeps the composer "busy" so a mid-plan message
+  // queues (chip card) instead of rendering an optimistic bubble that would
+  // duplicate the backend's queued message. slot.running reads False between
+  // stages, so orchestrating is the durable signal here.
+  return !!(dashSlot?.subagents_running || dashSlot?.orchestrating)
 }
 
 const chatSlice = createSlice({

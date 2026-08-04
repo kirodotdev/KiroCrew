@@ -795,6 +795,7 @@ class _ChatSlot:
         "_orch_tracker",
         "_auto_run",
         "_in_stage_execution",
+        "_last_turn_auth_required",
         "_recovery_chat_triggered",
         "_stage_titles",
         "_stage_descriptions",
@@ -937,7 +938,17 @@ class _ChatSlot:
         # the end-of-turn plan detector so a stage turn whose output happens to
         # contain plan-like text cannot re-arm / re-count the plan (which
         # corrupted the stage total and produced "Stage N of M" over-runs).
+        # It ALSO gates mid-plan message handling: while set, api_chat queues a
+        # user message (chip card) even when slot.task is momentarily idle between
+        # stages, and _start_next_queued_turn HOLDS user messages (recovery/system
+        # still drain) until the plan ends — so autopilot reuses the normal-chat
+        # queue/chip path without changing slot.task / slot.running semantics.
         self._in_stage_execution: bool = False
+        # Set by _run_chat's teardown to that turn's ACP auth-required outcome, so
+        # the orchestrator _stage_loop can mirror the "hold the queue for
+        # post-login resume" guard on its end-of-plan handoff (a signed-out CLI
+        # must not pop the held follow-up into another auth failure).
+        self._last_turn_auth_required: bool = False
         self._recovery_chat_triggered: bool = False  # guard against concurrent failure recovery
         self._stage_titles: list[str] = []  # stage titles extracted from plan
         self._stage_descriptions: list[list[str]] = []  # bullet points per stage
@@ -1592,6 +1603,7 @@ class _ChatSlot:
             "artifact": self._artifact,
             "messages": len(self.messages),
             "running": self.running,
+            "orchestrating": self._in_stage_execution,
             "queue_depth": self.queue_depth,
             "stopping": self._stopping,
             "pending_approval": pending_approval,

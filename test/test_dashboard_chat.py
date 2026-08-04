@@ -5616,6 +5616,123 @@ class TestPythonStageLoop:
         assert "hello world" in msg
 
     @pytest.mark.asyncio
+    async def test_orchestrating_flag_set_and_held_queue_drained(self, tmp_path, monkeypatch):
+        """The loop marks the slot orchestrating for the whole plan, then hands off
+        a message the user queued mid-plan once the plan ends."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        slot = self._make_slot(max_stages=2)
+        state._slots = {slot.key: slot}  # slot still registered
+        slot.queue_append("user typed mid-plan")
+
+        seen = []
+
+        async def _mock_run_chat(s, sl, msg, **kw):
+            seen.append(sl._in_stage_execution)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
+        start_next = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator._start_next_queued_turn", start_next
+        )
+
+        await _stage_loop(state, slot, auto_run=True)
+
+        assert seen == [True, True]  # orchestrating for every stage
+        assert slot._in_stage_execution is False  # cleared once the plan ends
+        start_next.assert_awaited_once()  # held user message handed off at plan end
+
+    @pytest.mark.asyncio
+    async def test_deleted_slot_skips_handoff(self, tmp_path, monkeypatch):
+        """If the slot was deleted mid-plan (no longer registered), the finally
+        must NOT launch its held queue on the torn-down slot."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        slot = self._make_slot(max_stages=1)
+        state._slots = {}  # slot deleted while the plan ran
+        slot.queue_append("queued during plan")
+
+        run_chat_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
+        start_next = AsyncMock(return_value=False)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator._start_next_queued_turn", start_next
+        )
+
+        await _stage_loop(state, slot, auto_run=True)
+
+        start_next.assert_not_awaited()  # no turn launched on a deleted slot
+        assert [i["content"] for i in slot._queue] == ["queued during plan"]
+
+    @pytest.mark.asyncio
+    async def test_signed_out_cli_holds_queue(self, tmp_path, monkeypatch):
+        """If a stage hit ACP auth-required, the end-of-plan handoff must HOLD the
+        queued follow-up for post-login resume, not pop it into another auth
+        failure (mirrors _run_chat's own not-_auth_required guard)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        slot = self._make_slot(max_stages=1)
+        state._slots = {slot.key: slot}
+        slot.queue_append("queued during plan")
+
+        async def _auth_run_chat(s, sl, msg, **kw):
+            sl._last_turn_auth_required = True  # signed-out CLI discovered this stage
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _auth_run_chat)
+        start_next = AsyncMock(return_value=False)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator._start_next_queued_turn", start_next
+        )
+
+        await _stage_loop(state, slot, auto_run=True)
+
+        start_next.assert_not_awaited()  # queue held for post-login resume
+        assert [i["content"] for i in slot._queue] == ["queued during plan"]
+
+    @pytest.mark.asyncio
+    async def test_orchestrating_slot_queues_message(self, tmp_path, monkeypatch):
+        """A mid-plan message QUEUES (not runs) even when slot.task is idle between
+        stages, because slot._in_stage_execution gates the api_chat queue path."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("orch-chat", mode="orchestrator")
+        slot._in_stage_execution = True  # plan running; slot.task momentarily None between stages
+
+        run_chat_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "queued mid-plan", "slot": "orch-chat"}
+            )
+            assert resp.status == 200
+            assert (await resp.json()).get("queued") is True
+
+        run_chat_mock.assert_not_called()  # queued, not run concurrently with the plan
+        assert any(i["content"] == "queued mid-plan" for i in slot._queue)
+
+    @pytest.mark.asyncio
     async def test_go_button_uses_stage_loop(self, tmp_path, monkeypatch):
         """Go button via plan-action endpoint uses _stage_loop."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

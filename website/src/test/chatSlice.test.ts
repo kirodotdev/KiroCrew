@@ -1853,7 +1853,7 @@ describe('selectSlotSubagentsActive', () => {
 describe('selectComposerBusy', () => {
   const initial = reducer(undefined, { type: '@@INIT' })
   const withSlot = { ...initial, activeSlot: 'slot-1' }
-  const wrap = (chat: ReturnType<typeof reducer>, slots: Array<{ key: string; subagents_running?: boolean }> = []) =>
+  const wrap = (chat: ReturnType<typeof reducer>, slots: Array<{ key: string; subagents_running?: boolean; orchestrating?: boolean }> = []) =>
     ({ chat, dashboard: { slots } }) as never
 
   it('is idle when nothing runs', () => {
@@ -1876,6 +1876,12 @@ describe('selectComposerBusy', () => {
 
   it('is busy on the snapshot field alone (first frames after reload)', () => {
     expect(selectComposerBusy(wrap(withSlot, [{ key: 'slot-1', subagents_running: true }]), 'slot-1')).toBe(true)
+  })
+
+  it('is busy while an autopilot plan is orchestrating (queues mid-plan messages)', () => {
+    // slot.running reads False between stages, but a mid-plan message must still
+    // queue as a chip rather than render an optimistic bubble.
+    expect(selectComposerBusy(wrap(withSlot, [{ key: 'slot-1', orchestrating: true }]), 'slot-1')).toBe(true)
   })
 
   it('clears when the subagent finishes (done event — reaper self-heal path)', () => {
