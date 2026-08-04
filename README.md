@@ -236,22 +236,12 @@ logical isolation boundary, not necessarily one OS process.
 **Choose how work starts.**
 
 | Mode | Use it for | Entry point |
-|---|---|
-| **Scheduled** | Briefings, audits, backups, and recurring maintenance |
-| **Proactive** | Goals that need another pass without waiting for a new user message |
-| **Reactive** | CI alerts, external automation, Slack activity, and other events |
-| **Task runner** | Bounded projects with explicit steps, tests, review, and checkpoint resume |
-| **Subagents** | Independent workstreams that can run concurrently |
-
-```bash
-kirocrew chat                         # interactive terminal conversation
-kirocrew run TASK.md                  # execute a multi-step spec
-kirocrew cron add "briefing" \
-  "summarize my open work" --cron "0 9 * * MON-FRI"
-kirocrew spawn run --async \
-  "research the migration options"
-kirocrew service install              # keep the gateway running after reboot
-```
+|---|---|---|
+| **Scheduled** | Briefings, audits, backups, and recurring maintenance | `kirocrew cron` or a natural-language request |
+| **Proactive** | Goals that need another pass without waiting for a new user message | AutoNudge and goal-loop skills |
+| **Reactive** | CI alerts, external automation, Slack activity, and other events | Authenticated agent webhooks and messaging events |
+| **Task runner** | Bounded projects with explicit steps, tests, review, and checkpoint resume | `kirocrew run TASK.md` |
+| **Subagents** | Independent workstreams that can run concurrently | `kirocrew spawn run "task"` |
 
 **Memory, learning, and evolution.** Kiro Crew maintains preferences, active
 project context, decaying history summaries, and durable lessons. Corrections
@@ -332,12 +322,12 @@ agent session runtime, ACP processes, and state together on one host. Your apps
 and chat surfaces connect to that Gateway.
 
 | Deployment | How to run it | Where Kiro Crew and its state live |
-|---|---|
-| **Mac app, local** | Install or build the desktop app with `make desktop` |
-| **Native local** | `make build`, or install a wheel from `make wheel` |
-| **Local container** | Run `ghcr.io/kirodotdev/kirocrew` and persist `/home/kirocrew` |
-| **Remote hardware** | Follow the [remote host guide](docs/remote-desktop-setup.md) and install the service |
-| **Windows source install** | Follow [the Windows guide](docs/windows-install.md) |
+|---|---|---|
+| **Mac app, local** | Install or build the desktop app with `make desktop` | The app starts its bundled Gateway. Agent sessions, ACP processes, and `~/.kiro/crew` stay on your Mac. |
+| **Native local** | `make build`, or install a wheel from `make wheel` | The Gateway and agent runtime run directly on your macOS, Linux, or Windows machine. |
+| **Local container** | Run `ghcr.io/kirodotdev/kirocrew` and persist `/home/kirocrew` | The Gateway and agent runtime run inside the official multi-arch container on your machine. |
+| **Remote hardware** | Follow the [remote host guide](docs/remote-desktop-setup.md) and install the service | The Gateway, agent sessions, and state run continuously on your Linux server, home lab, or cloud instance. Connect the desktop app or browser through an SSH tunnel. |
+| **Windows source install** | Follow [the Windows guide](docs/windows-install.md) | The Gateway, agent sessions, chat, cron, and dashboard run natively with documented feature limits. |
 
 For containers, mount the directory selected by `KIROCREW_HOME` so sessions,
 configuration, memory, and credentials survive replacement. Keep the Gateway
