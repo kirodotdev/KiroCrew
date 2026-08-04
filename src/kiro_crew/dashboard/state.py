@@ -29,7 +29,12 @@ from kiro_crew.constants import OPTIONS_RE_LINE
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.knowledge.store import KnowledgeStore
-from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink, is_channel_session_key
+from kiro_crew.messaging.link import (
+    SLACK_NAMESPACE,
+    ChannelLink,
+    channel_namespace_of,
+    is_channel_session_key,
+)
 from kiro_crew.notifications.bus import (
     NotificationBus,
     NotificationValidationError,
@@ -3263,6 +3268,19 @@ class DashboardState:
         slack_channel = persisted_channel or slot._slack_channel
         namespaced_origin = _split_namespaced_channel_id(persisted_channel)
         genuine_slack = _is_genuine_slack_link(slack_ts, slack_channel)
+        # A Slack-BORN session's ``slack_thread_ts`` names the thread it LIVES
+        # in, not a mirror target somewhere else: the Slack inbound handler
+        # writes it every turn as the thread registry that routes replies back.
+        # That makes it a self-reference, and the sidebar already draws an origin
+        # glyph from the slot key -- so surfacing it as an outbound mirror badges
+        # one conversation twice and offers a session its own origin thread as a
+        # releasable mirror. A Slack-born session that genuinely mirrors to a
+        # DIFFERENT thread still carries a different ts, so it is unaffected.
+        slack_origin_self_link = (
+            channel_namespace_of(session_key) == SLACK_NAMESPACE
+            and bool(slack_ts)
+            and session_key.endswith(slack_ts)
+        )
         links: list[dict[str, Any]] = []
 
         def append_link(link: ChannelLink, direction: str) -> None:
@@ -3299,7 +3317,7 @@ class DashboardState:
                 # get_mirror_link synthesizes Slack for the legacy fields. If
                 # those fields actually hold a namespaced non-Slack origin, the
                 # origin above is the only truthful representation.
-                if not namespaced_origin and genuine_slack:
+                if not namespaced_origin and genuine_slack and not slack_origin_self_link:
                     append_link(
                         ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
                         "out",
@@ -3321,7 +3339,7 @@ class DashboardState:
                     # degrade to the outbound reading rather than dropping the link.
                     inbound = False
                 append_link(mirror, "both" if inbound else "out")
-        elif genuine_slack:
+        elif genuine_slack and not slack_origin_self_link:
             # Defensive fallback for SessionManager test doubles or older
             # implementations that expose get_slack_link but not get_mirror_link.
             append_link(
@@ -3329,7 +3347,7 @@ class DashboardState:
                 "out",
             )
 
-        if genuine_slack:
+        if genuine_slack and not slack_origin_self_link:
             slack_namespace = _split_namespaced_channel_id(slack_channel)
             visible_slack_channel = slack_namespace[1] if slack_namespace else (slack_channel or "")
             return links, True, visible_slack_channel, slack_ts or ""

@@ -134,12 +134,38 @@ class SessionMap:
             self._data = {}
 
     def _rebuild_thread_index(self) -> None:
-        """Rebuild _thread_to_session from current _data."""
+        """Rebuild _thread_to_session from current _data.
+
+        Two entries can claim the same ``slack_thread_ts``: a dashboard session
+        that created the thread via send-to-Slack, and a ``slack:<ts>`` session
+        forked by an inbound reply that ignored the existing binding. A plain
+        last-write-wins pass resolves the thread by dict order, which is file
+        order -- so the fork usually wins and the thread keeps routing to the
+        wrong session even after the fork bug is fixed.
+
+        Break that tie in favour of the session that does NOT derive its key from
+        this thread. A ``slack:<ts>`` key whose ts IS the thread is the fork (or
+        a self-link, which is a no-op rewrite); any other key holds the real
+        conversation. This heals maps corrupted before the fix, on load, with no
+        migration pass.
+        """
         self._thread_to_session.clear()
+        derived: dict[str, str] = {}
         for key, entry in self._data.items():
             ts = entry.get("slack_thread_ts")
-            if ts:
-                self._thread_to_session[ts] = key
+            if not ts or not isinstance(ts, str):
+                # A hand-edited or legacy file can hold a non-string ts. The old
+                # index only ever used it as a dict key, so it survived; the
+                # tie-break below calls str.endswith, which would raise
+                # TypeError here and take gateway startup down with it.
+                continue
+            if is_channel_session_key(key) and key.endswith(ts):
+                # Self-derived: only usable if nothing else claims the thread.
+                derived.setdefault(ts, key)
+                continue
+            self._thread_to_session[ts] = key
+        for ts, key in derived.items():
+            self._thread_to_session.setdefault(ts, key)
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
