@@ -168,12 +168,31 @@ async def _stage_loop(
     )
 
     _paused = False
+    # Mark the ENTIRE stage-execution lifetime, not each _run_chat call. A
+    # stage turn can queue a recovery/continue turn (empty-response re-queue,
+    # stale/tool-stall recovery) that runs slightly later on the same slot; a
+    # per-call clear would drop the guard before that recovery ran, letting its
+    # plan-shaped output re-arm/re-count the plan (GPT finding). The flag is
+    # cleared once in the outer `finally` when the loop actually exits (pause,
+    # completion, break, or error) — so a later Cancel + re-plan can arm again.
+    slot._in_stage_execution = True
     try:
         for stage_idx in range(start_idx, total):
             if slot._stopping:
                 break
 
             stage_num = stage_idx + 1  # 1-based for display
+
+            # Defensive clamp: never build or execute a stage beyond the CURRENT
+            # plan size. `total` is captured once at range() creation; if the
+            # live stage count ever shrank mid-run, continuing would emit a
+            # phantom "Stage N of M" (N > M). Stop cleanly instead.
+            if stage_idx >= slot._plan_stage_count:
+                logger.warning(
+                    "Stage loop clamp for slot %s: stage_idx=%d >= plan_stage_count=%d; stopping",
+                    slot.key, stage_idx, slot._plan_stage_count,
+                )
+                break
 
             # Check timeout BEFORE recording new round (record_round resets timer)
             if tracker.is_stage_timed_out():
@@ -495,6 +514,10 @@ async def _stage_loop(
                     )
                 )
     finally:
+        # Clear the stage-execution guard exactly once, when the loop exits
+        # (pause / completion / break / error). This spans any queued recovery
+        # turns a stage started, and lets a later Cancel + re-plan arm again.
+        slot._in_stage_execution = False
         logger.info(
             "Stage loop end: slot=%s current_stage=%s/%s stopping=%s auto_run=%s",
             slot.key, tracker.current_stage, total, slot._stopping, slot._auto_run,

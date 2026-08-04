@@ -794,6 +794,7 @@ class _ChatSlot:
         "_dirty_gen",
         "_orch_tracker",
         "_auto_run",
+        "_in_stage_execution",
         "_recovery_chat_triggered",
         "_stage_titles",
         "_stage_descriptions",
@@ -935,6 +936,11 @@ class _ChatSlot:
         self._dirty_gen: int = 0
         self._orch_tracker: Any = None  # OrchestrationTracker, set by gateway
         self._auto_run: bool = False  # "Go All" — skip stage gates
+        # True only while _stage_loop is driving a stage-execution turn. Gates
+        # the end-of-turn plan detector so a stage turn whose output happens to
+        # contain plan-like text cannot re-arm / re-count the plan (which
+        # corrupted the stage total and produced "Stage N of M" over-runs).
+        self._in_stage_execution: bool = False
         self._recovery_chat_triggered: bool = False  # guard against concurrent failure recovery
         self._stage_titles: list[str] = []  # stage titles extracted from plan
         self._stage_descriptions: list[list[str]] = []  # bullet points per stage

@@ -2396,6 +2396,22 @@ async def _run_chat(
     last_heartbeat = time.time()
     chunk_seq = 0
     in_tool_group = False
+    # Whole-turn assistant-text buffer for orchestrator plan detection. Unlike
+    # `assistant_text` (reset on every tool-call boundary), this is NEVER reset
+    # mid-turn, so a plan emitted BEFORE further tool calls is still visible at
+    # end-of-turn. Only accumulated on a planning turn (see `_orch_planning`).
+    _orch_plan_buf = ""
+    # Set True when the final-segment detector below arms a plan, so the
+    # whole-turn-buffer fallback doesn't arm a second time.
+    _armed_final = False
+    # A turn is a "planning turn" iff it's orchestrator mode AND not a stage
+    # execution turn driven by _stage_loop. Only planning turns detect/arm a
+    # plan; stage-execution turns must never re-arm (that corrupted the stage
+    # total). `_in_stage_execution` is set by _stage_loop around its _run_chat.
+    _orch_planning = (
+        getattr(slot, "mode", "") == "orchestrator"
+        and not getattr(slot, "_in_stage_execution", False)
+    )
     # Rolling-buffer redactor for the live chat_chunk wire stream. Per-chunk
     # redaction misses a credential split across streaming boundaries;
     # this withholds the trailing credential-class run until it is confirmed safe
@@ -3214,6 +3230,11 @@ async def _run_chat(
                 safe_chunk, _ = redact_exfiltration_urls(event.text)
                 safe_chunk, _ = redact_credentials(safe_chunk)
                 assistant_text += safe_chunk
+                # Mirror into the never-reset whole-turn buffer so a plan
+                # emitted before later tool calls survives the tool-boundary
+                # reset of assistant_text above (planning turn only).
+                if _orch_planning:
+                    _orch_plan_buf += safe_chunk
                 _turn_emitted = True  # tokens delivered — transient retry now unsafe
                 # Stream to the wire through the rolling buffer so a credential
                 # split across token boundaries can't cross a broadcast boundary
@@ -4802,8 +4823,10 @@ async def _run_chat(
                     )
 
         if assistant_text:
-            # ── Plan format validation (orchestrator mode only) ─────
-            if getattr(slot, "mode", "") == "orchestrator":
+            # ── Plan format validation (planning turn only) ─────
+            # `_orch_planning` excludes stage-execution turns, so a stage turn
+            # whose output contains plan-like text can never re-arm/re-count.
+            if _orch_planning:
 
                 has_plan, valid, issues = validate_plan_format(assistant_text)
                 if not has_plan and looks_like_plan(assistant_text):
@@ -4845,6 +4868,7 @@ async def _run_chat(
                         assistant_text = strip_plan_markers(assistant_text)
                         has_plan = False
                 if has_plan:
+                    _armed_final = True
                     _reset_auto_run_for_new_plan(slot)
                     assistant_text = ensure_go_all_option(assistant_text)
                     # Store stage count for _stage_loop
@@ -4943,6 +4967,24 @@ async def _run_chat(
                     "again to continue."
                 )
                 slot.append("notice", _empty_msg, "msg msg-info")
+        # Fallback arm: a plan emitted BEFORE further tool calls was flushed out
+        # of `assistant_text` (reset on each tool boundary), so the final-segment
+        # detector above missed it and no [OPTION] gate would register — the
+        # model appears to "skip the plan and keep working". Recover the plan
+        # from the never-reset whole-turn buffer and arm the gate from it
+        # (planning turn only; skipped if the final-segment path already armed).
+        if _orch_planning and not _armed_final and _orch_plan_buf:
+            _hp_buf, _valid_buf, _ = validate_plan_format(_orch_plan_buf)
+            if _hp_buf and _valid_buf:
+                logger.info(
+                    "Arming plan gate from whole-turn buffer for slot %s "
+                    "(plan was followed by tool calls)",
+                    slot.key,
+                )
+                _reset_auto_run_for_new_plan(slot)
+                slot._stage_titles, slot._plan_goal, slot._stage_descriptions = (
+                    _extract_and_redact_plan_metadata(_orch_plan_buf)
+                )
         # On an empty-response re-queue the turn produced nothing and will
         # immediately re-run; skip persistence / consolidation / success-recording
         # so we don't save a spurious empty turn or skew reliability metrics.

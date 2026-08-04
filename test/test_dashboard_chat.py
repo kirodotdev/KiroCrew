@@ -5100,6 +5100,159 @@ class TestPlanValidationStuck:
         assert "📋" not in stripped
 
 
+class TestOrchestratorPlanGateArming:
+    """Regression tests for the plan-review gate.
+
+    Bug: the end-of-turn plan detector ran on EVERY orchestrator turn and only
+    inspected the final text segment. A stage-execution turn whose output
+    contained plan-like text could re-arm / re-count the plan (corrupting the
+    stage total → "Stage N of M" over-runs); and a plan followed by tool calls
+    was flushed out of the final segment so the gate never armed. The fix scopes
+    detection to planning turns (`_orch_planning` / `_in_stage_execution`) and
+    arms from a never-reset whole-turn buffer.
+    """
+
+    _PLAN = "📋 Plan for: demo\n\nStage 1: Alpha\nStage 2: Beta\n\n[OPTION: Go | Go All | Cancel]"
+
+    @staticmethod
+    def _make_mock_client(events):
+        client = AsyncMock()
+        client.context_usage_pct = MagicMock(return_value=10.0)
+
+        async def _stream(msg):
+            for ev in events:
+                yield ev
+
+        client.stream = _stream
+        client.stream_command = _stream
+        return client
+
+    @staticmethod
+    def _make_state_for_run_chat(tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.context_builder = None
+        state.consolidator = None
+        state._hook_store = None
+        state._yolo = False
+        return state
+
+    @pytest.mark.asyncio
+    async def test_planning_turn_arms_plan(self, tmp_path, monkeypatch):
+        """A planning turn (not a stage-execution turn) arms the gate metadata."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("plan-arm", mode="orchestrator")
+        slot._titled = True
+        client = self._make_mock_client(
+            [LLMEvent(kind=EVENT_TEXT_CHUNK, text=self._PLAN), LLMEvent(kind=EVENT_COMPLETE)]
+        )
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        await _run_chat(state, slot, "make a plan")
+
+        assert slot._stage_titles == ["Alpha", "Beta"]
+        assert slot._plan_goal == "demo"
+
+    @pytest.mark.asyncio
+    async def test_stage_execution_turn_never_rearms(self, tmp_path, monkeypatch):
+        """A stage-execution turn must NOT re-arm/re-count, even if its output
+        contains a valid plan — this is the root cause of the 'Stage N of M'
+        over-run."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("stage-noarm", mode="orchestrator")
+        slot._titled = True
+        # Simulate being mid stage-loop with an already-armed 1-stage plan.
+        slot._in_stage_execution = True
+        slot._stage_titles = ["Existing"]
+        slot._plan_goal = "existing goal"
+        # The stage turn's output happens to contain a *different* valid plan.
+        client = self._make_mock_client(
+            [LLMEvent(kind=EVENT_TEXT_CHUNK, text=self._PLAN), LLMEvent(kind=EVENT_COMPLETE)]
+        )
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        await _run_chat(state, slot, "execute stage 1")
+
+        # Titles/goal/count must be untouched — no re-arm, no re-count.
+        assert slot._stage_titles == ["Existing"]
+        assert slot._plan_goal == "existing goal"
+        assert slot._plan_stage_count == 1
+
+    @pytest.mark.asyncio
+    async def test_stage_loop_sets_and_clears_in_stage_execution(self, tmp_path, monkeypatch):
+        """_stage_loop keeps the guard set across EVERY stage turn (not per
+        _run_chat), so a queued recovery turn can't run unguarded, and clears it
+        once on exit so a later re-plan can arm again."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        slot = _ChatSlot("flag-test", mode="orchestrator")
+        slot._stage_titles = ["A", "B"]
+        slot._orch_tracker = None
+
+        seen: list[bool] = []
+
+        async def _rec(s, sl, msg, **kw):
+            seen.append(sl._in_stage_execution)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _rec)
+
+        await _stage_loop(state, slot, auto_run=True)
+
+        assert seen == [True, True], "guard must stay True during every stage turn"
+        assert slot._in_stage_execution is False, "guard must be cleared once on loop exit"
+
+    @pytest.mark.asyncio
+    async def test_stage_loop_clamps_when_plan_shrinks(self, tmp_path, monkeypatch):
+        """If the live plan size shrinks mid-run, the loop stops instead of
+        building a phantom 'Stage N of M' (N > M) context."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        slot = _ChatSlot("clamp-test", mode="orchestrator")
+        slot._stage_titles = ["A", "B", "C"]  # total = 3
+        slot._orch_tracker = None
+
+        calls = 0
+
+        async def _shrink(s, sl, msg, **kw):
+            nonlocal calls
+            calls += 1
+            sl._stage_titles = ["A"]  # plan shrinks to 1 stage mid-run
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _shrink)
+
+        await _stage_loop(state, slot, auto_run=True)
+
+        assert calls == 1, "loop must stop after the plan shrank, not over-run"
+        seps = [m["content"] for m in slot.messages if "stage-sep" in m.get("cls", "")]
+        assert not any("Stage 2" in s or "Stage 3" in s for s in seps), (
+            "no phantom stage beyond the live plan size may be built"
+        )
+
+
 # ── Tests: plan execution via Go/Go All button simulation ──
 
 
