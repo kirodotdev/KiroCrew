@@ -90,13 +90,19 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Max width (px) for relayed/saved frames — 1920 so a resized mirror panel
+# Max edge (px) for relayed/saved frames — 1920 so a resized mirror panel
 # shows real pixels instead of an upscaled blur; set KIROCREW_BROWSE_MAX_WIDTH=0
-# to disable downscaling entirely (send native resolution). JPEG quality is
-# likewise tunable. Both apply to the on-disk screenshot and the live mirror
-# frame, which share one encode.
-_MAX_FRAME_WIDTH = _env_int("KIROCREW_BROWSE_MAX_WIDTH", 1920)
+# to disable *cosmetic* downscaling (send native resolution up to the hard
+# ceiling). JPEG quality is likewise tunable. Both apply to the on-disk
+# screenshot and the live mirror frame, which share one encode.
+_MAX_FRAME_EDGE = _env_int("KIROCREW_BROWSE_MAX_WIDTH", 1920)
 _FRAME_JPEG_QUALITY = _env_int("KIROCREW_BROWSE_JPEG_QUALITY", 70)
+
+# Hard ceiling: the model gateway rejects any image dimension > 2000px in
+# multi-image requests. This limit is applied unconditionally — even when the
+# cosmetic downscale is disabled (MAX_WIDTH=0) — to prevent irreversible
+# session corruption from oversized screenshots poisoning conversation history.
+_HARD_MAX_EDGE = 2000
 
 # The browse session this proxy serves. kiro-cli freezes KIROCREW_SESSION_KEY in
 # the MCP subprocess env at spawn, so it identifies the session whose browse is
@@ -108,6 +114,11 @@ _SESSION_KEY = os.environ.get("KIROCREW_SESSION_KEY", "")
 def _encode_frame(data: str, media_type: str) -> tuple[bytes, str]:
     """Decode a base64 image; downscale + JPEG-encode if PIL is available.
 
+    Downscales the **longest edge** (not just width) to ``_MAX_FRAME_EDGE``,
+    matching the computer-use capture path. A hard ceiling of
+    ``_HARD_MAX_EDGE`` (2000px) is applied unconditionally to prevent the model
+    gateway from rejecting the image and permanently breaking the session.
+
     Returns ``(bytes, ext)``. Shared by the on-disk save and the live-frame POST
     so the (relatively expensive) decode/resize/encode runs once per screenshot.
     """
@@ -116,10 +127,18 @@ def _encode_frame(data: str, media_type: str) -> tuple[bytes, str]:
     if _HAS_PIL:
         try:
             img: Image.Image = Image.open(io.BytesIO(img_bytes))
-            if _MAX_FRAME_WIDTH and img.width > _MAX_FRAME_WIDTH:
-                ratio = _MAX_FRAME_WIDTH / img.width
+            longest = max(img.width, img.height)
+            # Apply cosmetic downscale (user-configurable, 0 = disabled).
+            max_edge = _MAX_FRAME_EDGE
+            # Always enforce the hard ceiling, even when cosmetic is disabled.
+            if not max_edge or max_edge > _HARD_MAX_EDGE:
+                max_edge = _HARD_MAX_EDGE
+            if longest > max_edge:
+                ratio = max_edge / longest
                 resample = getattr(Image, "LANCZOS", getattr(Image, "ANTIALIAS", None))
-                img = img.resize((_MAX_FRAME_WIDTH, int(img.height * ratio)), resample)
+                img = img.resize(
+                    (round(img.width * ratio), round(img.height * ratio)), resample
+                )
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=_FRAME_JPEG_QUALITY)
             return buf.getvalue(), "jpeg"

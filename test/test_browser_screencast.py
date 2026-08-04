@@ -9,6 +9,7 @@ client with the loopback gate patched.
 from __future__ import annotations
 
 import base64
+import io
 import os
 from unittest.mock import MagicMock, patch
 
@@ -146,6 +147,103 @@ class TestProxyFrameHelpers:
         assert ext in ("jpeg", "png")
         # Round-trips as valid base64 input.
         assert base64.b64decode(png_b64)
+
+    def test_encode_frame_downscales_tall_image(self, monkeypatch):
+        """A fullPage screenshot taller than the max edge is downscaled (#1273)."""
+        import kiro_crew.mcp_playwright_proxy as proxy
+        from PIL import Image as PILImage
+
+        monkeypatch.setattr(proxy, "_MAX_FRAME_EDGE", 1920)
+        monkeypatch.setattr(proxy, "_HARD_MAX_EDGE", 2000)
+
+        # Simulate a fullPage screenshot: 1440x5200 (width under limit, height way over).
+        img = PILImage.new("RGB", (1440, 5200), color=(255, 0, 0))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png_b64 = base64.b64encode(buf.getvalue()).decode()
+
+        result_bytes, ext = proxy._encode_frame(png_b64, "image/png")
+        result_img = PILImage.open(io.BytesIO(result_bytes))
+        # Longest edge (5200) should be clamped to 1920.
+        assert max(result_img.width, result_img.height) <= 1920
+        # Aspect ratio preserved.
+        assert abs(result_img.width / result_img.height - 1440 / 5200) < 0.01
+
+    def test_encode_frame_downscales_wide_image(self, monkeypatch):
+        """A wide image exceeding the max edge is downscaled (existing behavior)."""
+        import kiro_crew.mcp_playwright_proxy as proxy
+        from PIL import Image as PILImage
+
+        monkeypatch.setattr(proxy, "_MAX_FRAME_EDGE", 1920)
+        monkeypatch.setattr(proxy, "_HARD_MAX_EDGE", 2000)
+
+        # 2800x900 — width is the longest edge.
+        img = PILImage.new("RGB", (2800, 900), color=(0, 255, 0))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png_b64 = base64.b64encode(buf.getvalue()).decode()
+
+        result_bytes, _ = proxy._encode_frame(png_b64, "image/png")
+        result_img = PILImage.open(io.BytesIO(result_bytes))
+        assert result_img.width <= 1920
+        assert result_img.height <= 1920
+
+    def test_encode_frame_hard_ceiling_when_cosmetic_disabled(self, monkeypatch):
+        """Setting MAX_WIDTH=0 disables cosmetic downscale but respects hard ceiling (#1273)."""
+        import kiro_crew.mcp_playwright_proxy as proxy
+        from PIL import Image as PILImage
+
+        monkeypatch.setattr(proxy, "_MAX_FRAME_EDGE", 0)  # cosmetic disabled
+        monkeypatch.setattr(proxy, "_HARD_MAX_EDGE", 2000)
+
+        # 1440x3000 — both dimensions under 2000 in width but height exceeds.
+        img = PILImage.new("RGB", (1440, 3000), color=(0, 0, 255))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png_b64 = base64.b64encode(buf.getvalue()).decode()
+
+        result_bytes, _ = proxy._encode_frame(png_b64, "image/png")
+        result_img = PILImage.open(io.BytesIO(result_bytes))
+        # Hard ceiling enforced: no dimension exceeds 2000.
+        assert max(result_img.width, result_img.height) <= 2000
+
+    def test_encode_frame_no_downscale_when_within_limits(self, monkeypatch):
+        """Images within limits are not resized."""
+        import kiro_crew.mcp_playwright_proxy as proxy
+        from PIL import Image as PILImage
+
+        monkeypatch.setattr(proxy, "_MAX_FRAME_EDGE", 1920)
+        monkeypatch.setattr(proxy, "_HARD_MAX_EDGE", 2000)
+
+        # 1400x900 — both well within limits.
+        img = PILImage.new("RGB", (1400, 900), color=(128, 128, 128))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png_b64 = base64.b64encode(buf.getvalue()).decode()
+
+        result_bytes, _ = proxy._encode_frame(png_b64, "image/png")
+        result_img = PILImage.open(io.BytesIO(result_bytes))
+        # No downscale — dimensions preserved (JPEG re-encode may shift by 1px).
+        assert abs(result_img.width - 1400) <= 1
+        assert abs(result_img.height - 900) <= 1
+
+    def test_encode_frame_hard_ceiling_caps_large_cosmetic_value(self, monkeypatch):
+        """A cosmetic limit above the hard ceiling is clamped to the hard ceiling."""
+        import kiro_crew.mcp_playwright_proxy as proxy
+        from PIL import Image as PILImage
+
+        monkeypatch.setattr(proxy, "_MAX_FRAME_EDGE", 4000)  # above hard max
+        monkeypatch.setattr(proxy, "_HARD_MAX_EDGE", 2000)
+
+        # 1920x2500 — height exceeds hard max but not cosmetic.
+        img = PILImage.new("RGB", (1920, 2500), color=(255, 255, 0))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png_b64 = base64.b64encode(buf.getvalue()).decode()
+
+        result_bytes, _ = proxy._encode_frame(png_b64, "image/png")
+        result_img = PILImage.open(io.BytesIO(result_bytes))
+        assert max(result_img.width, result_img.height) <= 2000
 
     def test_internal_secret_read_from_kirocrew_home(self, monkeypatch, tmp_path):
         import kiro_crew.mcp_playwright_proxy as proxy
