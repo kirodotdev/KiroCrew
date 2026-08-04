@@ -24,9 +24,10 @@ import { useNotificationSound } from './hooks/useNotificationSound'
 import { recordSessionStart, recordEvent } from './rum'
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
+import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
+import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, Lightbulb, SquareTerminal, Bot } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -94,10 +95,14 @@ import { useProvider } from './providers/context'
 import { useAgents } from './hooks/useAgents'
 import ShortcutsModal from './components/ShortcutsModal'
 import CommandPalette from './components/CommandPalette'
-import Modal from './components/Modal'
+import KiroAccountModal from './components/KiroAccountModal'
 
 import { i18nT } from './i18n/t'
-import { fmtCompact, fmtNumber, fmtPercent } from './i18n/format'
+import { fmtCompact } from './i18n/format'
+
+const MAX_KIRO_BONUS_GRANT_NAME_CHARS = 100
+const MAX_KIRO_BONUS_CREDITS = 1_000_000
+const MAX_KIRO_BONUS_DAYS_LEFT = 3_650
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
 
 /** Minimal shape of an entry from `GET /api/apps`, limited to the fields the
@@ -1274,32 +1279,74 @@ export default function App() {
   // credits_covered on top — that double-counts the in-plan portion and is the
   // bug that rendered a capped 10K plan as "20.0K". Returns null until the
   // background cache warms.
-  const { data: kiroUsage } = useQuery({
+  const { data: kiroUsage } = useQuery<KiroCreditUsage | 'none' | null>({
     queryKey: ['kiro-usage'],
     queryFn: () => api.sessionsUsage().then(d => {
-      const u = d?.usage || {}
+      const u: KiroUsagePayload = d?.usage || {}
       // Kiro credit plan (internal) — the only usage this pill surfaces.
       // Number.isFinite guards against a stray NaN ever rendering as "NaN / NaN".
-      if (Number.isFinite(u.credits_plan)) {
+      if (typeof u.credits_plan === 'number' && Number.isFinite(u.credits_plan)) {
         const limit = Math.round(u.credits_plan)
         // credits_used is the real total (backend sets it to covered + overage);
         // fall back to 0 (not the limit) when the source omits it, so a partial
         // payload never implies a maxed plan.
-        const used = Number.isFinite(u.credits_used) ? Math.round(u.credits_used) : 0
-        const overage = Number.isFinite(u.credits_overage) ? u.credits_overage : Math.max(0, used - limit)
-        // Bonus / welcome-credit pool (spent before the plan). Present only when
-        // the backend surfaced it; when absent the pill/modal behave exactly as
-        // before (plan-only).
-        const bonus = (Number.isFinite(u.bonus_limit) && u.bonus_limit > 0)
-          ? {
-              used: Number.isFinite(u.bonus_used) ? Math.round(u.bonus_used) : 0,
-              limit: Math.round(u.bonus_limit),
-              label: (typeof u.bonus_label === 'string' && u.bonus_label) ? u.bonus_label : i18nT('app.bonus_credits'),
-              expiresLabel: typeof u.bonus_expires_label === 'string' ? u.bonus_expires_label : undefined,
-            }
-          : undefined
+        const used = typeof u.credits_used === 'number' && Number.isFinite(u.credits_used)
+          ? Math.round(u.credits_used)
+          : 0
+        const overage = typeof u.credits_overage === 'number' && Number.isFinite(u.credits_overage)
+          ? u.credits_overage
+          : Math.max(0, used - limit)
+        // Bonus grants come from untrusted CLI output. Validate every field so
+        // one malformed grant cannot poison the readout or account panel.
+        const bonusCredits = Array.isArray(u.bonus_credits)
+          ? u.bonus_credits.flatMap(grant => {
+              if (
+                !grant
+                || typeof grant.name !== 'string'
+                || !grant.name
+                || grant.name.length > MAX_KIRO_BONUS_GRANT_NAME_CHARS
+                || typeof grant.used !== 'number'
+                || !Number.isFinite(grant.used)
+                || grant.used < 0
+                || grant.used > MAX_KIRO_BONUS_CREDITS
+                || typeof grant.total !== 'number'
+                || !Number.isFinite(grant.total)
+                || grant.total <= 0
+                || grant.total > MAX_KIRO_BONUS_CREDITS
+                || (grant.days_left !== undefined
+                  && (typeof grant.days_left !== 'number'
+                    || !Number.isFinite(grant.days_left)
+                    || grant.days_left < 0
+                    || grant.days_left > MAX_KIRO_BONUS_DAYS_LEFT))
+              ) return []
+              return [{
+                name: grant.name,
+                used: grant.used,
+                total: grant.total,
+                daysLeft: grant.days_left,
+              }]
+            })
+          : []
         const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
-        return { used, limit, overage, resets: u.resets, plan: u.plan, costUsd: u.cost_usd, overageRate: u.overage_rate, bonus, stale: u.stale === true, account: str(u.account), email: str(u.email), accountType: str(u.account_type), startUrl: str(u.start_url) }
+        const parsedOverageRate = typeof u.overage_rate === 'number'
+          ? u.overage_rate
+          : Number.parseFloat(u.overage_rate ?? '')
+        const normalized: KiroCreditUsage = {
+          used,
+          limit,
+          overage,
+          resets: u.resets,
+          plan: u.plan,
+          costUsd: u.cost_usd,
+          overageRate: Number.isFinite(parsedOverageRate) ? parsedOverageRate : undefined,
+          bonusCredits,
+          stale: u.stale === true,
+          account: str(u.account),
+          email: str(u.email),
+          accountType: str(u.account_type),
+          startUrl: str(u.start_url),
+        }
+        return normalized
       }
       // Non-Kiro provider (kiro-cli absent) -> hide. Empty cache (Kiro warming) -> spinner.
       if (u.available === false) return 'none' as const
@@ -1714,40 +1761,16 @@ export default function App() {
               if (!kiroUsage) {
                 segments.push(<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)
               } else {
-                // Pool the plan and any bonus/welcome credits into one total so
-                // the pill reflects what the user is actually spending (bonus is
-                // drawn down first). fmtK renders 1000 -> "1K" and 1500 -> "1.5K"
-                // (the old toFixed(0) turned 1.5K into a misleading "2K").
-                const totalUsed = kiroUsage.used + (kiroUsage.bonus ? kiroUsage.bonus.used : 0)
-                const totalLimit = kiroUsage.limit + (kiroUsage.bonus ? kiroUsage.bonus.limit : 0)
-                const pct = totalLimit > 0 ? (totalUsed / totalLimit) * 100 : 0
-                // `fmtCompact`, not a `/1000 + 'K'` ladder: de has no short form at
-                // these magnitudes and renders `447.500`, zh abbreviates on 万 as
-                // `44.8万`. English is unchanged (`447.5K`). German is therefore
-                // WIDER than before — that is CLDR's answer for the language, not a
-                // bug, so the pill is kept nowrap so it can never break mid-number.
-                const fmtK = (n: number) => fmtCompact(n)
-                const usedStr = fmtK(totalUsed)
-                const limitStr = fmtK(totalLimit)
-                // Two whole-sentence keys rather than a base string plus an
-                // appended bonus clause: the bonus phrase carries its own
-                // grammar and word order, so concatenating it would strand the
-                // translator with a fragment.
-                const title = kiroUsage.bonus
-                  ? i18nT('app.kiro_credits_title_with_bonus', {
-                    used: fmtNumber(totalUsed),
-                    limit: fmtNumber(totalLimit),
-                    planUsed: fmtNumber(kiroUsage.used),
-                    planLimit: fmtNumber(kiroUsage.limit),
-                    bonusLabel: kiroUsage.bonus.label,
-                    bonusUsed: fmtNumber(kiroUsage.bonus.used),
-                    bonusLimit: fmtNumber(kiroUsage.bonus.limit),
-                  })
-                  : i18nT('app.kiro_credits_title', {
-                    used: fmtNumber(totalUsed),
-                    limit: fmtNumber(totalLimit),
-                    pct: fmtPercent(pct / 100),
-                  })
+                // Pool every bonus grant into the compact readout. Bonus is
+                // drawn down before the plan, so excluding it looks like a
+                // frozen counter while promotional credits are active.
+                const bonusUsed = kiroUsage.bonusCredits.reduce((sum, grant) => sum + grant.used, 0)
+                const bonusLimit = kiroUsage.bonusCredits.reduce((sum, grant) => sum + grant.total, 0)
+                const totalUsed = kiroUsage.used + bonusUsed
+                const totalLimit = kiroUsage.limit + bonusLimit
+                const usedStr = fmtCompact(totalUsed)
+                const limitStr = fmtCompact(totalLimit)
+                const title = i18nT('components.kiroAccountModal.kiro_credit_usage')
                 segments.push(<button key="usage" className={kiroUsage.stale ? `${seg} opacity-60` : seg} onClick={() => setKiroUsageOpen(true)} title={title} aria-label={title}>
                   <Coins size={12} /> {!isMobile && <span className="font-mono text-[11px] whitespace-nowrap tabular-nums">{usedStr}<span className="text-muted">/{limitStr}</span></span>}
                 </button>)
@@ -2388,113 +2411,7 @@ export default function App() {
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-    <Modal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} title={<span className="flex items-center gap-2"><Coins size={16} /> {i18nT('app.kiro_credits')}</span>} maxWidth={460}>
-      {!kiroUsage || kiroUsage === 'none' ? (
-        <div className="flex items-center gap-2 text-sm text-muted py-4">
-          <Loader2 size={14} className="animate-spin shrink-0" />
-          <span>{i18nT('app.checking_usage_running')} <code className="font-mono">{i18nT('app.kiro_cli_usage')}</code>…</span>
-        </div>
-      ) : (() => {
-        const bonus = kiroUsage.bonus
-        const totalUsed = kiroUsage.used + (bonus ? bonus.used : 0)
-        const totalLimit = kiroUsage.limit + (bonus ? bonus.limit : 0)
-        const pct = totalLimit > 0 ? (totalUsed / totalLimit) * 100 : 0
-        const planPct = kiroUsage.limit > 0 ? (kiroUsage.used / kiroUsage.limit) * 100 : 0
-        const bonusPct = bonus && bonus.limit > 0 ? (bonus.used / bonus.limit) * 100 : 0
-        const barColor = 'var(--accent)'
-        const Row = ({ label, value }: { label: string; value: React.ReactNode }) => (
-          <div className="flex justify-between items-baseline py-1.5 border-b" style={{ borderColor: 'var(--border)' }}>
-            <span className="text-[12px] text-muted">{label}</span>
-            <span className="text-[13px] font-medium text-text">{value}</span>
-          </div>
-        )
-        // One pool card (bonus or plan) with its own mini progress bar. Used
-        // only when a bonus pool exists, so the plan-only modal is unchanged.
-        const Pool = ({ name, used, limit, poolPct, color, meta }: { name: string; used: number; limit: number; poolPct: number; color: string; meta?: React.ReactNode }) => (
-          <div className="rounded-lg border p-2.5" style={{ borderColor: 'var(--border)' }}>
-            <div className="flex items-baseline gap-2">
-              <span className="flex items-center gap-1.5 text-[13px] font-medium text-text">
-                <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: color }} />{name}
-              </span>
-              <span className="ml-auto font-mono text-[12px] text-text">{fmtNumber(used)}<span className="text-muted">/{fmtNumber(limit)}</span></span>
-            </div>
-            <div className="w-full h-1.5 rounded-full overflow-hidden mt-2" style={{ background: 'var(--border)' }}>
-              <div className="h-full rounded-full" style={{ width: `${Math.min(poolPct, 100)}%`, background: color }} />
-            </div>
-            {meta && <div className="text-[11px] text-muted mt-1.5">{meta}</div>}
-          </div>
-        )
-        // Sign-in description shown under the identity: account type + issuer
-        // host ("IAM Identity Center · amzn.awsapps.com"). Collapses gracefully
-        // when either half is missing.
-        // kiro-cli distinguishes four auth kinds (social | idc | builderId |
-        // external_idp); social login covers Google/GitHub and reports
-        // accountType "Social". Unmapped values pass through verbatim rather
-        // than being hidden, so a new kind still says something truthful.
-        const acctKind = kiroUsage.accountType === 'IamIdentityCenter' ? i18nT('app.iam_identity_center')
-          : kiroUsage.accountType === 'BuilderId' ? i18nT('app.builder_id')
-          : kiroUsage.accountType === 'Social' ? i18nT('app.social_login')
-          : kiroUsage.accountType
-        let issuerHost: string | undefined
-        if (kiroUsage.startUrl) { try { issuerHost = new URL(kiroUsage.startUrl).host } catch { issuerHost = undefined } }
-        const signedInWith = [acctKind, issuerHost].filter(Boolean).join(' · ')
-        // Identity line prefers the real email; the org profile name is only a
-        // fallback for accounts where whoami gave us nothing.
-        const who = kiroUsage.email || kiroUsage.account
-        return (
-          <div className="flex flex-col gap-3">
-            {who && (
-              <div className="flex items-center gap-3 pb-3" style={{ borderBottom: '1px solid var(--border)' }}>
-                <div
-                  className="shrink-0 rounded-full flex items-center justify-center text-[15px] font-semibold uppercase"
-                  style={{ width: 40, height: 40, background: 'var(--accent)', color: '#fff' }}
-                  aria-hidden="true"
-                >
-                  {who.slice(0, 1)}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-[15px] font-medium text-text truncate" title={who}>{who}</div>
-                  {signedInWith && <div className="text-[12px] text-muted break-words" title={signedInWith}>{i18nT('app.signed_in_with', { provider: signedInWith })}</div>}
-                </div>
-              </div>
-            )}
-            <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-bold text-text">{fmtNumber(totalUsed)}</span>
-              <span className="text-sm text-muted">/ {fmtNumber(totalLimit)} {bonus ? i18nT('app.credits_total') : i18nT('app.credits')}</span>
-              <span className="ml-auto text-[12px] font-medium px-2 py-0.5 rounded-md" style={{ background: barColor, color: '#fff' }}>{fmtPercent(pct / 100)}</span>
-            </div>
-            <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
-              <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%`, background: barColor }} />
-            </div>
-            {bonus && (
-              <div className="flex flex-col gap-2">
-                <div className="text-[11px] uppercase tracking-wide text-muted mt-1">{i18nT('app.breakdown')}</div>
-                <Pool name={bonus.label} used={bonus.used} limit={bonus.limit} poolPct={bonusPct} color="var(--warn)" meta={bonus.expiresLabel} />
-                <Pool name={kiroUsage.plan || i18nT('app.plan')} used={kiroUsage.used} limit={kiroUsage.limit} poolPct={planPct} color="var(--accent)" meta={kiroUsage.resets ? `${i18nT('app.resets')} ${kiroUsage.resets}` : undefined} />
-              </div>
-            )}
-            <div className="mt-1">
-              {!bonus && kiroUsage.plan && <Row label={i18nT('app.plan')} value={kiroUsage.plan} />}
-              {!bonus && kiroUsage.resets && <Row label={i18nT('app.resets')} value={kiroUsage.resets} />}
-              <Row label={i18nT('app.overage_used')} value={`${fmtNumber(kiroUsage.overage)} credits`} />
-              {kiroUsage.overageRate && <Row label={i18nT('app.overage_rate')} value={`$${kiroUsage.overageRate} / credit`} />}
-              {kiroUsage.costUsd != null && <Row label={i18nT('app.est_overage_cost')} value={`$${kiroUsage.costUsd.toFixed(2)} USD`} />}
-            </div>
-            <p className="text-[11px] text-muted leading-relaxed mt-1">
-              {i18nT('app.monthly_kiro_credit_usage_from')} <code className="font-mono">{i18nT('app.kiro_cli_usage')}</code> {i18nT('app.across_chat_agents_mcp_and_subagents')}
-            </p>
-            <a
-              href="https://app.kiro.dev/settings/account"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-[12px] text-accent hover:underline mt-1 self-start"
-            >
-              {i18nT('app.manage_account')} <ExternalLink size={12} />
-            </a>
-          </div>
-        )
-      })()}
-    </Modal>
+    <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsage ?? null} />
     <CommandPalette
       open={commandPalette.open}
       onClose={commandPalette.close}

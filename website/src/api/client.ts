@@ -802,6 +802,54 @@ export interface KiroPrerequisiteStatus {
   operation: KiroPrerequisiteOperation
 }
 
+export interface KiroBonusCreditGrantPayload {
+  name: string
+  used: number
+  total: number
+  days_left?: number
+}
+
+export interface KiroUsagePayload {
+  available?: boolean
+  credits_used?: number
+  credits_covered?: number
+  credits_overage?: number
+  credits_plan?: number
+  resets?: string
+  plan?: string
+  cost_usd?: number
+  overage_rate?: number | string
+  bonus_credits?: KiroBonusCreditGrantPayload[]
+  stale?: boolean
+  account?: string
+  email?: string
+  account_type?: string
+  start_url?: string
+}
+
+export interface KiroBonusCreditGrant {
+  name: string
+  used: number
+  total: number
+  daysLeft?: number
+}
+
+export interface KiroCreditUsage {
+  used: number
+  limit: number
+  overage: number
+  resets?: string
+  plan?: string
+  costUsd?: number
+  overageRate?: number
+  bonusCredits: KiroBonusCreditGrant[]
+  stale: boolean
+  account?: string
+  email?: string
+  accountType?: string
+  startUrl?: string
+}
+
 export interface AgentImportCategory {
   id: string
   label: string
@@ -965,7 +1013,7 @@ export const api = {
   consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
   restartSessions: () => post('/api/sessions/restart').then(j),
   sessionsContext: () => fetch('/api/sessions/context').then(j),
-  sessionsUsage: () => fetch('/api/sessions/usage').then(j),
+  sessionsUsage: () => fetch('/api/sessions/usage').then(j) as Promise<{ usage?: KiroUsagePayload }>,
   providerUsage: () => fetch('/api/usage').then(j),
   mcpProbeCache: () => fetch('/api/mcp/probe').then(j),
   // Agents
