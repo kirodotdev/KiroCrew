@@ -15,6 +15,7 @@
     "Floats on your desktop with a swappable avatar"
   ],
   "defaultEnabled": false,
+  "hidden": true,
   "mcpServers": {
     "crew-companion": {
       "url": "http://127.0.0.1:7778/mcp",
