@@ -4421,3 +4421,40 @@ async def test_fleet_cached_background_failure_is_swallowed(_clean_fleet_cache):
         await asyncio.gather(task, return_exceptions=True)
     assert task.exception() is not None
     assert mod._FLEET_CACHE["data"] == {"worktrees": [{"name": "stale"}]}
+
+
+# --- manifest platform declaration ---
+def test_manifest_declares_every_platform_the_app_runs_on():
+    """`platform.os` summarises the whole app, and the non-pod half (fleet view,
+    Provision, Sync, Rebase, Prune) is git + filesystem work that runs anywhere.
+
+    Pinned because both narrower answers misinform: `["linux"]` reads as "does
+    not run on macOS", and omitting the block falls back to the implicit
+    ``["macos", "linux"]`` default, which silently drops Windows.
+    """
+    manifest = json.loads(
+        (Path(mod.__file__).parent / "app.json").read_text(encoding="utf-8")
+    )
+    assert manifest["platform"]["os"] == ["macos", "linux", "windows"]
+
+    # The pod requirement is carried in the UI copy, not the manifest gate.
+    assert any(
+        "Linux systemd" in h for h in manifest["highlights"]
+    ), "the highlight stating pods need Linux systemd is the honest half of this declaration"
+
+
+def test_declared_platforms_all_resolve_to_a_real_sys_platform():
+    """Every declared name must map to a sys.platform value.
+
+    An unmapped name is silently accepted into the list and then never matches,
+    so a declaration can claim a platform the gate rejects. `windows` was in
+    exactly that state until the mapping row landed.
+    """
+    from kiro_crew.apps.manifest import PlatformConfig
+
+    manifest = json.loads(
+        (Path(mod.__file__).parent / "app.json").read_text(encoding="utf-8")
+    )
+    cfg = PlatformConfig(os=manifest["platform"]["os"])
+    for sys_platform in ("darwin", "linux", "win32"):
+        assert cfg.supports_platform(sys_platform), sys_platform

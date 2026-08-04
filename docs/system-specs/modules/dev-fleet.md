@@ -505,13 +505,25 @@ All user-visible output passes through `redact_credentials()` and
 
 ## Platform Behavior
 
-The app declares `platform.os: ["linux"]` in `app.json`. That declaration is
-**informational** — `installMode` is the default `"server"`, and the App Store's
-platform gate only refuses `installMode: "client"` apps — so the app still
-installs and enables anywhere. What it buys is an honest App Store detail page
-(which renders the requirement) instead of the previous silence, where an absent
-`platform` block defaulted to `["macos", "linux"]` and advertised macOS support
-the app does not have.
+The app declares `platform.os: ["macos", "linux", "windows"]` in `app.json`,
+because that is where it genuinely runs: the fleet view, PR status, commit and
+disk figures, Provision, Sync, Rebase and Prune are git and filesystem work with
+no systemd in them. Only the pod plane and Make Live need Linux, and the app now
+says so in the UI rather than in the manifest — a `highlights` line states the
+requirement, and `GET /api/fleet` carries the reason that renders as a banner.
+
+Declaring one platform per capability is not expressible here: `os` is a single
+list describing the whole app, so any value is a summary. `["linux"]` was the
+wrong summary — it read as "does not run on macOS" for an app whose non-pod half
+runs there fine, which is the same misinformation in the opposite direction from
+the pre-#1254 silence (an absent `platform` block defaults to
+`["macos", "linux"]`, quietly advertising macOS parity).
+
+The declaration is **not** an install gate for this app: `installMode` is the
+default `"server"` and the App Store's platform check at `registry.py` only
+refuses `installMode: "client"` apps, so dev-fleet installs and enables
+everywhere regardless. What the list drives is the App Store detail page, which
+renders it verbatim (`AppDetailPage.tsx` → "Platform: macos, linux, windows").
 
 Two separate capability flags drive the degradation, because they gate different
 things:

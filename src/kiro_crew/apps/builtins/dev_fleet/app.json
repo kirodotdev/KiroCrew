@@ -16,7 +16,7 @@
   ],
   "defaultEnabled": false,
   "platform": {
-    "os": ["linux"]
+    "os": ["macos", "linux", "windows"]
   },
   "permissions": {
     "api": ["/apps/dev-fleet/api", "/apps/dev-fleet/api/*"],
