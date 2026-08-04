@@ -4261,7 +4261,6 @@
       "become_installable_and_run_setup_with_gateway_pr": "的应用将可安装，并以网关权限运行安装程序。",
       "branch": "分支",
       "cancel": "取消",
-      "dismiss_error": "忽略错误",
       "dismiss_trust_notice": "忽略信任提示",
       "display_name": "显示名称",
       "e_g_identity_services": "例如 Identity Services",
@@ -4807,6 +4806,14 @@
       "clear_filter": "清除筛选",
       "no_matches_for": "没有匹配",
       "no_noun_match": "没有匹配的{{noun}}"
+    },
+    "askAgent": {
+      "ask_the_agent": "询问代理",
+      "open_a_chat_with_this_error_s_context_attached": "打开聊天，并附上该错误的完整上下文",
+      "prompt_lead": "Kiro Crew 仪表板刚刚出现了这个错误。请定位根本原因并修复。"
+    },
+    "errorNotice": {
+      "dismiss": "忽略"
     }
   },
   "hooks": {
@@ -5109,7 +5116,6 @@
       "dependencies": "依赖：",
       "discover": "发现",
       "discover_install_and_manage_agentic_apps": "发现、安装并管理智能体应用",
-      "dismiss_error": "忽略错误",
       "dismiss_message": "忽略消息",
       "failed_to_load_apps": "加载应用失败",
       "failed_to_load_registry": "加载注册表失败",
@@ -7810,7 +7816,6 @@
         "default_reasoning_effort": "默认推理强度",
         "default_to_autopilot_mode": "默认使用自动驾驶模式",
         "describe_your_role": "描述你的角色",
-        "dismiss": "忽略",
         "display_time_on_each_message": "在每条消息上显示时间",
         "display_usage_percentage_next_to_the_context_pro": "在上下文进度条旁显示使用百分比",
         "e_g_solutions_architect_sre_founder": "例如：解决方案架构师、SRE、创始人",
@@ -8371,7 +8376,6 @@
         "bcp_47_language_code_for_speech_recognition": "语音识别的 BCP-47 语言代码",
         "default": "默认",
         "dictation_panel": "听写面板",
-        "dismiss_error": "忽略错误",
         "enabled": "已启用",
         "input_device_used_to_capture_your_voice": "用于采集语音的输入设备",
         "install_mlx_whisper": "安装 MLX Whisper",
@@ -8503,7 +8507,6 @@
         "aws_region_for_polly_api": "Amazon Polly API 使用的 AWS 区域",
         "aws_region_polly": "AWS 区域（Amazon Polly）",
         "default": "默认",
-        "dismiss": "忽略",
         "engine": "引擎",
         "failed_to_load_voice_config": "加载语音配置失败。",
         "path_to_the_piper_executable_leave_blank_to_auto": "Piper 可执行文件的路径。留空则自动在 PATH 或 ~/piper-venv/bin/piper 中检测",

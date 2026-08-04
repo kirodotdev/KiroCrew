@@ -19,6 +19,7 @@ import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
 import AppIcon from '../components/AppIcon'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
+import AskAgentButton from '../components/AskAgentButton'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateNumeric } from '../i18n/format'
@@ -528,11 +529,18 @@ export default function AppDetailPage() {
                   ? i18nT('pages.appDetailPage.third_party_blocked')
                   : error}
               </span>
-              {deniedByPolicy && (
+              {deniedByPolicy ? (
                 <div className="mt-2">
                   <Btn danger onClick={() => navigate('/settings?tab=security')}>
                     {i18nT('pages.appDetailPage.open_security_settings')}
                   </Btn>
+                </div>
+              ) : (
+                // The unrecognized-failure branch above renders raw backend prose
+                // and is otherwise a dead end — hand it to the agent with the
+                // status/endpoint/code the journal captured at the transport.
+                <div className="mt-2">
+                  <AskAgentButton message={error} />
                 </div>
               )}
             </div>

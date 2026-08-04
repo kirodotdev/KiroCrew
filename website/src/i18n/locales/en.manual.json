@@ -1343,6 +1343,14 @@
       "switching_drops_audio": "Switching while recording drops about 0.2s of audio.",
       "system_default": "System default",
       "unnamed_input": "Unnamed input"
+    },
+    "askAgent": {
+      "ask_the_agent": "Ask the agent",
+      "open_a_chat_with_this_error_s_context_attached": "Open a chat with this error's full context attached",
+      "prompt_lead": "This error just came up in the Kiro Crew dashboard. Diagnose the root cause and fix it."
+    },
+    "errorNotice": {
+      "dismiss": "Dismiss"
     }
   },
   "hooks": {

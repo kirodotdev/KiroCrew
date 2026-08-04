@@ -46,6 +46,7 @@ import { Btn } from './ui'
 
 
 import { i18nT } from '../i18n/t'
+import ErrorNotice from './ErrorNotice'
 const CHECK_POLL_BASE_MS = 10_000
 const CHECK_POLL_MAX_MS = 60_000
 // Strip-wide status poll. Steady state is paced by the TTL the server reports
@@ -707,7 +708,7 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
             : i18nT('components.pullRequestPanel.this_authorizes_the_merge_when_the_pipeline_succ')}
         </span>
       )}
-      {error && <span role="alert" className="text-[11px] text-danger">{error}</span>}
+      <ErrorNotice message={error} variant="inline" askAgent />
     </div>
   )
 }

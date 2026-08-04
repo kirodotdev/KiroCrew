@@ -11,6 +11,7 @@ import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 /**
  * Option labels are FUNCTIONS, not module-level arrays.
  *
@@ -281,12 +282,7 @@ export function ChatPanel() {
 
   return (
     <>
-      {saveError && (
-        <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-center justify-between animate-rise">
-          <span className="text-[13px] text-danger">{saveError}</span>
-          <button className="text-[13px] text-danger hover:text-text cursor-pointer bg-transparent border-none" onClick={() => setSaveError('')}>{i18nT('pages.settings.chatPanel.dismiss')}</button>
-        </div>
-      )}
+      <ErrorNotice message={saveError} onDismiss={() => setSaveError('')} className="mb-4 animate-rise" />
       {dashQ.isError && (
         <div className="mb-4 text-[13px] text-danger">
           {i18nT('pages.settings.chatPanel.failed_to_load_dashboard_config')}{' '}

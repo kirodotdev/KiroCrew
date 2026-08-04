@@ -4320,7 +4320,6 @@
       "become_installable_and_run_setup_with_gateway_pr": "इंस्टॉल करने योग्य हो जाते हैं और गेटवे विशेषाधिकारों के साथ सेटअप चलाते हैं।",
       "branch": "ब्रांच",
       "cancel": "रद्द करें",
-      "dismiss_error": "त्रुटि खारिज करें",
       "dismiss_trust_notice": "भरोसे की सूचना खारिज करें",
       "display_name": "प्रदर्शित नाम",
       "e_g_identity_services": "उदा. Identity Services",
@@ -4867,6 +4866,14 @@
       "clear_filter": "फ़िल्टर साफ़ करें",
       "no_matches_for": "कोई मिलान नहीं",
       "no_noun_match": "कोई {{noun}} मेल नहीं"
+    },
+    "askAgent": {
+      "ask_the_agent": "एजेंट से पूछें",
+      "open_a_chat_with_this_error_s_context_attached": "इस त्रुटि के पूरे संदर्भ के साथ चैट खोलें",
+      "prompt_lead": "यह त्रुटि अभी Kiro Crew डैशबोर्ड में आई है। मूल कारण का निदान करें और उसे ठीक करें।"
+    },
+    "errorNotice": {
+      "dismiss": "खारिज करें"
     }
   },
   "hooks": {
@@ -5174,7 +5181,6 @@
       "dependencies": "निर्भरताएँ:",
       "discover": "डिस्कवर",
       "discover_install_and_manage_agentic_apps": "एजेंटिक ऐप्स खोजें, इंस्टॉल करें और प्रबंधित करें",
-      "dismiss_error": "त्रुटि बंद करें",
       "dismiss_message": "संदेश बंद करें",
       "failed_to_load_apps": "ऐप्स लोड नहीं हो सके",
       "failed_to_load_registry": "रजिस्ट्री लोड नहीं हो सकी",
@@ -7897,7 +7903,6 @@
         "default_reasoning_effort": "डिफ़ॉल्ट रीज़निंग प्रयास",
         "default_to_autopilot_mode": "डिफ़ॉल्ट रूप से ऑटोपायलट मोड रखें",
         "describe_your_role": "अपनी भूमिका बताएं",
-        "dismiss": "खारिज करें",
         "display_time_on_each_message": "प्रत्येक संदेश पर समय दिखाएँ",
         "display_usage_percentage_next_to_the_context_pro": "कॉन्टेक्स्ट प्रोग्रेस बार के आगे उपयोग प्रतिशत दिखाएँ",
         "e_g_solutions_architect_sre_founder": "जैसे सॉल्यूशंस आर्किटेक्ट, SRE, फ़ाउंडर",
@@ -8458,7 +8463,6 @@
         "bcp_47_language_code_for_speech_recognition": "वाक् पहचान के लिए BCP-47 भाषा कोड",
         "default": "डिफ़ॉल्ट",
         "dictation_panel": "डिक्टेशन पैनल",
-        "dismiss_error": "त्रुटि बंद करें",
         "enabled": "सक्षम",
         "input_device_used_to_capture_your_voice": "आपकी आवाज़ कैप्चर करने के लिए उपयोग होने वाला इनपुट डिवाइस",
         "install_mlx_whisper": "MLX Whisper इंस्टॉल करें",
@@ -8590,7 +8594,6 @@
         "aws_region_for_polly_api": "Amazon Polly API के लिए AWS रीजन",
         "aws_region_polly": "AWS रीजन (Amazon Polly)",
         "default": "default",
-        "dismiss": "खारिज करें",
         "engine": "इंजन",
         "failed_to_load_voice_config": "वॉइस कॉन्फ़िग लोड नहीं हो सका।",
         "path_to_the_piper_executable_leave_blank_to_auto": "piper एक्ज़ीक्यूटेबल का पथ। PATH या ~/piper-venv/bin/piper पर स्वतः पहचान के लिए खाली छोड़ें",

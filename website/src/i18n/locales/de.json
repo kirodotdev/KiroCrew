@@ -4320,7 +4320,6 @@
       "become_installable_and_run_setup_with_gateway_pr": "installierbar werden und die Einrichtung mit Gateway-Rechten ausführen.",
       "branch": "Branch",
       "cancel": "Abbrechen",
-      "dismiss_error": "Fehler schließen",
       "dismiss_trust_notice": "Vertrauenshinweis schließen",
       "display_name": "Anzeigename",
       "e_g_identity_services": "z. B. Identity Services",
@@ -4867,6 +4866,14 @@
       "clear_filter": "Filter löschen",
       "no_matches_for": "Keine Treffer für",
       "no_noun_match": "Keine passenden {{noun}}"
+    },
+    "askAgent": {
+      "ask_the_agent": "Agent fragen",
+      "open_a_chat_with_this_error_s_context_attached": "Chat mit dem vollständigen Kontext dieses Fehlers öffnen",
+      "prompt_lead": "Dieser Fehler ist gerade im Kiro Crew-Dashboard aufgetreten. Diagnostiziere die Ursache und behebe sie."
+    },
+    "errorNotice": {
+      "dismiss": "Schließen"
     }
   },
   "hooks": {
@@ -5174,7 +5181,6 @@
       "dependencies": "Abhängigkeiten:",
       "discover": "Entdecken",
       "discover_install_and_manage_agentic_apps": "Agentische Apps entdecken, installieren und verwalten",
-      "dismiss_error": "Fehler schließen",
       "dismiss_message": "Nachricht schließen",
       "failed_to_load_apps": "Apps konnten nicht geladen werden",
       "failed_to_load_registry": "Registry konnte nicht geladen werden",
@@ -7897,7 +7903,6 @@
         "default_reasoning_effort": "Standard-Denkaufwand",
         "default_to_autopilot_mode": "Standardmäßig Autopilot-Modus",
         "describe_your_role": "Beschreibe deine Rolle",
-        "dismiss": "Schließen",
         "display_time_on_each_message": "Uhrzeit bei jeder Nachricht anzeigen",
         "display_usage_percentage_next_to_the_context_pro": "Verbrauchsprozentsatz neben dem Kontext-Fortschrittsbalken anzeigen",
         "e_g_solutions_architect_sre_founder": "z. B. Solutions Architect, SRE, Gründer",
@@ -8458,7 +8463,6 @@
         "bcp_47_language_code_for_speech_recognition": "BCP-47-Sprachcode für die Spracherkennung",
         "default": "Standard",
         "dictation_panel": "Diktierpanel",
-        "dismiss_error": "Fehler schließen",
         "enabled": "Aktiviert",
         "input_device_used_to_capture_your_voice": "Eingabegerät zur Aufnahme Ihrer Stimme",
         "install_mlx_whisper": "MLX Whisper installieren",
@@ -8590,7 +8594,6 @@
         "aws_region_for_polly_api": "AWS-Region für die Amazon Polly-API",
         "aws_region_polly": "AWS-Region (Amazon Polly)",
         "default": "Standard",
-        "dismiss": "Schließen",
         "engine": "Engine",
         "failed_to_load_voice_config": "Sprachkonfiguration konnte nicht geladen werden.",
         "path_to_the_piper_executable_leave_blank_to_auto": "Pfad zur ausführbaren Piper-Datei. Leer lassen, um automatisch in PATH oder ~/piper-venv/bin/piper zu suchen",

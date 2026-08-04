@@ -4320,7 +4320,6 @@
       "become_installable_and_run_setup_with_gateway_pr": "সেগুলো ইনস্টলযোগ্য হবে এবং গেটওয়ে সুবিধা নিয়ে সেটআপ চালাবে।",
       "branch": "ব্রাঞ্চ",
       "cancel": "বাতিল",
-      "dismiss_error": "ত্রুটি খারিজ করুন",
       "dismiss_trust_notice": "ট্রাস্ট নোটিশ খারিজ করুন",
       "display_name": "প্রদর্শিত নাম",
       "e_g_identity_services": "যেমন Identity Services",
@@ -4867,6 +4866,14 @@
       "clear_filter": "ফিল্টার মুছুন",
       "no_matches_for": "কোনো মিল নেই",
       "no_noun_match": "কোনো {{noun}} মিলছে না"
+    },
+    "askAgent": {
+      "ask_the_agent": "এজেন্টকে জিজ্ঞাসা করুন",
+      "open_a_chat_with_this_error_s_context_attached": "এই ত্রুটির সম্পূর্ণ প্রসঙ্গ সহ একটি চ্যাট খুলুন",
+      "prompt_lead": "এই ত্রুটিটি এইমাত্র Kiro Crew ড্যাশবোর্ডে দেখা দিয়েছে। মূল কারণ নির্ণয় করে সমাধান করুন।"
+    },
+    "errorNotice": {
+      "dismiss": "খারিজ করুন"
     }
   },
   "hooks": {
@@ -5174,7 +5181,6 @@
       "dependencies": "ডিপেনডেন্সি:",
       "discover": "আবিষ্কার",
       "discover_install_and_manage_agentic_apps": "এজেন্টিক অ্যাপ খুঁজুন, ইনস্টল করুন ও পরিচালনা করুন",
-      "dismiss_error": "ত্রুটি বন্ধ করুন",
       "dismiss_message": "বার্তা বন্ধ করুন",
       "failed_to_load_apps": "অ্যাপগুলো লোড করা যায়নি",
       "failed_to_load_registry": "রেজিস্ট্রি লোড করা যায়নি",
@@ -7897,7 +7903,6 @@
         "default_reasoning_effort": "ডিফল্ট রিজনিং এফোর্ট",
         "default_to_autopilot_mode": "ডিফল্টে অটোপাইলট মোড",
         "describe_your_role": "আপনার ভূমিকা লিখুন",
-        "dismiss": "বন্ধ করুন",
         "display_time_on_each_message": "প্রতিটি বার্তায় সময় দেখান",
         "display_usage_percentage_next_to_the_context_pro": "কনটেক্সট প্রোগ্রেস বারের পাশে ব্যবহারের শতাংশ দেখান",
         "e_g_solutions_architect_sre_founder": "যেমন সলিউশন আর্কিটেক্ট, SRE, প্রতিষ্ঠাতা",
@@ -8458,7 +8463,6 @@
         "bcp_47_language_code_for_speech_recognition": "স্পিচ রিকগনিশনের জন্য BCP-47 ভাষা কোড",
         "default": "ডিফল্ট",
         "dictation_panel": "ডিক্টেশন প্যানেল",
-        "dismiss_error": "ত্রুটি বাতিল করুন",
         "enabled": "সক্রিয়",
         "input_device_used_to_capture_your_voice": "আপনার কণ্ঠস্বর ধারণ করতে ব্যবহৃত ইনপুট ডিভাইস",
         "install_mlx_whisper": "MLX Whisper ইনস্টল করুন",
@@ -8590,7 +8594,6 @@
         "aws_region_for_polly_api": "Amazon Polly API-র জন্য AWS রিজিয়ন",
         "aws_region_polly": "AWS রিজিয়ন (Amazon Polly)",
         "default": "ডিফল্ট",
-        "dismiss": "বন্ধ করুন",
         "engine": "ইঞ্জিন",
         "failed_to_load_voice_config": "ভয়েস কনফিগ লোড করা যায়নি।",
         "path_to_the_piper_executable_leave_blank_to_auto": "piper এক্সিকিউটেবলের পাথ। PATH বা ~/piper-venv/bin/piper-এ স্বয়ংক্রিয়ভাবে শনাক্ত করতে খালি রাখুন",

@@ -11,6 +11,7 @@ import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectS
 import { createSlot, appendMessage, setSlotRunning, switchSlot } from './store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain } from './utils/navIntent'
+import { installSoftNavigate } from './utils/errorReport'
 import { fetchNotifications, ackNotification } from './store/notificationsSlice'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDashboardHealthProbe } from './hooks/useDashboardHealthProbe'
@@ -865,6 +866,21 @@ export default function App() {
       }),
     )
   }, [isPopout, isEmbed, navigate, dispatch])
+
+  // Publish the router navigator for the error → agent hand-off. AskAgentButton
+  // is deliberately hook-free (its callers include ErrorBoundary fallbacks, where
+  // router context may be what threw), so it navigates through this seam and
+  // falls back to a full page load when nothing is installed.
+  //
+  // Popout and embed windows never register, for the same reason the nav-intent
+  // handler above skips them: routing THAT window to /chat would replace the
+  // surface the user deliberately popped out (an artifact editor renders error
+  // banners of its own). They fall through to the hard-nav path instead.
+  useEffect(() => {
+    if (isPopout || isEmbed) return
+    installSoftNavigate(navigate)
+    return () => installSoftNavigate(null)
+  }, [isPopout, isEmbed, navigate])
 
   const {
     colorTheme,

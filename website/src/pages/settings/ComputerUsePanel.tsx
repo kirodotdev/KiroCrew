@@ -8,6 +8,7 @@ import { api } from '../../api/client'
 import type { ComputerUseConfigData, ComputerUseConfigSave } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 
 const QK = ['computer-use-config']
 
@@ -276,11 +277,7 @@ export function ComputerUsePanel() {
 
   return (
     <>
-      {saveError && (
-        <div className="mb-4 rounded-lg border border-danger/20 bg-danger/10 p-3 animate-rise">
-          <span className="text-[13px] text-danger">{saveError}</span>
-        </div>
-      )}
+      <ErrorNotice message={saveError} className="mb-4 animate-rise" />
 
       {/* A hand-edited keystone whose app lists could not be parsed. The page
           renders anyway — on purpose, because this is the only UI that can repair

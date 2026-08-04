@@ -40,6 +40,7 @@ import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor, ChatSlot 
 
 import { i18nT } from '../i18n/t'
 import { fmtDateFields } from '../i18n/format'
+import ErrorNotice from '../components/ErrorNotice'
 /**
  * The artifact's active companion session: the bound slot for `slug`, or the most
  * recently active one if a race or a History-page resume left more than one.
@@ -1701,11 +1702,19 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           </div>
         )}
 
-        {saveError && (
-          <div className="mb-3 px-3 py-2 rounded-md border border-danger/40 bg-danger-subtle text-[13px] text-danger">
-            <strong>{i18nT('pages.artifactDetailPage.save_failed')}</strong> {saveError}
-          </div>
-        )}
+        {/* No agent hand-off here, deliberately. `saveError` is set exactly when
+            handleSave threw, so `dirty` is still true and `editedContent` was
+            never persisted — a route change unmounts this page and the buffer is
+            gone. Every other nav-away on this page gates on
+            `dirty && confirm(discard_unsaved_changes)`, and the deleted-artifact
+            handler sets `saveError` INSTEAD of navigating precisely so the user
+            can copy their work out. A one-click navigation off this surface would
+            destroy it, and would bypass the beforeunload guard too. */}
+        <ErrorNotice
+          message={saveError}
+          title={i18nT('pages.artifactDetailPage.save_failed')}
+          className="mb-3"
+        />
 
         {/* Read-only publication sync-error surface: keeps a persisted sync
             error visible (no controls) if a publishing provider is ever

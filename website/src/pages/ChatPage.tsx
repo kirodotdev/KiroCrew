@@ -59,6 +59,7 @@ const SCROLL_AFTER_RENDER_MS = 100
 // applier); re-exported here for this page's historical importers.
 export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
+import { consumeChatHandoff, subscribeChatHandoff } from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
 import { usePanelTabs, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -112,7 +113,7 @@ import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl
 import { fileLandingSlot } from '../utils/uploadRouting'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
 import { toSlug } from '../utils/shareUrl'
-import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
+import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview, promptImages, promptBody, pinHandoffY, pinPushTravel, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
@@ -1050,6 +1051,47 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const t = setTimeout(() => setPrefillHint(false), 10000)
     return () => clearTimeout(t)
   }, [prefillHint])
+
+  // Drain the error hand-off channel ("Ask the agent" on an error surface).
+  // sessionStorage rather than Redux because the root ErrorBoundary's button has
+  // to work after a hard reload, when the store it would have dispatched to is
+  // gone. Feeding pendingInput keeps a single downstream prefill path.
+  //
+  // Two triggers: on mount (arriving from another route, or a full reload) and on
+  // the subscription (an error surface inside chat hands off with no route
+  // change, so nothing remounts).
+  useEffect(() => {
+    if (embedded) return
+    // Wait for a slot before consuming. The channel is SINGLE-USE, and on the
+    // hard-nav path (the root ErrorBoundary reloads the page) this effect runs
+    // with activeSlot still null: the pending-input consumer then cannot persist
+    // the prompt as a draft, and the slot-restore that follows overwrites the
+    // composer — losing the prompt for good. The 60s hand-off TTL covers the wait,
+    // and this effect re-runs once the slot appears.
+    if (!activeSlot) return
+    const drain = () => {
+      const prompt = consumeChatHandoff()
+      if (!prompt) return
+      // APPEND when the composer already holds unsent text — same hazard, and
+      // same helper, as `followupAddToSession` below: the pending-input consumer
+      // replaces the draft AND persists it, so a plain set would silently
+      // destroy whatever the user was mid-way through typing. This is reachable
+      // precisely because the subscription fires with no route change, while
+      // error surfaces INSIDE chat (a failed PR action, a message that failed to
+      // render) hand off from under a composer in use.
+      // Merge against the text that actually belongs to `activeSlot`. On the
+      // hard-nav path the composer may not have adopted this slot's stored draft
+      // yet — `composerSlotRef` lags `activeSlot` — and merging against an empty
+      // composer would make the pending-input consumer persist the prompt OVER
+      // the stored draft. When they agree, the live composer value is the truth.
+      const base = composerSlotRef.current === activeSlot
+        ? inputRef.current
+        : drafts.current[activeSlot] ?? ''
+      dispatch(setPendingInput(mergeIntoDraft(base, prompt)))
+    }
+    drain()
+    return subscribeChatHandoff(drain)
+  }, [dispatch, embedded, activeSlot])
 
   // Consume pendingInput from Redux (e.g. from "Chat" button on Projects page)
   useEffect(() => {
@@ -3347,11 +3389,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!activeSlot) return
     // APPEND when the composer already holds unsent text: the pending-input path
     // replaces the draft and persists it, so a plain set would silently destroy
-    // whatever the user was mid-way through typing.
-    // `inputRef` is the live composer value; a blank line separates the two
-    // because a handoff prompt is multi-line prose, not a word to concatenate.
-    const draft = inputRef.current ?? ''
-    dispatch(setPendingInput(draft.trim() ? `${draft.replace(/\s+$/, '')}\n\n${item.prompt}` : item.prompt))
+    // whatever the user was mid-way through typing. `inputRef` is the live
+    // composer value; `mergeIntoDraft` is shared with the error → agent hand-off
+    // drain so the two paths cannot drift.
+    dispatch(setPendingInput(mergeIntoDraft(inputRef.current, item.prompt)))
     // Clear by the RENDERED card's ts, as the worktree action does: a newer card
     // for this slot can land between render and click, and an unqualified clear
     // would delete suggestions the user never saw.

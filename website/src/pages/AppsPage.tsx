@@ -35,6 +35,7 @@ import { hasHeroArt } from '../components/appstore/useHeroArt'
 import { isVerified, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
 
 import { i18nT } from '../i18n/t'
+import ErrorNotice from '../components/ErrorNotice'
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
 type RemovableDep = UninstallPreview['dependencies']['removable'][number]
@@ -394,10 +395,11 @@ export default function AppsPage() {
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {/* Notifications */}
         {displayError && (
-          <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-center gap-3 animate-rise">
-            <span className="text-danger text-sm flex-1">{displayError}</span>
-            <button aria-label={i18nT('pages.appsPage.dismiss_error')} className="text-danger/60 hover:text-danger text-sm" onClick={() => { setError(''); setDismissedQueryError(true) }}><X className="lucide-inline" /></button>
-          </div>
+          <ErrorNotice
+            message={displayError}
+            onDismiss={() => { setError(''); setDismissedQueryError(true) }}
+            className="mb-4 animate-rise"
+          />
         )}
         {successMsg && (
           <div className="mb-4 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>

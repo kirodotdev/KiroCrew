@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, X, Hourglass, Package } from 'lucide-react'
+import { Hourglass, Package } from 'lucide-react'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import { api } from '../../api/client'
 import { listMicrophones, getPreferredMicId, setPreferredMicId, micAudioConstraints, reportIfMicDenied } from '../../hooks/mic'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 interface SttConfig {
   enabled: boolean
   provider: string
@@ -201,13 +202,11 @@ export default function SttSettings() {
 
   return (
     <>
-      {err && (
-        <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
-          <AlertTriangle className="lucide-inline shrink-0 text-danger" />
-          <span className="text-sm text-danger flex-1">{err}</span>
-          <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none" aria-label={i18nT('pages.settings.sttSettings.dismiss_error')} onClick={() => { dismissedErrorRef.current = err; setErr(''); sttQ.refetch() }}><X className="lucide-inline" /></button>
-        </div>
-      )}
+      <ErrorNotice
+        message={err}
+        onDismiss={() => { dismissedErrorRef.current = err; setErr(''); sttQ.refetch() }}
+        className="mb-4 animate-rise"
+      />
       <SettingsCard>
         <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} description={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
 

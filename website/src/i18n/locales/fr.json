@@ -4379,7 +4379,6 @@
       "become_installable_and_run_setup_with_gateway_pr": "deviennent installables et exécutent leur configuration avec les privilèges de la passerelle.",
       "branch": "Branche",
       "cancel": "Annuler",
-      "dismiss_error": "Ignorer l'erreur",
       "dismiss_trust_notice": "Ignorer l'avis de confiance",
       "display_name": "Nom affiché",
       "e_g_identity_services": "ex. Identity Services",
@@ -4927,6 +4926,14 @@
       "clear_filter": "Effacer le filtre",
       "no_matches_for": "Aucun résultat pour",
       "no_noun_match": "Aucun(e) {{noun}} correspondant(e)"
+    },
+    "askAgent": {
+      "ask_the_agent": "Demander à l'agent",
+      "open_a_chat_with_this_error_s_context_attached": "Ouvrir une conversation avec tout le contexte de cette erreur",
+      "prompt_lead": "Cette erreur vient d'apparaître dans le tableau de bord Kiro Crew. Diagnostique la cause racine et corrige-la."
+    },
+    "errorNotice": {
+      "dismiss": "Ignorer"
     }
   },
   "hooks": {
@@ -5239,7 +5246,6 @@
       "dependencies": "Dépendances :",
       "discover": "Découvrir",
       "discover_install_and_manage_agentic_apps": "Découvrez, installez et gérez des applications agentiques",
-      "dismiss_error": "Ignorer l'erreur",
       "dismiss_message": "Ignorer le message",
       "failed_to_load_apps": "Échec du chargement des applications",
       "failed_to_load_registry": "Échec du chargement du registre",
@@ -7984,7 +7990,6 @@
         "default_reasoning_effort": "Effort de raisonnement par défaut",
         "default_to_autopilot_mode": "Mode Autopilot par défaut",
         "describe_your_role": "Décrivez votre rôle",
-        "dismiss": "Ignorer",
         "display_time_on_each_message": "Afficher l'heure sur chaque message",
         "display_usage_percentage_next_to_the_context_pro": "Afficher le pourcentage d'utilisation à côté de la barre de progression du contexte",
         "e_g_solutions_architect_sre_founder": "p. ex. architecte de solutions, SRE, fondateur",
@@ -8545,7 +8550,6 @@
         "bcp_47_language_code_for_speech_recognition": "Code de langue BCP-47 pour la reconnaissance vocale",
         "default": "default",
         "dictation_panel": "Panneau de dictée",
-        "dismiss_error": "Ignorer l'erreur",
         "enabled": "Activé",
         "input_device_used_to_capture_your_voice": "Périphérique d'entrée utilisé pour capter votre voix",
         "install_mlx_whisper": "Installer MLX Whisper",
@@ -8677,7 +8681,6 @@
         "aws_region_for_polly_api": "Région AWS pour l'API Amazon Polly",
         "aws_region_polly": "Région AWS (Amazon Polly)",
         "default": "default",
-        "dismiss": "Ignorer",
         "engine": "Moteur",
         "failed_to_load_voice_config": "Échec du chargement de la configuration vocale.",
         "path_to_the_piper_executable_leave_blank_to_auto": "Chemin vers l'exécutable piper. Laissez vide pour une détection automatique dans PATH ou ~/piper-venv/bin/piper",

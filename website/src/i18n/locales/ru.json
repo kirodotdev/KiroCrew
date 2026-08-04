@@ -4438,7 +4438,6 @@
       "become_installable_and_run_setup_with_gateway_pr": "становятся доступными для установки и выполняют настройку с правами шлюза.",
       "branch": "Ветка",
       "cancel": "Отмена",
-      "dismiss_error": "Скрыть ошибку",
       "dismiss_trust_notice": "Скрыть уведомление о доверии",
       "display_name": "Отображаемое имя",
       "e_g_identity_services": "например, Identity Services",
@@ -4987,6 +4986,14 @@
       "clear_filter": "Очистить фильтр",
       "no_matches_for": "Нет совпадений для",
       "no_noun_match": "Нет совпадающих {{noun}}"
+    },
+    "askAgent": {
+      "ask_the_agent": "Спросить агента",
+      "open_a_chat_with_this_error_s_context_attached": "Открыть чат с полным контекстом этой ошибки",
+      "prompt_lead": "Эта ошибка только что возникла в панели Kiro Crew. Определи первопричину и устрани её."
+    },
+    "errorNotice": {
+      "dismiss": "Скрыть"
     }
   },
   "hooks": {
@@ -5304,7 +5311,6 @@
       "dependencies": "Зависимости:",
       "discover": "Обзор",
       "discover_install_and_manage_agentic_apps": "Находите и устанавливайте агентные приложения и управляйте ими",
-      "dismiss_error": "Скрыть ошибку",
       "dismiss_message": "Скрыть сообщение",
       "failed_to_load_apps": "Не удалось загрузить приложения",
       "failed_to_load_registry": "Не удалось загрузить реестр",
@@ -8071,7 +8077,6 @@
         "default_reasoning_effort": "Уровень рассуждений по умолчанию",
         "default_to_autopilot_mode": "Автопилот по умолчанию",
         "describe_your_role": "Опишите свою роль",
-        "dismiss": "Скрыть",
         "display_time_on_each_message": "Показывать время у каждого сообщения",
         "display_usage_percentage_next_to_the_context_pro": "Показывать процент использования рядом с индикатором контекста",
         "e_g_solutions_architect_sre_founder": "например: архитектор решений, SRE, основатель",
@@ -8632,7 +8637,6 @@
         "bcp_47_language_code_for_speech_recognition": "Код языка BCP-47 для распознавания речи",
         "default": "по умолчанию",
         "dictation_panel": "Панель диктовки",
-        "dismiss_error": "Закрыть ошибку",
         "enabled": "Включено",
         "input_device_used_to_capture_your_voice": "Устройство ввода для записи вашего голоса",
         "install_mlx_whisper": "Установить MLX Whisper",
@@ -8764,7 +8768,6 @@
         "aws_region_for_polly_api": "Регион AWS для API Amazon Polly",
         "aws_region_polly": "Регион AWS (Amazon Polly)",
         "default": "по умолчанию",
-        "dismiss": "Закрыть",
         "engine": "Движок",
         "failed_to_load_voice_config": "Не удалось загрузить настройки голоса.",
         "path_to_the_piper_executable_leave_blank_to_auto": "Путь к исполняемому файлу piper. Оставьте пустым для автоопределения в PATH или ~/piper-venv/bin/piper",
