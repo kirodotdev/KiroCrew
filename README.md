@@ -494,9 +494,9 @@ feature requests. Do not file security vulnerabilities publicly.
 
 ## Contributors
 
-KiroCrew was made possible by its internal community, the people who supported the
+Kiro Crew was made possible by its internal community, the people who supported the
 project and shipped its code, together with everyone who has since opened a pull
-request in the open. This is that founding group; as KiroCrew grows in the open, we
+request in the open. This is that founding group; as Kiro Crew grows in the open, we
 look forward to many more contributors joining them. Thank you to everyone who helped
 make this tool possible:
 

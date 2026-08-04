@@ -1,6 +1,6 @@
-# Contributing to KiroCrew
+# Contributing to Kiro Crew
 
-Thanks for your interest in contributing! KiroCrew is an open-source project and
+Thanks for your interest in contributing! Kiro Crew is an open-source project and
 we welcome issues and pull requests.
 
 ## Reporting Bugs and Requesting Features
@@ -10,7 +10,7 @@ do, search the open issues, because the fastest resolution is often a thread tha
 already exists.
 
 For a bug, what actually helps is a way to reproduce it, the version you are on,
-your operating system, and anything unusual about how KiroCrew is installed or
+your operating system, and anything unusual about how Kiro Crew is installed or
 where it runs. A stack trace beats a description of a stack trace. If it only
 happens on one surface, say which one, because the dashboard, the CLI, and a chat
 channel take different paths through the code.
@@ -84,7 +84,7 @@ how code gets written, tested, and reviewed here:
 - **`babysit`** — same-session monitoring loop that keeps a PR moving through
   CI and review rounds.
 
-An agent contributing to KiroCrew loads this suite and follows the same
+An agent contributing to Kiro Crew loads this suite and follows the same
 worktree → build gate → prepare-pr → review loop human contributors use, so
 the PR process stays consistent regardless of who is writing the code. If you
 change the workflow, change it THERE — those files are the single source of
@@ -315,7 +315,7 @@ Key entry points:
 
 Full reference: [AGENTS.md](AGENTS.md)
 
-## Extending KiroCrew
+## Extending Kiro Crew
 
 - **Skills** — drop markdown files in `skills/` or `~/.kiro/crew/skills/`. See [skills/README.md](skills/README.md) for the full format reference
 - **MCP tools** — add to `mcp_core.py` or `mcp_cron.py`. Every LLM-facing command must have an MCP tool
@@ -480,7 +480,7 @@ means following it, and the file names where to report a concern.
 
 ## Licensing
 
-KiroCrew is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for the
+Kiro Crew is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for the
 full text and [NOTICE](NOTICE) for attribution. Third-party components carry their
 own licenses, recorded in [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
 
