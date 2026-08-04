@@ -2,7 +2,7 @@
  * useRefreshScheduler — proactively refresh the dashboard's access cookie
  * before it expires.
  *
- * Spec: KiroCrew docs/token-refresh/REQUIREMENTS.md (backend feature).
+ * Spec: Kiro Crew docs/system-specs/features/dashboard-token-auth.md (backend feature).
  *
  * Architecture:
  *   - `useQuery({ queryKey: ['auth-me'] })` is the single source of truth

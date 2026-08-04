@@ -12,7 +12,7 @@
  * SVG icons, session palettes, test mocks) contains many legitimate literals,
  * so the checker exits 0 by default and only reports. Pass `--strict` to exit
  * non-zero (for a future ratchet once the baseline is burned down). It is NOT
- * wired into the blocking CI gate yet — see docs/theming-contract.md.
+ * wired into the blocking CI gate yet — see website/docs/theming-contract.md.
  *
  * Usage:
  *   node scripts/check-theme-colors.mjs           # report, exit 0
@@ -80,7 +80,7 @@ if (total === 0) {
 offenders.sort((a, b) => b.count - a.count)
 console.log(
   `theme-colors: ${total} raw color literal(s) across ${offenders.length} file(s) ` +
-    `(advisory — see docs/theming-contract.md).`
+    `(advisory — see website/docs/theming-contract.md).`
 )
 for (const o of offenders.slice(0, 20)) {
   console.log(`  ${o.rel}: ${o.count}  [lines: ${o.lines.slice(0, 10).join(', ')}${o.lines.length > 10 ? ', …' : ''}]`)

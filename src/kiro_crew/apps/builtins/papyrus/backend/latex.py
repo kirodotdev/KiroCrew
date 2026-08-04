@@ -405,7 +405,7 @@ async def _run(
         # So the refusal is reported, not bypassed: the caller maps it to a 422
         # carrying the sandbox layer's own remedy text, which names the
         # `agent.sandbox_allow_unsandboxed_exec` opt-in that
-        # `docs/WINDOWS_CHANGES.md` documents for exactly this host.
+        # `docs/guides/windows-install.md` documents for exactly this host.
         _audit(operation, argv[0], "denied", error=f"sandbox unavailable ({exc.kind})")
         raise
     proc: asyncio.subprocess.Process | None = None

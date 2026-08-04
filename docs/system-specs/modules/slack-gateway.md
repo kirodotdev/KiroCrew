@@ -1,7 +1,5 @@
 # Slack Gateway Module
 
-Last Updated: 2026-07-13 (slack-link fresh-anchor title fallback chain; messaging transport path + `/kirocrew restart` / `!restart` + OPTIONS buttons in send_message/cron + AcpPromptBusy auto-reset documented; prior: challenge-and-redirect REMOVED — Slack messages are processed inline; was an Amazon-internal-only posture)
-
 ## Overview
 
 The Slack integration (`kiro_crew/slack/`) connects KiroCrew to Slack via Socket Mode. DMs are routed through ACP to kiro-cli with real-time streaming and interactive tool approval.
@@ -225,7 +223,7 @@ Slack `file_share` messages are processed in `_route_message()` after dedup + au
 - **Mimetypes**: `audio/*`, `video/webm`
 - **Flow**: Download via `SlackClientOps.download_file()` → local whisper CLI → transcription text prepended as `[Voice memo transcription]...[End of transcription]`
 - **Config**: Enabled by default (`stt.enabled = true`). Actual availability gated by whisper binary presence.
-  On AL2, install whisper via `brew install openai-whisper` (see `docs/kiro-cli/chat/voice.md`).
+  On AL2, install whisper via `brew install openai-whisper` (see `docs/reference/kiro-cli/chat/voice.md`).
   Model default: `turbo` (~1.6 GB download, 809M params, ~8x faster than large).
   Device, timeout configurable.
 - **Security**: Transcription output run through `redact_credentials()` + `redact_exfiltration_urls()` before injection. Audio file suffix sanitized to alphanumeric only.

@@ -450,7 +450,7 @@ describe('a number is never glued to a unit literal', () => {
     // branch that FIXES a site and order it to come back and edit `BASELINE` — one
     // shared number that every parallel branch has to rewrite. The regression is
     // covered by the two diff-scoped gates below, which is what licenses relaxing
-    // this one; see the ratchet rule in `website/AGENTS.md`.
+    // this one; see the ratchet rule in `docs/ci/i18n-gates.md`.
     expect(
       offenders.length,
       `${ADVICE}\n\n${offenders.slice(0, 15).join('\n')}`,

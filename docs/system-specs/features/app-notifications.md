@@ -1,7 +1,5 @@
 # App Notification Producers (Push Endpoint) — Design Document
 
-Last Updated: 2026-07-22 (initial: RFC local notification bus, Phase 2)
-
 ## Overview
 
 Phase 2 of the local notification bus (`docs/request-for-change/rfc-local-notification-bus.md`): installed apps become first-class notification producers. An app declares its channels in `app.json`, then pushes notifications through `POST /api/notifications/push` authenticated with its app token. The gateway resolves the producer identity server-side from the verified token (never from the request body), enforces manifest-declared channels, and applies a per-app rate limit. Delivered notes flow through the Phase 1 `NotificationBus` sink (`DashboardState._deliver_note`), which redacts, broadcasts to SSE clients, and persists.

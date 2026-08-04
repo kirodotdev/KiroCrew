@@ -35,7 +35,7 @@ requires_git = pytest.mark.skipif(not _HAS_GIT, reason="git not available")
 # The backend runs natively on Windows (kiro_crew.platform_compat), but a
 # handful of suites exercise POSIX-only-by-design features (OS-level
 # sandbox, process groups / PGID semantics, PTY, AF_UNIX sockets -- see
-# docs/windows-install.md's per-feature table). Skip collecting them on
+# docs/guides/windows-install.md's per-feature table). Skip collecting them on
 # Windows rather than marking test-by-test: several fail at import or
 # fixture time on win32.
 from kiro_crew import platform_compat  # noqa: E402

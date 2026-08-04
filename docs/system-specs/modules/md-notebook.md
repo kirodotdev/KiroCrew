@@ -1,7 +1,5 @@
 # Notes Module
 
-Last Updated: 2026-07-31
-
 ## Overview
 
 Notes is a builtin App Store app (`kiro_crew/apps/builtins/md_notebook/`) for keeping a

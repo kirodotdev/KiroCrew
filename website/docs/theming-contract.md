@@ -2,7 +2,7 @@
 
 The dashboard is fully themable. A **theme** ranges from a color palette
 (Level 0) up to a full experience pack; a color theme is the degenerate case of
-a pack. Themes are a **standalone subsystem built on `useTheme`** — not apps.
+a pack. Themes are a **standalone subsystem built on `useTheme`**, not apps.
 Source of truth: the in-repo system spec
 [`docs/system-specs/modules/themes.md`](../../docs/system-specs/modules/themes.md).
 This document is the **frontend pack-author contract**; the spec governs the
@@ -17,15 +17,15 @@ KiroCrew" error. Author against the current major; breaking manifest changes
 bump it.
 
 **Every new UI element MUST be themable at least at the color layer.** Style it
-with the theme CSS custom properties or Tailwind classes mapped to them —
+with the theme CSS custom properties or Tailwind classes mapped to them,
 **never** a hardcoded `#hex` / `rgb(...)` / `rgba(...)` literal.
 
 ```tsx
-// ❌ don't
+// don't
 <div style={{ background: '#16213e', color: '#fff' }} />
 <div className="bg-gray-900 text-white" />
 
-// ✅ do
+// do
 <div style={{ background: 'var(--card)', color: 'var(--card-fg)' }} />
 <div className="bg-[var(--card)] text-[var(--card-fg)]" />
 ```
@@ -39,9 +39,27 @@ When you genuinely need a new color role, add the variable to **both** sides in
 parity (a parity test guards drift), then define it in **every** built-in theme:
 
 - Frontend: `ALLOWED_CSS_VARS` in `src/hooks/useTheme.tsx`
-- Backend: `_THEME_CSS_VARS_SET` in `src/kiro_crew/dashboard/handlers/agents.py`
+- Backend: `_THEME_CSS_VARS_SET` (built from `_THEME_CSS_VARS`) in
+  `src/kiro_crew/dashboard/theme_validate.py`
 
 Never introduce a one-off literal instead of a variable.
+
+Both sides are checked from Python: `test/test_theme_css_security.py`
+(`TestCssVarsSetSync`) asserts the required roles and the shadow roles are in the
+backend set and that an unknown name is not, and `TestThemeVarsFilter` asserts the
+filter keeps known keys, drops unknown ones, and drops unsafe values. The CSS
+parsers on the two sides are pinned against each other by a shared fixture,
+`test/fixtures/theme_css_corpus.json`: `test/test_theme_install.py`
+(`TestCssParserCorpus`) asserts the `installAccepts` column and
+`src/test/themeCssCorpus.test.tsx` asserts the `runtimeKeeps` column of the same
+cases, so a future divergence between them fails a test rather than a user. The
+two parsers differ by design (install-time is a denylist, runtime is a positive
+allowlist), which is exactly why the corpus pins both verdicts.
+
+`src/test/PhasedViewTheme.test.tsx` guards the other drift direction: it parses
+`index.css` for every custom property any theme block defines, and asserts a view
+references no token that does not exist. A `var(--nope, #16213e)` fallback would
+otherwise always win and silently ignore the active theme.
 
 ## What is / isn't customizable
 
@@ -55,15 +73,91 @@ Out of contract: app structure/routing, functional-control behavior, security
 chrome, and anything outside the CSS-var set + the `overrides.css` selector
 allowlist.
 
+## Stable hooks
+
+An L1 pack's `overrides.css` may only target the surfaces below. This is the list
+that the source comments citing this file point at, and it is the runtime
+boundary, not a style suggestion: `_scopeOverridesCss` in
+`src/hooks/useTheme.tsx` DROPS every rule whose selector group does not pass, so a
+rule aimed at anything else never reaches the document.
+
+**Six class hooks** (`_ALLOWED_CLASSES`):
+
+| Class | Where it is applied |
+|---|---|
+| `topbar` | the header shell (`App.tsx`) |
+| `sidebar` | the chat session list (`ChatSidebar.tsx`) |
+| `chat-container` | the chat scroll region (`ChatPane.tsx`, `ChatPage.tsx`) |
+| `message-bubble` | a user or assistant turn (`chat/UserMessage.tsx`, `chat/AssistantMessage.tsx`) |
+| `input-area` | the composer (`ChatInput.tsx`) |
+| `code-block` | a rendered fenced block (`CodeBlock.tsx`, `MonacoCodeBlock.tsx`) |
+
+Do not rename or drop one of these classes when refactoring the component that
+carries it. There is no compiler reference to break, so the only signal is a
+shipped pack quietly losing its styling. Keep the comment next to the class too:
+it is what tells the next reader the class is API.
+
+**Element hooks** (`_ALLOWED_ELEMENTS` is `''`, `body`, `button`):
+
+- **`button.primary`** is a special case: a bare `button` selector is rejected, and
+  a `button` compound is kept ONLY when it also carries `.primary`. So a pack can
+  restyle the primary action and cannot restyle every button in the app.
+- **Bare `body`** is allowed, but only bare: `body`, `body::before`, `body::after`
+  (a single-colon `:before` / `:after` is tolerated). Any class on `body`, or any
+  other pseudo-element on it, is rejected. The two pseudo-elements exist for the
+  decorative-overlay idiom (a scanline, a vignette).
+- The empty-string element means a class-only compound such as `.topbar:hover`,
+  which is the normal case.
+
+**Forbidden classes** (`_FORBIDDEN_CLASSES`, rejected even when chained onto an
+otherwise-allowed compound): `token`, `credential`. These name credential-bearing
+chrome, and a pack that could restyle them could hide or spoof them.
+
+**Selector shape.** Every selector in a comma group must pass, and each one must
+be a single compound:
+
+- **No combinators.** Whitespace, `>`, `+` and `~` are all rejected, so
+  `.topbar .btn` never applies. Style the hook itself, not its descendants.
+- **No ids and no attribute selectors** in the compound. This is what blocks
+  `#app-root` and `[data-auth]`.
+- **One optional `[data-theme="…"]` prefix** may lead the selector, with or without
+  a leading `html`, and it is stripped before the compound is checked. So
+  `[data-theme="mytheme-dark"] .topbar` and `html[data-theme="mytheme-dark"] body`
+  are both fine, but a second prefix is not.
+- Chained classes and pseudo-classes on the SAME base are fine
+  (`.topbar:hover`, `.message-bubble.mine`). Single-colon pseudo-classes are
+  ignored by the check.
+
+An `@media` block is recursed into with its wrapper preserved and its inner rules
+filtered the same way; every other at-rule is dropped. A kept rule's declaration
+body is then denylisted (`@import`, `expression()`, `javascript:`, `-moz-binding`,
+an external `url()`), both raw and after CSS escape-decoding, so an escaped token
+cannot hide from the scoper.
+
+**Install-time forbidden selectors.** The backend has its own, independent check.
+`_THEME_CSS_FORBIDDEN` in `src/kiro_crew/dashboard/theme_validate.py` rejects a
+pack outright if its `overrides.css` contains any of `iframe`, `script`,
+`[data-auth]`, `.token`, `.credential`, `#app-root`, matched case-insensitively
+against both the raw text and a comment-stripped, escape-decoded copy. The same
+module also rejects rules that could hijack the viewport or block interaction
+(`z-index` above 9999, `display:none`, `pointer-events:none`, a
+viewport-covering `position:fixed`), with an exemption for purely decorative
+`body::before` / `body::after`.
+
+The two layers are deliberately different models: install-time is a denylist that
+refuses the pack with an explainable error, and the runtime scoper is the positive
+allowlist that is the actual enforced boundary. A rule that slips past the former
+still gets dropped by the latter.
+
 ## Chat loader (compiled seam, not an installed pack)
 
-The loading indicator in the chat footer — shown while a turn is running — is
+The loading indicator in the chat footer (shown while a turn is running) is
 theme-owned, but it is a **compiled seam, not a manifest capability**. It is
 declared in code through `registerThemeBranding()` (`src/themeBranding.tsx`),
 which runs at module load from the composition root (`src/extensions.ts`), so it
 is available to themes **bundled in the build**: the core's own themes and a
 downstream edition's. An *installed* `theme.json` pack cannot ship executable
-registration, so it cannot set a loader — a pack that needs one has to land as a
+registration, so it cannot set a loader; a pack that needs one has to land as a
 compiled theme instead. (A pack can still restyle whatever loader is active via
 CSS; see the colour note below.)
 
@@ -76,10 +170,10 @@ registerThemeBranding({
   mytheme: {
     logo: '/mytheme/logo.png',
 
-    // Level 1 — keep the stock carousel, swap the artwork it cycles.
+    // Level 1: keep the stock carousel, swap the artwork it cycles.
     loaderIcons: [Sun, Moon, Star, Cloud, Comet],
 
-    // Level 2 — replace the indicator outright (wins over loaderIcons).
+    // Level 2: replace the indicator outright (wins over loaderIcons).
     loader: MyMascotLoader,
   },
 })
@@ -92,7 +186,7 @@ from your pool (never repeating the set it replaces or the other layer). Supply 
 least 4; more gives more variety. You inherit the cross-fade, the cascade timing
 and the reduced-motion handling for free.
 
-**`loader`** replaces the whole indicator with your component — a mascot
+**`loader`** replaces the whole indicator with your component: a mascot
 animation, a progress bar, a canvas, anything. It renders with no wrapper beyond
 the footer's padding, so it owns its size, layout and motion. Keep it small (the
 band is ~32px tall), mark it `aria-hidden` (it is decorative), and honour
@@ -110,7 +204,7 @@ takes no props, and is sized to 14px by the carousel. A `lucide-react` glyph
 inherits `currentColor` (the accent) and needs no styling at all.
 
 For bespoke brand art, mind the `use-lucide-icons` rule (`website/AUTOSDE.yaml`):
-lucide ships no mascot marks, so your own art is exempt — but **only while it stays
+lucide ships no mascot marks, so your own art is exempt, but **only while it stays
 an asset**. Keep the art in an `.svg` file, import it by URL, and render it in an
 `<img>`; no `<svg>` element or path data may appear in a `.tsx` file (the CI gate
 blocks that in every file, tests included). Theme it by filtering the `<img>`,
@@ -123,13 +217,13 @@ which traces the rendered alpha, so one asset serves every palette:
 }
 ```
 
-That is how the bundled Kiro poses get their light-palette outline — see
+That is how the bundled Kiro poses get their light-palette outline; see
 `src/components/GhostPoses.tsx` and `src/assets/onboarding/GhostIcons.tsx`.
 
 One implementation constraint if you write a custom `loader`: the carousel's
 cross-fade animation lives on a persistent `.lyr` wrapper rather than on the icon,
 because swapping an icon changes the rendered component type and remounts its
-element — animating the icon itself would restart that animation and desync it
+element, and animating the icon itself would restart that animation and desync it
 from the other layer. If your loader swaps artwork on a timer, animate a stable
 wrapper for the same reason.
 
@@ -143,9 +237,9 @@ npm run lint:theme-colors          # report raw literals in src/ (exit 0)
 node scripts/check-theme-colors.mjs --strict   # exit 1 if any (future ratchet)
 ```
 
-The checker excludes the theme-definition files (`useTheme.tsx`,
-`themeEditor.tsx`, `index.css`, `cssSanitize.ts`, `sessionColors.ts`), tests,
-and generated code. It is **advisory** today (the existing tree has legitimate
-literals in themes/icons/palettes) and is **not** wired into the blocking CI
-gate — enabling `--strict` in CI is a follow-up once the baseline is burned
-down.
+The checker excludes the five files where a raw literal is legitimate
+(`src/hooks/useTheme.tsx`, `src/components/themeEditor.tsx`, `src/index.css`,
+`src/lib/cssSanitize.ts`, `src/utils/sessionColors.ts`), plus tests, generated
+code, and type declarations. It is **advisory** (the existing tree has legitimate
+literals in themes, icons and palettes) and is **not** wired into the blocking CI
+gate; `--strict` becomes a CI gate once the baseline is burned down.

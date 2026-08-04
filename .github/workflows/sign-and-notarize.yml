@@ -2,7 +2,7 @@ name: Sign and Notarize macOS (reusable)
 
 # Reusable workflow: sign the macOS app via the signing service, notarize +
 # staple it, then publish it. Called by nightly.yml (channel: nightly) and release.yml
-# (channel: insider | stable). See docs/signing-runbook.md for the full
+# (channel: insider | stable). See docs/build/signing-runbook.md for the full
 # chain and the credential rotation procedure.
 #
 # Three jobs, chained:

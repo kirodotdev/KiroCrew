@@ -1,7 +1,5 @@
 # Papyrus Module
 
-Last Updated: 2026-08-03
-
 ## Overview
 
 Papyrus is an opt-in (`defaultEnabled: false`) built-in app: a LaTeX paper editor
@@ -658,7 +656,7 @@ no bare `fcntl`/`os.killpg`/`signal.SIGKILL`, `start_new_session=IS_POSIX`
   `GitSandboxUnavailable` (a `GitError` subclass, so existing handlers keep
   working) → 422 `git_sandbox_unavailable`. Both carry the sandbox layer's own
   remedy text, which names the `agent.sandbox_allow_unsandboxed_exec` opt-in that
-  `docs/WINDOWS_CHANGES.md` documents for this host. Bypassing the wrap was
+  `docs/guides/windows-install.md` documents for this host. Bypassing the wrap was
   rejected: `strict` mode is what stops `\input{../../.aws/credentials}` from
   typesetting the operator's keys into the PDF, and `gitops` runs `standard`
   precisely so an SSH push can see the key.

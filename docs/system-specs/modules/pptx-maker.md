@@ -1,7 +1,5 @@
 # PPTX Maker Module
 
-Last Updated: 2026-07-30 (initial import as a first-party builtin app)
-
 ## Overview
 
 PPTX Maker is an opt-in (`defaultEnabled: false`) built-in app that generates

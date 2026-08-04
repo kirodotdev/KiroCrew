@@ -5,7 +5,7 @@ The frozen contract says ``ctx.agent(prompt, schema=<JSON Schema>)`` returns a
 native schema enforcement, and the runtime ships neither ``jsonschema`` nor a
 JSON-Schema-consuming pydantic path — so this module is a small, dependency-free
 validator for the JSON-Schema **subset** the workflow DSL actually uses
-(the constructs in ``docs/dynamic-workflows/research/examples/*``):
+(the constructs in ``docs/system-specs/modules/examples/workflows/*``):
 
     type: object | array | string | integer | number | boolean | null
     object: properties, required
@@ -17,7 +17,7 @@ Leaf module (no intra-package imports) so it sits at the bottom of the layering
 unit-testable against a stub text producer (never a real agent).
 
 Gates: C1 valid object returned · C2 malformed→retry→success, all-malformed→None ·
-C3 schema-violating object rejected. See ``docs/dynamic-workflows/GATES.md``.
+C3 schema-violating object rejected. See ``docs/system-specs/modules/workflow-gates.md``.
 """
 
 from __future__ import annotations

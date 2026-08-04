@@ -1,7 +1,5 @@
 # Standalone provider — removed
 
-Last Updated: 2026-07-13 (Fable 5 registry entry + default-first available_models / bare-id alias dedup noted; KiroCrew collapsed to a single KiroACP / kiro-cli provider)
-
 > **This provider no longer exists in KiroCrew.** The public fork drives a single
 > backend — `kiro-cli` over the Agent Client Protocol (`agent.provider` is fixed
 > to `acp`). The removed standalone provider, the removed Bedrock provider, the

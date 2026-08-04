@@ -1,7 +1,5 @@
 # Issue Radar Module
 
-Last Updated: 2026-08-01
-
 ## Overview
 
 Issue Radar is an opt-in (`defaultEnabled: false`) built-in app for GitHub

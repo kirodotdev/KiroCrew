@@ -97,7 +97,7 @@ packaging/signing/generate-manifest.py:.*com\.amazon\.kiro\.crew
 packaging/signing/manifest-template.json:.*com\.amazon\.kiro\.crew
 packaging/signing/sign-dmg.sh:.*com\.amazon\.kiro\.crew
 packaging/build-desktop.sh:.*com\.amazon\.kiro\.crew
-docs/signing-runbook.md:.*com\.amazon\.kiro\.crew
+docs/build/signing-runbook.md:.*com\.amazon\.kiro\.crew
 # Same signed identity, in the computer-use self-denylist: KiroCrew's own
 # dashboard can flip this feature's primary enable, edit the denied-command
 # opt-out and change approval mode — all reachable ONLY out-of-band precisely so

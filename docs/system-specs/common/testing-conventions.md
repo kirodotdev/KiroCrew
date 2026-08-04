@@ -1,7 +1,5 @@
 # Testing Conventions
 
-Last Updated: 2026-07-18
-
 ## Framework
 
 - `pytest` with `pytest-asyncio` for async tests
@@ -104,6 +102,88 @@ test). The sweep's own behavior belongs in its own module's tests.
   sweeps as orphans on its next restart.
 - Tests SHOULD be fast (< 1s each)
 - Async tests MUST use `@pytest.mark.asyncio`
+
+## Running the suite: the defaults, and how to narrow safely
+
+The checkpoint run is the whole suite with the configured defaults:
+
+```bash
+python -m pytest
+```
+
+`setup.cfg`'s `[tool:pytest] addopts` supplies `--verbose`,
+`--ignore=build/private`, `-n auto`, `--dist loadgroup`, `--max-worker-restart=2`,
+`--timeout=120`, `--durations=5` and `--color=yes`. Coverage is deliberately NOT in
+`addopts`: measured on a 1,231-test subset it cost +21% wall time and +36% peak
+worker RSS on every local and agent run, while CI asks for it explicitly. So you no
+longer need an override just to avoid coverage.
+
+### A multi-test `--override-ini` MUST re-state the xdist flags
+
+`--override-ini="addopts=..."` REPLACES the whole list. Anything you leave out is
+silently gone, and two of the defaults are load-bearing:
+
+- **`--dist loadgroup`** is what honors `@pytest.mark.xdist_group`. Under
+  `loadgroup` the scheduling unit is a test's own nodeid unless it carries the mark,
+  in which case the group collapses to a shared scope and those tests land on ONE
+  worker. Drop the flag and the concurrency-sensitive tests that depend on
+  serialization are scattered across workers, which produces flaky races rather than
+  a clean failure. Nothing warns you.
+- **`--max-worker-restart=2`** turns worker loss into a fast loud failure. Without a
+  cap, xdist silently clones replacements up to `numprocesses * 4`: a 10-worker run
+  quietly restarts 40 times, and on a host that has started swapping that is roughly
+  20 minutes of zero progress and an empty log. Two replacements absorb a genuine
+  one-off crash; past that the run is not going to finish.
+
+So any override that still runs MANY tests must carry
+`-n auto --dist loadgroup --max-worker-restart=2`:
+
+```bash
+python -m pytest --testmon \
+  --override-ini="addopts=-v --ignore=build/private -n auto --dist loadgroup --max-worker-restart=2 --durations=5 --color=yes" \
+  -q 2>&1 | tail -25
+```
+
+### Selective execution with testmon
+
+`pytest-testmon` tracks which source files each test touches and runs only the
+tests affected by your changes. It is declared in `setup.cfg`'s `dev` extra (what
+`make build` installs), not in `pyproject.toml`'s `dependency-groups` dev that CI
+uses, so a CI-shaped environment will not have it.
+
+```bash
+# Only tests affected by the current changes.
+python -m pytest --testmon --override-ini="addopts=..." -q
+
+# Only the tests that failed last run.
+python -m pytest --lf --override-ini="addopts=..." -q
+```
+
+The first `--testmon` run builds the dependency database, so it costs a full pass;
+the wins come after.
+
+### One file or one test: use `-n0`
+
+Per-worker startup dominates a small selection, so parallelism makes a narrow run
+SLOWER. One measured test took 36.9s under `-n 2` and about 1.4s under `-n0`.
+
+```bash
+python -m pytest test/test_dashboard_chat.py -n0 -q
+python -m pytest -k "flush_segment" -n0 -q
+python -m pytest -n0 -k test_name --pdb        # -n0 is also what makes --pdb usable
+```
+
+`-n0` on the command line overrides the `addopts` `-n auto` without replacing the
+rest of the list, which is why a single-file run needs no `--override-ini` at all.
+
+### Which to use when
+
+| Scenario | Command |
+|---|---|
+| Iterating on one task | `pytest --testmon` with the full override above |
+| Debugging a specific failure | `pytest --lf` with the override, or `-k "test_name" -n0` |
+| One file | `pytest test/test_foo.py -n0 -q` |
+| Checkpoint before committing | `black && isort && flake8 && mypy && python -m pytest` |
 
 ## Determinism: the four flake classes
 

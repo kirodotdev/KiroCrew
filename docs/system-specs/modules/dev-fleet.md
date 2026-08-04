@@ -1,7 +1,5 @@
 # Dev Fleet Module
 
-Last Updated: 2026-07-22
-
 ## Overview
 
 Dev Fleet is a builtin App Store app (`kiro_crew/apps/builtins/dev_fleet/server.py`) for

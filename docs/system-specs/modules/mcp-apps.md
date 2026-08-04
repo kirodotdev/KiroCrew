@@ -1,7 +1,5 @@
 # MCP Apps (SEP-1865 interactive app rendering via gatewayd)
 
-Last Updated: 2026-07-25 (review-round hardening: fresh-per-call tools/list authorization, Windows owner-only DACL on spool files, endpoint session-ownership + ephemeral gate, binding-before-claim render order, additive v1 fields `tool_input`/`result_content`, session-scoped frontend keying + eviction. Initial spec same day — Milestone 1, stdio transport, flag `KIROCREW_MCP_APPS`)
-
 Interactive MCP Apps: a pooled MCP server declares a `ui://` resource on a tool; when that tool's result flows through gatewayd, the gateway fetches the app's HTML document, spools it to disk, and injects an opaque marker into the result text. The dashboard intercepts the marker, renders the app inline at the tool-call transcript row inside a sandboxed null-origin iframe, and relays the app's `tools/call` requests back through the gateway under a deny-by-default visibility gate.
 
 Producer side is gated by the `KIROCREW_MCP_APPS` env flag (default OFF — flag off is byte-identical legacy behavior). The dashboard consumer side is flag-independent: a marker that appears is handled.

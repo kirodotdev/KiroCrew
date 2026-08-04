@@ -1,7 +1,5 @@
 # Side Conversation Module
 
-Last Updated: 2026-05-20 (Phase 1 MVP — `/side` 5th Activity Panel tab)
-
 ## Overview
 
 The side conversation module adds an ephemeral Q&A thread to a parent chat

@@ -96,7 +96,7 @@ class GitSandboxUnavailable(GitError):
     A subclass so existing ``except GitError`` handlers keep working, but the
     route layer can answer with its own code: the remedy is an operator config
     change (``agent.sandbox_allow_unsandboxed_exec``, per
-    ``docs/WINDOWS_CHANGES.md``), not anything about the repository. Reported
+    ``docs/guides/windows-install.md``), not anything about the repository. Reported
     rather than bypassed — push runs in ``standard`` mode precisely because an
     SSH push needs the key, so silently dropping the wrap would hand an
     agent-writable repo config a shell with ``~/.ssh`` in reach.

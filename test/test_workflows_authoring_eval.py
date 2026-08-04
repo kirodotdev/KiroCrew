@@ -14,7 +14,7 @@ scripts so the first-try RATE is a real measurement, not a tautology. A live
 promptfarm/eval that feeds real agent output through this same harness is the
 production form (see VALIDATION.md §4); this test is the deterministic floor.
 
-See ``docs/dynamic-workflows/GATES.md`` (G1, G2).
+See ``docs/system-specs/modules/workflow-gates.md`` (G1, G2).
 """
 
 from __future__ import annotations
@@ -29,11 +29,17 @@ from kiro_crew.workflows.validate import validate
 NOW = "2026-06-18T00:00:00Z"
 
 _EXAMPLES_DIR = (
-    Path(__file__).resolve().parent.parent / "docs" / "dynamic-workflows" / "research" / "examples"
+    Path(__file__).resolve().parent.parent
+    / "docs"
+    / "system-specs"
+    / "modules"
+    / "examples"
+    / "workflows"
 )
 
-# First-try valid-script rate target (GATES.md G1 — set during M1). The shipped
-# examples are all valid; we keep the bar honest at ≥ 0.80.
+# First-try valid-script rate target (gate G1 in
+# docs/system-specs/modules/workflow-gates.md). The shipped examples are all
+# valid; we keep the bar honest at >= 0.80.
 G1_TARGET = 0.80
 
 

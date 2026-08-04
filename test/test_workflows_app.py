@@ -147,14 +147,15 @@ def test_handle_run_uses_injected_runner_and_agent() -> None:
 
 def test_handle_examples_lists_shipped_dsl_examples() -> None:
     examples = handle_examples()
-    # The repo ships example workflow scripts; each must parse to a name + source.
-    assert isinstance(examples, list)
-    if examples:  # examples dir present in this checkout
-        for ex in examples:
-            assert ex["name"] and isinstance(ex["source"], str)
+    # Assert non-empty rather than guarding on it: `_examples_dir()` returns "" when
+    # it cannot resolve the directory, so a guarded body passes vacuously and a moved
+    # examples tree silently empties the app's example picker. Tests only run from a
+    # source checkout, where the directory is always present.
+    assert examples, "handle_examples() found no shipped examples — did the docs tree move?"
+    for ex in examples:
+        assert ex["name"] and isinstance(ex["source"], str)
         # every shipped example must itself be a VALID workflow script
-        for ex in examples:
-            assert handle_validate({"source": ex["source"]})["ok"] is True, ex["name"]
+        assert handle_validate({"source": ex["source"]})["ok"] is True, ex["name"]
 
 
 # --------------------------------------------------------------------------- #

@@ -46,7 +46,7 @@ custom-rules:
       - Decorative icons: `text-[10px]`–`text-[11px]`
       - Code blocks: 13px mono
 
-      See the Typography scale section in AGENTS.md — Frontend Architecture.
+      See the Typography scale rules in website/docs/frontend-conventions.md.
 
   - id: use-design-tokens
     blocking: false
@@ -67,7 +67,7 @@ custom-rules:
       - Semantic: `--ok` (green), `--warn` (amber), `--danger` (red), `--info` (blue)
       - Special: `--aim` (purple for AIM badges), `--accent` (amber/orange)
 
-      See the Design tokens section in AGENTS.md — Frontend Architecture.
+      See the design-token rules in website/docs/theming-contract.md.
 
   - id: page-layout-pattern
     blocking: true
@@ -108,7 +108,7 @@ custom-rules:
       which provides its own sidebar nav + content area with proper scroll handling.
       This is an accepted variant — do not use `PageHeader` + `px-6` for these pages.
 
-      See the Page Layout Guide section in AGENTS.md — Frontend Architecture.
+      See website/docs/page-layout.md.
 
   - id: use-react-query
     blocking: false

@@ -1,12 +1,67 @@
 # App Kit platform contracts (agents, MCP scoping, window entries)
 
-Last Updated: 2026-08-01 (initial spec: the contracts a gateway-managed app relies on — where its MCP servers land, how its agent JSON is materialized and refreshed, how a generated prompt is pinned, how standalone window entries are served, and how `permissions.spawn` is gated)
-
 Everything here is **generic App Kit surface**, not one app's arrangement: each
 item is what the FIRST app to need it exposed, and every later app builds on the
 same contract. The manifest field reference lives in
-[../../app-kit/manifest-reference.md](../../app-kit/manifest-reference.md); this
+[../../app-kit/manifest-reference.md](../../app-kit/manifest-reference.md), and
+the publish-facing policy in
+[../../app-kit/publishing-guide.md](../../app-kit/publishing-guide.md); this
 document is the behaviour and the one-way doors.
+
+## 0. Three-axis classification: origin, resources, lifecycle
+
+An installed app's `installed.json` carries three **independent** fields, each
+answering one question. They exist as three because a single "managed" value
+conflated them, and the valid combinations it could not express (a registry app
+whose resources the app itself registers; a self-registered app that wants
+gateway-managed symlinks) are ordinary cases.
+
+| Field | Values | Question it answers |
+|---|---|---|
+| `origin` | `builtin`, `registry`, `local`, `external` | How the app was acquired. Effectively read-only after install. |
+| `resources` | `gateway`, `app` | Who registers agents/skills/SOPs/MCP/crons. |
+| `lifecycle` | `gateway`, `app`, `locked` | Who owns updates and uninstall. |
+
+`origin` is a categorical enum; `source` beside it is free-form concrete
+provenance (a filesystem path, `registry:<name>`, or the literal `builtin`).
+`origin` drives behavioural branching, `source` drives display and re-install
+lookups. Both are needed and neither substitutes for the other.
+
+Behaviour hangs off `resources` and `lifecycle`, never off `origin`:
+
+| Operation | `resources: gateway` | `resources: app` |
+|---|---|---|
+| Enable | register resources, start backend, resolve dependencies, run `onEnable` | run `onEnable` only |
+| Disable | run `onDisable`, run hooks, stop backend, deregister | run `onDisable` and hooks only |
+
+| Operation | `lifecycle: gateway` | `lifecycle: app` | `lifecycle: locked` |
+|---|---|---|---|
+| Update | re-clone or re-copy, re-register | 400 | 400 |
+| Uninstall | teardown then remove files | teardown then remove files | 400 (disable instead) |
+
+An unknown value in any of the three is repaired to that field's default with a
+warning rather than raising: `installed.json` is read on every boot, and a
+metadata typo must not make an app unloadable. A record written before the fields
+existed is migrated once from the old `managed` value and stamped
+`schemaVersion: 2`.
+
+**Provenance is immutable at runtime, in both directions.** A self-registration
+(`POST /api/apps/register`) is REFUSED for a name a builtin owns: accepting it
+would downgrade `origin`/`lifecycle` to `external`/`app`, handing a third party a
+shipped builtin's execution exemption and leaving the boot-warmed first-party
+name and MCP-server sets stale until the next restart. Symmetrically,
+`register_builtin_apps` stands down when a user-installed app already occupies the
+directory, leaving their install untouched, because taking it over is
+unrecoverable.
+
+Frontend badges and affordances read the same three fields
+(`origin === 'builtin'`, `resources === 'app'`, `lifecycle === 'gateway'`,
+`lifecycle !== 'locked'`). Provenance LABELS are a separate question: they must
+test the server-attached `_registry` tag FIRST, because `origin` and `author` are
+copied verbatim from an index entry for a not-yet-installed app, so an added
+registry could otherwise publish `origin: "builtin"` and self-award the
+first-party mark next to a button that runs its setup code with gateway
+privileges.
 
 ## 1. App MCP servers land in KiroCrew's agent config, never the shared kiro file
 
@@ -193,3 +248,120 @@ fork**, not a convergence-pending copy of the dashboard's `ChatEmbed` — an
 approval-flow or widget-protocol change in the dashboard chat must be ported to
 Mochi's panel too. Do not replace `ChatPanel` with `ChatEmbed` in an upstream
 sync.
+
+## 10. Teardown order is a precondition chain, not a cleanup list
+
+Uninstall is irreversible, so the whole sequence runs inside the per-app
+lifecycle lock and the one step that can safely refuse runs FIRST:
+
+1. **Cron cleanup** (gateway-managed apps). Owned jobs are removed in one atomic
+   transaction. A contended store aborts the uninstall with a retryable 409
+   having changed nothing. This must precede everything else: past this point
+   deregistration drops the per-app cron manifest and the final step deletes the
+   app directory, so still-enabled owned jobs become permanent orphans that the
+   scheduler keeps firing with nothing left that knows they belong to a removed
+   app. "Durably disable the jobs instead" is not a fallback, because disabling
+   is itself a store mutation needing the very lock that is contended.
+2. `onUninstall` script, reached only once cron cleanup succeeded, so a
+   non-idempotent teardown never runs on an uninstall that will be retried.
+3. Backend stop and resource deregistration (gateway-managed only).
+4. Dependency cleanup (see §11).
+5. File removal, preserving `data/` unless the caller asked to purge.
+
+The lock spans the script deliberately: the script may itself be destructive, so
+holding the lock across it stops a racing enable or update from starting a
+backend mid-teardown. The cost is that a concurrent same-app lifecycle operation
+waits up to the script timeout, which is acceptable because those operations
+genuinely conflict and the lock is per-app.
+
+Data deletion requires the dedicated literal `{"purge_data": true}`. Absence and
+malformed values preserve data, and a legacy `keep_data: false` is deliberately
+ignored, so no request shape can become an implicit purge. The script sees the
+decision as both `KEEP_DATA` and `PURGE_DATA` in its environment.
+
+`setup.onUpdate` parses, validates, and round-trips through `SetupConfig`, but
+**no code path executes it**. Treat the field as declared-not-wired: an app whose
+update correctness depends on it is broken, and the fix is an idempotent
+`onInstall` (a registry update re-runs it), not a new call site added quietly.
+
+Writers: `apps/routes.py::handle_uninstall_app`, `_deregister_crons_with_retry`,
+`_run_lifecycle_script`; `apps/manager.py::uninstall_app`.
+
+## 11. Dependencies are reference-counted, and only sole ownership is removable
+
+`~/.kiro/crew/dependency-ledger.json` records which apps caused which capability
+dependency to be resolved. Uninstall classifies each dependency the manifest
+declares into one of three buckets, and the bucket alone decides what happens:
+
+| Bucket | Condition | On uninstall |
+|---|---|---|
+| `removable` | in the ledger, this app is its only recorded owner | cleaned, unless the request names it in `keep_specific` |
+| `shared` | in the ledger with other owners | kept; this app drops out of `installedBy` |
+| `userInstalled` | absent from the ledger | never touched; the user installed it |
+
+Classify-and-update is ONE operation under a single exclusive ledger lock. Doing
+it as a read, then a decision, then a write would let two apps sharing a
+dependency be uninstalled concurrently and both conclude they were the sole
+owner.
+
+A dependency type with no cleanup operation (`capability.agents`) keeps its
+ledger row and only loses this app's ownership even when classified removable:
+dropping the row for something nothing can uninstall would orphan the installed
+package untraceably.
+
+Client-supplied `keep_specific` ids are normalized to canonical keys before the
+membership test, because a dashboard session that loaded its uninstall preview
+from an older build echoes pre-rename ids back, and an unnormalized comparison
+would silently delete a dependency the user explicitly chose to keep.
+
+`GET /api/apps/{name}/uninstall/preview` is the read-only classification that
+feeds the confirm dialog, and it is **additive**: a client that skips it and
+POSTs straight to uninstall gets the same safe default (clean removable, keep
+everything else). The handler exists and is exercised by the dashboard client;
+if a route table refactor drops its registration the dialog silently degrades to
+no preview, since the frontend treats the fetch as best-effort.
+
+Dependency resolution itself is **non-blocking by design**: no capability manager
+may exist (the public edition ships none), network failures are transient, and
+some dependencies are optional for degraded operation. `resolve_dependencies`
+returns a result the caller decides on, and the counts surface in the API
+response as warnings. Missing REQUIRED `commands` and missing `optionalCommands`
+are reported in separate lists precisely so "absent" stays distinguishable from
+"broken".
+
+Writers: `apps/dependency_ledger.py`, `apps/dependencies.py`;
+`apps/routes.py::handle_uninstall_preview`.
+
+## 12. Store visibility is a manifest flag, not a code removal
+
+Built-in apps ship default-DISABLED. `manager._DEFAULT_ON_BUILTINS` is the single
+source of truth for the exemption (currently only `projects`, the Task Runner),
+read by the policy tests over both the hardcoded list and the file-based
+manifests, so a builtin cannot become default-on through one registration path
+while the other path's test still forbids it. A default-enabled builtin is
+persisted at first registration and never routes through `enable_app`, so the
+governance `apps` activation allowlist is re-applied at that write: a
+governance-denied app registers disabled.
+
+`hidden: true` on a builtin manifest removes it from the Discover catalog while
+leaving its code and routes fully intact. It stays installable and enablable by
+name from the CLI, and remains visible in the Library once enabled. **Channels**
+carries this flag. **Board** is not hidden but removed: it is listed alongside
+`knowledge` (promoted to a built-in surface) and `orchestrated` (merged into the
+unified Chat surface) in the escalation-cleanup sweep, which deletes stale
+installed-app directories so an orphaned entry cannot resurface in the store.
+That sweep never follows a symlinked app directory and requires the resolved path
+to stay under the apps root, so it cannot delete anything outside the tree.
+
+Curator control over the Discover editorial layer is the registry entry's
+`featured` flag, and it is honored **only** for core-registry entries. The
+spotlight is the store's most persuasive install surface and its action runs
+third-party setup code with gateway privileges, so an external registry cannot
+flag itself into that slot. With nothing flagged, selection falls back to a
+deterministic order (hero art, then verified publishers, then name), so the
+surface is never empty and never arbitrary.
+
+Writers: `apps/manager.py` (`_BUILTIN_APPS`, `_DEFAULT_ON_BUILTINS`,
+`register_builtin_apps`), `apps/discovery.py::discover_builtin_apps`;
+consumers: `website/src/pages/AppsPage.tsx` (`pickFeatured`),
+`website/src/components/appstore/types.ts` (`isVerified`, `sourceLabel`).

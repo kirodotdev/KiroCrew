@@ -88,7 +88,7 @@ err() { echo "kirocrew-install: $*" >&2; exit 1; }
 # The channel name IS the storage path segment: publish-cli.yml writes
 # feed/<channel>/latest-cli.json and cli/<channel>/<version>/ using the literal
 # channel, and "beta" was renamed to "insider" everywhere including the path
-# segment (docs/release-automation.md -> "Deliberately not built"). So there is
+# segment (docs/build/release.md -> "Deliberately not built"). So there is
 # no name-to-prefix mapping. Reject anything outside the known set here: a
 # typo'd channel otherwise reaches the CDN and surfaces as an opaque 403.
 case "$CHANNEL" in

@@ -1,14 +1,5 @@
 # CLI Module
 
-Last Updated: 2026-08-01 (standalone wheel installation now requires a
-pinned-key RSA-signed artifact manifest and a matching signed SHA-256 digest;
-the repository deliberately fails closed until its operational KMS public key
-is pinned. The Kiro CLI remains always launched IN PLACE — the resolve-to-exec
-integrity snapshot is REMOVED; it broke Kiro CLI 2.15+, a multi-call binary that
-exec's a sibling `kiro-cli-chat` resolved relative to its own path. Prior: trust
-simplified to "runs + valid login" — install source/owner/path do not gate setup
-or ACP launch)
-
 ## Overview
 
 The CLI module (`kiro_crew/cli.py`) provides the `kirocrew` command using stdlib `argparse`.
@@ -483,7 +474,7 @@ Each step checks if the tool is already installed and skips if present.
 `kirocrew update` pulls the latest source and rebuilds:
 
 1. `git pull` from `KIROCREW_PROJECT_DIR`
-2. Rebuilds frontend via `build-frontend.sh` (non-fatal on failure)
+2. Rebuilds the dashboard via `build_frontend_sync()` (npm; non-fatal on failure)
 3. Reinstalls backend via `pip install -e .`
 
 ## Client Port Resolution
@@ -798,3 +789,26 @@ because a tool that runs other tools would let a model launder one per-call gate
 decision into many. There is deliberately **no** `kirocrew computer state <app>` —
 that would be a second, CLI-shaped spelling of an LLM-facing capability and would
 have to be an MCP tool instead (it is: `computer_get_state`).
+
+## Gateway Test Harness
+
+Four composable flags let an integration test or eval harness boot a gateway
+deterministically, with no model and no developer-machine state:
+
+```bash
+kirocrew gateway --test-mode          # bundle: ephemeral port + json-ready + reads approval
+kirocrew gateway --port auto          # OS-assigned port, avoiding a collision with a real gateway
+kirocrew gateway --json-ready         # print KIROCREW_READY:{port,token,pid,home} once listening
+kirocrew gateway --approval reads     # auto-approve read-only tools
+kirocrew gateway --approval yolo      # auto-approve ALL tools
+```
+
+`--json-ready` is what makes the harness race-free: the caller waits for the
+`KIROCREW_READY` line instead of polling a port, and reads the token from it rather
+than minting one.
+
+**`--approval yolo` refuses to start unless `KIROCREW_HOME` is explicitly set to a
+non-default path.** The flag disables every per-call approval, so pointing it at the
+real data home would let a test drive an operator's live sessions and credentials.
+The guard is a startup refusal rather than a warning because a warning in CI output
+is not read.

@@ -1540,7 +1540,7 @@ def _missing_scope_message(needed: str) -> str:
         f"This Slack action requires {scope_clause}, which is not granted to this app. "
         "Reinstall the app after granting the required permissions in the Slack Dashboard. "
         f"Alternatively, {add_clause} the app manifest and recreate the app by following "
-        "the steps in docs/slack-setup.md."
+        "the steps in docs/guides/slack-setup.md."
     )
 
 

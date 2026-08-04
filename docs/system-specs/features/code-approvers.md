@@ -1,7 +1,5 @@
 # CodeApprovers Tier Routing
 
-Last Updated: 2026-05-28
-
 ## Overview
 
 Tier-based pull-request reviewer routing via `CODE_APPROVERS.yaml` in both KiroCrew and KiroCrewWebsite packages. Automatically assigns reviewers based on file paths changed, with a drift validator test that fails the build if patterns don't match actual files.

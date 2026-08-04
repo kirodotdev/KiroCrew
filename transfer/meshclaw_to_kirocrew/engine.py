@@ -4,7 +4,7 @@ Pure logic (no aiohttp / dashboard deps) so it can be unit-tested and reused by
 the CLI.  Brings a user's data from the legacy ``~/.meshclaw`` install into the
 current KiroCrew home (``~/.kirocrew``, honoring ``KIROCREW_HOME``).
 
-Design notes (see ``docs/meshclaw-migration-design.md``):
+Design notes (see ``docs/system-specs/post-launch-removals.md``):
 
 * The DB schemas are identical between the two installs, so memory migration is
   a copy (target empty) or a row-level ``INSERT OR IGNORE`` merge.

@@ -1,10 +1,5 @@
 # Conversation History Module
 
-Last Updated: 2026-07-26 (foreign-agent session import: visible text only,
-closed generated keys, ConversationLog persistence, and idempotent provenance.
-Prior — 2026-07-25 foreign-append matcher hardening, on-loop offload discipline,
-archive behavior, and creation-time successor identity.)
-
 ## Overview
 
 Persistent conversation history with provenance tracking and LLM-driven consolidation. Conversations survive session expiry and gateway restarts.

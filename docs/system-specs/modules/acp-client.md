@@ -1,12 +1,5 @@
 # ACP Client Module
 
-Last Updated: 2026-07-27 (ACP now launches the user's installed Kiro CLI IN
-PLACE — the private-copy / sealed-memfd "integrity snapshot" is REMOVED. It
-broke Kiro CLI 2.15+, a multi-call binary that exec's a sibling `kiro-cli-chat`
-resolved relative to its own path. Prior: ACP trust simplified to "the CLI
-runs" — install source/owner/path/codesign do not gate launch, so
-toolbox/Homebrew/winget/self-updated installs work)
-
 ## Overview
 
 The ACP layer spans **five** modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for `kiro-cli acp` or `claude-agent-acp`, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. All protocol constants in `acp/types.py`.

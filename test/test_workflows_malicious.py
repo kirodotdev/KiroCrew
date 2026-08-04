@@ -6,7 +6,7 @@ scripts — data fixtures, not collected as tests since pytest's ``testpaths`` i
 are added by dropping a file in that directory — this test picks it up
 automatically (the flywheel).
 
-See ``docs/dynamic-workflows/GATES.md`` (B9).
+See ``docs/system-specs/modules/workflow-gates.md`` (B9).
 """
 
 from __future__ import annotations

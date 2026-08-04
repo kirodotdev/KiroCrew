@@ -1,9 +1,5 @@
 # Voice Streaming — Design Document
 
-Last Updated: 2026-07-15 (added the local **Piper** TTS provider + provider
-selector; `voice_reply` config gained `provider` + `piper_*` fields; the
-dashboard synth endpoint routes Piper through a single-clip non-streaming path.)
-
 ## Overview
 
 Real-time text-to-speech for dashboard chat responses. Two providers: **Piper**

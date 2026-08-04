@@ -1,7 +1,5 @@
 # Error Handling
 
-Last Updated: 2026-02-15
-
 ## Principles
 
 1. Custom exceptions in `acp/client.py` for ACP-specific errors

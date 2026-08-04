@@ -1,7 +1,5 @@
 # Dashboard Token Authentication — Design Document
 
-Last Updated: 2026-07-25 (authenticated Kiro prerequisite setup routes)
-
 ## Overview
 
 Slack-gated token authentication for the KiroCrew dashboard. The owner generates a time-limited, HMAC-SHA256 signed URL via the `!dashboard` Slack command. An aiohttp middleware validates the token on every request (query param or cookie fallback), sets a session cookie on first use, and pins the token to the client's IP. Static assets bypass checks. Loopback access (127.0.0.1) is always trusted regardless of mode — this ensures local processes (mcp-core, doctor, SSH tunnels) work without tokens. All generation and validation events are logged to SEL.

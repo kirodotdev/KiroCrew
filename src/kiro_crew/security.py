@@ -6580,7 +6580,7 @@ def _check_env_credential_access(command: str) -> str | None:
 # Applied to agent-influenced subprocess spawns to bound resource-exhaustion
 # attacks (fork bombs, FD exhaustion, runaway memory/CPU) so a compromised or
 # buggy tool/MCP server cannot starve the host out from under the gateway.
-# Uses POSIX resource limits (setrlimit); see docs/resource-protection.md.
+# Uses POSIX resource limits (setrlimit); see docs/architecture/resource-protection.md.
 
 # Default ceilings. Only RLIMIT_NOFILE is default-on: it is per-PROCESS,
 # generous enough that no legitimate tool trips it, yet finite so a descriptor
@@ -6592,7 +6592,7 @@ def _check_env_credential_access(command: str) -> str | None:
 # those defaults: RLIMIT_NPROC is per-UID (not per-subtree) and RLIMIT_AS caps
 # virtual (not resident) memory. cgroup v2 ``pids.max`` / ``memory.max`` are the
 # correct per-cgroup fork-bomb and RSS ceilings and are tracked as future work
-# (see docs/resource-protection.md); the ticket itself lists cgroup v2 as the
+# (see docs/architecture/resource-protection.md); the ticket itself lists cgroup v2 as the
 # alternative. This helper delivers the safe RLIMIT subset now and leaves the
 # hazardous knobs opt-in.
 _RLIMIT_DEFAULTS = {

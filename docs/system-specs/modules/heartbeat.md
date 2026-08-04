@@ -1,7 +1,5 @@
 # Heartbeat Module
 
-Last Updated: 2026-06-05 (kirocrew-heartbeat agent + scoped hooks + cycle-end recycle)
-
 ## Overview
 
 The heartbeat service (`kiro_crew/heartbeat.py`) runs periodic background tasks on a configurable interval (default 60s).

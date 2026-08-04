@@ -18,7 +18,7 @@
  *
  * The split itself is asserted too: the per-file CEILINGS deliberately keep the
  * upstream rule, because closing the hole there would force a bulk `--update` of a
- * ledger four open branches share — the one thing `website/AGENTS.md` forbids.
+ * ledger four open branches share — the one thing `website/docs/i18n-catalog.md` forbids.
  */
 
 import { describe, it, expect } from 'vitest'

@@ -24,6 +24,7 @@ history, not taken from the document's own claims.
 | [rfc-notification-bridge.md](rfc-notification-bridge.md) | `accepted` | Nothing — zero implementation code |
 | [rfc-tips-kit.md](rfc-tips-kit.md) | `draft` | Nothing. T1 was built and **retracted** ([#775](https://github.com/kirodotdev/KiroCrew/pull/775)); the design section needs revising first |
 | [rfc-update-architecture.md](rfc-update-architecture.md) | `draft` | Nothing — zero of three phases |
+| [rfc-app-sandbox-isolation.md](rfc-app-sandbox-isolation.md) | `draft` | Nothing. Apps still run in-process with full privileges (see `src/kiro_crew/docs/app-platform-trust-model.md`); no isolation code exists |
 | [version-compliance-framework.md](version-compliance-framework.md) | `draft` | Nothing. Framework doc, not an RFC; premise is pre-fork and stale |
 
 Nothing in this directory is `implemented` or `superseded` today.

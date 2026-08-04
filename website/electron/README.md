@@ -84,7 +84,7 @@ rm -f ~/Library/LaunchAgents/dev.kirocrew.gateway.plist
 ## Remote Tunnel Mode (Headless CDE)
 
 If the gateway runs on a remote dev desktop (the recommended setup per
-`docs/remote-desktop-setup.md`), the app can fetch tokens automatically
+`../../docs/guides/remote-and-mobile.md`), the app can fetch tokens automatically
 via SSH instead of reading the local `.local_secret`.
 
 ### Prerequisites
@@ -93,7 +93,7 @@ via SSH instead of reading the local `.local_secret`.
    ```bash
    ssh -L 5476:localhost:5476 YOUR_HOST.example.com
    ```
-   Or use a macOS LaunchAgent (see `docs/persistent-sessions/`).
+   Or use a macOS LaunchAgent (see `../../docs/guides/assets/`).
 
 2. `kirocrew` installed on the remote host. The default auto-discovers across common
    install layouts — no configuration needed unless you installed somewhere unusual.

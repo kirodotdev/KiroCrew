@@ -6,7 +6,7 @@ C3: an object that violates the JSON Schema is rejected (not returned).
 
 Exercises both the pure validator (``schema.py``) and the schema= path THROUGH the
 runner, using a stub text-producer that returns canned (malformed then valid) JSON
-— never a real agent. See ``docs/dynamic-workflows/GATES.md`` (C1–C3).
+— never a real agent. See ``docs/system-specs/modules/workflow-gates.md`` (C1–C3).
 """
 
 from __future__ import annotations

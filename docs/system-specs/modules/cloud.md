@@ -1,7 +1,5 @@
 # Cloud Launcher Module
 
-Last Updated: 2026-07-13 (initial spec — IMDSv2 + tag-scoped IAM + port-forward safety)
-
 ## Overview
 
 `src/kiro_crew/cloud/` runs KiroCrew on the user's **own** AWS EC2 instance with a

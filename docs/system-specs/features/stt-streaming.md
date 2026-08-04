@@ -1,9 +1,5 @@
 # Streaming STT — Design Document
 
-Last Updated: 2026-07-28 (SEL audit ordering: `stt_stream_end` is emitted
-BEFORE the WebSocket close on every exit path, so the balanced audit trail no
-longer depends on a well-behaved peer)
-
 ## Overview
 
 Live speech-to-text for the dashboard chat input. The browser streams

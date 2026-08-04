@@ -8,9 +8,9 @@ worker implementation (which agent, which backend, sweep protection, working
 directory, effort, reset semantics) is supplied by the caller via a factory.
 
 First consumer: Code Review Sage's ``ReviewPool`` (``apps/builtins/
-code-review-sage/lib/review_pool.py``). Knowledge Library's ``LLMPool`` and
+code_review_sage/sage_lib/review_pool.py``). Knowledge Library's ``LLMPool`` and
 others can adopt it later without changing the engine — see the design note in
-``docs/code-review-sage-design.md`` §9.
+``src/kiro_crew/apps/builtins/code_review_sage/``.
 
 Engine guarantees (the semantics any consumer relies on):
 

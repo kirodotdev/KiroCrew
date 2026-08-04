@@ -17,7 +17,7 @@ superseded-by: []
 - Correction to the reference below: KiroCrew ships **five** distribution shapes, not the set implied — `beacon.py:155` lists `{dmg, appimage, wheel, source, docker}`.
 - Author: zezhexu
 - Created: 2026-07-31
-- Related: `docs/release-process-design.md` (channels, release branches, promotion), `docs/request-for-change/version-compliance-framework.md` (the policy ceiling this RFC must honor)
+- Related: `docs/build/release.md` (channels, release branches, promotion), `docs/request-for-change/version-compliance-framework.md` (the policy ceiling this RFC must honor)
 
 ## Summary
 

@@ -3782,7 +3782,7 @@ async def handle_message(
     # zero-voice behavior, and globally-enabled users automatically get
     # symmetric voice-in/voice-out. Users who want voice ONLY in response to
     # voice memos can set ``auto_reply_to_voice=true`` while leaving
-    # ``enabled=false``. See docs/kiro-cli/chat/voice.md.
+    # ``enabled=false``. See docs/reference/kiro-cli/chat/voice.md.
     voice_auto_reply = had_voice_input and _vc.auto_reply_to_voice
     if _vc.global_enabled or session_key in _vc.sessions or voice_auto_reply:
         if len(accumulated) >= 50:

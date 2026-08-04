@@ -7,7 +7,7 @@
  * metadata. electron-updater generates that metadata at build time
  * (latest-mac.yml / latest-linux.yml), verifies sha512 fail-closed, adds Linux
  * support, and — on macOS — still drives Squirrel.Mac underneath, so the proven
- * atomic bundle swap is unchanged. See docs/windows-install.md and issue #598.
+ * atomic bundle swap is unchanged. See docs/guides/windows-install.md and issue #598.
  *
  * The ONE KiroCrew-specific concern vs. a plain Electron app is unchanged: the
  * bundled Python gateway is a long-running child process, so it MUST be stopped

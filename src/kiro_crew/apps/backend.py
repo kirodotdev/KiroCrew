@@ -1267,7 +1267,7 @@ def _health_check_loop(app_name: str, port: int, health_path: str) -> None:
 # gateway (no on_cleanup runs) they orphan, reparent to PID 1, and accumulate
 # across restarts. We persist each spawned backend's (pid, start_time) to a
 # pidfile and reap any survivors of a PRIOR generation on the next clean start.
-# See docs/request-for-change/rfc-event-loop-fault-isolation.md.
+# See docs/system-specs/modules/app-kit-platform.md.
 
 
 # Serializes the pidfile read-modify-write. _record_app_pid runs on the

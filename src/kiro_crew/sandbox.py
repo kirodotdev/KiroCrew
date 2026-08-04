@@ -2529,7 +2529,7 @@ def sandboxed_spawn_argv(
     # site. No-op (with a one-time loud warning) where cgroup delegation is
     # unavailable. Safe re: the cleanup path — that is returned separately, not
     # re-derived from an argv index, so prepending systemd-run does not disturb
-    # it. See docs/resource-protection.md.
+    # it. See docs/architecture/resource-protection.md.
     wrapped = cgroup_scope_argv(wrapped)
     # Positive-identity marker for the orphan sweep: every tree spawned through
     # this chokepoint (and its descendants, via env inheritance) is identifiable
@@ -2548,7 +2548,7 @@ def sandboxed_spawn_argv(
 # the kernel enforces at fork()/alloc time (no reaper race). We place each
 # agent-influenced spawn in a transient systemd --user --scope, which works
 # UNPRIVILEGED when the user session has cgroup v2 delegation (pids + memory
-# controllers). See docs/resource-protection.md.
+# controllers). See docs/architecture/resource-protection.md.
 
 # Default cgroup ceilings (per agent scope). Overridable via the same
 # ``resource_limits`` config block used by apply_resource_limits.
@@ -2752,7 +2752,7 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
                 "SECURITY: cgroup v2 scope enforcement unavailable (%s); agent "
                 "subprocess fork-bomb / memory-DoS ceilings are NOT enforced on "
                 "this host. RLIMIT_NOFILE still applies. See "
-                "docs/resource-protection.md.",
+                "docs/architecture/resource-protection.md.",
                 reason,
             )
         return argv
@@ -2871,7 +2871,7 @@ def resource_limit_preexec() -> "Callable[[], None] | None":
     kernel-enforced ceiling on processes / file descriptors / CPU / memory so a
     fork bomb or runaway allocation in a compromised tool or MCP server cannot
     exhaust the host out from under the gateway. Every agent-influenced spawn
-    passes the result as ``preexec_fn=`` (see ``docs/resource-protection.md``).
+    passes the result as ``preexec_fn=`` (see ``docs/architecture/resource-protection.md``).
 
     Returns the callable from :func:`kiro_crew.security.apply_resource_limits`,
     or ``None`` on non-POSIX platforms (where there is nothing to enforce and

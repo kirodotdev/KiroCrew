@@ -122,11 +122,13 @@ def handle_run(body: dict, *, runner: WorkflowRunner | None = None) -> dict:
 
 
 def _examples_dir() -> str:
-    # docs/dynamic-workflows/research/examples relative to the repo root.
+    # docs/system-specs/modules/examples/workflows relative to the repo root.
     here = os.path.dirname(os.path.abspath(__file__))
     root = here
     for _ in range(8):
-        cand = os.path.join(root, "docs", "dynamic-workflows", "research", "examples")
+        cand = os.path.join(
+            root, "docs", "system-specs", "modules", "examples", "workflows"
+        )
         if os.path.isdir(cand):
             return cand
         root = os.path.dirname(root)

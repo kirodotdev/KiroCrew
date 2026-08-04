@@ -597,7 +597,7 @@ class PlatformConfig:
     # Map user-friendly OS names to sys.platform values.
     #
     # ``windows`` is in both directions because KiroCrew itself supports Windows
-    # natively (see ``docs/windows-install.md``): without the row, ``"windows"``
+    # natively (see ``docs/guides/windows-install.md``): without the row, ``"windows"``
     # was not even EXPRESSIBLE in a manifest — a declaring app silently never
     # matched — and ``current_os()`` fell through to the raw ``"win32"``, which is
     # not one of the user-friendly names any manifest or UI compares against.

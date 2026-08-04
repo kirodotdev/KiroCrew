@@ -1,7 +1,5 @@
 # Themes Module
 
-Last Updated: 2026-07-23
-
 ## Overview
 
 The dashboard is fully skinnable. A **theme** ranges from a bare color palette

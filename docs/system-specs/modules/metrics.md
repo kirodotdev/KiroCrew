@@ -1,7 +1,5 @@
 # Metrics Telemetry Module
 
-Last Updated: 2026-08-04 (anonymous official-app install receipt + disclosure)
-
 ## Overview
 
 Local-first metrics telemetry built on the OpenTelemetry SDK (Apache-2.0 / CNCF).

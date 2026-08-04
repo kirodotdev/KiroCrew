@@ -10,7 +10,7 @@
 #
 # Mirrors sign.sh's proven flow (package -> upload -> submit -> poll ->
 # download) with a `type: dmg` manifest instead of the app manifest.
-# Manifest syntax per StoreGenVector docs/DMG_IMPLEMENTATION_PLAN.md and
+# Manifest syntax per StoreGenVector docs/build/signing-runbook.md and
 # the CDSigner API guide; flow per AIWQuilloWord code-signing-guide.md.
 #
 # Usage: sign-dmg.sh <dmg-path> <channel> <version>

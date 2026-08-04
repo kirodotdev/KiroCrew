@@ -1,6 +1,6 @@
 """Auth refresh endpoints: ``GET /api/auth/me`` and ``POST /api/auth/refresh``.
 
-Spec: ``docs/token-refresh/REQUIREMENTS.md``.
+Spec: ``docs/system-specs/features/dashboard-token-auth.md``.
 
 Both endpoints handle their own auth (the standard ``token_auth_middleware``
 exempts ``/api/auth/refresh`` so an expired access cookie does not block

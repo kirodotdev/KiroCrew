@@ -1,138 +1,173 @@
 {
-  "generated_at": "2026-07-22T12:59:41.704579+00:00",
+  "generated_at": "2026-08-04T15:40:51.555620+00:00",
   "entries": [
     {
       "feature": "Agents & Configuration",
       "title": "Agents & Configuration",
-      "summary": "KiroCrew uses agents for LLM interaction. Each agent is a JSON config that defines a model, system prompt, tools, and MCP servers. The default agent is `kirocrew`, but you can create your own custom agents.",
+      "summary": "Kiro Crew uses agents for LLM interaction. Each agent is a JSON config that defines a model, system prompt, tools, and MCP servers. The default agent is `kirocrew`, but you can create your own custom agents.",
       "doc": "agents.md",
-      "mtime": 1784265640.0
+      "mtime": 1785856770.0
     },
     {
       "feature": "Configuration Reference",
       "title": "Configuration Reference",
-      "summary": "`~/.kiro/crew/config.json` \u2014 main configuration file. Created automatically on first `kirocrew gateway` run.",
+      "summary": "Everything Kiro Crew remembers about how it should behave lives in one JSON file, `~/.kiro/crew/config.json`, created automatically on the first `kirocrew gateway` run.",
       "doc": "configuration.md",
-      "mtime": 1784575659.0
+      "mtime": 1785856770.0
     },
     {
       "feature": "Cron Jobs & Scheduling",
       "title": "Cron Jobs & Scheduling",
-      "summary": "KiroCrew can run tasks on a schedule \u2014 recurring checks, daily briefings, periodic monitoring, or one-shot reminders.",
+      "summary": "Kiro Crew can run tasks on a schedule \u2014 recurring checks, daily briefings, periodic monitoring, or one-shot reminders.",
       "doc": "cron-and-scheduling.md",
-      "mtime": 1784265640.0
+      "mtime": 1785856770.0
     },
     {
       "feature": "Web Dashboard",
       "title": "Web Dashboard",
       "summary": "The dashboard is a React SPA at `http://localhost:5476` (or your configured URL). It provides chat, memory management, cron jobs, skills, agents, and system monitoring.",
       "doc": "dashboard.md",
-      "mtime": 1784650591.0
+      "mtime": 1785856770.0
     },
     {
-      "feature": "Artifact Deploy (deploy-web)",
-      "title": "Artifact Deploy (deploy-web)",
-      "summary": "Publish a KiroCrew artifact (HTML / Markdown / widget) to a public HTTPS URL on **your own AWS account** \u2014 private S3 + CloudFront + Origin Access Control (OAC). KiroCrew stores only your AWS **profile name**; it never sees, stores, or manages your credentials.",
+      "feature": "Artifact Deploy",
+      "title": "Artifact Deploy",
+      "summary": "Artifact Deploy publishes an artifact from your library to a public HTTPS URL in **your own AWS account**: a private S3 bucket behind CloudFront with Origin Access Control, with an optional time-to-live and automatic cleanup.",
       "doc": "deploy-web.md",
-      "mtime": 1784517233.0
+      "mtime": 1785856770.0
     },
     {
       "feature": "Discord Integration",
       "title": "Discord Integration",
-      "summary": "Talk to your agent from Discord DMs. The channel connects outbound over Discord's Gateway WebSocket, so it works behind NAT and firewalls with no webhook or public address.",
+      "summary": "Talk to your agent from Discord DMs and explicitly approved server threads. The channel connects outbound over Discord's Gateway WebSocket, so it works behind NAT and firewalls with no webhook, public address, or inbound port.",
       "doc": "discord-integration.md",
-      "mtime": 1784663052.0
+      "mtime": 1785474761.0
     },
     {
       "feature": "Dynamic Sub-Agent Max Count",
       "title": "Dynamic Sub-Agent Max Count",
-      "summary": "KiroCrew sizes the concurrent sub-agent cap **automatically** by default (`agent.max_subagents = 0`): at gateway startup it computes a sensible cap from the host's actual memory and CPU, plus a per-agent cost KiroCrew *learns* from past runs.",
+      "summary": "Kiro Crew sizes the concurrent sub-agent cap **automatically** by default (`agent.max_subagents = 0`): at gateway startup it computes a sensible cap from the host's actual memory and CPU, plus a per-agent cost Kiro Crew *learns* from past runs.",
       "doc": "dynamic-subagent-sizing.md",
-      "mtime": 1784706744.0
+      "mtime": 1785856770.0
     },
     {
       "feature": "Feature Tips",
       "title": "Feature Tips",
-      "summary": "KiroCrew occasionally surfaces a small tip above the chat composer while the agent is working, pointing at a feature you have not used yet. Tips are personalized: a background session reads your recent activity and memory context to pick features that fit how you actually work.",
+      "summary": "Kiro Crew occasionally surfaces a small tip above the chat composer while the agent is working, pointing at a feature you have not used yet. Tips are personalized: a background session reads your recent activity and memory context to pick features that fit how you actually work.",
       "doc": "feature-tips.md",
-      "mtime": 1784615857.0
+      "mtime": 1785856770.0
     },
     {
-      "feature": "Getting Started with KiroCrew",
-      "title": "Getting Started with KiroCrew",
-      "summary": "KiroCrew is an autonomous AI agent layer that runs on top of the kiro-cli (KiroACP) backend. It adds persistent memory, scheduled jobs, background subagents, self-learning, and multi-session orchestration. You interact with it via Slack DMs or a web dashboard.",
+      "feature": "Getting Started with Kiro Crew",
+      "title": "Getting Started with Kiro Crew",
+      "summary": "Kiro Crew is an autonomous AI agent layer that runs on your own machine on top of the kiro-cli (KiroACP) backend.",
       "doc": "getting-started.md",
-      "mtime": 1784265640.0
+      "mtime": 1785856770.0
     },
     {
       "feature": "Knowledge Library \u2014 How the Graph Works",
       "title": "Knowledge Library \u2014 How the Graph Works",
       "summary": "The Knowledge Library builds a graph from documents without embeddings. It uses LLM extraction to identify entities and their relationships, then connects them through shared entity names across chunks.",
       "doc": "knowledge-library-how-it-works.md",
-      "mtime": 1784575659.0
+      "mtime": 1785856770.0
+    },
+    {
+      "feature": "MCP Apps",
+      "title": "MCP Apps",
+      "summary": "KiroCrew renders **MCP Apps** natively: when an MCP tool returns a `ui://` resource alongside its text, the dashboard mounts that resource as a live, interactive component in the chat instead of showing you a wall of JSON.",
+      "doc": "mcp-apps.md",
+      "mtime": 1785856699.0
     },
     {
       "feature": "Memory & Learning",
       "title": "Memory & Learning",
-      "summary": "KiroCrew has persistent memory that survives across sessions. It remembers your preferences, project context, daily activity, and corrections you teach it.",
+      "summary": "Kiro Crew has persistent memory that survives across sessions. It remembers your preferences, project context, daily activity, and corrections you teach it.",
       "doc": "memory-and-learning.md",
-      "mtime": 1784575659.0
+      "mtime": 1785856770.0
     },
     {
       "feature": "Research Lab",
       "title": "Research Lab",
       "summary": "Research Lab (the `auto-research` builtin app) runs autonomous, multi-cycle campaigns: you define a research question, a **grill tree** interactively clarifies scope and sub-questions, then the system investigates cycle-by-cycle until it satisfies a success criterion or exhausts its cycle budget.",
       "doc": "research-lab.md",
-      "mtime": 1784265640.0
+      "mtime": 1785365928.0
     },
     {
       "feature": "Skills",
       "title": "Skills",
-      "summary": "Skills are markdown files that give KiroCrew specialized knowledge for specific workflows. They live in `~/.kiro/crew/skills/` as `SKILL.md` files.",
+      "summary": "Skills are markdown files that give Kiro Crew specialized knowledge for specific workflows. They live in `~/.kiro/crew/skills/` as `SKILL.md` files.",
       "doc": "skills.md",
-      "mtime": 1784265640.0
+      "mtime": 1785856770.0
     },
     {
       "feature": "Slack Integration",
       "title": "Slack Integration",
-      "summary": "KiroCrew connects to Slack via Socket Mode. You interact with it through DMs or in channels where the bot is present.",
+      "summary": "Kiro Crew connects to Slack via Socket Mode. You interact with it through DMs or in channels where the bot is present.",
       "doc": "slack-integration.md",
-      "mtime": 1784265640.0
+      "mtime": 1785856770.0
+    },
+    {
+      "feature": "Backup & Restore",
+      "title": "Backup & Restore",
+      "summary": "`kirocrew snapshot` packs everything KiroCrew has learned about you into a single portable `.tar.gz`, and `kirocrew restore` unpacks it, on this machine or a different one.",
+      "doc": "snapshot-and-restore.md",
+      "mtime": 1785857553.6962614
     },
     {
       "feature": "Subagents & Parallel Work",
       "title": "Subagents & Parallel Work",
-      "summary": "KiroCrew can spawn background subagents to handle tasks in parallel. This is useful for fan-out work like reviewing multiple packages, running parallel searches, or delegating independent tasks.",
+      "summary": "Kiro Crew can spawn background subagents to handle tasks in parallel. This is useful for fan-out work like reviewing multiple packages, running parallel searches, or delegating independent tasks.",
       "doc": "subagents.md",
-      "mtime": 1784265640.0
+      "mtime": 1785856770.0
     },
     {
       "feature": "Task Runner",
       "title": "Task Runner",
       "summary": "The task runner executes multi-step autonomous tasks from spec files. It's useful for complex workflows that need structured execution with progress tracking.",
       "doc": "task-runner.md",
-      "mtime": 1784265640.0
+      "mtime": 1785365928.0
+    },
+    {
+      "feature": "Microsoft Teams Integration",
+      "title": "Microsoft Teams Integration",
+      "summary": "Kiro Crew can run as a Microsoft Teams bot, so you can DM your agent from Teams the same way you would from Slack, Telegram, Discord, Webex, or WeCom.",
+      "doc": "teams-integration.md",
+      "mtime": 1785856770.0
     },
     {
       "feature": "Telegram Integration",
       "title": "Telegram Integration",
-      "summary": "Chat with your KiroCrew agent right from Telegram \u2014 on your phone, your laptop, anywhere. Create a bot, paste one token, and you're talking. Replies stream back live, with tappable option buttons.",
+      "summary": "Chat with your Kiro Crew agent right from Telegram \u2014 on your phone, your laptop, anywhere. Create a bot, paste one token, and you're talking. Replies stream back live, with tappable option buttons.",
       "doc": "telegram-integration.md",
-      "mtime": 1784488197.0
+      "mtime": 1785856770.0
     },
     {
       "feature": "Use Cases & Workflows",
       "title": "Use Cases & Workflows",
-      "summary": "Real-world workflows from the KiroCrew community. These combine KiroCrew's capabilities \u2014 cron jobs, subagents, memory, Slack, and task runner \u2014 into end-to-end automation.",
+      "summary": "Real-world workflows from the Kiro Crew community. These combine Kiro Crew's capabilities \u2014 cron jobs, subagents, memory, Slack, and task runner \u2014 into end-to-end automation.",
       "doc": "use-cases.md",
-      "mtime": 1784265640.0
+      "mtime": 1785856770.0
+    },
+    {
+      "feature": "Webex Integration",
+      "title": "Webex Integration",
+      "summary": "Chat with your Kiro Crew agent from Cisco Webex \u2014 on your phone, your laptop, anywhere. Create a bot on the Webex developer portal, paste one token, and you're talking.",
+      "doc": "webex-integration.md",
+      "mtime": 1785856770.0
     },
     {
       "feature": "WeCom Integration",
       "title": "WeCom Integration",
-      "summary": "Talk to your KiroCrew agent from WeCom \u2014 through a WeCom (\u4f01\u4e1a\u5fae\u4fe1) AI bot. Create the bot in your WeCom console, drop in two values, and you're chatting. Replies stream back live.",
+      "summary": "Talk to your Kiro Crew agent from WeCom \u2014 through a WeCom (\u4f01\u4e1a\u5fae\u4fe1) AI bot. Create the bot in your WeCom console, drop in two values, and you're chatting. Replies stream back live.",
       "doc": "wecom-integration.md",
-      "mtime": 1784265640.0
+      "mtime": 1785856770.0
+    },
+    {
+      "feature": "WeChat (Weixin) integration",
+      "title": "WeChat (Weixin) integration",
+      "summary": "Connect Kiro Crew to **personal WeChat** (\u5fae\u4fe1) through Tencent's **iLink bot API**. Sign-in is a QR scan from the dashboard; messages arrive over HTTP long-poll, so no public endpoint, webhook, or tunnel is required.",
+      "doc": "weixin-integration.md",
+      "mtime": 1785856770.0
     }
   ]
 }

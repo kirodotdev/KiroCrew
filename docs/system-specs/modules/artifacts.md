@@ -1,7 +1,5 @@
 # Artifacts Module
 
-Last Updated: 2026-05-21
-
 ## Overview
 
 Artifacts give chat-rendered LLM-generated UI a persistent identity, version

@@ -27,7 +27,7 @@ trigger macOS Gatekeeper warnings).
 ## Prerequisites
 
 Access to the signing service must be onboarded (a security review plus
-sign-off). See `docs/release-automation.md` for the full onboarding runbook.
+sign-off). See `docs/build/release.md` for the full onboarding runbook.
 
 ## CLI artifact manifests (separate trust domain)
 

@@ -70,7 +70,8 @@ Resolution is most-specific-wins: a repo-root `.prepare-pr.toml` → **KiroCrew 
 
 - **`single_commit` governs history handling.** When it is `true` (KiroCrew's default) the loop squashes to one commit (Phase 1.3) and enforces one commit on push (Phase 3.1). When a profile sets it **`false`**, SKIP both — do not squash and do not force a single commit; preserve the branch's existing commit history.
 
-Full design + `.prepare-pr.toml` schema: `src/kiro_crew/docs/prepare-pr-portability.md`.
+Full design + `.prepare-pr.toml` schema: `docs/ci/prepare-pr-portability.md` (in a
+Kiro Crew repo checkout; this skill only ever runs against one).
 
 ## Workflow — ONE bounded loop, always the full cycle (cap 10 iterations)
 

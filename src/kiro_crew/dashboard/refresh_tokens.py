@@ -4,7 +4,7 @@ Adds a paired refresh cookie alongside the existing access cookie
 (``mc_token_<port>``) so users do not need to re-mint via the
 ``kirocrew token`` URL every ~20 hours.
 
-Design (full spec in ``docs/token-refresh/REQUIREMENTS.md``):
+Design (full spec in ``docs/system-specs/features/dashboard-token-auth.md``):
 
 - Refresh cookie ``mc_refresh_<port>`` is path-restricted to
   ``/api/auth/refresh`` — narrower attack surface than the access cookie.

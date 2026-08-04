@@ -10,7 +10,7 @@ The instance's gateway is bound to loopback (never public). To reach it we:
 We also (optionally) register the instance in the existing **Instances** registry
 using an SSM ``ProxyCommand`` ssh alias, so the dashboard's ``/instances`` page
 can auto-tunnel + token-refresh + self-heal it with no new code
-(``docs/instances.md`` §9). Removing the box (``cloud destroy``) also removes
+(``docs/system-specs/modules/instances.md`` §9). Removing the box (``cloud destroy``) also removes
 that registration.
 """
 

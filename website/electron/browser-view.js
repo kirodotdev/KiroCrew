@@ -6,7 +6,7 @@
 // the panel: native paint, real events, downloads, video, no letterboxing.
 //
 // Two things about this are load-bearing and were confirmed empirically by the
-// design spike (docs/native-browser-panel-design.md §10–§12):
+// design spike (docs/system-specs/modules/browser.md §10–§12):
 //
 //   1. A view does NOT have to fill the window. `setBounds()` honours an
 //      arbitrary rectangle, which is what makes an in-panel embed possible.

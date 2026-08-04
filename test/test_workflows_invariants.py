@@ -12,7 +12,7 @@ constructs an LLM-authored workflow script must never contain:
 Plus the authoring-shape rules (pure-literal META, ``async def workflow(ctx)``).
 
 If a case here goes from RED to GREEN because a check was loosened, that is a
-sandbox regression — see ``docs/dynamic-workflows/GATES.md`` group B. New escape
+sandbox regression — see ``docs/system-specs/modules/workflow-gates.md`` group B. New escape
 ideas append to ``ADVERSARIAL_CORPUS`` (the intervention flywheel).
 """
 

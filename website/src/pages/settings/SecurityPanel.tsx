@@ -1161,7 +1161,7 @@ export function SecurityPanel() {
         <SettingsCard>
           <div className="flex flex-col gap-2">
             {[
-              { label: i18nT('pages.settings.securityPanel.security_deep_dive'), href: `${CODE_BASE}/docs/security-deep-dive.md` },
+              { label: i18nT('pages.settings.securityPanel.security_deep_dive'), href: `${CODE_BASE}/docs/architecture/security-deep-dive.md` },
               { label: i18nT('pages.settings.securityPanel.security_module_spec'), href: `${CODE_BASE}/docs/system-specs/modules/security.md` },
             ].map(link => (
               <a key={link.label} href={link.href} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-[13px] text-accent hover:underline py-1">

@@ -1,7 +1,5 @@
 # Security Event Log (SEL) Module
 
-Last Updated: 2026-07-13 (added `config_bounds_clamped` event + `clamped` outcome and ACP worker-pool per-tool audit; prior: `acp`, `token_auth`, and `refresh_tokens` audit sources)
-
 ## Overview
 
 Immutable, tamper-evident audit trail for all tool invocations, MCP calls, and dashboard API mutations. Implements transactional event logging per Amazon Security Event Logging Standard.

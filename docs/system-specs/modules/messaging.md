@@ -1,14 +1,12 @@
 # Messaging Transport Module
 
-Last Updated: 2026-08-01 (channel sessions surface-aware: turn dispatch carries an authoritative `runtime_source` into prompt construction independent of the stable session key, channel dispatchers surface a newly-created session in the dashboard immediately via the shared `ChannelTurn.after_persist` hook instead of waiting for the reconciler, the main-session mirror targets the user's configured channels, and the sidebar renders per-channel brand icons; channel output framing: shared TurnDriver strips streamed steering protocol markers, converts them to structured boundaries, and replaces summary-bearing compaction notices with a terse receipt; Discord transcript replay drops legacy protocol/compaction text while preserving the stored audit record; direct Slack/Discord/Telegram compaction commands no longer interpolate summary bodies; Initial module spec: channel-neutral `kiro_crew.messaging` package — Layer 1 `MessagingTransport`/`TransportCapabilities`/`InboundMessage`, Layer 2 `TurnDriver` approval ladder, Layer 2b `Renderer`/`OutputEvent`/`chunk_text`, Layer 3 session-key namespacing + ConversationState generations; Slack reference impl + `messaging.use_transport` flag, default ON in KiroCrew; 2026-07-24: added Managed-MCP session-key resolution invariant — every channel transport-dispatch surface (Telegram DM + forum, Discord, Slack, Webex, WeCom) now publishes session_pid_<pid>.txt via the shared messaging.identity.publish_turn_identity helper so managed MCP tools resolve X-Session-Key, #232; 2026-07-24: WeCom settings API — GET/PUT /api/wecom/config with dual credential slots (WECOM_BOT_ID + WECOM_SECRET), Settings→WeCom panel on the shared BotChannelPanel, wecom_connected/wecom_connect_error kept live via WeComClient.on_status transitions)
-
 ## Overview
 
-`kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, and Weixin integrations; its conservative contract also leaves room for future channels such as WhatsApp. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It extracts the channel-neutral core of the historically monolithic Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
+`kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, and Weixin integrations; its conservative contract also leaves room for future channels such as WhatsApp. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It holds the channel-neutral core of the Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
 
 **Dependency direction is one-way:** `slack` / `dashboard` → `messaging`, never the reverse. The `kiro_crew.messaging` package imports nothing from `kiro_crew.slack` or `kiro_crew.dashboard`; its only first-party dependencies are the shared lower-level helpers — `acp.types` event constants, the `security` redactors (`redact_credentials` / `redact_exfiltration_urls`), and `sel` for audit.
 
-**Status:** contracts plus Slack, Discord, Telegram, Webex, WeCom, Teams, and Weixin implementations shipped. Slack's transport path is gated behind the `messaging.use_transport` config flag (default `true` in KiroCrew — the abstraction is the canonical path); when off, Slack's native `handle_message` path runs unchanged.
+Slack's transport path is gated behind the `messaging.use_transport` config flag (default `true` in Kiro Crew, so the abstraction is the canonical path); when off, Slack's native `handle_message` path runs instead.
 
 ## Architecture — the three layers
 
@@ -145,7 +143,7 @@ Session keys are namespaced as `f"{channel_type}:{conversation_id}"` (`session_k
 
 ## Config flag & routing
 
-`MessagingConfig.use_transport` (`config/loader.py`, default `True` in KiroCrew; exposed in `config.json` under `messaging`) is the single switch. `slack/events.py::_route_message` checks `orch._cfg.messaging.use_transport`; when `True` it creates a task on `handle_message_transport` and skips the native `handle_message` monolith. (There is no challenge-redirect in this fork — Slack messages are processed inline.) Approval mode is resolved by `_resolve_approval_mode(orch)` (respects configured mode + operator YOLO/SafetyOverride TTL), and the per-channel `slack.channels.<id>.agent` override is passed through.
+`MessagingConfig.use_transport` (`config/loader.py`, default `True` in Kiro Crew; exposed in `config.json` under `messaging`) is the single switch. `slack/events.py::_route_message` checks `orch._cfg.messaging.use_transport`; when `True` it creates a task on `handle_message_transport` and skips the native `handle_message` monolith. (There is no challenge-redirect in this fork — Slack messages are processed inline.) Approval mode is resolved by `_resolve_approval_mode(orch)` (respects configured mode + operator YOLO/SafetyOverride TTL), and the per-channel `slack.channels.<id>.agent` override is passed through.
 
 ## Telegram forum topics (per-Topic sessions)
 
@@ -181,43 +179,164 @@ abstraction Slack uses, so one bot serves many parallel, topic-scoped sessions
   and a queued message drains under the forum key (`editMessageText` is not
   threaded — the message id already identifies the message within its Topic).
 
-## Mid-turn routing & per-message overrides (Telegram)
+## Mid-turn routing, queue receipts & cancel
 
-A message arriving while a turn is in flight is routed by
-`messaging.queue_mode` (default `steer`):
+A message that arrives while a turn is still generating is not a new turn: the
+session semaphore is held, so running it directly would either block or open a
+second conversation against the same key. Two channels carry the full
+steer/queue/drain machinery, `telegram/transport_dispatch.py` and
+`discord/transport_dispatch.py`; both read the same
+`messaging.queue_mode` (`config/loader.py`, `"steer"` | `"queue"`, anything
+else normalized to `steer`) and both implement the same three primitives
+(`_handle_busy`, `_enqueue_with_receipt` + `_drain_queue`, `_handle_stop`) with
+only the platform call names differing.
 
-- **`steer`** — inject into the running turn via kiro-cli `_session/steer`.
-  kiro-cli folds it at its next generation boundary and emits an inline
-  `[STEERING steer-<id>: <ack summary>]` marker at the fold point. The user's
-  steer message receives an emoji **reaction** (`setMessageReaction`;
-  `TELEGRAM_CAPABILITIES.reactions=True`) as the delivery receipt.
-- **`queue`** — hold the message; a single in-place "⏳ Queued (N)" receipt
-  tracks the burst. When the turn ends, queued texts collapse into ONE combined
-  follow-up turn (order preserved).
+The remaining channels (Webex, WeCom, Teams, Weixin) implement `_handle_busy`
+as **steer-only**: they fold the message into the running turn and reply with a
+one-shot notice, or ask the user to resend when steer is unavailable. They have
+no receipt and no drain, because their reply is bound to the inbound request
+(WeCom, Weixin) or has no editable-receipt affordance, so a hold-then-deliver
+follow-up turn could not be delivered reliably later.
 
-**Per-message overrides:** a `/steer <msg>` or `/queue <msg>` prefix forces
-that message down the corresponding path, overriding `queue_mode` for that
-message only. The prefix is only recognized when the original text is not
-itself a command; the payload after the prefix is **turn content, never a
-command** — `/queue /new` queues the literal text `/new`. Bare `/steer` /
-`/queue` (no body) are treated as normal messages.
+### `steer` (the default): fold into the running turn
 
-**Drain semantics:** the queue-drain replay calls `handle_message(...,
-interpret_commands=False)`; drained payloads bypass both the command intercept
-and override parsing, so queued command-lookalike text reaches the model as
-literal content instead of executing on drain.
+`_handle_busy` injects the text into the in-flight turn via kiro-cli's
+`_session/steer` ext-method. The write is fire-and-forget: the turn's read loop
+is the single consumer of that process's stdout, so awaiting the response would
+steal the turn's own messages. kiro-cli folds the steer at its next generation
+boundary (a tool-call edge on an agentic turn, the end of stream on one long
+text turn) and emits an inline `[STEERING steer-<id>: <ack summary>]` marker in
+the text stream at the exact fold point.
 
-**Telegram rendering contract:** turns stream live via one real message edited
-in place (throttled plaintext frames; transient `🔧 {tool}…` footer during tool
-calls; trailing `[OPTIONS:]` markup held back from live frames). Segments seal
-to Telegram-HTML at rotation points: each complete `[STEERING]` marker (the
-pre-steer output seals; the continuation opens a fresh message headed by a
-`↪️ <ack summary>` chip, lazily materialized only when real continuation text
-follows — an end-of-stream marker posts no tail message) and length overflow
-(fence-balanced via `_split_markdown`; a trailing incomplete directive is
-detached before splitting). If sealing edits fail because the live message was
-deleted, the final content is re-sent as a fresh message. See
-`docs/mid-turn-queue-and-cancel.md` for the full behavioral walkthrough.
+Two preconditions gate the steer, and both matter:
+
+- `provider.supports_steer` (kiro-cli only; the dormant Claude backend seam has
+  no `_session/steer`). When false the message falls through to the queue path.
+- `provider.has_active_turn()`, **not** `sessions.is_busy()`. `is_busy` stays
+  true through post-turn bookkeeping (success record, turn persist, threshold
+  notice, SEL audit, all await points), so it alone cannot distinguish a live
+  turn from one that just ended. Steering an already-ended prompt is silently
+  swallowed, which would leave the user with an acknowledgement and no answer.
+
+On a successful steer the user's own message gets an emoji **reaction** as the
+delivery receipt (`setMessageReaction` on Telegram, `add_reaction` on Discord;
+both declare `reactions=True` in their `TransportCapabilities`). A reaction and
+not a reply, so a mid-turn steer costs no extra bubble in the transcript. The
+dispatcher also records the user's own words on the live renderer via
+`note_steer` so the rendered chip quotes the user rather than the redacted
+backend echo.
+
+Attachments force the queue path on Discord: `_session/steer` carries text only,
+so a mid-turn message with files would lose them.
+
+### `queue`: one collapsing receipt, then ONE combined turn
+
+In `queue` mode (or under a per-message override, or when steer is unavailable)
+the message is held and surfaced through a **single** receipt message that grows
+in place:
+
+```
+⏳ Queued (2): "what time is it" · "and the weather?"
+```
+
+The first five items are listed verbatim (`_RECEIPT_MAX_ITEMS`), the rest
+collapse into `…and N more` so a large burst cannot blow the message cap.
+
+**The receipt is EDITED, never deleted.** At the end of the turn it flips to
+`▶️ Now answering (N): …`; a `/stop` finalizes it to `🛑 Cancelled (N): …`.
+Neither dispatcher calls a delete API on it. This is deliberate: the receipt is
+the durable record of what the user asked and how it was routed, so deleting it
+would erase the only evidence that a message was accepted at all.
+
+The enqueue and the receipt create/grow happen together under `_receipt_lock`,
+which the end-of-turn drain also takes across its dequeue plus flip. That is
+what makes the two race-free: the drain sees either the message queued **with**
+its receipt or neither yet, never a half state that would orphan a bubble.
+`enqueue(..., force=False)` is a no-op once the semaphore is free, so if the
+turn finished inside the window the enqueue returns false and the caller runs
+the message as a fresh turn instead of stranding it.
+
+**Queued messages collapse into ONE turn.** `_drain_queue` dequeues the whole
+burst, joins the texts with blank lines in arrival order, and runs a single
+combined turn, rather than replaying N separate turns. Two caps bound the
+collapse: `_MAX_COLLAPSE` (50) messages, and on Discord the ingest attachment
+limit across the combined set. Once one item no longer fits, it **and everything
+behind it** are re-enqueued so FIFO order stays exact, the receipt notes
+`+N deferred`, and the drain loops to pump the remainder. Messages arriving
+during the combined turn open a fresh receipt and drain after it.
+
+The combined turn itself runs outside `_receipt_lock`, and the drain replays via
+`handle_message(..., interpret_commands=False)`. Drained payloads therefore
+bypass both the command intercept and override parsing, so a queued `/new`
+reaches the model as literal text instead of executing on drain.
+
+### Per-message overrides
+
+A `steer` / `queue` directive prefix forces that one message down the
+corresponding path, overriding `queue_mode` for that message only.
+**Discord's text commands are `!`-prefixed** (`!new`, `!compact`, `!link`,
+`!unlink`, `!stop`, `!help`, `!sessions`, `!queue`, `!steer`) because Discord's
+client swallows a bare `/` message into its own slash-command UI; the `/` forms
+are also accepted for muscle-memory parity with Telegram, which uses `/` only.
+
+The prefix is recognized only when the original text is not itself a command,
+and the payload after it is **turn content, never a command**: `/queue /new`
+queues the literal text `/new`. A bare `/steer` or `/queue` with no body is
+treated as an ordinary message.
+
+### Hard cancel: `/stop`
+
+`/stop` (alias `/cancel`; `!stop` / `!cancel` on Discord) aborts the running
+turn, drops every queued message, and finalizes the receipt to `🛑 Cancelled`.
+`clear_queue` and the receipt finalize run together under `_receipt_lock`.
+
+**Cancel is cooperative before it is fatal.** The dispatchers call
+`provider.cancel(wait_ack_timeout=0)`, which writes an ACP `session/cancel`
+notification and returns without waiting, so the acknowledgement to the user is
+immediate; the turn stops at its next safe point. Per the ACP spec the ack is
+not a response to that notification, it arrives as `stopReason: "cancelled"` on
+the `session/prompt` response. The client arms a cancel grace window
+(`_CANCEL_GRACE_SECS`, 10s floor, raised to the caller's budget when larger) and
+only treats the agent as unresponsive after it elapses. The dashboard and Slack
+Stop paths go through `SessionManager.stop_turn`, which waits out
+`agent.soft_stop_budget_secs` (default 10.0, clamped to [0.5, 60]) for that ack
+and escalates to a hard kill plus eager respawn only on timeout or error. See
+`../../architecture/design-notes/soft-stop.md`.
+
+On a shared runtime the cooperative cancel cannot force-kill a co-tenant
+process, which is why the soft path exists at all rather than always killing.
+
+### Streaming and steer rotation in the renderers
+
+Both renderers stream a turn live through one real message edited in place
+(throttled frames, a transient `🔧 {tool}…` footer during tool calls, trailing
+`[OPTIONS:]` markup held back from live frames), and rotate to a new message at
+the driver's structured steer boundary. Telegram seals segments to Telegram-HTML
+and caps source at 4000 chars; Discord sends markdown as-is and caps at 1900,
+under the platform's 2000 hard limit.
+
+At a rotation the pre-steer output **seals** as its own message and the
+continuation opens a fresh message headed by a chip quoting the marker's ack
+summary (falling back to the user's own steer text recorded by `note_steer`):
+
+```
+> ↪️ answered the weather question in parallel with the directory summary
+<steered continuation…>
+```
+
+**The chip is lazily materialized.** `_materialize_chip` prepends it only once
+real post-steer text exists in the segment, so a marker at the very end of the
+stream (the steer was already covered by the answer) posts **no tail message at
+all** and the reaction remains the only acknowledgement. Without the laziness
+every trailing steer would leave a chip-only bubble carrying no content.
+
+A trailing `[OPTIONS:]` block belongs to the visible pre-steer answer, so it is
+extracted before the seal and shipped as a keyboard on the sealed message,
+rather than frozen as literal protocol text the user cannot act on. Length
+overflow rotates too, fence-balanced so a code block spanning the cut is closed
+at the seal and reopened after it, with a trailing incomplete directive detached
+before the split. Raw markers never reach posted text; each renderer keeps a
+defensive raw-marker parser only for callers that bypass `TurnDriver`.
 
 ## Slack reference implementation
 
@@ -250,13 +369,17 @@ Full new-path dispatch: fires the ack reaction + working status immediately (con
 - **Redaction is unconditional**: all LLM/tool-originated text flowing through `TurnDriver` passes `redact_exfiltration_urls()` + `redact_credentials()` before reaching any renderer.
 - **Protocol metadata is not assistant speech**: streamed steering frames are withheld until complete, removed even when split across chunks, and represented as a structured boundary. Summary-bearing compaction activity is never sent to a channel as assistant speech; only a terse receipt may be rendered. `[OPTIONS: …]` remains user-facing and is never stripped by the shared filter.
 - **Conservative capability defaults**: unspecified `TransportCapabilities` degrade safely (WhatsApp-like floor), and renderers must honor `max_message_chars` (`chunk_text`) and `max_buttons`.
+- **A mid-turn queue receipt is edited, never deleted**: it flips in place to `▶️ Now answering` on drain and to `🛑 Cancelled` on `/stop`. It is the durable record that a held message was accepted, so no path may delete it.
+- **A queued burst drains as ONE turn**: `_drain_queue` joins the held texts in arrival order into a single combined turn (capped by `_MAX_COLLAPSE` and, on Discord, the attachment ingest limit), never N replayed turns. Anything past a cap is re-enqueued together with everything behind it so FIFO order stays exact.
+- **A mid-turn steer requires a genuinely live turn**: gate on `provider.has_active_turn()`, never on `sessions.is_busy()` alone, which stays true through post-turn bookkeeping. Steering an ended prompt is silently swallowed, producing an acknowledgement with no answer.
+- **Cancel is cooperative before it is fatal**: `/stop` sends the ACP `session/cancel` notification and lets the turn stop at its next safe point; escalation to a hard kill happens only after the soft-stop budget elapses without an ack. On a shared runtime the cooperative path is the only one that cannot take a co-tenant down with it.
 - **Session keys are namespaced**: every key is `channel_type:conversation_id`; only bare legacy Slack `thread_ts` keys are shimmed, via `canonical_key`/`legacy_key`.
 - **Runtime identity follows the current turn**: every channel dispatcher passes its trusted transport name as `runtime_source` to `ContextBuilder.build_message`; the shared `drive_turn` pipeline uses `ChannelTurn.channel_type`. A cross-surface resume keeps its original stable session key for conversation continuity, but `[RUNTIME]` names the interface carrying the current message. Follow-up turns refresh the marker because the one-time session context may describe an earlier surface.
 - **Channel dashboard visibility is immediate**: after the first successful turn of a Discord, Telegram, Webex, Teams, WeCom, or Weixin-owned session is persisted, the dispatcher triggers the channel-slot reconciler immediately when `dashboard.surface_channel_sessions` is enabled. `DashboardState.register_channel_transport` injects the dashboard state into the bound dispatcher; the lifetime 30-second reconciler remains the recovery path, but the normal first-turn path does not wait for it. Turns that resume an existing `dashboard:` session skip this step because that session already owns a slot.
 - **Configured outbound targets are transport-owned**: `MessagingTransport.configured_targets()` returns opaque `ConfiguredChannelTarget` records for the user-configured destinations a dashboard session may link to, including an explicit unavailable reason when a protocol needs prior inbound state or cannot send proactively. `resolve_configured_target()` revalidates the selected opaque id at the side-effect boundary and resolves it to `(conversation_id, thread_id)`; the browser never supplies an unchecked platform conversation id. Discord exposes configured users and threads, and fail-closes thread resolution unless Discord still reports the allow-listed id as an actual thread rather than a normal shared guild channel; Telegram and Webex expose configured DMs; Weixin exposes allow-listed DMs plus authorized peers learned under its open policy; Teams destinations become available after an authorized inbound activity supplies a conversation/service URL; and WeCom destinations (including its allow-all policy placeholder) remain visible but unavailable because its reply token is inbound-bound.
 - **Configured-target egress is governed at every yield boundary**: the dashboard mirror-link endpoint enters the shared fail-closed `channels` governance ladder before resolving an opaque target (resolution may itself open a remote DM), rechecks before the initial link message, and rechecks before each historical-context message. A profile that narrows after transport startup therefore stops both target resolution and all subsequent sends.
-- **Own-channel vs. mirror**: `ChannelLink` models a session's own inbound channel only; the dashboard→Slack mirror binding stays in `SessionMap.get/set_slack_link` (guardrail G3). The generalized channel-neutral outbound mirror (`SessionMap.set_mirror_link`, PR #52) stores a `ChannelLink` under the `mirror` slot for non-Slack channels — still distinct from the session's own inbound link.
-- **Managed-MCP session-key resolution**: every turn-running surface publishes `session_pid_<pid>.txt` (with an HMAC-SHA256 sidecar) through the single shared helper `messaging.identity.publish_turn_identity` (which calls `session_pid_sig.publish_session_pid`), keyed by the session's kiro-cli host PID, so the gateway's ancestor PID-walk resolves the caller's `X-Session-Key`. One writer is called by the dashboard, native Slack, and every shipped channel transport-dispatch surface — Telegram (DM + forum), Discord, Slack, Webex, WeCom, Teams, and Weixin (through the shared `drive_turn`). Any surface that omits it makes every session-keyed managed MCP tool (`learn_add`, cron management, …) fail with HTTP 400 `missing X-Session-Key` from that channel's turns; the identity-topology test guards every dispatcher against regressing. (#232)
+- **Own-channel vs. mirror**: `ChannelLink` models a session's own inbound channel only; the dashboard→Slack mirror binding stays in `SessionMap.get/set_slack_link` (guardrail G3). The generalized channel-neutral outbound mirror (`SessionMap.set_mirror_link`) stores a `ChannelLink` under the `mirror` slot for non-Slack channels, still distinct from the session's own inbound link.
+- **Managed-MCP session-key resolution**: every turn-running surface publishes `session_pid_<pid>.txt` (with an HMAC-SHA256 sidecar) through the single shared helper `messaging.identity.publish_turn_identity` (which calls `session_pid_sig.publish_session_pid`), keyed by the session's kiro-cli host PID, so the gateway's ancestor PID-walk resolves the caller's `X-Session-Key`. One writer is called by the dashboard, native Slack, and every shipped channel transport-dispatch surface: Telegram (DM + forum), Discord, Slack, Webex, WeCom, Teams, and Weixin (through the shared `drive_turn`). Any surface that omits it makes every session-keyed managed MCP tool (`learn_add`, cron management, …) fail with HTTP 400 `missing X-Session-Key` from that channel's turns; the identity-topology test guards every dispatcher against regressing.
 
 ## Testing conventions
 
@@ -325,22 +448,20 @@ the bot can see, although Kiro Crew immediately discards traffic outside
 approved threads. Bot-authored messages (including our own) are dropped as a
 loop guard. `DISCORD_BOT_TOKEN` is on the sandbox agent env denylist.
 
-**Dispatch + rendering.** Turns ride the shared `TurnDriver`
-(`transport_dispatch.py` mirrors the Telegram dispatcher: mid-turn
-steer/queue with collapsing receipts, drain-collapse, `!compact` under atomic
-`try_acquire`, dashboard mirror `!link`/`!unlink`). Text commands are
-`!`-prefixed (`!new`, `!compact`, `!link`, `!unlink`, `!stop`, `!help`,
-`!queue`/`!steer`; `/` aliases accepted) because Discord's client intercepts
-bare `/` as slash-commands. The renderer streams via throttled in-place edits
+**Dispatch + rendering.** Turns ride the shared `TurnDriver`.
+`transport_dispatch.py` carries the same mid-turn steer/queue/drain/cancel
+machinery as the Telegram dispatcher (see "Mid-turn routing, queue receipts &
+cancel" above) plus `!compact` under atomic `try_acquire` and the dashboard
+mirror `!link`/`!unlink`. The renderer streams via throttled in-place edits
 under the 2000-char cap (chunked at 1900 with fence-balanced splitting),
-rotates messages at the shared driver's structured steer boundaries with quote chips (a defensive raw-marker parser remains only for callers that bypass the driver), renders trailing
-`[OPTIONS:]` as button action rows (`opt:<i>`, label recovered from the
-component at interaction time), and posts Approve/Deny buttons for
-interactive tool approvals. Approval `custom_id`s carry a per-prompt random
-nonce (`a:<request_id>:<nonce>:<1|0>`) validated at resolution — ACP request
-IDs are reusable across provider/gateway restarts, so a stale button without
-the matching nonce fails closed. The decision window denies by default on
-timeout and retires the nonce with it.
+rotates messages at the shared driver's structured steer boundaries with quote
+chips, renders trailing `[OPTIONS:]` as button action rows (`opt:<i>`, label
+recovered from the component at interaction time), and posts Approve/Deny
+buttons for interactive tool approvals. Approval `custom_id`s carry a
+per-prompt random nonce (`a:<request_id>:<nonce>:<1|0>`) validated at
+resolution: ACP request IDs are reusable across provider/gateway restarts, so a
+stale button without the matching nonce fails closed. The decision window
+denies by default on timeout and retires the nonce with it.
 
 ## Discord settings API
 

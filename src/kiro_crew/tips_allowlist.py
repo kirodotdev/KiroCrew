@@ -22,6 +22,7 @@ TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
         "cron-and-scheduling.md",
         "dashboard.md",
         "deploy-web.md",
+        "discord-integration.md",
         "dynamic-subagent-sizing.md",
         "feature-tips.md",
         "getting-started.md",
@@ -31,12 +32,14 @@ TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
         "research-lab.md",
         "skills.md",
         "slack-integration.md",
+        "snapshot-and-restore.md",
         "subagents.md",
         "task-runner.md",
+        "teams-integration.md",
         "telegram-integration.md",
-        "discord-integration.md",
         "use-cases.md",
         "webex-integration.md",
         "wecom-integration.md",
+        "weixin-integration.md",
     }
 )

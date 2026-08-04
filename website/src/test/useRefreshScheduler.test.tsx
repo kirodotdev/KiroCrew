@@ -2,7 +2,7 @@
  * Tests for useRefreshScheduler.
  *
  * Covers TR-F-01 through TR-F-09 from
- * KiroCrew/docs/token-refresh/TESTCASES.md.
+ * KiroCrew/docs/system-specs/features/dashboard-token-auth.md.
  *
  * Strategy: vitest fake timers + global fetch mock + a probe component
  * that mounts the hook so we exercise its useEffect lifecycle. Each test

@@ -1248,7 +1248,7 @@ class TestSandboxRefusalIsReportedNotSwallowed:
     Windows is the host that makes this reachable on every compile: it has no
     sandbox backend at all (user namespaces are Linux, ``sandbox-exec`` is macOS),
     so before this the app's every compile raised an unhandled 500 that named no
-    remedy — even though ``docs/WINDOWS_CHANGES.md`` documents the one config flag
+    remedy — even though ``docs/guides/windows-install.md`` documents the one config flag
     that fixes it.
     """
 

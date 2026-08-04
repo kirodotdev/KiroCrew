@@ -1,7 +1,5 @@
 # Persistent Agent Channels Module
 
-Last Updated: 2026-04-03
-
 ## Overview
 
 `channel.py` + `handlers_channel.py` + `ChannelPage.tsx` — multi-agent

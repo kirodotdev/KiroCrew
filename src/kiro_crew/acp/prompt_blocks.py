@@ -14,7 +14,7 @@ Keeping one builder matters: both paths need the same path-to-image
 conversion, so a single implementation stops any channel from shipping a
 filesystem path to the model as text.
 
-Wire shape (per docs/kiro-cli/acp.md):
+Wire shape (per docs/reference/kiro-cli/acp.md):
 
 .. code-block:: json
 

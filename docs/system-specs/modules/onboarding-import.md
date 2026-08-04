@@ -1,9 +1,5 @@
 # Foreign-Agent Import Module
 
-Last Updated: 2026-07-29 (deferred embedding for bulk memory writes; foreign
-workspace-scope sentinels and directive-typed rows no longer discard a whole
-memory store)
-
 Previously: 2026-07-28 (initial spec: industry-consensus scope, session-import
 removal, memory-hierarchy destination mapping, dry-run contract, and
 user-selectable conflict strategies)
@@ -321,7 +317,6 @@ For those categories a successful write also carries a stable
 `destination_key` (`skills:<source>/<name>`, or the MCP server name), and
 `_record_ledger` drops any other record for the same `(category, destination_key)`
 so a single-occupancy destination keeps exactly one record.
-
 
 `<data_home>/imports/foreign-agent-imports.json`, shape
 `{"version": <int>, "records": {<fingerprint>: {...}}}`. An item whose

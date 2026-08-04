@@ -86,7 +86,7 @@ valid (and is what Linux and `make backend-bin` always use).
    notarytool, staple, spctl, feed write) is arch-indifferent. Feed schema
    untouched: `latest-mac.json` points at the universal zip; installed arm64
    apps update onto it seamlessly.
-7. **Docs** — `docs/desktop-app.md`: rewrite the "no universal2" section to
+7. **Docs** — `docs/build/desktop-app.md`: rewrite the "no universal2" section to
    describe this mode and why true universal2 stays off the table;
    `_vendor/README.md` table row for `macos_x86_64/`.
 

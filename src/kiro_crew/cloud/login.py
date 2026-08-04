@@ -6,7 +6,7 @@ up: run ``kiro-cli login`` on the instance over SSM, scrape the device-code URL
 + code, and open that URL in the user's *local* browser. KiroCrew stores **no**
 Kiro credentials — they live in kiro-cli's own store on the instance.
 
-Two remote-login shapes (see ``docs/kiro-cli/authentication.md``):
+Two remote-login shapes (see ``docs/reference/kiro-cli/authentication.md``):
 
 - **Builder ID / IAM Identity Center → device code.** kiro-cli prints a
   verification URL + code; the user opens it locally and approves. No port

@@ -1,7 +1,5 @@
 # Task Module
 
-Last Updated: 2026-02-16
-
 ## Overview
 
 The task module (`kiro_crew/task.py`) provides a state machine for

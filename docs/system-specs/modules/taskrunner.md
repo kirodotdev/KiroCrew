@@ -1,7 +1,5 @@
 # TaskRunner Module
 
-Last Updated: 2026-07-13 (batch parallel execution + execute_plan resume corrections; pause/resume, crash recovery, force_approval gates)
-
 ## Overview
 
 Autonomous task executor that reads a spec file, decomposes it into

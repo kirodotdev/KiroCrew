@@ -64,6 +64,28 @@ jobs:
           python3 scripts/check_brand_name.py --test
           python3 scripts/check_brand_name.py
 
+  docs-lint:
+    name: Docs Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify the linter's own checks still fire
+        # Self-test first: a gate that has silently stopped detecting anything is
+        # worse than no gate, because it reads as a green signal. Each check is
+        # exercised against a planted defect in a throwaway tree.
+        run: python3 scripts/docs_lint.py --test
+
+      - name: Lint documentation trees
+        # Blocking gate: every internal link resolves, every doc is reachable from
+        # its directory index, every directory holding docs has one, no code comment
+        # cites a doc that does not exist, and no doc whose filename is hardcoded in
+        # code has been renamed out from under its consumer.
+        # No setup-python step: ubuntu-latest ships Python 3 and the script is
+        # stdlib-only.
+        run: ./scripts/docs-lint.sh
+
   backend-lint:
     name: Backend Lint & Type Check
     runs-on: ubuntu-latest
@@ -191,7 +213,7 @@ jobs:
           if-no-files-found: error
 
   # Windows regression line: the backend supports Windows natively via
-  # kiro_crew.platform_compat (see docs/windows-install.md for the
+  # kiro_crew.platform_compat (see docs/guides/windows-install.md for the
   # per-feature status), but until this job existed nothing in CI held
   # that line -- a POSIX-only regression would land silently. Single
   # Python (3.12: the preferred Windows runtime; numpy 1.x ships no 3.13
@@ -587,7 +609,7 @@ jobs:
         # one day: `main` sat at 1120 against its own ALL-CAPS ceiling of 1118 within
         # minutes of it being set, and every open PR inherited the red. [dynamic-keys] was
         # the worst, failing when a file IMPROVED. The numbers are still printed; they do
-        # not gate. See website/AGENTS.md for the residual gap this leaves on [dynamic-keys]
+        # not gate. See docs/ci/i18n-gates.md for the residual gap this leaves on [dynamic-keys]
         # specifically, and the qa `CEILINGS` / `deadKeys` / `glossary` ratchets that are
         # still exact in both directions.
         #

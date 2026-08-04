@@ -1,7 +1,5 @@
 # Knowledge Module
 
-Last Updated: 2026-07-13 (Initial spec: FileReader/SUPPORTED formats incl. `.org` plain-text routing, FolderWatcher `_walk` discovery, sweep-shielded LLMPool workers, FTS5 + graph + vector RRF retrieval)
-
 ## Overview
 
 The Knowledge Library is KiroCrew's personal knowledge graph: a local, SQLite-backed corpus that ingests documents (folders, uploads, artifacts, fetched URLs), chunks and entity-extracts them via a bounded LLM worker pool, and serves hybrid retrieval (FTS5 keyword + graph traversal + optional vector) to the LLM through the `local_knowledge_search` MCP tool. All ingestion and search stay on-host; the only external calls are the extraction/URL-fetch worker's ACP LLM turns and the local Ollama embedding endpoint.

@@ -19,7 +19,7 @@ socket egress (B7).
 
 Spec: ``docs/system-specs/modules/workflows.md``. Never relax a check here without
 a matching update to the invariant tests (GATE group B in
-``docs/dynamic-workflows/GATES.md``).
+``docs/system-specs/modules/workflow-gates.md``).
 """
 
 from __future__ import annotations

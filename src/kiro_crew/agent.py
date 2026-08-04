@@ -452,7 +452,7 @@ def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
     # Windows has no ~/.local/bin symlink convention, and creating a symlink
     # there needs Developer Mode or elevation — a normal session raises
     # OSError [WinError 1314] mid-wizard. pip's Scripts\kirocrew.exe console
-    # script is already the supported Windows launcher (docs/windows-install.md),
+    # script is already the supported Windows launcher (docs/guides/windows-install.md),
     # so this POSIX install.sh mirror has nothing to do here. Return before any
     # filesystem attempt so `kirocrew setup` never prints a traceback for it.
     if platform_compat.IS_WINDOWS:
@@ -747,7 +747,7 @@ def _all_skill_paths() -> list[str]:
         paths.add(str(user_skills))
     # Open-standard global location: ``~/.kiro/skills/`` — canonical home for
     # ``cp -r my-skill ~/.kiro/skills/`` installs and AIM-published skills
-    # that follow the spec.  See docs/kiro-cli/skills.md.
+    # that follow the spec.  See docs/reference/kiro-cli/skills.md.
     kiro_user = Path.home() / ".kiro" / "skills"
     if kiro_user.is_dir() and not is_sensitive_path(str(kiro_user)):
         paths.add(str(kiro_user))
@@ -2129,7 +2129,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # never mutates them).
     #
     # NOTE: this reverses the prior "CC global wins over Kiro global" rule.
-    # See docs/mcp-architecture.md. CC global is kept only as a gap-filler so
+    # See docs/architecture/mcp.md. CC global is kept only as a gap-filler so
     # the Claude Code provider can be re-enabled later without rework; it must
     # not shadow a Kiro-global entry.
     managed_names = set(_MANAGED_MCP_SERVERS)

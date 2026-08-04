@@ -1,110 +1,328 @@
-# Publishing Guide — From Development to App Store
+# Publishing Guide: from development to the App Store
 
-Complete workflow: develop → test locally → submit to registry → users install.
+The full path an app takes: develop, test locally, list it in a registry, users
+install it. An "app" is a package that contributes agents, skills, SOPs, MCP
+servers, cron jobs, backend routes, or dashboard UI pages to Kiro Crew.
 
-## 1. Develop Your App
+This guide covers the publish-facing surface (store listing, assets, registry
+entry, review). The complete field reference is
+[manifest-reference.md](manifest-reference.md), and the first-app walkthrough is
+[getting-started.md](getting-started.md).
 
-Create an app directory with an `app.json` manifest:
+## 1. Develop your app
+
+Scaffold a skeleton, then edit it:
 
 ```bash
-mkdir my-app
-# Create app.json, agents/, skills/, ui/ as needed
+kirocrew app init my-app --ui --backend --cron
 ```
 
-See [Getting Started](getting-started.md) for details.
+`app.json` at the app root is the single source of truth for identity,
+resources, and the store listing. The registry entry (section 8) carries almost
+nothing, so bumping a version or rewriting a description means editing only your
+own repo.
 
-## 2. Test Locally
+## 2. The store-listing fields
 
-### Install from local path
+```json
+{
+  "name": "my-app",
+  "version": "1.0.0",
+  "displayName": "My App",
+  "description": "One paragraph describing what the app does.",
+  "author": "your-name",
+  "license": "MIT",
+  "tags": ["productivity", "automation"],
+  "highlights": [
+    "What the app does that a list entry cannot convey",
+    "One line per capability"
+  ],
+  "iconPath": "assets/icon.png",
+  "screenshots": ["assets/screenshots/main.png"],
+  "heroImage": "assets/hero-light.png",
+  "heroImageDark": "assets/hero-dark.png",
+  "heroImageDetail": "assets/hero-detail-light.png",
+  "heroImageDetailDark": "assets/hero-detail-dark.png"
+}
+```
+
+| Field | Rules |
+|-------|-------|
+| `name` | Required. Kebab-case, matched against `^[a-z0-9]+(?:-[a-z0-9]+)*$`, unique across all apps. This is the install id and the on-disk directory name. `system` is reserved (it would shadow the `system.*` notification-channel namespace). |
+| `version` | Required. Semver (`major.minor.patch`, optionally with a pre-release or build suffix). Bump on every release. |
+| `displayName` | Required. Rendered in a fixed-width row that truncates, so keep it short. |
+| `description` | Required. Plain text, no markdown. Discover's list row shows one truncated line; the feature cards clamp to two; the detail page shows it in full. Two or three sentences is the useful range. |
+| `author` | Recommended. Shown as provenance next to the app's category and source registry. |
+| `license` | Optional SPDX-style identifier, shown on the detail page. |
+| `tags` | Lowercase discovery tags. They also decide the app's Discover category (section 3). |
+| `highlights` | Feature bullets rendered as a list on the detail page. |
+
+### Store metadata is fetched from your repo, not the registry
+
+The App Store fetches each listed app's `app.json` with `git archive` and caches
+it for 24 hours (an external registry's index is cached for 1 hour). Image paths
+inside the manifest are rewritten to blob-proxy URLs, so nothing has to be
+mirrored into the Kiro Crew repo. Push a new version and the store picks it up on
+the next refresh.
+
+## 3. Categories come from your tags
+
+Discover groups apps into a fixed set of categories by scanning `tags` in
+priority order, so a specific tag beats a generic one. An app whose tags match
+nothing lands in **Other**.
+
+| Category | Tags that select it |
+|----------|---------------------|
+| On-call & Ops | `oncall`, `operations`, `monitoring`, `tickets`, `pipelines` |
+| Research & Writing | `research`, `writing`, `docs` |
+| Designer Tools | `ux`, `critique`, `usability`, `heuristic-evaluation`, `designer-tools` |
+| Developer Tools | `developer-tools`, `code-review`, `git`, `github`, `dev`, `worktrees`, `pods`, `issue-triage`, `code-quality`, `open-source`, `performance` |
+| Agents & Automation | `agents`, `automation`, `workflows`, `orchestration`, `autonomy`, `autonudge`, `execution`, `collaboration`, `visualization` |
+| Productivity | `productivity`, `tasks`, `inbox`, `slack`, `email`, `outlook`, `files`, `explorer`, `aggregation`, `reports`, `team` |
+
+## 4. Image assets
+
+All artwork is committed to your own repo. The App Store serves it through the
+git blob proxy (`GET /api/apps/blob?repo=<repo>&path=<path>`), so there is no CDN
+or external hosting to arrange. The proxy only serves repos that appear in a
+configured registry (an SSRF guard), only these extensions: `.png`, `.jpg`,
+`.jpeg`, `.gif`, `.webp`, `.svg`, `.ico`, and it rejects `..`, absolute paths,
+and any path segment starting with a dot.
+
+Path form depends on distribution: a registry app uses a repo-relative path
+(rewritten to a blob-proxy URL), while a built-in uses an absolute served URL.
+
+| Field | Rendered where | Aspect |
+|-------|----------------|--------|
+| `iconPath` | Card and row icon, and the gradient fallback's centerpiece | Square PNG with transparency; 256x256 or larger |
+| `screenshots` / `screenshotsDark` | Detail-page gallery with a lightbox; the first screenshot is also the last-resort hero | Landscape; around 1200px wide |
+| `heroImage` / `heroImageDark` | Discover rows, Library rows, the featured spotlight, feature cards, and the detail banner when no detail-specific art exists | 16:9 (for example 1200x675) |
+| `heroImageDetail` / `heroImageDetailDark` | Detail-page banner only, preferred there over `heroImage` | 25:6 (for example 1200x288) |
+
+Ship hero art. Every store surface uses it, and it is the difference between
+looking like a product and looking like a list entry.
+
+**Resolution order on every surface:** the current theme's art, then the
+opposite theme's, then the first screenshot. If an app ships none, or an image
+404s, the surface falls back to a name-seeded gradient carrying the app icon, so
+a missing or broken hero degrades instead of leaving a blank panel. The detail
+page sizes its container to whichever ratio it resolved, so a 16:9 hero used as
+a banner is not cropped.
+
+## 5. Setup and lifecycle scripts
+
+```json
+{
+  "setup": {
+    "onInstall": "bash setup.sh",
+    "onUninstall": "bash scripts/uninstall.sh",
+    "onEnable": "bash enable.sh",
+    "onDisable": "bash disable.sh",
+    "onEnableTimeout": 120,
+    "onDisableTimeout": 60
+  }
+}
+```
+
+| Hook | When it runs | Timeout |
+|------|--------------|---------|
+| `onInstall` | After a **registry** install has cloned and built the source, before the files are copied into the data home | 300s |
+| `onUninstall` | Before app files are removed, and only after cron cleanup has succeeded | 120s |
+| `onEnable` | After resources are registered, the backend is started, and dependencies are resolved | 30s, or `onEnableTimeout` |
+| `onDisable` | First step of disable, before hooks, backend stop, and deregistration | 30s, or `onDisableTimeout` |
+
+Execution model:
+
+- Every script is wrapped as `/bin/bash -c "set -euo pipefail\n<script>"`, so an
+  unset variable or any failing command in a pipeline aborts the script. Write
+  scripts assuming bash, and prefer `bash script.sh` over `source script.sh` so
+  the intent is explicit.
+- Scripts run sandboxed with a minimal environment (no gateway secrets) plus
+  `NONINTERACTIVE=1`, with `cwd` set to the app directory, under a cgroup
+  ceiling, in their own process group so a timeout kills the whole tree. They
+  must exit 0 on success. Output is truncated to the last lines and passed
+  through credential redaction before it reaches the client.
+- `onUninstall` additionally receives `KEEP_DATA` and `PURGE_DATA` (`1`/`0`). If
+  the user chose to keep app data, skip deleting user data directories.
+- `onEnable` failure rolls the enable back: the backend is stopped, resources are
+  deregistered, and the app stays disabled. Rationale: an app that cannot start
+  should not be left enabled and broken.
+- `onDisable` failure does **not** block the disable. It is reported in the
+  response's `warnings` and logged. A misbehaving app must always be
+  disableable; orphaned processes beyond what the backend stop handles are the
+  app's own responsibility.
+- Installing from a **local path** (`POST /api/apps/install`, `kirocrew app
+  install <dir>`) copies and registers the app but does not run `onInstall`. Do
+  any build step yourself while iterating locally.
+- `setup.onUpdate` parses and round-trips through the manifest, but no code path
+  executes it. Do not put work an update depends on there. Make `onInstall`
+  idempotent instead, since a registry update re-runs it.
+
+Only declare `onUninstall` for state Kiro Crew cannot see: app binaries outside
+the data home, shell aliases, launchd plists. For `resources: "gateway"` apps the
+gateway already deregisters agents, skills, MCP entries, and cron jobs, so do not
+duplicate that. For `resources: "app"` apps the gateway deregisters nothing and
+your script owns all of it.
+
+## 6. Dependencies
+
+```json
+{
+  "dependencies": {
+    "managedBy": "gateway",
+    "capabilities": {
+      "mcp": ["some-documentation-mcp-server", { "id": "my-mcp", "managedBy": "app" }],
+      "skills": ["SomeSkillPackage"]
+    },
+    "commands": ["node", "python3"],
+    "optionalCommands": ["git"]
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `managedBy` | Default resolution strategy. `"gateway"` resolves each entry through the edition's `CapabilityManager` seam; `"app"` means Kiro Crew only checks existence. A per-entry object (`{"id": ..., "managedBy": ...}`) overrides it. |
+| `capabilities.mcp` / `capabilities.skills` | Capability packages the app needs but does not provide. |
+| `capabilities.agents` | Declarable, but no edition has an install operation for it, so it is always reported unresolved. Declare `managedBy: "app"` or install it out of band. |
+| `commands` | REQUIRED host executables, probed with `which`. A miss is reported in `missing` and warned about; it does not block the install. |
+| `optionalCommands` | Same probe, reported separately in `missingOptional`. Use it for a tool the app can work without or can provision itself. |
+
+**The open-source edition ships no capability manager**, so `capabilities`
+entries resolve as unresolved and the app installs anyway. Design for graceful
+degradation: an app that hard-requires a capability package will not work on a
+stock install.
+
+`dependencies.capabilities.mcp` is not `mcpServers`. `mcpServers` are servers
+your app itself provides and runs, and the gateway registers them into
+Kiro Crew's own agent config. `capabilities.mcp` are external servers your app
+merely consumes.
+
+Resolved dependencies are recorded in a reference-counting ledger at
+`~/.kiro/crew/dependency-ledger.json`. On uninstall each declared dependency is
+classified as removable (this app is its only recorded owner), shared (another
+app also owns it), or user-installed (absent from the ledger). Only removable
+entries are cleaned, and the uninstall request can override that:
+`keep_dependencies: true` skips cleanup entirely, `keep_specific: [...]` spares
+named entries.
+
+## 7. Platform and install mode
+
+```json
+{
+  "platform": {
+    "os": ["macos"],
+    "installMode": "client",
+    "clientInstall": {
+      "shell": "git clone https://github.com/you/MyApp.git ~/MyApp && cd ~/MyApp && KIROCREW_HOST={{gateway_host}} bash setup.sh",
+      "postInstall": "open ~/Applications/MyApp.app"
+    },
+    "requiresDesktopApp": false
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `os` | `["macos", "linux"]` | Platforms the app can run on: `macos`, `linux`, `windows`. This constrains the machine the GATEWAY runs on. |
+| `arch` | any | Architecture restriction; empty means any. |
+| `installMode` | `"server"` | `"server"`: Kiro Crew clones and installs. `"client"`: the app must be installed on the user's own machine. |
+| `clientInstall.shell` | | One-liner the user runs in their local terminal. `{{gateway_url}}` and `{{gateway_host}}` are substituted with the dashboard origin and the gateway hostname. |
+| `clientInstall.postInstall` | | Follow-up command shown as a hint (for example, launching the app). |
+| `requiresDesktopApp` | `false` | The app's UI needs the Electron shell (native always-on-top windows, global shortcuts, tray). A UX gate only: the browser marker is client-side and spoofable, so nothing security-relevant may depend on it. |
+
+With `installMode: "client"` on an incompatible platform, the store shows the
+copy-paste instruction panel instead of running an install, and the app
+registers itself on first launch via `POST /api/apps/register`. On a compatible
+platform the normal clone-and-install path runs.
+
+An `installMode: "client"` app's `onEnable` script is treated as **advisory**: it
+launches a desktop application distributed separately, which may legitimately not be
+installed on this host. A failure is reported as `onEnable.failed` and the app stays
+enabled, and the script is skipped outright when the gateway's OS is not in the app's
+`platform.os`. Rolling the enable back instead would make the app's dashboard half
+unreachable on exactly the hosts that need it to explain how to get the desktop half.
+
+## 8. Test locally
 
 ```bash
-# Build UI if you have one
+# Build the UI bundle if the app has one
 cd my-app/ui && npm install && npm run build && cd ..
 
-# Install via REST API
 curl -X POST http://localhost:5476/api/apps/install \
   -H 'Content-Type: application/json' \
   -d '{"source": "./my-app"}'
 
-# Enable it
 curl -X POST http://localhost:5476/api/apps/my-app/enable
 ```
 
-Or use the App Store UI in the dashboard to install from a local path.
+The dashboard's Sources menu on the Apps page can install from a local path too.
 
-### Verify in dashboard
+Verify:
 
-1. Open KiroCrew dashboard (`kirocrew token` → open URL)
-2. Check App Store → Installed tab — your app should appear
-3. If it has UI, click the sidebar entry and verify the page loads
-4. If it has agents, test them from chat: ask the agent to do something
-5. If it has crons, check Schedule page — your cron should be listed
+1. Open the dashboard (`kirocrew token`, then the printed URL).
+2. Library tab: the app is listed with the right badges.
+3. If it ships UI, open its sidebar entry and confirm the page loads.
+4. If it ships agents, ask one to do something from chat.
+5. If it ships crons, confirm they appear on the Schedule page.
 
-### Debug tips
+Debug:
 
 ```bash
-# Check app is registered (via REST API)
 curl http://localhost:5476/api/apps | python3 -m json.tool
-
-# Check app manifest is valid
 curl http://localhost:5476/api/apps/my-app/manifest | python3 -m json.tool
-
-# Check Gateway logs for errors
-# Look for "app" or your app name in the log output
 ```
 
-### Iterate
+Manifest validation errors are returned by the install call itself, so a
+rejected install names the offending field.
+
+Iterate:
 
 ```bash
-# Edit code
-vim ui/src/App.tsx
-
-# Rebuild UI
 cd ui && npm run build && cd ..
-
-# Update installed app (re-copies files)
 curl -X POST http://localhost:5476/api/apps/my-app/update
-
-# Refresh dashboard — changes are live
 ```
 
-## 3. Prepare for Publishing
+For a tighter loop, turn on dev mode (`kirocrew app dev my-app`, or `POST
+/api/apps/my-app/dev`): UI files are then served with `Cache-Control: no-store`
+and a gateway-side watcher broadcasts a reload event when anything under `ui/`
+changes. Agent and skill edits take effect on the next agent invocation with no
+rebuild.
 
-### Checklist
+## 9. What gets copied at install time
 
-Before submitting to the registry:
+Install and update copy the source tree into `~/.kiro/crew/apps/{name}/` with two
+safeguards:
 
-- [ ] `app.json` passes validation: check via `GET /api/apps/{name}/manifest`
-- [ ] `name` is kebab-case, globally unique, descriptive
-- [ ] `version` follows semver (`1.0.0`)
-- [ ] `displayName` and `description` are clear and concise
-- [ ] `author` is set
-- [ ] `tags` help with discovery
-- [ ] `permissions` are minimal — only declare what you actually use
-- [ ] UI bundle is built and committed (`ui/dist/index.mjs`)
-- [ ] Agent JSON files are valid
-- [ ] Skill SKILL.md files have proper frontmatter
-- [ ] README.md explains what the app does and how to use it
-- [ ] If you have `setup.onInstall`, test it on a clean machine
+- **Symlinks are never followed.** A symlink resolving inside your app source
+  tree is preserved as a symlink; one resolving outside is omitted entirely.
+  Committed runtime artifacts must be real files (or in-tree links), never
+  reachable only through an external symlink. Absolute in-tree links are
+  rewritten to relative form so the installed copy does not depend on your
+  source directory.
+- **Build-input and VCS directories are excluded** at any depth: `node_modules`,
+  `.git`, `__pycache__`, `.venv`. Serve your UI from a committed `ui/dist/`
+  bundle; nothing needed at runtime may live under those names.
 
-### What gets copied at install time
+`data/` is preserved across updates and, by default, across uninstall.
 
-When KiroCrew installs or updates your app, it copies the source tree into
-`~/.kiro/crew/apps/{name}/` with two safeguards:
+### Third-party executable code is off by default
 
-- **Symlinks are never followed.** A symlink whose target resolves inside
-  your app source tree is preserved as a symlink; a symlink resolving
-  outside the source tree is omitted from the installed copy entirely.
-  Committed runtime artifacts must be real files (or in-tree relative
-  links), never reachable only through an external symlink.
-- **Build-input and VCS directories are excluded**: `node_modules`, `.git`,
-  `__pycache__`, and `.venv` (at any depth) are dropped from the installed
-  copy. Serve your UI from the committed `ui/dist/` bundle — nothing your app
-  needs at runtime may live under those names.
+Code shipped inside the Kiro Crew package (a built-in app) is exempt, but every
+other app's **executable** surfaces refuse to run unless the operator sets
+`agent.apps_allow_third_party` to the JSON boolean `true` in `config.json`. That
+covers registry installs and their install scripts, `detectInstalled`, backend
+processes, in-gateway Python hooks, lifecycle scripts, and `openCommand`. Only
+the literal `true` admits: absence, a malformed value, and an unreadable config
+all deny, and the env is not consulted, so an app cannot widen the boundary from
+its own process.
 
-### Repository structure
+Non-executable resources (agents, skills, MCP server declarations, cron
+definitions, UI bundles) are unaffected. If your app needs any executable
+surface, say so in your README: a user who has not flipped the setting will see
+`app_execution_denied` rather than a working install.
 
-Your app should live in its own Git repo (or a subdirectory of an existing repo):
+Repository layout:
 
 ```
 MyAppRepo/
@@ -113,19 +331,15 @@ MyAppRepo/
 ├── skills/
 ├── ui/
 │   ├── src/
-│   └── dist/index.mjs    ← committed build artifact
+│   └── dist/index.mjs      <- committed build artifact
 ├── README.md
-└── setup.onInstall        ← optional install script
+└── setup.sh                <- optional, referenced by setup.onInstall
 ```
 
-## 4. Submit to App Registry
+## 10. Add a registry entry
 
-The App Registry is a curated list in `src/kiro_crew/apps/app-registry.json`.
-Adding your app means opening a pull request against the KiroCrew repo.
-
-### Add registry entry
-
-Edit `app-registry.json` in the KiroCrew repo:
+The core registry is `src/kiro_crew/apps/app-registry.json` in the Kiro Crew repo.
+Listing an app there means opening a pull request.
 
 ```json
 [
@@ -137,128 +351,179 @@ Edit `app-registry.json` in the KiroCrew repo:
 ]
 ```
 
-If your app is in a subdirectory of a larger repo:
-
-```json
-{
-  "name": "my-app",
-  "gitUrl": "https://github.com/yourname/monorepo",
-  "branch": "main",
-  "subdirectory": "apps/my-app"
-}
-```
-
-### Registry entry fields
-
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | yes | Must match `app.json` name |
-| `gitUrl` | yes | Any git-cloneable URL (e.g. `https://github.com/...`, `git@host:...`). The legacy `repo` field is also accepted and used as the clone target when no `gitUrl` is given. |
-| `branch` | yes | Branch to clone from (usually `main`) |
-| `subdirectory` | no | Path within repo if app isn't at root |
-| `resources` | no | `"gateway"` (default) or `"app"` — who registers agents/skills/MCP |
-| `lifecycle` | no | `"gateway"` (default), `"app"`, or `"locked"` — who manages lifecycle |
-| `detectInstalled` | no | Shell command to check if already installed (for self-managed apps) |
+| `name` | yes | Must match `app.json`'s `name`. |
+| `gitUrl` | yes | Any git-cloneable URL (`https://github.com/...`, `git@host:...`). The legacy `repo` field is still read and used as the clone target when no `gitUrl` is present. |
+| `repo` | | Repo identifier the blob proxy uses to serve committed images. |
+| `branch` | | Branch to read and clone. Defaults to `main`. |
+| `subdirectory` | | Path within the repo holding `app.json`, for a monorepo layout. Treated as untrusted: it is joined with symlink-resolving containment and rejected if it escapes the clone root. |
+| `resources` | | `"gateway"` (default) or `"app"`: who registers agents, skills, MCP servers, and crons. |
+| `lifecycle` | | `"gateway"` (default), `"app"`, or `"locked"`: who owns updates and uninstall. |
+| `detectInstalled` | | Shell command that exits 0 when the app is already present on the machine (for self-managed apps). It runs sandboxed with a 5s timeout. |
+| `featured` | | Curator flag for the Discover editorial layer. `true` marks the app featured; a number both marks it and orders the slots (lower first). It lives on the registry entry, not in `app.json`, and is honored only for core-registry entries: a `featured` flag from an external registry is ignored, so adding a registry cannot seize the spotlight. With nothing flagged, the store falls back to a deterministic pick (apps with hero art first, then verified publishers, then name). |
 
-### Submit a pull request
+Open the pull request:
 
 ```bash
-cd /path/to/KiroCrew
 git checkout -b add-my-app
-# Edit src/kiro_crew/apps/app-registry.json
-git add src/kiro_crew/apps/app-registry.json
-git commit -m "feat(apps): add my-app to registry"
+# edit src/kiro_crew/apps/app-registry.json
+git commit -am "feat(apps): add my-app to registry"
 git push origin add-my-app
-# Open a pull request titled "Add my-app to App Store registry"
 ```
 
-### What happens during review
+## 11. Federated external registries
 
-Reviewers check:
-1. App manifest is valid and complete
-2. Permissions are reasonable (no unnecessary access)
-3. No path traversal in resource paths
-4. Install script (if any) is safe
-5. App provides value to KiroCrew users
-
-## 5. User Installation Flow
-
-After your pull request merges, users can install your app:
-
-### From App Store UI
-
-1. Open KiroCrew dashboard → App Store
-2. Browse tab → find your app
-3. Click Install
-4. Wait for clone + install script to complete
-5. App appears in Installed tab and sidebar
-
-### From CLI
-
-```bash
-curl -X POST http://localhost:5476/api/apps/registry/install \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "my-app"}'
-```
-
-### What happens during install
-
-1. KiroCrew clones your repo (shallow clone, specific branch)
-2. Runs `setup.onInstall` script if defined (e.g. `cd ui && npm install && npm run build`)
-3. Copies app to `~/.kiro/crew/apps/my-app/`
-4. Registers agents, skills, crons via symlinks
-5. App appears in dashboard
-
-## 6. Updates
-
-### Push an update
-
-1. Update your app code in your repo
-2. Bump `version` in `app.json`
-3. Commit and push
-
-### Users update
-
-Users can update from the App Store UI (refresh button) or REST API:
-
-```bash
-curl -X POST http://localhost:5476/api/apps/my-app/update
-```
-
-This re-clones, re-runs install script, and re-registers resources.
-
-## 7. Self-Managed Apps
-
-Some apps manage their own installation and resource registration. They
-register with KiroCrew for App Store visibility but handle their own
-agent/skill/MCP setup independently.
+A team can host its own registry without Kiro Crew review per app. Users opt in by
+adding it to their config:
 
 ```json
 {
-  "name": "my-desktop-app",
-  "repo": "MyDesktopApp",
-  "branch": "mainline",
-  "resources": "app",
-  "lifecycle": "app",
-  "detectInstalled": "test -d ~/Applications/MyDesktopApp.app"
+  "registries": [
+    { "name": "my-team", "repo": "https://github.com/my-team/AppRegistry", "branch": "main" }
+  ]
 }
 ```
 
-Self-managed apps:
-- Show in App Store as "Self-managed"
-- Handle their own install/update/uninstall
-- Register via `POST /api/apps/register` at runtime
-- KiroCrew only tracks metadata
+The index is read as `app-registry.json` at the repo root, falling back to
+discovering `apps/*/app.json` when no index file exists. Repo and branch values
+are validated against strict patterns, and unsafe `subdirectory` values are
+dropped from the index. Manage registries with `GET`/`PUT /api/apps/registries`
+(the PUT blocks adding the Kiro Crew repo itself) and `POST
+/api/apps/registries/refresh`.
 
-## Quick Reference
+**Trust model:** the user explicitly opts in by adding the registry, and the repo
+must be git-accessible.
 
-| Stage | Command / Action |
-|-------|-----------------|
-| Create | Create app directory with `app.json` |
+**Credential posture.** Apps listed in an external index are cloned
+credential-free by default: an anonymous environment plus a strict sandbox that
+hides `~/.ssh`. This is a confused-deputy defense, because an index the owner did
+not author could otherwise point at a private sibling repo on the owner's own
+trusted forge and have the gateway read it with ambient credentials.
+
+**The same-repo carve-out** relaxes that for the monorepo layout. When an index
+entry's effective clone URL is byte-identical to the registry repo URL the owner
+configured, the owner did designate exactly that URL, so manifest fetches and
+installs use owner credentials. The comparison is exact string equality with no
+normalization: sibling repos on the same host stay anonymous and strict.
+
+**Private-forge recipe.** On a credential-only forge (SSH keys, no anonymous
+read), keep every app inside the registry repo so the carve-out applies:
+
+```
+app-registry.json          # or rely on apps/*/ auto-discovery
+apps/
+  my-tool/app.json
+  other-app/app.json
+```
+
+Apps in separate repos on the same private forge will not benefit from the
+carve-out and will fail to clone.
+
+## 12. How a user install runs
+
+### Registry install
+
+The store's Install button (`POST /api/apps/registry/install`, or the SSE variant
+`/registry/install-stream` that streams the log live):
+
+1. Fetch `app.json` with `git archive` and check it against the fleet admission
+   policy, so a banned, non-allowlisted, or unsigned app is never cloned.
+2. Check `platform`, and answer with client-install instructions instead if the
+   gateway's OS cannot run it.
+3. Check `minKiroCrewVersion`.
+4. Clone into `~/.kiro/crew/app-sources/{name}/` (persistent, one workspace per
+   app; 60s timeout) and run a detected build: `npm install` plus `npm run build`
+   when `package.json` declares a build script, or `pip install .` /
+   `pip install -r requirements.txt` for a Python source tree. A missing
+   toolchain is a logged skip, not a failure.
+5. Run `setup.onInstall` (300s).
+6. Resolve declared dependencies.
+7. For a gateway-managed app: copy into `~/.kiro/crew/apps/{name}/`, register
+   resources, and start the backend. For `resources: "app"`: pre-register from
+   the cloned manifest so the app appears immediately, and let the app finish its
+   own registration on next launch.
+
+Requirements: the repo must be git-accessible, `app.json` must sit at the repo
+root or at `subdirectory`, and the install script must be non-interactive and
+finish inside its timeout.
+
+### Self-managed install
+
+An app with its own installer (an Electron build, a native binary) registers
+itself at runtime:
+
+```
+POST /api/apps/register
+{
+  "name": "my-app",
+  "version": "1.0.0",
+  "displayName": "My App",
+  "manifest": { ...full app.json... },
+  "origin": "external",
+  "resources": "app",
+  "lifecycle": "app"
+}
+```
+
+The call is idempotent: registering again with a newer version updates the entry.
+`origin`, `resources`, and `lifecycle` default to `external`/`app`/`app` when
+omitted. Use this when the app has its own build or package system, needs
+runtime-dynamic agent configuration, or manages its own agent, skill, and MCP
+registration. See
+[../system-specs/modules/app-kit-platform.md](../system-specs/modules/app-kit-platform.md)
+for what each classification value changes.
+
+## 13. Updates and versioning
+
+Bump `version` in `app.json` and push. The registry entry carries no version, so
+there is nothing to update there.
+
+- Patch for fixes, minor for features, major for breaking changes (agent config
+  schema, MCP tool interface).
+- `minKiroCrewVersion` is checked on install and update; too-old gateways get a
+  clear error telling the user to update Kiro Crew first.
+- Users update from the store or via `POST /api/apps/{name}/update`. For a
+  registry-sourced app this re-clones, rebuilds, re-runs `onInstall`, and swaps
+  resources only after the fresh install has succeeded, so a failed update leaves
+  the working version registered.
+
+## 14. Review checklist
+
+- [ ] `app.json` validates: kebab-case `name`, semver `version`, all required
+      fields non-empty
+- [ ] No `..` or absolute paths in `agents`, `skills`, `sops`, `ui.entry`,
+      `ui.pages[].entryPoint`, `backend.entryPoint`
+- [ ] `permissions` are minimal, and each one is actually used
+- [ ] Icon committed, square, 256x256 or larger
+- [ ] At least one screenshot and one hero image committed
+- [ ] `description` is plain text and reads well truncated to two lines
+- [ ] `tags` are lowercase and land the app in the right category
+- [ ] UI bundle built and committed (`ui/dist/index.mjs`)
+- [ ] Agent JSON files are valid; skill `SKILL.md` files have proper frontmatter
+- [ ] Install script is non-interactive, idempotent, and exits 0 within 300s
+- [ ] `onUninstall` cleans up everything created outside
+      `~/.kiro/crew/apps/{name}/`, and nothing the gateway already manages
+- [ ] `README.md` explains what the app does and how to use it
+- [ ] The app installs and enables cleanly from a local clone
+
+Reviewers check that the manifest is complete, the permissions are proportionate,
+resource paths do not traverse, any install script is safe to run, and the app is
+useful to Kiro Crew users.
+
+## 15. Quick reference
+
+| Stage | Command or action |
+|-------|-------------------|
+| Scaffold | `kirocrew app init my-app` |
 | Build UI | `cd ui && npm run build` |
-| Install locally | `POST /api/apps/install` or App Store UI |
-| Enable | `POST /api/apps/{name}/enable` |
-| Test | Open dashboard, verify UI + agents + crons |
-| Submit | Add to `app-registry.json`, open a pull request |
-| User install | App Store → Browse → Install |
-| Update | Bump version, push, users re-install |
+| Install locally | `POST /api/apps/install`, or `kirocrew app install <dir>` |
+| Enable | `POST /api/apps/{name}/enable`, or `kirocrew app enable <name>` |
+| Live reload | `kirocrew app dev <name>` |
+| Update local copy | `POST /api/apps/{name}/update` |
+| List a registry app | Add an entry to `app-registry.json`, open a pull request |
+| User install | Apps page, Discover, Install |
+| Ship an update | Bump `version`, push |
+
+Bugs and feature requests: [GitHub
+issues](https://github.com/kirodotdev/KiroCrew/issues).

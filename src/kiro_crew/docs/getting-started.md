@@ -1,52 +1,79 @@
 # Getting Started with Kiro Crew
 
-## What Is Kiro Crew?
-
-Kiro Crew is an autonomous AI agent layer that runs on top of the kiro-cli
-(KiroACP) backend. It adds persistent memory, scheduled jobs, background
-subagents, self-learning, and multi-session orchestration. You interact with it
-via Slack DMs or a web dashboard.
+Kiro Crew is an autonomous AI agent layer that runs on your own machine on top of
+the kiro-cli (KiroACP) backend. It adds persistent memory, scheduled jobs,
+background subagents, self-learning, and multi-session orchestration, and you
+talk to it from a web dashboard, from Slack DMs, or from the terminal.
 
 ## Prerequisites
 
-- **Python 3.10+** and **pip** (backend)
-- **Node.js 18+** and **npm** (frontend dashboard)
-- **The kiro-cli (KiroACP) backend** — required; must be on your `PATH`
-- **macOS or Linux** — Windows is not supported
-- *(Optional)* **Ollama** for local vector-memory embeddings
+| Requirement | Needed for | Floor |
+|-------------|------------|-------|
+| **Python** + pip | Backend | `>= 3.10` |
+| **Node.js** + npm | Building the dashboard from source | `20` or `>= 22` |
+| **`kiro-cli`** | Driving the LLM | Required, on your `PATH` |
+
+Node is only needed to *build* the dashboard. The prebuilt wheel, the macOS DMG,
+and the Linux AppImage all ship the dashboard already bundled, so if you install
+one of those you need neither Node nor a compiler.
+
+**Platforms: macOS, Linux, and Windows.** Windows runs natively from a Python
+source install and is launched as `python -m kiro_crew gateway`.
+
+Embeddings need no setup step. They run in-process, and on first start the
+gateway downloads the embedding model (about 610 MB) in the background and
+verifies it against a pinned sha256. Until it lands, memory search falls back to
+keyword search and picks up semantic search automatically with no restart.
 
 ## Installation
 
-### Backend (pip)
+### Prebuilt wheel from the release CDN (fastest)
 
 ```bash
-pip install kirocrew
+curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 ```
 
-Or, from a checkout of the repository:
+This installs a signed, sha256-verified `kirocrew` wheel. `stable` is the
+default channel; pass `--channel insider` or `--channel nightly` to track a
+faster one, or `--version X.Y.Z` to pin an exact release. The installer uses
+`pipx` when available, otherwise it creates a managed venv and symlinks
+`kirocrew` into `~/.local/bin`.
+
+`pip install kirocrew` alone does **not** work: Kiro Crew is not published to
+PyPI. To install with pip directly, point it at a release channel's index:
 
 ```bash
-pip install -e .
+pip install --pre kirocrew \
+  --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
 ```
 
-### Frontend (npm)
+`--extra-index-url` (not `--index-url`) is required, because the channel index
+carries only `kirocrew` and pip still needs PyPI to resolve its dependencies.
 
-The web dashboard is built with Vite:
+### From a source checkout
 
 ```bash
-cd website
-npm install
-npm run build
+git clone https://github.com/kirodotdev/KiroCrew.git
+cd Kiro Crew
+cd website && npm install && npm run build && cd ..
+pip install -e ".[voice]"       # [voice] adds the optional speech-to-text extras
 ```
 
-In development, `npm run dev` serves the dashboard with hot reload.
+The dashboard has to be built before the backend install, because the built
+`website/dist` is staged into the package and served by the gateway. `make
+build` does both steps plus a `.venv`.
 
-### Agent backend
+### Agent backend: `kiro-cli` (required)
 
-Kiro Crew runs the kiro-cli (KiroACP) backend, which is required. Install
-kiro-cli and make sure the `kiro-cli` binary is on your `PATH` — Kiro Crew
-resolves it from `PATH` at startup. See [Configuration](configuration.md) for
-backend options.
+`kiro-cli` is the only provider (`agent.provider` is fixed to `acp`). Install it
+per its own docs, make sure the binary resolves on your `PATH`, and log in:
+
+```bash
+kiro-cli login
+```
+
+On the first dashboard launch, the Set up Kiro page walks through installing the
+CLI and completing sign-in.
 
 ## First-Time Setup
 
@@ -54,48 +81,49 @@ backend options.
 kirocrew setup
 ```
 
-This interactive wizard:
-1. Detects the kiro-cli (KiroACP) backend on your PATH
-2. Saves the project directory for future use
-3. Installs the agent config to `~/.kiro/agents/kirocrew.json`
-4. Prompts for Slack credentials (app token, bot token, owner ID)
-5. Optionally sets up `http://kirocrew.localhost:5476` custom domain
+This interactive wizard detects `kiro-cli` on your PATH, saves the project
+directory so Kiro Crew works from any working directory, installs the agent
+config to `~/.kiro/agents/kirocrew.json`, registers the browser MCP proxy,
+prompts for Slack credentials, and offers to set up the
+`http://kirocrew.localhost:5476` custom domain.
 
-### Slack Credentials
+Use `kirocrew setup --agent-only` to reinstall just the agent config and skip
+the credential prompts.
 
-You need three values from your Slack app:
-- `SLACK_APP_TOKEN` — starts with `xapp-`
-- `SLACK_BOT_TOKEN` — starts with `xoxb-`
-- `KIROCREW_OWNER_ID` — your Slack user ID (starts with `U`)
+### Slack Credentials (optional)
 
-> ⚠️ **Use the user ID from the workspace where the bot is installed.** Your
-> user ID is different in each Slack workspace.
+Slack is optional. To use it you need three values from your Slack app:
+
+- `SLACK_APP_TOKEN` starts with `xapp-`
+- `SLACK_BOT_TOKEN` starts with `xoxb-`
+- `KIROCREW_OWNER_ID` is your Slack user ID (starts with `U`)
+
+Use the user ID from the workspace where the bot is installed: your user ID is
+different in every Slack workspace. Only the owner is authorized to interact
+over Slack.
 
 These are stored in `~/.kiro/crew/.env`.
 
 ## Starting Kiro Crew
 
-### Gateway Mode (Slack + Dashboard)
+### Gateway mode (dashboard + Slack)
 
 ```bash
 kirocrew gateway
 ```
 
-This starts the full server: Slack Socket Mode listener, web dashboard, cron
-scheduler, heartbeat, and auto-update checker. The dashboard opens at
+This starts the full server: web dashboard, Slack Socket Mode listener, cron
+scheduler, heartbeat, and update checker. The dashboard is at
 `http://localhost:5476`.
 
-### Chat Mode (CLI only)
+### Chat mode (CLI only)
 
 ```bash
-# Interactive chat
-kirocrew chat
-
-# Single message
-kirocrew chat -m "what's the weather like?"
+kirocrew chat                            # interactive REPL
+kirocrew chat -m "what's the weather like?"   # single message
 ```
 
-Lightweight mode — no Slack, no dashboard, just a terminal REPL with the LLM.
+Lightweight mode: no Slack, no dashboard, just a terminal conversation.
 
 ## Verifying Your Setup
 
@@ -103,68 +131,36 @@ Lightweight mode — no Slack, no dashboard, just a terminal REPL with the LLM.
 kirocrew doctor
 ```
 
-Checks: agent backend installation, project directory, agent config, MCP
-tools, Slack credentials, gateway status, and vector memory.
+Reports the resolved platform edition, the `kiro-cli` binary and login state,
+the project directory, the agent config and its MCP entries, Slack credentials,
+gateway status, and the embedding runtime and model. It repairs missing MCP
+entries where it can, and prints a specific fix hint for anything it cannot.
 
 ## Updating
 
 ```bash
-pip install -U kirocrew
+kirocrew update
 ```
 
-For a checkout, `git pull` and rebuild the frontend (`cd website && npm run
-build`). Clicking "Update Available" in the dashboard topbar runs the update
-for source installs.
+For a source checkout this pulls, rebuilds the frontend, reinstalls the package,
+and restarts in place. Clicking "Update Available" in the dashboard topbar runs
+the same path.
 
 ## Running in the Background
 
-### macOS (Launch Agent)
-
-Create `~/Library/LaunchAgents/com.kirocrew.gateway.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.kirocrew.gateway</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/zsh</string>
-        <string>-lic</string>
-        <string>kirocrew gateway</string>
-    </array>
-    <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key>
-    <string>$HOME/.kiro/crew/logs/gateway.stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>$HOME/.kiro/crew/logs/gateway.stderr.log</string>
-</dict>
-</plist>
-```
-
-Then load it:
 ```bash
-mkdir -p ~/.kiro/crew/logs
-launchctl load ~/Library/LaunchAgents/com.kirocrew.gateway.plist
+kirocrew service install     # launchd LaunchAgent on macOS, systemd unit on Linux
+kirocrew service status
+kirocrew service uninstall
 ```
 
-Replace `$HOME` with your actual home path. Uses `/bin/zsh -lic` to load your
-shell profile (so `kirocrew` is on PATH). Swap to `/bin/bash` if needed.
+The service survives an SSH disconnect, restarts on crash, and starts on boot.
+On Linux the install prompts for `sudo` once to write the unit; the gateway
+itself then runs as your own user. macOS needs no `sudo`.
 
-### Linux (systemd)
-
-```bash
-kirocrew service install   # creates and enables the systemd user service
-kirocrew service start
-```
+Tail its output with `kirocrew logs -f`.
 
 ## Dev Mode
-
-For development, use isolated data directories:
 
 ```bash
 export KIROCREW_HOME=.kirocrew-dev
@@ -172,6 +168,7 @@ export KIROCREW_PORT=6777
 kirocrew gateway
 ```
 
-This keeps dev data separate from your real `~/.kiro/crew`. Useful for running
-multiple Kiro Crew instances simultaneously — each with its own memory, crons,
-and sessions.
+`KIROCREW_HOME` gives the instance its own data directory, so dev memory, crons,
+and sessions never touch your real `~/.kiro/crew`. `KIROCREW_PORT` lets a second
+gateway run alongside the first. The two together are what make it safe to run
+several Kiro Crew instances at once.

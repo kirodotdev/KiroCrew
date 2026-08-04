@@ -1,7 +1,5 @@
 # Session Manager Module
 
-Last Updated: 2026-07-30 (dashboard sessions can link to validated user-configured destinations across all registered messaging transports; channel-owned sessions surface immediately after their first persisted turn; prior: empty-response recovery ladder, cross-platform process management, DM session keys, and Slack thread linking)
-
 ## Overview
 
 Maps thread keys to LLMProvider instances (`session.py`). Each thread gets

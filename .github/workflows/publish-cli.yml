@@ -2,7 +2,7 @@ name: Publish CLI (reusable)
 
 # Reusable workflow: publish an already-built CLI wheel to a release channel.
 # Called by nightly.yml (channel: nightly) and release.yml (channel:
-# insider | stable). See docs/release-automation.md -> "CLI (Linux / EC2) Distribution".
+# insider | stable). See docs/build/release.md -> "CLI (Linux / EC2) Distribution".
 #
 # Key properties:
 #   - CI-direct feed: writes feed/<channel>/latest-cli.json straight from CI.

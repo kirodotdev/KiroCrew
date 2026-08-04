@@ -10,7 +10,7 @@ would break consumers downstream without warning.
 If a case below turns RED, you changed the contract. That is allowed only as an
 explicit *re-freeze*: update ``workflows/__init__.py``, the module spec
 (``docs/system-specs/modules/workflows.md``), AND this test in the same change
-(see ``docs/dynamic-workflows/GATES.md`` gate F2 and the dir-scoped
+(see ``docs/system-specs/modules/workflow-gates.md`` gate F2 and the dir-scoped
 ``src/kiro_crew/workflows/AGENTS.md``). If you did NOT intend a re-freeze, revert
 the contract edit — do not "fix" the expectation here.
 

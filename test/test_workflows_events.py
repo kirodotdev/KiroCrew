@@ -8,7 +8,7 @@ B4: persistence is JSON only (never pickle/marshal) — ``serialize_events`` /
 ``deserialize_events`` round-trip through ``json`` and reject non-JSON input.
 
 See ``docs/system-specs/modules/workflows.md`` (run event stream) and
-``docs/dynamic-workflows/GATES.md`` (A7, B4).
+``docs/system-specs/modules/workflow-gates.md`` (A7, B4).
 """
 
 from __future__ import annotations

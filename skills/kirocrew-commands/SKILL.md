@@ -253,7 +253,7 @@ keystone paths are still refused). The CLI is the stricter of the two.
 ## Profiling (debug-only)
 
 Off unless `KIROCREW_DEBUG=1` is set; the CLI is the only entry point. Emits folded
-stacks (open in speedscope / flamegraph.pl). See `docs/profiling.md`.
+stacks (open in speedscope / flamegraph.pl). See `docs/architecture/design-notes/profiling.md`.
 
 | Command | Description |
 |---------|-------------|

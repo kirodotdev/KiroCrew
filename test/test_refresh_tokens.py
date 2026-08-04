@@ -1,6 +1,6 @@
 """Unit tests for the refresh-token module.
 
-Covers TR-U-* test cases from docs/token-refresh/TESTCASES.md.
+Covers TR-U-* test cases from docs/system-specs/features/dashboard-token-auth.md.
 
 These tests exercise generate_refresh_token / validate_refresh_token /
 RefreshStateManager directly. Handler integration tests are out of scope

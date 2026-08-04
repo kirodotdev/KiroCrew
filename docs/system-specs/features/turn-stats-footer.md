@@ -1,7 +1,5 @@
 # Per-Turn Stats Footer (Elapsed Time + Credits) — Design Document
 
-Last Updated: 2026-07-23 (initial)
-
 ## Overview
 
 kiro-cli natively prints an end-of-turn line with elapsed time and credits used; the dashboard chat previously showed neither. This feature attaches per-turn stats (`elapsed_ms`, `credits`, `cost_usd`) to the final assistant message of each completed turn and renders them as an always-visible muted footer line under that message — parity with the CLI.

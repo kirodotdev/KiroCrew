@@ -1,10 +1,5 @@
 # Subagent Module
 
-Last Updated: 2026-07-29 (post-fan-out synthesis no longer waits on Kiro
-readiness: readiness is latched at gateway boot, so the synthesis turn runs and a
-signed-out CLI surfaces as an `AcpAuthRequired` error card. Prior: synthesis
-survives temporary Kiro readiness loss)
-
 ## Overview
 
 The subagent module (`kiro_crew/subagent.py`) spawns isolated background agents for parallel task execution. Each subagent gets its own LLM session via `SessionManager`, runs a focused task, and announces the result via callback.
@@ -509,9 +504,9 @@ dashboard PATCH endpoint enforces the same enum via
 The values are threaded into `SubagentManager.__init__` from
 `gateway.py` (`completion_keep=`, `completion_keep_chars=` constructor
 kwargs sourced from `cfg.agent.*`). User-facing docs:
-[`docs/configuration.md`](../../../src/kiro_crew/docs/configuration.md),
-[`docs/subagents.md`](../../../src/kiro_crew/docs/subagents.md),
-[`docs/troubleshooting.md`](../../../src/kiro_crew/docs/troubleshooting.md).
+[`src/kiro_crew/docs/configuration.md`](../../../src/kiro_crew/docs/configuration.md),
+[`src/kiro_crew/docs/subagents.md`](../../../src/kiro_crew/docs/subagents.md),
+[`src/kiro_crew/docs/troubleshooting.md`](../../../src/kiro_crew/docs/troubleshooting.md).
 
 ### Dashboard API: `POST /api/spawn`
 
@@ -522,7 +517,6 @@ Errors: 400 (missing task), 429 (capacity reached), 503 (subagents not available
 ### Handler keywords (instant, no LLM)
 
 User-typed `spawn <task>`, `bg <task>`, `spawn list`, `spawn status` are intercepted by the handler for instant execution.
-
 
 ## Session sharing (shared AcpRuntime)
 

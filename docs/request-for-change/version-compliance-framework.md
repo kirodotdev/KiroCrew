@@ -1,8 +1,8 @@
 ---
-title: Version Compliance Framework for KiroCrew
+title: Version Compliance Framework for Kiro Crew
 kind: framework
 status: draft
-author: KiroCrew contributors
+author: Kiro Crew contributors
 created: 2026-05-26
 last-audited: 2026-08-03
 audited-at: 0ab6ed48
@@ -12,19 +12,19 @@ tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
-# Version Compliance Framework for KiroCrew
+# Version Compliance Framework for Kiro Crew
 
-**Author:** KiroCrew contributors
+**Author:** Kiro Crew contributors
 **Status:** draft — **nothing is built at the platform level.** No version authority document, no compliance heartbeat, no startup gate, no `kirocrew admin` command, no `block` mode, no deny-pattern propagation mechanism. `version_authority`, `version_compliance`, `set-min-version`, `recommended_version` all have zero hits repo-wide. The nearest live behavior is a *different* architecture: `update_governance.update_required()` enforces a min-version floor from the **local** trust-root `security_policy.json` and explicitly "never refuses to boot" — the opposite of Layer 2's `block`. `is_toolbox_install()` (`env.py:68`), cited below as existing infrastructure, now has **zero callers**.
 **Framing:** this is a framework/policy recommendation doc, not an RFC — note it has no `RFC:` title prefix and no `rfc-` filename prefix, unlike its ten siblings.
-**Two staleness warnings:** (1) It **predates the public repo** — it arrived at `64e47961`, so the 2026-05-26 date is pre-fork and the anonymized phrasing ("the managed distribution tool") is a scrub artifact. (2) Its §2 premise is stale: KiroCrew now ships five shapes over three channels with two independent feeds, not one managed tool with a 180-day pause window. `rfc-update-architecture.md` nonetheless cites this doc as "the policy ceiling this RFC must honor". Partially overtaken by PR #999 + the release-feed controls, which cover a subset of Layer 2 for 2 of 5 shapes.
+**Two staleness warnings:** (1) It **predates the public repo** — it arrived at `64e47961`, so the 2026-05-26 date is pre-fork and the anonymized phrasing ("the managed distribution tool") is a scrub artifact. (2) Its §2 premise is stale: Kiro Crew now ships five shapes over three channels with two independent feeds, not one managed tool with a 180-day pause window. `rfc-update-architecture.md` nonetheless cites this doc as "the policy ceiling this RFC must honor". Partially overtaken by PR #999 + the release-feed controls, which cover a subset of Layer 2 for 2 of 5 shapes.
 **Date:** 2026-05-26
 
 ---
 
 ## 1. Problem Statement
 
-KiroCrew is a security-sensitive agent orchestration platform with shell access, credential
+Kiro Crew is a security-sensitive agent orchestration platform with shell access, credential
 proximity, and persistent sessions. There is currently no mechanism to enforce that all running
 instances are on an approved version. A critical security patch (e.g., a new deny pattern for a
 novel exfiltration vector) has no guaranteed propagation timeline — users can defer updates for
@@ -41,7 +41,7 @@ compliance, or are additional controls needed?
 
 ### 2.1 Distribution: managed distribution tool
 
-KiroCrew publishes via a managed distribution tool. It provides:
+Kiro Crew publishes via a managed distribution tool. It provides:
 
 | Capability | How It Works | Enforcement Strength |
 |---|---|---|
@@ -55,7 +55,7 @@ KiroCrew publishes via a managed distribution tool. It provides:
 > The distribution tool does NOT support forced push or emergency propagation. The minimum
 > client-side rollback time is ~24h (next auto-update check).
 
-### 2.2 Existing Update Infrastructure in KiroCrew
+### 2.2 Existing Update Infrastructure in Kiro Crew
 
 | Component | Mechanism | Limitation |
 |---|---|---|
@@ -80,7 +80,7 @@ them in production use.
 | No push-update capability | Cannot force-update fleet in security emergencies | **High** |
 | 180-day pause window | Users can run vulnerable versions for 6 months | **High** |
 | Non-managed installs bypass entirely | git-clone installs receive zero compliance enforcement | **High** |
-| No startup version gate | KiroCrew starts and operates regardless of version age | Medium |
+| No startup version gate | Kiro Crew starts and operates regardless of version age | Medium |
 | No fleet visibility | No central telemetry on running versions across the org | Medium |
 | No backend API gate | Backend accepts requests from any client version | Low |
 
@@ -292,6 +292,6 @@ for development use only, gated behind dev-workspace detection.
 
 - an upstream min-version gate
 - the managed distribution mechanism — distribution and recall mechanisms
-- [KiroCrew Security Deep Dive](../security-deep-dive.md) — Defense-in-depth architecture
-- [KiroCrew apps/version.py](../../src/kiro_crew/apps/version.py) — Existing `check_min_version` implementation
+- [Kiro Crew Security Deep Dive](../architecture/security-deep-dive.md) — Defense-in-depth architecture
+- [Kiro Crew apps/version.py](../../src/kiro_crew/apps/version.py) — Existing `check_min_version` implementation
 - YOLO Override Governance (related compliance work)

@@ -357,7 +357,7 @@ describe('dynamic call sites are counted and reported', () => {
     // This count is a whole-repo stored total, so another branch can move it without
     // touching your files — and then the failure names no diff anyone can fix. It is a
     // report; `[added-lines]` in check-i18n-strings.mjs is what enforces new sites
-    // against the base ref. See website/AGENTS.md § "Only two kinds of check can fail".
+    // against the base ref. See website/docs/i18n-catalog.md § "Only two kinds of check can fail".
     const r = run({
       files: withPadding({ 'src/probe/Dynamic.tsx': DYNAMIC_SOURCE }),
       keys: [],

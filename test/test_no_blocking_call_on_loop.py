@@ -3,8 +3,8 @@
 A static AST check that fails the build when a known-blocking syscall appears
 lexically inside an ``async def`` body in ``kiro_crew`` source. This is the
 deterministic enforcement the event-loop fault-isolation RFC calls for
-(``docs/request-for-change/rfc-event-loop-fault-isolation.md`` -> "The piece
-that makes it systematic: a build gate"). It complements the judgment-based
+(the ``no-blocking-call-on-event-loop`` rule in ``AUTOSDE.yaml``, whose
+rationale this gate makes deterministic). It complements the judgment-based
 AUTOSDE rule ``no-blocking-call-on-event-loop``: the gate hard-fails the
 deterministic cases so they can never land, and the AUTOSDE rule covers the
 cases that need human/LLM judgment.

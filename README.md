@@ -22,7 +22,7 @@
 <p align="center">
   <a href="https://github.com/kirodotdev/KiroCrew/releases"><img src="https://img.shields.io/badge/Download-macOS%20%7C%20Linux-2f6feb?style=flat-square" alt="Download Kiro Crew for macOS or Linux"></a>
   <a href="docs/README.md"><img src="https://img.shields.io/badge/Documentation-1f6feb?style=flat-square" alt="Read the documentation"></a>
-  <a href="docs/install.md"><img src="https://img.shields.io/badge/Install%20guide-macOS%20%7C%20Linux%20%7C%20Windows-6e7781?style=flat-square" alt="Install guide for macOS, Linux, and Windows"></a>
+  <a href="docs/guides/install.md"><img src="https://img.shields.io/badge/Install%20guide-macOS%20%7C%20Linux%20%7C%20Windows-6e7781?style=flat-square" alt="Install guide for macOS, Linux, and Windows"></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/Contributing-238636?style=flat-square" alt="Contributing guide"></a>
   <a href="SECURITY.md"><img src="https://img.shields.io/badge/Security-8250df?style=flat-square" alt="Security policy"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-656d76?style=flat-square" alt="Apache 2.0 license"></a>
@@ -53,7 +53,7 @@ device-code sign-in.
 The desktop app starts a bundled Gateway when no local Gateway is already
 running, updates itself on the channel you download, and can connect to a
 remote Gateway over an SSH tunnel. See the
-[desktop app guide](docs/desktop-app.md).
+[desktop app guide](docs/build/desktop-app.md).
 
 - **macOS**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew.dmg) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew.dmg) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew.dmg)
 - **Linux**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.AppImage) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.AppImage) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.AppImage)
@@ -83,7 +83,7 @@ curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.1.0
 ```
 
 Open `http://localhost:5476` and start a conversation. The web dashboard works
-without messaging credentials. Add [Slack](docs/slack-setup.md),
+without messaging credentials. Add [Slack](docs/guides/slack-setup.md),
 [Telegram](src/kiro_crew/docs/telegram-integration.md), or
 [WeCom](src/kiro_crew/docs/wecom-integration.md) when you want to continue
 working with the same agent away from the dashboard. These channels connect
@@ -100,7 +100,7 @@ docker run -d --name kirocrew \
   ghcr.io/kirodotdev/kirocrew:stable
 ```
 
-See the [Docker guide](docs/docker.md) for first-run login, channel tags, and
+See the [Docker guide](docs/guides/docker.md) for first-run login, channel tags, and
 the container security model.
 
 ### Build from source
@@ -109,7 +109,7 @@ macOS and Linux require Python 3.10+, Node.js 18+, npm, and
 [`kiro-cli`](https://kiro.dev/docs/cli/). The first desktop or dashboard launch
 can install Kiro CLI on the Gateway host and guide device-code sign-in before
 chat opens. Windows is supported through a native source install; follow the
-[Windows guide](docs/windows-install.md) instead of the shell steps below.
+[Windows guide](docs/guides/windows-install.md) instead of the shell steps below.
 
 ```bash
 # 1. Clone and build Kiro Crew
@@ -167,7 +167,7 @@ You can also paste a screenshot and ask what is causing an error. Kiro Crew send
 the image to the active Kiro model and keeps the diagnosis in the conversation
 history.
 
-The complete inventory is in [Features](docs/features.md) and
+The complete inventory is in [Features](src/kiro_crew/docs/index.md) and
 [What's New](CHANGELOG.md).
 
 ## How it works
@@ -286,7 +286,7 @@ the runtime boundary instead of relying only on prompt instructions.
 
 No agent security layer removes the need to protect credentials and review
 high-impact actions. Avoid pasting secrets or sensitive personal data into a
-chat. Read the [security architecture](docs/security-deep-dive.md) and use
+chat. Read the [security architecture](docs/architecture/security-deep-dive.md) and use
 [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 ## Install, configure, and operate
@@ -314,7 +314,7 @@ falls back to keyword search and picks up embeddings automatically without a
 restart. Set `KIROCREW_EMBED_MODEL_URL` to point at a mirror for airgapped
 installs.
 
-See [Installing and Building](docs/install.md) for wheels, desktop builds,
+See [Installing and Building](docs/guides/install.md) for wheels, desktop builds,
 Windows, optional voice dependencies, and manual setup.
 
 **Choose where Kiro Crew runs.** The current deployment model keeps the Gateway,
@@ -326,15 +326,15 @@ and chat surfaces connect to that Gateway.
 | **Mac app, local** | Install or build the desktop app with `make desktop` | The app starts its bundled Gateway. Agent sessions, ACP processes, and `~/.kiro/crew` stay on your Mac. |
 | **Native local** | `make build`, or install a wheel from `make wheel` | The Gateway and agent runtime run directly on your macOS, Linux, or Windows machine. |
 | **Local container** | Run `ghcr.io/kirodotdev/kirocrew` and persist `/home/kirocrew` | The Gateway and agent runtime run inside the official multi-arch container on your machine. |
-| **Remote hardware** | Follow the [remote host guide](docs/remote-desktop-setup.md) and install the service | The Gateway, agent sessions, and state run continuously on your Linux server, home lab, or cloud instance. Connect the desktop app or browser through an SSH tunnel. |
-| **Windows source install** | Follow [the Windows guide](docs/windows-install.md) | The Gateway, agent sessions, chat, cron, and dashboard run natively with documented feature limits. |
+| **Remote hardware** | Follow the [remote host guide](docs/guides/remote-and-mobile.md) and install the service | The Gateway, agent sessions, and state run continuously on your Linux server, home lab, or cloud instance. Connect the desktop app or browser through an SSH tunnel. |
+| **Windows source install** | Follow [the Windows guide](docs/guides/windows-install.md) | The Gateway, agent sessions, chat, cron, and dashboard run natively with documented feature limits. |
 
 For containers, mount the directory selected by `KIROCREW_HOME` so sessions,
 configuration, memory, and credentials survive replacement. Keep the Gateway
 port bound to loopback unless you intentionally configure authenticated remote
 access. Container isolation and the Kiro Crew OS sandbox are separate layers
 and depend on the host runtime configuration. See the
-[Docker guide](docs/docker.md) for the published image and deployment details.
+[Docker guide](docs/guides/docker.md) for the published image and deployment details.
 
 **Keep it running.** Install a systemd service on Linux or a launchd agent on
 macOS:
@@ -347,7 +347,7 @@ kirocrew logs
 
 The desktop app can use this local Gateway or connect to a remote one. For an
 always-on VPS, home server, or cloud VM in your account, follow the
-[remote host guide](docs/remote-desktop-setup.md). Kiro Crew does not require a
+[remote host guide](docs/guides/remote-and-mobile.md). Kiro Crew does not require a
 Kiro Crew-hosted control plane.
 
 **Configure it.** User data lives under `~/.kiro/crew` by default. Manage the
@@ -468,11 +468,12 @@ performance metrics that never leave your machine. See
 
 | Topic | Start here |
 |---|---|
-| Install and packaging | [Getting started](docs/getting-started.md), [Installing and Building](docs/install.md), [Windows](docs/windows-install.md), [Desktop](docs/desktop-app.md), [Remote host](docs/remote-desktop-setup.md), [Release process](docs/release-process.md) |
-| Product capabilities | [Features](docs/features.md), [Skills](skills/README.md) |
-| Channels | [Slack](docs/slack-setup.md), [Discord](src/kiro_crew/docs/discord-integration.md), [Telegram](src/kiro_crew/docs/telegram-integration.md), [Teams](src/kiro_crew/docs/teams-integration.md), [Webex](src/kiro_crew/docs/webex-integration.md), [WeCom](src/kiro_crew/docs/wecom-integration.md), [WeChat (Weixin)](src/kiro_crew/docs/weixin-integration.md) |
-| Architecture | [System architecture](docs/project-architecture.md), [Memory](docs/memory-architecture.md), [MCP](docs/mcp-architecture.md), [App Kit](docs/app-kit/getting-started.md) |
-| Trust and dependencies | [Security](docs/security-deep-dive.md), [Security policy](SECURITY.md) |
+| Install and packaging | [Install and build](docs/guides/install.md), [Windows](docs/guides/windows-install.md), [Docker](docs/guides/docker.md), [Desktop](docs/build/desktop-app.md), [Remote host](docs/guides/remote-and-mobile.md), [Release process](docs/build/release.md) |
+| Product capabilities | [Features](src/kiro_crew/docs/index.md), [Skills](skills/README.md), [All user docs](src/kiro_crew/docs/README.md) |
+| All documentation | [docs/](docs/README.md) for contributor and architecture docs |
+| Channels | [Slack](docs/guides/slack-setup.md), [Discord](src/kiro_crew/docs/discord-integration.md), [Telegram](src/kiro_crew/docs/telegram-integration.md), [Teams](src/kiro_crew/docs/teams-integration.md), [Webex](src/kiro_crew/docs/webex-integration.md), [WeCom](src/kiro_crew/docs/wecom-integration.md), [WeChat (Weixin)](src/kiro_crew/docs/weixin-integration.md) |
+| Architecture | [System architecture](docs/architecture/overview.md), [Memory](docs/system-specs/modules/memory-skills-hooks.md), [MCP](docs/architecture/mcp.md), [App Kit](docs/app-kit/getting-started.md) |
+| Trust and dependencies | [Security](docs/architecture/security-deep-dive.md), [Security policy](SECURITY.md) |
 | Project work | [Contributing](CONTRIBUTING.md), [Tenets](TENETS.md), [Governance](GOVERNANCE.md), [Maintainers](MAINTAINERS.md), [AI assistant rules](AGENTS.md), [Changelog](CHANGELOG.md) |
 
 Contributions are welcome. Create a branch from `main`, keep changes focused,

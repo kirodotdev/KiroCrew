@@ -74,7 +74,7 @@ export interface Result {
    * the declarative model still rely on `onActivate` / `onCmdActivate` /
    * `onAltActivate`. New / ported providers SHOULD populate `enter`; the
    * dispatcher prefers it when present and falls back to the closures
-   * otherwise. See `docs/task-17-enter-matrix-findings.md`.
+   * otherwise.
    */
   enter?: EnterAction
   /** Primary activation (Enter). Context-aware per the §2 Enter matrix. */
@@ -115,8 +115,7 @@ export interface ResourceProvider {
  * closures. A single central dispatcher ({@link OnEnter}, implemented in
  * `CommandPalette.tsx`) switches on `kind` and applies the modifier branch.
  * Decoupling intent (this type) from execution (the dispatcher) is what makes
- * the Enter matrix unit-testable per result type — the failure analysis behind
- * the task-17 decomposition is in `docs/task-17-enter-matrix-findings.md`.
+ * the Enter matrix unit-testable per result type.
  *
  * The locked per-type matrix:
  *

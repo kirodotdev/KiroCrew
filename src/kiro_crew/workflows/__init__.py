@@ -7,10 +7,10 @@ script calls) and the run-event types that drive the UI and future resume.
 Everything else — the runner, the UI builtin app, schema enforcement, and the
 KiroCrew-native primitive wrappers — is built in parallel against this contract.
 Changing a signature or event shape here is a re-freeze and must update the
-conformance test (GATE F2 in ``docs/dynamic-workflows/GATES.md``).
+conformance test (GATE F2 in ``docs/system-specs/modules/workflow-gates.md``).
 
 Spec: ``docs/system-specs/modules/workflows.md``.
-Design: ``docs/dynamic-workflows/`` (PRD, GATES, VALIDATION, research).
+Gate catalog: ``docs/system-specs/modules/workflow-gates.md``.
 
 NOTE: This module is intentionally implementation-free. It declares Protocols and
 typed event records only. ``import``-ing it must have no side effects.

@@ -1,42 +1,54 @@
 # Configuration Reference
 
-## Config File
+Everything Kiro Crew remembers about how it should behave lives in one JSON file,
+`~/.kiro/crew/config.json`, created automatically on the first `kirocrew gateway`
+run. Most keys are also editable from the dashboard's Settings pages, and this
+page is the reference for the ones that are not: what they mean, what they
+default to, and which environment variables outrank them.
 
-`~/.kiro/crew/config.json` — main configuration file. Created automatically
-on first `kirocrew gateway` run.
-
-### Managing Config
+## Managing Config
 
 ```bash
 kirocrew config get                    # print full config
 kirocrew config get agent.model        # print a specific value
 kirocrew config set agent.model auto   # set a value (auto type detection)
+kirocrew config set --local agent.model auto   # write config.local.json instead
 kirocrew config edit                   # open in $EDITOR
 ```
 
-All config changes are audit-logged.
+Every config change is audit-logged to the security event log.
 
-### Sandbox Modes
+`config.local.json` holds overrides that survive an upgrade, which is what
+`--local` writes to. Its values win over `config.json`.
 
-Kiro Crew supports tiered sandbox levels for agent-backend process isolation:
+The dashboard port is **not** a config key: set `KIROCREW_PORT` instead.
 
-| Mode | Behavior |
-|------|----------|
-| `auto` (default) | Standard isolation — enables git-over-SSH and AWS CLI via `credential_process` while hiding non-workflow credential stores |
-| `strict` | Maximum isolation — blocks all external network and credential access |
-| `off` | No sandbox — full system access (use with caution) |
+## Sandbox
 
-Set via `kirocrew config set sandbox.mode auto`.
+`agent.sandbox` controls whether Kiro Crew wraps the agent process in its own
+OS-level sandbox (a user namespace on Linux, `sandbox-exec` on macOS).
 
-### Key Settings
+| Value | Behavior |
+|-------|----------|
+| `off` (default) | Defer isolation to kiro-cli's own internal agent sandbox |
+| `auto` | Add Kiro Crew's OS-level sandbox on top |
+
+The two layers are mutually exclusive on macOS, because a nested seatbelt
+sandbox fails with `EPERM`. That is why the default is `off`: kiro-cli already
+isolates the agent, and stacking a second sandbox would break it.
+
+Set via `kirocrew config set agent.sandbox auto`.
+
+## Key Settings
 
 ```json
 {
   "agent": {
-    "default_agent": "kirocrew",
-    "approval_mode": "interactive",
+    "provider": "acp",
+    "approval_mode": "auto",
     "model": "auto",
     "reasoning_effort": "",
+    "sandbox": "off",
     "bot_name": "",
     "conductor_skill": false,
     "max_channels": 1,
@@ -49,7 +61,8 @@ Set via `kirocrew config set sandbox.mode auto`.
     "completion_keep_chars": 3000
   },
   "session": {
-    "timeout_secs": 1800,
+    "timeout_secs": 3600,
+    "autocompact_pct": 90.0,
     "pool_size": 0,
     "pool_agent": "",
     "pool_ttl_secs": 1800
@@ -70,7 +83,7 @@ Set via `kirocrew config set sandbox.mode auto`.
     "reactions_enabled": true
   },
   "stt": {
-    "enabled": false,
+    "enabled": true,
     "provider": "whisper",
     "streaming": false,
     "transcribe_region": "us-east-1",
@@ -78,6 +91,7 @@ Set via `kirocrew config set sandbox.mode auto`.
   },
   "memory": {
     "embedding_provider": "llama_cpp",
+    "embedding_dim": 1024,
     "history_idle_hours": 3.0,
     "history_max_days": 365
   },
@@ -87,82 +101,152 @@ Set via `kirocrew config set sandbox.mode auto`.
   "knowledge": {
     "auto_ingest_artifacts": true,
     "auto_ingest_artifact_kinds": ["markdown", "text", "html", "json"]
-  }
+  },
+  "auto_update": true,
+  "timezone": ""
 }
 ```
 
+### Agent
+
 | Key | Description | Default |
 |-----|-------------|---------|
-| `agent.provider` | LLM provider backend: `"acp"` (KiroACP / kiro-cli) | `"acp"` |
-| `agent.default_agent` | Default agent name | `"kirocrew"` |
-| `agent.approval_mode` | `"auto"` or `"interactive"` | `"interactive"` |
+| `agent.provider` | LLM provider backend. `"acp"` (KiroACP / kiro-cli) is the only accepted value | `"acp"` |
+| `agent.default_agent` | Default agent name for new sessions. Empty resolves from the agent config | `""` |
+| `agent.approval_mode` | `"auto"` or `"interactive"` | `"auto"` |
 | `agent.model` | Default LLM model for new sessions. `"auto"` defers to the agent config, then to Kiro's own default. Editable from Settings → Chat → Model; a per-session model picker overrides it for that session only | `"auto"` |
-| `agent.reasoning_effort` | Default reasoning effort for new sessions on reasoning-capable models (Opus, Sonnet, Fable, GPT-5.x). One of `""`, `low`, `medium`, `high`, `xhigh`, `max`; `""` defers to the provider/model default. Editable from Settings → Chat → Model; a per-session effort override wins | `""` |
+| `agent.reasoning_effort` | Default reasoning effort on models that support it. One of `""`, `low`, `medium`, `high`, `xhigh`, `max`; `""` defers to the provider/model default. A per-session override wins | `""` |
+| `agent.sandbox` | `"off"` (defer to kiro-cli) or `"auto"` (add Kiro Crew's OS-level sandbox) | `"off"` |
+| `agent.streaming` | Stream response text as it is generated | `true` |
 | `agent.bot_name` | Custom name the bot identifies as | `""` |
 | `agent.conductor_skill` | Enable agent delegation conductor | `false` |
 | `agent.max_channels` | Max concurrent agent channels (1-5) | `1` |
 | `agent.max_channel_agents` | Max agents per channel (1-10) | `3` |
-| `agent.soft_stop_budget_secs` | Seconds to wait for cooperative cancel before hard kill | `10.0` |
-| `agent.max_subagents` | Maximum concurrent subagents (`0` = auto-size at startup) | `0` |
+| `agent.log_level` | Persistent log level for the `kiro_crew` logger, applied at startup. The `--verbose` CLI flag overrides it | `"WARNING"` |
+| `agent.soft_stop_budget_secs` | Seconds to wait for a cooperative cancel before hard-killing the session | `10.0` |
+| `agent.max_subagents` | Max concurrent subagents. `0` auto-sizes the cap at startup from host memory/CPU and a learned per-agent cost. A pin of 1 or 2 is raised to 3, because a cap below 3 would disable auto-sizing and still run under the default | `0` |
 | `agent.subagent_max_turns` | Default tool-call budget per subagent | `100` |
-| `agent.spawn_min_memory_gb` | Minimum available memory (GB) to spawn a subagent (0 disables) | `4.0` |
-| `agent.completion_keep` | Which end of the subagent transcript to keep in the completion event injected into the parent session. Three values: `"head"` (first N chars), `"tail"` (last N chars), `"both"` (head + middle marker + tail). | `"head"` |
-| `agent.completion_keep_chars` | Maximum characters retained in the completion event after applying `completion_keep`. The full transcript stays in `~/.kiro/crew/subagents/<id>/result.txt` until cleanup; use the `spawn_status` MCP tool to read it before delivery. `0` disables truncation entirely. | `3000` |
-| `session.timeout_secs` | Idle session timeout (0 disables idle sweep) | `1800` (30 min) |
-| `session.pool_size` | Number of pre-warmed agent processes | `0` (disabled) |
-| `session.pool_agent` | Agent for warm pool processes (empty = default) | `""` |
-| `session.pool_ttl_secs` | Max age for pooled processes before discard | `1800` |
+| `agent.spawn_min_memory_gb` | Minimum available memory (GB) to spawn a subagent (0 disables the check) | `4.0` |
+| `agent.completion_keep` | Which end of the subagent transcript to keep in the completion event injected into the parent session: `"head"`, `"tail"`, or `"both"` (head + middle marker + tail) | `"head"` |
+| `agent.completion_keep_chars` | Max characters retained in the completion event after applying `completion_keep`. `0` disables truncation. The full transcript stays on disk (see `subagent_result_ttl_secs`) | `3000` |
+| `agent.subagent_result_ttl_secs` | How long a delivered subagent's `result.txt` is retained before the reaper prunes it, so the parent can read the full transcript on demand instead of re-running the subagent | `3600` (1h) |
+
+### Session
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `session.timeout_secs` | Idle session timeout in seconds (0 disables the idle sweep) | `3600` (60 min) |
+| `session.autocompact_pct` | Context usage percentage at which auto-compaction triggers (5-90) | `90.0` |
+| `session.pool_size` | Number of pre-spawned kiro-cli processes kept ready for instant session start. 0 disables | `0` |
+| `session.pool_agent` | Agent for warm-pool processes. Empty uses `agent.default_agent` | `""` |
+| `session.pool_ttl_secs` | Max age in seconds for pooled processes, discarded at claim time. 0 disables | `1800` |
+| `session.archive_retention_days` | Days to keep compacted/rotated session archives before auto-cleanup. `-1` disables cleanup | `30` |
+| `session.watchdog_rss_max_mb` | Recycle a session when its process tree resident memory exceeds this many MiB. 0 disables. A session with a turn in flight is never recycled | `0` |
+
+### Dashboard
+
+| Key | Description | Default |
+|-----|-------------|---------|
 | `dashboard.url` | Dashboard URL for remote access | `""` (localhost only) |
 | `dashboard.restore_sessions` | Restore sessions on restart | `false` |
 | `dashboard.restore_window_minutes` | Minutes after restart within which sessions can be restored | `30` |
-| `dashboard.merge_queued_messages` | Concatenate follow-up messages while agent is busy | `false` |
-| `dashboard.mcp_probe_timeout_secs` | Seconds to wait for MCP server handshake during probe (5-120) | `15` |
-| `slack.allowed_users` | Users who can interact with Kiro Crew | `[]` |
+| `dashboard.merge_queued_messages` | Concatenate follow-up messages while the agent is busy | `false` |
+| `dashboard.mcp_probe_timeout_secs` | Seconds to wait for an MCP server handshake during a probe (5-120) | `15` |
+
+### Slack
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `slack.allowed_users` | User records (`{slack_id, name}`) recorded for Slack access | `[]` |
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
-| `slack.open_channels` | Channel IDs where all users are authorized | `[]` |
+| `slack.open_channels` | Channel records retained in config | `[]` |
+| `slack.command` | Slash-command name | `"kirocrew"` |
 | `slack.reactions` | Override phase reaction emojis (set a value to `null` to suppress that phase) | `{}` |
 | `slack.reactions_enabled` | Show phase reactions on Slack messages | `true` |
-| `stt.provider` | STT provider: `"whisper"` (local) or `"transcribe"` (AWS, requires the `voice` extra) | `"whisper"` |
-| `stt.streaming` | Enable streaming transcription in dashboard | `false` |
-| `stt.transcribe_region` | AWS region for Transcribe API (only when provider=`transcribe`) | `"us-east-1"` |
-| `stt.language_code` | Language for speech recognition | `"en-US"` |
-| `memory.history_idle_hours` | Hours idle before history consolidation | `3.0` |
-| `memory.history_max_days` | Days to keep history before pruning | `365` |
+
+Only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over Slack.
+Multi-user access and open channels are refused regardless of what these lists
+contain, so treat them as bookkeeping rather than an access grant.
+
+### Speech-to-text
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `stt.enabled` | Enable voice-memo transcription | `true` |
+| `stt.provider` | `"whisper"` (local), `"mlx"` (local, Apple silicon), or `"transcribe"` (AWS, needs the `voice` extra) | `"whisper"` |
+| `stt.streaming` | Stream partial transcripts live into the dashboard input. Transcribe provider only | `false` |
+| `stt.transcribe_region` | AWS region for the Transcribe API (transcribe provider only) | `"us-east-1"` |
+| `stt.language_code` | Language for speech recognition, e.g. `en-US`, `fr-FR` | `"en-US"` |
+
+### Memory and embeddings
+
+Embeddings are always on and run in-process through the bundled
+llama-cpp-python runtime. There is no server to install and no way to disable
+them, so there is no enable switch here: only knobs for *which* model runs.
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `memory.embedding_provider` | Vector embedding backend. `"llama_cpp"` is the only accepted value; any other value in an existing config (including a legacy `"ollama"` or `"none"`) is coerced to it on load | `"llama_cpp"` |
+| `memory.embedding_dim` | Output width of the embedding model in use. Must match a custom model's real width, or the load is refused | `1024` |
+| `memory.embed_model_url` | Override HTTPS URL for the embedding-model GGUF download (mirrored or airgapped hosts). Empty uses the public Kiro Crew CDN. `KIROCREW_EMBED_MODEL_URL` wins over both. Downloads are sha256-verified regardless of source | `""` |
+| `memory.embed_model_path` | Absolute path to a local GGUF to run **instead of** the bundled Qwen3-Embedding-0.6B. When set, the default model is never downloaded, so a custom model survives a default-model version change. Set `embedding_dim` to the model's output width. Changing the model changes the vector space, so stored embeddings are regenerated in the background. A configured-but-unreadable path fails closed (keyword search still works) rather than silently reverting to the default and re-embedding your corpus. Editable from the dashboard (Memory → Embedding Model). `KIROCREW_EMBED_MODEL_PATH` wins over this | `""` |
+| `memory.embed_model_id` | Stable identifier for a custom model's vector space. Defaults to `custom:<filename>:<size>`, which cannot distinguish two different models of identical byte size, so set it explicitly if you swap between such models | `""` |
+| `memory.semantic_confidence_threshold` | Minimum similarity score for a semantic search result | `0.8` |
 | `memory.episodic_max_results` | Max episodic memories injected per session | `8` |
-| `memory.embedding_provider` | Vector embedding backend — always-on, in-process via the bundled llama-cpp-python runtime. Every legacy value (including `"ollama"` and `"none"`) is coerced to `"llama_cpp"`; setting `"none"` no longer disables embeddings. The old `embedding_url` / `embedding_model` / `embedding_runtime` / `embedding_managed` / `embedding_auth` / `embedding_timeout_secs` / `allow_remote_embedding` keys are removed and ignored if present (`embedding_model` in particular is ignored — the model identity comes from the active backend) | `"llama_cpp"` |
-| `memory.embed_model_url` | Override HTTPS URL for the embedding-model GGUF download (mirrored/airgapped hosts). Empty uses the public Kiro Crew CDN; the `KIROCREW_EMBED_MODEL_URL` env var wins over both. Downloads are sha256-verified regardless of source | `""` |
-| `memory.embed_model_path` | Absolute path to a local GGUF embedding model to run **instead of** the bundled Qwen3-Embedding-0.6B. When set, the default model is never downloaded or installed, so a custom model survives a default-model version change. Set `memory.embedding_dim` to the model's output width — a mismatch is detected at load and refuses to publish the model rather than silently returning no embeddings. Changing the model changes the vector space, so stored embeddings are regenerated automatically. A configured-but-unreadable path fails closed (embeddings unavailable, keyword search still works) rather than reverting to the default and re-embedding your corpus behind your back. Editable from the dashboard (Memory → Embedding Model), which validates the path, refuses protected locations, probes the model's width and re-embeds stored vectors in the background — no restart needed. `KIROCREW_EMBED_MODEL_PATH` wins over this, and while that env var is set the dashboard refuses to change the model (a config write could not take effect) | `""` |
-| `memory.embed_model_id` | Optional stable identifier for a custom model's vector space. Defaults to `custom:<filename>:<size>`, which changes when a different model file is used. Set explicitly if you swap between models of identical byte size, which the default derivation cannot distinguish | `""` |
-| `skills.max_triggered` | Maximum skills loaded per message (≥1) | `3` |
-| `knowledge.auto_ingest_artifacts` | Auto-ingest content-bearing local artifacts into the Knowledge Library (searchable "Artifacts" source); kept in sync and removed when the artifact is deleted (see [Knowledge Library](knowledge-library-how-it-works.md)) | `true` |
-| `knowledge.auto_ingest_artifact_kinds` | Artifact kinds eligible for auto-ingest (`widget` excluded as UI/dashboards; `svg` excluded — no reader support) | `["markdown", "text", "html", "json"]` |
-| `knowledge.auto_discover_folder` | Watch for a documents folder inside the active workspace and register it as a Knowledge source automatically, so files dropped there become searchable without adding the source by hand. The folder is never created for you — its absence means you have not opted in — and it is picked up within one watcher sweep (default 300s) of being created, with no restart. Deleting the auto-added source records a dismissal, so it stays gone instead of reappearing on the next sweep; pausing it also persists. Off by default because ingestion spends LLM extraction on every supported file | `false` |
-| `knowledge.auto_discover_dirname` | Folder name inside the workspace that auto-discovery looks for. A single path segment; separators and traversal are rejected so the source cannot be redirected outside the workspace. Avoid `knowledge` — that is where the Library's own SQLite store lives and it always exists, which would defeat discovery | `"knowledge-docs"` |
+| `memory.episodic_max_count` | Max total episodic memories stored | `10000` |
+| `memory.history_idle_hours` | Hours of inactivity before history consolidation | `3.0` |
+| `memory.history_max_days` | Days of history to retain before pruning | `365` |
+
+### Skills
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `skills.max_triggered` | Maximum skills loaded per message (at least 1) | `3` |
+| `skills.lazy_load` | Inject only a usage-ranked top-K of on-demand skills at session start and leave the long tail discoverable via search, so a large skills set cannot crowd out memory and lessons | `false` |
+
+### Knowledge Library
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `knowledge.auto_ingest_artifacts` | Auto-ingest content-bearing local artifacts into the Knowledge Library as a searchable "Artifacts" source, kept in sync and removed when the artifact is deleted (see [Knowledge Library](knowledge-library-how-it-works.md)) | `true` |
+| `knowledge.auto_ingest_artifact_kinds` | Artifact kinds eligible for auto-ingest. `widget` is excluded as UI rather than a document; `svg` is excluded because the file reader has no support for it | `["markdown", "text", "html", "json"]` |
+| `knowledge.auto_discover_folder` | Watch for a documents folder inside the active workspace and register it as a Knowledge source automatically, so files dropped there become searchable without adding the source by hand. The folder is never created for you, and deleting or pausing the auto-added source persists so it does not reappear on the next sweep. Off by default because ingestion spends LLM extraction on every supported file | `false` |
+| `knowledge.auto_discover_dirname` | Folder name inside the workspace that auto-discovery looks for. A single path segment: separators and traversal are rejected so the source cannot be redirected outside the workspace. Avoid `knowledge`, which is where the Library's own store lives and always exists | `"knowledge-docs"` |
+
+### Top level
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `auto_update` | Enable automatic update checks | `true` |
+| `timezone` | IANA timezone name, e.g. `"America/Los_Angeles"` | `""` (falls back to UTC) |
+| `snapshot_dir` | Where `kirocrew snapshot` writes tarballs | `""` (`~/.kiro/crew/snapshots`) |
 
 ## Environment Variables
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `KIROCREW_HOME` | Override config/data directory | `~/.kiro/crew` |
-| `KIROCREW_PORT` | Override dashboard port | `5476` |
-| `KIROCREW_PROJECT_DIR` | Override agent config/skills directory | Auto-detected |
-| `KIROCREW_SKIP_MODEL_DOWNLOAD` | Set to `1` to skip the background embedding-model download at gateway startup (tests/CI, air-gapped hosts) | unset |
-| `KIROCREW_EMBED_MODEL_URL` | Override HTTPS URL for the embedding-model GGUF (mirrors); wins over `memory.embed_model_url` and the CDN default | unset |
-| `KIROCREW_EMBED_MODEL_PATH` | Absolute path to a local GGUF to use instead of the bundled model; wins over `memory.embed_model_path`. Suppresses the default-model download entirely | unset |
-| `KIROCREW_WORKSPACE` | Override workspace root directory | Platform default |
+| `KIROCREW_HOME` | Override the config/data directory | `~/.kiro/crew` |
+| `KIROCREW_PORT` | Override the dashboard port | `5476` |
+| `KIROCREW_PROJECT_DIR` | Override the agent-config/skills project directory | Auto-detected |
+| `KIROCREW_WORKSPACE` | Override the workspace root, used as-is with no subdirectory appended | Saved `workspace_dir`, else a platform default |
+| `KIROCREW_SKIP_MODEL_DOWNLOAD` | Set to `1` to skip the background embedding-model download at gateway startup (tests, CI, airgapped hosts) | unset |
+| `KIROCREW_EMBED_MODEL_URL` | Override HTTPS URL for the embedding-model GGUF; wins over `memory.embed_model_url` and the CDN default | unset |
+| `KIROCREW_EMBED_MODEL_PATH` | Absolute path to a local GGUF to use instead of the bundled model; wins over `memory.embed_model_path` and suppresses the default download entirely | unset |
 
 ### Timezone
 
-The `timezone` config key (IANA format, e.g. `"America/Los_Angeles"`) affects:
-- `[CURRENT DATE]` injection in every LLM prompt
-- Cron schedule display (`cron list`, Home Tab)
+The `timezone` key affects three things:
+
+- the `[CURRENT DATE]` line injected into every LLM prompt, so "today" is not
+  ambiguous on a host whose system clock is UTC
+- cron schedule display (`kirocrew cron list`, the Slack Home Tab)
 - `skip_dates` evaluation for cron jobs
 
-When empty (default), falls back to UTC.
+A per-job `timezone` on a cron job wins over this global value.
 
 ## Credentials
 
-`~/.kiro/crew/.env` — Slack tokens and owner ID:
+`~/.kiro/crew/.env` holds the Slack tokens and owner ID:
 
 ```
 SLACK_APP_TOKEN=xapp-...
@@ -170,18 +254,34 @@ SLACK_BOT_TOKEN=xoxb-...
 KIROCREW_OWNER_ID=UXXXXXXXX
 ```
 
+## Denied Commands
+
+The built-in destructive-command deny rules are enforced at Kiro Crew's own
+PreToolUse gate, and are on by default. They are configurable from Settings →
+Security: you can disable individual rules, disable them all, or add your own
+patterns.
+
+That opt-out state is **not** stored in `config.json`. It lives in a trust-root
+file the agent itself cannot read or write, which is what makes the ceiling
+un-disableable by the agent. An enterprise security policy can force-pin the
+rules so they cannot be opted out of at all.
+
 ## File Locations
 
 | Path | Purpose |
 |------|---------|
 | `~/.kiro/crew/config.json` | Main config |
+| `~/.kiro/crew/config.local.json` | Local overrides that survive upgrades |
 | `~/.kiro/crew/.env` | Slack credentials |
 | `~/.kiro/crew/skills/` | User skills |
 | `~/.kiro/crew/crons.json` | Scheduled jobs |
+| `~/.kiro/crew/hooks.json` | Script hooks |
 | `~/.kiro/crew/lessons.jsonl` | Learned corrections |
-| `~/.kiro/crew/models/` | Embedding model (downloaded in background at startup) |
+| `~/.kiro/crew/notifications.jsonl` | Notification history |
+| `~/.kiro/crew/models/` | Embedding model, downloaded in the background at startup |
 | `~/.kiro/crew/history/` | Chat history (JSONL) |
 | `~/.kiro/crew/workspace/memory/` | Memory files |
 | `~/.kiro/crew/session_map.json` | Session resume mapping |
+| `~/.kiro/crew/snapshots/` | Default output of `kirocrew snapshot` |
 | `~/.kiro/agents/kirocrew.json` | Installed agent config |
 | `~/.kiro/settings/mcp.json` | Global MCP server config |

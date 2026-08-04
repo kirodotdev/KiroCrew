@@ -533,7 +533,7 @@ def test_installer_channel_name_is_the_literal_path_segment() -> None:
     )
     assert "beta" not in code, (
         "cli.sh has executable code referencing a `beta` prefix; the published "
-        "path segment is `insider` (docs/release-automation.md)"
+        "path segment is `insider` (docs/build/release.md)"
     )
 
 

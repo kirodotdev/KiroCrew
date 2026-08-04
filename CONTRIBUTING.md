@@ -264,14 +264,8 @@ same PEP 440 wheel version — `v0.2.0-rc.1` and `v0.2.0-insider.1` both map to
 `0.2.0rc1`. The second publish then fails as a republish of an immutable key, so
 **stick to one prerelease convention (`-rc.N`) per base version.**
 
-Full detail: [docs/release-automation.md](docs/release-automation.md) (as-built
-operational reference for the pipeline) and
-[docs/release-process-design.md](docs/release-process-design.md) (design +
-platform-lane contract).
-
-For the branch, channel, and RC model behind these steps — where the tag goes
-and how insider becomes stable — see
-**[docs/release-process.md](docs/release-process.md)**.
+Full detail, including the branch, channel, and RC model behind these steps and the
+platform-lane contract: **[docs/build/release.md](docs/build/release.md)**.
 
 ## Project Structure
 
@@ -304,7 +298,7 @@ Key entry points:
 | Rule | Standard |
 |------|----------|
 | Line length | 100 chars (black) |
-| Python | ≥ 3.9, `from __future__ import annotations` |
+| Python | ≥ 3.10, `from __future__ import annotations` |
 | Logging | `import logging` + `logger = logging.getLogger(__name__)` |
 | Async | `asyncio` throughout, `async def` for all I/O |
 | Data | `@dataclass` for containers |
@@ -314,6 +308,33 @@ Key entry points:
 | Types | mypy, `# type: ignore[...]` sparingly |
 
 Full reference: [AGENTS.md](AGENTS.md)
+
+## Documentation (required with every behavior change)
+
+**A change that alters documented behavior must update the docs in the same
+commit.** A PR that changes behavior and leaves its doc stale will be sent back:
+a doc nobody updated is worse than no doc, because readers still trust it.
+
+1. **Find the one owning doc.** Every subsystem has exactly one, usually under
+   `docs/system-specs/modules/`. [AGENTS.md](AGENTS.md)'s routing table maps
+   subsystem to doc.
+2. **Edit that doc; don't add a second one.** Two docs on one subject diverge,
+   and then nobody can tell which is true.
+3. **Update the indexes** when you add, move, rename, or delete a doc: the
+   directory's own `README.md`, [docs/README.md](docs/README.md), and anything
+   linking to it.
+4. **No changelogs inside docs.** No `Last Updated:` line, no
+   "previously/used to/we now", no PR numbers or SHAs. Git holds history; the doc
+   states current behavior in present tense.
+5. **Run the gate:** `./scripts/docs-lint.sh` (also a blocking CI job). It catches
+   broken internal links, docs no index reaches, directories missing an index, code
+   comments citing a doc that does not exist, and a renamed doc whose filename is
+   hardcoded in code.
+
+Note that `src/kiro_crew/docs/` is **packaged and read at runtime**: its filenames
+are an API (see [its README](src/kiro_crew/docs/README.md)), so renaming a file
+there is a code change, and an internal engineering note placed there ships to every
+user.
 
 ## Extending Kiro Crew
 

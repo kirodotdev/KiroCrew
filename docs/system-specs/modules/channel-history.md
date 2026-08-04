@@ -1,7 +1,5 @@
 # Channel History Buffer Module
 
-Last Updated: 2026-05-28
-
 ## Overview
 
 `channel_history.py` — ephemeral in-memory rolling window that captures

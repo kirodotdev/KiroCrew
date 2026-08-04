@@ -7,7 +7,7 @@
 #   2. Install the app to your workspace and copy the Bot Token (xoxb-...)
 #   3. Run `kirocrew setup` and paste both tokens
 #
-# See docs/slack-setup.md for the full walkthrough.
+# See docs/guides/slack-setup.md for the full walkthrough.
 
 display_information:
   name: KiroCrew-{{ALIAS}}

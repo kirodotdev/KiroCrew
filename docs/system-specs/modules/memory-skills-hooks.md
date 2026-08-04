@@ -1,10 +1,41 @@
 # Memory, Skills & Hooks Modules
 
-Last Updated: 2026-07-30 (runtime identity is sourced from trusted per-turn transport metadata and refreshed on follow-ups, so cross-surface resumed sessions know the interface carrying the current message. Prior — 2026-07-29 the re-embed sweep needs numpy only, not faiss, and now also drains rows written with `write_episodic(defer_embedding=True)` — the foreign-agent importer defers embedding so its apply request is not held for minutes; foreign memory rows typed `directive` land in the lesson tier. Prior — 2026-07-28 foreign-agent instruction/persona-directive text is rewritten into the durable memory tiers — directives to `lessons.jsonl`, narrative knowledge to episodic memory — and import may never write the consolidator-replaced `preferences.md`/`projects.md`; full contract in `docs/system-specs/modules/onboarding-import.md`. Prior — 2026-07-26 foreign-agent import boundaries for memories/preferences, MCP servers, user-authored skills, and hooks. Prior — 2026-07-19 in-process embeddings: always-on with no disable path, non-blocking background model load, download robustness — daemon-thread HTTPS download, Ollama-blob salvage, retry ladder — and the `EmbeddingBackend` swap seam; skills lazy-load usage-ranked top-K + skill_search + SkillUsageLedger, /api/skills discovery_executor offload)
-
 ## Overview
 
-Persistent memory, skill system, and config-driven hooks. Assembled by `ContextBuilder` and injected into ACP prompts.
+Persistent memory, skill system, and config-driven hooks. Assembled by
+`ContextBuilder` and injected into ACP prompts.
+
+### The six memory layers
+
+Six distinct layers, each with its own store, write path, and context cap. The
+nesting below is source-of-truth ordering (a later layer can override an earlier
+one), not a storage hierarchy:
+
+```
+Context window (reference budget 165,000 chars, ~55k tokens)
+
+  Preferences            Projects            Recent history
+  (preferences.md)       (projects.md)       (history/{date}.md)
+  consolidator-replaced  consolidator-       multi-tier decay
+                         replaced
+        |                     |                     |
+        +---------------------+---------------------+
+                              |
+    Semantic memory (SQLite key-value)
+    pref.* / project.* / user.* keys, confidence-gated writes
+                              |
+    Episodic memory (past conversation fragments)
+    FAISS (or stdlib) vector search + time decay + MMR reranking
+                              |
+    Lessons (learned corrections)
+    lesson.* keys at confidence 1.0, user-explicit always wins
+```
+
+Layers 1 to 3 are Markdown files under the workspace memory dir; layers 4 to 6
+are rows in `memory.db` behind one shared `VectorMemoryStore` (lessons fall back
+to `lessons.jsonl` only when that store is not initialized). Each layer is
+detailed in its own section below, with a single conflict ladder in "Conflict
+resolution: which layer wins".
 
 ## Memory (`memory.py`)
 
@@ -13,20 +44,30 @@ Structured files under `~/.kiro/crew/workspace/memory/`:
 - `projects.md` — active project context (replaced wholesale by consolidator)
 - `history/{date}.md` — daily conversation summaries (append-only, pruned by heartbeat)
 
-FTS5 search via `~/.kiro/crew/memory_index.db` (SQLite via `pysqlite3-binary` on Linux for FTS5/UPSERT compat, stdlib `sqlite3` on macOS). Self-healing: corrupted DB auto-rebuilt. Incremental updates on writes, full rebuild on gateway startup. Snowball stemming for keyword scoring. Connection leak prevention: all FTS methods use try/finally.
+FTS5 search via `~/.kiro/crew/memory_index.db` (SQLite via `pysqlite3-binary` on Linux for FTS5/UPSERT compat, stdlib `sqlite3` on macOS). The virtual table is created with `tokenize='porter unicode61'`, so keyword matching is porter-stemmed inside SQLite. (This is a different stemmer from the `snowballstemmer` pass used by the vector store's keyword-fallback *scoring* in `vector_memory.py`; two independent code paths, do not conflate them.) Self-healing: corrupted DB auto-rebuilt. Incremental updates on writes, full rebuild on gateway startup and every `_FTS_REBUILD_TICKS = 15` heartbeat ticks (~15 min at the 60s default interval). Connection leak prevention: all FTS methods use try/finally.
 
 Context injection includes source citations per section. Agent can update memory files via kiro-cli's file tools.
 
 ### Decaying Memory (`read_recent_history`)
 
-History context uses natural decay — recent days in full detail, older days compressed:
-- **Last 14 days**: full entries (days 0–13, vivid recall)
-- **14-60 days ago**: first entry per day + count (fading summary)
-- **61-180 days ago**: date + entry count only (existence marker)
-- **181-364 days ago**: retained on disk but not loaded into context
-- **365+ days**: pruned by heartbeat (forgotten)
+History context uses natural decay: recent days in full detail, older days
+progressively compressed. `_read_recent_history_uncached` walks a fixed 181-day
+window (`range(181)`) and picks a rendering per day by age.
 
-Total output capped at `history_cap = 25_000` chars in `get_context()`. Timestamps use local timezone.
+| Age | What is kept | Why |
+|-----|--------------|-----|
+| 0–13 days (`i < days`, `days=14`) | Full entries with timestamps | Recent work needs full context |
+| 14–60 days (`i < 61`) | Day header + first entry + `…N more entries` | Enough to jog memory at a fraction of the chars |
+| 61–180 days | Date + `#### ` count only | Existence marker: "something happened then" |
+| 181–364 days | Not read into context | Still on disk as a backup |
+| 365+ days | Deleted from disk by heartbeat prune | Too old to be worth the scan |
+
+The assembled string is capped when injected. `MemoryStore.get_context()`
+declares `history_cap=25_000` as its own signature default, but the live caller
+is `ContextBuilder.build_session_context()`, which always passes
+`caps.memory_history` (26,400 chars at the reference window, scaled per model
+window, see Context Builder below), so 25,000 only applies to a direct
+programmatic call. Timestamps use local timezone.
 
 `read_recent_history` runs on every message turn (context build) and otherwise
 stats + reads up to 181 daily files synchronously. The assembled string is
@@ -41,16 +82,57 @@ so a new or pruned entry is visible immediately.
 
 ### Consolidation (`history.py` `HistoryConsolidator`)
 
+How a user message becomes durable memory:
+
+```
+user message
+    |
+    +-- learn_add MCP tool -----> write_lesson()  (immediate; user said
+    |                                              "remember X", or corrected
+    |                                              the agent)
+    |
+    +-- 30 messages ------------> consolidation, prefs path
+    |                             (_CONSOLIDATION_THRESHOLD = 30)
+    |                             - preferences.md  (wholesale replace)
+    |                             - projects.md     (wholesale replace)
+    |                             - semantic entries (max 20)
+    |
+    +-- 3h idle ----------------> consolidation, history path
+                                  - append history/{date}.md
+                                  - episodic entries (max 10)
+                                  - implicit lessons  (max 10)
+```
+
 Two separate consolidation paths with independent triggers:
 
 | Path | Trigger | What it updates | Offset tracking |
 |------|---------|-----------------|-----------------|
-| Preferences/projects | 30 messages (per session) | `preferences.md`, `projects.md` | In-memory `_prefs_offset` dict |
-| Daily history + lessons | 3h idle (per session) | `history/{date}.md`, `lessons.jsonl` (or `lesson.*` in vector store) | Persisted `last_consolidated` in JSONL metadata |
+| Preferences/projects | 30 messages (per session, `_CONSOLIDATION_THRESHOLD`) | `preferences.md`, `projects.md`, semantic entries | In-memory `_prefs_offset` dict |
+| Daily history + lessons | 3h idle (per session, `history_idle_hours` = 3.0) | `history/{date}.md`, episodic entries, `lessons.jsonl` (or `lesson.*` in vector store) | Persisted `last_consolidated` in JSONL metadata |
+
+Per-consolidation extraction caps (`vector_memory_constants.py`, also
+interpolated into the LLM prompt so the model is told the same numbers):
+`_MAX_SEMANTIC_PER_CONSOLIDATION = 20`, `_MAX_EPISODIC_PER_CONSOLIDATION = 10`,
+`_MAX_LESSONS_PER_CONSOLIDATION = 10`. The lessons cap exists because each
+`write_lesson()` can perform up to 6 blocking embeds (1 rule plus
+`_MAX_BACKFILLS_PER_CALL = 5` lazy backfills), so an uncapped LLM array could
+occupy a worker thread for minutes.
+
+The `preferences_update` / `projects_update` prompt keys are added ONLY when
+`memory.migrated` is false, so a migrated install writes structured memory and
+leaves the Markdown files alone.
 
 The prefs path does NOT advance the persisted `last_consolidated` marker — only the history path does. This ensures history consolidation always covers all messages, even if prefs consolidation fired earlier.
 
 Idle detection: `_last_activity[key]` updated on every `maybe_consolidate()` call. `check_idle_sessions()` called every heartbeat tick (60s), fires history consolidation when `now - last_activity > history_idle_secs` and there are unconsolidated messages.
+
+Neither path owns a timer. The prefs path is checked inline on every
+`maybe_consolidate()`; the history path is driven entirely by the heartbeat
+calling `check_idle_sessions()`. Every embed-bearing step
+(`_write_structured_memory`, `_save_lessons`, `append_history`) is dispatched
+through `run_in_embed_pool` (the bounded `mc-embed` bulkhead) because
+`_consolidate` runs on the gateway event loop, and a slow or hung embed inline
+would stall heartbeats, Slack, and the dashboard.
 
 ### Lesson Extraction from Chat
 
@@ -69,29 +151,102 @@ Exposed on dashboard: Overview → Memory tab → Memory Settings card. Changes 
 
 Structured memory system backed by SQLite + FAISS + in-process embeddings (vendored llama-cpp-python). Embeddings are ALWAYS-ON: `_coerce_embedding_provider` (config/loader.py) coerces EVERY `embedding_provider` value — including legacy `"ollama"` and `"none"` — to `"llama_cpp"`, so there is no config knob to disable them. While the model is still downloading or absent, memory degrades gracefully to keyword/FTS search and the lazy-rebind machinery in `vector_memory._try_embed` picks embeddings up when the model lands — no restart. Per-store overrides (`MemoryStoreConfig.embedding_provider`, enum `["", "llama_cpp"]`) can only inherit or restate the default — per-store disable is not supported.
 
+### Thread safety (`_db_lock`, `threading.RLock`)
+
+One `VectorMemoryStore` instance is shared by the gateway event loop (readers)
+and several worker threads (writers: consolidation via `run_in_embed_pool`, the
+dashboard memory handlers via `asyncio.to_thread`). It holds ONE `sqlite3`
+connection and ONE FAISS index, and neither is thread-safe: `sqlite3` caches
+prepared statements per connection, so two threads stepping a statement at the
+same time corrupt each other's row iteration (observed as
+`DatabaseError("another row available")`, and on Windows CI as a `None` value for
+a column the `WHERE` clause excluded), while a concurrent FAISS `add` during a
+`search` can corrupt the C++ index outright. `self._db_lock` (a reentrant
+`threading.RLock`, so a locked method may call another locked method)
+serializes every statement on that connection. The critical sections that
+matter most:
+
+- **Semantic write** (`_write_semantic`): the whole `SELECT` →
+  conflict-resolve → `UPSERT` sequence. Unlocked, a read-modify-write can
+  interleave with a concurrent writer and lose an update.
+- **Episodic write** (`write_episodic`): the under-lock dedup re-check, the
+  `INSERT`, and the FAISS `add` + `_faiss_id_map.append`. The index and the id
+  map MUST commit together: a reader that sees `index.ntotal == N+1` while
+  `len(id_map) == N` raises `IndexError`. The id is appended first and popped
+  back on a failing `add`, so the two structures stay in sync.
+- **Episodic search** (`search_episodic`, FAISS path): the FAISS `search`, the
+  id-map lookups, and the batched row resolve, so a mid-flight `add` cannot
+  desync the lookup. The MMR rerank and `_touch_last_accessed` run after the
+  block (the latter re-acquires the lock itself, which is why reentrancy is
+  required).
+- **Episodic search** (`_sqlite_vector_search`, the no-FAISS fallback): only the
+  row fetch is locked; the cosine/decay scoring loop then works on materialized
+  rows outside the lock.
+
+**The lock is never held across an embedding call.** An embed on a loaded model
+is serialized behind the embedder's own lock and costs tens of ms per short
+text; holding a process-wide store lock across that would serialize every reader
+behind it and defeat the point of offloading the write to a worker thread in the
+first place. So each write embeds FIRST, then takes the lock for local work
+only. Two consequences the code handles explicitly: `_write_semantic` calls
+`_retire_stale_episodic` AFTER releasing the lock (that helper embeds, then
+re-takes the lock itself), and `write_episodic` samples `_space_generation`
+before the embed, carries it into the locked region, and re-checks it there,
+because an embedding-model swap can land in the gap and a vector from the
+previous space must be persisted as NULL rather than committed (the post-swap
+backfill re-embeds the row).
+
+This serialization is **per-process only**. It adds no conflict detection or
+notification, and it does not coordinate across separate Kiro Crew processes
+(gateway plus a one-shot CLI), so two processes writing the same key remain
+last-write-wins.
+
 ### Semantic Memory
 
 SQLite table `semantic_memory` — structured key-value store with:
-- **Allowed keys**: only `pref.*`, `project.*`, `user.*` prefixes allowed (+ user-configurable extras)
-- **Confidence gating**: LLM writes require confidence ≥ 0.8; user-explicit writes always win
-- **Conflict resolution**: higher confidence wins; same confidence → newer source wins; user-explicit overrides all
-- **Injection detection**: 14 regex patterns scanned on every value write
-- **Audit trail**: `memory_events` table logs every create/update/delete with old+new values
+- **Allowed keys**: `_BUILTIN_PREFIXES` is `pref.*`, `project.*`, `user.*`, `lesson.*` (+ user-configurable `extra_prefixes`). The first three are the fact prefixes the consolidation prompt offers the LLM; `lesson.*` is the lessons tier writing into the same table.
+- **Key format**: `^[a-z][a-z0-9_.]*[a-z0-9]$`, max 100 chars; value JSON max 4,096 bytes
+- **Confidence gating**: writes whose source is not `user_explicit` require confidence ≥ `_DEFAULT_CONFIDENCE_THRESHOLD` (0.8); `user_explicit` bypasses the threshold
+- **Conflict resolution**: `user_explicit` always wins, and only another `user_explicit` may overwrite an existing `user_explicit` row; otherwise higher confidence wins, and confidences within 0.1 of each other count as equal so the newer write wins. A rejected write logs a `conflict_skip` event.
+- **Injection detection**: the `_INJECTION_PATTERNS` regex set (14 patterns, `vector_memory_constants.py`) is scanned on every value write
+- **Audit trail**: `memory_events` table logs every create/update/delete with old+new values, bounded at `_MAX_EVENTS = 10_000`
 
-Context injection: formatted as `key: value` pairs in `[Semantic Memory]` block, capped at `_SEMANTIC_MEMORY_CAP` (≈12.7k chars) when injected at session start via `get_context()`. Excludes `lesson.*` keys (they have their own `[Learned corrections]` block). Uses hybrid retrieval when embeddings are available: `0.6 × vector_score + 0.4 × keyword_score`. Falls back to keyword-only scoring (word overlap on keys and values, with Snowball stemming) without embeddings.
+Context injection: formatted as `key: value` pairs in `[Semantic Memory]` block. The cap is passed in by the caller: `build_session_context()` supplies `caps.semantic`, which is `_SEMANTIC_MEMORY_CAP` (7.7% of the base = 12,705 chars) at the reference window and scales down with the model window. Excludes `lesson.*` keys (they have their own `[Learned corrections]` block). Uses hybrid retrieval when embeddings are available: `_SEMANTIC_VECTOR_WEIGHT` 0.6 × vector_score + `_SEMANTIC_KEYWORD_WEIGHT` 0.4 × keyword_score. Falls back to keyword-only scoring (word overlap on keys and values, key matches weighted 3×, with `snowballstemmer` expansion) without embeddings.
 
 ### Episodic Memory
 
 SQLite table `episodic_memories` — conversation fragments with optional embeddings:
 - **Write**: text validation (10-2000 chars), **prompt-injection screening** (`_contains_injection`, same pattern set as the semantic-KV path), tag sanitization, importance clamping (0-1), FAISS dedup (cosine > 0.88). The dedup scan **skips tombstoned ("ghost") matches**: tombstone paths (merge, dashboard delete, cap eviction, stale retirement) set `is_deleted=1` but leave the vector in `_faiss_index`/`_faiss_id_map`, so a high-similarity hit may map to a deleted row. `_get_episodic()` filters `is_deleted=0` and returns `None` for those; the write loop `continue`s past a `None` match (mirroring `search_episodic`'s `if not mem or mem["is_deleted"]: continue`) instead of treating it as a conflict — otherwise a new memory matching a deleted one was silently rejected (data loss).
-- **Injection screening (XPIA defense-in-depth, `696671aa`)**: episodic text is derived from conversation transcripts, so a poisoned turn could persist steering instructions that get re-injected into future contexts. `write_episodic()` now runs `_contains_injection()` (before the embed call) and, on match, drops the entry and emits an auditable `injection_blocked` event with `memory_type='episodic'`. The stored audit snippet is scrubbed with `redact_exfiltration_urls()` + `redact_credentials()` first, since `/api/memory/events` surfaces it verbatim on the dashboard. This mirrors the semantic-KV screen at `validate_semantic()`. **Residual (accepted risk)**: this is a best-effort regex screen — a determined owner can still steer their own long-term memory with phrasing that evades the patterns; long-term memory poisoning is an accepted residual. The screen raises the bar against accidental/opportunistic XPIA persistence, not against a motivated self-owner.
-- **Search**: FAISS vector similarity with decay scoring: `cosine_sim × (0.7 + 0.3×importance) × exp(-0.03×days)`, then MMR diversity reranking (Jaccard-based, λ=0.6)
-- **MMR reranking**: Maximal Marginal Relevance balances relevance with diversity. Greedy iterative selection penalizes candidates similar to already-selected results. Prevents redundant episodic fragments from consuming the context budget. Configurable via `mmr=False` parameter to disable.
-- **Relevance threshold**: `cosine_sim ≥ 0.55` required for context injection (empirically determined from 100-query benchmark: 50 relevant + 50 irrelevant, F1=0.980). Results below threshold are filtered in `get_episodic_context()` only — `search_episodic()` returns all results for dashboard/API use. FTS5 keyword fallback is unaffected (no cosine scores).
-- **Fallback**: keyword search (OR logic, LIKE on text + tags) when embeddings unavailable
-- **Cap**: 10,000 active entries; lowest-importance oldest pruned when exceeded
+- **Injection screening (XPIA defense-in-depth)**: episodic text is derived from conversation transcripts, so a poisoned turn could persist steering instructions that get re-injected into future contexts. `write_episodic()` runs `_contains_injection()` (before the embed call) and, on match, drops the entry and emits an auditable `injection_blocked` event with `memory_type='episodic'`. The stored audit snippet is scrubbed with `redact_exfiltration_urls()` + `redact_credentials()` first, since `/api/memory/events` surfaces it verbatim on the dashboard. This mirrors the semantic-KV screen at `validate_semantic()`. **Residual (accepted risk)**: this is a best-effort regex screen: a determined owner can still steer their own long-term memory with phrasing that evades the patterns; long-term memory poisoning is an accepted residual. The screen raises the bar against accidental/opportunistic XPIA persistence, not against a motivated self-owner.
+- **Search**: FAISS vector similarity with decay scoring: `cosine_sim × (0.7 + 0.3×importance) × exp(-0.03×days_old)`, then MMR diversity reranking (Jaccard-based, `_MMR_LAMBDA` = 0.6)
+- **MMR reranking**: Maximal Marginal Relevance balances relevance with diversity. Greedy iterative selection penalizes candidates similar to already-selected results. Prevents redundant episodic fragments from consuming the context budget. Configurable via `mmr=False` parameter to disable. The candidate pool is deliberately NOT truncated toward `limit` (that tail pick is the point of MMR); the only bound is the recall-safe `_MMR_MAX_POOL` = 1000 ceiling for pathological inputs.
+- **Relevance threshold**: `_EPISODIC_RELEVANCE_THRESHOLD` = 0.55 cosine required for context injection (empirically determined from a 100-query benchmark: 50 relevant + 50 irrelevant, F1=0.980), relaxed to `_EPISODIC_LONG_TEXT_THRESHOLD` = 0.42 for entries longer than `_EPISODIC_LONG_TEXT_CHARS` = 300 chars, because long texts dilute cosine scores. The threshold reads the RAW `cosine_sim`, not the decay-adjusted score, so age and importance affect ordering but never admission. Results below it are filtered in `get_episodic_context()` only; `search_episodic()` returns all results for dashboard/API use. The keyword fallback is unaffected because those rows carry no `cosine_sim` key at all.
+- **Fallback ladder**: FAISS (needs faiss + numpy) → `_sqlite_vector_search`, stdlib cosine over the stored blobs → FTS5/LIKE keyword search (OR logic on text + tags) when there is no query embedding at all. The middle rung matters: faiss is an optional accelerator, not a declared dependency, so a stock install still gets vector recall from the stored vectors.
+- **Cap**: `_DEFAULT_EPISODIC_MAX` = 10,000 active entries. `_enforce_episodic_cap()` tombstones `ORDER BY importance ASC, created_at ASC` (lowest-importance oldest first) on write once the count reaches the cap.
 
-Context injection: top-8 results in `[Episodic Memory]` block, capped at 3000 chars (`cap=3000`). Injected on the first message of new sessions via `build_message()` — not at plain session start, since `build_session_context` passes no query to `memory.get_context()`.
+Context injection: `_DEFAULT_EPISODIC_LIMIT` = 8 results in an `[Episodic Memory]` block, each fragment sliced to 1,500 chars, total bounded by `min(_EPISODIC_INJECT_CAP, caps.episodic)` where `_EPISODIC_INJECT_CAP` = 3,000. Injected on the first message of new sessions via `build_message()`, not at plain session start, since `build_session_context` passes no query to `memory.get_context()`, so that call's `episodic_cap` argument never fires.
+
+### Fading: three independent decay mechanisms
+
+Three unrelated mechanisms keep stale memory out of the context budget. They do
+not coordinate, so reason about them separately:
+
+1. **History decay (time tiers)**: `memory.py` `read_recent_history()`, table
+   above. Cheap, deterministic, no scoring.
+2. **Episodic decay (exponential, at query time)**: the score formula above.
+   `exp(-0.03 × days_old)` halves at ~23 days and reaches ~10% at ~77 days;
+   `(0.7 + 0.3 × importance)` scales the whole score by importance, so a
+   high-importance entry decays from a higher starting point rather than more
+   slowly. Ranking and filtering are two separate stages in two separate
+   functions, in that order: `search_episodic()` ranks by decay-adjusted score
+   and returns everything (the dashboard and API want unfiltered results), then
+   `get_episodic_context()` drops anything whose RAW `cosine_sim` is below the
+   relevance threshold. A 30-day-old entry with importance 0.8 and cosine 0.9
+   scores `0.9 × 0.94 × 0.407 ≈ 0.34`, so it likely loses its top-8 slot to
+   newer matches; an entry at cosine 0.4 can hold a slot on score yet still be
+   dropped at injection time by the threshold.
+3. **Cap eviction**: `_enforce_episodic_cap()`, above. Independent of age
+   except as a tiebreak.
 
 ### In-Process Embedder (`embeddings.py`)
 
@@ -114,7 +269,7 @@ Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kir
 
 **Download flow** (`ensure_model()` / `start_background_model_download()`):
 - **Salvage fast-path** (`_salvage_legacy_ollama_blob`): before downloading, checks the legacy Ollama blob store (`~/.ollama/models/blobs/sha256-<digest>`, honoring `$OLLAMA_MODELS`) — Ollama stores layer blobs content-addressed and the Ollama-era GGUF is byte-identical, so migrating users skip the 610MB re-download entirely. The copy is sha256-verified like a real download; any failure falls through to the normal download
-- Downloads `qwen3-embedding-0.6b-q8_0.gguf` (Q8_0 quantized, 610MB) over plain HTTPS from the public KiroCrew CDN — URL resolution order: `KIROCREW_EMBED_MODEL_URL` env var, then the `memory.embed_model_url` config knob, then the built-in `_DEFAULT_MODEL_URL` CDN constant. No git, no cloud SDK. Streaming sha256 is computed while downloading and byte-level progress (`bytes_downloaded`/`bytes_total`) is written to `status` every ~16MB for the dashboard's determinate progress bar
+- Downloads `qwen3-embedding-0.6b-q8_0.gguf` (Q8_0 quantized, 610MB) over plain HTTPS from the public Kiro Crew CDN — URL resolution order: `KIROCREW_EMBED_MODEL_URL` env var, then the `memory.embed_model_url` config knob, then the built-in `_DEFAULT_MODEL_URL` CDN constant. No git, no cloud SDK. Streaming sha256 is computed while downloading and byte-level progress (`bytes_downloaded`/`bytes_total`) is written to `status` every ~16MB for the dashboard's determinate progress bar
 - sha256-verifies the file (`06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439` — the trust anchor for every source: a tampered CDN object or mirror can only fail verification); files under `_GGUF_MIN_BYTES` (1MB) are rejected as truncated
 - Installs persistently to `~/.kiro/crew/models/qwen3-embedding-0.6b.gguf` — atomic install: stages into a per-process unique file in the TARGET directory (same filesystem) then `os.replace`, so two concurrent processes (gateway + one-shot CLI) can never interleave writes into a shared staging file
 - **Daemon-thread download** (`_run_download_on_daemon_thread`): the blocking HTTPS transfer runs on a daemon thread (deliberately NOT `run_in_executor` — executor threads are joined at interpreter exit), so Ctrl-C or a finished one-shot CLI is never pinned by an in-flight 610MB transfer
@@ -140,7 +295,7 @@ Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kir
 |-------|-------|
 | Model | Qwen/Qwen3-Embedding-0.6B (Q8_0 GGUF) |
 | License | Apache-2.0 (on approved list for self-approval) |
-| Source | public KiroCrew CDN (`_DEFAULT_MODEL_URL`; sha256-pinned; `KIROCREW_EMBED_MODEL_URL` / `memory.embed_model_url` for mirrors) |
+| Source | public Kiro Crew CDN (`_DEFAULT_MODEL_URL`; sha256-pinned; `KIROCREW_EMBED_MODEL_URL` / `memory.embed_model_url` for mirrors) |
 | Runtime | Vendored llama-cpp-python 0.3.34 (MIT license, `kiro_crew/_vendor/`) |
 | Data flow | Text → in-process function call → float vectors (no data leaves machine) |
 | Policy | Self-approvable under a public dataset / ML model policy |
@@ -150,11 +305,11 @@ Conditions met for self-approval:
 2. Apache-2.0 license — on approved list
 3. Outputs are float vectors — no excluded categories (health, financial, biometric, PII)
 4. Not recreating training data — generating embeddings, not content
-5. Model weights sourced from the sha256-pinned KiroCrew release bucket (integrity-verified download at runtime)
+5. Model weights sourced from the sha256-pinned Kiro Crew release bucket (integrity-verified download at runtime)
 
 ### Why llama.cpp (not TEI)
 
-TEI (Text Embeddings Inference) uses the candle Rust framework with a Metal backend that has an [unmerged memory bug](https://github.com/huggingface/candle/pull/3197) causing unbounded GPU buffer allocation on macOS. The process consumes 4+ GB RAM and never becomes healthy. This affects ALL models on TEI/Metal, not just Qwen3. llama.cpp works correctly on all supported platforms (macOS Metal, Linux CPU) — KiroCrew vendors it directly via llama-cpp-python, which also removes the external Ollama server the previous design depended on.
+TEI (Text Embeddings Inference) uses the candle Rust framework with a Metal backend that has an [unmerged memory bug](https://github.com/huggingface/candle/pull/3197) causing unbounded GPU buffer allocation on macOS. The process consumes 4+ GB RAM and never becomes healthy. This affects ALL models on TEI/Metal, not just Qwen3. llama.cpp works correctly on all supported platforms (macOS Metal, Linux CPU) — Kiro Crew vendors it directly via llama-cpp-python, which also removes the external Ollama server the previous design depended on.
 
 ### Lessons in Vector Memory
 
@@ -221,7 +376,7 @@ The backend `POST /api/memory/migrate` endpoint and the `kirocrew memory migrate
 
 ### Cross-Platform
 
-macOS (Apple Silicon and Intel), Linux (x86_64, arm64/Graviton), and Windows supported. All paths use `pathlib.Path`. GGUF model downloaded over sha256-pinned HTTPS from the KiroCrew CDN. No runtime install step — native llama.cpp libraries are vendored per platform in `_vendor/llama_cpp_libs/` and selected via `LLAMA_CPP_LIB_PATH` (the old Docker fallback is gone).
+macOS (Apple Silicon and Intel), Linux (x86_64, arm64/Graviton), and Windows supported. All paths use `pathlib.Path`. GGUF model downloaded over sha256-pinned HTTPS from the Kiro Crew CDN. No runtime install step — native llama.cpp libraries are vendored per platform in `_vendor/llama_cpp_libs/` and selected via `LLAMA_CPP_LIB_PATH` (the old Docker fallback is gone).
 
 | Platform | Vendored libs | GPU | Notes |
 |----------|--------------|-----|-------|
@@ -242,9 +397,9 @@ memory-side invariants the destination writers enforce.
 
 The selectable `memories` category covers durable memories and preferences from
 supported foreign agents. It is not a raw file-copy path. Imported values pass
-through the same KiroCrew memory writers, key allowlists, per-entry size/count
+through the same Kiro Crew memory writers, key allowlists, per-entry size/count
 limits, injection screening, conflict resolution, deduplication, audit events,
-and active-entry caps described above. Existing KiroCrew memories/preferences
+and active-entry caps described above. Existing Kiro Crew memories/preferences
 win on conflict; re-applying the same foreign item is idempotent through the
 shared import provenance ledger.
 
@@ -265,7 +420,7 @@ copied around those writers.
 User-authored **instruction** documents (`CLAUDE.md`, `AGENTS.md`,
 `~/.claude/rules/*.md`, a workspace's own `CLAUDE.md`) and the directive body of
 a **persona** document (`SOUL.md`) ARE in scope, and are rewritten into
-KiroCrew's own tiers by the `instructions` category: each directive paragraph
+Kiro Crew's own tiers by the `instructions` category: each directive paragraph
 becomes a `Lesson(category="preference")` in `lessons.jsonl` — the highest-priority
 durable tier — while narrative knowledge continues to go to episodic memory via
 the `memories` category. A **foreign memory row the source types as a
@@ -274,7 +429,7 @@ tier (`_add_db_directive`) under the same identity guard and ceiling rather than
 being dropped. Import contributes at most 50 lessons
 (`_MAX_IMPORTED_LESSONS`) because `LessonStore` prunes oldest-first at 200; an
 unbounded import would silently evict the user's own accumulated corrections. What is excluded
-is the persona *role*: a foreign persona document never becomes KiroCrew's
+is the persona *role*: a foreign persona document never becomes Kiro Crew's
 persona (that surface is theme-pack persona, gated by
 `capabilities.theme_persona`), and no foreign text is injected as system-prompt
 identity. Import MUST NOT write `preferences.md` or `projects.md` — the
@@ -338,7 +493,103 @@ User-taught corrections ("always do X", "never do Y"). Single write path through
 
 **Migration**: `migrate_from_markdown()` reads `lessons.jsonl` and writes each entry as `lesson.*` semantic key with `source=migration, confidence=0.9`. User-explicit lessons (confidence 1.0) can't be overwritten by migration.
 
-Categories: `tool`, `preference`, `knowledge`. Injected as `[Learned corrections]` block, capped at 50.
+Categories: `tool`, `preference`, `knowledge`. Injected as a `[Learned corrections]` block, at most 50 lessons (`get_lessons(limit=50)` in the vector path, `_MAX_LESSONS_IN_CONTEXT = 50` in the JSONL path). The JSONL store itself retains `_MAX_LESSONS_TOTAL = 200` and prunes oldest-first beyond that, so "50 in context" and "200 on disk" are different numbers.
+
+### Conflict resolution: which layer wins
+
+Priority, highest first. A lower layer never overrides a higher one:
+
+1. **Lessons** (`lesson.*`, `user_explicit`, confidence 1.0)
+2. **Semantic memory, user-explicit writes**
+3. **Semantic memory, automated writes** (confidence ≥ 0.8 required)
+4. **Preferences / projects** (consolidation-generated Markdown)
+5. **Episodic memory** (relevance-scored fragments)
+6. **Recent history** (time-decayed summaries)
+
+Lessons top the ladder by wording, not by ordering: the block header reads
+"ALWAYS follow these. They override default behavior.", which is what makes a
+lesson beat a contradicting preference in the same prompt.
+
+| Conflict | Resolution | Code path |
+|----------|------------|-----------|
+| Lesson contradicts a preference | Lesson wins via the `[Learned corrections]` framing | `context.py` |
+| Two semantic writes to one key | `user_explicit` overrides all; else higher confidence; confidences within 0.1 count as equal so newer wins | `vector_memory._write_semantic()` |
+| Duplicate lessons | Substring dedup, then topic-overlap dedup (≥50% of the smaller keyword set → newer replaces older), then embedding dedup (cosine > 0.85 → longer text wins) | `vector_memory.write_lesson()` |
+| Contradicting episodic fragments | No explicit resolution: time decay plus MMR surfaces the newer/more relevant fragment | `vector_memory.search_episodic()` |
+| A semantic value is superseded | `_retire_stale_episodic()` tombstones episodic rows that quote the old value | `vector_memory._write_semantic()` step 9 |
+
+### Memory across surfaces and channels
+
+All surfaces share ONE memory store. `ContextBuilder.get_memory_for()` hands
+every non-default workspace the default workspace's `VectorMemoryStore`, so
+semantic, episodic, and lesson rows are global: a lesson taught in a Slack DM
+applies in the dashboard and vice versa. The Markdown layers
+(`preferences.md`, `projects.md`, `history/`) and the JSONL `LessonStore` are
+per-workspace-directory, so those ARE isolated when channels are configured onto
+different workspaces.
+
+What differs per channel is what gets *recorded* and what reaches the model:
+
+| Surface | Activation | What lands in the `ChannelHistory` buffer | Consolidation | Episodic extraction |
+|---------|-----------|--------------------------------------------|---------------|---------------------|
+| Slack DM (`D`-prefixed id) | `always` (`slack_dm_activation` default) | every authorized message, though it is largely redundant with ACP native session history | yes, both paths | yes |
+| Group channel | `mention` (default for an unlisted channel) | ONLY the messages the bot acts on (a mention, or a reply in a thread it already has a session for); a plain bystander message returns before the push | yes, on the turns it answers | yes |
+| Group channel | `observe` | every authorized message, mention or not, which is the point of the mode | yes, on the turns it answers | yes |
+| Group channel | `off` | nothing: the handler returns before any push. The `!channel` owner command is the one exception it lets through, so the channel can be re-enabled | no | no |
+| Dashboard tab | n/a | no channel buffer (no `channel_id`); ACP native session history covers it | yes, both paths | yes |
+
+The `mention` row is the easy one to get wrong: the buffer is NOT a passive
+recording of channel traffic in that mode. The activation gate returns before
+`channel_history.push`, so the depth the bot can see is the depth of its own
+prior involvement.
+
+Buffer limits, per `ChannelHistory`:
+
+| Mode | Entries | TTL | Clock | Durability |
+|------|---------|-----|-------|------------|
+| default (`mention`) | `_DEFAULT_MAX_ENTRIES` = 50 | `_DEFAULT_TTL_SECS` = 300s | monotonic | in-process only, lost on restart |
+| `observe` | `OBSERVE_MAX_ENTRIES` = 200 | `OBSERVE_TTL_SECS` = 604800s (1 week) | wall clock (required for persistence) | JSONL on disk |
+
+The observe pair is operator-tunable: `slack/gateway.py` constructs
+`ChannelHistory` with `observe_max_entries=observe_max_messages` (default 200)
+and `observe_ttl_secs=observe_ttl_hours × 3600` (default 168.0 hours). The
+default 50/300s pair has no config knob.
+
+A channel quiet for longer than the 5-minute default TTL presents an empty
+buffer even though the bot was there. `observe` buffers persist to
+`~/.kiro/crew/history/<channel_id>.jsonl` (path-validated: refused if it escapes
+the history root or hits `is_sensitive_path`) and are lazily compacted on load,
+dropping entries past the TTL and rewriting the file. `set_observe()` /
+`unset_observe()` re-`deque` an existing buffer to the other `maxlen`, and
+`unset_observe()` deletes the JSONL file.
+
+**The `_user_authorized` injection gate.** `slack/events.py` resolves
+`_user_authorized = is_allowed_user(sender_id)` before anything observable
+happens. No unauthorized sender's text ever reaches the buffer, via two distinct
+mechanisms:
+
+- The **observe** push happens EARLY (before the activation gates, since observe
+  mode records non-mentions), so it carries its own explicit predicate:
+  `should_record_observe_history(channel_history, _user_authorized)`, defined in
+  `security.py` so the rule lives with the other security controls.
+- The **non-observe** push happens late, after `if not _user_authorized: return`,
+  so it is covered by that early return rather than by a second predicate.
+
+This is a prompt-injection control, not a courtesy: the buffer is injected
+verbatim into a later turn's context, so a recorded stranger's message would
+become instructions the model reads on the next authorized `@mention`. For the
+same reason the ordering is load-bearing: the auth check, the message
+interceptor, and the activation-off/governance gates all run BEFORE the first
+push, transcription, or file download, because content that reaches the buffer
+has already bypassed every later gate. The ephemeral "not authorized" reply is
+deliberately deferred until after the activation checks so observe/mention
+channels are not spammed with rejections, but the SEL `denied` event is emitted
+immediately at the auth check, so the audit trail is complete either way.
+
+Even when recorded, channel context is treated as untrusted: `build_message()`
+passes `context_for()` output through `_neutralize_structural_markers()` so
+other users' text cannot forge a prompt boundary, and each formatted line is
+truncated to 300 chars.
 
 ## Skills (`skills.py`)
 
@@ -358,7 +609,7 @@ Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can 
 - **OFF** (`get_context(budget=None)`): the byte-for-byte legacy full dump — every on-demand skill summarized, unranked and untruncated, under the flat 165k `_CONTEXT_BUDGET_BASE`.
 - **ON** (`get_context(budget)`): `always: true` pinned skills are injected in full, plus a usage-ranked **top-K** of on-demand skills filled up to `budget`. Ranking is by `_rank_key` (`skills.py`) — `(usage_hits, effective_recency)` from the `SkillUsageLedger`, with a recency boost so freshly-added skills escape cold start. The long tail is left discoverable via the `skill_search` tool, the `$skillname` inline token, `cat`, and the per-message trigger auto-loader.
 
-**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the KiroCrew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in `get_triggered_skills` (`_record_use`) and `resolve_dollar_skills` **regardless of the `lazy_load` flag**, so ranking data accrues even while the feature is off. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
+**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in `get_triggered_skills` (`_record_use`) and `resolve_dollar_skills` **regardless of the `lazy_load` flag**, so ranking data accrues even while the feature is off. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
 **`skill_search` MCP tool (`kirocrew-core`):** greps skill name/description then, only on a metadata miss, the skill body (bounded, tool-call only — never per message). Schema in `mcp_core.py`, validated against `SKILL_SEARCH_SCHEMA` (`validation.py`). Does NOT record usage — searching is not using. Scope is **locally installed skills only**.
 
@@ -501,7 +752,7 @@ tool/filter, agent/scope, environment, header, credential, token, and cookie
 fields reject the whole server rather than producing a narrowed definition.
 Remote URLs with any query or fragment are rejected, even when the parameter
 name is not credential-like. Secret values themselves are never returned in
-scan/apply output or written to KiroCrew config. If the destination
+scan/apply output or written to Kiro Crew config. If the destination
 `mcpServers` value already exists but is malformed, import reports a conflict
 and preserves it byte-for-byte. The MCP phase runs outside the dashboard config
 lock because MCP handlers take the MCP file lock before the config lock; this
@@ -517,7 +768,7 @@ may be ignored, but nested `tools.include` or `tools.exclude` is tool scoping an
 rejects the entire server.
 
 MCP import is merge-only. Before writing, collision detection canonicalizes
-server aliases and reserves names from every effective source: the KiroCrew
+server aliases and reserves names from every effective source: the Kiro Crew
 data-home file, Kiro global settings, bundled/project/installed agent config,
 managed servers, and edition-contributed server/scope files. An exact or
 alias-equivalent foreign name is rejected, so a disabled import cannot shadow
@@ -695,7 +946,39 @@ Assembles all sources into prompts:
 - Runtime identity is turn-aware rather than key-only. Channel and dashboard dispatchers pass trusted `runtime_source` metadata to `build_message()`. New sessions use it for `[RUNTIME]`; follow-up turns refresh `[RUNTIME]` outside the one-time session context. This is required because a stable `dashboard:*` session can be resumed from Discord and `messaging.dm_scope="unified"` intentionally removes the originating channel from the session key. When trusted metadata is absent, namespaced keys (`discord:*`, `telegram:*`, `wecom:*`, `weixin:*`, `webex:*`, `teams:*`, `slack:*`) are recognized directly; bare unknown keys keep the legacy Slack fallback.
 - Thread history is injected only at session start (via `build_session_context`). Within the same ACP session, kiro-cli manages conversation history natively — duplicate injection wastes context window and accelerates compaction.
 - `_CRITICAL_RULES` injected for ALL agents (including custom) at session start — ensures diff rendering and OPTIONS buttons work universally
-- Cap: 165k chars max by default (`_CONTEXT_BUDGET_BASE`, single flat pool). With `skills.lazy_load` opt-in (default off), the single flat pool is replaced by independent per-section percentage caps (`_SKILLS_CAP`=15%, `_STEERING_CAP`=10%, `_LESSONS_CAP`=22.6%, `_MEMORY_HISTORY_CAP`=16%, `_SEMANTIC_MEMORY_CAP`/`_EPISODIC_MEMORY_CAP`=7.7% each, …) whose sum (plus a preamble headroom) is `_MAX_CONTEXT_CHARS` (~190k). This per-section budgeting is used only when `lazy_load` is on, so skills/steering can't crowd out memory/lessons (`context.py`).
+- Cap: `_CONTEXT_BUDGET_BASE` = 165,000 chars (~55k tokens). Which ceiling applies depends on `skills.lazy_load`: OFF (the default) uses `caps.base` as one flat shared pool; ON uses `caps.max_context`, the SUM of the independent per-section caps (190,575 chars at the reference window), so skills/steering can never eat into memory/lessons space. Note the per-section caps are computed and passed to every section either way; `lazy_load` changes the *global* ceiling and the skills block's shape (full dump vs usage-ranked top-K), not whether sections have caps.
+
+#### Per-section caps (reference window)
+
+Every value below is `int(165_000 × fraction)`, so the fraction is the source of
+truth and the char count is derived. `_resolve_caps(window)` rescales all of them
+(see the next subsection); the numbers here apply at the 1M reference window.
+
+| Section | Constant | Fraction | Chars | Overflow behavior |
+|---------|----------|----------|-------|-------------------|
+| Thread history, LLM-compressed | `_COMPRESSED_HISTORY_CAP` | 27% | 44,550 | head/tail verbatim around a compressed middle |
+| Lessons | `_LESSONS_CAP` | 22.6% | 37,290 | injects a `[CRITICAL ERROR — LESSONS FILE TOO LARGE]` block instructing the model to tell the user and offer `learn_remove`, logs at ERROR, then appends the truncated lessons with `…[lessons truncated]`. Shown lessons stay in effect; only over-cap content is dropped. |
+| Thread history, truncation fallback | `_HISTORY_BUDGET_CHARS` | 21% | 34,650 | raw truncation when compression is unavailable |
+| Daily history | `_MEMORY_HISTORY_CAP` | 16% | 26,400 | oldest tiers already compressed by the decay walk, then truncated |
+| Skills | `_SKILLS_CAP` | 15% | 24,750 | top-K under `lazy_load`; tail behind `skill_search` |
+| Steering | `_STEERING_CAP` | 10% | 16,500 | truncated with a marker |
+| Semantic memory | `_SEMANTIC_MEMORY_CAP` | 7.7% | 12,705 | lowest-scoring entries omitted |
+| Episodic memory | `_EPISODIC_MEMORY_CAP` | 7.7% | 12,705 | clamped further by `_EPISODIC_INJECT_CAP` (3,000) at the live call site |
+| Projects | `_MEMORY_PROJECTS_CAP` | 3.9% | 6,435 | truncated |
+| Preferences | `_MEMORY_PREFS_CAP` | 2.6% | 4,290 | truncated |
+| Preamble headroom | `_PREAMBLE_HEADROOM` | 3% | 4,950 | fixed rules/identity/workspace/docs/date |
+| Global ceiling (lazy_load ON) | `_MAX_CONTEXT_CHARS` | Σ above | 190,575 | newline-boundary truncation, last resort only |
+
+`_PER_MESSAGE_CAP` = 8,000 is a within-history bound (truncate one oversized
+message on the fallback path), not an additive section, so it is excluded from
+the sum.
+
+Beyond Kiro Crew's own assembly, kiro-cli manages its own context window:
+`_kiro.dev/compaction/status` notifications signal that it summarized older turns,
+and Kiro Crew resets its context-usage accounting at that chokepoint. Separately,
+`SessionManager` trips a circuit breaker after `_CIRCUIT_BREAKER_THRESHOLD` = 5
+consecutive turn FAILURES for a session key and resets the session; that counter
+tracks failures, not compactions.
 
 #### Dynamic budget scaling (per active model context window)
 

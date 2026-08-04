@@ -1,7 +1,5 @@
 # Meetings (builtin app)
 
-Last Updated: 2026-07-30 (initial import — ported from a standalone KiroCrew-family app; see `src/kiro_crew/apps/builtins/meetings/ATTRIBUTION.md`)
-
 An AI meeting assistant. Transcribes a live meeting through KiroCrew's own
 streaming speech-to-text, fans each line out to a small crew of background agents
 (structured notes, an HTML/Mermaid diagram, an action-item list), and gates the

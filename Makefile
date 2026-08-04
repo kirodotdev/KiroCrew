@@ -91,7 +91,7 @@ backend-bin: frontend
 	UNIVERSAL=0 SKIP_FRONTEND=1 SKIP_ELECTRON=1 bash packaging/build-desktop.sh
 
 # Full double-clickable desktop app. macOS: ONE universal DMG (arm64 + x86_64,
-# needs an Apple-Silicon host with Rosetta 2 — see docs/desktop-app.md;
+# needs an Apple-Silicon host with Rosetta 2 — see docs/build/desktop-app.md;
 # UNIVERSAL=0 for a faster host-arch-only build). Linux: AppImage (host arch).
 #
 # build-desktop.sh runs `npm ci` / `npm run build` itself, so it needs node on

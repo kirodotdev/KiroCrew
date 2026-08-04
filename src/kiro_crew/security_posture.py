@@ -32,7 +32,7 @@ Design contract:
   emits credential material, policy/profile rule CONTENTS (the governance
   ceiling the agent is fenced from — see ``handlers/security.py``'s posture-only
   snapshot), or user data. Sensitive-path entries are the *blocklist* itself,
-  which is already documented in ``docs/security-deep-dive.md`` and is not a
+  which is already documented in ``docs/architecture/security-deep-dive.md`` and is not a
   secret: knowing ``~/.aws`` is blocked does not help reach it.
 - **One registry, two readers.** The dashboard renders it; ``test_security_posture``
   pins the derivation so a control that grows without its detail entry fails CI.

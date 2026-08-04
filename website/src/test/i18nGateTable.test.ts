@@ -133,7 +133,7 @@ describe('attribution — rows name the check, they do not decide the run', () =
 })
 
 describe('no base commit — the diff-scoped checks did not run, and are not broken', () => {
-  // `website/AGENTS.md` tells contributors to run this locally, where `I18N_BASE_REF`
+  // `docs/ci/i18n-gates.md` tells contributors to run this locally, where `I18N_BASE_REF`
   // is normally unset, and `resolve-i18n-base.sh` deliberately returns empty on a
   // branch-creation push. Reporting those four as MISSING failed a healthy tree while
   // accusing four working checks of having stopped measuring.

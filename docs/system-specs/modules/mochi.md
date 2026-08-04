@@ -1,8 +1,5 @@
 # Mochi (builtin app)
 
-Last Updated: 2026-08-03 (initial import — ported from a standalone
-KiroCrew-family desktop pet; the autonomous core was rewritten TS→Python).
-
 A desktop pet companion: an always-on-top animated character plus a chat panel,
 a watch list, an appearance gallery, and an autonomous "owner loop" that plans
 moves/moods, checks watched items, and delivers notifications. The pet windows
