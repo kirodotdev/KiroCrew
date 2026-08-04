@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.mcp_discovery import (
     SCOPE_CC_GLOBAL,
     SCOPE_KIRO_GLOBAL,
@@ -750,6 +751,90 @@ class TestCommandsDiverged:
         from kiro_crew.mcp_discovery import _commands_diverged
 
         assert _commands_diverged("old-server", "new-server") is True
+
+    def test_distinct_absolute_paths_sharing_a_basename_diverge(self) -> None:
+        """Two different binaries with the same file name are NOT the same server."""
+        from kiro_crew.mcp_discovery import _commands_diverged
+
+        assert _commands_diverged("/opt/a/bin/srv", "/opt/b/bin/srv") is True
+
+    def test_relative_path_does_not_match_unrelated_rooted_path(self) -> None:
+        """A CWD-relative path names a specific file, not a PATH lookup.
+
+        ``bin/srv`` resolves against the working directory, so it is not the bare
+        name that ``PATH`` lookup turned into ``/usr/bin/srv`` — treating it as
+        one would silently skip syncing a genuinely changed command.
+        """
+        from kiro_crew.mcp_discovery import _commands_diverged
+
+        assert _commands_diverged("bin/srv", "/usr/bin/srv") is True
+        assert _commands_diverged("./srv", "/usr/bin/srv") is True
+        assert _commands_diverged("/usr/bin/srv", "bin/srv") is True
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_WINDOWS,
+        reason="Windows-only: PATHEXT suffixes are only stripped there.",
+    )
+    def test_differing_pathext_suffixes_diverge(self) -> None:
+        """``foo.bat`` and ``foo.cmd`` are different files, not two spellings of one.
+
+        Only the ``shutil.which``-resolved (rooted) side may shed its suffix;
+        folding it off both sides would collapse distinct executables.
+        """
+        from kiro_crew.mcp_discovery import _commands_diverged
+
+        assert _commands_diverged("foo.bat", r"C:\x\foo.cmd") is True
+        assert _commands_diverged("myserver.js", r"C:\x\myserver.exe") is True
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_WINDOWS,
+        reason="Windows-only: PATHEXT suffixing and case/separator-insensitive paths.",
+    )
+    def test_pathext_resolved_command_does_not_diverge(self, monkeypatch) -> None:
+        """A bare name matches the ``shutil.which`` result that carries a PATHEXT suffix.
+
+        ``agent._resolve_command`` resolves ``npx`` to ``...\\npx.CMD`` because
+        ``shutil.which`` spells the extension as ``PATHEXT`` does. Treating that as
+        divergence would re-sync and reset every session on every startup.
+        """
+        from kiro_crew.mcp_discovery import _commands_diverged
+
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        assert _commands_diverged("npx", r"C:\Program Files\nodejs\npx.CMD") is False
+        assert _commands_diverged(r"C:\tools\my-server.exe", "my-server") is False
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_WINDOWS,
+        reason="Windows-only: paths are case-insensitive and accept either separator.",
+    )
+    def test_separator_and_case_variants_do_not_diverge(self) -> None:
+        from kiro_crew.mcp_discovery import _commands_diverged
+
+        assert _commands_diverged(r"C:\tools\srv.exe", "C:/Tools/SRV.exe") is False
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_WINDOWS,
+        reason="Windows-only: a driveless root is not ntpath.isabs but still names a path.",
+    )
+    def test_driveless_rooted_path_matches_bare_name(self) -> None:
+        """A POSIX-shaped ``mcp.json`` copied onto Windows still resolves by basename.
+
+        ``ntpath.isabs('/usr/bin/srv')`` is False (no drive), so a rooted-path check
+        alone would read the whole string as a bare command name.
+        """
+        from kiro_crew.mcp_discovery import _commands_diverged
+
+        assert _commands_diverged("srv", "/usr/bin/srv") is False
+        assert _commands_diverged(r"\tools\srv", "srv") is False
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS,
+        reason="POSIX-only: filenames are case-sensitive there, unlike Windows.",
+    )
+    def test_case_differing_commands_diverge_on_posix(self) -> None:
+        from kiro_crew.mcp_discovery import _commands_diverged
+
+        assert _commands_diverged("Server", "/usr/bin/server") is True
 
 
 class TestSyncToAgentConfig:

@@ -57,6 +57,25 @@ def test_custom_work_dir(self, tmp_path):
     client = AcpClient(work_dir=tmp_path)
 ```
 
+### Links: use the conftest helpers, do not skip on Windows
+
+Creating a symlink on Windows needs `SeCreateSymbolicLinkPrivilege`; an unelevated
+developer shell lacks it and `os.symlink` raises `OSError [WinError 1314]`. A
+**directory junction** needs no privilege and is followed by the same reparse
+machinery — `rglob`, `Path.resolve` and `GetFinalPathNameByHandleW` all traverse
+it identically — so a junction exercises the behaviour under test on the platform
+where these path semantics differ most. Two helpers in `test/conftest.py`:
+
+| Need | Helper |
+|------|--------|
+| A path that reaches OUT of a sandbox root through a link | `make_escaping_link(inside, outside)` |
+| A directory link at a chosen location (`ui/` -> the dev source tree) | `make_dir_link(link, target)` |
+
+Prefer either over a bare `Path.symlink_to` plus a `skipif(sys.platform == "win32")`:
+an unconditional skip drops the whole assertion on Windows. Reach for a skip only
+where the *link kind itself* is the subject (a file symlink's `lstat` mode bits,
+say), and then still pair it with a Windows counterpart.
+
 ### Patch the defining module, not a re-export
 
 `monkeypatch.setattr`/`patch` rebind a NAME in one module namespace. Code

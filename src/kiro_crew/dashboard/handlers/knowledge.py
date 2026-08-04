@@ -11,7 +11,7 @@ import sys
 import tempfile
 import zipfile
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from aiohttp import web
 
@@ -708,6 +708,32 @@ async def add_source(request: web.Request) -> web.Response:
     if not source_type:
         return web.json_response({"error": "source_type required"}, status=400)
 
+    # Refuse UNC ("\\host\share") and Win32 extended-length ("\\?\") prefixes
+    # BEFORE anything filesystem-adjacent runs — connector.validate_config()
+    # can do Path.exists() on the value, and resolving a UNC path on Windows
+    # fires an outbound SMB/DNS lookup to `host` before any sensitive-path
+    # check would reject it. This gate also has to precede the Path.resolve()
+    # below, because resolve() leaves "\\?\" un-normalized so is_sensitive_path
+    # misses a `\\?\C:\Users\me\.ssh\id_rsa` bypass of the credential floor.
+    # Windows accepts either slash flavour AND their mixture as a device-path
+    # prefix — Path("\\/?\\C:\\...") normalizes to the same extended path as
+    # \\?\ — so match on "first two chars are any slash", not literal "\\" /
+    # "//" alone.
+    if (
+        isinstance(uri, str)
+        and len(uri) >= 2
+        and uri[0] in ("\\", "/")
+        and uri[1] in ("\\", "/")
+    ):
+        _sel_log("source.add_denied", reason="unsupported_prefix", uri=uri)
+        return web.json_response(
+            {
+                "error": "UNC and extended-length paths are not supported",
+                "code": "uri_unsupported_prefix",
+            },
+            status=400,
+        )
+
     # Validate via connector if available
     sync_scheduler = request.app.get("knowledge_sync")
     if sync_scheduler:
@@ -734,7 +760,15 @@ async def add_source(request: web.Request) -> web.Response:
         # drive letter (C:\... or C:/...), never "/", so the string test
         # rejected every valid Windows input and made single-file ingest 100%
         # unusable there.
-        if not Path(uri).is_absolute():
+        #
+        # UNC / extended-length prefixes are already refused by the pre-gate
+        # above (before any Path.resolve() call), so we do not re-check them
+        # here — that check has to precede the sandbox guard's own resolve().
+        # is_absolute() is flavour-bound to the RUNNING host, so a Windows drive
+        # path is NOT "absolute" to a POSIX gateway (the documented Windows
+        # browser -> Linux gateway topology). Accept either flavour explicitly so
+        # the answer does not depend on which OS the gateway happens to run.
+        if not (PurePosixPath(uri).is_absolute() or PureWindowsPath(uri).is_absolute()):
             return web.json_response(
                 {"error": "local_file URI must be an absolute path", "code": "uri_not_absolute"},
                 status=400,

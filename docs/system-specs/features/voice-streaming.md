@@ -88,6 +88,29 @@ etc.). To use a specific profile, set `aws_profile` in the config:
 }
 ```
 
+### Sandbox requirement
+
+Both synthesis paths spawn a subprocess (`aws polly synthesize-speech` /
+`piper`), and both route it through `sandbox.wrap_argv(mode="standard")` because
+the argv carries LLM-derived text. `wrap_argv` **fail-closes** where the host
+offers no OS sandbox backend — every Windows host, and Linux without user
+namespaces — so on those hosts synthesis returns `None` until the operator sets
+`agent.sandbox_allow_unsandboxed_exec` in `config.json`.
+
+That refusal arrives as the typed `SandboxUnavailableError` and is caught ahead
+of the generic handler in both `_synthesize_polly` and `_synthesize_piper`. The
+generic handler logs "Polly synthesis error" / "piper synthesis error" with a
+stack trace, which misreads as an AWS-credential or piper-model fault and sends
+the operator to the wrong place.
+
+Both handlers log `exc.kind` plus **`str(exc)`** — the remedy prose the sandbox
+layer selected — and never compose their own remedy text. Only `kind ==
+"no_backend"` names the `agent.sandbox_allow_unsandboxed_exec` opt-in;
+`"transient"` means momentary resource pressure where the caller must *not*
+advise disabling the sandbox, and `"foreign_sandbox"` means this host's sandbox
+works and the fix is a kiro-cli setting. A hardcoded remedy would give the wrong
+instruction for two of the three kinds.
+
 ### API
 
 - `GET /api/voice/config` — returns current settings + `autoSpeak` flag

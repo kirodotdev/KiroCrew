@@ -12,12 +12,10 @@ app-specific fields.
 from __future__ import annotations
 
 import json
-import ntpath
-import posixpath
 import re
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -34,22 +32,58 @@ SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+([+-]|$)")
 RESERVED_APP_NAMES = frozenset({"system"})
 
 
+def _is_rooted_path(rel_path: str) -> bool:
+    """Return True if ``rel_path`` is anything other than a purely relative path.
+
+    App-resource paths are joined onto the app root, so any path carrying a drive
+    or a root anchor can relocate that join and must be refused. ``is_absolute()``
+    is too narrow twice over:
+
+    - It is flavour-bound to the RUNNING host, and ``os.path`` IS ``ntpath`` on
+      Windows, so ``os.path.isabs(x) or ntpath.isabs(x)`` collapses to one
+      Windows-only test there. Windows' flavour does not consider ``/etc/passwd``
+      anchored (no drive), so a POSIX-absolute path passed validation on Windows.
+      The Windows flavour is a strict superset — it reads ``/`` and ``\\`` as a
+      root — so testing it alone covers both syntaxes on either host.
+    - A drive-relative path (``D:evil.py``) has a drive but no root, so
+      ``is_absolute()`` is False, yet joining it onto the app root yields
+      ``D:evil.py`` and escapes. Hence drive-OR-root, not ``is_absolute()``.
+    """
+    win = PureWindowsPath(rel_path)
+    return bool(win.drive or win.root)
+
+
+def _has_dotdot_segment(rel_path: str) -> bool:
+    """Return True if ``rel_path`` contains a ``..`` segment under EITHER flavour.
+
+    Segmenting both ways is load-bearing: a POSIX host reads ``..\\evil`` as one
+    opaque filename, so a POSIX-only split lets a backslash traversal through —
+    and the manifest that declares it is portable data, validated on whichever
+    host happens to install the app. No legitimate resource path has a bare
+    ``..`` segment (``a..b`` and ``notes..md`` are single segments and unaffected).
+    """
+    return ".." in PurePosixPath(rel_path).parts or ".." in PureWindowsPath(rel_path).parts
+
+
 def _path_escapes_app_root(rel_path: str, app_root: Path | None) -> bool:
     """Return True if ``rel_path`` is an unsafe app-resource path.
 
-    Unsafe = absolute (POSIX/Windows/UNC), or — resolved against ``app_root`` —
-    escapes ``app_root`` (canonical containment, matching the runtime checks in
-    ``module_loader`` / ``bridges``). When ``app_root`` is None (pure-format
-    validation / round-trip tests) falls back to a lexical check that rejects
-    absolute paths and any ``..`` path segment.
+    Unsafe = rooted (drive-qualified, POSIX-absolute, or UNC), or containing a
+    ``..`` segment, or — resolved against ``app_root`` — escaping ``app_root``
+    (canonical containment, matching the runtime checks in ``module_loader`` /
+    ``bridges``).
+
+    The lexical checks run BEFORE the canonical one and regardless of whether
+    ``app_root`` is known, so a manifest is judged identically on every host.
+    Deferring them to ``resolve()`` would make the verdict host-dependent: on a
+    POSIX host ``app_root / "..\\evil.py"`` is a single odd filename that stays
+    inside the root and would be accepted, while the same manifest is rejected on
+    Windows. Canonical containment then adds what no lexical check can see — a
+    symlink or reparse point inside the root whose target leaves it.
     """
     if not rel_path:
         return False
-    # Check BOTH flavors explicitly: on Windows ``os.path is ntpath``, so
-    # ``os.path.isabs`` alone would miss POSIX-absolute paths like
-    # ``/etc/passwd`` (ntpath treats a leading "/" as relative), and on POSIX
-    # ``os.path is posixpath`` would miss Windows-drive/UNC paths.
-    if posixpath.isabs(rel_path) or ntpath.isabs(rel_path):
+    if _is_rooted_path(rel_path) or _has_dotdot_segment(rel_path):
         return True
     if app_root is not None:
         try:
@@ -57,7 +91,7 @@ def _path_escapes_app_root(rel_path: str, app_root: Path | None) -> bool:
             return not resolved.is_relative_to(app_root.resolve())
         except (OSError, ValueError):
             return True
-    return ".." in Path(rel_path).parts
+    return False
 
 
 @dataclass

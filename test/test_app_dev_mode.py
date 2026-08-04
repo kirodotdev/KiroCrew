@@ -8,6 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from conftest import make_dir_link
 from kiro_crew.apps.dev_mode import (
     _read_dev_sentinel,
     _reconcile_sentinel_from_installed,
@@ -372,11 +373,18 @@ def test_scan_ui_mtimes_detects_edit_with_older_mtime(tmp_path):
 
 
 def test_scan_ui_mtimes_follows_symlink(tmp_path):
+    """The documented dev setup links ``ui/`` at the developer's source tree.
+
+    ``make_dir_link`` so Windows gets a junction: a directory symlink there needs
+    SeCreateSymbolicLinkPrivilege, which an unelevated shell lacks, and ``rglob``
+    traverses a junction through the same reparse machinery — so the "watch the
+    real source through the link" behaviour stays covered on every platform.
+    """
     real = tmp_path / "real-ui"
     real.mkdir()
     (real / "index.mjs").write_text("x")
     link = tmp_path / "ui"
-    link.symlink_to(real)
+    make_dir_link(link, real)
     count, digest = _scan_ui_mtimes(link)
     assert count == 1
     assert digest != 0
@@ -395,6 +403,15 @@ async def test_watch_loop_broadcasts_reload_on_edit(tmp_path, monkeypatch):
     sentinel read, and _scan_ui_mtimes() all run via asyncio.to_thread, and the
     path must still seed state on first tick (no reload storm) and fire exactly
     on change.
+
+    Progress is measured by counting completed ui/ scans rather than by sleeping a
+    fixed span: one tick is a sentinel stat plus a tree scan, each a separate
+    ``to_thread`` hop, and two hops cost well over the 20ms cadence on a loaded
+    Windows box (~15.6ms timer granularity, measured 25-35ms per tick). A fixed
+    100ms window is therefore not reliably two ticks, and the edit could land
+    before the state the watcher compares against had ever been seeded — the
+    watcher then treats the edited tree as its own first observation and correctly
+    stays silent, so the test failed on a real machine while the product was fine.
     """
     import asyncio
 
@@ -407,14 +424,35 @@ async def test_watch_loop_broadcasts_reload_on_edit(tmp_path, monkeypatch):
     monkeypatch.setattr(dev_mode, "POLL_INTERVAL_SECS", 0.02)
 
     events: list[tuple[str, dict]] = []
+    scans: list[tuple[int, int]] = []
 
     def _capture(event: str, payload: dict) -> None:
         events.append((event, payload))
 
+    real_scan = dev_mode._scan_ui_mtimes
+
+    def _counting_scan(ui_dir):
+        """Delegate to the real scan, recording that a tick completed one."""
+        result = real_scan(ui_dir)
+        scans.append(result)
+        return result
+
+    monkeypatch.setattr(dev_mode, "_scan_ui_mtimes", _counting_scan)
+
+    async def _wait_until(predicate, what: str) -> None:
+        """Poll *predicate* on the loop, generous enough for a loaded host."""
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"timed out waiting for {what}")
+
     task = asyncio.get_running_loop().create_task(dev_mode._watch_loop(_capture))
     try:
-        # Let the loop seed state for a couple ticks — no reload yet.
-        await asyncio.sleep(0.1)
+        # Two scans: the first seeds this app's state, the second compares an
+        # unchanged tree against it. Neither may broadcast.
+        await _wait_until(lambda: len(scans) >= 2, "the watcher to seed ui/ state")
         assert events == [], "seeding must not broadcast a reload"
 
         # Edit a ui/ file with a clearly-newer mtime, then wait for detection.
@@ -423,10 +461,7 @@ async def test_watch_loop_broadcasts_reload_on_edit(tmp_path, monkeypatch):
         import os
         os.utime(ui_file, (time.time() + 5, time.time() + 5))
 
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if events:
-                break
+        await _wait_until(lambda: bool(events), "an app_reload broadcast")
     finally:
         task.cancel()
         # _watch_loop catches CancelledError and returns cleanly, so awaiting

@@ -484,6 +484,7 @@ def test_in_linked_git_worktree_ignores_a_submodule_pointer(tmp_path):
     assert agent._in_linked_git_worktree(binary) is False
 
 
+@_posix_shim_only
 def test_ensure_shim_declines_a_worktree_target(tmp_path, monkeypatch):
     """A venv inside a linked worktree must never become the global launcher."""
     binary = _checkout_with_kirocrew(tmp_path / "wt-feature", linked_worktree=True)
@@ -514,6 +515,7 @@ def test_ensure_shim_declines_a_symlink_pointing_into_a_worktree(tmp_path, monke
     assert not (bin_dir / "kirocrew").exists()
 
 
+@_posix_shim_only
 def test_ensure_shim_declines_a_bare_repo_worktree_target(tmp_path, monkeypatch):
     """Same refusal for a worktree of a bare repo — the shape that bypassed the
     first version of this guard."""

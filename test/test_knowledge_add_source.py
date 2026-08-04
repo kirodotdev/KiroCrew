@@ -69,6 +69,33 @@ class TestAddSourceLocalFile:
             assert data["code"] == "uri_not_absolute"
 
     @pytest.mark.asyncio
+    async def test_rejects_extended_length_and_unc_prefixes(self, store):
+        r"""``\\?\C:\...`` survives Path.resolve() un-normalized, so
+        is_sensitive_path() does NOT match it against the credential paths that
+        the plain ``C:\...`` form hits — admitting one would route around the
+        sensitive-path floor and let ``.ssh/id_rsa`` be ingested. Neither the
+        extended-length nor the UNC prefix is something the file picker
+        produces, so both are refused before the absoluteness gate."""
+        blocked = [
+            "\\\\?\\C:\\Users\\me\\.ssh\\id_rsa",  # Win32 extended-length
+            "\\\\localhost\\C$\\Users\\me\\.aws\\credentials",  # UNC
+            "//localhost/C$/Users/me/.aws/credentials",  # UNC, forward slashes
+            # Windows accepts mixed slash flavours as a device-path prefix, so
+            # the check has to match "first two chars are any slash", not
+            # literal "\\" / "//":
+            "\\/?\\C:\\Users\\me\\.ssh\\id_rsa",  # mixed \/
+            "/\\?\\C:\\Users\\me\\.ssh\\id_rsa",  # mixed /\
+        ]
+        async with TestClient(TestServer(_make_app(store))) as client:
+            for uri in blocked:
+                resp = await client.post("/api/knowledge/sources", json={
+                    "name": "x", "source_type": "local_file", "uri": uri
+                })
+                assert resp.status == 400, (uri, resp.status)
+                data = await resp.json()
+                assert data["code"] == "uri_unsupported_prefix", (uri, data)
+
+    @pytest.mark.asyncio
     async def test_accepts_windows_drive_path(self, store, tmp_path):
         # The absoluteness gate must use Path.is_absolute(), not a leading-"/"
         # test — a Windows absolute path (C:\...) never starts with "/", so the

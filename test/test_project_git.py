@@ -23,6 +23,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import kiro_crew.dashboard.handlers.files as files_mod
 from kiro_crew.dashboard.handlers import api_project_git
 from kiro_crew.dashboard.handlers.files import (
+    _GIT_ROOT_WALK_LIMIT,
     _HEAD_READ_LIMIT,
     _git_head_path,
     _known_project_dirs,
@@ -266,8 +267,16 @@ class TestProjectGitBranchResolver:
         assert "branch" not in info
 
     def test_walk_up_is_depth_bounded(self, repo):
-        """A path nested past the ceiling is not walked all the way to the root."""
-        deep = repo.joinpath(*[f"d{i}" for i in range(45)])
+        """A path nested past the ceiling is not walked all the way to the root.
+
+        Segments are one character and the depth is derived from the limit rather
+        than a padded literal, because the whole tree has to fit inside Windows'
+        260-character MAX_PATH: multi-character names at a hardcoded depth of 45
+        pushed the leaf to 272 characters under pytest's tmp dir and ``mkdir``
+        failed with WinError 206 before the assertion was ever reached.
+        """
+        depth = _GIT_ROOT_WALK_LIMIT + 5
+        deep = repo.joinpath(*["d"] * depth)
         deep.mkdir(parents=True)
         info = _project_git_branch(os.path.realpath(str(deep)))
         assert info == {"repo": False}

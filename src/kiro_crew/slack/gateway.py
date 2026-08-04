@@ -1835,12 +1835,8 @@ class GatewayOrchestrator:
                     return None
                 except Exception as exc:
                     logger.exception("Command cron '%s' failed: %s", job.name, exc)
-                    # Store the full message (matching the script-cron sibling
-                    # below): the 200-char cap chopped the SandboxUnavailableError
-                    # mid-word, discarding the one sentence naming the fix, so a
-                    # Windows user saw "…Probe detail: not Linux. I" and no remedy.
                     err_str = redact(str(exc))
-                    job.last_error = err_str
+                    job.last_error = err_str[:200]
                     job.last_status = "error"
                     job.record_failure()
                     try:

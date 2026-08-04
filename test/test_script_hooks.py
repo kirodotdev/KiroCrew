@@ -5,6 +5,7 @@ from __future__ import annotations
 import platform
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -18,6 +19,26 @@ from kiro_crew.hooks import (
 )
 
 _IS_MACOS = platform.system() == "Darwin"
+_IS_WINDOWS = platform.system() == "Windows"
+
+# Reading an env var is the one hook-command shape that is inherently
+# shell-specific: POSIX sh expands ``$VAR``, cmd.exe expands ``%VAR%`` and
+# leaves ``$VAR`` as a literal.
+_ECHO_HOOK_EVENT = "echo %KIROCREW_HOOK_EVENT%" if _IS_WINDOWS else "echo $KIROCREW_HOOK_EVENT"
+
+
+def _script_command(script: Path, body: str) -> str:
+    """Write *body* to *script* and return a hook command that runs it.
+
+    A quoted interpreter plus a quoted script path is the one command shape both
+    ``/bin/sh -c`` and ``cmd /c`` parse identically — an inline ``python -c
+    '…'`` cannot be, because cmd.exe gives single quotes no grouping meaning.
+    It is also the shape a real Windows hook takes (``sys.executable`` usually
+    lives under a path containing a space), so the quotes must survive to the
+    shell verbatim rather than being argv-escaped on the way.
+    """
+    script.write_text(body, encoding="utf-8")
+    return f'"{sys.executable}" "{script}"'
 
 
 @pytest.fixture
@@ -245,18 +266,22 @@ class TestRunScriptHook:
 
     @pytest.mark.skipif(_IS_MACOS, reason="Flaky stdin piping through macOS sandbox")
     @pytest.mark.asyncio
-    async def test_stdin_json(self):
+    async def test_stdin_json(self, tmp_path: Path):
         """Hook receives JSON via stdin."""
+        command = _script_command(
+            tmp_path / "stdin_hook.py",
+            'import sys, json; print(json.load(sys.stdin)["hook_event_name"])\n',
+        )
         hook = ScriptHook(
             id="test-5",
             name="stdin",
             event=HOOK_EVENT_USER_PROMPT_SUBMIT,
-            command=f"{sys.executable} -c 'import sys, json; print(json.load(sys.stdin)[\"hook_event_name\"])'",
+            command=command,
             timeout=30,
             enabled=True,
         )
         result = await run_script_hook(hook, "test-context")
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.stderr
         assert HOOK_EVENT_USER_PROMPT_SUBMIT in result.stdout
 
     @pytest.mark.asyncio
@@ -266,7 +291,7 @@ class TestRunScriptHook:
             id="test-6",
             name="env",
             event=HOOK_EVENT_USER_PROMPT_SUBMIT,
-            command="echo $KIROCREW_HOOK_EVENT",
+            command=_ECHO_HOOK_EVENT,
             timeout=30,
             enabled=True,
         )
@@ -408,13 +433,17 @@ class TestScriptHookStoreFire:
 
     @pytest.mark.skipif(_IS_MACOS, reason="Flaky stdin piping through macOS sandbox")
     @pytest.mark.asyncio
-    async def test_fire_with_tool_input(self, hook_store: ScriptHookStore):
+    async def test_fire_with_tool_input(self, hook_store: ScriptHookStore, tmp_path: Path):
         """Tool input passed to hook via stdin."""
+        command = _script_command(
+            tmp_path / "tool_input_hook.py",
+            'import sys, json; print(json.load(sys.stdin).get("tool_input", {}).get("test_key"))\n',
+        )
         hook_store.create(
             {
                 "name": "input-hook",
                 "event": HOOK_EVENT_PRE_TOOL_USE,
-                "command": f'{sys.executable} -c \'import sys, json; print(json.load(sys.stdin).get("tool_input", {{}}).get("test_key"))\'',
+                "command": command,
                 "timeout": 30,
             }
         )
@@ -425,7 +454,7 @@ class TestScriptHookStoreFire:
             tool_input={"test_key": "test_value"},
         )
         assert len(results) == 1
-        assert "test_value" in results[0].stdout
+        assert "test_value" in results[0].stdout, results[0].stderr
 
     @pytest.mark.asyncio
     async def test_fire_no_hooks(self, hook_store: ScriptHookStore):
@@ -448,3 +477,120 @@ class TestScriptHookStoreFire:
         assert len(results) == 1
         assert results[0].succeeded
         assert "caveman" in results[0].stdout
+
+
+class TestRunScriptHookSpawnForm:
+    """The spawn form per platform, and the guard that keeps isolation ahead of it.
+
+    ``run_script_hook`` hands the command to the platform's shell two different
+    ways, and each way carries an invariant these tests pin. Both run on every
+    platform: the assertion is about which spawn the code CHOOSES, not about
+    running a shell, so a POSIX CI still catches a regression in the Windows
+    branch (and vice versa).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _passthrough_sandbox(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+        monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+
+    @staticmethod
+    def _hook(command: str) -> ScriptHook:
+        return ScriptHook(
+            id="spawn-form",
+            name="spawn-form",
+            event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+            command=command,
+            timeout=30,
+            enabled=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_command_reaches_the_shell_verbatim(self, monkeypatch):
+        """The operator's quotes must survive to the shell unescaped.
+
+        On Windows an argv spawn of ``["cmd", "/c", command]`` would route the
+        line through ``subprocess.list2cmdline``, which backslash-escapes every
+        quote — so a quoted interpreter path (unavoidable when it contains a
+        space) would reach cmd.exe as a backslash-escaped ``\\"C:\\...\\"`` and
+        fail. Whichever spawn this platform picks, the command string itself must
+        be passed through untouched.
+        """
+        command = r'"C:\Program Files\Py\python.exe" -c "print(1)"'
+        seen: dict[str, object] = {}
+
+        fake_proc = MagicMock()
+        fake_proc.communicate = AsyncMock(return_value=(b"", b""))
+        fake_proc.returncode = 0
+
+        async def fake_shell(cmd, **kwargs):
+            seen["shell_cmd"] = cmd
+            return fake_proc
+
+        async def fake_exec(*argv, **kwargs):
+            seen["argv"] = list(argv)
+            return fake_proc
+
+        # THREE layers can prepend to the argv before it reaches a real spawn:
+        # wrap_argv (OS sandbox), cgroup_scope_argv (cgroup v2), and
+        # create_subprocess_limited's own RLIMIT shim. Capturing at
+        # create_subprocess_limited — the boundary hooks.py actually calls — sees
+        # the argv hooks.py BUILT, independent of which of the three a host
+        # offers. Patching asyncio.create_subprocess_exec instead made the
+        # assertion host-dependent: green where no backend exists (Windows, this
+        # box) and red on the namespace-sandbox job, which has all three.
+        monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+        monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+        monkeypatch.setattr("kiro_crew.sandbox.create_subprocess_limited", fake_exec)
+        monkeypatch.setattr("asyncio.create_subprocess_shell", fake_shell)
+        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+        await run_script_hook(self._hook(command), "ctx")
+
+        if _IS_WINDOWS:
+            # No argv, hence no list2cmdline, hence no quote mangling.
+            assert seen.get("shell_cmd") == command
+            assert "argv" not in seen
+        else:
+            assert seen["argv"] == ["/bin/sh", "-c", command]
+
+    @pytest.mark.asyncio
+    async def test_a_wrapping_sandbox_wins_over_the_shell_spawn(self, monkeypatch):
+        """A wrapper that prepends argv must own the spawn, quoting notwithstanding.
+
+        The Windows shell spawn is deliberately guarded on ``wrap_argv`` +
+        ``cgroup_scope_argv`` having been no-ops. Should an isolation backend ever
+        prepend anything on Windows, the shell form would silently drop that
+        wrapper — so the code must fall back to the argv path instead.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.sandbox.wrap_argv", lambda argv, **k: (["sandbox-exec", *argv], None)
+        )
+        # cgroup_scope_argv runs AFTER wrap_argv and prepends its own launcher on
+        # a cgroup-v2 host, which would displace "sandbox-exec" from argv[0]. Pin
+        # it to a no-op so the assertion names the wrapper this test installed.
+        monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+        seen: dict[str, object] = {}
+
+        fake_proc = MagicMock()
+        fake_proc.communicate = AsyncMock(return_value=(b"", b""))
+        fake_proc.returncode = 0
+
+        async def fake_shell(cmd, **kwargs):
+            seen["shell_cmd"] = cmd
+            return fake_proc
+
+        async def fake_exec(*argv, **kwargs):
+            seen["argv"] = list(argv)
+            return fake_proc
+
+        # Capture at create_subprocess_limited so its RLIMIT shim cannot displace
+        # "sandbox-exec" from argv[0] (see the sibling test above).
+        monkeypatch.setattr("kiro_crew.sandbox.create_subprocess_limited", fake_exec)
+        monkeypatch.setattr("asyncio.create_subprocess_shell", fake_shell)
+        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+        await run_script_hook(self._hook("echo hi"), "ctx")
+
+        assert "shell_cmd" not in seen, "a wrapped argv must not be discarded for a shell spawn"
+        assert seen["argv"][0] == "sandbox-exec"

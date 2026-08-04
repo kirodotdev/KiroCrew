@@ -79,10 +79,20 @@ class TestCronNonBlocking:
         svc = CronService(base_dir=tmp_path, on_job=callback)
         await svc.start()
         svc.add_job("test", "msg", every_secs=60)
+        job_id = svc._jobs[0].id
         svc._jobs[0].last_run_ts = time.time() - 120
 
         await svc._on_timer()
-        await _wait_for(lambda: svc._jobs[0].last_status == "ok")
+        # Await the job task itself rather than polling for the in-memory
+        # last_status. _execute sets last_status BEFORE _run_job_isolated's
+        # finally block offloads _merge_job_result to a worker thread, so a
+        # predicate on last_status can go true while crons.json still holds the
+        # pre-run state — the disk assertion below would then read a store that
+        # was never written. The task completes only after that offloaded merge
+        # returns, making it the one signal that actually implies the write.
+        task = svc._running_tasks[job_id]
+        await task
+        assert svc._jobs[0].last_status == "ok"
 
         # Reload from disk and verify
         svc2 = CronService(base_dir=tmp_path)

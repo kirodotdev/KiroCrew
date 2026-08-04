@@ -4917,12 +4917,15 @@ def test_register_skills_creates_symlinks_for_bundled_skills(tmp_path, monkeypat
     # The stale bundled copy must stay deleted — the shipped catalog owns it.
     assert not (app_root / "skills" / "kirocrew-worktree-dev").exists()
 
+    # is_link_or_junction, not is_symlink: registration links with a directory junction
+    # on Windows (an unprivileged account holds no SeCreateSymbolicLinkPrivilege)
+    # and a junction reports is_symlink() False.
     for skill_name in expected_skills:
         link = namespaced_dir / skill_name
-        assert link.is_symlink(), f"Namespaced link missing: {link}"
+        assert platform_compat.is_link_or_junction(link), f"Namespaced link missing: {link}"
         assert link.resolve().is_dir()
         flat = skills_dir / skill_name
-        assert flat.is_symlink(), f"Flat link missing: {flat}"
+        assert platform_compat.is_link_or_junction(flat), f"Flat link missing: {flat}"
         assert flat.resolve().is_dir()
 
 

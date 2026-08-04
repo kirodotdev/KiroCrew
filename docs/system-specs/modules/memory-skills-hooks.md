@@ -866,6 +866,12 @@ Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kir
 
 **On-demand discovery** (dashboard): same `discover_servers_to_sync()` + `sync_to_agent_config()` triggered by "Discover & Sync" button.
 
+**Command divergence** (`_commands_diverged`): an existing server is only re-synced when its `mcp.json` command differs from the one recorded in the agent config. The two legitimately differ in spelling because `agent._resolve_command` stores the `shutil.which` result while `mcp.json` keeps the bare name, so the comparison folds path resolution:
+
+- A basename match is only accepted when one side is a **rooted path** and the other a **bare name** (no separator), since PATH lookup is what produced the rooted form. Two distinct rooted paths sharing a basename (`/opt/a/srv` vs `/opt/b/srv`) and a CWD-relative path (`bin/srv` vs `/usr/bin/srv`) each name a specific different file, so both stay divergent.
+- On Windows the keys are `normcase`+`normpath` folded (paths are case-insensitive and accept either separator), and a trailing `PATHEXT` suffix is stripped from the **rooted side only** — `shutil.which("npx")` returns `...\npx.CMD`, which would otherwise read as divergent from `npx` on every cycle and re-sync + reset every session at each startup. Stripping both sides would wrongly collapse distinct executables (`foo.bat` vs `foo.cmd`).
+- A leading separator with no drive letter (`/usr/bin/srv`) counts as rooted on Windows even though `ntpath.isabs` rejects it, so an `mcp.json` authored on macOS/Linux is read identically on every host.
+
 **Probing**: spawns each MCP server, sends JSON-RPC `initialize` + `tools/list` handshake, reports status + tool names. 30-second timeout, 1MB stdout buffer (an MCP server's responses exceed the default 64KB). Cleanup via `finally` block (no zombie processes). Results cached in `handlers.py` with 10-min TTL; GET `/api/mcp/probe` returns cached results non-blocking, POST `/api/mcp/probe` forces a fresh probe and updates cache.
 
 **Enable/Disable**: `POST /api/mcp/toggle` adds/removes `@name` from `tools` and `allowedTools` arrays in installed config (`~/.kiro/agents/kirocrew.json`). Does NOT modify `agents/defaults.json`. Disabled servers stay in `mcpServers` but kiro-cli won't load their tools.
@@ -1030,6 +1036,40 @@ Hook evaluation order: deny overrides approve; auto-reply → transform → cont
 Foreign-agent hooks are never imported. Hook scripts, hook commands, matchers,
 and hook runtime state are unsupported items: scan/apply may report their
 presence, but must not copy or register them.
+
+### Script hooks (`ScriptHook`, `run_script_hook`) — the shell per platform
+
+A script hook's `command` is a single shell command line stored in
+`~/.kiro/crew/hooks.json`. It runs in that platform's native shell language, and
+a hook is therefore **not portable across platforms**:
+
+| | Shell | Env var in a command | Quote grouping |
+|---|---|---|---|
+| POSIX | `/bin/sh -c <command>` | `$KIROCREW_HOOK_EVENT` | `'…'` and `"…"` |
+| Windows | `%ComSpec% /c "<command>"` | `%KIROCREW_HOOK_EVENT%` | `"…"` only (cmd.exe gives `'` no meaning) |
+
+Both platforms receive the same `KIROCREW_HOOK_EVENT` / `KIROCREW_HOOK_CONTEXT`
+env vars and the same hook-event JSON on stdin.
+
+**Windows spawns through `asyncio.create_subprocess_shell`, not an argv.** cmd.exe
+must receive the operator's command line verbatim: an argv spawn of
+`["cmd", "/c", command]` routes it through `subprocess.list2cmdline`, which
+backslash-escapes every quote the operator wrote, so an ordinary
+`"C:\Program Files\Python\python.exe" -c "print(1)"` reaches cmd.exe as
+`\"C:\Program Files\…\"` and fails with *"is not recognized as an internal or
+external command"*. `create_subprocess_shell` formats `%ComSpec% /c "<command>"`
+with no argv escaping — the same parse the operator gets typing the line at a
+prompt, and the only form under which both `%VAR%` and a literal `%` behave as
+written. The shell spawn is guarded on `wrap_argv` + `cgroup_scope_argv` having
+been no-ops; if a wrapper ever prepends anything the code falls back to the argv
+path, choosing isolation over quoting fidelity.
+
+On Windows both wrappers are pass-throughs whenever they return at all — there is
+no sandbox backend and no cgroup v2 — but `wrap_argv` **fail-closes** rather than
+passing through unless `agent.sandbox_allow_unsandboxed_exec` is set, so a
+Windows script hook needs that opt-in (the same one script crons and Papyrus
+need). Without it the hook's `SandboxUnavailableError` surfaces as the result's
+`error`, naming the setting.
 
 ### `safe_read_file(path: str) -> str`
 
