@@ -4978,6 +4978,7 @@
         "recovered_continuing": "recovered · continuing",
         "resuming_the_interrupted_turn": "resuming the interrupted turn",
         "safety_policy_continuing": "safety policy · continuing automatically",
+        "session_busy_continuing": "session busy · continuing automatically",
         "tool_call_blocked": "Tool call blocked",
         "tool_stopped_responding": "Tool stopped responding",
         "turn_interrupted": "Turn interrupted",

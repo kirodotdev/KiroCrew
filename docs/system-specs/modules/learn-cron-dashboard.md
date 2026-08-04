@@ -1092,6 +1092,29 @@ the chain). Scope is the two reason-bearing gates above; pre-tool-use hook
 `BLOCKED:` results are not yet wired for recovery (consistent treatment across
 all three hook branches is a follow-up).
 
+### Reset-and-Requeue Recovery
+
+A reset-and-requeue path must not replay a turn that already emitted assistant
+output or dispatched a tool. `chat_utils.build_recovery_requeue()` returns the
+original request only before any output; otherwise it returns a continuation that
+tells the model to resume from restored conversation state without repeating
+completed work.
+
+That decision does not depend on why the session was reset, but the continuation
+does. The helper takes a required `ResetCause` — `CONNECTION_LOST` or
+`SESSION_BUSY` — and returns the continuation for that cause, because the marker
+it carries is what the transcript renders: a session that was merely busy must
+not be reported to the user as a lost connection. The enum has no default, so a
+reset site added later cannot inherit another cause's label by omission.
+
+Every automatic requeue retains `kind="synthetic_recovery"`. Queue consumers use
+that structural provenance—not message text—to prevent merging with user input,
+continue draining while user turns are held, preserve the pending session-reset
+notice, and render the dequeued row as an `inject`. This keeps a user who happens
+to type the same marker ordinary user input. Each continuation starts with its own
+marker (`CONN_RECOVERY_PREFIX`, `BUSY_RECOVERY_PREFIX`), is folded by the frontend
+`RecoveryCard`, and is not mirrored to a linked messaging surface as user speech.
+
 ### Design
 
 - OpenClaw-inspired: Space Grotesk + JetBrains Mono, dark/light theme with amber accent

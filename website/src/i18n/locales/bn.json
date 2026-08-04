@@ -7060,6 +7060,7 @@
         "recovered_continuing": "পুনরুদ্ধার হয়েছে · চলছে",
         "resuming_the_interrupted_turn": "বিঘ্নিত পালা আবার শুরু হচ্ছে",
         "safety_policy_continuing": "নিরাপত্তা নীতি · স্বয়ংক্রিয়ভাবে চলছে",
+        "session_busy_continuing": "সেশন ব্যস্ত · স্বয়ংক্রিয়ভাবে চলছে",
         "tool_call_blocked": "টুল কল ব্লক করা হয়েছে",
         "tool_stopped_responding": "টুল সাড়া দেওয়া বন্ধ করেছে",
         "turn_interrupted": "টার্ন বাধাগ্রস্ত হয়েছে",

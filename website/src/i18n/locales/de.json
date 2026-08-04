@@ -7060,6 +7060,7 @@
         "recovered_continuing": "wiederhergestellt · wird fortgesetzt",
         "resuming_the_interrupted_turn": "unterbrochener Durchlauf wird fortgesetzt",
         "safety_policy_continuing": "Sicherheitsrichtlinie · wird automatisch fortgesetzt",
+        "session_busy_continuing": "Sitzung belegt · wird automatisch fortgesetzt",
         "tool_call_blocked": "Werkzeugaufruf blockiert",
         "tool_stopped_responding": "Werkzeug antwortet nicht mehr",
         "turn_interrupted": "Zug unterbrochen",

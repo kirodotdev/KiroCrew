@@ -7158,6 +7158,7 @@
         "recovered_continuing": "ripristinato · continua",
         "resuming_the_interrupted_turn": "ripresa del turno interrotto",
         "safety_policy_continuing": "policy di sicurezza · continua automaticamente",
+        "session_busy_continuing": "sessione occupata · continua automaticamente",
         "tool_call_blocked": "Chiamata allo strumento bloccata",
         "tool_stopped_responding": "Lo strumento ha smesso di rispondere",
         "turn_interrupted": "Turno interrotto",

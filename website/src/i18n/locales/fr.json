@@ -7158,6 +7158,7 @@
         "recovered_continuing": "récupéré · poursuite",
         "resuming_the_interrupted_turn": "reprise du tour interrompu",
         "safety_policy_continuing": "politique de sécurité · poursuite automatique",
+        "session_busy_continuing": "session occupée · poursuite automatique",
         "tool_call_blocked": "Appel d'outil bloqué",
         "tool_stopped_responding": "L'outil ne répond plus",
         "turn_interrupted": "Tour interrompu",

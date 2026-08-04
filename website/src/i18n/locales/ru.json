@@ -7256,6 +7256,7 @@
         "recovered_continuing": "восстановлено · продолжение",
         "resuming_the_interrupted_turn": "продолжаем прерванный ход",
         "safety_policy_continuing": "политика безопасности · продолжение автоматически",
+        "session_busy_continuing": "сеанс занят · продолжение автоматически",
         "tool_call_blocked": "Вызов инструмента заблокирован",
         "tool_stopped_responding": "Инструмент перестал отвечать",
         "turn_interrupted": "Ход прерван",

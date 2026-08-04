@@ -7060,6 +7060,7 @@
         "recovered_continuing": "पुनर्प्राप्त · जारी",
         "resuming_the_interrupted_turn": "बाधित बारी फिर से शुरू हो रही है",
         "safety_policy_continuing": "सुरक्षा नीति · स्वतः जारी",
+        "session_busy_continuing": "सत्र व्यस्त · स्वचालित रूप से जारी",
         "tool_call_blocked": "टूल कॉल अवरुद्ध",
         "tool_stopped_responding": "टूल ने प्रतिक्रिया देना बंद कर दिया",
         "turn_interrupted": "टर्न बाधित हुआ",

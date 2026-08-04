@@ -6968,6 +6968,7 @@
         "recovered_continuing": "復旧済み · 続行中",
         "resuming_the_interrupted_turn": "中断したターンを再開中",
         "safety_policy_continuing": "安全ポリシー · 自動で続行中",
+        "session_busy_continuing": "セッション使用中 · 自動的に続行中",
         "tool_call_blocked": "ツール呼び出しがブロックされました",
         "tool_stopped_responding": "ツールが応答しなくなりました",
         "turn_interrupted": "ターンが中断されました",

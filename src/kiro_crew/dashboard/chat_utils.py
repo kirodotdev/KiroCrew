@@ -13,12 +13,15 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
+from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMEvent
 
 from kiro_crew.dashboard.state import (
+    BUSY_RECOVERY_PREFIX,
+    CONN_RECOVERY_PREFIX,
     CRON_NOTIFY_PREFIX,
     EMPTY_RESPONSE_RECOVERY_PREFIX,
     MANUAL_RESUME_RECOVERY_PREFIX,
@@ -722,15 +725,34 @@ def _edit_queued_by_id(messages: list[dict], queue_id: str, content: str) -> boo
 # Runner-injected synthetic recovery instructions (defined here — the shared
 # utils layer — so BOTH the runner's turn logic and the queue/merge predicates
 # below classify them from one source of truth; chat_runner re-exports them).
-# The post-transient CONTINUE resumes an interrupted turn; the empty-response
-# nudge breaks the repeated-empty-generation pattern. Both are orchestration,
-# not user speech.
+# The connection-loss and post-transient continuations resume interrupted turns;
+# the empty-response nudge breaks the repeated-empty-generation pattern. All are
+# orchestration, not user speech.
 #
-# Each carries a bracketed marker line, matching the three recovery prefixes in
+# Each carries a bracketed marker line, matching the recovery prefixes in
 # state.py. The marker is what the dashboard matches to fold the row into a
 # one-line RecoveryCard instead of printing the machine-facing prose as a
 # full-width bubble; it also labels the injection for the model, which reads
 # these the same way it reads the refusal/stall continuations.
+_CONN_RECOVER_MSG = (
+    f"{CONN_RECOVERY_PREFIX}\n"
+    "Your previous turn was interrupted by a lost backend connection and has "
+    "been automatically recovered. This was NOT a user action — do not treat "
+    "it as a cancellation or interruption by the user. The work already done "
+    "above is preserved in the conversation. Continue from where it stopped "
+    "and finish the request — do not restart it or repeat steps or tools that "
+    "already completed successfully."
+)
+_BUSY_RECOVER_MSG = (
+    f"{BUSY_RECOVERY_PREFIX}\n"
+    "Your previous turn was interrupted because the backend session was still "
+    "busy, so the session was reset and the turn automatically recovered. This "
+    "was NOT a user action — do not treat it as a cancellation or interruption "
+    "by the user. The work already done above is preserved in the "
+    "conversation. Continue from where it stopped and finish the request — do "
+    "not restart it or repeat steps or tools that already completed "
+    "successfully."
+)
 _POSTTOKEN_RECOVER_MSG = (
     f"{POSTTOKEN_RECOVERY_PREFIX}\n"
     "The previous response was interrupted partway through by a transient "
@@ -746,7 +768,12 @@ _EMPTY_AUTO_CONTINUE_MSG = (
     "conversation above and respond now — do NOT restart from scratch and do "
     "NOT re-run steps or tools that already completed successfully."
 )
-_SYNTHETIC_RECOVERY_MSGS = (_POSTTOKEN_RECOVER_MSG, _EMPTY_AUTO_CONTINUE_MSG)
+_SYNTHETIC_RECOVERY_MSGS = (
+    _CONN_RECOVER_MSG,
+    _BUSY_RECOVER_MSG,
+    _POSTTOKEN_RECOVER_MSG,
+    _EMPTY_AUTO_CONTINUE_MSG,
+)
 # Injected when the USER presses Continue on an interrupted turn. Worded to be
 # TRUE in both interruption shapes, which is why the endpoint needs no branch:
 # a turn that streamed partway and one that produced nothing at all read this
@@ -786,6 +813,56 @@ _MANUAL_CONTINUE_MSG = (
 )
 
 
+class ResetCause(str, Enum):
+    """Why a turn's session had to be reset, which selects the continuation the
+    requeue carries — and so the row the transcript renders.
+
+    A closed set rather than a boolean or a caller-supplied string: every reset
+    site must state its cause, and a site added later cannot silently inherit
+    another cause's user-facing label.
+
+    ``str`` mixin (not ``StrEnum``) for Py3.10 compat, matching ``KindSupport``.
+    """
+
+    CONNECTION_LOST = "connection_lost"
+    SESSION_BUSY = "session_busy"
+
+
+#: The continuation each cause resumes with once the turn has emitted output.
+_CONTINUATION_BY_CAUSE = {
+    ResetCause.CONNECTION_LOST: _CONN_RECOVER_MSG,
+    ResetCause.SESSION_BUSY: _BUSY_RECOVER_MSG,
+}
+
+
+def build_recovery_requeue(
+    message: str, turn_emitted: bool, cause: ResetCause, *, message_is_synthetic: bool
+) -> tuple[str, RecoveryPayload]:
+    """Choose the prompt for a reset-and-requeue recovery, and label its provenance.
+
+    Once output or a tool call has been emitted, replaying the original request
+    can repeat side effects. A continuation instead resumes from restored
+    conversation state. Before any output, the original request is safe and is
+    still required for the model to begin the work.
+
+    That decision is the same for every cause, but the continuation is not:
+    ``cause`` is required because the marker it carries is what the transcript
+    renders, and a session that was merely busy must not be reported as a lost
+    connection.
+
+    The text and its label are returned together because choosing them apart is how
+    they drifted. Replaying ``message`` unchanged only means "the user's own words"
+    when this turn was not itself a recovery: a second consecutive failure before any
+    output re-queues the runner's previous continuation, so ``turn_emitted`` alone
+    cannot say whose words these are. ``message_is_synthetic`` carries that from the
+    queue entry that produced the turn, and is required for the same reason ``cause``
+    is — a requeue site added later must not silently inherit "the user said this".
+    """
+    if turn_emitted:
+        return _CONTINUATION_BY_CAUSE[cause], RecoveryPayload.CONTINUATION
+    return message, payload_for_replay(message_is_synthetic)
+
+
 def is_system_injection(content: str) -> bool:
     """True when a queued message is a system injection (sub-agent completion
     or cron notification) rather than a plain user message.
@@ -817,6 +894,48 @@ def is_synthetic_recovery_item(item: dict) -> bool:
     transcript-visible recovery text verbatim (which must classify as a plain
     user message)."""
     return item.get("kind") == SYNTHETIC_RECOVERY_KIND
+
+
+class RecoveryPayload(str, Enum):
+    """Whether a recovery entry's TEXT is runner-authored or the user's own words.
+
+    ``build_recovery_requeue`` already draws this line — a continuation once the
+    turn emitted output, the original request before that — but both re-queue
+    under ``SYNTHETIC_RECOVERY_KIND``, because both must render as an inject row
+    rather than a second user bubble. The kind therefore cannot also answer
+    whether the text may be mirrored to a linked thread as user speech.
+
+    ``str`` mixin (not ``StrEnum``) for Py3.10 compat, matching ``ResetCause``.
+    """
+
+    CONTINUATION = "continuation"
+    ORIGINAL = "original"
+
+
+def payload_for_replay(message_is_synthetic: bool) -> RecoveryPayload:
+    """The payload tag for a requeue that replays the incoming ``message`` verbatim.
+
+    Asks the only question such a site has: were these the user's words, or the
+    runner's? Branching on ``turn_emitted`` instead was wrong — a recovery turn that
+    dies before emitting replays the runner's own continuation, and labelling that
+    ORIGINAL mirrors internal orchestration to a linked thread as user speech.
+    """
+    return RecoveryPayload.CONTINUATION if message_is_synthetic else RecoveryPayload.ORIGINAL
+
+
+def is_synthetic_payload_item(item: dict) -> bool:
+    """True when a queue ENTRY's text was written by the runner, not the user.
+
+    Separate question from :func:`is_synthetic_recovery_item`, which answers where
+    the entry came from. An untagged entry falls back to the kind because the two
+    errors are not symmetric: mirroring runner text as if the user typed it
+    misattributes machine orchestration, while suppressing a mirror only loses an
+    echo of something the user can already see.
+    """
+    payload = item.get("payload")
+    if payload:
+        return payload == RecoveryPayload.CONTINUATION
+    return is_synthetic_recovery_item(item)
 
 
 def is_system_injection_item(item: dict) -> bool:
