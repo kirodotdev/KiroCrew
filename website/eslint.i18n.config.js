@@ -363,6 +363,18 @@ export default [
               // presses, so translating it would mislabel their keyboard. Anchored and
               // enumerated, not a pattern: ordinary copy cannot match it.
               '^(Ctrl|Alt|Shift|Cmd|Win)$',
+              // Electron accelerator API tokens, which are the INPUT side of the key
+              // caps above: `accelerator: "CmdOrCtrl+R"` is the string Electron parses
+              // to bind the shortcut, and the Windows titlebar menu rewrites those
+              // tokens to the cap the user actually sees (`CmdOrCtrl` -> `Ctrl`). The
+              // token never reaches the screen, so it is a machine value; the cap it
+              // becomes is already exempt on do-not-translate grounds. Translating the
+              // token would break the binding, not localise anything.
+              //
+              // Anchored and enumerated rather than a PascalCase shape rule on purpose:
+              // `^[A-Z][a-z]+$` would also swallow `File`, `Edit` and `Settings`, which
+              // are genuine UI copy.
+              '^(CommandOrControl|CmdOrCtrl)$',
             ],
           },
 

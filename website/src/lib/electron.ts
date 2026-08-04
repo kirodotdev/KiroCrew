@@ -12,6 +12,7 @@ const mc = (window as { kirocrew?: { isElectron?: boolean; platform?: string } }
 
 export const isElectron = !!mc?.isElectron
 export const isMacElectron = isElectron && mc?.platform === 'darwin'
+export const isWindowsElectron = isElectron && mc?.platform === 'win32'
 
 /** Header left inset clearing the traffic lights: 16px inset + ~52px button group + 16px gap. */
 export const TRAFFIC_LIGHT_INSET_PX = 84

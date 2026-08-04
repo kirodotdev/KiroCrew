@@ -28,6 +28,11 @@ build workflow deliberately does not hold. Current status:
   excluded from the updater (`SUPPORTED_PLATFORMS` in `auto-update.js`)
   until the NSIS migration lands (issue #598); installs update by running
   a newer Setup.exe.
+- **Integrated Windows chrome** — the preview desktop shell uses the
+  dashboard's 42px header as its titlebar. File/Edit/View/Connection/Window/Help
+  open the existing native Electron menus from the left of that row, the command
+  palette remains centered on the window, and native minimize/maximize/close
+  controls remain on the right.
 
 The source install below remains the fully supported path.
 

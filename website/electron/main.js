@@ -93,6 +93,7 @@ function readInternalSecret() {
   return "";
 }
 const { buildMenuTemplate } = require("./app-menu");
+const { serializeMenuItems, executeMenuItem } = require("./windows-menu-model");
 
 // ── Persistent settings for remote tunnel mode ──
 
@@ -161,7 +162,16 @@ const HEALTH_URL = `${BACKEND_URL}/api/status`;
 const POLL_INTERVAL_MS = 500;
 const MAX_WAIT_MS = 30_000; // 30s max wait for backend
 const IS_MAC = process.platform === "darwin";
-const IS_WIN = process.platform === "win32";
+const IS_WINDOWS = process.platform === "win32";
+const IS_WIN = IS_WINDOWS;
+const WINDOWS_TITLEBAR_MENU_IDS = new Set([
+  "file-menu",
+  "edit-menu",
+  "view-menu",
+  "connection-menu",
+  "window-menu",
+  "help-menu",
+]);
 const DEFAULT_THEME_ACCENT = "#8E48FF";
 const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
@@ -172,10 +182,9 @@ function currentThemeAccent() {
 
 
 // The dashboard view fills the whole content area on all platforms. On macOS
-// the window is frameless (titleBarStyle:"hidden") and the dashboard's own
-// 42px header doubles as the title bar: an injected drag region makes it
-// draggable and the native traffic lights are inset into it (see
-// positionTrafficLights).
+// and Windows the dashboard's own 42px header doubles as the title bar. macOS
+// insets native traffic lights; Windows overlays its native caption controls
+// and renders application-menu triggers inside the header.
 
 const { validateRemoteSettings } = require("./validation");
 const { attachContextMenu } = require("./context-menu");
@@ -826,6 +835,9 @@ function syncNativeTheme(view, win) {
       mode = parsed.mode || "";
     } catch { return; }
     nativeTheme.themeSource = resolveThemeSource(pref, mode);
+    if (mode === "dark" || mode === "light") {
+      updateWindowsTitleBarOverlay(win, mode);
+    }
   }).catch(() => {});
 }
 
@@ -1101,12 +1113,16 @@ function setupWindowContents(win, backendUrl) {
 
   attachContextMenu(view.webContents);
 
-  // Keep the native traffic lights centered in the zoom-scaled header row.
+  // Keep native window controls centered in the zoom-scaled header row.
   // "zoom-changed" covers pinch / ctrl+wheel gestures; the View-menu zoom
   // items call positionTrafficLights explicitly (see zoomItem in the menu).
   if (IS_MAC) {
     positionTrafficLights(win);
     view.webContents.on("zoom-changed", () => setTimeout(() => positionTrafficLights(win), 0));
+  }
+  if (IS_WINDOWS) {
+    updateWindowsTitleBarOverlay(win);
+    view.webContents.on("zoom-changed", () => setTimeout(() => updateWindowsTitleBarOverlay(win), 0));
   }
 
   // The frameless macOS window emits system-context-menu for the drag region;
@@ -1126,12 +1142,9 @@ function setupWindowContents(win, backendUrl) {
   view.webContents.on("page-title-updated", (e) => { e.preventDefault(); applyTitle(); });
 
   view.webContents.on("did-finish-load", () => {
-    // macOS + Linux only: the frameless window needs an injected drag region so
-    // the dashboard header can move the window. Windows uses a native title bar,
-    // which already provides dragging — injecting an app-region bar over the
-    // header would only risk swallowing clicks, so skip it there.
-    if (!IS_WIN) {
-      view.webContents.insertCSS(`
+    // The dashboard header doubles as the drag surface for every frameless or
+    // hidden-titlebar window, including the integrated Windows titlebar.
+    view.webContents.insertCSS(`
         #electron-drag-bar {
           position: fixed;
           top: 0; left: 0; right: 0;
@@ -1144,15 +1157,14 @@ function setupWindowContents(win, backendUrl) {
         [role="button"], [tabindex], iframe {
           -webkit-app-region: no-drag;
         }
-      `);
-      view.webContents.executeJavaScript(`
+    `);
+    view.webContents.executeJavaScript(`
         if (!document.getElementById('electron-drag-bar')) {
           const bar = document.createElement('div');
           bar.id = 'electron-drag-bar';
           document.body.prepend(bar);
         }
-      `);
-    }
+    `);
     // Sync window background to theme color (visible in tab bar padding area)
     view.webContents.executeJavaScript(
       `getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()`
@@ -1193,6 +1205,21 @@ function setupWindowContents(win, backendUrl) {
 // factor: the header's on-screen height is 42 * zoomFactor, so both the x
 // inset and the vertical centering scale with it.
 const HEADER_CSS_PX = 42;
+const WINDOWS_TITLEBAR_SYMBOL_DARK = "#f4f0fa";
+const WINDOWS_TITLEBAR_SYMBOL_LIGHT = "#211d28";
+
+function updateWindowsTitleBarOverlay(win, mode) {
+  if (!IS_WINDOWS || !win || win.isDestroyed() || typeof win.setTitleBarOverlay !== "function") return;
+  const zoom = win._mcView && !win._mcView.webContents.isDestroyed()
+    ? win._mcView.webContents.getZoomFactor()
+    : 1;
+  const resolvedMode = mode || (nativeTheme.shouldUseDarkColors ? "dark" : "light");
+  win.setTitleBarOverlay({
+    color: "#00000000",
+    symbolColor: resolvedMode === "dark" ? WINDOWS_TITLEBAR_SYMBOL_DARK : WINDOWS_TITLEBAR_SYMBOL_LIGHT,
+    height: Math.round(HEADER_CSS_PX * zoom),
+  });
+}
 // Visible AppKit traffic-light control height (fixed; does not scale with zoom).
 const TRAFFIC_LIGHT_NATIVE_H = 12;
 // AppKit anchors the button GROUP a few px below the naive top inset, so the
@@ -1252,18 +1279,22 @@ function createWindow() {
     minHeight: 600,
     backgroundColor: "#0f1117",
   };
-  // Frameless chrome is macOS-only: the dashboard's 42px header doubles as
-  // the title bar with the native traffic lights inset into it. Windows has
-  // no equivalent inset controls -- hiding the title bar there would ship
-  // windows with no minimize/maximize/close at all -- so it keeps the native
-  // frame, exactly like the shipped Linux AppImage (Electron ignores
-  // titleBarStyle on Linux). A Windows title-bar overlay with inset controls
-  // is the tracked follow-up.
+  // The dashboard's 42px header doubles as the title bar on both desktop
+  // platforms with overlay-capable native controls. Linux retains its native
+  // frame because electron-builder's AppImage support varies by WM.
   if (IS_MAC) opts.titleBarStyle = "hidden";
-  // Window + taskbar icon (Windows only): running unpackaged (`electron .`)
-  // otherwise shows the default Electron icon. macOS takes its icon from the
-  // .app bundle and Linux from the .desktop/AppImage, so leave those untouched.
-  if (IS_WIN) {
+  if (IS_WINDOWS) {
+    opts.titleBarStyle = "hidden";
+    opts.autoHideMenuBar = true;
+    opts.titleBarOverlay = {
+      color: "#00000000",
+      symbolColor: nativeTheme.shouldUseDarkColors
+        ? WINDOWS_TITLEBAR_SYMBOL_DARK
+        : WINDOWS_TITLEBAR_SYMBOL_LIGHT,
+      height: HEADER_CSS_PX,
+    };
+    // Running unpackaged (`electron .`) otherwise shows the default Electron
+    // icon. macOS and Linux source their icons from their app bundles.
     const iconFile = identityFamily(app.getVersion()) === "nightly"
       && fs.existsSync(path.join(__dirname, "icon-nightly.png"))
       ? "icon-nightly.png" : "icon.png";
@@ -1282,6 +1313,9 @@ function createWindow() {
     opts.y = state.y;
   }
   mainWindow = new BaseWindow(opts);
+  if (IS_WINDOWS && typeof mainWindow.setMenuBarVisibility === "function") {
+    mainWindow.setMenuBarVisibility(false);
+  }
 
   setupWindowContents(mainWindow, BACKEND_URL);
 
@@ -1939,11 +1973,24 @@ async function openNewConnectionWindow() {
       minHeight: 600,
       backgroundColor: "#0f1117",
     };
-    // Same platform-conditional chrome as the main window (see createWindow):
-    // frameless + inset traffic lights on macOS, native frame elsewhere.
+    // Same platform-conditional chrome as the main window (see createWindow).
     if (IS_MAC) connOpts.titleBarStyle = "hidden";
     if (IS_MAC) connOpts.trafficLightPosition = trafficLightPositionForZoom(1);
+    if (IS_WINDOWS) {
+      connOpts.titleBarStyle = "hidden";
+      connOpts.autoHideMenuBar = true;
+      connOpts.titleBarOverlay = {
+        color: "#00000000",
+        symbolColor: nativeTheme.shouldUseDarkColors
+          ? WINDOWS_TITLEBAR_SYMBOL_DARK
+          : WINDOWS_TITLEBAR_SYMBOL_LIGHT,
+        height: HEADER_CSS_PX,
+      };
+    }
     const connWin = new BaseWindow(connOpts);
+    if (IS_WINDOWS && typeof connWin.setMenuBarVisibility === "function") {
+      connWin.setMenuBarVisibility(false);
+    }
 
     setupWindowContents(connWin, backendUrl);
 
@@ -2195,6 +2242,30 @@ app.whenReady().then(async () => {
     })
   );
   Menu.setApplicationMenu(appMenu);
+
+  // Windows renders the menu surface in the custom titlebar so pointer hover
+  // can switch between top-level menus. Native Menu.popup() captures input on
+  // Windows and prevents that Zed-style interaction. Commands still execute
+  // through Electron's MenuItems, preserving roles and accelerator behavior.
+  ipcMain.handle("app-menu:items", (event, id) => {
+    if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
+    const item = appMenu.getMenuItemById(id);
+    const win = windowForWebContents(event.sender);
+    if (!item || !item.submenu || !win || win.isDestroyed()) return [];
+    return serializeMenuItems(item.submenu);
+  });
+
+  ipcMain.on("app-menu:execute", (event, id, index) => {
+    if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id) || !Number.isInteger(index)) return;
+    const topLevelItem = appMenu.getMenuItemById(id);
+    const win = windowForWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    // `event.sender`, not `event`: role items dispatch off the third click
+    // argument as a WebContents (`webContentsMethod(focusedWebContents)`), and
+    // the titlebar menu can only be clicked while its own renderer has focus,
+    // so the sender IS the focused WebContents the native menu would resolve.
+    executeMenuItem(topLevelItem, index, win, event.sender);
+  });
 
   // DevTools gate: renderer sends dev-mode state, we toggle menu visibility.
   ipcMain.on("dev-mode-changed", (_event, enabled) => {

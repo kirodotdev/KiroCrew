@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstanceTabBar from '../components/InstanceTabBar'
@@ -81,6 +81,82 @@ describe('InstanceTabBar', () => {
 
     await u.click(screen.getByRole('tab', { name: /Local/i }))
     expect(store.getState().instances.activeId).toBeNull()
+  })
+
+  it('bounds inline tabs in a horizontally scrollable region', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([
+      conn(),
+      conn({ id: 'cd-2', name: 'Cloud Two', ssh_host: 'cd-2-alias' }),
+    ]))
+    renderWithProviders(<InstanceTabBar variant="inline" />)
+
+    const tablist = await screen.findByRole('tablist', { name: /remote crews/i })
+    expect(tablist).toHaveClass('flex-1', 'min-w-0', 'overflow-hidden')
+    expect(tablist.firstElementChild).toHaveClass('flex-1', 'min-w-0', 'overflow-x-auto')
+  })
+
+  describe('compact (yielding header room to the expanded Windows menu)', () => {
+    // The bar used to be UNMOUNTED while the Windows application menu was
+    // expanded, which dropped focus to <body>, removed the tablist from the
+    // accessibility tree, and blanked every per-instance status signal. Compact
+    // keeps all of that and only drops the visible names.
+    it('keeps every tab present, named, and selectable with names hidden', async () => {
+      vi.mocked(api.listInstances).mockResolvedValue(listResp([
+        conn(),
+        conn({ id: 'cd-2', name: 'Cloud Two', ssh_host: 'cd-2-alias' }),
+      ]))
+      const u = userEvent.setup()
+      const store = createTestStore({
+        instances: {
+          warm: { 'cd-1': { port: 7778, token: 'tok' }, 'cd-2': { port: 7779, token: 'tok' } },
+          activeId: 'cd-1',
+          mru: ['cd-1'],
+          unread: {},
+        },
+      })
+      renderWithProviders(<InstanceTabBar variant="inline" compact />, { store })
+
+      // The tablist survives, with a tab per pane still reachable by name.
+      const tablist = await screen.findByRole('tablist', { name: /remote crews/i })
+      expect(within(tablist).getAllByRole('tab')).toHaveLength(3)
+      const cloudTwo = screen.getByRole('tab', { name: 'Cloud Two' })
+      // Name is hidden visually (icons only, no text node) but is still the
+      // accessible name, so screen readers and the role query both keep working.
+      expect(cloudTwo.textContent).toBe('')
+      expect(cloudTwo).toHaveAttribute('aria-label', 'Cloud Two')
+      expect(screen.getByRole('tab', { name: 'Local' }).textContent).toBe('')
+
+      // Still directly clickable — no dropdown to open first.
+      await u.click(cloudTwo)
+      expect(store.getState().instances.activeId).toBe('cd-2')
+    })
+
+    it('keeps the connection dot and unread badge visible while compact', async () => {
+      vi.mocked(api.listInstances).mockResolvedValue(listResp([
+        conn({ status: { instance_id: 'cd-1', state: 'error', error: 'ssh unreachable', remote_port: 7777 }, was_connected: true }),
+      ]))
+      const store = createTestStore({
+        instances: { warm: {}, activeId: null, mru: ['cd-1'], unread: { 'cd-1': 3 } },
+      })
+      renderWithProviders(<InstanceTabBar variant="inline" compact />, { store })
+
+      const tab = await screen.findByRole('tab', { name: 'Cloud One' })
+      // The error dot is the whole point of collapsing rather than hiding.
+      expect(tab.querySelector('.bg-\\[var\\(--danger\\)\\]')).not.toBeNull()
+      expect(within(tab).getByLabelText('3 unread')).toBeInTheDocument()
+      // Full detail stays available on hover.
+      expect(tab).toHaveAttribute('title', 'Cloud One (cd-1-alias) — error')
+    })
+
+    it('shows names and no aria-label override when not compact', async () => {
+      vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+      renderWithProviders(<InstanceTabBar variant="inline" />)
+
+      const tab = await screen.findByRole('tab', { name: /Cloud One/i })
+      expect(tab).toHaveTextContent('Cloud One')
+      expect(tab).not.toHaveAttribute('aria-label')
+      expect(screen.getByRole('tab', { name: /Local/i })).toHaveTextContent('Local')
+    })
   })
 
   it('connects a not-yet-warm instance when its tab is clicked', async () => {

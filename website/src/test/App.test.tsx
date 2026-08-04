@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
-import App, { calculateTopbarSearchLayout } from '../App'
+import App, { calculateTopbarChromeLayout } from '../App'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { openActivityPanel } from '../store/chatSlice'
 import SegmentedControl from '../components/SegmentedControl'
@@ -634,10 +634,27 @@ describe('App routing', () => {
     expect(screen.getByRole('dialog', { name: 'Search everywhere' })).toBeInTheDocument()
   })
 
-  it('reserves the larger topbar cluster before showing the centered search', () => {
-    expect(calculateTopbarSearchLayout(330, 180, 1200)).toEqual({ gutter: 342, visible: true })
-    expect(calculateTopbarSearchLayout(180, 505, 1570)).toEqual({ gutter: 517, visible: true })
-    expect(calculateTopbarSearchLayout(330, 180, 900)).toEqual({ gutter: 342, visible: false })
+  it('bounds instance tabs before showing the physically centered search', () => {
+    expect(calculateTopbarChromeLayout(1200, 12, 1000, 330)).toEqual({
+      leftWidth: 396,
+      searchWidth: 360,
+      visible: true,
+    })
+    expect(calculateTopbarChromeLayout(900, 12, 700, 330)).toEqual({
+      leftWidth: 676,
+      searchWidth: 260,
+      visible: false,
+    })
+    expect(calculateTopbarChromeLayout(1200, 12, 760, 330)).toEqual({
+      leftWidth: 736,
+      searchWidth: 360,
+      visible: false,
+    })
+    expect(calculateTopbarChromeLayout(1200, 12, 1000, 0)).toEqual({
+      leftWidth: 0,
+      searchWidth: 360,
+      visible: true,
+    })
   })
 
   it('resizes the sidebar and main body together with a quick shell transition', () => {
