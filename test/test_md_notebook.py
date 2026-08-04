@@ -15,6 +15,7 @@ import hmac
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import time
 from contextlib import asynccontextmanager
@@ -29,6 +30,24 @@ from kiro_crew.apps.builtins.md_notebook import git_ops
 SECRET = "test-proxy-secret"
 
 
+"""Env that makes a git call hermetic regardless of fixture scope.
+
+``test/conftest.py``'s ``_git_identity`` closes the same two host bleeds (identity,
+and ``~/.gitconfig`` reaching in via e.g. ``core.excludesFile``), but it is autouse
+and FUNCTION-scoped -- so the session-scoped template builder below runs before it and
+would otherwise read the developer's real global config. Applied here explicitly
+rather than widening that fixture's scope, which would stop it reverting per test.
+"""
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "Test",
+    "GIT_AUTHOR_EMAIL": "test@example.invalid",
+    "GIT_COMMITTER_NAME": "Test",
+    "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+}
+
+
 def _git(*args: str, cwd: Path) -> str:
     """Run git in a fixture repo, failing loudly on error."""
     return subprocess.run(
@@ -37,11 +56,12 @@ def _git(*args: str, cwd: Path) -> str:
         capture_output=True,
         text=True,
         check=True,
+        env={**os.environ, **_GIT_ENV},
     ).stdout.strip()
 
 
-def _seed_repo(base: Path) -> tuple[Path, Path]:
-    """Create a bare remote plus a working checkout holding two notes."""
+def _build_seed_repo(base: Path) -> None:
+    """Create a bare remote plus a working checkout holding two notes, under *base*."""
     remote = base / "remote.git"
     _git("init", "--bare", "-b", "main", str(remote), cwd=base)
     seed = base / "seed"
@@ -56,6 +76,35 @@ def _seed_repo(base: Path) -> tuple[Path, Path]:
     _git("commit", "-m", "seed", cwd=seed)
     _git("remote", "add", "origin", str(remote), cwd=seed)
     _git("push", "-u", "origin", "main", cwd=seed)
+
+
+@pytest.fixture(scope="session")
+def _seed_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Build the seed repo pair once per session; tests get a copy.
+
+    ``_build_seed_repo`` spawns nine git subprocesses, and ``fixtures`` is
+    function-scoped over 120 tests -- ~1.6s of setup each, which made this the most
+    expensive file in the suite. Copying a prebuilt tree is ~5x cheaper.
+
+    Session scope is safe because the template is never yielded to a test, only
+    copied from, so no test can reach another's repo.
+    """
+    template = tmp_path_factory.mktemp("md-notebook-seed")
+    _build_seed_repo(template)
+    return template
+
+
+def _seed_repo(base: Path, template: Path) -> tuple[Path, Path]:
+    """Copy the session seed *template* into *base*, returning ``(remote, seed)``.
+
+    ``git`` records the remote as an absolute path, so the copied checkout is
+    re-pointed at the copied bare remote rather than the template's -- otherwise
+    every test would push into one shared remote and see each other's commits.
+    """
+    remote, seed = base / "remote.git", base / "seed"
+    shutil.copytree(template / "remote.git", remote)
+    shutil.copytree(template / "seed", seed)
+    _git("remote", "set-url", "origin", str(remote), cwd=seed)
     return remote, seed
 
 
@@ -99,7 +148,7 @@ class SignedClient:
 
 
 @pytest.fixture
-def fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _seed_template: Path):
     """A fresh backend module bound to a temp home, plus git fixture repos."""
     monkeypatch.setenv("MD_NOTEBOOK_HOME", str(tmp_path / "home"))
     # The PAT lives under the crew data home (config_dir), never MD_NOTEBOOK_HOME,
@@ -112,7 +161,7 @@ def fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # HOME and friends are resolved at import time, so rebind them to the temp
     # home rather than relying on import order.
     server_mod = importlib.reload(server_mod)
-    remote, seed = _seed_repo(tmp_path)
+    remote, seed = _seed_repo(tmp_path, _seed_template)
     return server_mod, remote, seed
 
 

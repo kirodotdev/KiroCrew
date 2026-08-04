@@ -180,3 +180,11 @@ and test packs live **outside the repo**; the full-L2 install/validate/persona
 regression is exercised entirely from fixtures built in a temp directory (see
 `test/test_theme_install.py::TestFullL2Fixture`), so nothing shippable carries
 a persona or third-party-derived branding.
+
+This covers **art assets too**, not just personas and manifests. The
+built-in-theme removal deleted the persona markdown but left nine unreferenced
+image/font/video files behind in `src/kiro_crew/static/`, which
+`MANIFEST.in`'s `recursive-include src/kiro_crew/static *` kept shipping in the
+sdist, wheel and DMG. They are gone. When retiring a theme, delete its art in
+the same change: every file under `src/kiro_crew/static/` ships, so an orphan
+there is a shipped orphan, not dead weight in a dev tree.

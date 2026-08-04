@@ -32,6 +32,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
+import { useLanguage } from '../i18n/LanguageProvider'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import { useChatPopouts } from '../hooks/useChatPopouts'
@@ -82,10 +83,10 @@ const RENAME_MAX_H = 120
  *  A `tool` phase honors the user's `simplifiedToolNames` preference (purpose vs
  *  raw tool title) via toolStatusLabel, so the row agrees with the inline tool
  *  pill in the transcript rather than always showing the purpose. */
-function slotStatusText(detail: { kind?: string; text?: string; toolName?: string } | undefined, simplifiedToolNames: boolean): string {
+function slotStatusText(detail: { kind?: string; text?: string; toolName?: string } | undefined, simplifiedToolNames: boolean, uiLang: string): string {
   if (detail?.kind === 'streaming') return i18nT('pages.chatSidebar.streaming')
   if (detail?.kind === 'thinking' && detail.text === 'Thinking…') return i18nT('pages.chatSidebar.thinking')
-  return toolStatusLabel(detail, simplifiedToolNames) || i18nT('pages.chatSidebar.thinking')
+  return toolStatusLabel(detail, simplifiedToolNames, uiLang) || i18nT('pages.chatSidebar.thinking')
 }
 /** Telegram-style relative time: time today, "Yesterday hh:mm", weekday+time this week,
  *  short date this year, full date otherwise.
@@ -535,10 +536,9 @@ interface ChatSidebarProps {
    *  When provided, this fires AFTER the switchSlot dispatch so consumers
    *  can react to user-driven selection (e.g. to navigate the URL). */
   onSelectSlot?: (key: string) => void
-  /** When true, the sidebar is externally collapsible — a persistent toggle
-   *  button lives in the chat container at the top-left, so the header
-   *  reserves left space for it. Omitted in embed/sessions mode where the
-   *  sidebar is the whole view. */
+  /** When true, ChatPage floats a hide-sidebar button over this header's
+   *  top-left (open state), so the header reserves left space for it.
+   *  Omitted in embed/sessions mode where the sidebar is the whole view. */
   collapsible?: boolean
   /** Split View (session grid) opt-in feature. When `splitEnabled`, a pinned
    *  "Split View" entry renders at the top; clicking it calls `onOpenSplit`.
@@ -806,6 +806,7 @@ function ChatSidebar({
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail, shallowEqual)
   // Purpose-vs-raw-tool-title preference, shared with the inline tool pills.
   const simplifiedToolNames = useSimplifiedToolNames()
+  const uiLang = useLanguage().resolved
   // Presence in this map means "this session is in an active goal loop".
   const goalLoops = useAppSelector(s => s.chat.goalLoops)
   // Live subagent activity per slot, for the sidebar row's "N agents running"
@@ -2048,7 +2049,7 @@ function ChatSidebar({
       : subagentCount > 0
         ? subagentLabel
         : s.running
-          ? slotStatusText(slotStatusDetail[s.key], simplifiedToolNames)
+          ? slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)
           : (s.last_message || '')
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
     const rowColor = ci != null ? paletteColors[ci] : null
@@ -2297,7 +2298,7 @@ function ChatSidebar({
                 <span className="truncate">{subagentLabel}</span>
               </div>
             ) : s.running ? (
-              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusText(slotStatusDetail[s.key], simplifiedToolNames)}</div>
+              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)}</div>
             ) : s.last_message ? (
               <div className="text-[12px] text-muted leading-snug truncate mt-0.5">{s.last_message}</div>
             ) : null}
@@ -2706,14 +2707,17 @@ function ChatSidebar({
         <div className="w-[2px] h-full bg-transparent group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-colors duration-200" />
       </div>
 
-      {/* Header — per Figma (node 3108:9725): all elements (collapse icon,
-          "Sessions" title, kebab, New button) centered on one line at ~28px
-          from the panel top (mt-2 ≈ panel 8px pad, then centered in a 40px row),
-          matching the left-menu header baseline. Equal top/right gap so the New
-          button sits equidistant from the panel's top and right edges. */}
-      <div className="flex justify-between items-center pl-2 pr-3.5 mt-2 h-10">
-        <div className={`flex items-center gap-1.5 min-w-0 flex-1 ${collapsible && !isMobile ? 'pl-8' : ''}`}>
-          {!tinyHeader && <span className="sessions-panel-title text-sm font-medium text-muted tracking-[.04em] truncate">{i18nT('pages.chatSidebar.sessions')}</span>}
+      {/* Header — all elements ("Sessions" title, kebab, New button) centered
+          on one line 23px from the panel top (1px card border + mt-0.5, then
+          centered in a 40px row) — the shared control baseline: the nav rail
+          header, chat title row, and activity strip icons center on the same
+          line.
+          px-2 is symmetric so the New button ends 9px from the card's right
+          edge (8 + 1px border) — the same as its 9px gap to the top edge
+          (1px border + mt-0.5 + 6px of the h-10 row around the h-7 button). */}
+      <div className="flex justify-between items-center px-2 mt-0.5 h-10">
+        <div className={`flex items-center gap-1.5 min-w-0 flex-1 ${collapsible && !isMobile ? 'pl-9' : 'pl-1.5'}`}>
+          {!tinyHeader && <span className="sessions-panel-title text-sm font-semibold text-text-strong tracking-[.04em] truncate">{i18nT('pages.chatSidebar.sessions')}</span>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <DropdownMenu>

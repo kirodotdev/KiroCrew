@@ -23,19 +23,35 @@ from kiro_crew.dashboard.handlers.agents import _get_config_lock
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.embeddings import (
     DOWNLOAD_ATTEMPTS_INTERACTIVE,
+    activate_shared_embedder,
+    active_embedding_space_signature,
+    build_gated_bundled,
+    build_gated_candidate,
+    embedding_backend_serving,
     get_shared_embedder,
+    install_shared_embedder,
     make_sync_embed_fn,
     model_download_manager,
     model_file_present,
+    reconcile_store_embedding_space,
+    reembed_progress,
+    reset_shared_embedder,
     resolve_custom_model,
+    validate_custom_model_path,
 )
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import embed_executor, run_in_embed_pool
 from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 from ._shared import _get_memory, _is_restricted_session
 
 logger = logging.getLogger(__name__)
+
+# Bounded because a wedged native load has no cancellation: without a deadline
+# the progress tracker would sit at `applying` forever and every later apply
+# would 409. Safe to bound ONLY because the candidate is gated — an abandoned
+# loader publishes into an embedder we close, and close() is terminal.
+_MODEL_LOAD_TIMEOUT_SECS = 600.0
 
 
 def _sel():
@@ -321,6 +337,324 @@ _SETUP_STEP_LEGACY = {
 }
 
 
+async def _write_embed_model_config(path: str, dim: int) -> None:
+    """Persist ``memory.embed_model_path`` + ``embedding_dim``.
+
+    Same fail-closed contract as :func:`_set_migrated`: an unparseable
+    config.json is left alone rather than clobbered with only these two keys,
+    which would destroy every other recoverable setting.
+    """
+    async with _get_config_lock():
+        cfg_path = config_path()
+        if cfg_path.exists():
+            try:
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.warning(
+                    "config.json is unparseable; refusing to write the embedding "
+                    "model path to avoid clobbering other settings"
+                )
+                raise ValueError(
+                    "config.json could not be parsed — fix it before changing the model"
+                )
+        else:
+            data = {}
+        memory = data.setdefault("memory", {})
+        if path:
+            memory["embed_model_path"] = path
+        else:
+            memory.pop("embed_model_path", None)
+        # An explicit memory.embed_model_id OVERRIDES the derived (name+size)
+        # identity — _custom_model_id documents that "an explicit id always
+        # wins" — so it is pinned to whichever model the operator set it for.
+        # Carrying it across a model change keeps the OLD vector-space
+        # signature, so a swap to a different model of the SAME dimension
+        # reconciles as "space unchanged": vectors from the previous model are
+        # retained and then compared against new-model vectors, corrupting
+        # semantic results with nothing on screen to explain it. Drop it and let
+        # the id be re-derived from the file actually in use.
+        memory.pop("embed_model_id", None)
+        if dim > 0:
+            memory["embedding_dim"] = dim
+        write_config_atomically(cfg_path, data)
+
+
+def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEventLoop") -> None:
+    """Blocking apply of a model change. Runs on a worker thread, never the loop.
+
+    The candidate is loaded EXACTLY ONCE and is GATED for its whole lifetime as a
+    candidate. That combination is what makes a live swap safe:
+
+    1. Install the gated candidate, closing the outgoing model in the same step.
+       Peak residency stays one model, and because the slot is never empty a
+       concurrent status poll cannot rebuild the outgoing one behind us.
+    2. Wait for the load, bounded. A timeout is safe here only BECAUSE of the
+       gate: the abandoned loader publishes into an embedder we then close, and
+       ``close()`` is terminal, so it can never start serving.
+    3. Any failure before activation rolls back — drop the candidate and let the
+       next ``get_shared_embedder()`` rebuild the previous model from config,
+       which is still untouched at that point.
+    4. Persist path + the width the model reported. Only now is the new space the
+       configured one.
+    5. Retarget the store's width, then reconcile (NULLs foreign vectors, drops
+       the stale index).
+    6. ACTIVATE. Everything before this point could still hand a caller a vector
+       from a space the store had not reconciled to.
+    7. Backfill with progress, which is what the dashboard indicator renders.
+    """
+    prog = reembed_progress()
+    candidate_installed = False
+    # Hoisted above the try: the catch-all handler below calls _restore_dim(), so
+    # it must be defined even when the failure lands before the retarget.
+    previous_dim = store._embedding_dim  # type: ignore[attr-defined]
+    dim_retargeted = False
+
+    def _restore_dim() -> None:
+        """Undo the width retarget so the store matches the model being restored.
+
+        Retargeting without restoring on failure is worse than the failure itself:
+        the store would expect the NEW width while the rebuilt backend is the OLD
+        model, so backfill's per-row shape check and build_faiss_index' width
+        check reject every vector — and reconcile has already NULLed the corpus —
+        leaving memory keyword-only for the rest of the process lifetime.
+        """
+        if dim_retargeted:
+            store.set_embedding_dim(previous_dim)  # type: ignore[attr-defined]
+    try:
+        if raw:
+            # Re-validate HERE rather than trusting the request-boundary check:
+            # the worker is a thread hop away, so re-deriving the path without
+            # the sensitive-path gate would leave the gate and the actual
+            # native-library file access in different scopes.
+            candidate, verr, _vcode = validate_custom_model_path(raw, "The model path")
+            if verr:
+                prog.fail(verr)
+                return
+            install_shared_embedder(build_gated_candidate(candidate))
+        else:
+            # Reverting to the bundled model takes the SAME gated path. Its width
+            # is known, but the file is a download and can be absent — persisting
+            # the revert before proving it loads would discard a working custom
+            # configuration with nothing to fall back to.
+            install_shared_embedder(build_gated_bundled())
+        candidate_installed = True
+        # From here the outgoing model is no longer authoritative. Anything already
+        # inside _try_embed produced its vector in the old space; the store's
+        # generation guard drops those instead of committing them behind the
+        # reconcile. Bumped for EVERY swap, including same-width ones, which a dim
+        # comparison alone would miss.
+        store.begin_space_change()  # type: ignore[attr-defined]
+
+        embedder = get_shared_embedder()
+        wait_ready = getattr(embedder, "wait_ready", None)
+        ready = (
+            wait_ready(timeout=_MODEL_LOAD_TIMEOUT_SECS)
+            if callable(wait_ready)
+            else embedder.is_ready()
+        )
+        if not ready:
+            if candidate_installed:
+                # Config still names the PREVIOUS model — nothing has been
+                # persisted yet on either branch — so dropping the candidate
+                # restores it on the next get_shared_embedder(). The candidate is
+                # retired terminally, so if this was a timeout its loader cannot
+                # publish a serving model later.
+                reset_shared_embedder()
+            prog.fail(
+                "the model did not load — run 'kirocrew doctor' for the reason "
+                "(memory falls back to keyword search meanwhile)"
+            )
+            return
+
+        # _restore_dim() reads this from the enclosing scope at call time.
+        dim_retargeted = store.set_embedding_dim(embedder.dim)  # type: ignore[attr-defined]
+
+        store.embed_fn = make_sync_embed_fn()  # type: ignore[attr-defined]
+        reconcile_store_embedding_space(store)  # type: ignore[arg-type]
+
+        # Reconcile DELIBERATELY does not stamp the signature when it could not
+        # unlink the stale FAISS pair (read-only memory dir; Windows while the
+        # index is mapped — both named in its own comment). Ignoring that would
+        # let this report "Re-embedding complete" for a store that was never
+        # reconciled, and the next start's load_faiss_index() prefers the
+        # surviving OLD-space pair. The recorded space is the observable.
+        recorded = store.recorded_embedding_space()  # type: ignore[attr-defined]
+        if recorded != active_embedding_space_signature():
+            # Config still names the PREVIOUS model (the write is below), so
+            # dropping the candidate restores it. The NULLed vectors are refilled
+            # by the next boot's backfill under that model.
+            reset_shared_embedder()
+            _restore_dim()
+            prog.fail(
+                "the old vector index could not be removed, so the model change was "
+                "rolled back — check permissions on the memory directory and retry"
+            )
+            return
+
+        # Persisted LAST, after the model proved it loads AND the store agreed to
+        # its space. Reconcile reads the live backend, not config, so it does not
+        # need the new path on disk first — and deferring the write is what makes
+        # a reconcile failure recoverable: config still names the PREVIOUS model,
+        # so the rollback below rebuilds that model instead of resurrecting the
+        # new one, ungated, against a store that was never reconciled.
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                _write_embed_model_config(raw, embedder.dim), loop
+            )
+            fut.result()
+        except ValueError as exc:
+            # Unparseable config.json. The store is already reconciled to the new
+            # space; restoring the previous model re-stamps and re-embeds it on
+            # the next reconcile, which is recoverable. Serving a model config
+            # does not name would not be.
+            reset_shared_embedder()
+            _restore_dim()
+            prog.fail(str(exc))
+            return
+
+        # The store now agrees with the candidate's space AND config names it, so
+        # it is finally safe for ordinary consumers to get vectors from it.
+        activate_shared_embedder()
+        logger.info(
+            "Applied embedding model %s (%dd, space %s) — re-embedding in background",
+            embedder.model_id,
+            embedder.dim,
+            active_embedding_space_signature(),
+        )
+        embedded = store.backfill_missing_embeddings(progress=prog.advance)  # type: ignore[attr-defined]
+        prog.finish(embedded)
+    except Exception as exc:  # noqa: BLE001 - surfaced to the dashboard, never crashes the app
+        logger.warning("Applying the embedding model failed", exc_info=True)
+        if candidate_installed and not embedding_backend_serving():
+            # Failed before activation: a gated candidate left installed would
+            # serve nobody for the process lifetime. Drop it so the previous
+            # model (still the configured one, unless the write already landed)
+            # is rebuilt on demand.
+            reset_shared_embedder()
+            _restore_dim()
+        prog.fail(str(exc) or exc.__class__.__name__)
+
+
+async def api_memory_embedding_model(request: web.Request) -> web.Response:
+    """POST /api/memory/embedding-model — validate and apply a custom model.
+
+    Body: ``{"path": "<absolute path to .gguf>", "validate_only": bool}``.
+    An empty ``path`` reverts to the bundled model.
+
+    The dimension is NOT taken from the caller: it is read off the loaded model
+    (``n_embd``), so the user cannot get it wrong and the UI needs no dim field.
+    """
+    state: DashboardState = request.app["state"]
+    if _is_restricted_session(state, request):
+        sk = request.headers.get("X-Session-Key", "")
+        _sel().log_api_access(
+            caller=sk, operation="memory.embedding_model", outcome="denied",
+            source="dashboard", resources="restricted_session_block",
+        )
+        return web.json_response(
+            {"error": "not available in this session", "code": "restricted_session"},
+            status=403,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"error": "invalid JSON", "code": "invalid_json"}, status=400
+        )
+    if not isinstance(body, dict):
+        # `[]`, `"str"` and `5` are all VALID JSON, so request.json() returns them
+        # happily and only the .get() below would fail — with an AttributeError
+        # outside the try above, i.e. a 500 for what is really malformed client
+        # input. Reject them on the same 400 contract as unparseable bytes.
+        return web.json_response(
+            {"error": "invalid JSON", "code": "invalid_json"}, status=400
+        )
+
+    raw = str(body.get("path", "") or "").strip()
+    validate_only = bool(body.get("validate_only"))
+
+    # Validate BEFORE writing, so a typo never lands in config.
+    size_bytes = 0
+    if raw:
+        path, error, code = validate_custom_model_path(raw, "The model path")
+        if error:
+            return web.json_response(
+                {"ok": False, "error": error, "code": code}, status=400
+            )
+        try:
+            size_bytes = path.stat().st_size
+        except OSError:
+            size_bytes = 0
+    if validate_only:
+        return web.json_response({"ok": True, "size_bytes": size_bytes})
+
+    # KIROCREW_EMBED_MODEL_PATH wins over memory.embed_model_path for the PATH,
+    # but resolve_custom_model() always reads memory.embedding_dim from CONFIG.
+    # So applying a model here while the env override is set would persist THIS
+    # model's width against the ENV's path — a pair _load_model refuses on the
+    # width check, leaving the previously-working env-pinned model unloadable on
+    # every restart until config.json is hand-edited. Refuse instead: with the
+    # env override in force a config write cannot take effect anyway.
+    if os.environ.get("KIROCREW_EMBED_MODEL_PATH", "").strip():
+        return web.json_response(
+            {"ok": False,
+             "error": "KIROCREW_EMBED_MODEL_PATH is set, so it overrides the configured "
+                      "path — unset it to change the model from here",
+             "code": "env_override_active"},
+            status=409,
+        )
+
+    prog = reembed_progress()
+    if prog.is_active():
+        # Single-flight: a second apply mid-re-embed would race the first over
+        # the same rows and the same FAISS file.
+        return web.json_response(
+            {"error": "a model change is already being applied",
+             "code": "model_change_in_progress"},
+            status=409
+        )
+
+    try:
+        store = _get_vector_store(state)
+    except Exception as exc:  # noqa: BLE001 - surfaced to the caller, not swallowed
+        # Acquire the store BEFORE begin_apply(). If this raised after the
+        # progress tracker was armed, is_active() would stay true for the rest of
+        # the process lifetime and every later apply would 409 while the card
+        # polled an indeterminate bar forever.
+        logger.warning("Embedding model apply: vector store unavailable", exc_info=True)
+        return web.json_response(
+            {"ok": False, "error": f"vector memory is unavailable: {exc}",
+             "code": "vector_store_unavailable"},
+            status=503,
+        )
+
+    # Audit the ALLOWED decision too, not just the restricted-session denial
+    # above. This mutates config AND reshapes the whole vector store (reconcile
+    # NULLs every embedding, then the backfill re-embeds it), so an operator
+    # reading the SEL log must see the change that actually happened — auditing
+    # only blocked attempts would show the denials and hide the applies.
+    # Logged BEFORE the worker starts so the intent is recorded even if the
+    # process dies mid-apply; the outcome is observable via the reembed status.
+    _sel().log_api_access(
+        caller=request.headers.get("X-Session-Key", ""),
+        operation="memory.embedding_model",
+        outcome="allowed",
+        source="dashboard",
+        resources=f"apply:{raw or 'bundled'}",
+    )
+
+    # Config is written by the worker AFTER the candidate's width is probed, so a
+    # bad file never displaces a working configuration.
+    prog.begin_apply()
+    loop = asyncio.get_running_loop()
+    task = loop.run_in_executor(
+        embed_executor(), _apply_embedding_model, store, raw, loop
+    )
+    # Retain the future so it is not garbage-collected mid-apply.
+    state._embed_model_apply_task = task  # type: ignore[attr-defined]
+    return web.json_response({"ok": True, "size_bytes": size_bytes, "status": "applying"})
+
+
 async def api_memory_embedding_status(request: web.Request) -> web.Response:
     """GET /api/memory/embedding-status — embedding system status + setup progress."""
     embedder = get_shared_embedder()
@@ -381,6 +715,10 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
             "bytes_total": mgr.status.get("bytes_total", 0),
             "setup_error": setup_error,
             "can_retry": can_retry,
+            # Live re-embed progress for the Memory tab indicator. Same
+            # in-memory pattern as the download status above, so the card's
+            # existing 2s poll picks it up with no new endpoint.
+            "reembed": reembed_progress().snapshot(),
         }
     )
 

@@ -75,7 +75,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { serveDist } from './lib/serve-dist.mjs'
 import { stubDashboardApi, logPageProblems, json } from './lib/stub-dashboard-api.mjs'
-import { SURFACES, LOCALES, VIEWPORTS } from './lib/i18n-surfaces.mjs'
+import { SURFACES, LOCALES, VIEWPORTS, FIXTURE_DETAIL_APP } from './lib/i18n-surfaces.mjs'
 import { browserBundle } from './lib/render-scan.mjs'
 import {
   BUCKETS,
@@ -244,6 +244,83 @@ const FIXTURE_SLOTS = [{
   source_links_total: 0,
 }]
 
+/**
+ * Installed-app records for `GET /api/apps` and `GET /api/apps/<name>`.
+ *
+ * `origin: 'builtin'` is load-bearing: `AppsPage.browseApps` builds the Discover
+ * catalogue from `apps.filter(a => a.origin === 'builtin' && !a.manifest?.hidden)`,
+ * so any other origin renders the same card-less storefront this fixture exists to
+ * replace. Two entries rather than one because `pickFeatured` consumes the first for
+ * the spotlight and the card grid only starts at the second.
+ *
+ * Which fields carry LATIN and which carry a digit placeholder is a deliberate
+ * split, not an inconsistency:
+ *
+ *   - `displayName` / `description` / `highlights[]` / `tags[]` are Latin. They
+ *     render ONLY on `/apps` and `/apps/detail/:name`, and they are exactly the
+ *     backend-owned values the components interpolate raw. Bare Latin at those
+ *     nodes under en-XA is the finding.
+ *   - `ui.pages[].label` is a digit placeholder. `App.tsx`'s nav rail resolves
+ *     `page.label || a.displayName || a.name` for every installed app, so the rail
+ *     is GLOBAL chrome: Latin there would land the same finding on all 50+ surfaces
+ *     and drown the two that are about app metadata. The placeholder still makes
+ *     the rail's Apps group render (it has been empty on every surface until now,
+ *     because `/api/apps` answered `[]`), which is the part worth covering here.
+ *   - `permissions` carries booleans only. The permission ROWS are product copy and
+ *     should be scanned; an `api: ['/api/chat/*']` entry would add a fixture-owned
+ *     path string to the count without adding any product signal.
+ */
+const FIXTURE_APPS = [
+  {
+    name: FIXTURE_DETAIL_APP,
+    version: '1.0.0',
+    displayName: 'Fixture Research Lab',
+    enabled: true,
+    installedAt: '2026-01-01T00:00:00Z',
+    origin: 'builtin',
+    resources: 'gateway',
+    lifecycle: 'locked',
+    manifest: {
+      name: FIXTURE_DETAIL_APP,
+      version: '1.0.0',
+      displayName: 'Fixture Research Lab',
+      description: 'Runs research campaigns unattended.',
+      author: '0008',
+      tags: ['research', 'automation'],
+      highlights: [
+        'Expands questions into subtrees.',
+        'Cites every finding.',
+      ],
+      ui: { pages: [{ route: '/fixture-research-lab', label: '0009', icon: 'FlaskConical' }] },
+      permissions: { storage: true, cron: true, network: true },
+    },
+  },
+  {
+    name: 'fixture-issue-radar',
+    version: '2.1.0',
+    displayName: 'Fixture Issue Radar',
+    enabled: false,
+    installedAt: '2026-01-02T00:00:00Z',
+    origin: 'builtin',
+    resources: 'gateway',
+    lifecycle: 'locked',
+    manifest: {
+      name: 'fixture-issue-radar',
+      version: '2.1.0',
+      displayName: 'Fixture Issue Radar',
+      description: 'Triages incoming issue reports.',
+      author: '0008',
+      tags: ['developer-tools'],
+      highlights: [
+        'Groups reports by component.',
+        'Leaves triage evidence.',
+      ],
+      ui: { pages: [{ route: '/fixture-issue-radar', label: '0010', icon: 'Radar' }] },
+      permissions: { storage: true, network: true },
+    },
+  },
+]
+
 const FIXTURE_OVERRIDES = async (language, path, route) => {
   // `stubDashboardApi` treats a TRUTHY return as "handled". `json()` resolves to
   // undefined (that is what `route.fulfill()` returns), so an override must await
@@ -268,6 +345,101 @@ const FIXTURE_OVERRIDES = async (language, path, route) => {
     return done({ builtins: [], user_added: [], policy_pinned: [] })
   }
   if (path === '/api/security/posture') return done({ posture: {} })
+  // BUILTIN APP COLLECTION SHAPES. `handleBootRoute`'s fallback answers an
+  // unknown path with `[]` (or `{}` for a config-ish name), and for most app
+  // endpoints that is fine — the panel renders its empty state, which is exactly
+  // the copy we want scanned. These two crash on it instead, and a crash is not a
+  // finding: React's error boundary swaps the panel for its own English message,
+  // the scan counts that message, and the surface's number stops describing the
+  // product. `check-i18n-render.mjs` turns any page error into exit 2 for that
+  // reason, so a new app surface that dies here needs its shape declared, not the
+  // surface dropped.
+  //
+  // file-explorer: `FileExplorerPage` guards with `if (treeData?.entries)` and
+  // then calls `.forEach`. Against the `[]` fallback that guard PASSES —
+  // `[].entries` is `Array.prototype.entries`, a truthy function — and the
+  // `.forEach` on it throws. The guard is only sound against an object.
+  if (path.startsWith('/apps/file-explorer/api/')) {
+    if (path.startsWith('/apps/file-explorer/api/health')) {
+      return done({ allowedRoots: ['/0003'] })
+    }
+    if (path.startsWith('/apps/file-explorer/api/search')) return done({ results: [] })
+    if (path.startsWith('/apps/file-explorer/api/git-status')) return done(null)
+    return done({ entries: [] })
+  }
+  // code-review-sage: `settings.models.map` / `nsData.namespaces.map` read arrays
+  // straight off the response with no optional chaining.
+  if (path.startsWith('/api/apps/code-review-sage/settings')) {
+    return done({ settings: {}, models: [], efforts: [], namespaces: [] })
+  }
+  if (path.startsWith('/api/apps/code-review-sage/namespaces')) {
+    return done({ namespaces: [], active: [] })
+  }
+  if (path.startsWith('/api/apps/code-review-sage/runs')) return done({ runs: [] })
+  // Two more panels read nested collections off a config payload with no optional
+  // chaining, so the `{}` an objectish path falls back to is not enough:
+  // `KiroCrewCfgTab` does `Object.entries(cfg.agents)` and `VoicePanel`'s provider
+  // row does `Object.keys` on its own config. Same class as the two apps above.
+  if (path === '/api/config/kirocrew') {
+    return done({
+      agents: {}, workspaces: {}, memory_stores: {}, session: {}, memory: {},
+      agent: {}, auto_update: {},
+      default_agent: '', default_workspace: '', default_memory_store: '',
+    })
+  }
+  if (path === '/api/voice/config') {
+    return done({
+      // `provider` must be one of `PROVIDER_OPTIONS`; anything else and the panel
+      // renders neither provider's rows, which is a different screen.
+      enabled: false, provider: 'piper', voice: '0004', engine: '0005', rate: '0006',
+      autoSpeak: false, aws_profile: '', region: '',
+      piper_binary: '', piper_model: '', piper_model_config: '', piper_length_scale: 1,
+    })
+  }
+  if (path === '/api/voice/voices') return done({ voices: [] })
+  // `SttSettings` (mounted inside VoicePanel) does `Object.keys(stt.models)` with
+  // no guard, and `/api/config/stt` falls back to `{}` for holding `config`.
+  if (path === '/api/config/stt') {
+    return done({
+      enabled: false, provider: '0007', model: '', mlx_model: '',
+      available: false, docker_mode: false, models: {}, mlx_models: {},
+    })
+  }
+  // APP STORE + APP DETAIL. `handleBootRoute`'s fallback answers `/api/apps` and
+  // `/api/apps/registry` with `[]`, so both render their EMPTY state: the Discover
+  // grid draws zero cards and `/apps/detail/:name` draws `app_not_found`. Neither
+  // is a crash, so nothing failed -- the surfaces just silently described the wrong
+  // screen. `apps` recorded 2 text findings for a storefront that has a spotlight,
+  // category chips, card rows, an author line and a tag list.
+  //
+  // The prose below is deliberately LATIN, not the digit placeholders the fixtures
+  // above use, and that difference is the point of this fixture. Every field here
+  // is a field the Python side owns (`apps/builtins/*/app.json` ->
+  // `discovery.py` -> `GET /api/apps`), and the components render it straight:
+  // `{app.displayName}`, `{app.description}`, `highlights.map`. Under en-XA a
+  // catalog lookup comes back bracketed, so bare Latin at those nodes is proof the
+  // value never passed through one. A digit placeholder would render the same
+  // surface while hiding exactly the defect this surface exists to show.
+  //
+  // Read the resulting numbers as a FIXED STRUCTURAL PROBE, not as the size of the
+  // debt: the scanner counts per word, so the count is whatever prose this fixture
+  // carries -- which is why the strings below are terse rather than realistic
+  // marketing copy. They are long enough to prove the bypass and short enough not
+  // to dominate the surface's entry in the record. The real population is 128
+  // manifest strings across 14 builtins, and its ground truth is a server-side
+  // pseudolocale, the same way `test_error_code_contract.py` declares it for
+  // backend error bodies. Tracked as D14-a on #1004.
+  if (path === '/api/apps') return done(FIXTURE_APPS)
+  if (path === '/api/apps/registry') {
+    return done({ apps: [], serverPlatform: { os: 'linux', arch: 'x64' } })
+  }
+  if (path === '/api/apps/registries') return done({ registries: [] })
+  // Exact ids, not a `/api/apps/` prefix: a prefix arm here would shadow the
+  // per-app sub-paths declared above (`/api/apps/code-review-sage/settings`).
+  for (const app of FIXTURE_APPS) {
+    if (path === `/api/apps/${app.name}`) return done(app)
+  }
+  if (path === '/api/system') return done({ hostname: '0008', os: 'linux', arch: 'x64' })
   return false
 }
 
@@ -412,20 +584,19 @@ function resolveBaseScope() {
  * did exactly that to me once. `git archive` touches no repo state at all, needs no
  * cleanup, cannot corrupt anything, and works on the shallow clone CI checks out.
  *
- * Mostly `website/` is exported, plus the handful of files it imports ACROSS the
- * repo boundary at build time (`CROSS_BOUNDARY_BUILD_DEPS`): those escape `website/`
- * via `../../../../src/kiro_crew/...`, so without them in the export vite cannot
- * resolve the import and the base build dies. `node_modules` is symlinked rather
+ * The WHOLE commit is exported, not just `website/`. The frontend's build graph is
+ * not confined to that directory — `src/pages/connections/registry.ts` imports
+ * `../../../../src/kiro_crew/connections/registry.json` — and an allowlist of the
+ * paths that escape it is the shape that already rotted: `website` WAS the
+ * allowlist, and the moment a PR with no reason to know this script exists added a
+ * cross-tree import, every base build died with `Could not resolve …` and the gate
+ * exited 2 on EVERY pull request, because the breakage lived in the base tree
+ * rather than in anyone's diff. Archiving the commit costs a few seconds of tar
+ * next to two ~45s vite builds and cannot rot. `node_modules` is symlinked rather
  * than installed — a second `npm ci` would cost minutes, and the base's dependency
  * set only matters if the lockfile changed, which a render gate is not the right
  * place to police.
  */
-const CROSS_BOUNDARY_BUILD_DEPS = [
-  // website/src/pages/connections/registry.ts imports this JSON via
-  // ../../../../src/kiro_crew/connections/registry.json, reaching outside website/.
-  'src/kiro_crew/connections/registry.json',
-]
-
 function buildBaseBundle(sha) {
   const dir = join(tmpdir(), `i18n-render-base-${sha.slice(0, 12)}`)
   rmSync(dir, { recursive: true, force: true })
@@ -433,23 +604,22 @@ function buildBaseBundle(sha) {
   out(`[i18n-render] [vs-base] exporting base tree ${sha.slice(0, 8)}`)
 
   const tarball = join(dir, 'base.tar')
-  // `git archive` fatals on a pathspec that matches nothing, so include each
-  // cross-boundary dep only when it exists at THIS base sha (older bases predate
-  // it). `website` is always present.
-  const extraPaths = CROSS_BOUNDARY_BUILD_DEPS.filter((p) => {
-    try {
-      execFileSync('git', ['cat-file', '-e', `${sha}:${p}`], { cwd: REPO, stdio: 'ignore' })
-      return true
-    } catch {
-      return false
-    }
-  })
   try {
-    const out = execFileSync(
-      'git',
-      ['archive', '--format=tar', '-o', tarball, sha, 'website', ...extraPaths],
-      { cwd: REPO, stdio: 'pipe' },
-    )
+    // The WHOLE commit, not just `website`. The frontend's build graph is not
+    // confined to `website/`: `src/pages/connections/registry.ts` imports
+    // `../../../../src/kiro_crew/connections/registry.json` (#1229/#1287), so a
+    // `website`-only archive produced a base tree whose vite build died with
+    // `Could not resolve "../../../../src/kiro_crew/connections/registry.json"`
+    // — the gate then exited 2 on EVERY pull request, because the breakage lives
+    // in the base tree rather than in anyone's diff.
+    //
+    // Deliberately not an allowlist of the extra paths. That is the shape that
+    // just failed: `website` WAS the allowlist, and it rotted the moment someone
+    // added a cross-tree import in a PR that had no reason to know this script
+    // exists. Archiving the commit costs a few seconds of tar next to two ~45s
+    // vite builds and cannot rot.
+    const out = execFileSync('git', ['archive', '--format=tar', '-o', tarball, sha],
+      { cwd: REPO, stdio: 'pipe' })
     void out
     execFileSync('tar', ['-xf', tarball, '-C', dir], { stdio: 'pipe' })
     rmSync(tarball, { force: true })
@@ -552,18 +722,44 @@ async function main() {
     if (scope.run) {
       const { dist: baseDist, baseWeb } = buildBaseBundle(scope.sha)
       const baseIds = baseSurfaceIds(baseWeb)
-      newSurfaces = new Set(surfaces.map(x => x.id).filter(id => !baseIds.has(id)))
-      if (newSurfaces.size) {
-        out(`[i18n-render] [vs-base] ${newSurfaces.size} surface(s) are new on this branch`
-          + ` — their base count is 0, not measured: ${[...newSurfaces].join(', ')}`)
-      }
+      const unregistered = surfaces.map(x => x.id).filter(id => !baseIds.has(id))
       // Deliberately the SAME scanScript, surfaces and locales as the HEAD run —
       // they come from this checkout, not from the base tree. Only the BUNDLE is
       // base's. If the base tree's own scanner were used instead, any change to the
       // detector would read as a product regression (or mask one).
-      baseAll = (await sweep(browser, baseDist, {
+      const baseSweep = await sweep(browser, baseDist, {
         scanScript, dnt, surfaces, locales, label: `base ${scope.sha.slice(0, 8)}`,
-      })).all
+      })
+      baseAll = baseSweep.all
+      // A surface is NEW — base 0 — only when the base bundle had no route for its
+      // URL. Being absent from the base REGISTRY is not the same thing, and
+      // conflating the two is a bug worth naming: adding 34 URL-reachable surfaces
+      // that all existed as routes reported every one of their pre-existing
+      // findings as growth, so the branch that widened the gate's aperture was
+      // charged for debt it merely revealed. Zero would then be the wrong base, not
+      // the honest one.
+      //
+      // The signal is behavioural rather than a source scan: the base sweep
+      // navigated each URL, and `App.tsx` sends an unknown route through a redirect
+      // (`BuiltinAppRoute` -> `<Navigate to="/chat">`, or `ChatRedirect`), so a
+      // final URL that is not the requested one is proof the route was absent.
+      //
+      // Residual gap, stated: a query-param surface (`/settings?tab=x`) whose tab
+      // the base does not know renders the DEFAULT panel at the same URL, so it
+      // reads as resolved and its base count describes the wrong panel. Adding such
+      // a surface in the same commit as the tab it addresses is what avoids that;
+      // the redirect check cannot see it.
+      newSurfaces = new Set(unregistered.filter(id => baseSweep.unresolved.has(id)))
+      const measured = unregistered.filter(id => !baseSweep.unresolved.has(id))
+      if (newSurfaces.size) {
+        out(`[i18n-render] [vs-base] ${newSurfaces.size} surface(s) have no route on the base`
+          + ` — their base count is 0, not measured: ${[...newSurfaces].join(', ')}`)
+      }
+      if (measured.length) {
+        out(`[i18n-render] [vs-base] ${measured.length} surface(s) are newly REGISTERED but`
+          + ' their route already existed on the base, so they are compared against a real'
+          + ` measurement: ${measured.join(', ')}`)
+      }
     } else if (scope.reason) {
       totalIsFallback = !!scope.fallback
       SKIP_REASON = scope.reason
@@ -588,11 +784,30 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
   const { srv, base } = await serveDist(dist)
   /** @type {Array<{surface: string, locale: string, viewport: string, finding: object}>} */
   const all = []
+  /**
+   * Surfaces whose URL this bundle redirected away from, i.e. whose route it does
+   * not have. Only meaningful on the BASE sweep, where it separates "this branch
+   * added the route" from "this branch only added the registry entry".
+   */
+  const unresolved = new Set()
   let pseudoSeen = false
 
   try {
     for (const locale of locales) {
-      for (const viewport of VIEWPORTS) {
+      // A locale may restrict itself to a subset of viewports. The DNT probe does:
+      // DNT integrity is a CONTENT assertion (did a proper noun survive the
+      // translator byte-identical), so re-rendering it at a second width buys
+      // nothing and this gate is cap-bound. Unknown ids are a config error, not a
+      // silent skip -- rendering zero viewports would exit 0 having checked nothing.
+      const localeViewports = locale.viewports
+        ? VIEWPORTS.filter(v => locale.viewports.includes(v.id))
+        : VIEWPORTS
+      if (!localeViewports.length) {
+        die(`locale ${locale.code} restricts itself to viewports `
+          + `[${locale.viewports.join(', ')}], none of which exist in VIEWPORTS `
+          + `([${VIEWPORTS.map(v => v.id).join(', ')}]) -- fix lib/i18n-surfaces.mjs.`)
+      }
+      for (const viewport of localeViewports) {
         const context = await browser.newContext({
           viewport: { width: viewport.width, height: viewport.height },
           // Pin the browser tags too. Detection is only consulted when no explicit
@@ -627,6 +842,17 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
         for (const surface of surfaces) {
           pageErrors.length = 0
           await page.goto(base + surface.url, { waitUntil: 'domcontentloaded' })
+          // Did this bundle actually HAVE this route? Both fallbacks in `App.tsx`
+          // redirect — an unregistered builtin app hits
+          // `BuiltinAppRoute`'s `<Navigate to="/chat">`, an unknown top-level path
+          // hits `ChatRedirect` — so a final URL that is not the requested one
+          // means the route did not exist here. `[vs-base]` needs this to tell a
+          // surface whose ROUTE is new from one that merely was not registered
+          // yet: the second kind is measurable on the base and its findings are
+          // pre-existing debt, not something the branch added.
+          if (new URL(page.url()).pathname + new URL(page.url()).search !== surface.url) {
+            unresolved.add(surface.id)
+          }
           // Wait for the shell to actually paint. A fixed sleep raced the first
           // render and made the gate report zero findings on a surface it never
           // saw — the quietest possible false pass. The predicate is deliberately
@@ -671,6 +897,15 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
             { mode: locale.mode, minLetters: 1, dnt: locale.mode === 'real' ? dnt : [] },
           )
           for (const finding of findings) {
+            // A DNT-probe locale contributes ONLY its zero-tolerance DNT findings.
+            // Dropping the rest is what makes the reduced locale set honest: a real
+            // locale rendered at one viewport measures `layout`/`latent` partially,
+            // and a partial measurement folded into the ledger LOWERS the recorded
+            // debt -- the silent-understatement failure `AGENTS.md` warns about, and
+            // worse than not measuring it. `tally()` already routes `kind: 'dnt'`
+            // out of the buckets, so the probe's findings stay zero-tolerance while
+            // the buckets come purely from the fully-rendered pseudolocale.
+            if (locale.dntOnly && finding.kind !== 'dnt') continue
             all.push({ surface: surface.id, locale: locale.code, viewport: viewport.id, finding })
           }
         }
@@ -686,7 +921,14 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
       + 'text assertions would have passed against English.\n'
       + '    node scripts/check-i18n-render.mjs --build')
   }
-  return { all }
+  // DNT is not asserted here — see the `LOCALES` docstring in
+  // `lib/i18n-surfaces.mjs`. It cannot run under the pseudolocale (every term
+  // renders accented by design), and with no real locale in the list there is
+  // nothing for it to run against, so it lives in `check-dnt-catalogs.mjs` as a
+  // value comparison over all 9 shipped catalogs. The guard that used to stand here
+  // required a real locale precisely so this assertion could not go quiet; that
+  // requirement now belongs to that script, which the i18n runner fails closed on.
+  return { all, unresolved }
 }
 
 /**

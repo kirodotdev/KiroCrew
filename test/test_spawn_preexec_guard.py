@@ -21,6 +21,7 @@ the follow-up to issue #935.
 from __future__ import annotations
 
 import ast
+import functools
 from pathlib import Path
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
@@ -45,11 +46,23 @@ _ALLOWED = frozenset(
 )
 
 
+@functools.lru_cache(maxsize=1)
 def _async_spawns_with_preexec() -> dict[str, int]:
-    """Map ``<relpath>::<func>`` -> line for async spawns passing ``preexec_fn``."""
+    """Map ``<relpath>::<func>`` -> line for async spawns passing ``preexec_fn``.
+
+    Cached: this AST-parses all ~630 files under ``src/kiro_crew`` and both tests in
+    this file call it, so an unmemoized second pass re-parsed the whole tree for the
+    same answer. The source tree cannot change mid-run. Callers must not mutate the
+    returned dict -- both only read it.
+    """
     found: dict[str, int] = {}
     for path in sorted(_SRC_ROOT.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        # Cheap substring pre-filter: parsing is the expensive step, and a file with
+        # no `preexec_fn` text cannot contain a match.
+        source = path.read_text(encoding="utf-8")
+        if "preexec_fn" not in source:
+            continue
+        tree = ast.parse(source, str(path))
         funcs = [
             n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]

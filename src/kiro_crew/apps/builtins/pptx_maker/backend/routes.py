@@ -78,7 +78,12 @@ from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import FileTooLargeError
-from kiro_crew.security import is_sensitive_path, path_contains_sensitive, redact
+from kiro_crew.security import (
+    REDACTED_CREDENTIAL_TAG,
+    is_sensitive_path,
+    path_contains_sensitive,
+    redact,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
@@ -150,7 +155,16 @@ SERVED_SUFFIXES: dict[str, ServedSuffix] = {
 _INLINE_BITMAP_RE = re.compile(
     r"data:image/(?:png|jpe?g|gif|webp|avif|bmp)"  # bitmap subtypes only — never svg+xml
     r"(?:;[\w.+-]+)*"  # optional media parameters
-    r";base64,([A-Za-z0-9+/=]+)",  # group 1: the body, probed for a real signature
+    r";base64,([A-Za-z0-9+/=]+)"  # group 1: the body, probed for a real signature
+    # Group 2: the MAXIMAL run of characters after the body that do not terminate the
+    # URI (see `_BITMAP_URI_TERMINATORS`); empty when the URI ends properly. Capturing
+    # the whole run — not just the first character — is what makes excision complete: a
+    # credential appended to the body splits at whatever separator it uses (`xoxb-`,
+    # `pypi-`, `ghp_`, a JWT's `.`), the prefix landing in the body and surviving the
+    # re-encode, so dropping only the body leaves the rest of the secret in the text.
+    # An allowlist of terminators is the only closed form here — enumerating separators
+    # is endless, while the characters that legally END a data URI are finite.
+    r"([^\s\"'`)<>,;\]}\\]*)",
     re.IGNORECASE,
 )
 
@@ -182,30 +196,36 @@ _BITMAP_FTYP_OFFSET = 4
 _BITMAP_FTYP_MAGIC = b"ftyp"
 
 
-# Structured credential markers that can hide INSIDE a base64 body while decoding to
-# noise. Deliberately narrow — see `_scanned_bitmap_bytes` for why a full `redact()`
-# cannot be used on encoded text — and deliberately anchored on shapes that random
-# base64 does not produce: an AWS key id is a fixed 4-char prefix plus exactly 16
-# upper/digit chars, and the `ghp_`/`xox`/`sk-` forms carry a literal prefix.
+# The one credential shape that can hide INSIDE a base64 body while decoding to noise.
+# An AWS key id is a fixed 4-char prefix plus exactly 16 upper/digit chars — all of it
+# base64 alphabet — so it can be smuggled as body text and reproduced by the re-encode.
+# Chance collision is negligible (~1.6e-7 per 20 KB raster) because the 16-char body is
+# required; matching a BARE 4-char prefix instead is what used to blank real pictures at
+# 0.88% per 20 KB and 4.7% per 100 KB.
 #
-# Case-sensitive on purpose: these markers are case-specific, and lowering the whole
-# body would make `[A-Z0-9]{16}` match ordinary mixed-case base64 constantly.
-_ENCODED_CREDENTIAL_RE = re.compile(
-    r"(?:AKIA|ASIA)[A-Z0-9]{16}"
-    r"|gh[pousr]_[A-Za-z0-9]{16,}"
-    # `xox…` and `sk-ant…` are matched by PREFIX ONLY, without their bodies, because
-    # `_INLINE_BITMAP_RE`'s body class excludes `-`: a token appended to a raster is cut
-    # after `xoxb`, so the rest never reaches this text and requiring it would never
-    # match. Neither half is a credential shape alone, so the prefix is the only signal
-    # available — and refusing the exemption is the safe response, since the blob then
-    # goes through the ordinary text pass where the WHOLE token is visible and redacted.
-    #
-    # `xox[abposr]` and `sk-ant` are 4-6 specific characters; a genuine raster's base64
-    # producing one by chance costs only that one image's inline art (it is still
-    # served, just redacted), never a leak. Measured at 0/300 on real 20 KB rasters.
-    r"|xox[abposr]"
-    r"|sk-ant"
-)
+# Every other provider marker (`xox…`, `sk-ant…`, `gh[pousr]_…`, `pypi-`, `glpat-`, a
+# JWT's `.`) needs a separator that is NOT in the base64 alphabet, so it cannot occur in
+# a body at all. Listing those here would be dead code — the appended-credential case
+# they were meant to catch is handled by requiring a proper URI terminator after the
+# body (see `_BITMAP_URI_TERMINATORS`), which covers every separator rather than an
+# enumerated few.
+#
+# Case-sensitive on purpose: `[A-Z0-9]{16}` over a lowercased body would match ordinary
+# mixed-case base64 constantly.
+_ENCODED_CREDENTIAL_RE = re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}")
+
+
+# Characters that legitimately END a `data:` URI in the artifact formats the engine
+# emits: a JSON or HTML attribute string (`"`, `'`, and `\` for the escaped quote a
+# raw JSON file carries), CSS `url(...)` and markdown `](...)` (`)`), markup (`<`,
+# `>`), JSON/CSS structure (`,`, `;`, `]`, `}`), and any whitespace. End-of-text
+# counts too — group 2 is then empty.
+#
+# Anything else directly after the body means the URI does not end there, which is not
+# a shape the engine produces and is exactly how an appended credential looks. The
+# carve-out is refused in that case, costing only the inline art of an already
+# malformed artifact.
+_BITMAP_URI_TERMINATORS: frozenset[str] = frozenset("\"'`)<>,;]}\\ \t\r\n\f\v")
 
 
 def _has_bitmap_signature(raw: bytes) -> bool:
@@ -217,8 +237,23 @@ def _has_bitmap_signature(raw: bytes) -> bool:
     )
 
 
-def _scanned_bitmap_bytes(b64_body: str) -> bytes | None:
-    """The decoded raster bytes when *b64_body* carries no credential, else ``None``.
+def _scanned_bitmap_bytes(b64_body: str) -> tuple[bytes | None, bool]:
+    """``(decoded raster bytes, credential_found)`` for a candidate bitmap body.
+
+    The bytes are non-``None`` only when the blob is a real raster carrying no
+    credential. ``credential_found`` distinguishes the two reasons for refusing:
+    a credential was seen (so the caller must EXCISE the region — see below), versus
+    the blob simply is not a raster (so it stays in the text as ordinary prose).
+
+    That distinction is load-bearing. Handing a credential-bearing region back to the
+    text pass assumes ``redact()`` recognises the same tokens this scan does, and it
+    does not: a `gh[pousr]_` body shorter than a real GitHub PAT matches here and is
+    invisible to ``redact()``, so returning the text unchanged served the token. The
+    caller therefore excises whatever this scan condemns rather than delegating.
+
+    A credential APPENDED after the body is not this function's problem: the caller
+    refuses any blob the URI does not properly terminate, which catches an appended
+    token whatever separator it uses.
 
     Returns the BYTES, not a boolean, so the caller restores a re-encoding of exactly
     what was cleared rather than the original matched text.
@@ -263,15 +298,15 @@ def _scanned_bitmap_bytes(b64_body: str) -> bytes | None:
     try:
         raw = base64.b64decode(b64_body + "=" * (-len(b64_body) % 4), validate=False)
     except (ValueError, binascii.Error):
-        return None
+        return None, False
     if not _has_bitmap_signature(raw):
-        return None
+        return None, False
     # Scan the decoded bytes exactly as the text pass would: `redact` operating on a
     # lossy-decoded copy tells us whether the redactor finds anything in there. Only
     # a blob it leaves untouched is safe to exempt.
     probe = raw.decode("utf-8", errors="replace")
     if redact(probe) != probe:
-        return None
+        return None, True
     # And scan the ENCODED text, which is the form actually served. See the docstring:
     # a credential appended to a real raster's body decodes to noise (so the check
     # above passes) but survives re-encoding intact.
@@ -282,9 +317,10 @@ def _scanned_bitmap_bytes(b64_body: str) -> bytes | None:
     # blank every image in every deck. That is the same looks-secure-renders-blank
     # failure `_INLINE_BITMAP_RE` exists to avoid, so the encoded pass matches only
     # STRUCTURED credential markers, which random base64 does not produce by chance.
+    #
     if _ENCODED_CREDENTIAL_RE.search(b64_body):
-        return None
-    return raw
+        return None, True
+    return raw, False
 
 
 # Placeholder that stands in for an excised bitmap during the redaction pass.
@@ -969,8 +1005,32 @@ def _redact_artifact(raw: bytes) -> bytes:
         # A `data:image/...` label is agent-authored, so it is a claim: excise only
         # a blob whose bytes really start like a raster. Anything else stays in the
         # text and gets scanned like ordinary prose.
-        scanned = _scanned_bitmap_bytes(match.group(1))
+        appended = match.group(2) or ""
+        if appended:
+            # The URI does not end where the base64 does, so something is glued to it.
+            # Excise the body AND the whole appended run: a credential appended here
+            # splits at its own separator, the prefix landing in the BODY and surviving
+            # the re-encode, so dropping only the body leaves the rest of the secret in
+            # the text — a PyPI macaroon lost its `pypi-` prefix and served 49 chars of
+            # body. Handing the region to the text pass does not help either: the
+            # bare-secret heuristic eats the base64 run and stops at the separator.
+            #
+            # This deletes text in the (unattested) case where the run is innocent, but
+            # a `-`/`.`/`:`-led run glued to a data URI is not a shape the engine emits,
+            # the deletion is signposted by the tag rather than silent, and the
+            # alternative is serving credential material. The TERMINATOR is not part of
+            # the match, so the surrounding document keeps its quote or bracket.
+            prefix = match.group(0)[: match.start(1) - match.start(0)]
+            return prefix + REDACTED_CREDENTIAL_TAG
+        scanned, credential = _scanned_bitmap_bytes(match.group(1))
         if scanned is None:
+            if credential:
+                # Excise rather than hand back: the text pass only removes tokens
+                # `redact()` itself recognises, which is a NARROWER set than this
+                # scan matches, so delegating served the ones it does not know. A
+                # credential-bearing "image" is not one worth rendering anyway.
+                prefix = match.group(0)[: match.start(1) - match.start(0)]
+                return prefix + REDACTED_CREDENTIAL_TAG
             return match.group(0)
         # Stash a RE-ENCODING of the bytes that were actually scanned, never
         # `match.group(0)`. Restoring the original matched text is what let a

@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } fro
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component, PanelBottom, Globe, CircleDot, Folder } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder } from 'lucide-react'
+import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
@@ -29,7 +30,7 @@ import { i18nT } from '../../i18n/t'
 const KIND_ICON: Record<TabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
-  file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Package size={16} />, folder: <Folder size={16} />,
+  file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Component size={16} />, folder: <Folder size={16} />,
 }
 
 /**
@@ -383,12 +384,12 @@ export default function SidePanel({
       <div className="side-panel-strip flex items-center gap-1.5 shrink-0 p-2 rounded-tl-xl bg-bg-elevated">
         {/* Collapse the panel (far-left), separated from the tabs by a hairline. */}
         <button
-          className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
+          className="pi-morph flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
           onClick={onClose}
           title={i18nT('pages.chat.sidePanel.close_panel')}
           aria-label={i18nT('pages.chat.sidePanel.close_panel')}
         >
-          <PanelRightClose size={15} />
+          <PanelRightLight size={15} />
         </button>
         <span aria-hidden="true" className="w-px h-5 bg-border shrink-0" />
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
@@ -733,11 +734,11 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, onTransfer, 
           {onTransfer && (
             <button
               onClick={(e) => { e.stopPropagation(); onTransfer() }}
-              className={`shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
+              className={`pi-morph shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
               title={i18nT('pages.chat.sidePanel.move_to_bottom_panel')}
               aria-label={i18nT('pages.chat.sidePanel.move_to_bottom_panel')}
             >
-              <PanelBottom size={12} />
+              <PanelBottomSolid size={12} />
             </button>
           )}
           {closable && (

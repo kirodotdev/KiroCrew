@@ -30,7 +30,7 @@ This module defines a **namespaced, versioned, typed** protocol extension:
                "schemaVersion": 1,
                "sessionKey": "T123ABC:C456DEF:1777...",
                "sessionType": "slack-thread" | "dashboard" | "cron" | ...,
-               "principalId": "mingweic",
+               "principalId": "alice",
                "channelId": "C0AUNEY55NV"
            }
        }

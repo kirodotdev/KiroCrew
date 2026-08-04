@@ -814,6 +814,10 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # text. find_contradiction_candidates and write_lesson are synchronous
         # (blocking embed + O(N) cosine scan), so run them via to_thread to
         # avoid stalling concurrent dashboard/Slack requests.
+        # Read the space generation BEFORE embedding: write_lesson cannot infer the
+        # space of a vector computed out here, and a model swap landing between this
+        # embed and the write would otherwise commit it into the wrong space.
+        rule_emb_generation = vs.space_generation
         rule_emb = await asyncio.to_thread(vs.embed_lesson, rule)
         # Persist the lesson immediately so the request returns fast. The
         # contradiction sweep below makes a per-candidate LLM call (~27s each);
@@ -822,7 +826,15 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # for a lesson that was actually saved (and re-saved on every retry).
         # Writing first, then sweeping in the background, keeps the slow LLM call
         # off the request path.
-        await asyncio.to_thread(vs.write_lesson, rule, category, None, "user_explicit", rule_emb)
+        await asyncio.to_thread(
+            vs.write_lesson,
+            rule,
+            category,
+            None,
+            "user_explicit",
+            rule_emb,
+            rule_emb_generation,
+        )
         candidates = await asyncio.to_thread(
             vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb
         )

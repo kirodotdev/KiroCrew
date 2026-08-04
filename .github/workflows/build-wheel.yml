@@ -50,6 +50,13 @@ jobs:
           sed -i "s/__version__ = \".*\"/__version__ = \"${WHEEL_VERSION}\"/" src/kiro_crew/__init__.py
           echo "Building wheel: ${WHEEL_VERSION}"
 
+      - name: Stamp distribution channel
+        run: |
+          # Must run BEFORE `python -m build` so _build_info.py is inside the
+          # package tree when the wheel is assembled. Without it every pip
+          # install reports "source" and the channel breakdown is a constant.
+          bash scripts/stamp-distribution.sh wheel
+
       - name: Build frontend
         working-directory: website
         run: |

@@ -1,6 +1,20 @@
+---
+title: Update Architecture (install-shape capability contract)
+status: draft
+author: zezhexu
+created: 2026-07-31
+last-audited: 2026-08-03
+audited-at: 0ab6ed48
+doc-pr: 1003
+implementation-prs: []
+tracking-issues: []
+supersedes: []
+superseded-by: []
+---
 # RFC: Update Architecture (install-shape capability contract)
 
-- Status: DRAFT
+- Status: draft — the document is merged (PR #1003) but **zero of its three phases has any implementation on main.** `platform/update_capability.py` does not exist; `KIROCREW_DISTRIBUTION` is still telemetry-only with one caller (`beacon.py:438`); the three divergent `.git` derivations are intact; boot-time git auto-apply is still armed (`slack/gateway.py:5145`); all three SPA surfaces remain install-shape-coupled; no wheel/pipx self-replacement path exists; no on-disk update lease. Adjacent in-flight under a **different** design: PR #999 (`feat/emergency-release-controls`, open) adds a feed-served minimum version + mandatory-update modal for the desktop lane only, without the capability contract.
+- Correction to the reference below: KiroCrew ships **five** distribution shapes, not the set implied — `beacon.py:155` lists `{dmg, appimage, wheel, source, docker}`.
 - Author: zezhexu
 - Created: 2026-07-31
 - Related: `docs/release-process-design.md` (channels, release branches, promotion), `docs/request-for-change/version-compliance-framework.md` (the policy ceiling this RFC must honor)
@@ -33,9 +47,13 @@ Five shapes, enumerated at `src/kiro_crew/beacon.py:136`:
 KNOWN_DISTRIBUTIONS = frozenset({"dmg", "appimage", "wheel", "source", "docker"})
 ```
 
-That value is stamped at build time by the packaging scripts into
-`KIROCREW_DISTRIBUTION` (`beacon.py:135`) and is read **only by telemetry**. No
-update code consults it.
+Each packaging path stamps that value at build time into a generated
+`kiro_crew/_build_info.py` (via `scripts/stamp-distribution.sh`), which
+`beacon.distribution()` prefers over the `KIROCREW_DISTRIBUTION` env var: a
+baked module ships with the artifact and a running install cannot change it,
+whereas the env var is inherited by child processes and settable by anyone with
+a shell. Windows (Squirrel) has no value in the set and reports `source`. The
+field is read **only by telemetry**; no update code consults it.
 
 Three mechanisms:
 

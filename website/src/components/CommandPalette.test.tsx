@@ -193,6 +193,7 @@ vi.mock('../store', () => ({
 import CommandPalette from './CommandPalette'
 import { useCommandPalette, DOUBLE_SHIFT_WINDOW_MS } from '../hooks/useCommandPalette'
 import { SHORTCUTS_ENABLED_KEY } from '../hooks/useKeyboardShortcuts'
+import { QUICK_SEARCH_SHORTCUT_KEY } from '../lib/quickSearchShortcut'
 import type { Result } from './commandPalette/types'
 
 afterEach(() => {
@@ -330,6 +331,62 @@ describe('useCommandPalette — Enable shortcuts toggle', () => {
       fireEvent.keyDown(window, { key: 'Shift' })
       fireEvent.keyDown(window, { key: 'Shift' })
     })
+    expect(result.current.open).toBe(true)
+  })
+})
+
+describe('useCommandPalette — configurable activation', () => {
+  // jsdom localStorage is shared across the file; clear the preference so a
+  // mode set here can't leak into later suites, and vice versa.
+  afterEach(() => {
+    localStorage.removeItem(QUICK_SEARCH_SHORTCUT_KEY)
+    localStorage.removeItem(SHORTCUTS_ENABLED_KEY)
+  })
+
+  it('default (unconfigured) preserves BOTH double-Shift and the ⌘K alias', () => {
+    // Backward compatibility: with nothing stored, the shipped behavior stands.
+    const a = renderHook(() => useCommandPalette())
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Shift' })
+      fireEvent.keyDown(window, { key: 'Shift' })
+    })
+    expect(a.result.current.open).toBe(true)
+    a.unmount()
+
+    const b = renderHook(() => useCommandPalette())
+    act(() => { fireEvent.keyDown(window, { key: 'k', metaKey: true }) })
+    expect(b.result.current.open).toBe(true)
+  })
+
+  it('mod-k mode: ⌘K/Ctrl+K toggles, but double-Shift no longer opens', () => {
+    localStorage.setItem(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify({ mode: 'mod-k' }))
+    const { result } = renderHook(() => useCommandPalette())
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Shift' })
+      fireEvent.keyDown(window, { key: 'Shift' })
+    })
+    expect(result.current.open).toBe(false)
+    act(() => { fireEvent.keyDown(window, { key: 'k', ctrlKey: true }) })
+    expect(result.current.open).toBe(true)
+  })
+
+  it('custom mode: the recorded chord toggles; double-Shift and the ⌘K alias are off', () => {
+    // Non-mac test env, so the `mod` chord resolves to Ctrl.
+    localStorage.setItem(
+      QUICK_SEARCH_SHORTCUT_KEY,
+      JSON.stringify({ mode: 'custom', custom: { key: 'p', mod: true } }),
+    )
+    const { result } = renderHook(() => useCommandPalette())
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Shift' })
+      fireEvent.keyDown(window, { key: 'Shift' })
+    })
+    expect(result.current.open).toBe(false)
+    // The ⌘K/Ctrl+K alias is suppressed once a custom chord is bound.
+    act(() => { fireEvent.keyDown(window, { key: 'k', ctrlKey: true }) })
+    expect(result.current.open).toBe(false)
+    // The custom chord (Ctrl+P here) toggles the palette.
+    act(() => { fireEvent.keyDown(window, { key: 'p', code: 'KeyP', ctrlKey: true }) })
     expect(result.current.open).toBe(true)
   })
 })

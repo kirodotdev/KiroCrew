@@ -47,6 +47,17 @@ vi.mock('../api/client', () => ({
       skipped: [],
       merge_only: true,
     }),
+    onboardingImportState: vi.fn().mockResolvedValue({}),
+    // The first-run Privacy chapter renders the real TelemetryToggle.
+    beaconStatus: vi.fn().mockResolvedValue({
+      enabled: true,
+      would_send: true,
+      reason: 'ready',
+      endpoint_configured: true,
+      env_override: false,
+      env_var: 'KIROCREW_TELEMETRY_DISABLED',
+    }),
+    patchConfig: vi.fn().mockResolvedValue({}),
   },
   // Default to "no auth banner showing" so existing App tests render the
   // normal connected/offline pill paths. The dedicated auth-banner
@@ -147,6 +158,156 @@ describe('App routing', () => {
     })
   })
 
+  // ── First-run chapter order: Import setup → Privacy → Customize ───────────
+  // Privacy is MANDATORY, so these cover the two ways out of chapter 1: it
+  // completing with nothing to import, and "Skip all".
+  describe('first-run Privacy chapter', () => {
+    const freshFirstRun = async () => {
+      const { api } = await import('../api/client')
+      localStorage.clear()
+      vi.mocked(api.updateThemeConfig).mockClear()
+      vi.mocked(api.themeBoot).mockResolvedValue({
+        mode: '',
+        color: '',
+        onboarded: false,
+        import_onboarded: false,
+      } as never)
+      return api
+    }
+
+    it('opens after Import setup and gates the Customize chapter', async () => {
+      await freshFirstRun()
+      // Nothing to import: the import chapter completes itself, and Privacy is
+      // still shown rather than skipped along with it.
+      renderWithProviders(<App />, { route: '/chat' })
+
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
+      expect(within(dialog).getByText('Anonymous daily heartbeat')).toBeInTheDocument()
+      // Mandatory: no way past it but forward.
+      expect(within(dialog).queryByRole('button', { name: /skip/i })).not.toBeInTheDocument()
+      // The Customize chapter must not be reachable behind it.
+      expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+
+      expect(await screen.findByText('Pick your look')).toBeInTheDocument()
+      expect(localStorage.getItem('mc-privacy-acked')).toBe('1')
+    })
+
+    it('"Skip all" from the Customize chapter ends first run without re-showing Privacy', async () => {
+      const api = await freshFirstRun()
+      renderWithProviders(<App />, { route: '/chat' })
+
+      // Chapter 1 (nothing to import) → Privacy → Customize.
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+      expect(await screen.findByText('Pick your look')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Skip all setup and onboarding' }))
+
+      // Privacy is already behind the user, so the skip lands in the product.
+      await waitFor(() =>
+        expect(api.updateThemeConfig).toHaveBeenCalledWith({ onboarded: true }))
+      expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument()
+      expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+    })
+
+    it('"Skip all" still lands on Privacy, then ends first run', async () => {
+      const api = await freshFirstRun()
+      vi.mocked(api.onboardingImportScan).mockResolvedValueOnce({
+        sources: [{
+          id: 'codex',
+          name: 'Codex',
+          detected: true,
+          detail: '~/.codex',
+          categories: [{
+            id: 'instructions',
+            label: 'Instructions',
+            count: 2,
+            description: 'Agent instructions',
+          }],
+        }],
+        skipped: [],
+        merge_only: true,
+      } as never)
+
+      renderWithProviders(<App />, { route: '/chat' })
+
+      const importDialog = await screen.findByRole('dialog', { name: 'Import agent setup' })
+      fireEvent.click(
+        within(importDialog).getByRole('button', { name: 'Skip all setup and onboarding' }),
+      )
+
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
+      // Skipping everything does not skip the disclosure — but nothing follows it.
+      expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+
+      await waitFor(() =>
+        expect(api.updateThemeConfig).toHaveBeenCalledWith({ onboarded: true }))
+      expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+    })
+
+    // Escape IS "Skip all" — same routing, from a keystroke instead of the
+    // header control. Asserted end-to-end because the two halves live apart:
+    // the flow reports a skip, and App is what owes the user Privacy first.
+    it('Escape in Import setup lands on Privacy, then ends first run', async () => {
+      const api = await freshFirstRun()
+      vi.mocked(api.onboardingImportScan).mockResolvedValueOnce({
+        sources: [{
+          id: 'codex',
+          name: 'Codex',
+          detected: true,
+          detail: '~/.codex',
+          categories: [{
+            id: 'instructions',
+            label: 'Instructions',
+            count: 2,
+            description: 'Agent instructions',
+          }],
+        }],
+        skipped: [],
+        merge_only: true,
+      } as never)
+
+      renderWithProviders(<App />, { route: '/chat' })
+      await screen.findByRole('dialog', { name: 'Import agent setup' })
+
+      fireEvent.keyDown(document, { key: 'Escape' })
+
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
+      expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
+
+      // Escape skipped the REST of first run, so Customize never opens.
+      await waitFor(() =>
+        expect(api.updateThemeConfig).toHaveBeenCalledWith({ onboarded: true }))
+      expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+    })
+
+    // A tree whose import chapter was completed by a build that PREDATES the
+    // Privacy chapter: `mc-import-onboarded` is set, `mc-privacy-acked` is not.
+    // The tour is seeded from localStorage BEFORE theme boot resolves, so this
+    // holds boot pending — the window in which the derive effect cannot yet
+    // correct anything, and the only thing standing between "Done" and the end
+    // of first run is the guard on the completion path itself.
+    it('cannot end first run from the pre-boot tour when Privacy is unacknowledged', async () => {
+      const api = await freshFirstRun()
+      localStorage.setItem('mc-import-onboarded', '1')
+      // Boot never resolves for the duration of this test.
+      vi.mocked(api.themeBoot).mockReturnValueOnce(new Promise(() => {}) as never)
+
+      renderWithProviders(<App />, { route: '/chat' })
+
+      // The seed must NOT put Customize on screen ahead of the disclosure.
+      expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+      // And nothing may have marked first run complete.
+      expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
+    })
+  })
+
   it('renders chat page at /chat', () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByTestId('chat-page')).toBeInTheDocument()
@@ -185,10 +346,10 @@ describe('App routing', () => {
     expect(screen.getByText('Sessions')).toBeInTheDocument()
     expect(screen.getByText('Agent Capabilities')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
-    // The App Store rides the Apps section header as an accent link.
+    // The App Store now rides the Apps section header as an accent link.
     expect(screen.getByText('Explore')).toBeInTheDocument()
     // The bottom-pinned community row: two stacked GitHub links under one mark,
-    // plus the icon-only Discord link.
+    // plus the icon-only Discord link. The kiro.dev link was removed.
     expect(screen.getByText('Star us')).toBeInTheDocument()
     expect(screen.getByText('Report issue')).toBeInTheDocument()
     expect(screen.getByLabelText('Star KiroCrew on GitHub')).toBeInTheDocument()
@@ -198,23 +359,24 @@ describe('App routing', () => {
   })
 
   it('renders the registry-derived Artifacts and Knowledge nav items', () => {
-    // Both Artifacts and Knowledge are registered unconditionally in
-    // `surfaces/builtins.tsx`, so they must always appear in the
-    // registry-driven rail (`NAV_ITEMS = getBuiltinSurfaces().map(...)`).
-    // Asserting them by label catches a hardcoded-array regression (an array
-    // that omits Artifacts and Knowledge) that the isolated surfaces.test.tsx
-    // cannot.
+    // Regression guard for the aaf7cfe stale-branch merge, which reverted the
+    // registry-driven rail (`NAV_ITEMS = getBuiltinSurfaces().map(...)`) back
+    // to a hardcoded array that omitted Artifacts and Knowledge. Both are
+    // registered unconditionally in `surfaces/builtins.tsx`, so they must
+    // always appear in the rail. Asserting them by label catches a future
+    // hardcoded-array regression that the isolated surfaces.test.tsx cannot.
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByText('Artifacts')).toBeInTheDocument()
     expect(screen.getByText('Knowledge')).toBeInTheDocument()
   })
 
   it('does not double-render Secretary when the builtin Secretary app is enabled', async () => {
-    // Secretary registers a surface (so its attention badge wires through
-    // `selectSurfaceBadgeCount`) but is rendered as a nav item by `appNavItems`
-    // from `api.listApps()`, not by NAV_ITEMS. With `appOnly: true` on the
-    // Secretary surface, `getBuiltinSurfaces()` excludes it from NAV_ITEMS so it
-    // appears exactly once even when api.listApps() returns it.
+    // Regression for the Surface registry refactor: Secretary registers a
+    // surface (so its attention badge wires through `selectSurfaceBadgeCount`)
+    // but is rendered as a nav item by `appNavItems` from `api.listApps()`,
+    // not by NAV_ITEMS. With `appOnly: true` on the Secretary surface,
+    // `getBuiltinSurfaces()` excludes it from NAV_ITEMS so it should appear
+    // exactly once even when api.listApps() returns it.
     const { api } = await import('../api/client')
     ;(api.listApps as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       {
@@ -235,9 +397,9 @@ describe('App routing', () => {
   })
 
   it('collapses a long Apps list behind a "more" toggle so the nav cannot grow unbounded', async () => {
-    // With many enabled apps the rail would grow past the viewport, so the Apps
-    // group shows up to APPS_NAV_LIMIT (6) and hides the rest behind a
-    // "show more" toggle.
+    // Regression for the nav-overflow bug: with many enabled apps the rail used
+    // to grow past the viewport. The Apps group now shows up to APPS_NAV_LIMIT
+    // (6) and hides the rest behind a "show more" toggle.
     const { api } = await import('../api/client')
     const manyApps = Array.from({ length: 10 }, (_, i) => ({
       name: `app${i}`,
@@ -283,12 +445,12 @@ describe('App routing', () => {
   })
 
   it('refetches the Apps nav when the gateway reconnects (post-update recovery)', async () => {
-    // The empty-rail-after-update case: the dashboard fetches /api/apps once on
-    // mount, and right after a `kirocrew update` restart that first fetch can
-    // come back empty while the gateway is still warming. When the WebSocket
-    // reconnects, the Apps nav must refetch and self-heal — otherwise it stays
-    // empty until a manual reload (Browse, lazy-fetched, keeps working, which is
-    // why apps still show in the App Store).
+    // Regression for the empty-rail-after-update bug: the dashboard fetches
+    // /api/apps once on mount, and right after a `kirocrew update` restart that
+    // first fetch can come back empty while the gateway is still warming. When
+    // the WebSocket reconnects, the Apps nav must refetch and self-heal —
+    // previously it stayed empty until a manual reload (Browse, lazy-fetched,
+    // kept working, which is why apps still showed in the App Store).
     const { api } = await import('../api/client')
     const lateApp = {
       name: 'late', displayName: 'Late App', enabled: true, origin: 'installed',
@@ -312,8 +474,8 @@ describe('App routing', () => {
   })
 
   it('retries the initial Apps-nav fetch after a transient failure', async () => {
-    // The mount fetch can reject while the gateway is mid-restart; that failure
-    // must not be swallowed (empty rail). refreshAppNav retries with bounded
+    // The mount fetch can reject while the gateway is mid-restart; the failure
+    // used to be swallowed (empty rail). refreshAppNav now retries with bounded
     // backoff so the apps appear without a manual reload.
     vi.useFakeTimers()
     try {
@@ -415,11 +577,11 @@ describe('App routing', () => {
   })
 
   it('dismisses the collapsed overflow-toggle hover label when the toggle is pressed', async () => {
-    // Pressing the Apps overflow toggle in the collapsed rail must dismiss its
-    // portaled "N more" / "Show less" flyout. Two causes would otherwise leave
-    // it on screen: expanding re-flows the list so the row moves out from under
-    // a stationary cursor (no mouseleave is dispatched), and the click's own
-    // focus re-arms the label. Activation must dismiss it.
+    // Regression: pressing the Apps overflow toggle in the collapsed rail left
+    // its portaled "N more" / "Show less" flyout on screen until the user
+    // clicked elsewhere. Two causes: expanding re-flows the list so the row
+    // moves out from under a stationary cursor (no mouseleave is dispatched),
+    // and the click's own focus re-armed the label. Activation must dismiss it.
     const { fireEvent } = await import('@testing-library/react')
     const { api } = await import('../api/client')
     const manyApps = Array.from({ length: 10 }, (_, i) => ({
@@ -457,8 +619,9 @@ describe('App routing', () => {
   it('renders Kiro Crew branding', () => {
     localStorage.removeItem('mc-nav') // expanded sidebar shows the brand text
     renderWithProviders(<App />, { route: '/chat' })
-    // Brand (logo + name) lives in the sidebar menu row.
-    expect(screen.getAllByText('Kiro Crew').length).toBeGreaterThan(0)
+    // Brand (logo + name) moved from the top bar into the sidebar menu row.
+    // The wordmark renders as two colored segments ('Kiro ' + 'Crew').
+    expect(screen.getAllByText('Crew').length).toBeGreaterThan(0)
     localStorage.removeItem('mc-nav')
   })
 
@@ -479,10 +642,10 @@ describe('App routing', () => {
 
   it('resizes the sidebar and main body together with a quick shell transition', () => {
     localStorage.removeItem('mc-nav')
-    // The width transition must be unconditional — including with Activity open.
-    // Gating it on a 180ms pulse AND the Activity panel being closed makes the
-    // sidebar snap instead of animate whenever Activity is open (or a slow frame
-    // eats the pulse).
+    // Regression (PR #94): the width transition was gated on a 180ms pulse AND
+    // the Activity panel being closed, so the sidebar snapped instead of
+    // animating whenever Activity was open (or a slow frame ate the pulse).
+    // The transition must now be unconditional — including with Activity open.
     const store = createTestStore()
     store.dispatch(openActivityPanel())
     renderWithProviders(<App />, { route: '/chat', store })
@@ -506,9 +669,9 @@ describe('App routing', () => {
     renderWithProviders(<App />, { route: '/chat' })
 
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    // Brand (logo + name) lives in the rail's menu row; the collapse control is
-    // an arrow-left-to-line button.
-    expect(within(nav).getByText('Kiro Crew')).toBeInTheDocument()
+    // Brand (logo + name) now lives in the rail's menu row, replacing the old
+    // hamburger; the collapse control is an arrow-left-to-line button.
+    expect(within(nav).getByText('Crew')).toBeInTheDocument()
     const collapse = within(nav).getByRole('button', { name: 'Collapse sidebar' })
     expect(within(nav).queryByRole('button', { name: 'Toggle sidebar' })).not.toBeInTheDocument()
     expect(within(nav).queryByText('Main')).not.toBeInTheDocument()
@@ -540,9 +703,9 @@ describe('App routing', () => {
     safeSetItem('mc-nav', '1')
     renderWithProviders(<App />, { route: '/chat' })
 
-    // Request a Feature is its own pill in the header's right-side actions
-    // cluster; it stays visible regardless of the sidebar's collapsed/expanded
-    // state.
+    // Request a Feature moved out of the brand region into its own pill in the
+    // header's right-side actions cluster; it stays visible regardless of the
+    // sidebar's collapsed/expanded state.
     expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
 
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
@@ -555,8 +718,8 @@ describe('App routing', () => {
 
   it('renders connection status', () => {
     renderWithProviders(<App />, { route: '/chat' })
-    // Connection is a colored dot in the unified readout capsule (no "Offline"
-    // text -- the capsule's red tint is the disconnected signal).
+    // Connection is a colored dot in the unified readout capsule ("Offline"
+    // text was removed -- the capsule's red tint is the disconnected signal).
     expect(screen.getByLabelText('Gateway offline')).toBeInTheDocument()
   })
 

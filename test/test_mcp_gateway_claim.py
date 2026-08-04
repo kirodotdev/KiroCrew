@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -566,11 +565,11 @@ def _endpoint_dir() -> str | None:
 
 
 @pytest.mark.asyncio
-async def test_send_claim_roundtrip() -> None:
+async def test_send_claim_roundtrip(short_sock_dir) -> None:
     """The sender round-trips a claim frame over a real unix socket and treats
     a ``claimed`` ack as success, anything else as failure."""
     received: list[dict[str, Any]] = []
-    sock = Path(tempfile.mkdtemp(dir=_endpoint_dir())) / "gw.sock"
+    sock = short_sock_dir / "gw.sock"
 
     async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         raw = await reader.readline()
@@ -592,9 +591,9 @@ async def test_send_claim_roundtrip() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_claim_failure_paths() -> None:
+async def test_send_claim_failure_paths(short_sock_dir) -> None:
     """A missing socket or a non-ack response returns False without raising."""
-    base = Path(tempfile.mkdtemp(dir=_endpoint_dir()))
+    base = short_sock_dir
     assert await claim_mod.send_claim(str(base / "absent.sock"), 7, "dashboard:x") is False
 
     sock = base / "nak.sock"
@@ -614,14 +613,12 @@ async def test_send_claim_failure_paths() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_claim_aggregate_timeout_bound(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_send_claim_aggregate_timeout_bound(monkeypatch: pytest.MonkeyPatch, short_sock_dir) -> None:
     """A gatewayd that accepts but never responds is bounded by ONE aggregate
     budget — not one budget per phase (connect/drain/readline), which would
     triple the worst-case stall (review-bot finding f-d76c6f17)."""
     monkeypatch.setattr(claim_mod, "_CLAIM_TIMEOUT_SECS", 0.3)
-    sock = Path(tempfile.mkdtemp(dir=_endpoint_dir())) / "stall.sock"
+    sock = short_sock_dir / "stall.sock"
     stalled = asyncio.Event()
 
     async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

@@ -3235,7 +3235,7 @@ def _is_credential_mint(text_lower: str) -> bool:
     program is the product CLI and one of whose words is exactly ``token``.
 
     Does NOT match the word appearing in a path or another program's arguments:
-    ``cd /workplace/nrb/kirocrew-wt-x && pytest test/test_token_auth.py`` has no
+    ``cd /workplace/user/kirocrew-wt-x && pytest test/test_token_auth.py`` has no
     argv whose PROGRAM is the CLI, and ``kirocrew doctor | grep token`` puts the
     word in ``grep``'s argv, not the CLI's.
     """
@@ -4408,6 +4408,19 @@ _NORMALIZER_READ_VERBS: frozenset[str] = frozenset(
 )
 
 
+# ── Hardlink/symlink creation verbs ──
+# A hardlink (or symlink) to a credential file "flattens" it onto a benign,
+# non-sensitive alias: `ln ~/.npmrc ./x` then reading `./x` exposes the token
+# while dodging the path-based read matcher (GPT review, PR #1339 — standard
+# sandbox mode does NOT bind-mask credential paths, so the command gate is the
+# only line there). We do NOT block link/linkat at the syscall layer (that
+# banned npm cacache's internal fs.link and every benign hardlink); instead we
+# treat an AGENT-ISSUED link command like a read and resolve its operands
+# through is_sensitive_path(), so linking a sensitive SOURCE is refused at the
+# same fidelity as reading it. npm's own fs.link() never transits this gate.
+_LINK_CREATE_VERBS: frozenset[str] = frozenset({"ln", "link"})
+
+
 def is_sensitive_bash_command(command: str) -> str | None:
     """Check if a bash command reads sensitive paths, accesses IMDS, or leaks env creds.
 
@@ -4472,18 +4485,18 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     if not tokens:
         return None
 
-    # Check if any token resolves to a known read verb (by basename, so
-    # /usr/bin/cat is recognized as "cat").
-    has_read_verb = False
+    # Check if any token resolves to a known read verb or hardlink/symlink
+    # creation verb (by basename, so /usr/bin/cat is recognized as "cat").
+    has_relevant_verb = False
     for token in tokens:
         if not token:
             continue
         basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS:
-            has_read_verb = True
+        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
+            has_relevant_verb = True
             break
 
-    if not has_read_verb:
+    if not has_relevant_verb:
         return None
 
     # Route each path-like token through is_sensitive_path()
@@ -4493,9 +4506,9 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
         # Skip flags
         if token.startswith("-"):
             continue
-        # Skip tokens that ARE the read verb itself
+        # Skip tokens that ARE the verb itself
         basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS:
+        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
             continue
         # Only check tokens that look like filesystem paths
         if not _is_path_like(token):
@@ -5239,6 +5252,12 @@ def _decode_b64_safe(text: str) -> str:
 # redactor (`redact_credentials`) and the streaming fail-closed path
 # (`StreamRedactor.feed`) so the on-the-wire marker is identical everywhere.
 _REDACTED_CREDENTIAL_TAG = "[REDACTED: credential]"
+
+# Public alias for modules that must emit the SAME tag rather than duplicate the
+# literal — e.g. the pptx-maker preview, which excises a credential-bearing bitmap
+# itself because this module's redactor recognises a narrower token set than that
+# scan matches.
+REDACTED_CREDENTIAL_TAG = _REDACTED_CREDENTIAL_TAG
 
 
 def redact_credentials(text: str) -> tuple[str, list[str]]:

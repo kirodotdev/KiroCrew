@@ -111,6 +111,26 @@ export default [
       // user-visible copy ever added to THIS path will not be reported — keep the
       // module parser-facing only.
       'src/apps/pptx-maker/lib.ts',
+      // Model-facing, not user-facing: `planningInstructionForMode` returns the
+      // behaviour instruction embedded in the pet's planning PROMPT. Translating it
+      // would send the agent a localized instruction while the rest of its prompt
+      // stays English, which is a regression, not a fix.
+      'src/apps/mochi/src/shared/config.ts',
+      // Design tokens / pack DATA, not UI chrome: `themes.ts` is CSS custom
+      // properties + color-mix values; `builtInCatPresets.ts` is a hex→region
+      // color map; `builtinPacks.ts` is builtin pack definitions (ids, authors,
+      // thumbnail filenames, brand names, and English-pinned persona descriptions
+      // that double as the agent prompt). None of it is translatable UI copy.
+      'src/apps/mochi/src/shared/themes.ts',
+      'src/apps/mochi/src/shared/builtInCatPresets.ts',
+      'src/apps/mochi/builtinPacks.ts',
+      // Machine HTML/markup only (DOCTYPE, a fixed stylesheet, a sandboxed
+      // iframe element) that hosts an untrusted widget in a browser popout —
+      // never user-facing copy. Same rationale as the srcdoc builders above.
+      'src/apps/mochi/src/shared/widgetPopout.ts',
+      // Key glyphs / key-cap names only (⌘ ⇧ ⌥ / Ctrl Win Alt) — a machine
+      // grammar the OS parses, not translatable copy. Same rationale as above.
+      'src/apps/mochi/src/shared/shortcut.ts',
     ],
     linterOptions: {
       // Every `eslint-disable` comment in this codebase targets the MAIN config's
@@ -186,6 +206,17 @@ export default [
               //      flagged, so it lands in the baseline. Accepted: a false positive
               //      costs one baseline entry, a false negative hides copy forever.
               '^(?![a-z]+(?: [a-z]+)+$)[\\s\\-a-z0-9:/\\[\\]().%#]+$',
+              // CSS ATTRIBUTE SELECTORS, e.g. `[role="dialog"],[data-x]` — a
+              // comma-joined list of bracketed attribute selectors, as passed to
+              // querySelector. The Tailwind/class shape above cannot cover these:
+              // its char class forbids `=`, `"` and `,`, which is exactly what an
+              // attribute selector is made of. Such constants live at module level
+              // under an ALL-CAPS name, so `i18n-strict` looks inside them.
+              //
+              // Deliberately anchored and total: the WHOLE string must be
+              // bracketed selectors, so prose cannot match (prose has no square
+              // brackets), and a sentence merely containing one is still flagged.
+              '^\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\](?:\\s*,\\s*\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\])*$',
               // Identifiers, paths, URLs, mime types, storage keys.
               // camelCase identifiers only. A plain lowercase word must NOT be excluded
               // here: `saved`, `active` and `done` are all real UI copy, and a pattern of
@@ -249,6 +280,61 @@ export default [
               // slash-prefixed string (`'/Delete'`) is exempt.
               '^https?://\\S*$',
               '^[.~]?/\\S*$',
+              // NOTE ON SHAPE: the plugin wraps every pattern as `^<pattern>$`
+              // (`generateFullMatchRegExp`), so a pattern must describe the WHOLE
+              // string. A prefix-only pattern like `^data:` becomes `^^data:$` and can
+              // never match — which is why each entry below is a full match.
+              //
+              // Data URIs and MIME types. A base64 payload is not copy, and the
+              // `image/png` half of one is a wire value the server matches on. The
+              // second pattern also covers a comma-joined accept list.
+              'data:[\\s\\S]*$',
+              '[a-z]+/[a-z0-9.+-]+(?:,[a-z]+/[a-z0-9.+-]+)*$',
+              // Hex colours, and CSS functional values the lowercase-CSS pattern above
+              // misses: a hex colour carries uppercase letters, and `scaleX(-1)` /
+              // `rgba(...)` / `radial-gradient(...)` carry an interior capital or a comma.
+              '#[0-9A-Fa-f]{3,8}$',
+              '(?:scale|translate|rotate|skew|matrix)[XYZ]?\\([\\s\\S]*\\)$',
+              '(?:rgba?|hsla?|var|calc|url|(?:linear|radial|conic)-gradient)\\([\\s\\S]*\\)$',
+              // Multi-value CSS shorthand: `border-color 150ms, background 150ms`. A CSS
+              // unit is required so ordinary prose containing a comma cannot slip through.
+              '[a-z][a-z0-9-]*(?:[ ,][a-z0-9%.()-]+)*(?:ms|s|px|em|rem|%)(?:[ ,][^A-Z]*)?$',
+              // snake_case discriminants: `trust_reads`, `not_connected`, `mochi_off`,
+              // `approval_required`. The camelCase pattern above covers the other
+              // identifier convention; this covers the one the pet's state and event
+              // vocabularies use. An interior underscore is required, so a plain word
+              // stays flagged.
+              '[a-z][a-z0-9]*(?:_[a-z0-9]+)+$',
+              // Dunder sentinels used as wire markers (`__approval__`, `__new__`), and
+              // the DOM's own `_blank` / `noopener` window-feature tokens.
+              '__[a-z][a-z0-9_]*__?$', '_(?:blank|self|parent|top)$', '(?:noopener|noreferrer)$',
+              // Electron global-shortcut accelerators — a machine grammar the OS parses:
+              // `CommandOrControl+Shift+M`.
+              '(?:Command|Control|CommandOrControl|Cmd|Ctrl|Alt|Option|Shift|Super)(?:\\+[A-Za-z0-9]+)+$',
+              // Key CAP names and modifier glyphs. These name physical keys, which the
+              // catalog's own translator context says are left as printed on the keyboard
+              // (see `components.shortcutsModal.k`, `components.commandPalette.tab`).
+              '[⌘⇧⌥⌃]+[A-Za-z0-9]?$', '(?:Ctrl|Cmd|Alt|Win|Opt|Shift|Esc|Tab|Enter|Del)$',
+              // A TEMPLATE LITERAL is validated one QUASI at a time (the rule reports
+              // the whole template if ANY quasi fails), so the fragments BETWEEN
+              // interpolations need shapes of their own. `data:${mime};base64,${b64}`
+              // splits into `data:`, `;base64,` and `` — the first matches the data-URI
+              // pattern above, the second needs this.
+              '[;,]?base64,?$',
+              // API paths with an optional query string: `/api/file-raw?path=`. The
+              // `^[.~]?/` entry above cannot match these — the plugin full-anchors every
+              // pattern, so a prefix-only one is inert.
+              '/[\\w./-]*(?:\\?[\\w=&%-]*)?$',
+              // The attachment wire format a composer writes into the outgoing message,
+              // mirroring core's own convention (`[attached_file N] /path`, `![image](path)`).
+              // Machine syntax the agent parses, not copy.
+              '!\\[image\\]\\($', '\\[attached_file$',
+              // An escaped newline joining two interpolations. Quasi values are
+              // TRIMMED before matching, so this arrives as the two characters
+              // backslash and `n` — which the letterless pattern below cannot cover.
+              '\\\\n$',
+              // An HTML/SVG tag fragment used for content sniffing (`'<svg'`).
+              '</?[a-z][a-z0-9]*$',
               // Tokens with no letters at all: separators, punctuation, symbols, numbers.
               // Written as an ASCII class on purpose. `[^\p{L}]` looks equivalent but a
               // JS regex without the `u` flag reads `\p{L}` as the character class
@@ -285,6 +371,14 @@ export default [
             exclude: [
               // Diagnostics and dev-only output.
               '^console\\.\\w+$', '^(Type)?Error$', '^URL(SearchParams)?$',
+              // Validator diagnostics, for parity with `Error` above. A rejected input's
+              // reason names the FIELD that failed (`Missing or invalid "meta" field`,
+              // `Invalid meta.format: "…" (expected "svg", "lottie", or "sprite")`) and
+              // is addressed to whoever authored the malformed file. The same sentence
+              // passed to `new Error(...)` is already exempt one line up, so treating it
+              // as copy only because it lands in an array instead of a throw would be an
+              // artifact of the sink, not a statement about the text.
+              '\\berrors\\.push$',
               // Style and test helpers.
               '^(css|cx|clsx|twMerge|cva)$',
               // Storage, telemetry and routing take machine keys.
@@ -297,6 +391,10 @@ export default [
               // Config PATCH takes a dotted config path (`telemetry.beacon_enabled`),
               // a machine key that must never be translated.
               'patchConfig',
+              // Pet telemetry and state reporting: the argument is an event name from a
+              // fixed vocabulary (`message_sent`, `tool_call`, `approval_required`), read
+              // by the behaviour state machine, never rendered.
+              '^report[A-Z]\\w*$', '^pickFile$',
               'querySelector(All)?', 'getElementById', 'createElement',
               'addEventListener', 'removeEventListener', 'matchMedia',
               // WebGL/DOM capability lookups take registry identifiers
@@ -370,6 +468,9 @@ export default [
               // `api.fetch`, never `prefetch`). A leading `^` opts out of the dotted
               // prefix, which is what is wanted here — `i18nT`, not `obj.i18nT`.
               '^i18nT$', '^t$',
+              // Icon component factory: the string argument is a React DevTools
+              // displayName, not user-visible copy.
+              '^makePanelIcon$',
               // A per-app `request` wrapper takes an ENDPOINT PATH — the same class as
               // the `fetch` exclusion above, and the only thing standing between a
               // route string and the fetch it performs. Anchored, so it cannot match a
@@ -430,11 +531,28 @@ export default [
               // for — `aliases` moves _total 1842 -> 1840 and changes no other file's
               // entry, so it hands nothing back.
               'aliases',
+              // `error` on a VALIDATION RESULT object (`{ ok: false, error }`) — the
+              // same class as `errors.push` in `callees` above, and exempt for the same
+              // reason. A user-facing failure message belongs in a toast or a rendered
+              // element, both of which are still gated.
+              'error',
+              // `reason` carries a diagnostic detail string, not copy: it explains WHY a
+              // validator rejected a machine input (a capture region outside the screen
+              // union, a malformed manifest field) and is logged or attached to a
+              // result object rather than rendered as a sentence to the user.
+              'reason',
+              // CSS-in-JS style values: a grid template or font stack is a
+              // stylesheet declaration, never copy.
+              'gridTemplateColumns', 'fontFamily',
             ],
           },
 
           // `Trans` is excluded by the plugin already; these render markup, not copy.
-          'jsx-components': { exclude: ['Trans', 'Markdown', 'code', 'pre', 'kbd', 'samp'] },
+          'jsx-components': {
+            // `style` holds a stylesheet: the pet windows are separate bundles that
+            // inline their own keyframes, so the child of a <style> tag is CSS source.
+            exclude: ['Trans', 'Markdown', 'code', 'pre', 'kbd', 'samp', 'style'],
+          },
         },
       ],
     },

@@ -135,7 +135,8 @@ import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { BookOpen, EyeOff, Loader, PanelLeftOpen, PanelLeftClose, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, PanelRight, Paperclip } from 'lucide-react'
+import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip } from 'lucide-react'
+import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
 
 import InfoTip from '../components/InfoTip'
 import { FileCard } from '../components/FileCard'
@@ -4278,8 +4279,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   useEffect(() => { if (!isMobile) setMobileSessions(false) }, [isMobile])
   // Swipe from left edge to open sidebar, swipe left on backdrop to close
   const chatContainerRef = useRef<HTMLDivElement>(null)
-  // Measured container height — used to size the sidebar border-box morph
-  // (the panel rect it grows from / shrinks into the expand button).
+  // Measured container height — sizes the sidebar border-box morph (the panel
+  // rect the box shrinks from on collapse and grows back to on expand).
   const [containerH, setContainerH] = useState(0)
   useEffect(() => {
     const el = chatContainerRef.current
@@ -4388,46 +4389,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         )}
       </AnimatePresence>
-      {/* Sidebar collapse/expand control. Two stacked pieces, both in the
-          stable container (not inside the morphing panel):
-          1. Morph border-box: a crisp bordered box (no content, so border &
-             radius stay sharp) that grows from the button's rect to the
-             panel's rect on open and shrinks back on collapse — the panel's
-             border becoming the button's box.
-          2. Icon button: fixed at the button's spot, flips icon + action.
-          Desktop, non-embed, with sessions only. */}
-      {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && (() => {
-        const RADIUS = 12 // same as the panel's rounded-xl — constant through the morph
-        const PANEL = { top: 0, left: 0, width: sidebarWidth, height: Math.max(0, containerH - 8), borderRadius: RADIUS, opacity: 1 }
-        const BTN = { top: 12, left: 8, width: 34, height: 34, borderRadius: RADIUS, opacity: 1 }
-        const MORPH = { duration: 0.32, ease: [0.32, 0.72, 0, 1] as const }
-        return (
-          <>
-            <AnimatePresence initial={false}>
-              {!sidebarOpen && (
-                <motion.div
-                  key="sidebar-morph-box"
-                  aria-hidden="true"
-                  className="absolute z-[60] bg-bg-elevated border border-border shadow-md pointer-events-none"
-                  initial={PANEL}
-                  animate={BTN}
-                  exit={{ ...PANEL, opacity: 0 }}
-                  transition={MORPH}
-                />
-              )}
-            </AnimatePresence>
-            <button
-              type="button"
-              onClick={() => window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))}
-              className="absolute top-[12px] left-2 z-[61] w-[34px] h-[34px] rounded-xl flex items-center justify-center cursor-pointer text-muted hover:text-text transition-colors bg-transparent border-none"
-              title={sidebarOpen ? i18nT('pages.chatPage.hide_sessions') : i18nT('pages.chatPage.show_sessions')}
-              aria-label={sidebarOpen ? i18nT('pages.chatPage.hide_sessions_sidebar') : i18nT('pages.chatPage.show_sessions_sidebar')}
-            >
-              {sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
-            </button>
-          </>
-        )
-      })()}
+      {/* Sidebar toggle — absolute in the stable container in BOTH states
+          (only the icon flips), so collapsing cannot drag it sideways with
+          the reflowing content pane. The collapse/expand motion itself is the
+          panel deforming into/out of this button's rect (OverlayDrawer morph
+          mode, morphTarget below). Desktop, non-embed, with sessions only. */}
+      {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && (
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))}
+          className="pi-morph absolute top-[9px] left-2 z-[61] w-7 h-7 rounded-md flex items-center justify-center cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none"
+          title={sidebarOpen ? i18nT('pages.chatPage.hide_sessions') : i18nT('pages.chatPage.show_sessions')}
+          aria-label={sidebarOpen ? i18nT('pages.chatPage.hide_sessions_sidebar') : i18nT('pages.chatPage.show_sessions_sidebar')}
+        >
+          {sidebarOpen ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />}
+        </button>
+      )}
       {embedMode === 'chat' ? null : embedMode === 'sessions' ? (
         <div className="flex-1 min-w-0 h-full overflow-hidden [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!border-0 [&_.sidebar-inner]:!rounded-none [&_.sidebar-inner]:!shrink [&_.sidebar-inner]:!bg-bg [&_.sidebar-resize-handle]:!hidden">
           <ChatSidebar
@@ -4445,7 +4422,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         </div>
       ) : (
-      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} className={isMobile ? 'mobile-sessions-overlay fixed top-[42px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
+      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} morphTarget={{ x: 8, y: 9, size: 28 }} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-[42px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
         <ChatSidebar
           slots={filteredSlots}
           activeSlot={activeSlot}
@@ -4519,14 +4496,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 in index.css) so the overlay never paints over the scroller's scrollbar
                 track — otherwise the thumb is hidden/un-grabbable when scrolled to top. */}
             <div className="absolute top-0 left-0 right-1.5 z-10 pointer-events-none" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-              <div className={`relative pr-5 pt-1 pb-2 flex items-center gap-2 bg-bg pointer-events-none ${!sidebarOpen && !isMobile ? 'pl-14' : 'pl-5'}`}>
+              {/* The row's left padding GLIDES between its open (20px) and
+                  collapsed (60px, clearing the stationary toggle + divider)
+                  values on the same 320ms curve as the panel — an instant
+                  class flip here reads as the title jumping sideways at the
+                  start of the slide. */}
+              <div className={`relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : 'pl-5'}`}>
+                {/* Divider between toggle and title — ALWAYS mounted and
+                    absolute (zero width, no flex-gap participation) so it can
+                    never change the row's layout; it rides the row (title
+                    side) and only fades. left-[52px] = the collapsed pane's
+                    view of container x 44 (button 8+28 + 8px gap). */}
+                {!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && (
+                  <span aria-hidden="true" className={`absolute left-[52px] top-[13px] w-px h-5 bg-border transition-opacity ${sidebarOpen ? 'opacity-0 duration-100' : 'opacity-100 duration-150 delay-[90ms]'}`} />
+                )}
                 {embedMode !== 'chat' && isMobile && (
                   <button className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto" onClick={() => setMobileSessions(p => !p)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
                     {effectiveMode === 'orchestrator' ? <MessageSquareDot size={16} /> : <MessageSquare size={16} />}
                   </button>
                 )}
                 <div className="group/header flex items-stretch gap-0.5 pointer-events-auto">
-                <div className="rounded-l-md rounded-r-[2px] px-1.5 py-0.5 group-hover/header:bg-bg-hover transition-colors">
+                <div className="flex items-center rounded-l-md rounded-r-[2px] px-1.5 py-0.5 group-hover/header:bg-bg-hover transition-colors">
                 <ChatHeaderMenu
                   activeSlot={activeSlot}
                   agent={currentSlot?.agent}
@@ -4561,7 +4551,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               {/* Trailing controls grouped under a single ml-auto so multiple
                   right-aligned items don't each absorb free space (two ml-auto
                   siblings split the gap, parking the split icon mid-header). */}
-              <div className="ml-auto flex items-center gap-1.5 pr-1.5 pointer-events-none">
+              <div className="ml-auto flex items-center gap-1.5 pointer-events-none">
               {/* Pop-out control, promoted to the title bar (menu items remain for
                   sidebar parity). Mirrors the split-view pattern to its left: a
                   dimmed icon to act, an accent chip when the state is active.
@@ -4588,12 +4578,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   the button does nothing. */}
               {!embedMode && !popout && !activityOpen && (
                 <Clickable
-                  className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+                  className="pi-morph flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
                   onClick={toggleAct}
                   title={i18nT('pages.chatPage.open_activity_panel')}
                   aria-label={i18nT('pages.chatPage.open_activity_panel')}
                 >
-                  <PanelRight size={15} />
+                  <PanelRightSolid size={15} />
                 </Clickable>
               )}
               {!embedMode && splitFeatureEnabled && (splitAnchorForActive && !activeIsSplitAnchor ? (
@@ -4840,8 +4830,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   activity sidebar has no TODO view, so hiding it there would
                   lose the information rather than de-duplicate it. */}
               <TaskProgressBar slot={activeSlot} />
-              {!activityOpen && <SubagentProgressBar slot={activeSlot} />}
-              {!activityOpen && <WorkflowProgressBar slot={activeSlot} />}
+              {/* De-duplicate ONLY against the matching sidebar tab (#728): each
+                  bar is redundant when the activity sidebar is actually SHOWING
+                  its own view (Subagents / Workflows), but on any OTHER tab
+                  (Files, Changes, Logs, Artifacts) hiding it would lose the live
+                  roster entirely. The condition mirrors the SidePanel's own
+                  render guard (`activityOpen && !search.isOpen`) — so opening the
+                  find pane, which UNMOUNTS the panel, re-shows the bar — and
+                  reads the live panel tab (`tabsCtl`), NOT the Redux
+                  `activityTab`, which only tracks programmatic openActivityToTab
+                  calls and goes stale when the user clicks a tab in the panel. */}
+              {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
+              {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}

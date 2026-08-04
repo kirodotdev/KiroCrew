@@ -1,6 +1,19 @@
+---
+title: Local Notification Bus
+status: partial
+author: KiroCrew contributors
+created: 2026-07-10
+last-audited: 2026-08-03
+audited-at: 0ab6ed48
+doc-pr: null
+implementation-prs: [185, 189, 273, 345, 399, 422]
+tracking-issues: [589]
+supersedes: []
+superseded-by: []
+---
 # RFC: Local Notification Bus
 
-- Status: DRAFT
+- Status: partial — Phases 1, 3 and 4 are fully on main (bus core + schema v2, per-channel settings + priority UX, inline actions + `group_key` stacking + dock badge). Phase 2's mechanism is complete and wired (`POST /api/notifications/push`, manifest `notifications.channels`, rate limiter) but has **no producer**: zero shipped `app.json` declares a channel, so its exit criterion is unproven end-to-end. Phase 5 shipped 2 of 3 (the `send_notification` MCP tool and the TTL sweeper); removing the kind-based routing fallbacks is unstarted — `NotificationDetailPanel.tsx` still branches on `n.kind`. Slack escalation was **withdrawn**, not shipped, and is superseded by `rfc-notification-bridge.md`.
 - Author: KiroCrew contributors
 - Created: 2026-07-10
 - Related: rfc-federated-app-platform.md (apps as notification producers), rfc-event-loop-fault-isolation.md (gateway process boundaries)

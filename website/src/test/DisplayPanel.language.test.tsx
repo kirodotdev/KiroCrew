@@ -6,6 +6,7 @@ vi.mock('@radix-ui/react-select', async () => await import('./__mocks__/@radix-u
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent } from '@testing-library/react'
 import React from 'react'
+import i18next from 'i18next'
 
 import { renderWithProviders } from './helpers'
 import { LANG_STORAGE_KEY } from '../i18n/detect'
@@ -104,5 +105,33 @@ describe('DisplayPanel — language picker Auto row', () => {
     const text = autoOptionText()
     expect(text).toContain('English')
     expect(text).not.toContain('简体中文')
+  })
+})
+
+describe('DisplayPanel — zoom level description', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await i18next.changeLanguage('en')
+  })
+
+  // The description used to be a template literal interpolating `modKey`, so it
+  // stayed English in every locale while the label beside it translated — the
+  // one untranslated sentence in an otherwise localized card. A template
+  // literal is invisible to the extraction codemod, so only a rendered
+  // assertion catches this class.
+  it('is translated, and still names the platform modifier key', async () => {
+    await i18next.changeLanguage('zh-CN')
+
+    renderWithProviders(<DisplayPanel />)
+
+    const description = screen.getByText(/原生窗口缩放/)
+    expect(screen.queryByText(/Native window zoom/)).toBeNull()
+    // `{{mod}}` must survive interpolation — a missing value renders the raw
+    // placeholder, which reads as broken copy rather than as a keyboard hint.
+    expect(description.textContent).not.toContain('{{mod}}')
   })
 })

@@ -15,7 +15,8 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
-import { json, logPageProblems, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
+import { logPageProblems, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
+import { crewsApi } from './lib/crews-fixtures.mjs'
 
 const OUT = process.argv[2] || '../.github/screenshots/crews-tab'
 const PREFIX = process.argv[3] || 'after'
@@ -28,25 +29,6 @@ const CREWS = [
   { name: 'research', kiro_agent: 'kirocrew', workspace: 'research', memory_store: 'research' },
 ]
 
-/** Endpoints only the Crews tab needs, layered on top of the shared boot stubs. */
-async function crewsApi(path, route) {
-  if (path === '/api/agents') {
-    return json(route, { agents: CREWS, default_agent: 'kirocrew' }), true
-  }
-  if (path === '/api/agents/installed') {
-    return json(route, [{ name: 'kirocrew' }, { name: 'oncall' }]), true
-  }
-  if (path === '/api/workspaces') {
-    return json(route, {
-      workspaces: [{ name: 'default' }, { name: 'oncall' }, { name: 'research' }],
-    }), true
-  }
-  if (path === '/api/config/kirocrew') {
-    return json(route, { memory_stores: { default: {}, research: {} } }), true
-  }
-  return false
-}
-
 async function main() {
   const { srv, base } = await serveDist()
   const browser = await chromium.launch()
@@ -57,7 +39,9 @@ async function main() {
   const page = await context.newPage()
   logPageProblems(page)
 
-  await stubDashboardApi(page, { extra: crewsApi })
+  await stubDashboardApi(page, {
+    extra: crewsApi({ crews: CREWS, defaultAgent: 'kirocrew' }),
+  })
 
   await page.goto(base + '/capabilities', { waitUntil: 'domcontentloaded' })
   // The tab label is the assertion, so fail loudly rather than shoot a blank page.

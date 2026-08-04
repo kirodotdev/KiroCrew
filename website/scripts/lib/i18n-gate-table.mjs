@@ -30,10 +30,11 @@ export const SCRIPTS = [
   { key: 'plural', argv: ['i18n-plural-codemod.mjs', '--check'] },
   { key: 'source', argv: ['check-source-strings.mjs'] },
   { key: 'strings', argv: ['check-i18n-strings.mjs'] },
+  { key: 'dnt', argv: ['check-dnt-catalogs.mjs'] },
 ]
 
 /**
- * The eleven checks, in reading order within their section.
+ * The twelve checks, in reading order within their section.
  *
  * `find` pulls the numbers out of the owning script's output on the PASSING path;
  * `whenFailed` does the same for the failing path, because most of these scripts print
@@ -98,6 +99,22 @@ export const CHECKS = [
     id: 'pseudolocale', script: 'pseudo', scope: 'repo', enforce: 'hard-zero',
     find: /^OK: en-XA\.json matches (\d+) English keys/m,
     summary: m => `en-XA matches en · ${m[1]} keys`,
+  },
+  {
+    // DNT moved here from the render gate when `LOCALES` came down to `en-XA`
+    // alone: the assertion cannot run under the pseudolocale (every term renders
+    // accented by design), so leaving it there would have meant a gate that
+    // renders, reports and exits 0 while checking no term. Comparing catalog
+    // VALUES covers all 9 shipped locales instead of the one probe locale a render
+    // budget could afford, and costs no render time. Hard-zero: a respelt product
+    // name is a defect in every locale, with no ceiling to inherit.
+    id: 'dnt', script: 'dnt', scope: 'repo', enforce: 'hard-zero',
+    find: /^OK: (\d+) DNT term\(s\) intact across (\d+) catalog\(s\) — (\d+) value/m,
+    summary: m => `${m[1]} terms intact · ${m[2]} catalogs · ${m[3]} values`,
+    whenFailed: {
+      find: /^\[dnt\] (\d+) do-not-translate violation\(s\) across (\d+) catalog/m,
+      summary: m => `${m[1]} respelt term(s) across ${m[2]} catalog(s)`,
+    },
   },
   {
     id: 'dynamic-keys', script: 'keys', scope: 'repo', enforce: 'info',

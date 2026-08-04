@@ -556,7 +556,10 @@ async def test_dashboard_user_token_is_still_allowed() -> None:
         return {
             "session_key": "dashboard:chat-1",
             "questions": _questions(),
-            "timeout_secs": 15,
+            # 1s, not 15s: the assertion below is only that the owner-gate does not
+            # REFUSE this caller, and the handler waits out this whole window to reach
+            # it. At 15s this was the slowest test in the suite.
+            "timeout_secs": 1,
         }
 
     request.json = _json

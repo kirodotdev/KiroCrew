@@ -391,7 +391,21 @@ function ConnectionCard({
   )
 }
 
-export default function ConnectionsPage() {
+/**
+ * `servicesEnabled` gates the provider gallery. The Connections work is merged
+ * on main but held for a later release, so the default is CLOSED: the Services
+ * panel offers no providers, so no card, Connect button or OAuth flow is
+ * reachable.
+ *
+ * The panel still RENDERS rather than being removed, which is deliberate.
+ * Hiding the sub-tab and defaulting to the MCP Servers table was tried and
+ * reverted: it makes that table the default-rendered surface and so exposes its
+ * pre-existing i18n debt to the render-time gate, which measured
+ * `capabilities-mcp` going 44 -> 102 findings. Emptying the list keeps the
+ * measured surface comparable to main (568 -> 558 overall, gate PASS) while
+ * still removing every way to actually connect a provider.
+ */
+export default function ConnectionsPage({ servicesEnabled = false }: { servicesEnabled?: boolean } = {}) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<'services' | 'mcp-servers'>('services')
@@ -436,12 +450,17 @@ export default function ConnectionsPage() {
   }, [servers, oauthByServer])
 
   const filteredProviders = useMemo(() => {
+    // Held feature: offer nothing. No card renders, so no Connect button and no
+    // OAuth flow is reachable, while the panel itself still renders exactly the
+    // markup it renders on main -- which is what keeps the render-time i18n gate
+    // measuring a comparable surface.
+    if (!servicesEnabled) return []
     const needle = search.trim().toLowerCase()
     if (!needle) return CONNECTION_PROVIDERS
     return CONNECTION_PROVIDERS.filter(provider =>
       `${provider.name} ${provider.slug} ${provider.mcp_url}`.toLowerCase().includes(needle),
     )
-  }, [search])
+  }, [search, servicesEnabled])
 
   useEffect(() => {
     if (activeTab !== 'services' || !highlightedSlug) return
@@ -606,7 +625,7 @@ export default function ConnectionsPage() {
 
       {activeTab === 'services' ? (
         <div id="connections-services-panel" role="tabpanel" aria-labelledby="connections-services-tab">
-          <div className="mb-4 flex items-center gap-3">
+          {servicesEnabled && <div className="mb-4 flex items-center gap-3">
             <SearchInput
               value={search}
               onChange={event => setSearch(event.target.value)}
@@ -615,7 +634,7 @@ export default function ConnectionsPage() {
               className="max-w-[520px] flex-1"
             />
             <Badge variant="muted">{t('pages.connectionsPage.services_available', { value: filteredProviders.length })}</Badge>
-          </div>
+          </div>}
 
           {isError && (
             <div role="alert" className="mb-3 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger">

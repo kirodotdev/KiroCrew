@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { modelListRefetchInterval } from '../providers/modelListHealth'
-import { Check, Star, StarOff, Brain, Plug, X, Pin, Package, Lock, Hourglass, Bot, ChevronDown } from 'lucide-react'
+import { Star, StarOff, Brain, Plug, X, Pin, Package, Lock, Hourglass, Bot, ChevronDown } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { useAppSelector } from '../store'
 import { api } from '../api/client'
@@ -63,40 +63,6 @@ interface AgentDetail extends Partial<InstalledAgent> {
   toolsSettings?: { execute_bash?: { deniedCommands?: string[] } }
   /** `skill://` resources the catalog editor cannot express (wildcards, foreign paths). */
   unmanaged_skills?: string[]
-}
-
-function AgentMetadataEditor({ name }: { name: string }) {
-  const [content, setContent] = useState('')
-  const [original, setOriginal] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [msg, setMsg] = useState<ReactNode>('')
-  const [msgOk, setMsgOk] = useState(false)
-  useEffect(() => {
-    api.agentMetadata(name).then(d => { setContent(d.content || ''); setOriginal(d.content || '') }).catch(() => {})
-  }, [name])
-  const dirty = content !== original
-  const save = async () => {
-    setSaving(true); setMsg('')
-    try {
-      await api.agentMetadataSave(name, content)
-      setOriginal(content); setMsg(<><Check className="lucide-inline" /> {i18nT('pages.agentsPage.saved')}</>); setMsgOk(true)
-      setTimeout(() => setMsg(''), 2000)
-    } catch (e) { setMsg(e instanceof Error ? e.message : String(e)); setMsgOk(false) }
-    finally { setSaving(false) }
-  }
-  return (
-    <div className="mb-3">
-      <div className="flex items-center gap-2 mb-1">
-        <span className="text-[12px] text-muted font-medium uppercase tracking-wider">{i18nT('pages.agentsPage.routing_metadata')}</span>
-        <InfoTip text={i18nT('pages.agentsPage.routing_hints_for_the_conductor_skill_describe_t')} />
-      </div>
-      <textarea aria-label={i18nT('pages.agentsPage.routing_metadata_2')} className="w-full bg-bg-elevated border border-border rounded-md p-2.5 text-text font-mono text-[12px] outline-none resize-y leading-relaxed transition-colors focus-ring" rows={4} value={content} onChange={e => setContent(e.target.value)} placeholder={i18nT('pages.agentsPage.describe_when_to_use_this_agent')} />
-      <div className="flex items-center gap-2 mt-1">
-        <Btn primary onClick={save} disabled={!dirty || saving}>{saving ? i18nT('pages.agentsPage.saving') : i18nT('pages.agentsPage.save_metadata')}</Btn>
-        {msg && <span className={`text-[12px] ${msgOk ? 'text-ok' : 'text-danger'}`}>{msg}</span>}
-      </div>
-    </div>
-  )
 }
 
 export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
@@ -226,7 +192,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
             <div className="px-5 pt-5 pb-3"><h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{i18nT('pages.agentsPage.installed_agents')} <InfoTip text={i18nT('pages.agentsPage.agent_templates_grouped_by_package_update_and_un')} /></h3></div>
             <div className="flex" style={{ height: `${LAYOUT.AGENT_LIST_HEIGHT}px` }}>
               {/* Agent list — scrollable */}
-              <div className="w-[260px] shrink-0 border-r border-border overflow-y-auto p-2">
+              <div className="w-[280px] shrink-0 border-r border-border overflow-y-auto p-2">
                 {(() => {
                   // Group: non-package agents first, then package agents grouped by package
                   const nonPackage = installed.filter(a => a.source !== 'package')
@@ -234,34 +200,36 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                     const key = a.package || a.name; (g[key] ||= []).push(a); return g
                   }, {})
                   const renderAgent = (a: typeof installed[0], showDelete?: boolean) => (
-                    <Clickable key={a.name} className={`flex items-center gap-2 px-3 py-2.5 rounded-md border transition-all cursor-pointer mb-1 ${selectedAgent?.name === a.name ? 'list-selected bg-accent-subtle border-accent/40' : 'bg-bg-elevated border-transparent hover:bg-bg-hover hover:border-border-strong'}`} onClick={async () => { try { const d = await api.agentDetail(a.name); setSelectedAgent(d) } catch { /* List rows carry display NAMES; the editor round-trips catalog KEYS, so drop them rather than offer unsavable chips. */ setSelectedAgent({ ...a, skills: undefined }) } }}>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5 mb-0.5">
-                          <span className="text-[13px] font-mono font-semibold text-text truncate">{a.name}</span>
-                          <SourceBadge source={a.source} />
-                        </div>
-                        <div className="flex gap-2 mt-0.5">
-                          {a.skills.length > 0 && <span className="text-[11px] text-muted"><Brain className="lucide-inline" />{a.skills.length}</span>}
-                          {a.mcp_servers.length > 0 && <span className="text-[11px] text-muted"><Plug className="lucide-inline" />{a.mcp_servers.length}</span>}
-                          <span className="text-[11px] text-muted font-mono">{a.model}</span>
-                        </div>
+                    <Clickable key={a.name} className={`flex flex-col gap-1.5 px-3 py-2.5 rounded-md border transition-all cursor-pointer mb-1 ${selectedAgent?.name === a.name ? 'list-selected bg-accent-subtle border-accent/40' : 'bg-bg-elevated border-transparent hover:bg-bg-hover hover:border-border-strong'}`} onClick={async () => { try { const d = await api.agentDetail(a.name); setSelectedAgent(d) } catch { /* List rows carry display NAMES; the editor round-trips catalog KEYS, so drop them rather than offer unsavable chips. */ setSelectedAgent({ ...a, skills: undefined }) } }}>
+                      {/* Row 1: the name owns the full column width; badge + delete are pinned right and never steal the name's space. */}
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-[13px] font-mono font-semibold text-text truncate flex-1 min-w-0" title={a.name}>{a.name}</span>
+                        <SourceBadge source={a.source} />
+                        {showDelete && <button className="text-[10px] text-muted hover:text-danger-fg hover:bg-danger px-1 py-0.5 rounded border border-border hover:border-danger/40 transition-all shrink-0" title={i18nT('pages.agentsPage.delete_agent', { name: a.name })} aria-label={i18nT('pages.agentsPage.delete_agent', { name: a.name })} onClick={e => { e.stopPropagation(); if (confirm(`Delete agent "${a.name}"? This removes the config file.`)) deleteAgentMut.mutate(a.name) }}><X className="lucide-inline" /></button>}
                       </div>
-                      {/* The word carries the state: a bare star glyph gives a first-time
-                          user nothing to read, so the default-agent control is labeled. */}
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        aria-label={defaultAgent === a.name ? i18nT('pages.agentsPage.remove_default_agent') : i18nT('pages.agentsPage.set_as_default_agent')}
-                        className={`shrink-0 inline-flex items-center gap-1 px-2 py-[3px] rounded-md border text-[11px] font-medium transition-colors cursor-pointer ${defaultAgent === a.name ? 'text-warn border-warn/45 bg-warn-subtle' : 'text-muted border-border-strong hover:text-warn hover:border-warn hover:bg-warn-subtle'}`}
-                        title={defaultAgent === a.name ? i18nT('pages.agentsPage.remove_default_agent') : i18nT('pages.agentsPage.set_as_default_agent')}
-                        onClick={e => { e.stopPropagation(); toggleDefault(a.name) }}
-                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleDefault(a.name) } }}
-                      >
-                        {defaultAgent === a.name
-                          ? <><Star className="lucide-inline" />{i18nT('pages.agentsPage.default')}</>
-                          : <><StarOff className="lucide-inline" />{i18nT('pages.agentsPage.set_as_default')}</>}
-                      </span>
-                      {showDelete && <button className="text-[10px] text-muted hover:text-danger-fg hover:bg-danger px-1 py-0.5 rounded border border-border hover:border-danger/40 transition-all shrink-0" title={`Delete ${a.name}`} aria-label={`Delete ${a.name}`} onClick={e => { e.stopPropagation(); if (confirm(`Delete agent "${a.name}"? This removes the config file.`)) deleteAgentMut.mutate(a.name) }}><X className="lucide-inline" /></button>}
+                      {/* Row 2: model metadata on the left, the labeled default control on the right. */}
+                      <div className="flex items-center justify-between gap-2 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {a.skills.length > 0 && <span className="text-[11px] text-muted shrink-0"><Brain className="lucide-inline" />{a.skills.length}</span>}
+                          {a.mcp_servers.length > 0 && <span className="text-[11px] text-muted shrink-0"><Plug className="lucide-inline" />{a.mcp_servers.length}</span>}
+                          <span className="text-[11px] text-muted font-mono truncate min-w-0" title={a.model}>{a.model}</span>
+                        </div>
+                        {/* The word carries the state: a bare star glyph gives a first-time
+                            user nothing to read, so the default-agent control is labeled. */}
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          aria-label={defaultAgent === a.name ? i18nT('pages.agentsPage.remove_default_agent') : i18nT('pages.agentsPage.set_as_default_agent')}
+                          className={`shrink-0 inline-flex items-center gap-1 px-2 py-[3px] rounded-md border text-[11px] font-medium transition-colors cursor-pointer ${defaultAgent === a.name ? 'text-warn border-warn/45 bg-warn-subtle' : 'text-muted border-border-strong hover:text-warn hover:border-warn hover:bg-warn-subtle'}`}
+                          title={defaultAgent === a.name ? i18nT('pages.agentsPage.remove_default_agent') : i18nT('pages.agentsPage.set_as_default_agent')}
+                          onClick={e => { e.stopPropagation(); toggleDefault(a.name) }}
+                          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleDefault(a.name) } }}
+                        >
+                          {defaultAgent === a.name
+                            ? <><Star className="lucide-inline" />{i18nT('pages.agentsPage.default')}</>
+                            : <><StarOff className="lucide-inline" />{i18nT('pages.agentsPage.set_as_default')}</>}
+                        </span>
+                      </div>
                     </Clickable>
                   )
                   return (<>
@@ -311,7 +279,6 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                     </div>
                   </div>
                   {selectedAgent.description && <div className="text-[13px] text-muted mb-3 leading-relaxed">{selectedAgent.description}</div>}
-                  <AgentMetadataEditor name={selectedAgent.name} />
                   {selectedAgent.skills === undefined ? (
                     /* The agent-detail fetch failed, so the real mapping is
                      * UNKNOWN. An empty-but-enabled editor here is destructive:

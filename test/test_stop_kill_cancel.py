@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import signal
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -749,14 +748,12 @@ class TestAbortAckLogging:
     """Tests for abort.send_abort acknowledgment handling and logging."""
 
     @pytest.mark.asyncio
-    async def test_send_abort_logs_ack_from_real_roundtrip(self, caplog):
+    async def test_send_abort_logs_ack_from_real_roundtrip(self, caplog, short_sock_dir):
         """A real socket round-trip through send_abort() logs the ack produced
         by production code (not a manually-emitted log line)."""
         import logging
 
-        # Use /tmp directly — macOS tmp_path exceeds the 104-char AF_UNIX
-        # sun_path limit under xdist (same convention as test_mcp_gateway_claim).
-        socket_path = str(Path(tempfile.mkdtemp(dir="/tmp")) / "gw.sock")
+        socket_path = str(short_sock_dir / "gw.sock")
 
         async def _fake_gatewayd(reader, writer):
             frame = json.loads((await reader.readline()).decode("utf-8"))
@@ -782,12 +779,11 @@ class TestAbortAckLogging:
             await server.wait_closed()
 
     @pytest.mark.asyncio
-    async def test_send_abort_logs_warning_on_bad_ack(self, caplog):
+    async def test_send_abort_logs_warning_on_bad_ack(self, caplog, short_sock_dir):
         """A malformed ack from gatewayd logs a warning via production code."""
         import logging
 
-        # Short dir: macOS sun_path limit (see test above).
-        socket_path = str(Path(tempfile.mkdtemp(dir="/tmp")) / "gw.sock")
+        socket_path = str(short_sock_dir / "gw.sock")
 
         async def _fake_gatewayd(reader, writer):
             await reader.readline()

@@ -290,6 +290,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cloud/source.py::_git_tracked_files",
         "cloud/source.py::_tracked_tree_is_dirty",
         "cloud/source.py::_use_git_archive",
+        # Windows tunnel teardown: `taskkill /T /F /PID <pid>`, a fixed argv whose
+        # only variable is the pid of a child THIS process created (the Popen handed
+        # to kill_port_forward) -- never agent-supplied, no shell, no PATH shim
+        # (taskkill is a System32 binary). It exists because Windows has no
+        # os.killpg: without a tree kill the session-manager-plugin child survives
+        # and keeps the forwarded local port bound, which is the exact leak
+        # kill_port_forward exists to prevent. NOT sandbox-routed for the same
+        # reason as its sibling `open_port_forward` below -- a sandbox that rewrites
+        # the process identity could not signal our own already-running child.
+        "cloud/ssm.py::_kill_tree_windows",
         "cloud/ssm.py::_run_install_command",
         "cloud/ssm.py::open_port_forward",
         "dashboard/chat_voice.py::api_voice_voices",

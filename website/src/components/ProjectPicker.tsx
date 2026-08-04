@@ -39,7 +39,21 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const browse = useCallback((path?: string, preserveInput = false) => {
     api.browseDirs(path).then(d => {
       setBrowsePath(d.path); setBrowseParent(d.parent); setBrowseDirs(d.dirs); setBrowseSel(0)
-      if (!preserveInput) setInput(d.path)
+      // Append the path delimiter after a browse/drill so the user can start
+      // typing the next segment immediately (#1196). Derive the separator from
+      // the returned path so a native Windows path (C:\Users\me) stays all-`\`
+      // instead of rendering the mixed C:\Users\me/ . A path already ending in
+      // its separator (e.g. a drive/filesystem root) is left as-is; the trailing
+      // separator is a no-op for the auto-drill effect below (which keys on `/`).
+      if (!preserveInput) {
+        // `\` is a separator ONLY on a Windows-shaped path (drive-letter `C:...`
+        // or UNC `\\...`); on POSIX it is a legal filename character, so always
+        // append `/` there (GPT 5.6: never treat a trailing `\` as a separator on
+        // a POSIX path). A path already ending in its separator is left as-is.
+        const isWin = /^[A-Za-z]:/.test(d.path) || d.path.startsWith('\\\\')
+        const sep = isWin ? '\\' : '/'
+        setInput(d.path.endsWith(sep) ? d.path : d.path + sep)
+      }
       // Keep the combobox input focused so arrow/Enter nav continues after a drill.
       requestAnimationFrame(() => inputRef.current?.focus())
     }).catch(() => {})
@@ -74,7 +88,20 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     return () => { clearTimeout(timer); cleanup() }
   }, [open, onOpenChange, btnRef, getAnchorRect])
 
-  const select = (path: string) => { onSelect(path); onOpenChange(false) }
+  const select = (path: string) => {
+    // The browse input carries a trailing delimiter for typing continuation
+    // (#1196); the committed project path must stay clean. `\` is a separator
+    // ONLY on a Windows-shaped path (drive-letter `C:...` or UNC `\\...`); on
+    // POSIX it is a legal filename char, so only `/` is stripped there and a real
+    // trailing `\` is preserved (GPT 5.6). Bare roots stay intact: POSIX `/` and a
+    // Windows drive root `C:\` / `C:/` (stripping `C:/` to `C:` would yield a
+    // drive-RELATIVE path, not the drive root).
+    const isWin = /^[A-Za-z]:/.test(path) || path.startsWith('\\\\')
+    const clean = isWin
+      ? (/^[A-Za-z]:[\\/]$/.test(path) ? path : path.replace(/[\\/]+$/, ''))
+      : (path.replace(/\/+$/, '') || '/')
+    onSelect(clean); onOpenChange(false)
+  }
   const rq = recentQuery.trim().toLowerCase()
   const filteredRecent = rq ? recentDirs.filter(d => d.toLowerCase().includes(rq)) : recentDirs
 

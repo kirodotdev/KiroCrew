@@ -1,5 +1,5 @@
 /**
- * Crew roster (KiroCrewAgentsPage) — card grid + editor side sheet.
+ * Crew roster (KiroCrewAgentsPage) — card grid, compact table, editor dialog.
  *
  * The page used to be a StatCard row plus an HTML table, and its tests read the
  * DOM structurally (`table tr`, nth-child cells). Those assertions could not
@@ -8,6 +8,10 @@
  * with, the ordering of the promote-then-save writes, and the nested-dialog
  * keyboard case. Everything here is queried by accessible name or an explicit
  * test id so a restyle cannot turn a green suite red.
+ *
+ * The list view IS a table again, but the assertions go through roles
+ * (`columnheader`, the row's own control) rather than cell positions, so
+ * reordering a column does not break them.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
@@ -140,10 +144,22 @@ beforeEach(() => {
 
 /** Wait until the roster has rendered real data rather than the empty state. */
 async function renderRoster(expectCards = 2) {
-  renderPage()
+  const rendered = renderPage()
   await waitFor(() => expect(screen.getAllByTestId('crew-card')).toHaveLength(expectCards))
   await waitFor(() => expect(mockApi.workspaces).toHaveBeenCalled())
   await waitFor(() => expect(mockApi.kirocrewConfig).toHaveBeenCalled())
+  return rendered
+}
+
+/** Escape, dispatched where Radix listens for it.
+ *
+ *  Radix's DismissableLayer binds `keydown` on `document`; the hand-rolled dialog
+ *  this page used to render bound it on `window`. An event dispatched directly AT
+ *  `window` never passes through `document`, so `fireEvent.keyDown(window, ...)`
+ *  is invisible to Radix — it is not a faithful simulation either way, since a
+ *  real keypress targets the focused element and bubbles up through both. */
+function pressEscape() {
+  fireEvent.keyDown(document, { key: 'Escape' })
 }
 
 /** A roster card, addressed by the accessible name the card exposes. */
@@ -151,13 +167,13 @@ function crewCard(name: string) {
   return screen.getByRole('button', { name: `Edit crew ${name}` })
 }
 
-/** Open the editor sheet on `name` and return the dialog element. */
+/** Open the editor dialog on `name` and return the dialog element. */
 async function openEditor(name: string): Promise<HTMLElement> {
   fireEvent.click(crewCard(name))
   return await screen.findByRole('dialog', { name: `Edit crew ${name}` })
 }
 
-/** Open the editor sheet in create mode and return the dialog element. */
+/** Open the editor dialog in create mode and return the dialog element. */
 async function openCreate(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
   return await screen.findByRole('dialog', { name: 'Create a new crew' })
@@ -239,6 +255,149 @@ describe('crew roster — filtering', () => {
     // Distinct copy from the filter case — a first run is not a failed search.
     expect(screen.getByTestId('empty-state-title')).not.toHaveTextContent('match your filter')
     expect(screen.queryAllByTestId('crew-card')).toHaveLength(0)
+  })
+})
+
+describe('crew roster — description', () => {
+  it('clamps a long description to two lines and keeps the full text reachable', async () => {
+    // The card used to `truncate` to ONE line, which cut nearly every real
+    // description mid-word. Two lines plus the full text in the tooltip.
+    const long =
+      'Paged-alert triage crew — owns the runbooks, keeps the escalation ladder ' +
+      'warm, and files the follow-up tickets after every page.'
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [DEFAULT_CREW, { ...OTHER_CREW, description: long }],
+      default_agent: 'kirocrew',
+    })
+    await renderRoster()
+
+    const desc = within(crewCard('oncall')).getByText(long)
+    expect(desc.className).toContain('line-clamp-2')
+    // Height is pinned alongside the clamp: without it the clamp leaks a sliver
+    // of a third line, and short-description cards sit shorter than their
+    // neighbours so the binding grids stop lining up across the row.
+    expect(desc.className).toContain('h-[34px]')
+    expect(desc).toHaveAttribute('title', long)
+  })
+
+  it('does not put an empty title on a crew with no description', async () => {
+    await renderRoster()
+    // DEFAULT_CREW has no description, so the card shows the default-crew line
+    // instead — and must not advertise a tooltip that would render as blank.
+    const filler = within(crewCard('kirocrew')).getByText('Used for all new chats')
+    expect(filler).not.toHaveAttribute('title')
+  })
+
+  it('falls back to the same text in the card and the row', async () => {
+    // The two views drifted: a crew with no description was blank in the card
+    // but italic "No description" in the row, so the same crew read differently
+    // depending on which layout you were in.
+    await renderRoster()
+    // OTHER_CREW is non-default with no description -> the placeholder.
+    expect(within(crewCard('oncall')).getByText('No description')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    await screen.findByRole('table')
+    const row = screen.getByRole('button', { name: 'Edit crew oncall' }).closest('tr')!
+    expect(within(row).getByText('No description')).toBeInTheDocument()
+
+    // And the default crew keeps its own hint in BOTH views, rather than one
+    // view explaining why it matters and the other calling it undescribed.
+    const defaultRow = screen.getByRole('button', { name: 'Edit crew kirocrew' }).closest('tr')!
+    expect(within(defaultRow).getByText('Used for all new chats')).toBeInTheDocument()
+  })
+})
+
+describe('crew roster — view toggle', () => {
+  beforeEach(() => localStorage.clear())
+
+  it('defaults to cards and switches to a table on List', async () => {
+    await renderRoster()
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+
+    const table = await screen.findByRole('table')
+    expect(screen.getAllByTestId('crew-row')).toHaveLength(2)
+    // The cards are gone, not merely hidden underneath.
+    expect(screen.queryAllByTestId('crew-card')).toHaveLength(0)
+    // Bindings move into columns, so the header names them once instead of
+    // repeating a label per card.
+    expect(within(table).getByRole('columnheader', { name: 'Workspace' })).toBeInTheDocument()
+    expect(within(table).getByRole('columnheader', { name: 'Memory Store' })).toBeInTheDocument()
+  })
+
+  it('carries each crew’s bindings into its row', async () => {
+    await renderRoster()
+    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    await screen.findByRole('table')
+
+    const row = screen.getByRole('button', { name: 'Edit crew oncall' }).closest('tr')!
+    expect(within(row).getByText('oncall-agent')).toBeInTheDocument()
+    expect(within(row).getByText('oncall-mem')).toBeInTheDocument()
+    expect(within(row).getByText('claude-opus-5')).toBeInTheDocument()
+  })
+
+  it('opens the editor from a row', async () => {
+    await renderRoster()
+    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    await screen.findByRole('table')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit crew oncall' }))
+    expect(await screen.findByRole('dialog', { name: 'Edit crew oncall' })).toBeInTheDocument()
+  })
+
+  it('opens the editor exactly once when the row itself is clicked', async () => {
+    // The row is a click target for convenience AND contains a real control
+    // with the same action. One gesture must not fire both.
+    await renderRoster()
+    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    await screen.findByRole('table')
+
+    const nameControl = screen.getByRole('button', { name: 'Edit crew oncall' })
+    fireEvent.click(nameControl)
+    await screen.findByRole('dialog', { name: 'Edit crew oncall' })
+    // A second dialog would mean the row handler fired on top of the control's.
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+  })
+
+  it('remembers the choice across mounts', async () => {
+    const { unmount } = await renderRoster()
+    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    await screen.findByRole('table')
+    expect(localStorage.getItem('mc-crews-view')).toBe('list')
+
+    // A fresh mount reads the stored layout rather than snapping back to cards.
+    unmount()
+    renderPage()
+    await waitFor(() => expect(screen.getAllByTestId('crew-row')).toHaveLength(2))
+  })
+
+  it('flags a doubled-up store in the row, naming which one', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [
+        { ...DEFAULT_CREW, memory_store: 'core-mem' },
+        { ...OTHER_CREW, workspace: 'oncall', memory_store: 'core-mem' },
+      ],
+      default_agent: 'kirocrew',
+    })
+    await renderRoster()
+    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    await screen.findByRole('table')
+
+    const row = screen.getByRole('button', { name: 'Edit crew oncall' }).closest('tr')!
+    // Memory is doubled; the workspaces are distinct, so exactly one marker.
+    expect(within(row).getAllByText('shared')).toHaveLength(1)
+  })
+
+  it('is not offered when there are no crews to lay out', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({ agents: [], default_agent: '' })
+    renderPage()
+    await waitFor(() =>
+      expect(screen.getByTestId('empty-state-title')).toHaveTextContent('No crews'),
+    )
+    expect(screen.queryByRole('button', { name: 'List' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cards' })).not.toBeInTheDocument()
   })
 })
 
@@ -352,7 +511,7 @@ describe('crew editor — stale writes', () => {
 
     const sheetA = await openEditor('oncall')
     fireEvent.click(within(sheetA).getByRole('button', { name: 'Save changes' }))
-    fireEvent.keyDown(window, { key: 'Escape' })
+    pressEscape()
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'Edit crew oncall' })).not.toBeInTheDocument(),
     )
@@ -373,7 +532,7 @@ describe('crew editor — stale writes', () => {
 
     const sheetA = await openEditor('oncall')
     fireEvent.click(within(sheetA).getByRole('button', { name: 'Save changes' }))
-    fireEvent.keyDown(window, { key: 'Escape' })
+    pressEscape()
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'Edit crew oncall' })).not.toBeInTheDocument(),
     )
@@ -394,7 +553,7 @@ describe('crew editor — stale writes', () => {
 
     const first = await openEditor('oncall')
     fireEvent.click(within(first).getByRole('button', { name: 'Save changes' }))
-    fireEvent.keyDown(window, { key: 'Escape' })
+    pressEscape()
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'Edit crew oncall' })).not.toBeInTheDocument(),
     )
@@ -415,7 +574,7 @@ describe('crew editor — stale writes', () => {
 
     const sheet = await openEditor('oncall')
     fireEvent.click(within(sheet).getByRole('button', { name: 'Chat with this crew' }))
-    fireEvent.keyDown(window, { key: 'Escape' })
+    pressEscape()
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'Edit crew oncall' })).not.toBeInTheDocument(),
     )
@@ -454,27 +613,14 @@ describe('crew roster — default crew bar', () => {
   })
 })
 
-describe('crew editor — collision warning', () => {
-  it('warns as soon as the picker points at a store another crew uses', async () => {
-    // Reading the PERSISTED binding here meant the warning only appeared after
-    // a save and a reopen — by which point the collision it exists to prevent
-    // has already happened.
-    await renderRoster()
-    const sheet = await openEditor('oncall')
-
-    // oncall starts on its own store, so nothing collides yet.
-    expect(within(sheet).queryByText(/Also used by/)).not.toBeInTheDocument()
-
-    fireEvent.click(within(sheet).getByRole('combobox', { name: 'Memory Store' }))
-    fireEvent.click(await screen.findByRole('option', { name: 'core-mem' }))
-
-    // kirocrew is already on core-mem, so the warning must name it immediately.
-    await waitFor(() =>
-      expect(within(sheet).getByText(/Also used by kirocrew/)).toBeInTheDocument(),
-    )
-    expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
-  })
-})
+/* The collision warning's test lives in CrewCollision.test.tsx, not here.
+   It is the only test on this page that drives a Radix Select to completion from
+   INSIDE the Radix Dialog, and that combination cannot run in this harness:
+   Radix commits discrete events via `ReactDOM.flushSync(...)`, Testing Library
+   wraps interactions in `act()`, and React throws "Should not already be
+   working." on a flushSync nested inside a flush. That file mocks SimpleSelect
+   to keep the assertion; the REAL Radix path is verified end-to-end in
+   scripts/verify-crews-dialog-select.mjs. */
 
 describe('crew editor — chat with this crew', () => {
   it('keeps the panel open and surfaces the error when the session cannot be created', async () => {
@@ -533,48 +679,15 @@ describe('crew editor — keyboard', () => {
     await renderRoster()
     await openEditor('oncall')
 
-    fireEvent.keyDown(window, { key: 'Escape' })
+    pressEscape()
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'Edit crew oncall' })).not.toBeInTheDocument(),
     )
   })
 
-  it('ignores Escape while the nested workspace dialog is open', async () => {
-    await renderRoster()
-    const sheet = await openCreate()
-
-    fireEvent.click(within(sheet).getByRole('combobox', { name: 'Workspace' }))
-    fireEvent.click(await screen.findByText('+ New workspace…'))
-    const modal = await screen.findByRole('dialog', { name: 'Create Workspace' })
-    expect(modal).toBeInTheDocument()
-
-    // Focus must still be within one of the two stacked dialogs. An earlier
-    // version paused the sheet's trap by swapping the ref it was given, which
-    // re-ran the focus effect's CLEANUP and restored focus to whatever opened
-    // the sheet — behind BOTH overlays — so Tab then walked the obscured page.
-    // (Which of the two holds it is Radix's call: closing the select portal
-    // returns focus to its trigger, inside the sheet.)
-    const sheetEl = screen.getByRole('dialog', { name: 'Create a new crew' })
-    const active = document.activeElement as HTMLElement
-    expect(active).not.toBe(document.body)
-    expect(modal.contains(active) || sheetEl.contains(active)).toBe(true)
-
-    fireEvent.keyDown(window, { key: 'Escape' })
-
-    // The inner dialog takes the key; the sheet must NOT close underneath it,
-    // or the user loses the whole form to one keypress. This is the `paused`
-    // prop on SideSheet.
-    await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Create Workspace' })).not.toBeInTheDocument(),
-    )
-    expect(screen.getByRole('dialog', { name: 'Create a new crew' })).toBeInTheDocument()
-
-    // Once the nested dialog is gone the sheet owns Escape again.
-    fireEvent.keyDown(window, { key: 'Escape' })
-    await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Create a new crew' })).not.toBeInTheDocument(),
-    )
-  })
+  /* The nested-dialog Escape test lives in CrewEditorSelect.test.tsx — reaching
+     the nested dialog means driving a Radix Select from inside the Radix Dialog,
+     which this harness cannot do (see that file's header). */
 })
 
 describe('CrewAvatar', () => {

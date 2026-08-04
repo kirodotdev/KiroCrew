@@ -1230,6 +1230,11 @@ def _parse_worktree_porcelain(raw: str) -> list[dict]:
             current["branch"] = ref.split("refs/heads/", 1)[-1] if "refs/heads/" in ref else ref
         elif line == "detached":
             current["branch"] = None
+        elif line == "prunable" or line.startswith("prunable "):
+            # git flags an entry `prunable` when its checkout directory is gone
+            # but the admin record survives (a `rm -rf` with no
+            # `git worktree prune`). The reason text is optional.
+            current["prunable"] = line[len("prunable"):].strip() or "unknown"
     if current:
         entries.append(current)
     return entries
@@ -1260,7 +1265,13 @@ async def _discover_worktrees() -> list[dict]:
     # repository discovery hint).
     for i, e in enumerate(entries):
         e["is_main"] = (i == 0)
-    return entries
+    # A `prunable` entry has no checkout on disk, so every git call against its
+    # path fails and it renders as a ghost row with no branch, behind count or
+    # timestamp — and no refresh ever clears it, because git keeps reporting the
+    # record until `git worktree prune` runs. Drop those. The primary checkout
+    # is never filtered: it anchors `is_main`, and losing it would promote a
+    # linked worktree to main.
+    return [e for e in entries if e.get("is_main") or not e.get("prunable")]
 
 
 async def _git(
@@ -1320,32 +1331,107 @@ async def _real_dirty(path: str) -> bool | None:
 # --- fleet cache ---
 _FLEET_TTL = 10.0
 _FLEET_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
-_FLEET_REFRESHING = False
+# The single in-flight rebuild. A rebuild costs one `gh pr` round-trip per
+# branch, so the background revalidate and every `fresh=1` request coalesce onto
+# the SAME task instead of each starting their own. Holding the reference here
+# also keeps a fire-and-forget rebuild from being garbage-collected mid-flight.
+_FLEET_INFLIGHT: asyncio.Task[dict] | None = None
+# Worktrees evicted by `_fleet_forget`, keyed to an eviction counter. A rebuild
+# that started BEFORE an eviction still reads the worktree from git, so storing
+# its result would resurrect the row the eviction just dropped. Entries are
+# reaped by the first build that started after them.
+_FLEET_EPOCH = 0
+_FLEET_TOMBSTONES: dict[str, int] = {}
 
 
-async def _fleet_refresh() -> dict:
+def _drop_worktrees(data: dict, names: set[str]) -> dict:
+    """A copy of ``data`` without the named worktrees.
+
+    Copies rather than mutates: a concurrent response may still hold the old
+    dict while aiohttp serializes it.
+    """
+    wts = data.get("worktrees")
+    if not isinstance(wts, list):
+        return data
+    kept = [w for w in wts if w.get("name") not in names]
+    if len(kept) == len(wts):
+        return data
+    return {**data, "worktrees": kept}
+
+
+async def _fleet_build() -> dict:
+    global _FLEET_TOMBSTONES
+    started = _FLEET_EPOCH
     data = await _build_fleet()
+    # Removals that landed DURING this build are invisible to it — the git state
+    # it read predates them. Re-apply them so a slow build cannot put back a row
+    # an eviction already removed.
+    data = _drop_worktrees(
+        data, {n for n, e in _FLEET_TOMBSTONES.items() if e > started}
+    )
+    # Evictions that predate this build's start need no tombstone: `_fleet_forget`
+    # runs only after git has removed the worktree, so no later build can see it.
+    _FLEET_TOMBSTONES = {n: e for n, e in _FLEET_TOMBSTONES.items() if e > started}
     _FLEET_CACHE["data"] = data
     _FLEET_CACHE["ts"] = time.monotonic()
     return data
 
 
+def _fleet_rebuild_task() -> asyncio.Task[dict]:
+    """The in-flight rebuild, starting one if none is running."""
+    global _FLEET_INFLIGHT
+    task = _FLEET_INFLIGHT
+    if task is None or task.done():
+        task = asyncio.ensure_future(_fleet_build())
+        _FLEET_INFLIGHT = task
+    return task
+
+
+async def _fleet_refresh() -> dict:
+    # shield: a client disconnecting mid-request must not cancel a rebuild that
+    # other waiters (and the cache) depend on. Coalescing onto a build already in
+    # flight is safe even for a `fresh=1` request that raced a removal:
+    # `_fleet_build` re-applies any eviction that landed mid-build.
+    return await asyncio.shield(_fleet_rebuild_task())
+
+
+def _fleet_forget(name: str) -> None:
+    """Evict one worktree from the cached snapshot and mark it for rebuild.
+
+    ``_fleet_cached`` is stale-while-revalidate: once past the TTL it serves the
+    PREVIOUS snapshot and only schedules a rebuild behind it. Without this hook a
+    just-removed worktree keeps rendering for the length of a full rebuild, so
+    the UI shows rows that no longer exist and refreshing does not help. Evicting
+    the row makes the very next response truthful at zero rebuild latency, and
+    zeroing the timestamp schedules the rebuild that refreshes the rest.
+    """
+    global _FLEET_EPOCH
+    _FLEET_EPOCH += 1
+    _FLEET_TOMBSTONES[name] = _FLEET_EPOCH
+    data = _FLEET_CACHE["data"]
+    if isinstance(data, dict):
+        _FLEET_CACHE["data"] = _drop_worktrees(data, {name})
+    _FLEET_CACHE["ts"] = 0.0
+
+
+def _log_fleet_rebuild_failure(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("dev-fleet: background fleet rebuild failed: %s", exc)
+
+
 async def _fleet_cached() -> dict:
-    global _FLEET_REFRESHING
     data, ts = _FLEET_CACHE["data"], _FLEET_CACHE["ts"]
     if data is None:
         return await _fleet_refresh()
-    if time.monotonic() - ts > _FLEET_TTL and not _FLEET_REFRESHING:
-        _FLEET_REFRESHING = True
-
-        async def _bg():
-            global _FLEET_REFRESHING
-            try:
-                await _fleet_refresh()
-            finally:
-                _FLEET_REFRESHING = False
-
-        asyncio.create_task(_bg())
+    if time.monotonic() - ts > _FLEET_TTL:
+        task = _fleet_rebuild_task()
+        # This caller does not await the rebuild, so consume its exception here
+        # or asyncio reports it as never-retrieved.
+        if not task.done():
+            task.add_done_callback(_log_fleet_rebuild_failure)
     return data
 
 
@@ -2074,6 +2160,10 @@ async def _worktree_remove(
                     f"refs/heads/{branch}", verdict_oid.strip(), timeout=10,
                 )
 
+    # Every removal path lands here — the single-worktree handler, each parallel
+    # prune worker, and the auto-prune reaper — so this is the one place the
+    # cached snapshot has to be told the row is gone.
+    _fleet_forget(name)
     return {"ok": True, "removed": True, "stopped_pod": stopped_pod, "pr": _redact_pr(pr)}
 
 

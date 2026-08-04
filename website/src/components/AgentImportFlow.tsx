@@ -22,10 +22,34 @@ import {
   type AgentImportSource,
 } from '../api/client'
 import { Btn, SendBtn } from './ui'
-import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
+import OnboardingChapterShell, {
+  OnboardingShellContext,
+  type ShellAsideCopy,
+} from './OnboardingChapterShell'
 
 import { i18nT } from '../i18n/t'
 type Stage = 1 | 2 | 3 | 4
+
+/**
+ * The accent left panel's copy for the first-run SETUP chapters.
+ *
+ * Shared with the Privacy chapter that follows this one, rather than duplicated:
+ * the panel is mounted ONCE by `OnboardingShellHost`, so identical copy across
+ * the hand-off means nothing on the left changes and the floating mascots have
+ * no reason to re-render, let alone replay their entrance. Two look-alike copies
+ * would drift the moment one is edited.
+ *
+ * A function (not a const) because `i18nT()` at module load would freeze the
+ * boot language; the lookup has to run during render.
+ */
+export function setupChapterAside(ariaLabel: string): ShellAsideCopy {
+  return {
+    ariaLabel,
+    panelHeadline: i18nT('components.agentImportFlow.bring_your_crew_with_you'),
+    panelBody: i18nT('components.agentImportFlow.bring_your_supported_setup_sessions_memories_wor'),
+    panelFootnote: i18nT('components.agentImportFlow.merge_only_setup_credentials_stay_where_they_are'),
+  }
+}
 
 /** The wizard's stages, in order. Only the COUNT is ever displayed (the "2 of 4"
  *  eyebrow) — each stage's on-screen heading and description are separate,
@@ -265,7 +289,11 @@ export default function AgentImportFlow({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        skip()
+        // Escape means SKIP ALL, not "skip import": one keystroke abandons the
+        // whole of first run, exactly like the header control. It still cannot
+        // bypass the mandatory Privacy chapter — that is the host's job, and
+        // both exits route through it (see App.tsx).
+        skipAll()
         return
       }
       if (event.key !== 'Tab') return
@@ -286,7 +314,7 @@ export default function AgentImportFlow({
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-    // `skip` intentionally follows the current mutation state.
+    // `skipAll` intentionally follows the current mutation state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, completionMutation.isPending, applyMutation.isPending, skipAllMutation.isPending])
 
@@ -320,7 +348,12 @@ export default function AgentImportFlow({
     applyMutation.mutate(undefined)
   }
   const importAnother = () => resetFlow(true)
-  const completionError = completionMutation.error
+  // Both mutations PUT the identical completed-onboarding payload to the same
+  // endpoint, so one failure message covers them and every existing render site
+  // reports either. Without this a rejected write on the "Skip all" path (the
+  // header control, or Escape) would leave the dialog open with no feedback at
+  // all — the user presses Escape, nothing happens, and nothing says why.
+  const completionError = completionMutation.error ?? skipAllMutation.error
   const isBusy = completionMutation.isPending || applyMutation.isPending || skipAllMutation.isPending
   const hasSelection = applyPayload.sources.length > 0
 
@@ -696,10 +729,7 @@ export default function AgentImportFlow({
   return (
     <OnboardingChapterShell
       dialogRef={dialogRef}
-      ariaLabel={i18nT('components.agentImportFlow.import_agent_setup')}
-      panelHeadline={i18nT('components.agentImportFlow.bring_your_crew_with_you')}
-      panelBody={i18nT('components.agentImportFlow.bring_your_supported_setup_sessions_memories_wor')}
-      panelFootnote={i18nT('components.agentImportFlow.merge_only_setup_credentials_stay_where_they_are')}
+      {...setupChapterAside(i18nT('components.agentImportFlow.import_agent_setup'))}
       eyebrow={
         <>
           {i18nT('components.agentImportFlow.import_setup')}

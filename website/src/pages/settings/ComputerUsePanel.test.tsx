@@ -176,6 +176,16 @@ describe('ComputerUsePanel', () => {
     })
   })
 
+  it('tags the section as macOS only', async () => {
+    // Computer use has a macOS-only driver; the panel must say so up front rather
+    // than only in the unsupported-platform reason text. Shown in every state.
+    // `renderPanel` already awaits the settled render, so a synchronous getByText
+    // is correct here — a `findByText` retry can latch onto a transient node from
+    // React Query's re-render and resolve to a detached element.
+    await renderPanel()
+    expect(screen.getByText('macOS only')).toBeInTheDocument()
+  })
+
   it('renders only the reason and no toggle when the platform is unsupported', async () => {
     await renderPanel(
       snapshot({
@@ -188,6 +198,8 @@ describe('ComputerUsePanel', () => {
       await screen.findByText('the Linux AT-SPI driver is not implemented yet'),
     ).toBeInTheDocument()
     expect(screen.queryByRole('switch', { name: ENABLE_LABEL })).not.toBeInTheDocument()
+    // The macOS-only tag stays visible on the unsupported host too.
+    expect(screen.getByText('macOS only')).toBeInTheDocument()
   })
 
 

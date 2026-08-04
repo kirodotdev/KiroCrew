@@ -144,7 +144,7 @@ function resolveMode(pref: ModePreference): ResolvedMode {
   return pref === 'system' ? getSystemMode() : pref
 }
 
-function applyTheme(colorTheme: ColorTheme, mode: ResolvedMode) {
+function applyTheme(colorTheme: ColorTheme, mode: ResolvedMode, pref: ModePreference) {
   const el = document.documentElement
   if (colorTheme.startsWith('custom-')) {
     el.dataset.theme = `${colorTheme}-${mode}`
@@ -152,6 +152,13 @@ function applyTheme(colorTheme: ColorTheme, mode: ResolvedMode) {
     el.dataset.theme = colorTheme === 'emerald' ? mode : `${colorTheme}-${mode}`
   }
   el.dataset.mode = mode
+  // The PREFERENCE, exposed separately from the resolved mode because the two
+  // mean different things to the Electron shell. `data-mode` is what to paint;
+  // `data-mode-pref` is whether the user asked to follow the OS. main.js maps
+  // this onto `nativeTheme.themeSource`, which must stay `system` under Auto —
+  // pinning it to dark/light also pins `prefers-color-scheme` in every renderer,
+  // which is the media query Auto resolves through. See syncNativeTheme.
+  el.dataset.modePref = pref
 }
 
 // Allowlist of allowed CSS custom property names for themes.
@@ -739,9 +746,20 @@ export interface ThemeContextValue {
   themeVersion: number
   onboarded: boolean
   importOnboarded: boolean
+  /**
+   * Has the user seen the mandatory first-run Privacy chapter?
+   *
+   * Browser-local on purpose, unlike `onboarded` / `importOnboarded`: it only
+   * ever gates a screen INSIDE first run, and a finished first run (`onboarded`,
+   * which IS server-backed) implies it — so a second machine never re-shows the
+   * chapter to someone who already completed onboarding, and no config field is
+   * needed to say so.
+   */
+  privacyAcked: boolean
   themeBootReady: boolean
   markOnboarded: () => void
   markImportOnboarded: () => void
+  markPrivacyAcked: () => void
   addCustomTheme: (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => Promise<CustomThemeData>
   deleteCustomTheme: (slug: string) => Promise<void>
   loadCustomThemes: () => Promise<void>
@@ -815,6 +833,12 @@ function useThemeState(): ThemeContextValue {
   const [customThemesLoaded, setCustomThemesLoaded] = useState(false)
   const [importOnboarded, setImportOnboarded] = useState(
     () => !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded'),
+  )
+  // Seeded from `mc-onboarded` as well as its own flag: a user who finished
+  // first run before this chapter existed (or on another machine) has no reason
+  // to be shown it now.
+  const [privacyAcked, setPrivacyAcked] = useState(
+    () => !!localStorage.getItem('mc-privacy-acked') || !!localStorage.getItem('mc-onboarded'),
   )
   const legacyOnboardedRef = useRef(
     !!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-import-onboarded'),
@@ -904,6 +928,8 @@ function useThemeState(): ThemeContextValue {
         legacyMigrationStartedRef.current = true
         setOnboarded(true)
         setImportOnboarded(true)
+        setPrivacyAcked(true)
+        safeSetItem('mc-privacy-acked', '1')
         persistTheme(
           { onboarded: true, import_onboarded: true },
           {
@@ -918,6 +944,10 @@ function useThemeState(): ThemeContextValue {
           setOnboarded(bootData.onboarded)
           if (bootData.onboarded) {
             safeSetItem('mc-onboarded', '1')
+            // A completed first run passed through the Privacy chapter (or
+            // predates it) — the server flag is the durable record of both.
+            safeSetItem('mc-privacy-acked', '1')
+            setPrivacyAcked(true)
           } else {
             localStorage.removeItem('mc-onboarded')
           }
@@ -937,9 +967,21 @@ function useThemeState(): ThemeContextValue {
   }, [bootData, themeBootFetched])
 
   useEffect(() => {
-    applyTheme(colorTheme, resolved)
+    applyTheme(colorTheme, resolved, mode)
     bumpThemeVersion()
-  }, [resolved, colorTheme, bumpThemeVersion])
+  }, [resolved, colorTheme, mode, bumpThemeVersion])
+
+  // Tell the Electron shell which mode PREFERENCE is active, so it can set
+  // `nativeTheme.themeSource` to match ('system' under Auto). Pushed on change
+  // rather than only pulled on window focus so switching Dark → Auto un-pins
+  // `prefers-color-scheme` immediately; Chromium then fires a change event on
+  // the media query below if the effective value moved. No-op in a browser.
+  useEffect(() => {
+    const bridge = (window as unknown as {
+      electronAPI?: { setThemeMode?: (pref: string) => void }
+    }).electronAPI
+    bridge?.setThemeMode?.(mode)
+  }, [mode])
 
   // Report the resolved accent to the Electron shell (if present) so the NEXT
   // launch's boot splash (loading.html) paints in the user's chosen colour.
@@ -1117,6 +1159,11 @@ function useThemeState(): ThemeContextValue {
     setImportOnboarded(true)
   }, [])
 
+  const markPrivacyAcked = useCallback(() => {
+    safeSetItem('mc-privacy-acked', '1')
+    setPrivacyAcked(true)
+  }, [])
+
   return {
     theme: resolved,
     preference: mode,
@@ -1132,9 +1179,11 @@ function useThemeState(): ThemeContextValue {
     themeVersion,
     onboarded,
     importOnboarded,
+    privacyAcked,
     themeBootReady,
     markOnboarded,
     markImportOnboarded,
+    markPrivacyAcked,
     addCustomTheme,
     deleteCustomTheme,
     loadCustomThemes,

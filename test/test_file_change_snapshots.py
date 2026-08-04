@@ -14,9 +14,12 @@ touching the live ACP runtime — every test stays in pure-Python land.
 
 from __future__ import annotations
 
+import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 from kiro_crew.dashboard.chat_runner import (
     _MAX_SNAPSHOT,
@@ -26,6 +29,25 @@ from kiro_crew.dashboard.chat_runner import (
     _truncate_snapshot,
 )
 from kiro_crew.dashboard.state import _ChatSlot
+
+
+@pytest.fixture
+def short_tmp_dir():
+    """A short-path temp dir under ``/tmp``, removed on teardown.
+
+    These tests assert on a file's PATH as it appears in message metadata, and a
+    macOS ``tmp_path`` carries high-entropy directory ids that trip
+    ``redact_credentials()`` on that field -- so the path has to come from ``/tmp``
+    rather than from ``tmp_path``. ``mkdtemp`` registers no finalizer, though, so
+    the nine inline calls this replaces each leaked a directory that survived the
+    run; ``/tmp`` is not swept per-run the way pytest's own basetemp is.
+    """
+    base = Path(tempfile.mkdtemp(dir="/tmp"))
+    try:
+        yield base
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
 
 # ── _truncate_snapshot ──────────────────────────────────────────────────────
 
@@ -171,10 +193,8 @@ class TestFlushFileChanges:
         # No synthetic message created.
         assert slot.messages == []
 
-    def test_attaches_to_last_assistant_message(self):
-        # Use /tmp directly — macOS tmp_path contains high-entropy dir IDs that
-        # trigger redact_credentials() on the path field, breaking the assertion.
-        d = Path(tempfile.mkdtemp(dir="/tmp"))
+    def test_attaches_to_last_assistant_message(self, short_tmp_dir: Path):
+        d = short_tmp_dir
         f = d / "x.py"
         f.write_text("after\n")
         slot = _make_slot_with_assistant_message()
@@ -189,9 +209,8 @@ class TestFlushFileChanges:
         # Slot's accumulator is reset for the next turn.
         assert slot._file_changes == []
 
-    def test_dedup_keeps_first_before(self):
-        # Use /tmp directly — see test_attaches_to_last_assistant_message.
-        d = Path(tempfile.mkdtemp(dir="/tmp"))
+    def test_dedup_keeps_first_before(self, short_tmp_dir: Path):
+        d = short_tmp_dir
         f = d / "loop.py"
         f.write_text("v3\n")
         slot = _make_slot_with_assistant_message()
@@ -207,9 +226,8 @@ class TestFlushFileChanges:
         # After-content is read from disk once.
         assert changes[0]["after"] == "v3\n"
 
-    def test_dedup_across_multiple_files(self):
-        # Use /tmp directly — see test_attaches_to_last_assistant_message.
-        d = Path(tempfile.mkdtemp(dir="/tmp"))
+    def test_dedup_across_multiple_files(self, short_tmp_dir: Path):
+        d = short_tmp_dir
         a = d / "a.py"
         b = d / "b.py"
         a.write_text("a-after")
@@ -257,10 +275,9 @@ class TestFlushFileChanges:
         changes = slot.messages[-1]["meta"]["file_changes"]
         assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["before"]
 
-    def test_synthetic_message_created_when_no_assistant_text(self):
+    def test_synthetic_message_created_when_no_assistant_text(self, short_tmp_dir: Path):
         """User stopped before any assistant chunk: still surface modified files."""
-        # Use /tmp directly — see test_attaches_to_last_assistant_message.
-        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        d = short_tmp_dir
         f = d / "edit.py"
         f.write_text("after\n")
         slot = _ChatSlot("aborted-turn")
@@ -638,10 +655,10 @@ class TestNoOpPassThrough:
     redacted spans (PR #920 review finding).
     """
 
-    def test_noop_write_is_surfaced(self):
+    def test_noop_write_is_surfaced(self, short_tmp_dir: Path):
         """A write with identical before/after still generates an entry
         (the frontend labels it "no changes")."""
-        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        d = short_tmp_dir
         f = d / "unchanged.py"
         f.write_text("same content\n")
         slot = _make_slot_with_assistant_message()
@@ -654,9 +671,9 @@ class TestNoOpPassThrough:
         assert len(changes) == 1
         assert changes[0]["before"] == changes[0]["after"] == "same content\n"
 
-    def test_noop_and_real_change_both_surfaced(self):
+    def test_noop_and_real_change_both_surfaced(self, short_tmp_dir: Path):
         """No-op and real-change entries both survive the flush."""
-        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        d = short_tmp_dir
         changed = d / "changed.py"
         changed.write_text("new content\n")
         unchanged = d / "unchanged.py"
@@ -676,11 +693,11 @@ class TestNoOpPassThrough:
         assert changes[str(changed)]["after"] == "new content\n"
         assert changes[str(unchanged)]["before"] == changes[str(unchanged)]["after"]
 
-    def test_flush_always_resets_accumulator(self):
+    def test_flush_always_resets_accumulator(self, short_tmp_dir: Path):
         """The accumulator is cleared on every flush path, so an all-no-op
         turn can never leak its entries into a later turn (stale-entry
         misattribution, PR #920 review finding)."""
-        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        d = short_tmp_dir
         f = d / "a.py"
         f.write_text("content_a\n")
 
@@ -711,10 +728,10 @@ class TestContentBlockRedactionAndTruncation:
         assert "(truncated at" in result["content"]
         assert result["content"].startswith("x" * 100)
 
-    def test_redaction_applies_to_content_block_before_in_flush(self):
+    def test_redaction_applies_to_content_block_before_in_flush(self, short_tmp_dir: Path):
         """Credentials in content-block-sourced 'before' are redacted by
         _flush_file_changes, just like disk-sourced content."""
-        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        d = short_tmp_dir
         f = d / "config.yml"
         # After content is different (clean) so the entry isn't dropped as no-op
         f.write_text("aws_access_key_id=REPLACED_SAFELY\nversion=2\n")
@@ -742,9 +759,9 @@ class TestContentBlockRedactionAndTruncation:
         # Must be None — sensitive path refusal takes priority
         assert result is None
 
-    def test_exfil_url_redacted_in_content_block_before(self):
+    def test_exfil_url_redacted_in_content_block_before(self, short_tmp_dir: Path):
         """Exfiltration URLs in content-block before text are scrubbed."""
-        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        d = short_tmp_dir
         f = d / "script.sh"
         # After content is clean
         f.write_text("echo 'clean'\n")

@@ -777,7 +777,8 @@
       "creating_worktree": "Creating worktree…",
       "failed_to_create_worktree": "Failed to create worktree",
       "start_in_new_worktree": "Start in new worktree",
-      "this_session_has_no_project_directory_so_there_i": "This session has no project directory, so there is no repository to branch from"
+      "this_session_has_no_project_directory_so_there_i": "This session has no project directory, so there is no repository to branch from",
+      "worktree_disabled_no_project_directory": "\"Add to this session\" pre-fills the composer — nothing is sent until you press send. Worktrees are unavailable here: this session has no project directory (pick one with the composer's Project chip)."
     },
     "inboundLinkChip": {
       "confirm_release": "Release this session from {{label}}?\n\nMessages sent there will stop arriving here, and replies will stop being delivered there. You can re-attach with !sessions from that channel.",
@@ -895,28 +896,31 @@
       "copy_url_of": "Copy URL of {{name}}"
     },
     "markdownPanel": {
+      "add_to_artifact_library": "Add to artifact library",
       "adding": "Adding…",
       "adding_2": "Adding...",
       "already_in_library": "Already in Library",
+      "cannot_read_file": "Cannot read file",
+      "download_failed": "Download failed",
       "edit": "Edit",
+      "failed_to_add_source": "Failed to add source",
+      "file_too_large_to_add": "File is too large to add",
       "full_screen": "Full screen",
       "no_results": "No results",
+      "open_as_artifact": "Open as artifact",
       "preview": "Preview",
       "refresh_file_re_read_from_disk": "Refresh file (re-read from disk)",
-      "remove_star": "Remove star",
       "save": "Save",
       "save_failed": "Save failed",
       "save_or_discard_changes_first": "Save or discard changes first",
       "saving": "Saving…",
       "snapshot_version": "Snapshot version",
       "snapshotting": "Snapshotting…",
-      "star": "Star",
       "switch_to_split_view": "Switch to split view",
       "switch_to_unified_view": "Switch to unified view",
+      "tracking_description": "Tracking {{path}}",
       "view_preview": "View Preview",
-      "view_source": "View Source",
-      "failed_to_add_source": "Failed to add source",
-      "download_failed": "Download failed"
+      "view_source": "View Source"
     },
     "markdownRenderer": {
       "click_to_browse_shift_click_to_reveal_in_finder": "Click to browse / Shift+click to reveal in Finder",
@@ -995,11 +999,6 @@
       "done": "Done",
       "make_it_yours": "Make it yours.",
       "next": "Next",
-      "privacy_eyebrow": "Privacy",
-      "privacy_panel_body": "Your prompts, files, and credentials never leave your machine. We collect as little as possible — five anonymous fields.",
-      "privacy_panel_headline": "You stay in control",
-      "privacy_subtitle": "The five anonymous fields Kiro Crew sends, and how to turn them off.",
-      "privacy_title": "Privacy",
       "saving": "Saving…",
       "set_your_look_and_tell_kiro_about_you_so_respons": "Set your look and tell Kiro about you so responses fit the way you work.",
       "pop_apps_body": "Install purpose-built tools that unlock new capabilities and workflows.",
@@ -1321,6 +1320,12 @@
       "desc_todos": "Show or manage the task list",
       "desc_tools": "Show available tools",
       "desc_usage": "Show billing and usage information"
+    },
+    "privacyChapter": {
+      "continue": "Continue",
+      "eyebrow": "Privacy",
+      "subtitle": "The five anonymous fields Kiro Crew sends, and how to turn them off.",
+      "title": "Privacy"
     }
   },
   "hooks": {
@@ -1499,10 +1504,8 @@
       "agent_templates_grouped_by_package_update_and_un": "Agent templates grouped by package. Update and uninstall at package level. Individual agents can be deleted (removes config file).",
       "default": "Default",
       "default_for_new_sessions": "Default for new sessions",
+      "delete_agent": "Delete {{name}}",
       "remove_default_agent": "Remove default agent",
-      "routing_hints_for_the_conductor_skill_describe_t": "Routing hints for the conductor skill: describe the tasks and triggering conditions where this agent should be picked (e.g. 'Use for frontend/React UI work' or 'Handle DB migrations'). An incoming task is matched against this text to delegate to the right specialist. These hints only take effect once Orchestrator Mode is enabled in Config (Developer → Config → Orchestrator Mode); otherwise they're ignored. Markdown format.",
-      "save_metadata": "Save Metadata",
-      "saving": "Saving…",
       "set_as_default": "Set as default",
       "set_as_default_agent": "Set as default agent"
     },
@@ -1658,11 +1661,28 @@
     "chat": {
       "activityViewer": {
         "approval_needed": "Approval Needed",
+        "artifact_save_permanently": "Save permanently",
+        "artifact_save_permanently_aria": "Save this artifact permanently so it is not cleaned up",
+        "artifacts": "Artifacts",
+        "artifacts_browse_all": "Browse all ({{count}})",
+        "artifacts_empty_hint": "Anything you create or open here will show up in this panel.",
+        "artifacts_empty_title": "No artifacts in this chat yet",
+        "artifacts_from_library": "From your library",
+        "artifacts_search_library": "Search your library…",
         "cancelled": "Cancelled",
+        "changes": "Changes",
         "clear": "Clear",
         "complete": "Complete",
         "dismiss_done_count": "Dismiss done ({{count}})",
         "error": "Error",
+        "file_artifact_add": "Add to artifacts",
+        "file_artifact_add_aria": "Add this file to the artifact library",
+        "file_artifact_add_failed": "Could not add — try again",
+        "file_artifact_open": "Open artifact",
+        "file_artifact_open_aria": "Open the artifact for this file",
+        "file_not_found_on_disk_it_may_have_been_moved_or": "File not found on disk. It may have been moved or deleted.",
+        "issues": "Issues",
+        "logs": "Logs",
         "no_issues_in_this_session_yet_mention_a_github_o": "No issues in this session yet. Mention a GitHub or GitLab issue link and it will appear here.",
         "no_matches": "No matches",
         "no_pull_requests_yet": "No pull requests in this session yet",
@@ -1676,17 +1696,12 @@
         "running_tool": "Running Tool",
         "search_files": "Search by file name, folder, or link…",
         "show_all_count": "Show all ({{count}})",
+        "side": "Side",
         "starting": "Starting…",
         "stopped": "Stopped",
-        "unable_to_read_this_file": "Unable to read this file.",
-        "file_not_found_on_disk_it_may_have_been_moved_or": "File not found on disk. It may have been moved or deleted.",
-        "unable_to_read_file": "Unable to read file.",
-        "artifacts": "Artifacts",
-        "changes": "Changes",
-        "issues": "Issues",
-        "logs": "Logs",
-        "side": "Side",
         "subagents": "Subagents",
+        "unable_to_read_file": "Unable to read file.",
+        "unable_to_read_this_file": "Unable to read this file.",
         "workflows": "Workflows"
       },
       "assistantMessage": {
@@ -2408,6 +2423,7 @@
       },
       "computerUsePanel": {
         "could_not_save_computer_use_settings": "Could not save computer-use settings.",
+        "macos_only": "macOS only",
         "computer_use_lets_the_agent_read_any_app_window": "Computer use lets the agent read any app window and send clicks and keystrokes into it. Most clicks are delivered straight to the app and leave your pointer alone, but the agent can ask to move the real pointer when a target needs it. Password fields are never read; nothing else limits which apps it may drive.",
         "could_not_check": "Could not check",
         "draw_a_cursor_that_glides_to_each_target_and_pul": "Draw a cursor that glides to each target and pulses when it clicks, so you can follow along on screen. Purely visual — it changes nothing about what the agent is allowed to do, and it only appears for clicks that move the real pointer.",
@@ -2517,7 +2533,8 @@
         "edit_theme": "Edit Theme",
         "fetching": "Fetching…",
         "install": "Install",
-        "install_failed": "Install failed"
+        "install_failed": "Install failed",
+        "native_window_zoom_tip": "Native window zoom, the same setting as {{mod}}+ / {{mod}}− (50%–300%). Remembered across launches."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",
@@ -2792,6 +2809,13 @@
         "token_description": "The Secret shown next to the Bot ID on the same settings page.",
         "token_label": "WeCom bot secret",
         "token_placeholder": "Paste WeCom bot secret"
+      },
+      "shortcutsPanel": {
+        "preset_double_shift": "Double Shift",
+        "preset_mod_k": "⌘K / Ctrl+K",
+        "preset_custom": "Custom",
+        "record_prompt": "Press keys…",
+        "custom_hint": "Use at least one modifier key."
       }
     },
     "systemPage": {

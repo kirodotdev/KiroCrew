@@ -86,3 +86,41 @@ class TestSuggestFollowupApplier:
             state, slot, "dashboard:chat-1", "suggest_followup", {"items": [_item()]}
         )
         assert "restate" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_unscoped_slot_warns_that_the_worktree_button_is_disabled(self):
+        """A slot with no project directory renders the card's 'Start in new
+        worktree' button DISABLED (FollowUpCard.tsx gates on projectDir). The
+        confirmation is the model's only window into that, so it must say so —
+        otherwise the agent recommends a route that cannot work (Research Lab
+        worker slots are always unscoped: auto_research/handlers.py)."""
+
+        async def deliver_ws_owners(event, payload):
+            return 1
+
+        state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
+        slot = SimpleNamespace(key="dashboard:research-1", project="")
+        result = await apply_session_directive(
+            state, slot, "dashboard:research-1", "suggest_followup", {"items": [_item()]}
+        )
+        assert "no project directory" in result.lower()
+        assert "add to this session" in result.lower()
+        # Still a success, not an error: the card WAS shown.
+        assert "error" not in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_scoped_slot_gets_the_plain_confirmation(self):
+        """With a project directory every card action works — the confirmation
+        must not carry the disabled-button note, which would steer the model
+        away from the worktree route for no reason."""
+
+        async def deliver_ws_owners(event, payload):
+            return 1
+
+        state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
+        slot = SimpleNamespace(key="dashboard:chat-1", project="/repo")
+        result = await apply_session_directive(
+            state, slot, "dashboard:chat-1", "suggest_followup", {"items": [_item()]}
+        )
+        assert "no project directory" not in result.lower()
+        assert "shown below the composer" in result.lower()

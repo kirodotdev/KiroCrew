@@ -114,6 +114,12 @@ export default {
         'nc-slide-out': { from: { marginRight: '0px' }, to: { marginRight: '-420px' } },
         'nc-slide-in-full': { from: { marginRight: '-100%' }, to: { marginRight: '0px' } },
         'nc-slide-out-full': { from: { marginRight: '0px' }, to: { marginRight: '-100%' } },
+        /* EXIT halves of `fade-in` / `scale-in`, for a Radix-driven overlay.
+           Radix `Presence` defers unmount until a CSS ANIMATION ends — it does
+           not observe transitions — so a closing dialog needs a real keyframe
+           or it vanishes instantly while its entrance is animated. */
+        'fade-out': { from: { opacity: '1' }, to: { opacity: '0' } },
+        'scale-out': { from: { opacity: '1', transform: 'scale(1)' }, to: { opacity: '0', transform: 'scale(.96)' } },
       },
       animation: {
         rise: 'rise .35s cubic-bezier(.16,1,.3,1) backwards',
@@ -133,6 +139,8 @@ export default {
         'nc-slide-out': 'nc-slide-out .24s cubic-bezier(.3,0,.8,.15) forwards',
         'nc-slide-in-full': 'nc-slide-in-full .32s cubic-bezier(.16,1,.3,1) backwards',
         'nc-slide-out-full': 'nc-slide-out-full .24s cubic-bezier(.3,0,.8,.15) forwards',
+        'fade-out': 'fade-out .15s ease forwards',
+        'scale-out': 'scale-out .15s cubic-bezier(.3,0,.8,.15) forwards',
       },
     },
   },

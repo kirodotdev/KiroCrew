@@ -790,7 +790,8 @@ class _ChatSlot:
         "_stop_event_id",
         "_stop_escalated_card_id",
         "_pending_reset_history_key",
-        "_dirty",
+        "_dirty_flag",
+        "_dirty_gen",
         "_orch_tracker",
         "_auto_run",
         "_recovery_chat_triggered",
@@ -928,7 +929,10 @@ class _ChatSlot:
         # inline because the endpoint can be reached from inside the kiro-cli
         # process group via the set_project MCP tool.
         self._pending_reset_history_key: str | None = None
-        self._dirty: bool = False  # True when messages changed since last flush
+        self._dirty_flag: bool = False  # True when messages changed since last flush
+        # Bumped by the _dirty setter on every True. Lets the periodic flush tell
+        # "the True I started this save under" from "a NEW True set during it".
+        self._dirty_gen: int = 0
         self._orch_tracker: Any = None  # OrchestrationTracker, set by gateway
         self._auto_run: bool = False  # "Go All" — skip stage gates
         self._recovery_chat_triggered: bool = False  # guard against concurrent failure recovery
@@ -1085,6 +1089,40 @@ class _ChatSlot:
         # STOP, error). Without this, a steer swallowed by a dying turn
         # vanished with no trace (see the requeue site).
         self._pending_steers: list[str] = []
+
+    @property
+    def _dirty(self) -> bool:
+        """True while this slot holds state not yet confirmed on disk.
+
+        Deliberately a property so that ``_dirty_gen`` is bumped centrally by the
+        ~20 existing ``slot._dirty = True`` sites without editing any of them.
+
+        Two independent readers depend on this staying True for the WHOLE
+        duration of a save, not just until the save starts:
+
+        * ``chat_fork`` treats it as "unpersisted in-memory state exists". A False
+          read makes it skip both the in-memory tail append and the durable
+          pre-fork save, so it forks from stale disk and the new session silently
+          omits the newest messages.
+        * ``_save_slot_to_history``'s resumed-slot no-op guard skips when
+          ``_resumed_count > 0 and len(window) <= _resumed_count and not _dirty``;
+          its comment states the assumption directly — "a dirty slot whose length
+          merely equals the resumed count still falls through ... otherwise an
+          in-place edit after resume would never reach disk."
+
+        So the periodic flush must NOT clear this early to protect itself against
+        clobbering a concurrent mark. It compares ``_dirty_gen`` instead.
+        """
+        return self._dirty_flag
+
+    @_dirty.setter
+    def _dirty(self, value: bool) -> None:
+        self._dirty_flag = value
+        if value:
+            # Monotonic: only ever advances, so a wrapped-around compare is
+            # impossible and a missed bump can only cause an extra (harmless)
+            # flush, never a skipped one.
+            self._dirty_gen += 1
 
     @property
     def _plan_stage_count(self) -> int:
@@ -2349,11 +2387,29 @@ class DashboardState:
         for slot in list(self._slots.values()):
             if not slot._dirty or not slot.messages:
                 continue
+            # Clear the dirty bit only if NOTHING re-marked the slot while this
+            # save was running. This runs on an executor thread and the event loop
+            # keeps mutating the slot underneath it, so a plain post-save
+            # `_dirty = False` would overwrite a mark set DURING the save (e.g.
+            # _flush_file_changes attaching file_changes) — the stale snapshot
+            # would be the last thing written and every later pass would skip the
+            # slot, so the late mutation would never reach disk.
+            #
+            # The generation compare is used instead of consuming the bit up front
+            # because `_dirty` must stay True for the whole save: `chat_fork` reads
+            # it as "unpersisted state exists" (a False read makes it fork from
+            # stale disk), and `_save_slot_to_history`'s resumed-slot no-op guard
+            # is written assuming a dirty slot still reads dirty during the save.
+            # See the `_dirty` property for both contracts.
+            gen = slot._dirty_gen
             try:
                 _save_slot_to_history(self, slot)
-                slot._dirty = False
             except Exception:
+                # Leave _dirty set so the next 5s pass retries.
                 logger.warning("Flush failed for slot %s", slot.key, exc_info=True)
+            else:
+                if slot._dirty_gen == gen:
+                    slot._dirty = False
         # Snapshot the live tab set so a gateway restart can restore exactly
         # the tabs the user had open, regardless of last-message age. Without
         # this, restore_recent_sessions only brings back sessions whose

@@ -540,6 +540,43 @@ describe('a surface this branch added is measured against zero, not against a fa
     expect(verdict.failed).toBe(false)
     expect(verdict.shrank.map(fmtDelta)).toEqual(['chat.text: 9 -> 4'])
   })
+
+  // The other half of the same distinction, and the one that decides whether the
+  // gate's aperture can ever be widened. A surface REGISTERED for the first time
+  // whose ROUTE already existed on the base is measurable there, and its findings
+  // are pre-existing debt the registration merely revealed — not something the
+  // branch added. `newSurfaces` must therefore mean "the base had no route for this
+  // URL" (proven in `check-i18n-render.mjs` by the base sweep being redirected
+  // away), never "this id is absent from the base registry".
+  it('does NOT charge a newly registered surface whose route already existed', () => {
+    const verdict = decide({
+      counts: { chat: { text: 0, layout: 0, latent: 0 }, newsurf: { text: 140, layout: 0, latent: 0 } },
+      // The base rendered the same route and found the same 140 — the surface was
+      // simply never in the registry, so nobody had looked.
+      baseCounts: { chat: { text: 0, layout: 0, latent: 0 }, newsurf: { text: 140, layout: 0, latent: 0 } },
+      surfaceIds: SURFS,
+      // Not in `newSurfaces`: the base sweep landed on the requested URL.
+      newSurfaces: new Set(),
+    })
+
+    expect(verdict.failed).toBe(false)
+    expect(verdict.grew).toHaveLength(0)
+    expect(verdict.shrank).toHaveLength(0)
+  })
+
+  it('still catches a real regression on a newly registered existing route', () => {
+    // Registering the surface must not buy an exemption either: once it is compared
+    // against a real base, an increase there fails like anywhere else.
+    const verdict = decide({
+      counts: { chat: { text: 0, layout: 0, latent: 0 }, newsurf: { text: 146, layout: 0, latent: 0 } },
+      baseCounts: { chat: { text: 0, layout: 0, latent: 0 }, newsurf: { text: 140, layout: 0, latent: 0 } },
+      surfaceIds: SURFS,
+      newSurfaces: new Set(),
+    })
+
+    expect(verdict.failed).toBe(true)
+    expect(verdict.grew.map(fmtDelta)).toEqual(['newsurf.text: 140 -> 146 (+6)'])
+  })
 })
 
 describe('BUCKETS', () => {  it('is the ledger key order the debt record is written with', () => {

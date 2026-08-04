@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ExternalLink, MessageSquare, MessageSquarePlus, Send, Loader2, Copy, Maximize2, Minimize2 } from 'lucide-react'
+import { Component, ExternalLink, MessageSquare, MessageSquarePlus, Send, Loader2, Copy, Maximize2, Minimize2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import DetailPanel from './DetailPanel'
 import Clickable from './Clickable'
@@ -278,12 +278,8 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
     <>
     <DetailPanel
       embedded={embedded}
-      title={
-        <span className="flex items-center gap-2">
-          <span className="truncate">{name}</span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-medium shrink-0 uppercase">{effectiveKind}</span>
-        </span>
-      }
+      icon={<Component size={14} className="text-accent shrink-0" />}
+      title={<span className="truncate">{name}</span>}
       onClose={onClose}
       initialWidth={480}
       minWidth={420}
@@ -337,8 +333,8 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
         {/* Header — pl-20 clears macOS traffic-light buttons */}
         <div className="flex items-center justify-between pl-20 pr-6 h-12 shrink-0 border-b border-border">
           <span className="flex items-center gap-2 min-w-0">
+            <Component size={14} className="text-accent shrink-0" />
             <span className="text-base font-semibold text-text-strong truncate">{name}</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-medium shrink-0 uppercase">{effectiveKind}</span>
           </span>
           <div className="flex items-center gap-1.5">
             {commentsToggle(faFull.sidebarOpen, faFull.toggleSidebar)}

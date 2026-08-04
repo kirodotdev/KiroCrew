@@ -72,6 +72,29 @@ describe('FollowUpCard', () => {
     expect(screen.getByRole('button', { name: /add to this session/i })).not.toBeDisabled()
   })
 
+  it('demotes the disabled worktree button from the accent style so it does not read as the primary action', () => {
+    // A permanently-disabled button that keeps the accent background at 40%
+    // opacity still looks like the main CTA on a dark theme — users click it,
+    // meet a not-allowed cursor, and report a dead button. Unscoped sessions
+    // must render it in the secondary (bordered) look instead.
+    setup({ projectDir: undefined })
+    const worktree = screen.getByRole('button', { name: /start in new worktree/i })
+    expect(worktree.className).not.toContain('bg-accent')
+    expect(worktree.className).toContain('border-border')
+  })
+
+  it('keeps the accent style on the worktree button when the session is scoped', () => {
+    setup()
+    const worktree = screen.getByRole('button', { name: /start in new worktree/i })
+    expect(worktree.className).toContain('bg-accent')
+  })
+
+  it('explains the disabled worktree button in the footer instead of claiming both actions work', () => {
+    setup({ projectDir: undefined })
+    expect(screen.getByText(/this session has no project directory/i)).toBeInTheDocument()
+    expect(screen.queryByText(/^both actions pre-fill/i)).not.toBeInTheDocument()
+  })
+
   it('renders the worktree failure inline instead of throwing', async () => {
     const onStartInWorktree = vi.fn().mockRejectedValue(new Error('Branch already exists: feat/x'))
     setup({ onStartInWorktree })

@@ -105,6 +105,14 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Mochi notify + pin egress",
+        "apps/builtins/mochi/hooks.py",
+        "Agent-authored notify text (perform_pet_action summary/chatMessage) crosses to "
+        "the browser via the `mochi:notify` broadcast and the chat push; `redact_tree` "
+        "scrubs credentials and exfiltration URLs before publish, the same "
+        "output-boundary reason as the app plan/activity-log sinks.",
+    ),
+    (
         "Profile artifact",
         "perf_sampler.py",
         "Folded-stack profiles written by `kirocrew perf sample`. Frame labels are "
@@ -262,6 +270,23 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Install/start/stop script output and warnings surfaced from an app.",
     ),
     (
+        "App activity log",
+        "apps/builtins/mochi/activity_log.py",
+        "Agent-authored activity entries are redacted before persistence, for the "
+        "same reason as the session JSONL: the file is served back over the app's "
+        "activity route AND read into a later prompt, so an unredacted credential "
+        "would be written to disk and then replayed. Redaction sits at the single "
+        "write point rather than at each caller.",
+    ),
+    (
+        "App plan endpoint",
+        "apps/builtins/mochi/backend/routes.py",
+        "The agent-authored plan queue (update_plan) is served to the dashboard "
+        "over the app's /plan route; a credential or webhook URL an LLM wrote into "
+        "a narrative/task field is recursively redacted here before json_response, "
+        "the same output-boundary reason as the app activity log.",
+    ),
+    (
         "Slack session mirror",
         "dashboard/chat_slack.py",
         "Thread titles and mirrored message bodies posted to Slack, via "
@@ -321,6 +346,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # goes out to a human.
         "context.py",
         "agent.py",
+        # The shared recursive redactor helper itself — a pure scrubber, not an
+        # egress boundary; the modules that CALL it (mochi routes/hooks) are the
+        # registered sinks.
+        "apps/builtins/mochi/redact.py",
         "autonudge_authz.py",
         "acp/_dispatch.py",
         "acp/client.py",
@@ -419,12 +448,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cloud/connect.py",
         "cloud/login.py",
         "embeddings.py",
-        # Same shape as embeddings.py above: papyrus's managed-compiler download
-        # redacts the DOWNLOAD URL (userinfo + signed query) before logging it, so a
-        # mirrored/presigned override cannot leak credentials into a log. Nothing
-        # here reaches a user-facing surface — the app's egress paths (compile log,
-        # git stderr) redact separately in papyrus/backend/routes.py.
-        "apps/builtins/papyrus/backend/tectonic.py",
+        # NOTE: papyrus's tectonic.py is deliberately NOT here — see the sinks
+        # list below. Its redacted URL does reach the dashboard, so filing it as
+        # non-egress was wrong and would have let the drift guard miss a future
+        # change that started returning `{exc}` verbatim.
         # Same shape again: pptx-maker's digest-pinned engine download redacts the
         # DOWNLOAD URL (userinfo + signed query) before logging it, so a
         # mirrored/presigned KIROCREW_PPTX_ENGINE_URL override cannot leak
@@ -476,6 +503,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/meetings/backend/routes/meeting_lifecycle.py",
         "apps/builtins/meetings/backend/routes/tasks.py",
         "apps/builtins/papyrus/backend/routes.py",
+        # A real egress boundary, not a log-only redaction: `_download_to` returns
+        # `f"download failed (...) from {redact_url(url)}"`, which lands in the
+        # persisted job state, rides `GET /health`, and is rendered verbatim in the
+        # dashboard's install banner. The redaction itself is host-only (so a
+        # credentialed mirror override cannot leak), but it must be REGISTERED here
+        # or the drift guard cannot notice a change that starts returning `{exc}`.
+        "apps/builtins/papyrus/backend/tectonic.py",
         "apps/builtins/pptx_maker/backend/decks.py",
         "apps/builtins/pptx_maker/backend/routes.py",
         "apps/builtins/workflows/server.py",

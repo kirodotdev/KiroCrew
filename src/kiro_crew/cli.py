@@ -82,14 +82,14 @@ _PROJECT_MARKERS = ("skills", "src/kiro_crew")
 # builds an LLM provider factory (``build_provider_factory`` /
 # ``SessionManager``) and runs in-process agent/LLM work belongs here — so a
 # companion's ``jail=on`` isolation guarantee covers all of them, not just the
-# interactive ones.  Today that is ``chat``/``tui``/``run`` plus ``consolidate``
+# interactive ones.  Today that is ``chat``/``run`` plus ``consolidate``
 # (history consolidation LLM inference) and ``eval`` (eval turns + judge).
 # ``gateway`` is deliberately EXCLUDED despite being agent-bearing: it is the
 # long-lived service whose own execv-based self-update / restart path must not be
 # nested inside a jail re-exec (that would exhaust user namespaces); it composes
 # isolation by other means.  The public edition's JailProvider has no backend, so
 # this set only matters once a companion supplies a real one.
-_JAILED_COMMANDS = frozenset({"chat", "tui", "run", "consolidate", "eval"})
+_JAILED_COMMANDS = frozenset({"chat", "run", "consolidate", "eval"})
 
 # Env marker the gate sets BEFORE a successful re-exec into the jail.  The jailed
 # CHILD re-runs ``main`` (and so the gate) for the same command; without this
@@ -747,7 +747,7 @@ def main() -> None:
     )
     # ``--no-jail`` is shared between the top-level parser and the jailed
     # subparsers (every command in ``_JAILED_COMMANDS`` —
-    # chat/tui/run/consolidate/eval — gets ``parents=[_jail_opts]``) via a parent
+    # chat/run/consolidate/eval — gets ``parents=[_jail_opts]``) via a parent
     # parser, so BOTH ``kirocrew --no-jail <cmd>`` and ``kirocrew <cmd> --no-jail``
     # are accepted (argparse only matches a flag on the parser that declares it).
     # The PARENT copy uses ``default=argparse.SUPPRESS`` so that when the flag is
@@ -789,18 +789,6 @@ Examples:
     chat_parser.add_argument("-m", "--message", help="Single message (non-interactive)")
     chat_parser.add_argument("--model", help="Model to use (default: from config)")
     chat_parser.add_argument("--agent", help="Agent to use (default: from config)")
-    chat_parser.add_argument("--tui", action="store_true", help="Launch TUI instead of REPL")
-
-    # tui
-    tui_parser = sub.add_parser("tui", help="Launch Terminal UI", parents=[_jail_opts])
-    tui_parser.add_argument("--yolo", action="store_true", help="Auto-approve all tools")
-    tui_parser.add_argument("--port", type=int, help="Gateway port (default: from config)")
-    tui_parser.add_argument("--session", help="Resume a specific session")
-    tui_parser.add_argument(
-        "--workspace", help="Workspace name (auto-detected from CWD if omitted)"
-    )
-    tui_parser.add_argument("--agent", help="Start with a specific agent")
-    tui_parser.add_argument("--home", help="KIROCREW_HOME override (e.g. ~/.kirocrew-dev)")
 
     # doctor
     sub.add_parser("doctor", help="Verify Kiro Crew setup")
@@ -1919,17 +1907,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         _jail_reexec_gate(args.command, getattr(args, "no_jail", False))
 
     if args.command == "chat":
-        if getattr(args, "tui", False):
-            _tui(args)
-        else:
-            cfg = KiroCrewConfig.load()
-            if cfg.to_dict().get("dashboard", {}).get("default_mode") == "tui":
-                _tui(args)
-            else:
-                print("Tip: Try `kirocrew tui` for the new terminal UI experience")
-                asyncio.run(_chat(args.message, args.model, agent=getattr(args, "agent", None)))
-    elif args.command == "tui":
-        _tui(args)
+        asyncio.run(_chat(args.message, args.model, agent=getattr(args, "agent", None)))
     elif args.command == "gateway":
         # Seam-supplied pre-launch checks (CPP IdentityProvider seam). Runs
         # HERE in the gateway dispatch — not in boot_platform (which runs for
@@ -2092,7 +2070,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 # ── Config ──
 
 
-from kiro_crew.cli_chat import _chat, _tui  # noqa: E402
+from kiro_crew.cli_chat import _chat  # noqa: E402
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices  # noqa: E402
 from kiro_crew.cli_cloud import handle_cloud  # noqa: E402
 from kiro_crew.cli_commands import (  # noqa: E402

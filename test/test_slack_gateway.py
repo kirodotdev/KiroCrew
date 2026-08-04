@@ -227,6 +227,17 @@ class TestResultHash:
 class TestOpenDmWithRetry:
     """Retry logic for open_dm."""
 
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch):
+        """Skip the production linear backoff's real sleep (1s then 2s).
+
+        These tests assert the retry COUNT and the final result, never the delay, so
+        the 5s this class spent asleep bought no coverage. The retry loop still runs.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.slack.retry.asyncio.sleep", AsyncMock(return_value=None)
+        )
+
     @pytest.mark.asyncio
     async def test_success_first_attempt(self):
         orch = _make_orchestrator(slack_enabled=True)

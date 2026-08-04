@@ -2,6 +2,7 @@ import { createElement, useMemo } from 'react'
 import { MessageSquare, Clock } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import i18next from 'i18next'
 
 import { api } from '../../../api/client'
 import { useSimplifiedToolNames } from '../../../hooks/useSimplifiedToolNames'
@@ -197,7 +198,7 @@ export function sessionStatus(
       colorVar: '--accent',
       pulse: true,
       label:
-        toolStatusLabel(statusDetail, simplifiedToolNames) ||
+        toolStatusLabel(statusDetail, simplifiedToolNames, i18next.language) ||
         i18nT('components.commandPalette.providers.recentsProvider.thinking'),
     }
   }

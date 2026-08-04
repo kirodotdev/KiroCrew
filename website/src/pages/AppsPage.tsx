@@ -147,6 +147,15 @@ export default function AppsPage() {
         screenshots: a.manifest?.screenshots,
         heroImage: a.manifest?.heroImage,
         heroImageDark: a.manifest?.heroImageDark,
+        // Forwarded too: a builtin has no `registryEntry` (the core
+        // `app-registry.json` is empty), so anything omitted here is simply
+        // absent from the Discover catalog for every built-in app. The detail
+        // page reads these off the installed manifest and so happened to keep
+        // working, which is why the omission stayed invisible.
+        heroImageDetail: a.manifest?.heroImageDetail,
+        heroImageDetailDark: a.manifest?.heroImageDetailDark,
+        highlights: a.manifest?.highlights,
+        license: a.manifest?.license,
         icon: a.manifest?.ui?.pages?.[0]?.icon || '',
         iconUrl: a.manifest?.iconUrl || '',
         installed: true,

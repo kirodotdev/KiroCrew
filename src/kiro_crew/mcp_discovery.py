@@ -38,6 +38,13 @@ logger = logging.getLogger(__name__)
 # Configurable via dashboard.mcp_probe_timeout_secs in <config_dir>/config.json.
 _PROBE_TIMEOUT_SECS = 15  # fallback if config not loaded yet
 
+# Teardown budget for a probed child, paid TWICE on a server that ignores a
+# closed stdin: once waiting for a graceful exit, then again after SIGKILL. A
+# server that hangs rather than exiting therefore costs 2x this before the
+# process-group reap runs, which is why it is a named constant -- tests that
+# deliberately probe a never-exiting child shrink it instead of waiting it out.
+_PROBE_TEARDOWN_WAIT_SECS = 5
+
 
 def _get_probe_timeout() -> int:
     try:
@@ -1053,11 +1060,11 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
             try:
                 if proc.stdin:
                     proc.stdin.close()
-                await asyncio.wait_for(proc.wait(), timeout=5)
+                await asyncio.wait_for(proc.wait(), timeout=_PROBE_TEARDOWN_WAIT_SECS)
             except (asyncio.TimeoutError, Exception):
                 try:
                     proc.kill()
-                    await asyncio.wait_for(proc.wait(), timeout=5)
+                    await asyncio.wait_for(proc.wait(), timeout=_PROBE_TEARDOWN_WAIT_SECS)
                 except Exception:
                     pass
         if proc is not None and platform_compat.IS_POSIX:

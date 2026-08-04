@@ -1,5 +1,5 @@
 import { createElement } from 'react'
-import { LayoutGrid } from 'lucide-react'
+import { Component } from 'lucide-react'
 import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
@@ -66,7 +66,9 @@ export interface ArtifactsProviderDeps {
 }
 
 function artifactIcon() {
-  return createElement(LayoutGrid, { className: 'lucide-inline' })
+  // One glyph for artifacts everywhere: the SidePanel `artifacts` view + the
+  // opened-artifact tab use the same lucide `Component`.
+  return createElement(Component, { className: 'lucide-inline' })
 }
 
 /**

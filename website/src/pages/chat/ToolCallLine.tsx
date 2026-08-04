@@ -4,7 +4,10 @@ import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
-import { LoaderCircle, CircleSlash, CircleDot, Lock, PanelRight } from 'lucide-react'
+import { useLanguage } from '../../i18n/LanguageProvider'
+import { pickToolLabel } from '../../utils/toolLabel'
+import { LoaderCircle, CircleSlash, CircleDot, Lock } from 'lucide-react'
+import { PanelRightSolid } from '../../components/icons/panels'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { ChatMessage } from '../../types'
 import { ToolDetails } from './ToolDetails'
@@ -37,6 +40,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const label = message.content.replace(/^🔧\s*/, '')
   const toolCallId = message.meta?.tool_call_id as string | undefined
   const simplified = useSimplifiedToolNames()
+  const uiLang = useLanguage().resolved
 
   // MCP App (SEP-1865) render payload attached to this tool call, if any.
   // Rendered as an inline sandboxed iframe below the tool-call row. Selected
@@ -240,7 +244,16 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     ? (isRejected ? 'var(--danger)' : 'var(--ok)')
     : hasPendingPerm ? 'var(--warn)' : 'var(--accent)'
   const barStyle = `color-mix(in srgb, ${barColor} 70%, transparent)`
-  const toolLabel = (simplified && (purpose || message.meta?.purpose)) ? (purpose || message.meta?.purpose as string) : label
+  // Purpose is the agent's prose label (simplified mode). Guard it against the
+  // active UI language so a purpose written in another language (e.g. a Chinese
+  // label persisted before the user switched to English) falls back to the
+  // language-neutral raw tool label instead of showing foreign-script text.
+  const toolLabel = pickToolLabel({
+    simplified,
+    purpose: purpose || (message.meta?.purpose as string | undefined),
+    rawLabel: label,
+    uiLang,
+  })
 
   // Design C: surface the file basename as a chip that hugs the open-in-pane
   // icon, so the affordance names the file it opens — crucial in simplified /
@@ -382,14 +395,14 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           on hover; the icon inherits the button's currentColor. */}
       {showFileOpen && filePath && (
         <button
-          className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-[12px] leading-tight bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          className="pi-morph shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-[12px] leading-tight bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
           style={{ marginTop: '1px' }}
           onClick={(e) => { e.stopPropagation(); onFileOpen!(filePath) }}
           title={`Open ${filePath} in side panel`}
           aria-label={`Open ${filePath} in side panel`}
         >
           <span className="max-w-[240px] truncate">{basename}</span>
-          <PanelRight size={12} className="shrink-0" />
+          <PanelRightSolid size={12} className="shrink-0" />
         </button>
       )}
       </div>

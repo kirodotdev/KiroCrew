@@ -2,7 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { RefreshCw, ExternalLink, Ellipsis, ChevronRight, Columns2, Hash, WrapText, Zap, Maximize2, Minimize2, MessageSquare, MessageSquarePlus, Copy, BookOpen, BookmarkPlus, Camera, Check, X, Star, FileDiff, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
+import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, Zap, Maximize2, Minimize2, MessageSquare, MessageSquarePlus, Copy, BookOpen, BookmarkPlus, Camera, Check, X, Component, FileText, FileDiff, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import hljs from '../utils/hljs'
 import DOMPurify from 'dompurify'
@@ -222,21 +222,43 @@ const barIconBtn = (on: boolean) =>
   `flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors border-none shrink-0 ${on ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`
 
 /**
- * Row-2 icon: artifact star/unstar toggle. A filled accent star means the
- * file is starred (pinned) to the artifact library; clicking toggles it in place
- * — no navigation, stay in the current view. Consistent with the star
- * save control used across the Artifacts tab/page.
+ * The file's artifact action, in exactly two states — one component so the
+ * embedded header and the fullscreen header can never drift apart:
+ *
+ *   already in the library -> accent glyph that OPENS the artifact. Never a
+ *     second save; one control is the entry point for both.
+ *   not there yet          -> muted glyph that promotes the file. Whether that
+ *     COPIES the content or LINKS the path is decided by the backend from the
+ *     path, so nothing is decided here.
+ *
+ * Deliberately never a comment icon: commenting is an artifact-only feature.
+ * The old star lived here and was inert — the artifact-store sweep only evicts
+ * auto-registered chat widgets, so pinning a promoted file did nothing but set
+ * a library filter flag.
  */
-function ArtifactToggleIconButton({ state }: { state: ReturnType<typeof useFileArtifactState> }) {
+function FileArtifactActionButton({ state }: { state: ReturnType<typeof useFileArtifactState> }) {
+  const navigate = useNavigate()
+  if (state.existing) {
+    return (
+      <button
+        className="p-1.5 rounded-md border border-border text-accent hover:border-border-strong cursor-pointer transition-all shrink-0"
+        onClick={() => navigate(`/artifacts/${encodeURIComponent(state.existing!.slug)}`)}
+        title={i18nT('components.markdownPanel.open_as_artifact')}
+        aria-label={i18nT('components.markdownPanel.open_as_artifact')}
+      >
+        <Component size={14} className="fill-current" />
+      </button>
+    )
+  }
   return (
     <button
-      className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-50"
-      onClick={() => state.toggleSave()}
-      disabled={state.toggling}
-      title={state.saved ? i18nT('components.markdownPanel.remove_star') : i18nT('components.markdownPanel.star')}
-      aria-label={state.saved ? i18nT('components.markdownPanel.remove_star') : i18nT('components.markdownPanel.star')}
+      className="p-1.5 rounded-md border border-border text-muted hover:text-accent hover:border-border-strong cursor-pointer transition-all disabled:opacity-50 shrink-0"
+      onClick={() => state.add()}
+      disabled={state.adding}
+      title={i18nT('components.markdownPanel.add_to_artifact_library')}
+      aria-label={i18nT('components.markdownPanel.add_to_artifact_library')}
     >
-      <Star size={14} className={state.saved ? 'fill-current' : ''} style={state.saved ? { color: 'var(--accent)' } : undefined} />
+      <Component size={14} />
     </button>
   )
 }
@@ -275,10 +297,10 @@ function KnowledgeToggleIconButton({ state }: { state: ReturnType<typeof useFile
 const barLabelBtn = (on: boolean) =>
   `flex items-center gap-1.5 px-2 h-[26px] rounded-md cursor-pointer transition-colors border-none shrink-0 text-[11.5px] font-medium ${on ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`
 
-export function OverflowMenu({ filePath, content, revealOrCopy, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting }: {
-  filePath: string; content: string; revealOrCopy: (path: string, action: 'open' | 'reveal') => void
-  /** View actions live in the ⋯ menu: the single home for everything that
-   *  isn't a mode toggle. */
+export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting }: {
+  filePath: string; content: string
+  /** View actions folded in from the old header row (side-panel revamp): the
+   *  ⋯ menu is the single home for everything that isn't a mode toggle. */
   onRefresh?: () => void; refreshDisabled?: boolean; refreshTitle?: string
   onFullscreen?: () => void; fullscreen?: boolean
   /** Snapshot the file's artifact (saves first when dirty — parent owns that
@@ -351,12 +373,6 @@ export function OverflowMenu({ filePath, content, revealOrCopy, onRefresh, refre
               {fullscreen ? <Minimize2 size={14} className="lucide-inline" /> : <Maximize2 size={14} className="lucide-inline" />} {fullscreen ? i18nT('components.markdownPanel.exit_full_screen') : i18nT('components.markdownPanel.full_screen')}
             </button>
           )}
-          <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => { revealOrCopy(filePath, 'open'); setOpen(false) }}>
-            <ExternalLink size={14} className="lucide-inline" /> {i18nT('components.markdownPanel.open_with_default_app')}
-          </button>
-          <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => { revealOrCopy(filePath, 'reveal'); setOpen(false) }}>
-            {i18nT('components.markdownPanel.reveal_in_finder')}
-          </button>
           <div className="h-px bg-border my-1 mx-2" />
           {artifact.existing ? (
             <button
@@ -488,14 +504,32 @@ function useFileArtifactState(filePath: string, content: string) {
         : ext === '.svg' ? 'svg'
         : ext === '.html' || ext === '.htm' ? 'html'
         : 'text'
+      // Re-read the file rather than promoting the in-memory `content`.
+      // /api/file-read truncates very large files and flags it with
+      // X-Truncated; the panel's copy carries no such marker, so promoting it
+      // would persist a 512 KB prefix AS THOUGH it were the whole document --
+      // and a disposable file is COPIED, so nothing would reference the
+      // original and the loss would be silent and permanent. Reading here also
+      // means the artifact captures the file as it is at promote time.
+      const res = await fetch(fileReadUrl(filePath))
+      if (!res.ok) throw new Error(i18nT('components.markdownPanel.cannot_read_file'))
+      if (res.headers.get('X-Truncated') === 'true') {
+        throw new Error(i18nT('components.markdownPanel.file_too_large_to_add'))
+      }
+      const fresh = await res.text()
+      // Same slot is passed as the X-Session-Key so the server's
+      // restricted-session gate sees the REAL session. With the transport's
+      // shared `dashboard:ui` placeholder an incognito session could persist a
+      // promoted file its own restriction was meant to refuse.
+      const promoteSlot = store.getState().chat.activeSlot
       const created = await api.createArtifact({
         name,
-        content,
+        content: fresh,
         kind,
         source_path: filePath,
-        description: `Tracking ${filePath}`,
-        origin_session_key: store.getState().chat.activeSlot || undefined,
-      })
+        description: i18nT('components.markdownPanel.tracking_description', { path: filePath }),
+        origin_session_key: promoteSlot || undefined,
+      }, promoteSlot ? `dashboard:${promoteSlot}` : undefined)
       return created as { slug: string; version: number }
     },
     onSuccess: () => {
@@ -519,9 +553,16 @@ function useFileArtifactState(filePath: string, content: string) {
   })
   const { mutate: toggleSave, isPending: toggling } = useMutation({
     mutationFn: async () => {
+      // Read the owning slot ONCE, up front: both branches below pass it as the
+      // X-Session-Key so a restricted slot is gated on the pin as well as the save.
+      const saveSlot = store.getState().chat.activeSlot
       // Saved == pinned (consistent with the Artifacts tab/page + chat bookmark).
       if (existing) {
-        await api.setArtifactPinned(existing.slug, !existing.pinned)
+        await api.setArtifactPinned(
+          existing.slug,
+          !existing.pinned,
+          saveSlot ? `dashboard:${saveSlot}` : undefined,
+        )
         return
       }
       // Not yet an artifact — create (file-backed), then pin. createArtifact
@@ -535,9 +576,9 @@ function useFileArtifactState(filePath: string, content: string) {
         : ext === '.html' || ext === '.htm' ? 'html'
         : 'text'
       const created = await api.createArtifact({
-        name, content, kind, source_path: filePath, description: `Tracking ${filePath}`, origin_session_key: store.getState().chat.activeSlot || undefined,
-      }) as { slug: string }
-      await api.setArtifactPinned(created.slug, true)
+        name, content, kind, source_path: filePath, description: i18nT('components.markdownPanel.tracking_description', { path: filePath }), origin_session_key: saveSlot || undefined,
+      }, saveSlot ? `dashboard:${saveSlot}` : undefined) as { slug: string }
+      await api.setArtifactPinned(created.slug, true, saveSlot ? `dashboard:${saveSlot}` : undefined)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['artifact-by-source-path', filePath] })
@@ -955,14 +996,6 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
   }, [diffData, filePath, initialDiffMode, onDiffModeChange])
 
-  const revealOrCopy = useCallback(async (path: string, action: 'open' | 'reveal') => {
-    try {
-      const res = await fetch('/api/reveal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, action }) })
-      const data = await res.json()
-      if (data.copy) { await navigator.clipboard.writeText(data.copy); alert(i18nT('components.markdownPanel.path_copied_to_clipboard_no_desktop_available')) }
-    } catch { /* ignore */ }
-  }, [])
-
   const handleRefresh = useCallback(async () => {
     if (refreshing || dirty) return
     setRefreshing(true)
@@ -1356,6 +1389,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
            main bar never crowds. */
         <div className="shrink-0 border-b border-border">
           <div className="flex items-center gap-2 h-[38px] px-3">
+            <FileText size={14} className="text-muted shrink-0" />
             <span className="flex items-center min-w-0" title={filePath}>
               {crumbs.map((seg, i) => (
                 <span key={i} className="flex items-center min-w-0 text-[12px]">
@@ -1372,9 +1406,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               </span>
             )}
             <span className="flex-1 min-w-[8px]" />
-            {/* File-level library actions (star / knowledge) stay available in
-                both preview and edit mode so they're never lost. */}
-            <ArtifactToggleIconButton state={artifactState} />
+            <FileArtifactActionButton state={artifactState} />
             {(() => {
               const kExt = '.' + (filePath.split('.').pop() || '').toLowerCase()
               const canK = knowledge.formats && knowledge.formats.includes(kExt)
@@ -1394,7 +1426,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {!isRichType && (
               <button className={barIconBtn(diffMode)} onClick={toggleDiffMode} title={i18nT('components.markdownPanel.toggle_diff_view')} aria-label={i18nT('components.markdownPanel.toggle_diff_view')} aria-pressed={diffMode}><FileDiff size={14} /></button>
             )}
-            <OverflowMenu filePath={filePath} content={content} revealOrCopy={revealOrCopy}
+            <OverflowMenu filePath={filePath} content={content}
               onRefresh={handleRefresh} refreshDisabled={refreshing || dirty} refreshTitle={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk')}
               onFullscreen={() => setFullscreen(f => !f)} fullscreen={fullscreen}
               onSnapshot={artifactState.existing ? handleSnapshot : undefined} snapshotting={artifactState.snapshotting}
@@ -1462,7 +1494,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           <span className="text-base font-semibold text-text-strong truncate">{fileName}</span>
           <div className="flex items-center gap-1.5">
             <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file')} aria-label={i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
-            <ArtifactToggleIconButton state={artifactState} />
+            <FileArtifactActionButton state={artifactState} />
             {(() => {
               const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
               const canK = knowledge.formats && knowledge.formats.includes(ext)
@@ -1470,7 +1502,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               return <KnowledgeToggleIconButton state={knowledge} />
             })()}
             {editorToolbarButtons}
-            <OverflowMenu filePath={filePath} content={content} revealOrCopy={revealOrCopy} />
+            <OverflowMenu filePath={filePath} content={content} />
             <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={() => setFullscreen(false)} title={i18nT('components.markdownPanel.exit_full_screen_esc')} aria-label={i18nT('components.markdownPanel.exit_full_screen')}><Minimize2 size={14} /></button>
           </div>
         </div>

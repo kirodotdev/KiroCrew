@@ -568,8 +568,13 @@ class TestTranscribeFiles:
             },
         ]
 
+        # Patch where events.py BOUND the symbol, not where it is defined: events.py
+        # does `from kiro_crew.transcribe import transcribe_audio`, so it holds its own
+        # module global. Patching the definition left the REAL transcriber running --
+        # the assertion passed for the wrong reason and the test was the 3rd slowest in
+        # the suite. Matches the sibling test above.
         with patch(
-            "kiro_crew.transcribe.transcribe_audio", new_callable=AsyncMock, return_value=None
+            "kiro_crew.slack.events.transcribe_audio", new_callable=AsyncMock, return_value=None
         ):
             result = await _transcribe_files(mock_orch, files)
         assert result == []

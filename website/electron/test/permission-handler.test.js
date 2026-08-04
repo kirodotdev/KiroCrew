@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const {
   isAppOrigin,
   requestsVideo,
+  isNoteworthyDenial,
   createPermissionRequestHandler,
   createPermissionCheckHandler,
 } = require("../permission-handler");
@@ -351,6 +352,33 @@ describe("denial logging", () => {
     check(null, "media", undefined, { mediaType: "audio" }); // deny
     assert.equal(seen.length, 1);
     assert.equal(seen[0][0], "check");
+  });
+
+  it("does NOT log the by-design refusals Chromium re-checks every navigation", () => {
+    // The console flood: every route triggers geolocation / web-app-installation
+    // / background-sync / media(video) checks that are all denied by design. None
+    // carries diagnostic value, so none is logged.
+    const seen = [];
+    const deps = { isAppOrigin: () => true, onDeny: (...a) => seen.push(a) };
+    const check = createPermissionCheckHandler(deps);
+    for (const p of ["geolocation", "web-app-installation", "background-sync", "notifications", "midi"]) {
+      check(APP, p, ORIGIN, {});
+    }
+    check(APP, "media", ORIGIN, { mediaType: "video" }); // camera, by design
+    const req = createPermissionRequestHandler(deps);
+    grant(req, APP, "geolocation", {});
+    grant(req, APP, "media", { mediaTypes: ["video"] });
+    assert.deepEqual(seen, [], "by-design denials must not reach the console");
+  });
+
+  it("STILL logs a media audio/unspecified denial — the mic-regression signal", () => {
+    // The one class worth seeing: a media request that should have been granted
+    // but was refused (foreign/absent origin). Both handlers keep logging it.
+    assert.equal(isNoteworthyDenial("media", { mediaType: "audio" }), true);
+    assert.equal(isNoteworthyDenial("media", {}), true);
+    assert.equal(isNoteworthyDenial("media", { mediaType: "video" }), false);
+    assert.equal(isNoteworthyDenial("media", { mediaTypes: ["video"] }), false);
+    assert.equal(isNoteworthyDenial("geolocation", {}), false);
   });
 
   it("survives a destroyed webContents while logging", () => {

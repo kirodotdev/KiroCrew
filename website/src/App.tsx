@@ -26,11 +26,12 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, PanelLeftClose, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
+import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
 import AgentImportFlow from './components/AgentImportFlow'
+import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_FOCUS_EVENT } from './components/WebPreviewPanel'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -871,9 +872,11 @@ export default function App() {
     theme: resolvedMode,
     onboarded,
     importOnboarded,
+    privacyAcked,
     themeBootReady,
     markOnboarded,
     markImportOnboarded,
+    markPrivacyAcked,
   } = useTheme()
   // The E2E Playwright suite depends on this onboarding gate: playwright/auth.setup.ts
   // seeds localStorage['mc-onboarded']='1' so the first-run "Choose your look" modal
@@ -881,19 +884,56 @@ export default function App() {
   // renamed or the modal moves off localStorage, update auth.setup.ts to match.
   const locallyImportOnboarded =
     !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded')
+  // Mirrors `privacyAcked`'s own seed in useTheme. The tour's seed below MUST
+  // consult it: a tree whose import chapter was completed by a build that
+  // predates the Privacy chapter has `mc-import-onboarded` set and no
+  // `mc-privacy-acked`, and seeding the tour open on that alone would put
+  // Customize on screen ahead of Privacy until theme boot resolves — and its
+  // "Done" would end first run from there. Same formula as the derive effect.
+  const locallyPrivacyAcked =
+    !!localStorage.getItem('mc-privacy-acked') || !!localStorage.getItem('mc-onboarded')
   const [showAgentImport, setShowAgentImport] = useState(false)
+  const [showPrivacy, setShowPrivacy] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(
-    () => locallyImportOnboarded && !localStorage.getItem('mc-onboarded'),
+    () => locallyImportOnboarded && locallyPrivacyAcked && !localStorage.getItem('mc-onboarded'),
   )
   const continueTourAfterImport = useRef(false)
+  // Where the mandatory Privacy chapter leads. 'customize' hands off to the
+  // onboarding tour (the normal chapter order); 'finish' ends first run right
+  // there, which is what "Skip all" from Import setup means — the user still has
+  // to pass through Privacy, but nothing follows it.
+  const privacyExit = useRef<'customize' | 'finish'>('customize')
+  // The ONLY way the tour chapter ends first run — deliberately shared by BOTH
+  // its exits ("Done" and every skip: "Skip all", a popover Skip, Escape).
+  // Privacy is mandatory, so no exit may mark onboarding complete while it is
+  // unacknowledged; handing the two props one function is what makes that
+  // symmetric by construction instead of by two closures agreeing. In the normal
+  // chapter order Privacy is already behind the user here and this just ends
+  // first run; the branch is what holds the mandate for a tree whose import
+  // chapter predates the Privacy chapter.
+  const endFirstRun = useCallback(() => {
+    setShowOnboarding(false)
+    if (!privacyAcked) {
+      privacyExit.current = 'finish'
+      setShowPrivacy(true)
+      return
+    }
+    markOnboarded()
+  }, [privacyAcked, markOnboarded])
   // Dismiss onboarding when server reports user is already onboarded
   // (handles the race: boot fetch completes after useState initializer ran).
   useEffect(() => { if (onboarded) setShowOnboarding(false) }, [onboarded])
+  // Seeds — and re-derives — which first-run chapter is open from the three
+  // completion flags. Chapter order is Import setup → Privacy → Customize/tour,
+  // so each chapter opens only once its predecessor is marked done. Runs on
+  // every flag change (not just boot) so the hand-offs below and this effect
+  // can never disagree about what should be on screen.
   useEffect(() => {
     if (!themeBootReady) return
     setShowAgentImport(!importOnboarded)
-    setShowOnboarding(importOnboarded && !onboarded)
-  }, [importOnboarded, themeBootReady])
+    setShowPrivacy(importOnboarded && !privacyAcked)
+    setShowOnboarding(importOnboarded && privacyAcked && !onboarded)
+  }, [importOnboarded, privacyAcked, onboarded, themeBootReady])
   useEffect(() => {
     const replay = (event: Event) => {
       continueTourAfterImport.current =
@@ -1850,35 +1890,61 @@ export default function App() {
           glitch. Both flows portal their content into this single shell; each
           still renders standalone (its own chrome) when used outside a host. */}
       <OnboardingShellHost>
-        {/* First-run import gate. Existing users inherit the old onboarding
-            marker, while new users reach the feature tour only after this flow. */}
+        {/* First-run chapter 1 — import gate. Existing users inherit the old
+            onboarding marker, while new users reach Privacy (and then the
+            feature tour) only after this flow. */}
         <AgentImportFlow
           initialOpen={showAgentImport}
           onComplete={() => {
             markImportOnboarded()
             setShowAgentImport(false)
-            if (!onboarded || continueTourAfterImport.current) {
-              setShowOnboarding(true)
-            }
+            const wantsTour = !onboarded || continueTourAfterImport.current
             continueTourAfterImport.current = false
+            if (!privacyAcked) {
+              privacyExit.current = wantsTour ? 'customize' : 'finish'
+              setShowPrivacy(true)
+              return
+            }
+            if (wantsTour) setShowOnboarding(true)
           }}
           onSkipAll={() => {
-            // Skip the entire first-run flow: mark both import + onboarding tour
-            // done and close both so the user lands in the product (new chat).
+            // Skip the rest of first run — but NOT the Privacy chapter, which is
+            // mandatory: show it, and let its Continue mark onboarding done so
+            // the user lands in the product (new chat) straight after it.
             markImportOnboarded()
-            markOnboarded()
             setShowAgentImport(false)
-            setShowOnboarding(false)
             continueTourAfterImport.current = false
+            if (!privacyAcked) {
+              privacyExit.current = 'finish'
+              setShowPrivacy(true)
+              return
+            }
+            markOnboarded()
+            setShowOnboarding(false)
           }}
         />
 
-        {/* First-run onboarding: 4-step flow (theme → Schedule → Apps → Sessions).
-            Rendered unconditionally so the `/onboarding` slash command can reopen
-            it anytime; internal visibility is seeded by `initialOpen`. */}
+        {/* First-run chapter 2 — Privacy. Mandatory and un-skippable: every path
+            out of chapter 1 (finish, "Skip import", nothing to import, "Skip
+            all") arrives here. */}
+        <PrivacyChapter
+          open={showPrivacy}
+          onContinue={() => {
+            markPrivacyAcked()
+            setShowPrivacy(false)
+            if (privacyExit.current === 'finish') markOnboarded()
+            else setShowOnboarding(true)
+          }}
+        />
+
+        {/* First-run chapter 3 — Customize + feature tour (theme → about you →
+            Schedule → Apps → Sessions). Rendered unconditionally so the
+            `/onboarding` slash command can reopen it anytime; internal
+            visibility is seeded by `initialOpen`. */}
         <OnboardingFlow
           initialOpen={showOnboarding}
-          onComplete={() => { markOnboarded(); setShowOnboarding(false) }}
+          onComplete={endFirstRun}
+          onSkipAll={endFirstRun}
         />
       </OnboardingShellHost>
 
@@ -1915,19 +1981,29 @@ export default function App() {
         <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-2">
           {/* mb-1.5 (6px) + the container's gap-0.5 (2px) = 8px between the
               header and the first nav item, without widening the 2px item gaps. */}
-          <div className={`flex items-center mb-1.5 ${effectiveCollapsed ? 'justify-start' : ''}`}>
+          <div className={`relative flex items-center mb-1.5 ${effectiveCollapsed ? 'justify-start' : ''}`}>
             {/* One persistent click target that toggles the rail. The logo
                 never unmounts, so it stays perfectly still across collapse/
                 expand (no swap, no shift). Only the brand text + collapse arrow
                 animate — fading in on expand and out on collapse via
                 AnimatePresence. No hover tint on the row; on hover only the
                 logo rotates (group-hover). */}
-            {/* No overflow-hidden here: the 40px logo's hover-rotate paints a
-                few px past its box, and clipping it looked cut off. Rotation is
-                a transform so it doesn't affect the header's layout height (row
-                stays 40px, collapse-icon alignment unchanged); horizontal spill
-                on collapse is still clipped by the rail (motion.nav) and the
-                brand text clips itself via `truncate`. */}
+            {/* No overflow-hidden here: the logo's hover-rotate paints a few
+                px past its box, and clipping it looked cut off. Rotation is a
+                transform so it doesn't affect the header's layout height
+                (row height tracks the logo, collapse-icon alignment
+                unchanged); horizontal spill on collapse is still clipped by
+                the rail (motion.nav) and the brand text clips itself via
+                `truncate`.
+                Logo is DUAL-SIZE: w-7 (28px) expanded — 1px card border +
+                pt-2 + 14 puts the header row's center on the 23px shared
+                control baseline — and w-10 (40px) collapsed, where the
+                icons-only rail keeps the full brand mark (a branding
+                logoClass overrides both). The collapse arrow no longer centers
+                in the row — it pins to top-[6px] so its center stays on the
+                23px shared control baseline (chat title row, its sessions
+                toggle, and the activity strip icons) while the two-line
+                brand block makes the row taller. */}
             <button
               type="button"
               className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left"
@@ -1937,7 +2013,7 @@ export default function App() {
               aria-expanded={!effectiveCollapsed}
             >
               <span className="flex items-center gap-2.5 min-w-0">
-                <img src={avatar} alt="" aria-hidden="true" className={`${branding?.logoClass ?? 'w-10 h-10'} rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]`} />
+                <img src={avatar} alt="" aria-hidden="true" className={`${branding?.logoClass ?? (effectiveCollapsed ? 'w-10 h-10' : 'w-7 h-7')} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg]`} />
                 <AnimatePresence initial={false}>
                   {!effectiveCollapsed && (
                     <motion.span
@@ -1946,8 +2022,20 @@ export default function App() {
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: -6, transition: { duration: 0.12, ease: 'easeIn' } }}
                       transition={{ duration: 0.2, ease: 'easeOut' }}
-                      className="text-sm font-bold tracking-[.08em] text-text-strong whitespace-nowrap truncate min-w-0"
-                    >{botName}</motion.span>
+                      className="text-[13px] font-bold tracking-[.14em] uppercase whitespace-nowrap truncate min-w-0"
+                    >
+                      {/* Last word of the bot name carries the accent (KIRO
+                          CREW: muted brand, accent product); single-word names
+                          render all-muted. */}
+                      {botName.includes(' ') ? (
+                        <>
+                          <span className="text-muted">{botName.slice(0, botName.lastIndexOf(' ') + 1)}</span>
+                          <span className="text-accent/90">{botName.slice(botName.lastIndexOf(' ') + 1)}</span>
+                        </>
+                      ) : (
+                        <span className="text-muted">{botName}</span>
+                      )}
+                    </motion.span>
                   )}
                 </AnimatePresence>
               </span>
@@ -1965,14 +2053,19 @@ export default function App() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1, transition: { duration: 0.18, ease: 'easeOut', delay: 0.12 } }}
                     exit={{ opacity: 0, transition: { duration: 0.12, ease: 'easeIn' } }}
-                    className="absolute right-0 inset-y-0 my-auto h-4 flex items-center text-muted pointer-events-none"
+                    className="absolute right-0 top-[6px] h-4 flex items-center text-muted pointer-events-none"
                   >
-                    <PanelLeftClose size={16} />
+                    {/* Arrow-to-edge, not a hide-panel glyph: the rail
+                        collapses to an icon rail rather than hiding. */}
+                    <ArrowLeftToLine size={15} />
                   </motion.span>
                 )}
               </AnimatePresence>
             </button>
           </div>
+          {/* Hairline under the expanded header (collapsed rail has none —
+              the big logo alone separates well). */}
+          {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mt-0.5 mb-[7px]" />}
           {NAV_ITEMS.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
           {/* Apps section header. "Explore" (the App Store) rides the header
               row in accent when expanded; collapsed it becomes a regular

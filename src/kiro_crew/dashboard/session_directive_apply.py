@@ -325,6 +325,19 @@ async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
             "Follow-up card prepared, but no dashboard client is attached — "
             "restate the follow-ups in your reply text so they are not lost."
         )
+    if not getattr(slot, "project", ""):
+        # The card renders "Start in new worktree" DISABLED when the slot has no
+        # project directory (FollowUpCard.tsx gates on projectDir), and this
+        # confirmation is the model's only window into that: without it the
+        # agent recommends the worktree route in sessions where it can never
+        # work — Research Lab worker slots, for one, are created unscoped
+        # (auto_research/handlers.py) — and steers the user into a dead button.
+        return (
+            "Follow-up card shown below the composer. Note: this session has no "
+            "project directory, so the card's 'Start in new worktree' button is "
+            "disabled. Point the user at 'Add to this session' instead, or "
+            "suggest they scope a project first (the composer's Project chip)."
+        )
     return "Follow-up card shown below the composer."
 
 

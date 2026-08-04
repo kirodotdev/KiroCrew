@@ -55,7 +55,7 @@ class DummyPublishProvider(PublishProvider):
             "artifactUrl": "https://artifacts.example.com/artifact/uuid-123",
             "versionNumber": 1,
             "sha256": "sha-v1",
-            "ownerAlias": "nrb",
+            "ownerAlias": "alice",
             "status": "READY",
         }
         self.upload_version_response = {
@@ -261,7 +261,7 @@ async def test_publish_sets_publication(store, fake_client):
     assert pub.last_pushed_sha256 == "sha-v1"
     assert pub.last_synced_kirocrew_version == 1
     assert pub.version_map == {"1": 1}
-    assert pub.published_by == "nrb"
+    assert pub.published_by == "alice"
     # uploaded the rendered text content
     upload_args = fake_client.called("upload")[0]
     assert upload_args["title"] == "Doc"
@@ -434,7 +434,7 @@ def test_publication_roundtrip(tmp_path):
         last_pushed_sha256="abc",
         last_synced_kirocrew_version=art.version,
         version_map={"1": 1},
-        published_by="nrb",
+        published_by="alice",
     )
     store.set_publication("d", pub)
 
@@ -519,7 +519,7 @@ def test_wrap_widget_html_self_contained():
 
 
 def test_redact_untrusted_scans_every_source():
-    # Regression (PR #14 nrb): the `manual` source is no longer a redaction
+    # Regression (PR #14 alice): the `manual` source is no longer a redaction
     # bypass. `source` is set once at create and NOT re-derived when an agent
     # later updates the content, so a `manual`-labelled artifact can carry
     # LLM/agent bytes by publish time — it MUST still be scanned. An AKIA-shaped
@@ -592,7 +592,7 @@ from kiro_crew.artifacts import ForkMetadata  # noqa: E402
 
 
 def _remote_get(
-    tmp_path, content, *, version, sha, owner="nrb", ctype="text/plain", shared=None, shared_v2=None
+    tmp_path, content, *, version, sha, owner="alice", ctype="text/plain", shared=None, shared_v2=None
 ):
     """A fake get_artifact response: artifact metadata + downloaded localPath."""
     f = tmp_path / f"remote-{version}-{sha}.txt"

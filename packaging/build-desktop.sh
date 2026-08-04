@@ -44,6 +44,18 @@ case "$OS" in
 esac
 HOST_ARCH="$(uname -m)"
 
+# Beacon provenance for the artifact this run produces, derived from the
+# electron-builder target rather than the host: mac.target is dmg, linux.target
+# is AppImage (website/electron/package.json). Reading the host OS instead would
+# be wrong on Linux, where the same machine also builds wheels.
+# Windows ships a Squirrel installer, which has no KNOWN_DISTRIBUTIONS value;
+# "source" is the honest answer until one is added on both sides.
+case "$OS" in
+  darwin)  KC_DISTRIBUTION="dmg" ;;
+  windows) KC_DISTRIBUTION="source" ;;
+  *)       KC_DISTRIBUTION="appimage" ;;
+esac
+
 # Universal is the macOS default; Linux has no universal concept (AppImage is
 # per-arch). UNIVERSAL=0 opts a macOS build out.
 if [ "$OS" = "darwin" ]; then
@@ -222,6 +234,12 @@ build_backend() {
     echo "ERROR: dashboard dist not staged" >&2; exit 1
   }
 
+  # Beacon provenance, stamped into the INSTALLED tree (not $ROOT) so a
+  # universal build's two backends are each stamped and no state leaks into the
+  # developer's checkout. pip installed from $ROOT, where the module is
+  # gitignored and absent, so this is the only place it exists.
+  bash "$ROOT/scripts/stamp-distribution.sh" "$KC_DISTRIBUTION" "$sp/kiro_crew"
+
   # Relocatable launcher script.
   cat > "$out/bin/kirocrew" <<'LAUNCH'
 #!/bin/bash
@@ -297,6 +315,12 @@ build_backend_windows() {
   [ -f "$sp/kiro_crew/static/dist/index.html" ] || {
     echo "ERROR: dashboard dist not staged" >&2; exit 1
   }
+
+  # Beacon provenance. Squirrel has no KNOWN_DISTRIBUTIONS value, so the honest
+  # answer is "source", but stamp it explicitly rather than relying on the
+  # module's absence: pip installed from $ROOT, and a stale stamp left in a
+  # developer's checkout would otherwise be copied in and mislabel the build.
+  bash "$ROOT/scripts/stamp-distribution.sh" "$KC_DISTRIBUTION" "$sp/kiro_crew"
 
   # Relocatable launcher shim: %~dp0 is the .cmd's own directory (bin\),
   # so the interpreter resolves relative to the bundle wherever it lands.

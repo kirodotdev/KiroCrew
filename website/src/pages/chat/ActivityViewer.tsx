@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, Star, Component, GitPullRequest, CircleDot, ArrowLeft, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
+import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, ArrowLeft, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
 import { api } from '../../api/client'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
 import { fileReadUrl } from '../../utils/fileReadUrl'
 import { LogViewer } from '../LogsPage'
 import TrustDropdown from '../../components/TrustDropdown'
 import Clickable from '../../components/Clickable'
-import type { SubagentActivity, ToolActivity, SessionDoc, Artifact } from '../../types'
+import type { SubagentActivity, ToolActivity, Artifact } from '../../types'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import { getInlineDraft, setInlineDraft, clearInlineDraft } from '../../hooks/usePanelTabs'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
@@ -21,6 +21,7 @@ import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminal
 import SegmentedControl from '../../components/SegmentedControl'
 import { PanelSectionHeader } from '../../components/ui'
 import { colorForExt, fileIcon } from '../../utils/fileIcons'
+import { kindForFilename } from '../../lib/artifactImport'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
@@ -460,7 +461,7 @@ function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
  * conditional render IIFE it replaced). */
 function FilesTab({
   files, sources, issues, navLinks, navResolving, slot,
-  onFileOpen, onFileRemove, onFileSave, onSubmitComments, openDocPaths,
+  onFileOpen, onArtifactOpen, onFileRemove, onFileSave, onSubmitComments, openDocPaths,
   previewPathValue, setPreviewPath,
 }: {
   files?: TouchedFile[]
@@ -470,6 +471,9 @@ function FilesTab({
   navResolving?: boolean
   slot: string
   onFileOpen?: (path: string) => void
+  /** Opens an artifact tab in this same panel — the target for a file row whose
+   *  artifact already exists (so the row opens it instead of saving a second). */
+  onArtifactOpen?: (slug: string) => void
   onFileRemove?: (path: string) => void
   onFileSave?: (filePath: string, content: string) => Promise<void>
   onSubmitComments?: (message: string) => void
@@ -478,6 +482,87 @@ function FilesTab({
   setPreviewPath: (p: string | null) => void
 }) {
   const [query, setQuery] = useState('')
+  const qc = useQueryClient()
+
+  /* ── Add-to-library, per file row ──────────────────────────────────────────
+   * The Artifacts tab lists artifact RECORDS only, so a plain file can no
+   * longer drift into the library by having the right extension — getting in is
+   * an explicit act, and this is where that act lives, next to the files.
+   *
+   * Derived above the inline-preview early return below so every hook here runs
+   * unconditionally (a hook after that `return` would be a conditional hook). */
+  const changed = useMemo(() => (files || []).filter(f => f.source === 'tool'), [files])
+  // Which rows can even offer it, by extension. IMPORTABLE_EXT_KINDS is the
+  // shared extension→kind map the "Add Artifact" file picker already enforces
+  // (and which `test/test_artifact_import_parity.py` holds identical to the
+  // backend's `_EXT_KIND_MAP`) — so both ways into the library agree on what is
+  // admissible, and every kind it yields has a real renderer.
+  const promotable = useMemo(
+    () => new Map(changed.map(f => [f.path, kindForFilename(f.path)] as const)),
+    [changed],
+  )
+  const anyPromotable = useMemo(() => [...promotable.values()].some(k => k !== null), [promotable])
+  // Already-in-the-library detection. Same query key AND fetcher as the
+  // Artifacts tab's library section, so the two tabs share ONE cache entry and
+  // one request rather than each holding its own copy of the library. Gated on
+  // there being a promotable row at all: a session that only touched code
+  // never pulls the library. (Keyed off the UNFILTERED list so typing in the
+  // search box can't toggle the query on and off.)
+  const { data: libraryData } = useQuery<{ artifacts: Artifact[] }>({
+    queryKey: ['artifacts', 'panel-library'],
+    queryFn: () => api.artifacts({}),
+    enabled: anyPromotable,
+  })
+  // source_path → slug. Only LINKED artifacts carry a source_path: the backend
+  // classifier deliberately stores none for a COPY (a disposable file's
+  // snapshot has no live pointer), so a copied file's row shows as
+  // not-yet-added. Clicking it again is still safe — POST /api/artifacts
+  // de-dups on the source_path it was sent.
+  const artifactBySourcePath = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const a of libraryData?.artifacts || []) if (a.source_path) m.set(a.source_path, a.slug)
+    return m
+  }, [libraryData])
+  const promoteMut = useMutation({
+    mutationFn: async (path: string) => {
+      const kind = promotable.get(path) ?? kindForFilename(path)
+      if (!kind) throw new Error('unsupported file type')
+      // Read through the same endpoint (and cache-shape) the inline preview
+      // uses. The create endpoint does not read from disk — it stores the
+      // content it is given — so the bytes have to come from here.
+      const res = await fetch(fileReadUrl(path))
+      if (!res.ok) throw new Error('cannot read file')
+      // /api/file-read truncates very large files and says so in a header.
+      // Promoting a truncated read would persist the PREFIX as though it were
+      // the whole document -- and because a disposable file is COPIED, the
+      // original is not referenced, so the loss would be silent and permanent.
+      if (res.headers.get('X-Truncated') === 'true') throw new Error('file too large to add')
+      const content = await res.text()
+      // `source_path` is sent unconditionally and the SERVER decides copy vs
+      // link from it (a temp/Downloads/Desktop file is snapshotted, a file in a
+      // project is linked). The frontend deliberately does not classify.
+      // The session key is passed EXPLICITLY so the server can apply the
+      // restricted-session gate. Without it the request carried the shared
+      // `dashboard:ui` placeholder and an incognito session could persist a
+      // promoted file that its own restriction was supposed to refuse.
+      return await api.createArtifact({
+        name: path.split('/').pop() || path,
+        content,
+        kind,
+        source_path: path,
+        origin_session_key: slot || undefined,
+      }, slot ? `dashboard:${slot}` : undefined) as { slug: string }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['artifacts'] })
+      qc.invalidateQueries({ queryKey: ['session-artifact-records', slot] })
+      // Keeps the file editor's own per-path artifact state coherent, so its
+      // "already an artifact" controls agree with this list.
+      qc.invalidateQueries({ queryKey: ['artifact-by-source-path'] })
+    },
+  })
+  const promotingPath = promoteMut.isPending ? (promoteMut.variables as string) : null
+  const failedPath = promoteMut.isError ? (promoteMut.variables as string) : null
 
   // Inline file preview: opening a file from this tab keeps it HERE (no new
   // document tab) — the list is swapped for the file's content with a "Back to
@@ -500,7 +585,6 @@ function FilesTab({
   const openInline = onFileSave
     ? (p: string) => { if (openDocPaths?.has(p)) onFileOpen?.(p); else setPreviewPath(p) }
     : onFileOpen
-  const changed = (files || []).filter(f => f.source === 'tool')
   // Hide links that already have a RICH panel of their own — the Changes tab's
   // `sources` and the Issues tab's `issues`. Keep every other link, including
   // cr-classified hosts (Bitbucket, self-hosted, code reviews) and
@@ -568,7 +652,21 @@ function FilesTab({
                   className="mt-1 mb-0.5"
                 />
                 <div className="flex flex-col">
-                  {filteredChanged.map(f => <FileRow key={f.path} f={f} onFileOpen={openInline} onFileRemove={onFileRemove} />)}
+                  {filteredChanged.map(f => (
+                    <FileRow
+                      key={f.path}
+                      f={f}
+                      onFileOpen={openInline}
+                      onFileRemove={onFileRemove}
+                      artifactSlug={artifactBySourcePath.get(f.path)}
+                      promotable={promotable.get(f.path) != null}
+                      onPromote={promoteMut.mutate}
+                      onArtifactOpen={onArtifactOpen}
+                      promoting={promotingPath === f.path}
+                      promoteBusy={promoteMut.isPending}
+                      promoteFailed={failedPath === f.path}
+                    />
+                  ))}
                 </div>
               </div>
             )}
@@ -611,9 +709,26 @@ export function countDiffStats(diff: string): { added: number; removed: number }
 /* ── Changed-files list row ──────────────────────────────────────────────────
  * One touched file per full-width row: type-colored icon + filename (with the
  * parent directory as a dimmed subtitle for disambiguation) on the left, a
- * +N/-N diffstat on the right, and a hover-revealed remove control. Reads as a
- * scannable list instead of a wrapping pile of cramped chips. */
-function FileRow({ f, onFileOpen, onFileRemove }: { f: TouchedFile; onFileOpen?: (p: string) => void; onFileRemove?: (p: string) => void }) {
+ * +N/-N diffstat on the right, and hover-revealed add-to-library and remove
+ * controls. Reads as a scannable list instead of a wrapping pile of cramped
+ * chips. */
+function FileRow({ f, onFileOpen, onFileRemove, artifactSlug, promotable, onPromote, onArtifactOpen, promoting, promoteBusy, promoteFailed }: {
+  f: TouchedFile
+  onFileOpen?: (p: string) => void
+  onFileRemove?: (p: string) => void
+  /** Slug of the artifact already backing this file, if there is one. */
+  artifactSlug?: string
+  /** Whether the artifact store can take this file (extension check). */
+  promotable?: boolean
+  onPromote?: (p: string) => void
+  onArtifactOpen?: (slug: string) => void
+  promoting?: boolean
+  /** True while ANY promotion is in flight. Dedup is resolved server-side on
+   *  source_path, so two concurrent POSTs can both pass the pre-create lookup
+   *  and mint duplicate records -- the lock has to be global, not per-row. */
+  promoteBusy?: boolean
+  promoteFailed?: boolean
+}) {
   const name = f.path.split('/').pop() || f.path
   const dir = f.path.slice(0, Math.max(0, f.path.length - name.length)).replace(/\/+$/, '')
   const Icon = fileIcon(f.path)
@@ -624,6 +739,34 @@ function FileRow({ f, onFileOpen, onFileRemove }: { f: TouchedFile; onFileOpen?:
     placeholderData: (prev) => prev,
   })
   const stats = data?.diff ? countDiffStats(data.diff) : null
+  // Artifact control, three mutually exclusive states:
+  //   • already in the library → an always-visible accent glyph that OPENS it
+  //     (never a second save — the row is the entry point for both)
+  //   • admissible but not there yet → a muted glyph revealed on row hover OR
+  //     keyboard focus, which adds it
+  //   • anything else → no control, because the store would not take the file
+  // `Component` is the library's own glyph (it identifies a row in the
+  // Artifacts tab). Safe on the right here because the left glyph is always a
+  // file icon from `fileIcon()` — File/FileCode/FileJson/FileText/Image/
+  // Paintbrush/Settings/Terminal — so the two can never be the same shape.
+  const promoted = !!artifactSlug
+  const artifactLabel = promoted
+    ? i18nT('pages.chat.activityViewer.file_artifact_open')
+    : promoteFailed
+      ? i18nT('pages.chat.activityViewer.file_artifact_add_failed')
+      : i18nT('pages.chat.activityViewer.file_artifact_add')
+  const artifactAria = promoted
+    ? i18nT('pages.chat.activityViewer.file_artifact_open_aria', { name })
+    : i18nT('pages.chat.activityViewer.file_artifact_add_aria', { name })
+  const artifactCls = 'shrink-0 p-1 rounded transition-all bg-transparent border-none cursor-pointer disabled:cursor-default '
+    + (promoted
+      ? 'text-accent'
+      : promoteFailed
+        ? 'text-danger'
+        : 'text-muted/50 hover:text-accent opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100')
+  const artifactGlyph = promoting
+    ? <LoaderIcon size={13} className="animate-spin" />
+    : <Component size={13} />
   return (
     <div
       className="group flex items-center gap-2 px-2 py-1 rounded-md cursor-pointer hover:bg-bg-hover transition-colors"
@@ -644,12 +787,49 @@ function FileRow({ f, onFileOpen, onFileRemove }: { f: TouchedFile; onFileOpen?:
           {stats.removed > 0 && <span className="text-danger">-{stats.removed}</span>}
         </span>
       )}
+      {/* Both inner controls stop keydown as well as click: the row itself
+          handles Enter/Space to open the file, so without this, activating a
+          control from the keyboard would ALSO open the file underneath it. */}
+      {promoted && !onArtifactOpen ? (
+        // No panel host wired (this tab rendered outside a chat) — a plain link
+        // to the detail page keeps the row from being a dead click without
+        // needing a router hook here.
+        <a
+          href={`/artifacts/${encodeURIComponent(artifactSlug)}`}
+          data-testid={`file-artifact-${f.path}`}
+          className={`${artifactCls} no-underline inline-flex`}
+          title={artifactLabel}
+          aria-label={artifactAria}
+          onClick={e => e.stopPropagation()}
+          onKeyDown={e => e.stopPropagation()}
+        >
+          {artifactGlyph}
+        </a>
+      ) : (promoted || promotable) ? (
+        <button
+          type="button"
+          data-testid={`file-artifact-${f.path}`}
+          disabled={promoting || promoteBusy}
+          className={artifactCls}
+          title={artifactLabel}
+          aria-label={artifactAria}
+          onClick={e => {
+            e.stopPropagation()
+            if (promoted) onArtifactOpen?.(artifactSlug)
+            else onPromote?.(f.path)
+          }}
+          onKeyDown={e => e.stopPropagation()}
+        >
+          {artifactGlyph}
+        </button>
+      ) : null}
       {onFileRemove && (
         // Hover-revealed, but ALSO revealed on keyboard focus — otherwise a
         // keyboard user tabs onto an invisible control.
         <button
-          className="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-muted/50 hover:text-danger transition-all bg-transparent border-none cursor-pointer"
+          className="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted/50 hover:text-danger transition-all bg-transparent border-none cursor-pointer"
           onClick={e => { e.stopPropagation(); onFileRemove(f.path) }}
+          onKeyDown={e => e.stopPropagation()}
           title={i18nT('pages.chat.activityViewer.remove')}
           aria-label={i18nT('pages.chat.activityViewer.remove_file_from_list')}
         >
@@ -702,7 +882,7 @@ function ResourceRow({ link }: { link: ExtractedLink }) {
  *
  * Two sections, so the tab is both a session view AND a library browser:
  *
- *  A. "This session" — everything this session was involved with, from THREE
+ *  A. "This session" — everything this session was involved with, from TWO
  *     inputs:
  *       1. Artifacts scoped by `?touched_by=` — the session's *involvement*
  *          scope, not just its output: artifacts it created, read, edited,
@@ -710,45 +890,60 @@ function ResourceRow({ link }: { link: ExtractedLink }) {
  *          `session_key` with every event's `session_id`). Includes each
  *          `<mcwidget>` the agent emitted, which the backend auto-registers
  *          unpinned (kiro_crew/widget_artifacts.py). These have no filesystem
- *          path — a widget's HTML lives inline in the message, which is exactly
- *          why the file-backed scan below can never see them.
+ *          path — a widget's HTML lives inline in the message.
  *       2. The session's bound companion artifact, if any. A session started
  *          from an artifact's detail page carries `slot.artifact`, persisted in
  *          the history meta line — so the binding still resolves after the user
  *          leaves the detail page, picks the session up on the main chat page,
  *          and opens this tab. Listed even when the agent never touched the
  *          artifact, because the binding itself is the association.
- *       3. Virtual session documents — non-code files recorded in chat
- *          `file_changes`, not persisted until starred (materialized).
  *
- *  B. "Other artifacts" — the rest of the local library, so the tab answers "what do I
- *     have?" and not only "what happened here?". De-duped against section A:
- *     anything already listed above is omitted rather than shown twice.
+ *  B. "From your library" — a search field that pulls a SPECIFIC prior artifact
+ *     into this session (results de-duped against section A), plus a link to the
+ *     full /artifacts page. This replaces the old inline library mirror: the
+ *     panel stays scoped to the conversation, and the /artifacts page remains
+ *     the home for browsing the whole library.
  *
- * The star means "keep in library" for either kind. An artifact row opens the
- * artifact, a document row opens the file.
+ * Every row is a real artifact RECORD. This tab used to also list "session
+ * documents" — plain files the agent wrote, admitted purely on their extension
+ * (`.md`/`.txt`/`.rst`/…) — which meant any scratch note appeared here as if it
+ * were an artifact. Files belong to the Files tab; the library is curated, so
+ * getting into it is an explicit act. Plain-file rows are gone, and with them the
+ * doc↔artifact-twin reconciliation the two overlapping inputs required.
  */
-type SessionArtifactRow =
-  | { kind: 'artifact'; key: string; name: string; sub: string; slug: string; starred: boolean }
-  | { kind: 'doc'; key: string; name: string; sub: string; path: string; slug: string; starred: boolean }
+type SessionArtifactRow = {
+  key: string
+  name: string
+  sub: string
+  slug: string
+  /** True only for a chat-emitted widget the store auto-registered and that is
+   *  still unpinned — the one state where the row offers "save permanently".
+   *  See `savePermanently` on the row component for why nothing else does. */
+  offerSave: boolean
+}
 
-/** Library rows rendered before the "Show all" cut. The library is unbounded
- *  and this panel is ~460px wide, so cap the DOM the same way the Subagents
- *  view does rather than mounting hundreds of rows nobody scrolls to. */
-const ARTIFACT_LIBRARY_CAP = 50
+/** Cap on library search results shown inline — the panel is a ~460px rail, so
+ *  a search that matches half the library still shows a readable slice, and the
+ *  "Browse all" link goes to the full /artifacts page for the rest. */
+const LIBRARY_SEARCH_CAP = 20
 
-function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: string; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void }) {
+/** Project one artifact record onto a row. Single mapper so a section-A row and
+ *  its section-B twin can never disagree about what the row offers. */
+const toRow = (a: Artifact): SessionArtifactRow => ({
+  key: `artifact:${a.slug}`,
+  name: a.name || a.slug,
+  sub: a.kind,
+  slug: a.slug,
+  offerSave: !!a.auto_registered && !a.pinned,
+})
+
+function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifactOpen?: (slug: string) => void }) {
   const qc = useQueryClient()
-  // Artifact rows have no filesystem path, so `onFileOpen` can't serve them;
-  // `onArtifactOpen` is their twin and opens an artifact tab in this same
-  // panel. It is optional because this tab also renders outside a chat (no
+  // Artifact rows have no filesystem path, so the Files tab's `onFileOpen` can't
+  // serve them; `onArtifactOpen` is their twin and opens an artifact tab in this
+  // same panel. It is optional because this tab also renders outside a chat (no
   // panel to open into), where the standalone detail page stays the target.
   const navigate = useNavigate()
-  const { data, isFetching } = useQuery<{ docs: SessionDoc[] }>({
-    queryKey: ['session-artifacts', slot],
-    queryFn: () => api.artifactSessionDocs(slot),
-    enabled: !!slot,
-  })
   const { data: artifactData, isFetching: artifactsFetching } = useQuery<{ artifacts: Artifact[] }>({
     queryKey: ['session-artifact-records', slot],
     queryFn: () => api.artifacts({ touchedBy: slot }),
@@ -767,137 +962,79 @@ function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: strin
     s => s.dashboard.slots.find(x => x.key === slot)?.artifact || '',
   )
   const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ['session-artifacts', slot] })
     qc.invalidateQueries({ queryKey: ['session-artifact-records', slot] })
     qc.invalidateQueries({ queryKey: ['artifacts'] })
-    qc.invalidateQueries({ queryKey: ['artifact-session-docs'] })
   }
-  const saveMut = useMutation({ mutationFn: (path: string) => api.materializeArtifact(path, slot), onSuccess: invalidate })
   const pinMut = useMutation({
-    mutationFn: ({ slug, pinned }: { slug: string; pinned: boolean }) => api.setArtifactPinned(slug, pinned),
+    // Real session key, not the transport's shared placeholder: this pin is made
+    // on behalf of THIS chat slot, so a restricted (incognito) slot must be gated.
+    mutationFn: (slug: string) =>
+      api.setArtifactPinned(slug, true, slot ? `dashboard:${slot}` : undefined),
     onSuccess: invalidate,
   })
-  const busyPath = saveMut.isPending ? (saveMut.variables as string) : null
-  const busySlug = pinMut.isPending ? (pinMut.variables as { slug: string }).slug : null
+  const busySlug = pinMut.isPending ? (pinMut.variables as string) : null
 
   const rows = useMemo<SessionArtifactRow[]>(() => {
-    const artifacts = artifactData?.artifacts || []
-    // A materialized document is BOTH a session doc and a real artifact; keep the
-    // path-aware doc row (only it can open the file) and drop the artifact twin.
-    //
-    // Matching on slug alone is not enough: the session-docs backend builds its
-    // path→slug map from PINNED artifacts only, so a doc that was materialized
-    // and then UN-starred reports `slug: ''` and its artifact would slip through
-    // as a second row with its own star. Joining on `source_path` as well covers
-    // that state, because a materialized artifact's source_path IS the doc path.
-    //
-    // The path join has to be exactly that narrow. Excluding file-backed
-    // artifacts outright would also drop artifacts this session merely READ or
-    // iterated on that happen to be file-backed — the very artifacts the
-    // touched_by scan exists to surface — banishing them to "Other artifacts".
-    const docSlugs = new Set((data?.docs || []).map(d => d.slug).filter(Boolean))
-    const docPaths = new Set((data?.docs || []).map(d => d.path).filter(Boolean))
-    const out: SessionArtifactRow[] = artifacts
-      .filter(a => !docSlugs.has(a.slug) && !(a.source_path && docPaths.has(a.source_path)))
-      .map(a => ({
-        kind: 'artifact' as const,
-        key: `artifact:${a.slug}`,
-        name: a.name || a.slug,
-        sub: a.kind,
-        slug: a.slug,
-        starred: !!a.pinned,
-      }))
+    const out: SessionArtifactRow[] = (artifactData?.artifacts || []).map(toRow)
     // The bound companion artifact belongs in this section even if the agent
     // never touched it, so it is added when the touched_by scan didn't already
-    // return it. Its metadata comes from the library list rather than a third
+    // return it. Its metadata comes from the library list rather than a second
     // query; if the library hasn't loaded (or the artifact was deleted while the
     // binding lingers) there is nothing to render, so skip it rather than
     // inventing a placeholder row.
     if (boundArtifactSlug && !out.some(r => r.slug === boundArtifactSlug)) {
       const bound = (libraryData?.artifacts || []).find(a => a.slug === boundArtifactSlug)
-      if (bound) {
-        out.unshift({
-          kind: 'artifact',
-          key: `artifact:${bound.slug}`,
-          name: bound.name || bound.slug,
-          sub: bound.kind,
-          slug: bound.slug,
-          starred: !!bound.pinned,
-        })
-      }
-    }
-    for (const d of data?.docs || []) {
-      out.push({
-        kind: 'doc' as const,
-        key: `doc:${d.path}`,
-        name: d.name,
-        sub: d.path,
-        path: d.path,
-        slug: d.slug,
-        starred: d.saved,
-      })
+      if (bound) out.unshift(toRow(bound))
     }
     return out
-  }, [artifactData, data, boundArtifactSlug, libraryData])
+  }, [artifactData, boundArtifactSlug, libraryData])
 
-  // Section B: the library minus whatever section A already shows.
-  //
-  // Two joins are needed, not one. Slug covers ordinary artifacts, but a
-  // materialized session doc that was later UNSTARRED reports `slug: ''` from
-  // the session-docs backend (it maps path→slug from PINNED artifacts only) —
-  // so its library twin has a slug nothing in section A claims, and a
-  // slug-only de-dup would list the same document twice: once as the
-  // path-aware doc row above, once as a library row here. Joining on
-  // `source_path` as well catches that state, mirroring the narrow path join
-  // section A applies to its own artifact rows.
+  // Section B: the library minus whatever section A already shows. Both sides
+  // are artifact records now, so slug is the whole join — the extra
+  // `source_path` join this used to carry existed only to reconcile a
+  // file-backed artifact against its plain-file twin row, and there are no
+  // plain-file rows left to reconcile against.
   const libraryRows = useMemo<SessionArtifactRow[]>(() => {
     const shownSlugs = new Set(rows.map(r => r.slug).filter(Boolean))
-    const shownPaths = new Set(rows.filter(r => r.kind === 'doc').map(r => r.path))
     return (libraryData?.artifacts || [])
-      .filter(a => !shownSlugs.has(a.slug) && !(a.source_path && shownPaths.has(a.source_path)))
-      .map(a => ({
-        kind: 'artifact' as const,
-        key: `lib:${a.slug}`,
-        name: a.name || a.slug,
-        sub: a.kind,
-        slug: a.slug,
-        starred: !!a.pinned,
-      }))
+      .filter(a => !shownSlugs.has(a.slug))
+      .map(a => ({ ...toRow(a), key: `lib:${a.slug}` }))
   }, [libraryData, rows])
 
-  const loading = isFetching || artifactsFetching
-  const [showAllLibrary, setShowAllLibrary] = useState(false)
-  const visibleLibrary = showAllLibrary ? libraryRows : libraryRows.slice(0, ARTIFACT_LIBRARY_CAP)
-  const cappedLibrary = libraryRows.length - visibleLibrary.length
+  const loading = artifactsFetching
+  const libraryTotal = libraryData?.artifacts?.length ?? 0
+  // Search the library (section-A items already excluded) as a pull-in
+  // affordance. Results appear ONLY while a query is present — an empty query
+  // never dumps the whole library inline; that is what the /artifacts page is for.
+  const [libQuery, setLibQuery] = useState('')
+  const filteredLibrary = useMemo<SessionArtifactRow[]>(() => {
+    const q = libQuery.trim().toLowerCase()
+    if (!q) return []
+    return libraryRows.filter(r => r.name.toLowerCase().includes(q)).slice(0, LIBRARY_SEARCH_CAP)
+  }, [libQuery, libraryRows])
 
   const openRow = useCallback((r: SessionArtifactRow) => {
-    // A doc row addresses a file on disk, so it opens as a file tab even when
-    // it also has an artifact twin — only the file tab can edit/save the path.
-    if (r.kind === 'doc') { onFileOpen?.(r.path); return }
     if (!r.slug) return
     // Panel tab when a host provided one (the chat case); otherwise fall back
     // to the standalone page so this row is never a dead click.
     if (onArtifactOpen) onArtifactOpen(r.slug)
     else navigate(`/artifacts/${r.slug}`)
-  }, [onFileOpen, onArtifactOpen, navigate])
-  const toggleStar = useCallback((r: SessionArtifactRow) => {
-    // A doc with no slug isn't persisted yet — starring it materializes it.
-    // Everything else is a metadata pin flip.
-    if (r.kind === 'doc' && !r.slug) saveMut.mutate(r.path)
-    else if (r.slug) pinMut.mutate({ slug: r.slug, pinned: !r.starred })
-  }, [saveMut, pinMut])
-  const rowBusy = useCallback((r: SessionArtifactRow) => (
-    (r.kind === 'doc' && busyPath === r.path) || (!!r.slug && busySlug === r.slug)
-  ), [busyPath, busySlug])
+  }, [onArtifactOpen, navigate])
+  const savePermanently = useCallback((r: SessionArtifactRow) => {
+    if (r.slug) pinMut.mutate(r.slug)
+  }, [pinMut])
+  const rowBusy = useCallback(
+    (r: SessionArtifactRow) => !!r.slug && busySlug === r.slug,
+    [busySlug],
+  )
 
-  // Nothing at all — no session activity AND an empty library.
-  if (rows.length === 0 && libraryRows.length === 0) {
+  // Still loading with nothing resolved yet — show a single spinner line rather
+  // than flashing the empty hero before data lands.
+  if ((loading || libraryFetching) && rows.length === 0 && libraryTotal === 0) {
     return (
       <div className="flex-1 overflow-y-auto py-1.5">
         <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">
-          {loading || libraryFetching
-            ? i18nT('pages.chat.activityViewer.loading')
-            : i18nT('pages.chat.activityViewer.artifacts_empty')}
+          {i18nT('pages.chat.activityViewer.loading')}
         </div>
       </div>
     )
@@ -906,11 +1043,9 @@ function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: strin
   return (
     <div className="flex-1 overflow-y-auto py-1.5">
       <div className="px-3 flex flex-col">
-        {/* Section A — this session. Rendered whenever there is session
-            activity; suppressed entirely (header included) when there is none,
-            so a fresh session shows just the library instead of an empty
-            heading above it. */}
-        {rows.length > 0 && (
+        {/* Section A — this session. When the session has touched nothing yet, a
+            short hero explains what the panel collects instead of an empty heading. */}
+        {rows.length > 0 ? (
           <>
             <PanelSectionHeader
               label={i18nT('pages.chat.activityViewer.artifacts_this_session')}
@@ -918,46 +1053,76 @@ function SessionArtifactsTab({ slot, onFileOpen, onArtifactOpen }: { slot: strin
               className="mt-0.5 mb-0.5"
             />
             {rows.map(r => (
-              <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onToggleStar={toggleStar} />
+              <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onSave={savePermanently} />
             ))}
           </>
+        ) : (
+          <div className="flex flex-col items-center text-center px-4 pt-6 pb-1">
+            <Component size={22} className="text-muted/50" />
+            <div className="mt-2.5 text-[13px] font-medium text-text">
+              {i18nT('pages.chat.activityViewer.artifacts_empty_title')}
+            </div>
+            <div className="mt-1 text-[12px] text-muted leading-snug max-w-[260px]">
+              {i18nT('pages.chat.activityViewer.artifacts_empty_hint')}
+            </div>
+          </div>
         )}
-        {/* Section B — the rest of the library. */}
-        {libraryRows.length > 0 && (
-          <>
+        {/* Section B — bridge to the wider library: search to pull a specific
+            artifact into this session, plus a link to the full /artifacts page.
+            Replaces the old inline library mirror. */}
+        {libraryTotal > 0 && (
+          <div className={rows.length > 0 ? 'mt-3' : 'mt-4'}>
             <PanelSectionHeader
-              label={i18nT('pages.chat.activityViewer.artifacts_library')}
-              count={libraryRows.length}
-              className={`mb-0.5 ${rows.length > 0 ? 'mt-3' : 'mt-0.5'}`}
+              label={i18nT('pages.chat.activityViewer.artifacts_from_library')}
+              className="mb-1.5"
             />
-            {visibleLibrary.map(r => (
-              <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onToggleStar={toggleStar} />
-            ))}
-            {cappedLibrary > 0 && (
-              <button
-                type="button"
-                onClick={() => setShowAllLibrary(true)}
-                className="self-start mt-1 px-2 py-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer transition-colors"
-              >
-                {i18nT('pages.chat.activityViewer.show_all_count', { count: cappedLibrary })}
-              </button>
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+              <input
+                type="text"
+                value={libQuery}
+                onChange={e => setLibQuery(e.target.value)}
+                placeholder={i18nT('pages.chat.activityViewer.artifacts_search_library')}
+                aria-label={i18nT('pages.chat.activityViewer.artifacts_search_library')}
+                className="w-full text-[12px] pl-7 pr-2.5 py-1.5 rounded-md bg-bg border border-border text-text placeholder:text-muted focus:outline-none focus:border-accent transition-colors"
+              />
+            </div>
+            {libQuery.trim() && (
+              filteredLibrary.length > 0 ? (
+                <div className="mt-1">
+                  {filteredLibrary.map(r => (
+                    <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onSave={savePermanently} />
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-2 px-2 text-[11.5px] text-muted">
+                  {i18nT('pages.chat.activityViewer.no_matches')}
+                </div>
+              )
             )}
-          </>
+            <button
+              type="button"
+              onClick={() => navigate('/artifacts')}
+              className="self-start mt-1.5 px-2 py-1 text-[11.5px] text-accent hover:underline bg-transparent border-none cursor-pointer transition-colors"
+            >
+              {i18nT('pages.chat.activityViewer.artifacts_browse_all', { count: libraryTotal })}
+            </button>
+          </div>
         )}
       </div>
     </div>
   )
 }
 
-/** One row of the Artifacts tab — an artifact or a virtual session document.
+/** One row of the Artifacts tab — always a real artifact record.
  *  Module-scope (not nested in SessionArtifactsTab): a nested definition would
  *  be a new component type on every render, remounting every row and dropping
- *  the star button's pending state mid-flight. */
-function ArtifactListRow({ row, busy, onOpen, onToggleStar }: {
+ *  the save button's pending state mid-flight. */
+function ArtifactListRow({ row, busy, onOpen, onSave }: {
   row: SessionArtifactRow
   busy: boolean
   onOpen: (row: SessionArtifactRow) => void
-  onToggleStar: (row: SessionArtifactRow) => void
+  onSave: (row: SessionArtifactRow) => void
 }) {
   return (
     <div className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-bg-hover transition-colors">
@@ -965,31 +1130,39 @@ function ArtifactListRow({ row, busy, onOpen, onToggleStar }: {
         type="button"
         onClick={() => onOpen(row)}
         className="flex items-center gap-2 min-w-0 flex-1 text-left bg-transparent border-none cursor-pointer p-0"
-        title={row.kind === 'doc'
-          ? i18nT('pages.chat.activityViewer.open_in_side_panel')
-          : i18nT('pages.chat.activityViewer.open_artifact')}
+        title={i18nT('pages.chat.activityViewer.open_artifact')}
       >
-        {row.kind === 'doc'
-          ? <FileText size={14} className="text-emerald-400 shrink-0" />
-          : <Component size={14} className="text-accent shrink-0" />}
+        {/* Identity glyph. Deliberately NOT reused as the action icon on the
+            right: two of the same glyph in one row, only one of them clickable,
+            reads as a rendering bug. */}
+        <Component size={14} className="text-accent shrink-0" />
         <span className="min-w-0 flex-1 leading-tight">
           <span className="block text-[12.5px] text-text truncate">{row.name}</span>
           <span className="block text-[10.5px] text-muted/80 truncate">{row.sub}</span>
         </span>
       </button>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => onToggleStar(row)}
-        className={`shrink-0 p-1 rounded transition-colors bg-transparent border-none cursor-pointer disabled:cursor-default ${row.starred ? 'text-accent' : 'text-muted/50 hover:text-accent'}`}
-        title={row.starred
-          ? i18nT('pages.chat.activityViewer.remove_star')
-          : i18nT('pages.chat.activityViewer.star')}
-        aria-label={row.starred ? `Unstar ${row.name}` : `Star ${row.name}`}
-        aria-pressed={row.starred}
-      >
-        {busy ? <LoaderIcon size={13} className="animate-spin" /> : <Star size={13} className={row.starred ? 'fill-current' : ''} />}
-      </button>
+      {/* "Save permanently", and ONLY for a chat-emitted widget that is still
+          unpinned. That is the single case where the flag changes an outcome:
+          the store sweeps auto-registered widgets oldest-first past
+          MAX_AUTO_WIDGET_ARTIFACTS (200) unless they are pinned
+          (kiro_crew/artifacts.py — prune_auto_widgets). For an explicitly
+          created artifact nothing sweeps it, so the same control would promise
+          safety it isn't providing. One-way by design: there is no un-save
+          affordance here, because the only thing un-saving buys is
+          eligibility for deletion. */}
+      {row.offerSave && (
+        <button
+          type="button"
+          disabled={busy}
+          data-testid={`artifact-save-${row.slug}`}
+          onClick={() => onSave(row)}
+          className="shrink-0 p-1 rounded transition-colors bg-transparent border-none cursor-pointer disabled:cursor-default text-muted/50 hover:text-accent"
+          title={i18nT('pages.chat.activityViewer.artifact_save_permanently')}
+          aria-label={i18nT('pages.chat.activityViewer.artifact_save_permanently_aria', { name: row.name })}
+        >
+          {busy ? <LoaderIcon size={13} className="animate-spin" /> : <BookmarkPlus size={13} />}
+        </button>
+      )}
     </div>
   )
 }
@@ -1339,6 +1512,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           navResolving={navResolving}
           slot={slot}
           onFileOpen={onFileOpen}
+          onArtifactOpen={onArtifactOpen}
           onFileRemove={onFileRemove}
           onFileSave={onFileSave}
           onSubmitComments={onSubmitComments}
@@ -1349,7 +1523,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       )}
 
       {/* Artifacts tab (in-session documents) */}
-      {effectiveTab === 'artifacts' && <SessionArtifactsTab slot={slot} onFileOpen={onFileOpen} onArtifactOpen={onArtifactOpen} />}
+      {effectiveTab === 'artifacts' && <SessionArtifactsTab slot={slot} onArtifactOpen={onArtifactOpen} />}
 
       {/* Side tab */}
       {effectiveTab === 'side' && <SideChat slot={slot} />}

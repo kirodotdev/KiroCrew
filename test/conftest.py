@@ -116,7 +116,7 @@ def _windows_restrict_to_owner_stub(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_aim_skills_dir(tmp_path, monkeypatch):
+def _isolate_aim_skills_dir(monkeypatch):
     """Prevent SkillsLoader from discovering edition-contributed skill roots.
 
     SkillsLoader now sources extra skill roots from the CPP seam
@@ -125,6 +125,10 @@ def _isolate_aim_skills_dir(tmp_path, monkeypatch):
     composed companion (or leftover roots) can't inflate session context beyond
     _MAX_CONTEXT_CHARS and cause silent truncation / non-deterministic xdist
     failures.
+
+    Does NOT request ``tmp_path``: this fixture only patches a method, and being
+    autouse it made every one of the suite's ~26k tests allocate a temp directory it
+    never touched -- the single largest fixed cost in the suite's setup path.
     """
     from kiro_crew.platform.defaults import DefaultMcpToolingProvider
 
@@ -400,8 +404,51 @@ def _reset_reasoning_effort_globals():
         _cp._reasoning_effort_ordered = saved_ordered
 
 
+@pytest.fixture(scope="session")
+def _isolation_root(tmp_path_factory):
+    """One session-scoped parent for the per-test isolation dirs below.
+
+    ``tmp_path_factory.mktemp`` picks its numbered suffix by scanning the whole
+    basetemp, so its cost grows with the number of entries already there. Four autouse
+    fixtures called it per test, adding thousands of siblings to one directory. Those
+    fixtures now ``mkdir`` under this root instead, which is a single syscall and does
+    not scan.
+
+    Named ``i`` rather than something descriptive to keep the paths short: Windows
+    still caps a path at 260 characters unless long paths are enabled, and everything
+    a test writes under ``KIROCREW_HOME`` nests inside here.
+    """
+    return tmp_path_factory.mktemp("i")
+
+
+@pytest.fixture
+def _isolation_dirs(_isolation_root):
+    """Return an allocator for this test's isolation dirs, created on demand.
+
+    Each call returns ``<root>/<counter>-<name>``, so one test's dirs cannot collide
+    with another's (the counter is per-process, and pytest-xdist gives every worker its
+    own ``basetemp`` -- verified: workers report ``popen-gw0``/``popen-gw1`` roots).
+    Flat rather than nested, again to keep Windows paths short.
+    """
+    made: dict[str, pathlib.Path] = {}
+    _isolation_dirs.seq += 1  # type: ignore[attr-defined]
+    stem = _isolation_dirs.seq  # type: ignore[attr-defined]
+
+    def _get(name: str) -> pathlib.Path:
+        if name not in made:
+            path = _isolation_root / f"{stem}-{name}"
+            path.mkdir(parents=True, exist_ok=True)
+            made[name] = path
+        return made[name]
+
+    return _get
+
+
+_isolation_dirs.seq = 0  # type: ignore[attr-defined]
+
+
 @pytest.fixture(autouse=True)
-def _isolate_kirocrew_home(tmp_path_factory, monkeypatch):
+def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
     """Pin ``KIROCREW_HOME`` to a per-test tmp dir as a safety net.
 
     ``config_dir()`` reads ``KIROCREW_HOME`` on every call and falls back to the
@@ -434,7 +481,7 @@ def _isolate_kirocrew_home(tmp_path_factory, monkeypatch):
     behavior — green in CI (env unset there), red locally. Tests that need a
     project dir set it themselves via ``monkeypatch`` (which still wins).
     """
-    home = tmp_path_factory.mktemp("kirocrew-home")
+    home = _isolation_dirs("kirocrew-home")
     monkeypatch.setenv("KIROCREW_HOME", str(home))
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
     monkeypatch.setattr("kiro_crew.config.paths._resolved_home", None)
@@ -476,7 +523,7 @@ def _isolate_kiro_window_cache():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_subagents_dir(tmp_path_factory, monkeypatch):
+def _isolate_subagents_dir(_isolation_dirs, monkeypatch):
     """Pin the subagent registry dir to a tmp dir for the whole suite.
 
     ``kiro_crew.subagent_persistence._SUBAGENTS_DIR`` is bound at import time to
@@ -490,12 +537,12 @@ def _isolate_subagents_dir(tmp_path_factory, monkeypatch):
     """
     monkeypatch.setattr(
         "kiro_crew.subagent_persistence._SUBAGENTS_DIR",
-        tmp_path_factory.mktemp("subagents"),
+        _isolation_dirs("subagents"),
     )
 
 
 @pytest.fixture(autouse=True)
-def _no_model_download(monkeypatch, tmp_path_factory):
+def _no_model_download(monkeypatch, _isolation_dirs):
     """Never let a test trigger the 610MB embedding-model download.
 
     Embeddings are always-on, so any test that boots the gateway/server
@@ -512,11 +559,19 @@ def _no_model_download(monkeypatch, tmp_path_factory):
     Ollama-era embeddings.
     """
     monkeypatch.setenv("KIROCREW_SKIP_MODEL_DOWNLOAD", "1")
-    monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path_factory.mktemp("ollama-models")))
+    monkeypatch.setenv("OLLAMA_MODELS", str(_isolation_dirs("ollama-models")))
+    # Force telemetry OFF for every test. `_consent_enabled` reads this env var BEFORE
+    # the config flag, which is what makes it a reliable gate: ~15 tests patch
+    # `KiroCrewConfig.load` with a bare MagicMock, whose `telemetry.enabled` is TRUTHY,
+    # so a real recorder starts and `Path(cfg.local_dir)` resolves the mock to the
+    # RELATIVE path `MagicMock/load().telemetry.local_dir/...` -- writing metrics and a
+    # lock file into the repo root, plus a background reader thread that outlives the
+    # test. Tests that exercise telemetry delete this var themselves (test/metrics/).
+    monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
 
 
 @pytest.fixture(autouse=True)
-def _isolate_agent_state_sidecar(tmp_path_factory, monkeypatch):
+def _isolate_agent_state_sidecar(_isolation_dirs, monkeypatch):
     """Pin the agent_state sidecar to a tmp dir for the whole suite.
 
     ``kiro_crew.agent_state`` stores per-agent bookkeeping (model_managed,
@@ -526,7 +581,7 @@ def _isolate_agent_state_sidecar(tmp_path_factory, monkeypatch):
     ``config_dir`` — referenced as a module attribute at call time — to a fresh
     tmp dir so every test starts from empty state.
     """
-    sidecar_root = tmp_path_factory.mktemp("agent-state-isolation")
+    sidecar_root = _isolation_dirs("agent-state")
     monkeypatch.setattr("kiro_crew.agent_state.config_dir", lambda: sidecar_root)
 
 

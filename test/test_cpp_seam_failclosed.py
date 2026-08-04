@@ -409,8 +409,9 @@ def test_normalize_jail_unit() -> None:
 
 def test_jailed_commands_cover_agent_bearing_set() -> None:
     """consolidate + eval (both build a provider factory) are jailed too."""
-    assert {"chat", "tui", "run", "consolidate", "eval"} <= cli._JAILED_COMMANDS
+    assert {"chat", "run", "consolidate", "eval"} <= cli._JAILED_COMMANDS
     assert "gateway" not in cli._JAILED_COMMANDS  # excluded (execv self-update)
+    assert "tui" not in cli._JAILED_COMMANDS  # removed: TUI command surface hidden
 
 
 # ── R5: _child_argv reuses _resolve_kirocrew_bin incl. the sentinel branch ──

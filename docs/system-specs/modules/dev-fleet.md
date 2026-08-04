@@ -15,7 +15,9 @@ Gateway session auth (token/cookie) gates the proxy entrance as with all builtin
 
 ## Responsibilities
 
-1. **Worktree discovery** — enumerates git worktrees via `git worktree list --porcelain`
+1. **Worktree discovery** — enumerates git worktrees via `git worktree list --porcelain`,
+   dropping records git flags `prunable` (checkout directory deleted without a
+   `git worktree prune`); the primary checkout is never dropped, since it anchors `is_main`
 2. **Pod integration** — spin up/down/restart isolated pod instances per worktree
 3. **Pull+Build sync** — pull origin/main and rebuild (venv + frontend dist)
 4. **Prune** — safely remove merged/empty worktrees with PR-shipped verification
@@ -193,7 +195,18 @@ after the unit was installed.
   without a restart. Cycles that remove or fail anything are SEL-audited under
   `dev_fleet_auto_prune`. Cancelled on `dev_fleet_cleanup`.
 - **Fleet cache** — 10s TTL. Cold requests block on fresh data; warm requests serve stale
-  and background-refresh.
+  and background-refresh. Concurrent rebuilds (the background revalidate plus any number
+  of `?fresh=1` requests) coalesce onto a single in-flight build, so a rebuild never costs
+  more than one `gh pr` round-trip per branch. A successful `_worktree_remove` evicts that
+  worktree from the cached snapshot and zeroes the timestamp, so the next response stops
+  listing a removed worktree without waiting for a rebuild. An eviction also tombstones the
+  name against an eviction counter: a rebuild that started before the removal still read the
+  worktree from git, so it re-applies any eviction recorded after it began rather than
+  storing a snapshot that would resurrect the row. Tombstones are reaped by the first build
+  that started after them, so a worktree later re-created under the same name is not hidden.
+  The dashboard refreshes with
+  `?fresh=1` after every mutating action (and on the explicit Refresh button) so it never
+  renders the pre-mutation snapshot.
 
 ## Async Runs
 
@@ -492,13 +505,25 @@ All user-visible output passes through `redact_credentials()` and
 
 ## Platform Behavior
 
-The app declares `platform.os: ["linux"]` in `app.json`. That declaration is
-**informational** — `installMode` is the default `"server"`, and the App Store's
-platform gate only refuses `installMode: "client"` apps — so the app still
-installs and enables anywhere. What it buys is an honest App Store detail page
-(which renders the requirement) instead of the previous silence, where an absent
-`platform` block defaulted to `["macos", "linux"]` and advertised macOS support
-the app does not have.
+The app declares `platform.os: ["macos", "linux", "windows"]` in `app.json`,
+because that is where it genuinely runs: the fleet view, PR status, commit and
+disk figures, Provision, Sync, Rebase and Prune are git and filesystem work with
+no systemd in them. Only the pod plane and Make Live need Linux, and the app now
+says so in the UI rather than in the manifest — a `highlights` line states the
+requirement, and `GET /api/fleet` carries the reason that renders as a banner.
+
+Declaring one platform per capability is not expressible here: `os` is a single
+list describing the whole app, so any value is a summary. `["linux"]` was the
+wrong summary — it read as "does not run on macOS" for an app whose non-pod half
+runs there fine, which is the same misinformation in the opposite direction from
+the pre-#1254 silence (an absent `platform` block defaults to
+`["macos", "linux"]`, quietly advertising macOS parity).
+
+The declaration is **not** an install gate for this app: `installMode` is the
+default `"server"` and the App Store's platform check at `registry.py` only
+refuses `installMode: "client"` apps, so dev-fleet installs and enables
+everywhere regardless. What the list drives is the App Store detail page, which
+renders it verbatim (`AppDetailPage.tsx` → "Platform: macos, linux, windows").
 
 Two separate capability flags drive the degradation, because they gate different
 things:

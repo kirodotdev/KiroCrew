@@ -39,7 +39,9 @@ detecting it (``home_migration.py``, ``config/paths.py``, ``security.py``,
 
 from __future__ import annotations
 
+import functools
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -70,6 +72,24 @@ LEGACY_READER_SCRIPTS = frozenset(
 
 # Directories that are vendored, generated, or dependency trees.
 SKIP_DIR_PARTS = frozenset({"node_modules", "_vendor", ".venv", "build", "dist", ".git"})
+
+
+@functools.lru_cache(maxsize=1)
+def _repo_python_files() -> tuple[Path, ...]:
+    """Every repo ``*.py`` outside :data:`SKIP_DIR_PARTS`, pruned DURING the walk.
+
+    ``REPO_ROOT.rglob("*.py")`` enumerates the skipped trees before the caller can
+    filter them out -- measured 4946 files walked in ~4s to keep 665, on a checkout
+    with a ``.venv``. ``os.walk`` lets the skip list prune ``dirnames`` in place, so
+    those subtrees are never descended into. Same file set, same assertions.
+    """
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_PARTS]
+        for name in filenames:
+            if name.endswith(".py"):
+                found.append(Path(dirpath) / name)
+    return tuple(sorted(found))
 
 
 def _shell_scripts() -> list[Path]:
@@ -223,9 +243,9 @@ def test_no_python_expands_a_hardcoded_legacy_home() -> None:
     """
     pattern = re.compile(r"expanduser\(\s*[^)]*\.kirocrew(?![-.])")
     offenders: list[str] = []
-    for path in sorted(REPO_ROOT.rglob("*.py")):
+    for path in _repo_python_files():
         rel = path.relative_to(REPO_ROOT)
-        if SKIP_DIR_PARTS.intersection(rel.parts) or rel.parts[0] == "test":
+        if rel.parts[0] == "test":
             continue
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if pattern.search(line):

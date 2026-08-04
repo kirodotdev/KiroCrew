@@ -17,7 +17,17 @@ from kiro_crew.apps.discovery import discover_builtin_apps
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _APP_ASSETS_DIR = _REPO_ROOT / "website" / "public" / "app-assets"
-_ASSET_FIELDS = ("iconUrl", "heroImage", "heroImageDark")
+#: Every top-level manifest field that can name an ``/app-assets/`` file. The
+#: two detail banners were missing, so ten builtins referenced art this guard
+#: never checked — a typo in a ``heroImageDetail`` path would have shipped the
+#: broken-image placeholder on the app's own detail page with CI green.
+_ASSET_FIELDS = (
+    "iconUrl",
+    "heroImage",
+    "heroImageDark",
+    "heroImageDetail",
+    "heroImageDetailDark",
+)
 
 
 def _asset_refs(app: dict) -> list[tuple[str, str]]:

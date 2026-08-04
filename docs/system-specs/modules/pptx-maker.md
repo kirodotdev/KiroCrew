@@ -454,11 +454,49 @@ sensitive-path check and the governance ceiling — would never be reached.
     runs `_ENCODED_CREDENTIAL_RE` over the encoded text. That screen is deliberately
     NARROW rather than a full `redact()`: the bare-secret heuristic flags a 40-char run
     of random base64, which every genuine raster contains — measured, it refused 300/300
-    real 20 KB rasters, i.e. it would blank every image in every deck. `xox…`/`sk-ant…`
-    are matched by PREFIX only, because the body class excludes `-` so the rest of such
-    a token never reaches this text; a chance prefix hit costs one image's inline art
-    (still served, just redacted), never a leak. Pinned by
-    `::test_a_credential_APPENDED_to_a_real_raster_is_not_exempted`.
+    real 20 KB rasters, i.e. it would blank every image in every deck.
+    **The scan matches exactly one shape, and requires its body.** `AKIA`/`ASIA` plus 16
+    upper/digit chars is the only credential form expressible entirely in the base64
+    alphabet, so it is the only one that can hide in a body and be reproduced by the
+    re-encode; chance collision is ~1.6e-7 per 20 KB. Every other provider marker needs
+    a separator absent from base64 and therefore cannot occur in a body at all — listing
+    those here would be dead code, which is what the earlier bare-prefix alternatives
+    effectively were: `xox[abposr]` matched 0.88% of 20 KB rasters and 4.7% of 100 KB
+    ones by chance, silently blanking real pictures.
+    **The carve-out requires the URI to TERMINATE at the body.** `_INLINE_BITMAP_RE`
+    captures, as group 2, the maximal run of characters after the base64 that are NOT in
+    `_BITMAP_URI_TERMINATORS` (`"`, `'`, `` ` ``, `)`, `<`, `>`, `,`, `;`, `]`, `}`, `\`,
+    whitespace). An empty group 2 means the URI ends properly and the exemption applies;
+    a non-empty one means something is glued to the URI, and the body **plus the whole
+    run** is excised. Both halves of that matter. An allowlist is the only closed form —
+    a credential appended to the body splits at whatever separator it uses (`xoxb-`,
+    `pypi-`, `ghp_`, a JWT's `.`, a bare `:` or `~`), the prefix landing in the BODY and
+    surviving the re-encode while the remainder escapes the scan, so enumerating
+    separators is endless while legal terminators are finite. And excising the whole run
+    rather than the body alone is what makes it complete: dropping only the body left a
+    PyPI macaroon's 49-char tail in the served text once its `pypi-` prefix had gone into
+    the excised blob. Handing the region to the text pass does not help either — the
+    bare-secret heuristic eats the base64 run and stops at the separator. This deletes
+    text when the run is innocent, but a `-`/`.`/`:`-led run glued to a data URI is not a
+    shape the engine emits, the deletion is signposted by the tag rather than silent, and
+    the alternative is serving credential material. The terminator is outside the match,
+    so the surrounding document keeps its quote or bracket. Pinned by
+    `::test_a_uri_the_body_does_not_terminate_forfeits_the_carve_out` (JWT, `pypi`,
+    `glpat`, `:` and `~` — none enumerated anywhere — asserting no 8-char FRAGMENT
+    survives, since a full-token assertion passed while a tail still shipped) and
+    `::test_every_legal_uri_terminator_keeps_the_image` (JSON quote, escaped quote, CSS
+    `url(...)`, markdown, end-of-text all round-trip byte-identical).
+    **A condemned region is excised here, not delegated.** Handing it to the text pass
+    assumed `redact()` recognises the same tokens this scan does; it recognises fewer
+    (a `gh[pousr]_` body shorter than a real 36-char PAT matches here and is invisible
+    there), so delegating served those tokens. `_scanned_bitmap_bytes` returns
+    `(bytes, credential_found)` and the caller replaces a credential-bearing region
+    with the shared `REDACTED_CREDENTIAL_TAG`, while a blob that merely is not a raster
+    still falls through to ordinary prose scanning. Pinned by
+    `::test_a_credential_APPENDED_to_a_real_raster_is_not_exempted`,
+    `::test_appended_tokens_whose_separator_is_not_base64_are_caught`,
+    `::test_a_raster_whose_base64_contains_a_token_prefix_still_renders` and
+    `::test_text_butted_against_a_data_uri_is_not_silently_dropped`.
   - **Decode degrades, never crashes.** Text is decoded `errors="replace"` and
     re-encoded to UTF-8; a malformed byte sequence cannot raise on the worker
     thread and become an opaque 500. The declared Content-Type carries

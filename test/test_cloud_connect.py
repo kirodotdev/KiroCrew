@@ -291,6 +291,84 @@ class TestKillProcessTree:
             time.sleep(0.1)
         assert not _pid_alive(child_pid), "grandchild (same group) must also be killed"
 
+    def test_windows_uses_a_tree_kill_not_a_parent_only_terminate(self, monkeypatch):
+        """On Windows the group signal can never work, so the tree kill must run.
+
+        ``os.killpg``/``os.getpgid`` do not exist on Windows, so the POSIX path
+        falls through to ``proc.terminate()`` -- which kills only the wrapper and
+        leaves the plugin holding the forwarded port, the exact failure
+        ``kill_port_forward`` exists to prevent. Exercised on any platform by
+        forcing ``os.name``.
+        """
+        from kiro_crew.cloud import ssm as ssm_mod
+
+        calls: list[list[str]] = []
+
+        class FakeProc:
+            pid = 4321
+            terminated = False
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                FakeProc.terminated = True
+
+            def kill(self):  # pragma: no cover - must not be reached
+                FakeProc.terminated = True
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+
+            class R:
+                returncode = 0
+
+            return R()
+
+        monkeypatch.setattr(ssm_mod.os, "name", "nt")
+        monkeypatch.setattr(ssm_mod.subprocess, "run", fake_run)
+        ssm_mod.kill_port_forward(FakeProc())
+
+        assert calls, "Windows must attempt a tree kill"
+        argv = calls[0]
+        assert argv[0] == "taskkill"
+        assert "/T" in argv, "/T is what reaps the plugin child"
+        assert "/F" in argv
+        assert str(FakeProc.pid) in argv
+        assert not FakeProc.terminated, "parent-only terminate must not be the Windows path"
+
+    def test_windows_tree_kill_tolerates_a_process_object_without_a_pid(
+        self, monkeypatch
+    ) -> None:
+        """A Popen-LIKE stand-in must not raise on the Windows branch.
+
+        `kill_port_forward` accepts any object with poll/terminate/wait -- the
+        POSIX branch already tolerates one with no `pid` (its group signal catches
+        AttributeError and falls back). The Windows branch read `proc.pid`
+        directly, so the same caller worked on Linux and raised AttributeError on
+        Windows.
+        """
+        from kiro_crew.cloud import ssm as ssm_mod
+
+        class NoPid:
+            terminated = False
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                NoPid.terminated = True
+
+        monkeypatch.setattr(ssm_mod.os, "name", "nt")
+        ssm_mod.kill_port_forward(NoPid())  # must not raise
+        assert NoPid.terminated, "should fall back to terminate() when there is no pid"
+
     def test_none_and_dead_proc_are_noops(self):
         connect._kill_process_tree(None)  # must not raise
 

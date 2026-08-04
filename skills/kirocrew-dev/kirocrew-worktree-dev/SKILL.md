@@ -105,6 +105,38 @@ checkout — if it fails there too, it's pre-existing and can be noted rather
 than fixed; if it only fails on your branch, it's yours. Never label a failure
 "known flaky" without that main-vs-branch comparison.
 
+**A confirmed flake is a bug with a root cause, not noise to retry.** Do NOT add a
+rerun, lengthen a `sleep`, or relax an assertion. Read
+`docs/system-specs/common/testing-conventions.md` § Determinism for the four classes
+and the one correct fix for each: seed nondeterministic input, poll instead of
+sleeping, `MagicMock` for sync methods, `await` after `cancel()`. To find what is
+actually flaky rather than guessing, mine CI instead of the local suite (a real flake
+often will not reproduce on macOS at all):
+
+```bash
+gh run list --workflow=ci.yml --limit 250 --json databaseId,conclusion \
+  --jq '.[]|select(.conclusion=="failure")|.databaseId' > /tmp/ids
+xargs -P 10 -I{} sh -c 'gh run view {} --log-failed 2>/dev/null \
+  | sed "s/\x1b\[[0-9;]*m//g" | grep -oE "_{3,} ?[A-Za-z_][A-Za-z0-9_.]* ?_{3,}"' \
+  < /tmp/ids | sort | uniq -c | sort -rn | head -30
+```
+
+Rank by that frequency, and check each candidate against `origin/main` before fixing:
+a ratchet/contract test failing on feature branches is a TRUE POSITIVE, not a flake.
+The Windows shards fail far more than Linux, so expect timer-granularity and
+process-semantics causes there.
+
+**Suite speed: profile, don't guess.** At ~26.5k tests, per-test setup cost dominates
+any single slow test. Time one file with `pytest test/test_x.py -n0 -q --no-cov
+--durations=10` and compare a candidate fix **back to back** on the same machine
+(`git stash`, run, pop, run), because a loaded host makes an absolute number
+meaningless.
+The recurring wins are an autouse fixture requesting an unused `tmp_path`, a real
+`git` repo rebuilt per test instead of `copytree`d from a session template, and a
+production poll the test never asserts on. After any speedup, mutate the covered
+production code and confirm the test still fails. Full method and measured numbers:
+`docs/system-specs/common/testing-conventions.md` § Keeping the suite fast.
+
 **mypy must reproduce CI, not just "run".** CI installs `-e ".[voice]" --group
 dev` (mypy pinned in `pyproject.toml` `[dependency-groups] dev`) and does NOT
 install `faiss`. Two things make a local run diverge from CI:

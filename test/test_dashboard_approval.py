@@ -114,6 +114,20 @@ def _context_builder(hook_result: ToolHookResult = ToolHookResult.allow()) -> Ma
     return cb
 
 
+async def _drain(task: asyncio.Task) -> None:
+    """Cancel *task* and await it, so it cannot outlive the test.
+
+    A helper task left running is garbage-collected on a later test's loop, which
+    reports "coroutine ignored GeneratorExit" against an innocent test.
+    """
+    if not task.done():
+        task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 # ── Tests ──
 
 
@@ -127,16 +141,23 @@ class TestApprovalModes:
         slot = _make_slot()
         _set_stream(client, [_permission_event(), _complete_event()])
 
+        # Poll for the future rather than sleeping a fixed 0.05s and hoping the chat
+        # has registered it by then, and keep a handle so the helper is cancelled
+        # instead of being GC'd mid-flight during a later test.
         async def _auto_approve():
-            await asyncio.sleep(0.05)
-            fut = slot._approval_futures.get("req-1")
-            if fut and not fut.done():
-                fut.set_result("approved")
+            for _ in range(600):
+                fut = slot._approval_futures.get("req-1")
+                if fut is not None:
+                    if not fut.done():
+                        fut.set_result("approved")
+                    return
+                await asyncio.sleep(0.01)
 
-        asyncio.get_event_loop().create_task(_auto_approve())
+        approver = asyncio.get_event_loop().create_task(_auto_approve())
 
         with _patch_stats():
             await _run_chat(state, slot, "hello")
+        await _drain(approver)
 
         msgs = _tool_messages(slot)
         assert any(
@@ -385,15 +406,19 @@ class TestApprovalModes:
         _set_stream(client, [_permission_event(), _complete_event()])
 
         async def _auto_approve():
-            await asyncio.sleep(0.05)
-            fut = slot._approval_futures.get("req-1")
-            if fut and not fut.done():
-                fut.set_result("approved")
+            for _ in range(600):
+                fut = slot._approval_futures.get("req-1")
+                if fut is not None:
+                    if not fut.done():
+                        fut.set_result("approved")
+                    return
+                await asyncio.sleep(0.01)
 
-        asyncio.get_event_loop().create_task(_auto_approve())
+        approver = asyncio.get_event_loop().create_task(_auto_approve())
 
         with _patch_stats():
             await _run_chat(state, slot, "hello")
+        await _drain(approver)
 
         msgs = _tool_messages(slot)
         assert not any(

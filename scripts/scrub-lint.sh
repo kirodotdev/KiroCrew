@@ -82,7 +82,7 @@ fi
 # ---------------------------------------------------------------------------
 # 1. Working-tree scan: internal domains, hostnames, account IDs, ticket IDs
 # ---------------------------------------------------------------------------
-dim "[1/4] Scanning working tree for internal markers..."
+dim "[1/5] Scanning working tree for internal markers..."
 
 INTERNAL_PATTERN='amazon\.com|a2z\.com|aws\.dev|\.amazon\.|code\.amazon|t\.corp|sim\.amazon|isengard|phonetool|midway-auth|mwinit|brazil ws|brazil-build|brazil-runtime|brazil-pkg-cache|meshclaw|Mesh-[0-9]|AVP-[0-9]|account.?[0-9]{12}|CR-[0-9]{6,}|\bP[0-9]{6,}\b'
 
@@ -130,7 +130,7 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Employee alias scan (known patterns in non-test source)
 # ---------------------------------------------------------------------------
-dim "[2/4] Scanning for employee aliases..."
+dim "[2/5] Scanning for employee aliases..."
 
 # Aliases are stored in an external file excluded from the public repo.
 # If the file doesn't exist, this check is skipped (fresh clones won't have it).
@@ -170,9 +170,98 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Credential pattern scan
+# 3. Personal identity scan (structural — needs NO name list)
+#
+# The alias scan above reads scripts/.scrub-aliases.txt, which is deliberately
+# kept out of the repo (publishing a list of employee names would defeat the
+# purpose). Consequence: on a fresh clone — and in CI — that file is absent, the
+# check prints "skipped", and the gate becomes VACUOUS. That is exactly how
+# personal aliases have shipped before now.
+#
+# This check needs no configuration and therefore cannot silently degrade. It
+# matches the *shape* of a personal identifier rather than any specific name:
+#   * a home-directory path whose user segment is not a known generic
+#     placeholder (/local/home/<alias>, /home/<alias>, /Users/<alias>)
+#   * an @amazon.com address whose local part is not a known fake persona
+# Unlike scan 1 it also covers test/, which scan 1 never looks at — real
+# addresses in test fixtures were previously unchecked.
 # ---------------------------------------------------------------------------
-dim "[3/4] Scanning for credential patterns..."
+dim "[3/5] Scanning for personal identity leaks (structural)..."
+
+# User segments that are intentional documentation placeholders / system users.
+GENERIC_USER='user|users|otheruser|someuser|u|me|you|your|youruser|dev|developer|example|someone|somebody|alice|bob|carol|dave|eve|jane|john|foo|bar|baz|secret|weird|root|runner|ubuntu|node|builder|linuxbrew|kirocrew|kirocrew-workspace|mcp-gateway|nimbus|src|admin|test|tester|testuser|du|voce|você|tu|vous|usuario|usuário|utente|utilisateur|benutzer|<user>|\$USER|\$\{USER\}|\{user\}|%USERNAME%'
+
+# Fake personas permitted in email fixtures.
+GENERIC_EMAIL_LOCAL='alice|bob|carol|dave|eve|user|test|tester|example|someone|noreply|no-reply|opensource-codeofconduct|dev|admin'
+
+IDENTITY_SCAN_DIRS=(src/ website/src/ website/docs/ docs/ skills/ scripts/ config/ packaging/ test/)
+IDENTITY_INCLUDES=(--include='*.py' --include='*.ts' --include='*.tsx' --include='*.md'
+                   --include='*.json' --include='*.sh' --include='*.yaml' --include='*.yml'
+                   --include='*.cfg' --include='*.toml')
+
+# --- personal home-directory paths ---
+personal_matches=$(grep -rnoE '/(local/home|home|Users)/[A-Za-z][A-Za-z0-9._-]+' \
+  "${IDENTITY_SCAN_DIRS[@]}" ./*.md "${IDENTITY_INCLUDES[@]}" 2>/dev/null || true)
+
+# --- Amazon /workplace/<alias> trees ---
+# /workplace holds BOTH employee aliases and Brazil package/workspace names, so
+# only an ALIAS-SHAPED segment counts. The charset (lowercase start, then
+# lowercase/digit/hyphen) admits real logins like `jo-smith` and `dlloyd2` while
+# still excluding the CamelCase and dotted names Brazil packages use, so package
+# paths do not false-positive.
+workplace_matches=$(grep -rnoE '/workplace/[a-z][a-z0-9-]{1,30}(/|$)' \
+  "${IDENTITY_SCAN_DIRS[@]}" ./*.md "${IDENTITY_INCLUDES[@]}" 2>/dev/null || true)
+workplace_matches=$(echo "$workplace_matches" | sed 's:/$::')
+
+personal_matches=$(printf '%s\n%s\n' "$personal_matches" "$workplace_matches")
+personal_matches=$(echo "$personal_matches" \
+  | grep -vEi "/(local/home|home|Users|workplace)/($GENERIC_USER)$" || true)
+
+# --- employee-shaped email addresses ---
+email_matches=$(grep -rnoE '[A-Za-z0-9._%+-]+@amazon\.com' \
+  "${IDENTITY_SCAN_DIRS[@]}" ./*.md "${IDENTITY_INCLUDES[@]}" 2>/dev/null || true)
+email_matches=$(echo "$email_matches" \
+  | grep -vEi "[:/]($GENERIC_EMAIL_LOCAL)@amazon\.com$" || true)
+
+# NOT covered, deliberately: a bare alias assigned to an identity-ish field (an
+# `author`/`assignee`/`principal_id` string literal). It was tried and measured:
+# scanning those fields yields ~60 hits of which ~55 are legitimate personas
+# (octocat, agent, reviewer, maintainer, a-contributor, yourname...), because a
+# bare token is indistinguishable from any other string without a name list. A
+# gate nobody can keep green is how scan 2 became vacuous in the first place, so
+# this class stays uncovered rather than pretending to be covered — see scan 2.
+identity_matches=$(printf '%s\n%s\n' "$personal_matches" "$email_matches")
+
+# Filter allowlist — but ONLY its `path:pattern` entries. A PATH-ONLY entry was
+# written to exempt a file from the marker/alias scans (e.g. an auth stub that
+# must mention midway); honouring it here would blanket-exempt that whole file
+# from identity checking too — verified: planted identity lines in
+# test_deploy_web_profiles.py, sensitiveCommand.test.ts and deploy/scan.py were
+# all silently dropped. That is exactly the hazard this allowlist warns about at
+# :144-150, so an identity hit needs a narrow `path:pattern` entry to be waived.
+if [[ -f "$ALLOWLIST" ]]; then
+  while IFS= read -r pattern; do
+    [[ -z "$pattern" || "$pattern" == \#* ]] && continue
+    [[ "$pattern" != *:* ]] && continue
+    identity_matches=$(echo "$identity_matches" | grep -v "$pattern" || true)
+  done < "$ALLOWLIST"
+fi
+identity_matches=$(echo "$identity_matches" | grep -v '^$' || true)
+
+if [[ -n "$identity_matches" ]]; then
+  red "FAIL: Personal identifiers found (home paths / employee emails / identity fields):"
+  echo "$identity_matches"
+  red "  Replace with a generic placeholder (e.g. /home/user, alice@amazon.com),"
+  red "  or add a narrow entry to $ALLOWLIST if the reference is intentional."
+  FAILURES=$((FAILURES + 1))
+else
+  green "  ✓ No personal identifiers in source or tests"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Credential pattern scan
+# ---------------------------------------------------------------------------
+dim "[4/5] Scanning for credential patterns..."
 
 CRED_PATTERN='AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|aws_secret_access_key\s*=\s*[A-Za-z0-9/+=]{20,}|-----BEGIN (RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----'
 
@@ -211,7 +300,7 @@ fi
 # ---------------------------------------------------------------------------
 # 4. Git history scan (author emails and subjects)
 # ---------------------------------------------------------------------------
-dim "[4/4] Scanning git history for internal references..."
+dim "[5/5] Scanning git history for internal references..."
 
 if [[ $SKIP_HISTORY -eq 1 ]]; then
   dim "  ⊘ Git-history scan skipped (--no-history) — tracked separately"

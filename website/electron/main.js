@@ -50,7 +50,8 @@ const {
   createPermissionRequestHandler,
   createPermissionCheckHandler,
 } = require("./permission-handler");
-const { createWindowOpenHandler } = require("./external-scheme");
+const { createWindowOpenHandler, openExternalSafely } = require("./external-scheme");
+const { resolveThemeSource } = require("./native-theme");
 const { initAutoUpdate } = require("./auto-update");
 const {
   classifyBundleLocation,
@@ -66,7 +67,31 @@ const { chooseRecoveryStrategy } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("./instance-guard");
+const { initMochi, shutdownMochi } = require("./mochi/index");
 const { clampZoomFactor, stepZoomFactor } = require("./zoom");
+const { createBrowserViewManager, isUntrustedContents } = require("./browser-view");
+// chooseControlTransport is exercised by the routing layer (see Stage 6 notes),
+// not here — main.js only owns the plane and its gate.
+const { canAgentControl, createControlPlane, OWNER } = require("./browser-control");
+const { createAgentCommandChannel } = require("./browser-agent-channel");
+const { secretCandidates } = require("./home-dir");
+
+/**
+ * Read the gateway's shared internal secret for machine-to-machine calls.
+ *
+ * Re-read on every call, never cached: the secret is per-gateway-boot, so a
+ * cached value goes stale across a gateway restart — the exact failure mode that
+ * produced spurious "Forbidden" responses elsewhere in this app.
+ */
+function readInternalSecret() {
+  for (const candidate of secretCandidates()) {
+    try {
+      const value = fs.readFileSync(candidate, "utf8").trim();
+      if (value) return value;
+    } catch { /* try the next candidate */ }
+  }
+  return "";
+}
 const { buildMenuTemplate } = require("./app-menu");
 
 // ── Persistent settings for remote tunnel mode ──
@@ -679,6 +704,7 @@ async function fetchLocalToken(backendUrl = BACKEND_URL) {
   });
 }
 
+
 function checkBackend(healthUrl = HEALTH_URL) {
   return new Promise((resolve, reject) => {
     const req = http.get(healthUrl, { timeout: 2000 }, (res) => {
@@ -768,13 +794,85 @@ async function getModalCSS() {
 
 // ── Window ──
 
+// Mirror the dashboard's dark/light MODE PREFERENCE onto Chromium's native
+// theme, so native chrome (tab bar, context menus, DevTools, macOS window
+// frame) matches the dashboard.
+//
+// Reads `data-mode-pref` (the preference), NOT `data-mode` (the resolved
+// mode). `themeSource = 'dark' | 'light'` does not only restyle native chrome:
+// it also OVERRIDES `prefers-color-scheme` in every renderer, which is the
+// media query the dashboard's Auto mode resolves through. Feeding the resolved
+// mode back in therefore pinned that query to whatever Auto happened to
+// resolve at first load, and OS appearance changes stopped propagating — Auto
+// froze. Electron's own docs prescribe exactly this mapping:
+//   Follow OS -> 'system', Dark -> 'dark', Light -> 'light'.
+//
+// `data-mode-pref` is absent on a dashboard build older than the field, so an
+// unrecognised value falls back to the resolved mode: the pre-fix behaviour for
+// explicit dark/light (correct), and no worse than before for Auto.
 function syncNativeTheme(view, win) {
   if (win.isDestroyed()) return;
   view.webContents.executeJavaScript(
-    `document.documentElement.dataset.mode || ""`
-  ).then(mode => {
-    if (mode === "dark" || mode === "light") nativeTheme.themeSource = mode;
+    `JSON.stringify({` +
+      `pref: document.documentElement.dataset.modePref || "",` +
+      `mode: document.documentElement.dataset.mode || ""` +
+    `})`
+  ).then(raw => {
+    let pref = "";
+    let mode = "";
+    try {
+      const parsed = JSON.parse(raw);
+      pref = parsed.pref || "";
+      mode = parsed.mode || "";
+    } catch { return; }
+    nativeTheme.themeSource = resolveThemeSource(pref, mode);
   }).catch(() => {});
+}
+
+/**
+ * Session partition for the embedded browser views.
+ *
+ * `persist:` so the browser keeps its own logins across restarts; separate from
+ * the default partition so it never receives the dashboard's `mc_token_<port>`
+ * cookie (cookies are host-scoped, not port-scoped).
+ */
+const BROWSER_PARTITION = "persist:kirocrew-browser";
+
+/**
+ * Lock down the embedded-browser partition.
+ *
+ * Permission handlers are PER-SESSION. Moving these views off the default
+ * partition therefore takes them out from under the dashboard's handlers, and an
+ * un-handled session falls back to Chromium/Electron defaults — which are far
+ * more permissive than what this app grants. So the browser partition gets its
+ * own handlers that refuse everything: nothing loaded in the embedded browser
+ * needs the mic, camera, geolocation, notifications or MIDI.
+ */
+function hardenBrowserPartition(sessionApi) {
+  const browserSession = sessionApi.fromPartition(BROWSER_PARTITION);
+  browserSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  browserSession.setPermissionCheckHandler(() => false);
+  return browserSession;
+}
+
+/**
+ * Dispatch one browser-control op onto a control plane.
+ *
+ * A CLOSED verb set, deliberately — never a raw CDP method from the caller, so
+ * the control surface cannot be widened by whoever is calling. Shared by the
+ * renderer IPC handler and the agent command channel so both are limited to
+ * exactly the same capabilities.
+ */
+async function dispatchBrowserOp(plane, op, args) {
+  const a = args || {};
+  switch (op) {
+    case "navigate": return plane.navigate(String(a.url || ""));
+    case "click": return plane.click(Number(a.x), Number(a.y));
+    case "type": return plane.type(String(a.text || ""));
+    case "evaluate": return plane.evaluate(String(a.expression || ""));
+    case "snapshot": return plane.snapshot();
+    default: throw new Error(`unsupported browser control op: ${op}`);
+  }
 }
 
 function setupWindowContents(win, backendUrl) {
@@ -794,6 +892,10 @@ function setupWindowContents(win, backendUrl) {
 
   // Clean up views when window is closed
   win.on("closed", () => {
+    if (win._mcAgentChannel) void win._mcAgentChannel.stop();
+    if (win._mcBrowserPanels) {
+      for (const id of [...win._mcBrowserPanels.keys()]) win._mcDestroyBrowserPanel(id);
+    }
     view.webContents.close();
   });
 
@@ -803,6 +905,11 @@ function setupWindowContents(win, backendUrl) {
     if (win.isDestroyed()) return;
     const { width, height } = win.getContentBounds();
     view.setBounds({ x: 0, y: 0, width, height });
+    // Embedded browser views are PARTIAL rects inside the same content area,
+    // so every event that resizes the window invalidates their clamp too.
+    if (win._mcBrowserPanels) {
+      for (const entry of win._mcBrowserPanels.values()) entry.manager.refreshBounds();
+    }
   }
   updateViewBounds();
   win.on("resize", updateViewBounds);
@@ -856,6 +963,142 @@ function setupWindowContents(win, backendUrl) {
   win._mcGetCustomName = () => customName;
   win._mcBackendUrl = backendUrl;
   win._mcView = view;
+
+  // ── Native browser panels (one per dashboard Browser panel) ──
+  // Lazily hosts a real Chromium view over a Browser side-panel's rect. The
+  // renderer owns layout (it reports the rect and overlay state); the main
+  // process owns the view. See browser-view.js for the security posture — in
+  // particular, these views get NO preload, because they render untrusted web
+  // content and must never see the dashboard's IPC bridges.
+  //
+  // Keyed by PANEL, not by window. The dashboard renders one Browser panel per
+  // chat session, so a single per-window slot let two sessions clobber each
+  // other's agent-act authorization and fight over one shared view.
+  const browserPanels = new Map();
+
+  function browserPanel(panelId, { create = true } = {}) {
+    const id = typeof panelId === "string" ? panelId.trim() : "";
+    if (!id) return null;
+    const existing = browserPanels.get(id);
+    if (existing || !create) return existing || null;
+
+    const entry = { id, agentAct: false };
+    entry.manager = createBrowserViewManager({
+      createView: () =>
+        new WebContentsView({
+          webPreferences: {
+            // A SEPARATE persistent partition, not the default session.
+            //
+            // Cookies are host-scoped, NOT port-scoped (RFC 6265 — see the note
+            // on cookie isolation in dashboard/server.py). The dashboard's own
+            // auth cookie is `mc_token_<port>` on `localhost`, so an embedded
+            // view sharing the default jar would send that credential to ANY
+            // `http://localhost:<other-port>` it visited — handing dashboard
+            // auth to any local service the user browses to.
+            //
+            // `persist:` keeps the browser's own logins across restarts (the
+            // point of the shared-session decision) while isolating it from the
+            // dashboard's credentials, which were never meant to be shared.
+            partition: BROWSER_PARTITION,
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            webviewTag: false,
+          },
+        }),
+      getContentBounds: () => win.getContentBounds(),
+      addView: (v) => win.contentView.addChildView(v),
+      removeView: (v) => win.contentView.removeChildView(v),
+      // Chrome the embedded page needs but the module must not import Electron
+      // for: the shared right-click menu (spelling suggestions, cut/copy/paste,
+      // Look Up). Safe for untrusted content — every item is a plain edit role,
+      // none reaches app state.
+      onCreate: (v) => attachContextMenu(v.webContents),
+      onEvent: (name, payload) => {
+        // Page-driven window.open goes to the real browser, never a second
+        // native window inside the dashboard. Routed through the audited helper,
+        // which swallows BOTH failure shapes (a throwing call and a rejected
+        // promise from a scheme the OS cannot handle).
+        if (name === "open-external") {
+          if (payload && payload.url) {
+            openExternalSafely(shell.openExternal, payload.url,
+              (msg) => console.warn(`[browser-panel] ${msg}`));
+          }
+          return;
+        }
+        // Tag the panel so the renderer routes the event to the right one.
+        if (!view.webContents.isDestroyed()) {
+          view.webContents.send(`browser:${name}`, { ...(payload || {}), panelId: id });
+        }
+      },
+    });
+
+    // Display (above) and control (here) are independent: the human always
+    // drives the page with real OS input, while at most ONE agent owner may
+    // hold it over CDP. `agentAct` mirrors the dashboard's general "let the
+    // agent act" authorization — recorded here so a control request is checked
+    // against state the main process owns, not whatever the caller asserts.
+    entry.control = createControlPlane({
+      getWebContents: () => entry.manager.getWebContents(),
+      onAudit: (event, detail) => {
+        console.warn(`[browser-control] ${id} ${event} ${JSON.stringify(detail)}`);
+      },
+    });
+    entry.gate = () =>
+      canAgentControl({
+        agentActEnabled: entry.agentAct,
+        viewOpen: entry.manager.getState().open,
+      });
+
+    browserPanels.set(id, entry);
+    return entry;
+  }
+
+  /** Release one panel's control + view and forget it. */
+  function destroyBrowserPanel(id) {
+    const entry = browserPanels.get(id);
+    if (!entry) return;
+    browserPanels.delete(id);
+    try { void entry.control.release(); } catch { /* mid-teardown */ }
+    try { entry.manager.close(); } catch { /* mid-teardown */ }
+  }
+
+  win._mcBrowserPanel = browserPanel;
+  win._mcBrowserPanels = browserPanels;
+  win._mcDestroyBrowserPanel = destroyBrowserPanel;
+
+  // ── Agent command channel ──
+  // The agent's `browser_*` MCP calls originate in the Python gateway, which has
+  // no way to call INTO Electron. So Electron pulls: it long-polls the gateway
+  // for queued commands and posts results back. Outbound-only, which keeps the
+  // direction of trust identical to the existing frame pump and means no new
+  // listening socket in this process.
+  //
+  // Commands are routed BY SESSION KEY onto the matching panel's control plane —
+  // which only works because panels are session-scoped. Ops go through the same
+  // closed verb set the renderer IPC uses (`dispatchBrowserOp`), so the agent can
+  // never reach a capability the panel itself does not expose.
+  win._mcAgentChannel = createAgentCommandChannel({
+    fetchFn: (url, init) => fetch(url, init),
+    getGatewayUrl: () => win._mcBackendUrl,
+    getSecret: () => readInternalSecret(),
+    // Only panels that actually exist can be driven; an empty list parks the
+    // poller instead of spinning.
+    listPanelIds: () => [...browserPanels.keys()],
+    dispatch: async (sessionKey, op, args) => {
+      const entry = browserPanel(sessionKey, { create: false });
+      if (!entry) throw new Error(`no native browser panel for session ${sessionKey}`);
+      // The agent is acting unattended, so it must hold LIGHT — and taking it
+      // runs the same gate (agent-act authorization) as any other transition.
+      const taken = await entry.control.setOwner(OWNER.LIGHT, entry.gate());
+      if (taken.refused) throw new Error(`browser control refused: ${taken.refused}`);
+      return dispatchBrowserOp(entry.control, op, args);
+    },
+    onError: (err, context) =>
+      console.warn(`[browser-agent-channel] ${context}: ${err && err.message}`),
+  });
+  win._mcAgentChannel.start();
+
   attachContextMenu(view.webContents);
 
   // Keep the native traffic lights centered in the zoom-scaled header row.
@@ -1969,6 +2212,17 @@ app.whenReady().then(async () => {
     }
   });
 
+  // The renderer reports its dark/light mode PREFERENCE whenever it changes (see
+  // useTheme.tsx). Pushed rather than only pulled on window focus so that
+  // switching back to Auto un-pins `prefers-color-scheme` right away — while it
+  // stays pinned, Auto cannot see the OS appearance at all. Unrecognised values
+  // are ignored; the focus/load pull remains the fallback.
+  ipcMain.on("theme-mode-changed", (_event, pref) => {
+    if (pref === "system" || pref === "dark" || pref === "light") {
+      nativeTheme.themeSource = resolveThemeSource(pref, "");
+    }
+  });
+
   // Dock/taskbar badge (RFC notification bus Phase 4): renderer pushes its
   // unread notification count. Clamped to a sane non-negative integer;
   // Electron no-ops setBadgeCount on unsupported platforms (Windows).
@@ -1996,6 +2250,95 @@ app.whenReady().then(async () => {
   ipcMain.handle("zoom:set", (event, factor) => applyZoom(event.sender, clampZoomFactor(factor)));
   ipcMain.handle("zoom:step", (event, dir) =>
     applyZoom(event.sender, stepZoomFactor(event.sender.getZoomFactor(), dir > 0 ? +1 : -1)));
+
+  // ── Native browser panel IPC ──
+  // The dashboard renderer drives the embedded browser view: it opens/navigates,
+  // reports the panel rectangle it measured, and reports when one of its own
+  // overlays (modal, dropdown, drag preview) covers that rectangle — the native
+  // view composites ABOVE the SPA, so it has to be hidden for the overlay's
+  // duration.
+  //
+  // Every call carries a `panelId` (the renderer's session key), because the
+  // dashboard renders one Browser panel per chat session and each gets its own
+  // view, control plane and agent-act authorization.
+  const panelFor = (event, panelId, opts) => {
+    const owner = windowForWebContents(event.sender);
+    if (!owner || !owner._mcBrowserPanel) return null;
+    return owner._mcBrowserPanel(panelId, opts);
+  };
+  ipcMain.handle("browser:open", (event, panelId, url) => {
+    const p = panelFor(event, panelId);
+    return p ? p.manager.open(url) : null;
+  });
+  ipcMain.handle("browser:navigate", (event, panelId, url) => {
+    const p = panelFor(event, panelId);
+    return p ? p.manager.navigate(url) : null;
+  });
+  ipcMain.handle("browser:set-bounds", (event, panelId, rect, viewport) => {
+    // Do not CREATE a panel just because layout reported a rect — only an
+    // explicit open() should bring a view into existence.
+    const p = panelFor(event, panelId, { create: false });
+    return p ? p.manager.setPanelBounds(rect, viewport) : null;
+  });
+  ipcMain.handle("browser:set-overlay", (event, panelId, active) => {
+    const p = panelFor(event, panelId, { create: false });
+    return p ? p.manager.setOverlayActive(active) : null;
+  });
+  // Going INACTIVE (this panel's side-panel tab is not the visible one) hides
+  // the view but keeps the page alive. Deliberately NOT `close`: switching tabs
+  // away and back must not lose unsaved form input, scroll position or history.
+  ipcMain.handle("browser:set-inactive", (event, panelId, value) => {
+    const p = panelFor(event, panelId, { create: false });
+    return p ? p.manager.setInactive(value) : null;
+  });
+  ipcMain.handle("browser:close", (event, panelId) => {
+    const owner = windowForWebContents(event.sender);
+    const p = panelFor(event, panelId, { create: false });
+    if (!p) return null;
+    const state = p.manager.getState();
+    // Releasing control before the view goes away keeps the invariant honest:
+    // an owner must never outlive the page it was driving.
+    if (owner && owner._mcDestroyBrowserPanel) owner._mcDestroyBrowserPanel(p.id);
+    return { ...state, open: false, visible: false };
+  });
+  ipcMain.handle("browser:get-state", (event, panelId) => {
+    const p = panelFor(event, panelId, { create: false });
+    return p ? p.manager.getState() : null;
+  });
+
+  // ── Agent control IPC ──
+  // The dashboard renderer is the authority on whether the agent is authorized
+  // to act (it owns that toggle), so it pushes the flag; the main process keeps
+  // it per panel and evaluates the gate itself on every transition.
+  ipcMain.handle("browser:set-agent-act", async (event, panelId, enabled) => {
+    const p = panelFor(event, panelId);
+    if (!p) return { ok: false };
+    p.agentAct = !!enabled;
+    // Revocation must STOP an agent that is already driving, not merely refuse
+    // its next transition. Flipping the flag alone left the plane still holding
+    // LIGHT with the debugger attached, so ops kept succeeding against a view
+    // that carries the user's logged-in session. Releasing here makes the
+    // withdrawal take effect immediately.
+    if (!p.agentAct) await p.control.release();
+    return { ok: true };
+  });
+  ipcMain.handle("browser:set-control-owner", async (event, panelId, requested) => {
+    const p = panelFor(event, panelId, { create: false });
+    if (!p) return null;
+    return p.control.setOwner(requested, p.gate());
+  });
+  ipcMain.handle("browser:get-control", (event, panelId) => {
+    const p = panelFor(event, panelId, { create: false });
+    if (!p) return null;
+    return { owner: p.control.getOwner(), attached: p.control.isAttached(), gate: p.gate() };
+  });
+  // Op dispatch. Deliberately a CLOSED verb set — never a raw CDP method from
+  // the caller — so the control surface cannot be widened by whoever calls it.
+  ipcMain.handle("browser:control", async (event, panelId, op, args) => {
+    const p = panelFor(event, panelId, { create: false });
+    if (!p) return null;
+    return dispatchBrowserOp(p.control, op, args);
+  });
 
   // Enable the chat input's screen-snip tool inside the Electron shell.
   // Without a display-media request handler, Electron (>= 20) rejects the
@@ -2039,18 +2382,33 @@ app.whenReady().then(async () => {
   // the signing entitlements — the hardened runtime refuses the mic before TCC
   // is ever consulted, which is what produced a denial with no prompt at all.
   const isMac = process.platform === "darwin";
+  // The embedded browser views share this session, so both handlers are told how
+  // to recognise them: an untrusted view is refused every permission BY IDENTITY,
+  // before the localhost-origin heuristic can grant it the mic. Without this, a
+  // page served from any http://localhost:<port> would inherit the dashboard's
+  // own microphone grant.
   session.defaultSession.setPermissionRequestHandler(
-    createPermissionRequestHandler(
-      isMac
+    createPermissionRequestHandler({
+      isUntrusted: isUntrustedContents,
+      ...(isMac
         ? {
             getMicAccessStatus: () => systemPreferences.getMediaAccessStatus("microphone"),
             askForMicAccess: () => systemPreferences.askForMediaAccess("microphone"),
             onMicBlocked: () => showMicPermissionDialog(),
           }
-        : {},
-    ),
+        : {}),
+    }),
   );
-  session.defaultSession.setPermissionCheckHandler(createPermissionCheckHandler());
+  session.defaultSession.setPermissionCheckHandler(
+    createPermissionCheckHandler({ isUntrusted: isUntrustedContents }));
+
+  // The embedded browser views live on their OWN partition (see
+  // BROWSER_PARTITION), so the handlers just installed on the default session do
+  // NOT cover them. Harden that partition explicitly — otherwise those views
+  // would fall through to Electron's defaults. `isUntrustedContents` stays wired
+  // above as defence in depth, for any view that ever lands on the default
+  // session.
+  hardenBrowserPartition(session);
 
   // Renderer-side recovery route. The handler above only sees requests that
   // reach Electron; a mic can still fail further down (a stale TCC row pinned to
@@ -2200,6 +2558,13 @@ app.whenReady().then(async () => {
   await startGateway();
   await showLoadingThenConnect(win);
 
+  // Mochi's pet overlay. Opened only when the builtin is enabled -- the app is
+  // defaultEnabled:false, so a user who never turned it on gets no overlay and
+  // pays nothing. Deliberately AFTER showLoadingThenConnect: the gateway must
+  // be answering before we ask it whether Mochi is on, and the pet page is
+  // loaded from the gateway origin. Best-effort -- a failure here must never
+  // block the dashboard, so everything is inside a catch that only logs.
+  initMochi({ backendUrl: BACKEND_URL, fetchLocalToken, glog });
 
   app.on("activate", () => {
     if (!mainWindow?.isVisible()) mainWindow?.show();
@@ -2210,6 +2575,7 @@ app.on("before-quit", () => {
   isQuitting = true;
   // Flush the final metrics window before the gateway teardown begins.
   try { if (desktopMetricsRecorder) desktopMetricsRecorder.stop(); } catch { /* best effort */ }
+  shutdownMochi();
   stopGateway();
 });
 

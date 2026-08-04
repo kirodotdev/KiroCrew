@@ -233,9 +233,17 @@ export function ComputerUsePanel() {
     if (bounded !== null) save({ [key]: bounded })
   }
 
+  // Platform tag on the section header, shown in EVERY state (loading, error,
+  // supported, unsupported). Computer use has a macOS-only driver — the Windows
+  // and Linux backends are typed refusals — so the panel says so up front rather
+  // than only after the reason text on an unsupported host. On macOS it still
+  // reads correctly: it tells the operator this capability does not follow them
+  // to another OS.
+  const macOnlyBadge = <Badge variant="muted">{i18nT('pages.settings.computerUsePanel.macos_only')}</Badge>
+
   if (cfgQ.isError) {
     return (
-      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={macOnlyBadge}>
         <SettingsCard>
           <div className="text-[13px] text-danger">
             {i18nT('pages.settings.computerUsePanel.could_not_load_computer_use_settings')}{' '}
@@ -248,7 +256,7 @@ export function ComputerUsePanel() {
 
   if (!cfg) {
     return (
-      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={macOnlyBadge}>
         <SettingsCard><FormSkeleton rows={['toggle', 'field', 'field']} /></SettingsCard>
       </SettingsSection>
     )
@@ -256,7 +264,7 @@ export function ComputerUsePanel() {
 
   if (!cfg.supported) {
     return (
-      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={macOnlyBadge}>
         <SettingsCard>
           <div className="text-[13px] text-muted">
             {cfg.reason || `Computer use is not available on ${cfg.platform}.`}
@@ -285,7 +293,7 @@ export function ComputerUsePanel() {
         </div>
       )}
 
-      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={macOnlyBadge}>
         <SettingsCard>
           <SettingsToggle
             label={i18nT('pages.settings.computerUsePanel.enable_computer_use')}

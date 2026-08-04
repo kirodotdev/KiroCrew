@@ -661,6 +661,103 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
   return result
 }
 
+/** Carry the client-stamped `meta.clientTs` from the current messages onto the
+ *  server copies returned by a slot-detail reload (the refreshSlot fired on
+ *  chat_done). A message STREAMED this session is born with only
+ *  `meta.clientTs` (a minted bornKey, no server `ts`); the reloaded server copy
+ *  has an authoritative `ts` but NO `clientTs`. The renderer keys virtual rows
+ *  by `clientTs ?? ts`, so without this the row's key flips bornKey → serverTs
+ *  on the reload, remounting the row and DROPPING its measured height in the
+ *  virtualizer's HeightCache — a visible scroll jump on every turn (the "reload
+ *  the whole history, scroll bar keeps moving up, can't reach the bottom"
+ *  report).
+ *
+ *  Matching is two-pass so a duplicate-content row can never steal a live
+ *  identity (forward-first content matching would let an OLDER duplicate
+ *  consume the newest stamp, flipping two rows' keys instead of zero):
+ *    1. Durable identities — a stamp that already carries a server `ts` (it was
+ *       reloaded before) matches its incoming copy by EXACT `ts`. Collision-proof.
+ *    2. Freshly-streamed identities — a stamp with NO `ts` (born this session,
+ *       not yet reloaded) has nothing to match on, but its server copy is the
+ *       NEWEST message of that role, so pair newest-first: walk the ts-less
+ *       stamps from the transcript tail and scan `incoming` in REVERSE for the
+ *       first unused (normalized-role, trimmed-content) match. 'streaming' is
+ *       normalized to 'assistant' since finalization flips the role.
+ *  Returns `incoming` unchanged (reference-equal) when nothing needs carrying. */
+function mergePreservedClientTs<M extends { role: string; content: string; ts?: string; meta?: Record<string, unknown> }>(
+  existing: M[],
+  incoming: M[],
+): M[] {
+  const norm = (r: string): string => (r === 'streaming' ? 'assistant' : r)
+  const stamped = existing.filter(m => typeof m.meta?.clientTs === 'string')
+  if (!stamped.length) return incoming
+  const carried = new Array<string | undefined>(incoming.length)
+  const usedIncoming = new Set<number>()
+  let changed = false
+
+  // Pass 1: durable (already-reloaded) stamps — same server `ts` AND matching
+  // (normalized-role, trimmed-content). A `ts` is NOT unique (a coarse OS clock
+  // can stamp two fast tool-delimited rows with the same tick) and is NOT
+  // role-specific (a tool row can share the assistant's tick), so keying on ts
+  // alone would (a) collapse two distinct same-ts identities or (b) hand a
+  // stamp to the wrong row (e.g. an unstamped tool row ahead of the stamped
+  // assistant). Bucket the stamps per ts and consume the first bucket entry
+  // that also matches role+content, so each identity lands on its own row.
+  const byTs = new Map<string, { ct: string; role: string; content: string }[]>()
+  for (const s of stamped) {
+    if (typeof s.ts === 'string' && s.ts) {
+      const e = { ct: s.meta!.clientTs as string, role: norm(s.role), content: s.content.trimEnd() }
+      const q = byTs.get(s.ts)
+      if (q) q.push(e)
+      else byTs.set(s.ts, [e])
+    }
+  }
+  if (byTs.size) {
+    for (let i = 0; i < incoming.length; i++) {
+      const item = incoming[i]
+      if (item.meta?.clientTs) continue
+      if (!(typeof item.ts === 'string' && item.ts)) continue
+      const q = byTs.get(item.ts)
+      if (!q || !q.length) continue
+      const irole = norm(item.role)
+      const icontent = item.content.trimEnd()
+      const qi = q.findIndex(e => e.role === irole && e.content === icontent)
+      if (qi >= 0) { carried[i] = q[qi].ct; q.splice(qi, 1); usedIncoming.add(i); changed = true }
+    }
+  }
+
+  // Pass 2: freshly-streamed (ts-less) stamps — pair newest-first from the tail.
+  // Exclude still-'streaming' stamps (a partial in-progress row has no server
+  // copy yet, so a content match could only hit an older duplicate) and
+  // 'thinking' stamps (client-only, never present in the server payload — and
+  // re-inserted separately by mergePreservedThinking), which also keeps this
+  // pass from scanning one dead thinking stamp per turn.
+  const tsLess = stamped.filter(
+    s => !(typeof s.ts === 'string' && s.ts) && s.role !== 'streaming' && s.role !== 'thinking',
+  )
+  for (let p = tsLess.length - 1; p >= 0; p--) {
+    const s = tsLess[p]
+    for (let i = incoming.length - 1; i >= 0; i--) {
+      if (usedIncoming.has(i)) continue
+      const item = incoming[i]
+      if (item.meta?.clientTs) continue
+      if (norm(s.role) === norm(item.role) && s.content.trimEnd() === item.content.trimEnd()) {
+        carried[i] = s.meta!.clientTs as string
+        usedIncoming.add(i)
+        changed = true
+        break
+      }
+    }
+  }
+
+  if (!changed) return incoming
+  return incoming.map((item, i) =>
+    carried[i] !== undefined
+      ? { ...item, meta: { ...(item.meta || {}), clientTs: carried[i] as string } }
+      : item,
+  )
+}
+
 export const refreshSlot = createAsyncThunk(
   'chat/refreshSlot',
   async (key: string, { getState }) => {
@@ -2201,7 +2298,7 @@ const chatSlice = createSlice({
           : mergedWithPastes
         // Reasoning is client-only (never persisted server-side); re-insert it so
         // a finished turn's thinking block survives this refresh.
-        state.messages = mergePreservedThinking(state.messages, sorted)
+        state.messages = mergePreservedThinking(state.messages, mergePreservedClientTs(state.messages, sorted))
         // Re-hydrate queued bubbles through the SAME shared path as
         // switchSlot/warmSlotCache. The merge above is rebuilt from server
         // history + preserved perms/thinking and carries no `queued` bubbles, so

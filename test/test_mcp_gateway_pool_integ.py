@@ -40,7 +40,6 @@ import ast
 import asyncio
 import json
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -179,7 +178,7 @@ def _launch_count(log: Path) -> int:
 
 
 @pytest.mark.asyncio
-async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path) -> None:
+async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path, short_sock_dir) -> None:
     """THE pooling assertion: 3 real stub processes -> exactly 1 MCP server.
 
     Also asserts partitioning in the same run: a fourth stub under a DIFFERENT
@@ -187,7 +186,7 @@ async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path) -> Non
     ignored the agent entirely, which would silently break isolation between
     agents -- a correctness bug, not merely a lost optimisation.
     """
-    endpoint_root = Path(tempfile.mkdtemp(dir=_endpoint_dir()))
+    endpoint_root = short_sock_dir
     sock = endpoint_root / "gw.sock"
     work_dir = tmp_path / "ws"
     work_dir.mkdir()
