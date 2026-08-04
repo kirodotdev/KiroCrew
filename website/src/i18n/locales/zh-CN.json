@@ -5754,6 +5754,8 @@
         "stopping_in_progress": "正在停止"
       },
       "subagentProgressBar": {
+        "collapse_agent_list": "折叠子代理列表",
+        "expand_agent_list": "展开子代理列表",
         "backend_hiccup_retrying": "后端异常 — 正在重试…",
         "more_running_normally": "个仍在正常运行…",
         "no_activity": "— 无活动",

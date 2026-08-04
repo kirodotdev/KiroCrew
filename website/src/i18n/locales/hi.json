@@ -5827,6 +5827,8 @@
         "stopping_in_progress": "रोकने की प्रक्रिया चल रही है"
       },
       "subagentProgressBar": {
+        "collapse_agent_list": "सब-एजेंट सूची समेटें",
+        "expand_agent_list": "सब-एजेंट सूची विस्तृत करें",
         "backend_hiccup_retrying": "बैकएंड में अड़चन — पुनः प्रयास…",
         "more_running_normally": "और सामान्य रूप से चल रहे…",
         "no_activity": "— कोई गतिविधि नहीं",

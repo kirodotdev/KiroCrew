@@ -4845,6 +4845,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 flex: 1,
                 paddingBottom: 8,
                 overflowY: 'auto',
+                // overflow-x must be pinned, not left to default `visible`: with
+                // overflowY `auto`, CSS forces the `visible` axis to compute to
+                // `auto`, so one over-wide child (a long path, a wide code block,
+                // a widget) gives the whole list a draggable horizontal scrollbar
+                // above the composer. The conversation never pans sideways —
+                // wide children scroll within themselves.
+                overflowX: 'hidden',
                 // Reserve a stable scrollbar gutter so the 6px scrollbar always
                 // occupies the same right-edge column the title overlay is inset
                 // from (see the right-1.5 inset above) — keeps the thumb visible

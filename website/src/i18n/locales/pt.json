@@ -5900,6 +5900,8 @@
         "stopping_in_progress": "Parada em andamento"
       },
       "subagentProgressBar": {
+        "collapse_agent_list": "Recolher a lista de subagentes",
+        "expand_agent_list": "Expandir a lista de subagentes",
         "backend_hiccup_retrying": "falha temporária no backend — tentando novamente…",
         "more_running_normally": "mais em execução normal…",
         "no_activity": "— sem atividade",

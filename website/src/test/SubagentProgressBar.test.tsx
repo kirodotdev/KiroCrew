@@ -241,3 +241,36 @@ describe('SubagentProgressBar — chrome follows the Font Family setting', () =>
     expect(toolFragment!.parentElement!.textContent).toContain('at npx vitest run')
   })
 })
+
+describe('SubagentProgressBar — collapse toggle', () => {
+  beforeEach(() => { vi.clearAllMocks(); try { localStorage.clear() } catch { /* not available in this env */ } })
+
+  it('defaults to expanded, showing the agent list', () => {
+    renderBar(makeStore(['a1', 'a2']))
+    // Open state offers the collapse affordance.
+    expect(screen.getByLabelText('Collapse subagent list')).toBeInTheDocument()
+    // The list container is not hidden.
+    const listContainer = screen.getAllByTestId('subagent-row')[0].parentElement!
+    expect(listContainer.className).not.toContain('hidden')
+  })
+
+  it('collapsing hides the list while keeping the count + Stop all in the header', () => {
+    renderBar(makeStore(['a1', 'a2']))
+    fireEvent.click(screen.getByLabelText('Collapse subagent list'))
+    // Affordance flips to expand.
+    expect(screen.getByLabelText('Expand subagent list')).toBeInTheDocument()
+    // The list container is now hidden (rows stay in the DOM, just not shown).
+    const listContainer = screen.getAllByTestId('subagent-row')[0].parentElement!
+    expect(listContainer.className).toContain('hidden')
+    // Header still carries the running count and the stop-all control.
+    expect(screen.getByTestId('subagent-running-count')).toHaveTextContent('2')
+    expect(screen.getByLabelText('Stop all running subagents')).toBeInTheDocument()
+  })
+
+  it('lets "Stop all" work while collapsed', () => {
+    renderBar(makeStore(['a1', 'a2']))
+    fireEvent.click(screen.getByLabelText('Collapse subagent list'))
+    fireEvent.click(screen.getByLabelText('Stop all running subagents'))
+    expect(api.spawnDelete).toHaveBeenCalledTimes(2)
+  })
+})

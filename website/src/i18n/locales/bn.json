@@ -5827,6 +5827,8 @@
         "stopping_in_progress": "থামানোর কাজ চলছে"
       },
       "subagentProgressBar": {
+        "collapse_agent_list": "সাবএজেন্ট তালিকা সংকুচিত করো",
+        "expand_agent_list": "সাবএজেন্ট তালিকা প্রসারিত করো",
         "backend_hiccup_retrying": "ব্যাকএন্ডে সমস্যা — আবার চেষ্টা করা হচ্ছে…",
         "more_running_normally": "আরও কয়েকটি স্বাভাবিকভাবে চলছে…",
         "no_activity": "— কোনো অ্যাক্টিভিটি নেই",

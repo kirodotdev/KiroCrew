@@ -5900,6 +5900,8 @@
         "stopping_in_progress": "Arresto in corso"
       },
       "subagentProgressBar": {
+        "collapse_agent_list": "Comprimi l’elenco dei subagenti",
+        "expand_agent_list": "Espandi l’elenco dei subagenti",
         "backend_hiccup_retrying": "intoppo del backend — nuovo tentativo…",
         "more_running_normally": "altri in esecuzione normale…",
         "no_activity": "— nessuna attività",

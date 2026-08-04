@@ -5827,6 +5827,8 @@
         "stopping_in_progress": "Stoppen läuft"
       },
       "subagentProgressBar": {
+        "collapse_agent_list": "Subagentenliste einklappen",
+        "expand_agent_list": "Subagentenliste aufklappen",
         "backend_hiccup_retrying": "Backend-Aussetzer — wird wiederholt…",
         "more_running_normally": "weitere laufen normal…",
         "no_activity": "— keine Aktivität",

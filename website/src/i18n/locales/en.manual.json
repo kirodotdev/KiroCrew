@@ -1801,6 +1801,8 @@
         "switch_to_unified_view": "Switch to unified view"
       },
       "subagentProgressBar": {
+        "collapse_agent_list": "Collapse subagent list",
+        "expand_agent_list": "Expand subagent list",
         "retry_failed_count": "Retry failed ({{count}})",
         "stop_all_running_subagents": "Stop all running subagents",
         "stop_running_subagent": "Stop running subagent"
