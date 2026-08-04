@@ -6046,6 +6046,7 @@ class KiroCrewConfig:
                 subagent_spawn_stagger_secs=_safe_float(
                     agent_data.get("subagent_spawn_stagger_secs", 2.0), 2.0
                 ),
+                spawn_min_memory_gb=_safe_float(agent_data.get("spawn_min_memory_gb", 4.0), 4.0),
                 resource_pressure_gb=_safe_float(agent_data.get("resource_pressure_gb", 4.0), 4.0),
                 resource_critical_gb=_safe_float(agent_data.get("resource_critical_gb", 2.0), 2.0),
                 admission_gate=_safe_bool(agent_data.get("admission_gate"), True),
@@ -6344,6 +6345,9 @@ class KiroCrewConfig:
                 reactions_enabled=bool(slack_data.get("reactions_enabled", True)),
                 use_tunnel_url=bool(slack_data.get("use_tunnel_url", False)),
                 show_thinking=bool(slack_data.get("show_thinking", True)),
+                home_tab_sessions_per_kind=_safe_int(
+                    slack_data.get("home_tab_sessions_per_kind", 5), 5
+                ),
             ),
             publish=PublishConfig(
                 allowed_destinations=[
