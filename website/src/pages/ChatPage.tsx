@@ -3579,6 +3579,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return !isNaN(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 260
   })
   const [sidebarDragging, setSidebarDragging] = useState(false)
+  // Pending reveal-in-sidebar request, consumed by ChatSidebar on mount/update.
+  const [revealSlot, setRevealSlot] = useState<{ key: string; nonce: number } | null>(null)
   const [editingTitle, setEditingTitle] = useState(false)
   // Native session grid "split mode": an in-place tiling of the chat surface (NOT an
   // overlay). The flag is EPHEMERAL per mount — nav/refresh lands on single chat —
@@ -4489,6 +4491,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           splitActive={splitMode}
           onOpenSplit={() => enterSplit(activeSlot)}
           onSelectSlot={() => setSplitMode(false)}
+          revealSlot={revealSlot}
+          onRevealConsumed={() => setRevealSlot(null)}
         />
       </OverlayDrawer>
       )}
@@ -4570,7 +4574,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <ChatHeaderMenu
                   activeSlot={activeSlot}
                   agent={currentSlot?.agent}
-                  onReveal={activeSlot ? () => { if (!sidebarPinned) setSidebarPinned(true); window.dispatchEvent(new CustomEvent('reveal-slot', { detail: activeSlot })) } : undefined}
+                  onReveal={activeSlot ? () => { setPreviewFocused(false); if (!sidebarPinned) setSidebarPinned(true); setRevealSlot({ key: activeSlot, nonce: Date.now() }) } : undefined}
                   onRename={activeSlot ? () => { setEditingTitle(true); setTitleDraft(title) } : undefined}
                   mode={effectiveMode}
                 />

@@ -103,6 +103,7 @@ export default {
         'brand-glow': { '0%': { opacity: '.6', transform: 'scale(1)' }, '100%': { opacity: '1', transform: 'scale(1.05)' } },
         'gradient-shift': { '0%': { backgroundPosition: '0% 50%' }, '50%': { backgroundPosition: '100% 50%' }, '100%': { backgroundPosition: '0% 50%' } },
         'msg-highlight': { '0%': { boxShadow: 'inset 0 0 0 2px var(--accent)' }, '100%': { boxShadow: 'inset 0 0 0 0px transparent' } },
+        'slot-reveal': { '0%': { boxShadow: 'inset 0 0 0 2px var(--accent)' }, '100%': { boxShadow: 'inset 0 0 0 0px transparent' } },
         float: { '0%,100%': { transform: 'translateY(0)' }, '50%': { transform: 'translateY(-6px)' } },
         /* margin-based (NOT transform): a transformed ancestor becomes a
            backdrop root and breaks descendants' backdrop-filter blur.
@@ -134,6 +135,7 @@ export default {
         'brand-glow': 'brand-glow 5s ease-in-out infinite alternate',
         'gradient-shift': 'gradient-shift 20s ease infinite',
         'msg-highlight': 'msg-highlight 2s ease-out forwards',
+        'slot-reveal': 'slot-reveal 2s ease-out forwards',
         float: 'float 3s ease-in-out infinite',
         'nc-slide-in': 'nc-slide-in .32s cubic-bezier(.16,1,.3,1) backwards',
         'nc-slide-out': 'nc-slide-out .24s cubic-bezier(.3,0,.8,.15) forwards',
