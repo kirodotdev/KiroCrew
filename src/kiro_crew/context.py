@@ -1687,12 +1687,22 @@ class ContextBuilder:
         mem_key = memory_store or workspace
         memory = self.get_memory_for(mem_key)
         if not blocks_reads:
+            # Session isolation (issue #655): omit the ``## Recent History``
+            # daily activity log from a session's startup context. That log is
+            # a per-workspace aggregate of EVERY session's activity with no
+            # per-session attribution, so injecting it here let a fresh session
+            # recall tasks that were given in a different, separate chat
+            # session. Preferences, projects, semantic memory, and lessons are
+            # still injected (preferences + lessons are global BY DESIGN); the
+            # daily history remains on disk and reachable via the Memory tab and
+            # memory search when the user explicitly asks to get up to speed.
             memory_ctx = memory.get_context(
                 prefs_cap=caps.prefs,
                 projects_cap=caps.projects,
                 history_cap=caps.memory_history,
                 semantic_cap=caps.semantic,
                 episodic_cap=caps.episodic,
+                include_daily_history=False,
             )
             if memory_ctx:
                 parts.append(memory_ctx)
