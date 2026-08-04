@@ -10,13 +10,18 @@ import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry
  *
  * - `slack.*` — the Slack tab collapsed into the Channels tab (nav regroup).
  * - `voice.aws-*` — labels gained (Transcribe)/(Polly) qualifiers, replacing
- *   the positional `-2` disambiguation suffix.
+ *   the positional `-2` disambiguation suffix. The Polly pair then shifted
+ *   again when the qualifier was corrected to the service's real name,
+ *   Amazon Polly — so BOTH the positional id and the short-form id have to
+ *   land on the current one.
  */
 const LEGACY_ID_EXACT: Record<string, string> = {
   'voice.aws-profile': 'voice.aws-profile-transcribe',
   'voice.aws-region': 'voice.aws-region-transcribe',
-  'voice.aws-profile-2': 'voice.aws-profile-polly',
-  'voice.aws-region-2': 'voice.aws-region-polly',
+  'voice.aws-profile-2': 'voice.aws-profile-amazon-polly',
+  'voice.aws-region-2': 'voice.aws-region-amazon-polly',
+  'voice.aws-profile-polly': 'voice.aws-profile-amazon-polly',
+  'voice.aws-region-polly': 'voice.aws-region-amazon-polly',
   // The "Default Model" row is labeled "Fallback Model", and registry ids
   // derive from the label — without this, links saved or bookmarked against
   // the old id silently lose their highlight.

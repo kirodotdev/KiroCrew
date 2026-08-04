@@ -27,7 +27,9 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_runner import _run_chat
-from kiro_crew.dashboard.chat_utils import _history_key_for
+from kiro_crew.dashboard.chat_utils import (
+    effective_session_key,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -143,7 +145,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 if disk_older > 0 and state.conversation_log is not None:
                     try:
                         chained = state.conversation_log.read_messages_chained(
-                            _history_key_for(slot.key)
+                            effective_session_key(slot)
                         )
                     except Exception:
                         logger.debug("rewind: chained scan for ts failed", exc_info=True)
@@ -188,7 +190,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
 
         # Capture orphan info before any mutation, so we can clean up the
         # kiro-cli session file even if the swap path errors out partway.
-        session_key = _history_key_for(slot.key)
+        session_key = effective_session_key(slot)
         orphan_kiro_session_id = ""
         if state.sessions is not None:
             try:

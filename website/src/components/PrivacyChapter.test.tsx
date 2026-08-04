@@ -36,6 +36,7 @@ describe('PrivacyChapter', () => {
 
     expect(screen.getByRole('heading', { name: 'Privacy' })).toBeInTheDocument()
     expect(screen.getByText('Anonymous daily heartbeat')).toBeInTheDocument()
+    expect(screen.getByText('Official app install receipts')).toBeInTheDocument()
     expect(screen.getByText('Never sent')).toBeInTheDocument()
     expect(screen.getByText('Stays on your device')).toBeInTheDocument()
     expect(

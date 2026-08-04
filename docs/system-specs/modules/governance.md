@@ -1136,12 +1136,13 @@ scope growth without server-recorded grants is not covered by this decision.
 
 ### Anonymous telemetry — `capabilities.telemetry`
 
-The anonymous usage beacon (`beacon.py`; full spec in
-[metrics.md](metrics.md) → "Anonymous usage beacon") is the repo's **only
-default-on egress**: one at-most-daily HTTP GET carrying a five-field anonymous
-payload. It is governed by the `capabilities.telemetry` `SCOPE_CATALOG` capability
-row (`capability_default=True`, data-only shape — no `CONTRACT_VERSION` or
-evaluator change, mirroring the theme rows above).
+The anonymous daily heartbeat and official-app install receipt (`beacon.py` and
+`apps/install_receipt.py`; full spec in [metrics.md](metrics.md) → "Anonymous
+outbound telemetry") are the repo's **only default-on egress family**. Both use
+fixed anonymous payloads and the same effective-enable ladder. They are governed
+by the `capabilities.telemetry` `SCOPE_CATALOG` capability row
+(`capability_default=True`, data-only shape — no `CONTRACT_VERSION` or evaluator
+change, mirroring the theme rows above).
 
 **Why a governance row when a Settings toggle already exists.** The toggle, the CLI
 and the `KIROCREW_TELEMETRY_DISABLED` env var are all *operator* controls: anyone on
@@ -1157,7 +1158,7 @@ Consulted at **four** chokepoints — the send gate plus EVERY write path to
 
 | Chokepoint | Pinned-off behavior |
 |---|---|
-| `beacon.should_send()` | Refuses the send. Ranked **above** the config flag so the reported reason names the policy, not the (now irrelevant) local value |
+| `beacon.telemetry_permitted()` | Refuses both heartbeat and receipt egress. Ranked **above** the config flag so the reported reason names the policy, not the (now irrelevant) local value |
 | `PATCH /api/config/kirocrew` (`handlers/core.py`) | **403** on `telemetry.beacon_enabled=true` |
 | `kirocrew telemetry enable` (`cli_commands.py`) | Exits **1** without writing config.json |
 | `kirocrew config set [--local] …` (`cli_config.py`) | Exits **1** without writing. The *generic* setter reaches the same key, and `--local` writes the overlay that takes PRECEDENCE over the base file |

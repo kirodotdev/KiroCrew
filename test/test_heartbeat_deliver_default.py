@@ -26,6 +26,9 @@ def _make_orch(default_deliver, monkeypatch):
     state = MagicMock()
     slot = MagicMock()
     slot.key = "chat-1"
+    # A real slot is unbound unless its conversation lives on another session;
+    # a bare MagicMock would hand back a truthy Mock as the session key.
+    slot.linked_session_key = ""
     state.get_or_create_slot.return_value = slot
     state.notify = MagicMock()
     state.push_slots_update = MagicMock()

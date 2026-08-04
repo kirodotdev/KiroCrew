@@ -15,7 +15,7 @@ from typing import Any
 from unittest.mock import patch
 
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
-from kiro_crew.messaging.link import ChannelLink, dashboard_mirror_key
+from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
 from kiro_crew.messaging.renderer import (
     DONE,
     STEER_CONSUMED,
@@ -2163,15 +2163,15 @@ class TestTelegramMidTurn:
 
 
 class TestLinkCommand:
-    def test_dashboard_mirror_key_transform(self) -> None:
-        # Guards the exact seam _deliver_cross_surface_reply reads at runtime:
-        # dashboard:<channel session key with ':' sanitized to '_'>.
+    def test_legacy_dashboard_mirror_key_transform(self) -> None:
+        # Compat-only spelling: bindings written before session identity was
+        # unified live on dashboard:<channel key with non-word chars folded>.
         assert (
-            dashboard_mirror_key("telegram:kirocrew:direct:8743158320:gen3")
+            legacy_dashboard_mirror_key("telegram:kirocrew:direct:8743158320:gen3")
             == "dashboard:telegram_kirocrew_direct_8743158320_gen3"
         )
         assert (
-            dashboard_mirror_key("telegram:kirocrew:direct:7")
+            legacy_dashboard_mirror_key("telegram:kirocrew:direct:7")
             == "dashboard:telegram_kirocrew_direct_7"
         )
 
@@ -2182,11 +2182,12 @@ class TestLinkCommand:
         assert parse_command("/new") == "new"
         assert parse_command("hello") is None
 
-    def test_link_sets_mirror_on_dashboard_key(self) -> None:
+    def test_link_sets_mirror_on_channel_session_key(self) -> None:
         d, cli, sess = _dispatcher({7})
         asyncio.run(d._handle_link(("direct", "7"), 7))
-        expected_key = dashboard_mirror_key(d._session_key(("direct", "7")))
+        expected_key = d._session_key(("direct", "7"))
         assert expected_key in sess.mirror_links
+        assert legacy_dashboard_mirror_key(expected_key) not in sess.mirror_links
         link = sess.mirror_links[expected_key]
         assert isinstance(link, ChannelLink)
         assert link.channel_type == "telegram"
@@ -2201,9 +2202,18 @@ class TestLinkCommand:
         d, cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
         route = ("forum", "-1001234567890:5")
         asyncio.run(d._handle_link(route, -1001234567890))
-        link = sess.mirror_links[dashboard_mirror_key(d._session_key(route))]
+        link = sess.mirror_links[d._session_key(route)]
         assert link.channel_id == "-1001234567890"
         assert link.thread_id == "5"  # Topic id, as a str
+
+    def test_unlink_clears_legacy_spelling(self) -> None:
+        # A binding created before unification must still be clearable in-channel.
+        d, cli, sess = _dispatcher({7})
+        legacy = legacy_dashboard_mirror_key(d._session_key(("direct", "7")))
+        sess.mirror_links[legacy] = ChannelLink("telegram", channel_id="7")
+        asyncio.run(d._handle_unlink(("direct", "7"), 7))
+        assert sess.mirror_links == {}
+        assert any("Unlinked" in t for t, _ in cli.sent)
 
     def test_unlink_clears_existing(self) -> None:
         d, cli, sess = _dispatcher({7})

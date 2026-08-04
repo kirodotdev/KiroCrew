@@ -61,6 +61,7 @@ from kiro_crew.providers.base import (
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionManager
+from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.session_workspace import result_path as _ws_result_path
 from kiro_crew.slack.format import extract_options
 from kiro_crew.stats import Stats
@@ -1358,8 +1359,11 @@ class SubagentManager:
         # Redact before any delivery path (injection or Slack DM)
         msg = _redact(msg)
 
-        # Try session injection first
-        if parent_session.startswith("dashboard:"):
+        # Try session injection first. The question is whether a tab is OPEN to
+        # receive the notice, not where the conversation started — a channel-born
+        # parent keeps its channel session key while its tab is open, and with no
+        # tab the digest DM below is the only surface.
+        if has_dashboard_surface(parent_session):
             try:
                 injected = await self._try_inject_orphan_notification(parent_session, msg)
                 if injected:
@@ -1842,10 +1846,16 @@ class SubagentManager:
                 except Exception:
                     logger.debug("Failed to mark subagent %s delivered", info.id, exc_info=True)
                 # Clean up workspace result file (agent-{id}.md in parent dir).
+                # The directory is named after the parent's SLOT, which a
+                # channel-born parent has while its session key stays the
+                # channel's own; without a tab there is no directory to clean.
                 try:
-                    parent_key = info.parent_session_key
-                    if parent_key.startswith("dashboard:"):
-                        slot_key = parent_key.removeprefix("dashboard:")
+                    # Lazy: the dashboard layer must not be imported by a core
+                    # module at import time.
+                    from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+                    slot_key = dashboard_slot_key(info.parent_session_key)
+                    if slot_key:
                         _ws_result_path(slot_key, info.id).unlink(missing_ok=True)
                 except Exception:
                     logger.debug("Failed to clean workspace result for %s", info.id, exc_info=True)
@@ -2243,10 +2253,17 @@ class SubagentManager:
         the result from disk if needed.
         """
         try:
-            parent_key = info.parent_session_key
-            if not parent_key.startswith("dashboard:"):
+            # Lazy: the dashboard layer must not be imported by a core module at
+            # import time.
+            from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+            # The failure is queued into a SLOT, so the gate is whether the
+            # parent has a tab — true for a channel-born parent whose session
+            # key is the channel's own. Without one there is nothing to append
+            # to and nothing to drain on the next turn.
+            slot_name = dashboard_slot_key(info.parent_session_key)
+            if not slot_name:
                 return
-            slot_name = parent_key.removeprefix("dashboard:")
 
             # Build failure message the LLM will see on next turn
             task_preview = _redact((info.task or "")[:100])

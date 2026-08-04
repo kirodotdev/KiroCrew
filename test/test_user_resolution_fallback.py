@@ -22,6 +22,10 @@ def _make_orch(allowed_users: list[dict] | None = None) -> MagicMock:
     orch.slack.get_user_info = AsyncMock(return_value={})
     orch.sessions = AsyncMock()
     orch.sessions.enqueue = MagicMock(return_value=False)
+    # Sync accessor on an AsyncMock: left unset it returns a truthy coroutine,
+    # which would route the message down the mid-turn steer path and return
+    # before the handler processes it.
+    orch.sessions.is_busy = MagicMock(return_value=False)
     orch.sessions.is_cancelled = MagicMock(return_value=False)
     orch.sessions.dequeue = MagicMock(return_value=None)
     orch.sessions.clear_queue = MagicMock()

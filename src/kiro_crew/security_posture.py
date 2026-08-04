@@ -356,6 +356,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/session_handle.py",
         "platform/defaults.py",
         "platform/interfaces.py",
+        # Comparison-only: applies the redactors to compute a match identity and
+        # discards the result. The two files being merged can hold the same
+        # message with and without redaction, so a raw comparison would keep both
+        # copies — nothing redacted here is ever written or shown.
+        "channel_transcript_migration.py",
         # Internal persistence / indexing (the on-disk or in-memory copy), whose
         # user-visible surface is already covered by a registered sink.
         "dashboard/chat_folders.py",
@@ -424,6 +429,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # redact() (that guardrail would replace the install id with
         # "[REDACTED]" and make DAU compute as 1).
         "beacon.py",
+        # Egresses, and for the same reason carries NO redactable content: the
+        # app-install receipt sends a fixed three-field set (a truncated HMAC, a
+        # two-valued kind, the clamped release) plus the official catalog slug in
+        # the path. There is no free-form field and no caller-supplied
+        # pass-through, so the allowlist IS the control. It matches the drift
+        # scanner only because its docstring explains why it does NOT route
+        # through metrics/schema.py's redactor.
+        "apps/install_receipt.py",
         "cron_script.py",
         "eval/runner.py",
         "kiro_prerequisite.py",

@@ -436,3 +436,48 @@ describe('ToolCallLine — pill follows the Font Family setting, path chip stays
     if (chip) expect(chip.className).toContain('font-mono')
   })
 })
+
+describe('ToolCallLine MCP app side-panel placeholder', () => {
+  const APP_SLOT = 'slot-1'
+  const appStore = () => createTestStore({
+    chat: {
+      messages: [toolMsg()],
+      toolLog: [],
+      slotRunning: false,
+      activeSlot: APP_SLOT,
+      // Only presence matters: `appInPanel` short-circuits before McpAppFrame,
+      // so the payload is never handed to an iframe here.
+      mcpApps: { [`${APP_SLOT}\u001Ftc_1`]: { session_key: APP_SLOT, tool_call_id: 'tc_1' } },
+    } as unknown as ChatState,
+  })
+
+  it('renders the placeholder as an interactive control, not static text', () => {
+    renderWithProviders(
+      <ToolCallLine message={toolMsg()} running={false} appInPanel onOpenApp={() => {}} />,
+      { store: appStore() },
+    )
+    // Must be a real button: keyboard-reachable and announced as actionable.
+    // A plain <div> here left the app unreachable once the tab was closed.
+    expect(screen.getByRole('button', { name: /side.?panel/i })).toBeTruthy()
+  })
+
+  it('clicking it asks to reopen the app, passing the tool-call id', () => {
+    const onOpenApp = vi.fn()
+    renderWithProviders(
+      <ToolCallLine message={toolMsg()} running={false} appInPanel onOpenApp={onOpenApp} />,
+      { store: appStore() },
+    )
+    fireEvent.click(screen.getByRole('button', { name: /side.?panel/i }))
+    expect(onOpenApp).toHaveBeenCalledWith('tc_1')
+  })
+
+  // Complement, not a regression guard: with the flag off the inline frame renders
+  // instead, which held before this change too.
+  it('renders the inline frame, not the placeholder, when the panel flag is off', () => {
+    renderWithProviders(
+      <ToolCallLine message={toolMsg()} running={false} onOpenApp={() => {}} />,
+      { store: appStore() },
+    )
+    expect(screen.queryByRole('button', { name: /side.?panel/i })).toBeNull()
+  })
+})

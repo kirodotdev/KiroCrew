@@ -24,6 +24,7 @@ import uuid
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
@@ -39,14 +40,15 @@ logger = logging.getLogger(__name__)
 
 
 def _slot_key_from_session(session_key: str) -> str:
-    """Map a ``dashboard:chat-N-TS`` session key to its bare slot key.
+    """The slot key of the tab displaying *session_key*, or ``""`` if none.
 
-    The question card is addressed by slot key (what the frontend compares
-    against ``activeSlot``), while MCP callers hold a session key.
+    The question card is addressed by slot key — what the frontend compares
+    against ``activeSlot`` — while MCP callers hold a session key. The slot name
+    is looked up rather than derived by stripping a prefix: a channel-born
+    conversation runs under its own channel key while its tab is open, so
+    ``slack:<ts>`` must resolve to the ``slack_<ts>`` the frontend matches.
     """
-    if session_key.startswith("dashboard:"):
-        return session_key.split(":", 1)[1]
-    return session_key
+    return dashboard_slot_key(session_key)
 
 
 def _deny_app_token(request: web.Request, operation: str) -> web.Response | None:
@@ -147,14 +149,15 @@ async def api_ask_question(request: web.Request) -> web.Response:
         return web.json_response({"error": "body must be a JSON object"}, status=400)
 
     session_key = str(body.get("session_key") or "")
-    slot_key = _slot_key_from_session(session_key)
-    if not slot_key:
+    if not session_key:
         return web.json_response({"error": "session_key is required"}, status=400)
+    slot_key = _slot_key_from_session(session_key)
     # Refuse to address a slot that does not exist: otherwise the caller blocks
-    # for the full window on a card no client will ever render.
-    if slot_key not in state._slots:
+    # for the full window on a card no client will ever render. An empty slot key
+    # is the same dead end — the conversation has no open tab to render into.
+    if not slot_key or slot_key not in state._slots:
         return web.json_response(
-            {"error": f"unknown slot {slot_key!r} — no dashboard session to ask"},
+            {"error": f"unknown slot for {session_key!r} — no dashboard session to ask"},
             status=404,
         )
 

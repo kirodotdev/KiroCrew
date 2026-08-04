@@ -38,7 +38,7 @@ from kiro_crew.messaging.link import (
     CHAT_TYPE_FORUM,
     ChannelLink,
     build_dm_session_key,
-    dashboard_mirror_key,
+    legacy_dashboard_mirror_key,
     seed_generation,
 )
 from kiro_crew.messaging.transport import InboundMessage
@@ -909,7 +909,7 @@ class TelegramDispatcher:
         here. ``/new`` starts a fresh, unlinked conversation.
         """
         assert self.client is not None
-        key = dashboard_mirror_key(self._session_key(route))
+        key = self._session_key(route)
         # Carry the forum Topic so dashboard-mirrored replies for a forum-linked
         # session thread back into the SAME Topic (via
         # ``_deliver_cross_surface_reply``'s ``thread_id=link.thread_id``), not
@@ -924,6 +924,10 @@ class TelegramDispatcher:
                 thread_id=(str(topic) if topic is not None else None),
             ),
         )
+        # Drop any pre-unification row so a stale binding cannot outlive the
+        # rebind (reads prefer the channel key, but a leftover row would still
+        # answer a clear).
+        self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key))
         await self._reply(
             chat_id,
             "✅ Linked. Replies from the dashboard for this conversation will "
@@ -933,8 +937,11 @@ class TelegramDispatcher:
 
     async def _handle_unlink(self, route: tuple[str, str], chat_id: int) -> None:
         assert self.client is not None
-        key = dashboard_mirror_key(self._session_key(route))
+        key = self._session_key(route)
         was_linked = self.sessions.clear_mirror_link(key)
+        was_linked = (
+            self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key)) or was_linked
+        )
         await self._reply(
             chat_id,
             "✅ Unlinked." if was_linked else "This conversation wasn't linked.",

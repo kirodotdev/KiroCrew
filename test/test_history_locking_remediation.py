@@ -988,7 +988,9 @@ class TestOnLoopCallersOffload:
             real_set_title(*args, **kwargs)  # type: ignore[arg-type]
 
         log.set_title = _spy  # type: ignore[method-assign]
-        monkeypatch.setattr(chat_title, "_history_key_for", lambda _k: "dashboard:t")
+        monkeypatch.setattr(
+            chat_title, "effective_session_key", lambda _slot: "dashboard:t"
+        )
 
         state = MagicMock()
         state.conversation_log = log

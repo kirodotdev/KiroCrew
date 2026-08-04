@@ -23,6 +23,10 @@ def _make_slot(key: str, running: bool = False) -> MagicMock:
     slot = MagicMock()
     slot.key = key
     slot.running = running
+    # A real slot is unbound unless its conversation lives on another session.
+    # Left unset, a bare MagicMock hands back a truthy Mock as the session key,
+    # so the teardown would target something that is not a key at all.
+    slot.linked_session_key = ""
     if running:
         async def _hang():
             await asyncio.sleep(999)
@@ -140,3 +144,24 @@ class TestRemoveSlotForHistoryKey:
         state.sessions.destroy = AsyncMock(side_effect=RuntimeError("already gone"))
         await _remove_slot_for_history_key(state, "dashboard_chat-1-100")
         assert "dashboard_chat-1-100" not in state._slots
+
+
+class TestChannelSlotTeardown:
+    """Deleting a channel history must tear down the CHANNEL's session.
+
+    A channel-born slot runs the channel's own session, so a key derived from
+    the history key names a session that does not exist: the provider survives
+    the delete and its next inbound message recreates the transcript the user
+    just removed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_destroys_the_slots_own_session_not_a_derived_key(self):
+        slot = _make_slot("slack_1785370133.085469")
+        slot.linked_session_key = "slack:1785370133.085469"
+        state = _make_state({"slack_1785370133.085469": slot})
+
+        await _remove_slot_for_history_key(state, "slack_1785370133.085469")
+
+        state.sessions.destroy.assert_awaited_once_with("slack:1785370133.085469")
+        assert "slack_1785370133.085469" not in state._slots

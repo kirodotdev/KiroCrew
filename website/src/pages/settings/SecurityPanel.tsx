@@ -553,7 +553,7 @@ function GovernanceRow({ row }: { row: GovernanceScope }) {
 /** Read-only viewer: the effective governance ceiling across every scope. */
 /* ── Ad-hoc auto-approve duration ── */
 
-interface KirocrewCfgShape { agent?: { yolo_duration?: string } }
+interface KirocrewCfgShape { agent?: { yolo_duration?: string; apps_allow_third_party?: unknown } }
 
 const YOLO_DURATION_KEYS = ['30m', '1h', '6h', '12h', '24h', 'until_shutdown'] as const
 type YoloDurationKey = (typeof YOLO_DURATION_KEYS)[number]
@@ -643,6 +643,101 @@ function YoloDurationCard() {
       <div className="text-[11px] text-muted mt-2">{i18nT('pages.settings.securityPanel.yolo_duration_next_activation_note')}</div>
       {save.isError && (
         <div className="text-[12px] text-danger mt-1.5">{i18nT('pages.settings.securityPanel.failed_to_save_yolo_duration')}</div>
+      )}
+    </SettingsCard>
+  )
+}
+
+/* ── Third-party app execution ── */
+
+/** The process-level admission gate for app code that is NOT a shipped builtin
+ *  (`agent.apps_allow_third_party`, backend decision in `apps/execution.py`).
+ *
+ *  Default OFF. While it is off, installing OR enabling a third-party app fails
+ *  with a raw backend sentence naming this config key — and until this card
+ *  existed the key was reachable only from `kirocrew config set`, so a user who
+ *  never opens a terminal had no way to act on it. Every app shipped so far is
+ *  a builtin (exempt), which is why the dead end went unnoticed.
+ *
+ *  This is deliberately a BLANKET switch, so the copy has to say so: it admits
+ *  every third-party app, present and future, not the one the user was trying
+ *  to install. */
+function ThirdPartyAppsCard() {
+  const qc = useQueryClient()
+  const { data, isLoading, isError } = useQuery<KirocrewCfgShape>({ queryKey: ['kirocrewConfig'], queryFn: api.kirocrewConfig })
+  // Mirror the backend exactly: `third_party_execution_allowed()` admits ONLY
+  // the literal JSON boolean `true`, so a hand-edited `"true"` or `1` in
+  // config.json is NOT a grant and must not render as one — hence the typed
+  // `unknown` plus an identity check rather than a truthiness test.
+  const allowed = data?.agent?.apps_allow_third_party === true
+  // An UNREADABLE value is not "off". If the read failed, the persisted setting
+  // may well be `true`, and collapsing that to `false` would be wrong twice
+  // over: the blanket-trust warning would be hidden while third-party code is
+  // still admitted, and the switch — sitting at OFF — would write `true` on
+  // click, so an ACTIVE grant could not be revoked from here at all. Treat
+  // not-yet-known and failed-to-read the same way: no actionable control, and
+  // say so instead of asserting a state we do not have.
+  const stateUnknown = isLoading || isError || data === undefined
+  const save = useMutation({
+    mutationFn: (next: boolean) => api.patchConfig('agent.apps_allow_third_party', next),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+  })
+
+  return (
+    <SettingsCard>
+      <div className="flex items-center justify-between py-1.5">
+        <div className="flex-1 min-w-0 mr-4">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.third_party_apps_title')}</span>
+            <InfoTip text={i18nT('pages.settings.securityPanel.third_party_apps_tip')} />
+          </div>
+          <div className="text-[12px] text-muted mt-0.5 leading-relaxed">
+            {i18nT('pages.settings.securityPanel.third_party_apps_desc')}
+          </div>
+        </div>
+        <span className="shrink-0">
+          {/* On a FAILED read, render no switch at all rather than a disabled
+              one. `role="switch"` supports only aria-checked true/false — ARIA
+              has no "unknown" for it (`mixed` is checkbox-only) — so any switch
+              we render here would assert a state we could not read, and a
+              screen-reader user would simply hear "not checked". Disabling it
+              stops the write but does not retract the claim. A transient
+              loading read keeps the disabled switch: it resolves on its own. */}
+          {isError ? (
+            <span className="text-[12px] text-muted">
+              {i18nT('pages.settings.securityPanel.third_party_apps_state_unknown')}
+            </span>
+          ) : (
+            <Toggle
+              checked={allowed}
+              onChange={next => save.mutate(next)}
+              disabled={stateUnknown || save.isPending}
+              label={i18nT('pages.settings.securityPanel.third_party_apps_title')}
+            />
+          )}
+        </span>
+      </div>
+
+      {isError && (
+        <div className="text-[12px] text-warn mt-1 flex items-start gap-1.5 leading-relaxed">
+          <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+          <span>{i18nT('pages.settings.securityPanel.third_party_apps_unavailable')}</span>
+        </div>
+      )}
+
+      {allowed && !stateUnknown && (
+        <div className="text-[12px] text-warn mt-1 flex items-start gap-1.5 leading-relaxed">
+          <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+          <span>{i18nT('pages.settings.securityPanel.third_party_apps_on_warning')}</span>
+        </div>
+      )}
+
+      <div className="text-[11px] text-muted mt-2 leading-relaxed">
+        {i18nT('pages.settings.securityPanel.third_party_apps_scope_note')}
+      </div>
+
+      {save.isError && (
+        <div className="text-[12px] text-danger mt-1.5">{i18nT('pages.settings.securityPanel.third_party_apps_save_failed')}</div>
       )}
     </SettingsCard>
   )
@@ -944,6 +1039,12 @@ export function SecurityPanel() {
       </SettingsSection>
 
       <GovernancePolicyViewer />
+
+      {/* ── Third-party app execution ── */}
+      <SettingsSection title={i18nT('pages.settings.securityPanel.third_party_apps_section')}>
+        <ThirdPartyAppsCard />
+      </SettingsSection>
+
 
       {/* ── Denied Commands ── */}
       <SettingsSection title={i18nT('pages.settings.securityPanel.denied_commands')}>

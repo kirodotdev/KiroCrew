@@ -212,7 +212,35 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
 
     Fetches the SKILL.md content from the provider and writes it to the
     local skills directory. Returns the installed skill's key.
+
+    Human-only. ``/api/skills/-/discover`` is on
+    ``_MIXED_INTERNAL_API_PATHS`` so the read-only ``skill_discover`` /
+    ``skill_fetch`` MCP tools can reach it, and that admission is
+    prefix-matched — it reaches this route too. Installing writes
+    third-party files (including scripts) into the skills dir, where they
+    join the agent's own catalog, so refuse the internal-secret caller and
+    keep it a deliberate dashboard action. The agent can still READ any
+    registry skill via ``skill_fetch``; it just cannot persist one.
     """
+    if request.get("internal_auth"):
+        _sel().log_tool_invocation(
+            session_key=request.get("session_key", "mcp"),
+            tool_name="install_skill_from_provider",
+            tool_kind="skill_provider_install",
+            outcome="denied",
+            error="internal_secret_caller_not_allowed",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "Installing a registry skill is a user action — do it from "
+                    "Settings → Skills → Discover. Use skill_fetch to read a "
+                    "skill without installing it."
+                ),
+                "code": "human_only",
+            },
+            status=403,
+        )
     try:
         body = await request.json()
     except Exception:

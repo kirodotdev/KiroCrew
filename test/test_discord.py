@@ -57,7 +57,7 @@ from kiro_crew.discord.transport_dispatch import (
     _receipt_text,
 )
 from kiro_crew.messaging.attachments import cleanup
-from kiro_crew.messaging.link import dashboard_mirror_key
+from kiro_crew.messaging.link import legacy_dashboard_mirror_key
 from kiro_crew.messaging.transport import InboundMessage
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -1545,8 +1545,9 @@ class TestDispatcher:
     async def test_link_and_unlink(self) -> None:
         d, cli, sess = _dispatcher({"u1"})
         await d.handle_message(self._msg("!link"))
-        key = dashboard_mirror_key(d._session_key("u1"))
+        key = d._session_key("u1")
         assert key in sess.mirror_links
+        assert legacy_dashboard_mirror_key(key) not in sess.mirror_links
         assert sess.mirror_links[key].channel_id == "c1"
         await d.handle_message(self._msg("!unlink"))
         assert key not in sess.mirror_links

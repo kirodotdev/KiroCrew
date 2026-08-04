@@ -57,8 +57,22 @@ Other verbs: `ls` (list running pods) · `status <wt>` · `token <wt>` · `url <
 
 **Isolation guarantees** (enforced by the pod runtime):
 own `KIROCREW_HOME`, own port, **no tunnel** (can't grab the real Slack identity),
-`--no-crons`, cgroup `MemoryMax=4G`/`CPUQuota=200%`, and cleanup on stop.
+`--no-crons`, and cleanup on stop.
 A pod can **never** collide with the live gateway and many can run at once.
+
+**Resource ceilings are Linux-only.** On Linux the unit sets cgroup
+`MemoryMax=4G` / `CPUQuota=200%`, which the kernel enforces. **On macOS there is
+no such ceiling and none is emitted** — macOS has no cgroups, and nothing it does
+offer bounds the total memory of a *process tree* or hard-caps CPU (`RLIMIT_AS`
+covers one process's address space, not resident memory, and the gateway spawns
+agent subprocesses that each get their own limit). So on a Mac a runaway pod can
+starve the machine; every other isolation property above still holds.
+
+**Teardown differs too.** Linux reaps the pod's isolated HOME from the unit's
+`ExecStopPost`, so it happens whatever stopped the service. launchd has no
+post-stop hook, so `pod down` does it — meaning a pod killed without an explicit
+`down` (host crash, force-reboot) leaves its HOME behind on macOS. `pod ls` reports those
+(reclaim each with `pod down <name>`).
 
 ## Bundled suite (quick path)
 

@@ -223,3 +223,37 @@ class TestPersistence:
             sm2 = SessionMap()
             got = sm2.get_mirror_link("dashboard:chat-1")
             assert got == ChannelLink(channel_type="telegram", channel_id="777", thread_id=None)
+
+
+class TestLegacyDashboardSpelling:
+    """A channel conversation's mirror now lives on its own session key; a
+    binding written under the old ``dashboard:<safe key>`` spelling must still
+    resolve and still be clearable, so an existing link is not orphaned."""
+
+    CHANNEL = "telegram:kirocrew:direct:7"
+    LEGACY = "dashboard:telegram_kirocrew_direct_7"
+
+    def test_read_falls_back_to_legacy_row(self, session_map):
+        link = ChannelLink(channel_type="telegram", channel_id="7")
+        session_map.set_mirror_link(self.LEGACY, link)
+        assert session_map.get_mirror_link(self.CHANNEL) == link
+
+    def test_clear_reaches_legacy_row(self, session_map):
+        session_map.set_mirror_link(
+            self.LEGACY, ChannelLink(channel_type="telegram", channel_id="7")
+        )
+        assert session_map.clear_mirror_link(self.CHANNEL) is True
+        assert session_map.get_mirror_link(self.CHANNEL) is None
+
+    def test_canonical_binding_wins_over_legacy(self, session_map):
+        session_map.set_mirror_link(
+            self.LEGACY, ChannelLink(channel_type="telegram", channel_id="old")
+        )
+        fresh = ChannelLink(channel_type="telegram", channel_id="new")
+        session_map.set_mirror_link(self.CHANNEL, fresh)
+        assert session_map.get_mirror_link(self.CHANNEL) == fresh
+
+    def test_no_fallback_for_dashboard_born_key(self, session_map):
+        # Only a channel key has a legacy twin; a dashboard session must not
+        # inherit a binding from some unrelated sanitized name.
+        assert session_map.get_mirror_link("dashboard:chat-1") is None

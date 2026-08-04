@@ -236,22 +236,12 @@ logical isolation boundary, not necessarily one OS process.
 **Choose how work starts.**
 
 | Mode | Use it for | Entry point |
-|---|---|
-| **Scheduled** | Briefings, audits, backups, and recurring maintenance |
-| **Proactive** | Goals that need another pass without waiting for a new user message |
-| **Reactive** | CI alerts, external automation, Slack activity, and other events |
-| **Task runner** | Bounded projects with explicit steps, tests, review, and checkpoint resume |
-| **Subagents** | Independent workstreams that can run concurrently |
-
-```bash
-kirocrew chat                         # interactive terminal conversation
-kirocrew run TASK.md                  # execute a multi-step spec
-kirocrew cron add "briefing" \
-  "summarize my open work" --cron "0 9 * * MON-FRI"
-kirocrew spawn run --async \
-  "research the migration options"
-kirocrew service install              # keep the gateway running after reboot
-```
+|---|---|---|
+| **Scheduled** | Briefings, audits, backups, and recurring maintenance | `kirocrew cron` or a natural-language request |
+| **Proactive** | Goals that need another pass without waiting for a new user message | AutoNudge and goal-loop skills |
+| **Reactive** | CI alerts, external automation, Slack activity, and other events | Authenticated agent webhooks and messaging events |
+| **Task runner** | Bounded projects with explicit steps, tests, review, and checkpoint resume | `kirocrew run TASK.md` |
+| **Subagents** | Independent workstreams that can run concurrently | `kirocrew spawn run "task"` |
 
 **Memory, learning, and evolution.** Kiro Crew maintains preferences, active
 project context, decaying history summaries, and durable lessons. Corrections
@@ -332,12 +322,12 @@ agent session runtime, ACP processes, and state together on one host. Your apps
 and chat surfaces connect to that Gateway.
 
 | Deployment | How to run it | Where Kiro Crew and its state live |
-|---|---|
-| **Mac app, local** | Install or build the desktop app with `make desktop` |
-| **Native local** | `make build`, or install a wheel from `make wheel` |
-| **Local container** | Run `ghcr.io/kirodotdev/kirocrew` and persist `/home/kirocrew` |
-| **Remote hardware** | Follow the [remote host guide](docs/remote-desktop-setup.md) and install the service |
-| **Windows source install** | Follow [the Windows guide](docs/windows-install.md) |
+|---|---|---|
+| **Mac app, local** | Install or build the desktop app with `make desktop` | The app starts its bundled Gateway. Agent sessions, ACP processes, and `~/.kiro/crew` stay on your Mac. |
+| **Native local** | `make build`, or install a wheel from `make wheel` | The Gateway and agent runtime run directly on your macOS, Linux, or Windows machine. |
+| **Local container** | Run `ghcr.io/kirodotdev/kirocrew` and persist `/home/kirocrew` | The Gateway and agent runtime run inside the official multi-arch container on your machine. |
+| **Remote hardware** | Follow the [remote host guide](docs/remote-desktop-setup.md) and install the service | The Gateway, agent sessions, and state run continuously on your Linux server, home lab, or cloud instance. Connect the desktop app or browser through an SSH tunnel. |
+| **Windows source install** | Follow [the Windows guide](docs/windows-install.md) | The Gateway, agent sessions, chat, cron, and dashboard run natively with documented feature limits. |
 
 For containers, mount the directory selected by `KIROCREW_HOME` so sessions,
 configuration, memory, and credentials survive replacement. Keep the Gateway
@@ -395,7 +385,9 @@ model finished downloading under `~/.kiro/crew/models`. For a stale MCP configur
 
 Kiro Crew sends **one anonymous heartbeat per day** so maintainers can see how
 many copies are actively running, which versions are in use, and which
-platforms and install channels to support. This is on by default.
+platforms and install channels to support. After a successful install or update
+from the official app catalog, it also sends one anonymous per-app receipt.
+Both signals are on by default and use the same controls below.
 
 To turn it off, flip **Settings → Privacy → Send anonymous usage heartbeat** in
 the dashboard (the same switch appears on the last step of first-run
@@ -421,6 +413,21 @@ both — when it is set, the dashboard toggle is disabled and says so.
 | Install channel | `dmg` | Which install path people actually use |
 | First-run flag | `1` / `0` | New installs vs returning |
 
+**Official-app install receipts are separate and event-based.** After a
+successful official-catalog install or update, Kiro Crew sends one GET to
+`/b/1/install/<app-slug>?t=<token>&k=<fresh|update>&v=<release>` on the same
+telemetry host. The slug is the public catalog identifier. `t` is the first 32
+hex characters of HMAC-SHA256 keyed by the local beacon install id over
+`app-install:<slug>`; the raw install id is never sent, and tokens for different
+apps cannot be linked to assemble an installed-app profile. `k` separates fresh
+installs from updates, and `v` is the same release-only Kiro Crew version clamp
+used by the heartbeat.
+
+Receipts are emitted only for bundled or edition-provided official catalog
+entries. Apps from user-configured registries, local-directory installs, and
+self-registered apps emit nothing, so private app names never leave the machine.
+If no persistent beacon install id exists yet, the receipt is skipped.
+
 This list used to be nine fields. Release channel, OS, CPU architecture and
 governance posture were **removed** — each was coarse on its own, but the
 instance id is stable, so those attributes all describe the *same* copy and
@@ -440,7 +447,7 @@ log delivery does not include that field, so no IP is stored at all.
 than `~/.kiro/crew` (dev instances and pods are never counted).
 
 **Enterprise administrators can pin it off entirely.** A `capabilities.telemetry`
-entry in the security policy blocks the heartbeat regardless of the local
+entry in the security policy blocks both outbound signals regardless of the local
 setting, and the dashboard toggle then says so instead of offering a change that
 would not take effect:
 
@@ -464,7 +471,7 @@ performance metrics that never leave your machine. See
 | Channels | [Slack](docs/slack-setup.md), [Discord](src/kiro_crew/docs/discord-integration.md), [Telegram](src/kiro_crew/docs/telegram-integration.md), [Teams](src/kiro_crew/docs/teams-integration.md), [Webex](src/kiro_crew/docs/webex-integration.md), [WeCom](src/kiro_crew/docs/wecom-integration.md), [WeChat (Weixin)](src/kiro_crew/docs/weixin-integration.md) |
 | Architecture | [System architecture](docs/project-architecture.md), [Memory](docs/memory-architecture.md), [MCP](docs/mcp-architecture.md), [App Kit](docs/app-kit/getting-started.md) |
 | Trust and dependencies | [Security](docs/security-deep-dive.md), [Security policy](SECURITY.md) |
-| Project work | [Contributing](CONTRIBUTING.md), [AI assistant rules](AGENTS.md), [Changelog](CHANGELOG.md) |
+| Project work | [Contributing](CONTRIBUTING.md), [Governance](GOVERNANCE.md), [Maintainers](MAINTAINERS.md), [AI assistant rules](AGENTS.md), [Changelog](CHANGELOG.md) |
 
 Contributions are welcome. Create a branch from `main`, keep changes focused,
 and run the relevant checks before opening a pull request:

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import type { DeniedCommandsData } from '../../api/client'
 
@@ -19,6 +19,10 @@ vi.mock('../../api/client', () => ({
     deleteUserDeniedCommand: vi.fn(),
     governancePolicy: vi.fn(),
     securityPosture: vi.fn(),
+    // Read + write for the third-party-app execution toggle. Also consumed by
+    // YoloDurationCard, which tolerates an unresolved read.
+    kirocrewConfig: vi.fn(),
+    patchConfig: vi.fn(),
   },
 }))
 
@@ -619,5 +623,116 @@ describe('SecurityPanel — posture disclosure', () => {
 
     expect(await screen.findByText('Brand new control')).toBeInTheDocument()
     expect(screen.getByText('3 widgets')).toBeInTheDocument()
+  })
+})
+
+/* ── Third-party app execution toggle ──────────────────────────────────────
+ * The blanket admission gate for app code that is not a shipped builtin
+ * (`agent.apps_allow_third_party`). Two properties matter enough to pin:
+ *   1. the switch writes a real JSON boolean, because the backend's
+ *      `third_party_execution_allowed()` admits ONLY `true` by identity;
+ *   2. a config value that is truthy but NOT that boolean must render OFF —
+ *      showing "on" for a value the gate rejects would tell the user their
+ *      apps are admitted when every execution decision still denies them.
+ */
+describe('SecurityPanel — third-party app execution', () => {
+  const TITLE = 'Let third-party apps run their own code'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.patchConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+  })
+
+  /** Render with a given `agent.apps_allow_third_party` value on the config read.
+   *
+   *  The card renders before that read resolves, and the Toggle is `disabled`
+   *  while loading — so a click landing in that window is silently swallowed by
+   *  the component's own `!disabled &&` guard. Wait for the loaded state before
+   *  handing the switch back, or every interaction test races the query.
+   */
+  async function renderWithFlag(value: unknown) {
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({
+      agent: { apps_allow_third_party: value },
+    })
+    renderWithProviders(<SecurityPanel />)
+    const sw = await screen.findByRole('switch', { name: TITLE })
+    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
+    return sw
+  }
+
+  it('is off when the flag is absent, and shows no blanket-trust warning', async () => {
+    const sw = await renderWithFlag(undefined)
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByText(/trusts every third-party app/i)).not.toBeInTheDocument()
+  })
+
+  it('turning it on writes the literal JSON boolean, not a string', async () => {
+    const sw = await renderWithFlag(false)
+    fireEvent.click(sw)
+
+    await waitFor(() =>
+      expect(api.patchConfig).toHaveBeenCalledWith('agent.apps_allow_third_party', true),
+    )
+    // Identity, not coercion: `'true'` would satisfy a loose assertion but is
+    // rejected by the backend gate.
+    const [, written] = (api.patchConfig as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(written).toBe(true)
+    expect(typeof written).toBe('boolean')
+  })
+
+  it('renders the blanket-trust warning while it is on', async () => {
+    const sw = await renderWithFlag(true)
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText(/trusts every third-party app/i)).toBeInTheDocument()
+  })
+
+  it('a truthy non-boolean config value renders OFF, matching the backend gate', async () => {
+    // `third_party_execution_allowed()` compares with `is True`, so a
+    // hand-edited "true" / 1 in config.json grants nothing. The UI must agree.
+    for (const value of ['true', 1, 'yes']) {
+      const sw = await renderWithFlag(value)
+      expect(sw).toHaveAttribute('aria-checked', 'false')
+      cleanup()
+    }
+  })
+
+  it('turning it back off writes false', async () => {
+    const sw = await renderWithFlag(true)
+    fireEvent.click(sw)
+
+    await waitFor(() =>
+      expect(api.patchConfig).toHaveBeenCalledWith('agent.apps_allow_third_party', false),
+    )
+  })
+
+  /* A FAILED config read must not be reported as "off".
+   *
+   * The persisted value may be `true`, in which case treating an unreadable
+   * read as false is wrong twice: the blanket-trust warning disappears while
+   * third-party code is still admitted, and the switch — sitting at OFF —
+   * would write `true` on click, so an ACTIVE grant could never be revoked
+   * from this panel.
+   *
+   * Disabling the switch fixes the write but NOT the claim: `role="switch"`
+   * carries aria-checked true/false and nothing else (ARIA has no "unknown"
+   * for it — `mixed` is checkbox-only), so a rendered switch still tells a
+   * screen-reader user "not checked". So the switch must be ABSENT here, and
+   * this test asserts absence rather than a disabled state — asserting only
+   * `aria-disabled` would pass while the false OFF assertion remained.
+   */
+  it('a failed config read renders no switch at all and says the value is unknown', async () => {
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    renderWithProviders(<SecurityPanel />)
+
+    expect(await screen.findByText(/could not read the current setting/i)).toBeInTheDocument()
+    // No switch => no aria-checked => no assertion about a value we never read.
+    expect(screen.queryByRole('switch', { name: TITLE })).not.toBeInTheDocument()
+    // Never claim the grant is active either.
+    expect(screen.queryByText(/trusts every third-party app/i)).not.toBeInTheDocument()
+    // And nothing can overwrite the unknown value.
+    expect(api.patchConfig).not.toHaveBeenCalled()
   })
 })

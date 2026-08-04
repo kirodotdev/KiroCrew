@@ -360,7 +360,54 @@ Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can 
 
 **Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the KiroCrew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in `get_triggered_skills` (`_record_use`) and `resolve_dollar_skills` **regardless of the `lazy_load` flag**, so ranking data accrues even while the feature is off. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
-**`skill_search` MCP tool (`kirocrew-core`):** greps skill name/description then, only on a metadata miss, the skill body (bounded, tool-call only — never per message). Schema in `mcp_core.py`, validated against `SKILL_SEARCH_SCHEMA` (`validation.py`). Does NOT record usage — searching is not using.
+**`skill_search` MCP tool (`kirocrew-core`):** greps skill name/description then, only on a metadata miss, the skill body (bounded, tool-call only — never per message). Schema in `mcp_core.py`, validated against `SKILL_SEARCH_SCHEMA` (`validation.py`). Does NOT record usage — searching is not using. Scope is **locally installed skills only**.
+
+**Registry discovery — `skill_discover` / `skill_fetch` MCP tools (`kirocrew-core`).**
+The agent-facing twins of the dashboard's Skills → Discover panel, covering the
+skills that are *not* on disk. Both are read-only and reach the existing
+`skill_providers/` registry (skills.sh today) through the gateway rather than the
+network directly, so provider timeouts, the 1 MiB response cap, the SSRF
+denylist, and `_redact_external` all still apply:
+
+| Tool | Endpoint | Returns |
+|------|----------|---------|
+| `skill_discover(query, limit=10≤50, provider?)` | `GET /api/skills/-/discover` | Candidate list — id, name, description, provider, author, install count, and an `installed` flag resolved against the local catalog. Each entry carries a ready-to-paste `skill_fetch(...)` call so the `owner/repo/skill` id survives verbatim. Publisher-controlled fields are clamped per-entry and labelled untrusted in the **header**. |
+| `skill_fetch(id, provider="skillsh")` | `GET /api/skills/-/discover/preview` | The skill's instruction file, usable immediately with **no install step**, capped at `_SKILL_FETCH_MAX_CHARS` (32 KiB) for the context budget, prefixed with an untrusted-content warning. |
+
+Both paths are on `server._MIXED_INTERNAL_API_PATHS` (the Skills page calls the
+same two routes with cookie auth, so mixed rather than strict).
+
+**Egress redaction.** `query` and `id` are LLM-supplied and, unlike
+`skill_search`'s local grep, the gateway forwards them to a **third-party host**
+— so both are passed through `redact_exfiltration_urls` + `redact_credentials`
+before the request is built. A credential the model happened to include in a
+search term would otherwise be disclosed to skills.sh and logged there. A
+legitimate query or `owner/repo/skill` id matches no credential shape, so this is
+a no-op on every real call; when it does fire the search returns nothing, which
+is the correct fail-safe.
+
+**No install tool, by design.** For a knowledge skill, fetch-and-use is the whole
+workflow — the install step exists for humans who want the skill to *persist*
+into the catalog (trigger auto-loading, `$token` resolution, usage ranking,
+`always: true` pinning) and for bundles whose steps shell out to sibling files.
+Because the mixed-path admission is prefix-matched it also reaches
+`/discover/install`, so `api_skills_discover_install` refuses an `internal_auth`
+caller outright (403 `code: "human_only"`) — that handler guard is the SOLE
+enforcement point, not one of two layers, and installation stays a deliberate
+dashboard action. Registry skills ARE bundles: `skill_fetch` returns only the
+instruction file and reports the sibling file list so the agent knows when the
+in-context copy is not sufficient rather than trying and failing.
+
+**Both tools label their output untrusted**, because a registry publisher's text
+reaches the model verbatim: `skill_fetch` prefixes the body, and `skill_discover`
+leads with the label. The gateway's `_redact_external` scrubs credential shapes
+and exfiltration URLs but cannot tell imperative prose from a description, so the
+label is the only signal — and it must **lead**, not trail. `sanitize_response`
+drops the TAIL at `MAX_RESPONSE_LEN` (100k) and `SkillSearchResult` puts no bound
+on `id` / `name` / `author`, so a trailing label could be padded off the end by
+the very publisher it warns about. `skill_discover` additionally clamps those
+fields per entry (name 120, id 200, author 80, description 240) so one padded
+entry cannot crowd the other candidates out of the response.
 
 **Trigger matching (`get_triggered_skills`) — per-message hot path.** Runs on
 every non-custom-agent message via the context builder, scoring word-overlap of

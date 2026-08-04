@@ -27,6 +27,7 @@ from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_ap
 from kiro_crew.autonudge import get_instance as _autonudge_get
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
 from kiro_crew.browser.setup import migrate_owned_playwright_registration
+from kiro_crew.channel_transcript_migration import migrate_channel_transcripts
 from kiro_crew.config import config_dir
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import env_flag_enabled
@@ -369,6 +370,22 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # anything holding the internal secret. This route is local-only triage
         # state — no forge write, no shared ledger.
         "/api/apps/issue-radar/investigation",
+        # Registry skill discovery — the READ leg only, for the
+        # ``skill_discover`` / ``skill_fetch`` MCP tools. The Skills page calls
+        # the same two routes with cookie auth, hence mixed rather than strict.
+        #
+        # Prefix-matching (path == p or startswith(p + "/")) means the first
+        # entry ALSO admits ``/api/skills/-/discover/install`` — a WRITE that
+        # fetches third-party files and writes them into the skills dir. That is
+        # closed off at the handler instead: ``api_skills_discover_install``
+        # refuses an internal-secret caller outright (see its ``internal_auth``
+        # guard), so installation stays a deliberate human action in the
+        # dashboard. Do not remove that guard to add an install MCP tool without
+        # re-reviewing this admission.
+        "/api/skills/-/discover",
+        # Redundant under the prefix match above, kept explicit so a reader of
+        # this list sees both routes the MCP tools actually call.
+        "/api/skills/-/discover/preview",
         "/v1/chat/completions",  # OpenAI-compat API
     }
 )
@@ -1150,6 +1167,27 @@ def _write_secret_file(secret_path: Path, secret: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _claimed_dashboard_slots(state: DashboardState) -> frozenset[str]:
+    """Slot names the persisted session map holds a ``dashboard:`` session for.
+
+    Read off the live map so the transcript migration can tell a real dashboard
+    session from an orphan of a same-named channel session. Blocking (reads the
+    map file), so callers on the event loop must offload it.
+    """
+    try:
+        sessions = getattr(state, "sessions", None)
+        smap = getattr(sessions, "_session_map", None)
+        data = getattr(smap, "_data", None)
+        if not isinstance(data, dict):
+            return frozenset()
+        return frozenset(
+            k[len("dashboard:"):] for k in data if k.startswith("dashboard:")
+        )
+    except Exception:
+        logger.debug("could not read claimed dashboard slots", exc_info=True)
+        return frozenset()
 
 
 def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
@@ -2417,8 +2455,16 @@ async def start_dashboard(
     # empty set (should this fail) simply fails closed (owns-server calls prompt).
     async def _warm_builtin_app_names() -> None:
         try:
-            from kiro_crew.apps.execution import builtin_app_mcp_servers, builtin_app_names
-            from kiro_crew.hooks import set_builtin_app_mcp_servers, set_builtin_app_names
+            from kiro_crew.apps.execution import (
+                builtin_app_agents,
+                builtin_app_mcp_servers,
+                builtin_app_names,
+            )
+            from kiro_crew.hooks import (
+                set_builtin_app_agents,
+                set_builtin_app_mcp_servers,
+                set_builtin_app_names,
+            )
 
             names = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), builtin_app_names
@@ -2428,6 +2474,12 @@ async def start_dashboard(
                 subprocess_executor(), builtin_app_mcp_servers
             )
             set_builtin_app_mcp_servers(servers)
+            # Agent → owning app, so a builtin whose UI is not an app iframe
+            # (empty Slot._app) can still auto-approve calls to its OWN server.
+            agents = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), builtin_app_agents
+            )
+            set_builtin_app_agents(agents)
         except Exception:  # noqa: BLE001 — a warm failure only costs an extra prompt
             logger.warning("Failed to warm builtin app-name set for the gate", exc_info=True)
 
@@ -3003,6 +3055,28 @@ async def start_dashboard(
     # intermediate states no client renders. Reseeding happens inside the block too
     # — it must complete before the single broadcast so clients never see slots
     # under a counter that could still re-mint a colliding index.
+    # Converge any leftover copy transcripts BEFORE the restores read them. A
+    # channel conversation used to get a second transcript under a derived
+    # dashboard key; on an install carrying one, its dashboard-authored turns
+    # exist nowhere else, so they must be merged into the channel transcript
+    # before a slot is built from it. Idempotent, so it is a cheap no-op on
+    # every subsequent boot. Off-loop: it takes the per-session cross-process
+    # flock, which must never block the event loop.
+    try:
+        # Slot names the session map claims as real dashboard sessions, so a
+        # dashboard session that merely happens to be named like a channel
+        # stem is never mistaken for an orphan of it.
+        _claimed = await asyncio.to_thread(_claimed_dashboard_slots, state)
+        merged = await asyncio.to_thread(
+            migrate_channel_transcripts, dashboard_slots=_claimed
+        )
+        if merged:
+            logger.info("Merged %d leftover channel transcript copies", merged)
+    except Exception:
+        # A failed migration leaves the orphan in place rather than losing
+        # messages, so starting up without it is safe.
+        logger.warning("channel transcript migration failed", exc_info=True)
+
     with state.suspend_slots_push():
         await chat.restore_open_slots_async(state)
         restored = await chat.restore_recent_sessions_async(

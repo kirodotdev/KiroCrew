@@ -2172,17 +2172,20 @@ function ChatSidebar({
               </AnimatePresence>
               {isOut && <span className="text-accent" title={i18nT('pages.chatSidebar.popped_out_to_a_separate_window')}><ExternalLink size={10} /></span>}
               {slotChannelNamespace(s.key) && (() => {
-                // Distinct from the `Link` glyph above (`linked_to_slack`), which
-                // means live two-way mirroring. This one is a one-time copy: the
-                // conversation started on that channel, replies stay here.
+                // Where this conversation started — and, since the session IS the
+                // conversation rather than a copy of it, still where it is two-way
+                // with: what you type here is delivered to that channel, and what
+                // is sent there arrives here. Same wording as the inbound-link
+                // chip (`components.inboundLinkChip.tooltip`), which states the
+                // same relationship for a session driven from a channel.
                 //
                 // `unified` gets its own key rather than an interpolated label:
                 // it has no proper noun, and an English article fragment inside
                 // a translated sentence is not something a locale can repair.
                 const ns = slotChannelNamespace(s.key)
                 const label = ns === 'unified'
-                  ? i18nT('pages.chatSidebar.copied_from_direct_message')
-                  : i18nT('pages.chatSidebar.copied_from_channel', { channel: slotChannelLabel(s.key) })
+                  ? i18nT('pages.chatSidebar.two_way_with_direct_message')
+                  : i18nT('pages.chatSidebar.two_way_with_channel', { channel: slotChannelLabel(s.key) })
                 // Brand mark rather than a generic bubble: the row already tells
                 // you a chat happened, so the only new information this glyph can
                 // carry is WHICH app it came from. Namespaces with no mark of

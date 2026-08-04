@@ -4696,6 +4696,20 @@
       "defaultValue": ""
     },
     {
+      "path": "agents.*.triggers",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Triggers",
+      "help": "Routing intent for orchestrator crew selection: free-text 'when to use this crew' guidance the main agent reads via select_crew. A crew with no triggers is not offered for selection.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "agents.*.source",
       "kind": "core",
       "type": "string",

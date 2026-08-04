@@ -536,7 +536,7 @@ KiroCrew exposes capabilities to the LLM via two mechanisms:
 
 1. **MCP tools** (native): kiro-cli calls them directly with structured JSON params — **preferred for all LLM-facing operations**
    - `kirocrew-cron` MCP server: `cron_list`, `cron_add`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`
-   - `kirocrew-core` MCP server: `spawn_run`, `spawn_list`, `spawn_status`, `learn_add`, `learn_list`, `learn_remove`, `task_run`, `wait`, `register_hook`, `send_message`, `send_notification`, `local_knowledge_search`
+   - `kirocrew-core` MCP server: `spawn_run`, `spawn_list`, `spawn_status`, `learn_add`, `learn_list`, `learn_remove`, `task_run`, `wait`, `register_hook`, `send_message`, `send_notification`, `local_knowledge_search`, `skill_search`, `skill_discover`, `skill_fetch`
    - `kirocrew-computer` MCP server (10 tools): `computer_list_apps`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` — native desktop GUI automation. Default-OFF behind a keystone primary enable (`~/.kiro/crew/computer_use.json`, NOT `config.json`); the stdio process is a thin shim and the authoritative fail-closed gate runs in the gateway. `computer_click` takes **either** `element_index` **or** `x`+`y` (never both) plus optional `click_count` (1-3), `mouse_button` (`left`/`right`/`middle`) and `click_method` (`auto`/`accessibility`/`app_post`/`global`); `computer_drag` is coordinate-only. Both keyboard tools (`computer_type_text`, `computer_press_key`) REQUIRE `element_index`: an unnamed target has no role/subrole, so the always-on secure-field (password) refusal could not inspect it. See `docs/system-specs/modules/computer-use.md`.
    - `playwright` MCP server (`@playwright/mcp`): `browser_navigate`, `browser_click`, `browser_snapshot`, `browser_take_screenshot`, `browser_fill_form`, `browser_type`, `browser_press_key`, `browser_evaluate`, `browser_hover`, `browser_drag`, `browser_select_option`, `browser_tabs`, `browser_close`, `browser_wait_for`, `browser_resize`
    - `slack-mcp` (mcpServers): Slack integration
@@ -586,6 +586,10 @@ should always use the MCP tool equivalents.
 | — | `send_message` | kirocrew-core |
 | — | `send_notification` | kirocrew-core |
 | — | `local_knowledge_search` | kirocrew-core |
+| — | `skill_search` | kirocrew-core |
+| — | `skill_discover` | kirocrew-core |
+| — | `skill_fetch` | kirocrew-core |
+| Settings → Skills → Discover (human-only) | — (deliberately none) | — |
 | — | `file_send` | kirocrew-core |
 | — | `autonudge_stop` | kirocrew-core |
 | — | `ask_question` | kirocrew-core |
@@ -621,7 +625,8 @@ should always use the MCP tool equivalents.
 
 - **Handler keywords**: only for instant user-typed commands with no LLM round-trip (e.g. `cron list`, `spawn list`)
 - **Do NOT** add regex to match NL variants — the LLM handles NL interpretation
-- **`kirocrew computer call` is the one deliberate "no MCP twin" row.** It is not a capability — it is a human debug/repro harness that runs the ten existing `computer_*` tools through the same gated chokepoint (optionally a JSON array of them in ONE process, so `element_index` values stay resolvable). The MCP-first rule exists so the model gets a structured tool instead of shelling out, and the model already has all ten. A tool that runs other tools would let a model launder one per-call gate decision into many — so do NOT add `computer_call`.
+- **`kirocrew computer call` is one deliberate "no MCP twin" row.** It is not a capability — it is a human debug/repro harness that runs the ten existing `computer_*` tools through the same gated chokepoint (optionally a JSON array of them in ONE process, so `element_index` values stay resolvable). The MCP-first rule exists so the model gets a structured tool instead of shelling out, and the model already has all ten. A tool that runs other tools would let a model launder one per-call gate decision into many — so do NOT add `computer_call`.
+- **Skill INSTALL is a second deliberate "no MCP twin".** The three skill tools split by scope: `skill_search` searches skills already on disk, `skill_discover` searches the public registry (skills.sh, via `skill_providers/`), and `skill_fetch` reads a registry skill's instructions straight into the conversation. `skill_fetch` is why no install tool is needed — for a knowledge skill, fetch-and-use IS the whole workflow, so **do NOT add a `skill_install` tool**. Installing writes third-party files (including `scripts/`) into the skills dir, where they join the agent's own catalog and gain trigger auto-loading and `$token` resolution; that stays a human action in Settings → Skills → Discover. What enforces it is **one** thing, not two: `api_skills_discover_install` refuses an internal-secret caller (`internal_auth`). The two READ routes on `server._MIXED_INTERNAL_API_PATHS` are NOT a second layer — that list is prefix-matched, so `/api/skills/-/discover` admits `/discover/install` regardless and the handler guard is the only thing between an internal caller and an install. Registry skills are **bundles** — `skill_fetch` returns only the instruction file, so a skill whose steps shell out to sibling files genuinely does need installing, and the tool says so in its output. Treat fetched content as untrusted third-party text.
 
 #### IMPORTANT: MCP Tools MUST Be Stateless
 

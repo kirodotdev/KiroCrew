@@ -9,7 +9,7 @@ from aiohttp import web
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import state as dashboard_state
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
-from kiro_crew.dashboard.chat_utils import _history_key_for
+from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_and_truncate
 from kiro_crew.sel import sel
@@ -64,7 +64,10 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
     if not owner_id:
         return web.json_response({"error": "owner not configured"}, status=500)
 
-    session_key = _history_key_for(name)
+    # The slot's OWN session key: a channel-born slot's turns run on the
+    # channel session, so the link has to live there for the turn path and the
+    # link projection (state._slot_links) to find it.
+    session_key = effective_session_key(slot)
 
     # Check if already linked
     existing_ts, existing_chan = state.sessions.get_slack_link(session_key)
@@ -165,25 +168,21 @@ async def api_chat_slot_slack_unlink(request: web.Request) -> web.Response:
     wrongly restrict this browser action to loopback-only callers.
     """
     state: DashboardState = request.app["state"]
-    # Keys off _history_key_for(name), NOT slot.linked_session_key — the latter
-    # only diverges for cron/takeover slots, which are never Slack-linked.
     name = request.match_info.get("name") or request.match_info.get("slot", "")
     slot = state.get_slot(name) or state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
 
-    session_key = _history_key_for(name)
+    # Authoritative key = the slot's own session key. Deriving it from the slot
+    # NAME instead would build "dashboard:slack:<ts>" for a channel-born slot,
+    # leaving the real link untouched so mirroring silently resumes next turn.
+    session_key = effective_session_key(slot)
     cleared = state.sessions.clear_slack_link(session_key)
-    # ⚠️ chat_runner.py copies the link onto the "dashboard:"-prefixed key when
-    # a turn runs, so unlink MUST clear BOTH the raw and "dashboard:"-prefixed
-    # keys or the next turn silently re-inherits the link and mirroring resumes.
+    # chat_runner copies a dashboard session's link from the bare key onto the
+    # "dashboard:"-prefixed one when a turn runs, so both spellings must go or
+    # the next turn re-inherits the link. A channel key has no such twin.
     if session_key.startswith("dashboard:"):
         cleared = state.sessions.clear_slack_link(session_key[len("dashboard:") :]) or cleared
-    else:
-        # Defensive: _history_key_for always returns a dashboard:-prefixed key,
-        # so this branch is currently unreachable — kept to stay correct if the
-        # key scheme ever changes.
-        cleared = state.sessions.clear_slack_link(f"dashboard:{session_key}") or cleared
 
     prev_channel = slot._slack_channel
     prev_thread_ts = slot._slack_thread_ts
@@ -281,7 +280,7 @@ async def api_chat_slot_handoff(request: web.Request) -> web.Response:
     except Exception:
         pass
 
-    history_key = _history_key_for(slot.key)
+    history_key = effective_session_key(slot)
     thread_ts = await handoff_to_slack(
         state.slack_client,
         state.owner_id,

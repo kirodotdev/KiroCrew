@@ -149,20 +149,37 @@ class TestRestoreRecentSessions:
         assert restored == 0
         assert "old" not in state._slots
 
-    def test_skips_non_dashboard_sessions(self, tmp_path, monkeypatch):
-        """Sessions not prefixed with 'dashboard' are skipped."""
+    def test_leaves_channel_sessions_to_the_reconciler(self, tmp_path, monkeypatch):
+        """This loop runs ON the event loop, so it must not read channel transcripts.
+
+        Channel-born tabs are restored by ``channel_slot_reconciler``, which
+        reads in an executor. Pulling them in here would put a large
+        transcript's read in front of the whole gateway at startup.
+        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         _write_session(
             tmp_path,
             "slack_thread123",
             [{"role": "user", "content": "slack msg", "ts": "2026-03-23T10:00:00"}],
         )
-        path = tmp_path / "slack_thread123.jsonl"
-        path.touch()
+        (tmp_path / "slack_thread123.jsonl").touch()
 
         state = _make_state(tmp_path)
-        restored = restore_recent_sessions(state, window_minutes=60)
-        assert restored == 0
+        assert restore_recent_sessions(state, window_minutes=60) == 0
+
+    def test_skips_sessions_with_no_dashboard_surface(self, tmp_path, monkeypatch):
+        """Keys owned by another surface (cron, sub-agent) never become tabs."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        for stem in ("cron_nightly", "subagent_abc123"):
+            _write_session(
+                tmp_path,
+                stem,
+                [{"role": "user", "content": "x", "ts": "2026-03-23T10:00:00"}],
+            )
+            (tmp_path / f"{stem}.jsonl").touch()
+
+        state = _make_state(tmp_path)
+        assert restore_recent_sessions(state, window_minutes=60) == 0
 
     def test_skips_already_existing_slots(self, tmp_path, monkeypatch):
         """Does not overwrite slots that already exist in state."""

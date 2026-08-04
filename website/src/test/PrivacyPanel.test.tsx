@@ -40,6 +40,16 @@ const HEARTBEAT_FIELDS = [
   'first-run flag',
 ] as const
 
+const RECEIPT_DISCLOSURE = "Official app slug · per-app anonymous token (not linkable across apps) · fresh/update flag · Kiro Crew version"
+
+const RECEIPT_FIELDS = [
+  'Official app slug',
+  'per-app anonymous token',
+  'not linkable across apps',
+  'fresh/update flag',
+  'Kiro Crew version',
+] as const
+
 // Fields the payload excludes. Asserted ABSENT, not just omitted from the list
 // above: this text is the product's transparency commitment, so a re-added wire
 // field that nobody documented — or documentation that outlives the field — is
@@ -86,6 +96,7 @@ describe('PrivacyPanel', () => {
 
     expect(headings.map(heading => heading.textContent)).toEqual([
       'Anonymous daily heartbeat',
+      'Official app install receipts',
       'Never sent',
       'Stays on your device',
       'Telemetry controls',
@@ -100,6 +111,20 @@ describe('PrivacyPanel', () => {
     for (const field of HEARTBEAT_FIELDS) {
       expect(disclosure).toHaveTextContent(field)
     }
+  })
+
+  it('discloses the official-app receipt and its privacy boundary', () => {
+    renderWithProviders(<PrivacyPanel />)
+
+    const disclosure = screen.getByText(RECEIPT_DISCLOSURE)
+    for (const field of RECEIPT_FIELDS) {
+      expect(disclosure).toHaveTextContent(field)
+    }
+    expect(
+      screen.getByText(
+        /External registries, local apps, and self-registered apps are never reported/,
+      ),
+    ).toBeInTheDocument()
   })
 
   it('no longer claims to send the four removed fields', () => {

@@ -7,7 +7,11 @@ import { secureRandomId } from '../utils/secureId'
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
 export type ViewKind = 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side' | 'browser'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
-export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal' | 'folder'
+/** `app` hosts an MCP App (a sandboxed iframe with a live JSON-RPC bridge).
+ *  It is deliberately a TabKind and NOT a ViewKind: SidePanel unmounts
+ *  category views on tab switch (`if (!isActive) return null`), which would
+ *  reload the app's iframe and destroy whatever the user has drawn. */
+export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal' | 'folder' | 'app'
 
 /** Views that are AUTO-managed by content (see `syncPinned`): they appear —
  *  pinned to the front, non-closable, and absent from the + menu — only while
@@ -36,6 +40,15 @@ export interface PanelTab {
   diffMode?: boolean
   artifactSlug?: string
   artifactKind?: Artifact['kind']
+  // ── MCP App fields ──
+  /** Tool-call id of the render this app tab hosts. Keyed the same way as
+   *  `chat.mcpApps` (see `mcpAppKey`) so the body can select its payload. */
+  appToolCallId?: string
+  /** When this app tab was last focused (epoch ms). Drives warm-set eviction:
+   *  the cap drops the LEAST-RECENTLY-USED frame, not the oldest-opened one, so
+   *  a user who keeps returning to an early diagram does not have it evicted
+   *  out from under them while newer renders stream in. */
+  appActiveAt?: number
   // ── terminal fields ──
   /** PTY session id — one live shell per terminal tab. */
   sessionId?: string
@@ -103,6 +116,24 @@ function localiseTitles(tabs: PanelTab[]): PanelTab[] {
   })
 }
 
+/** Max concurrent MCP App tabs per chat (the "warm set").
+ *
+ *  Every app tab keeps a LIVE iframe mounted: SidePanel display-toggles app
+ *  bodies instead of unmounting them, because a null-origin app frame cannot be
+ *  remounted without reloading the app and losing the drawing. Each frame
+ *  carries multi-MB of app HTML plus a running app runtime, so a session that
+ *  renders a diagram per turn would otherwise accumulate one live frame per
+ *  diagram for as long as the chat is open.
+ *
+ *  Terminals cap by REFUSING (`openTerminal` refocuses the newest instead of
+ *  spawning) because one shell is as good as another. An app render is not
+ *  fungible — the newest diagram is the one the user just asked for and must be
+ *  shown — so apps cap by EVICTING the least-recently-used frame instead.
+ *  Eviction is recoverable: the payload lives on in `chat.mcpApps` (bounded
+ *  separately by MCP_APPS_PER_SLOT_MAX), so the chat bubble's side-panel control
+ *  re-creates the tab and re-renders it. Only in-app edit state is lost. */
+export const MAX_APP_TABS_PER_CHAT = 3
+
 /** Max concurrent terminal tabs per chat (each is a live PTY). At the cap,
  *  openTerminal focuses/reuses the most-recent terminal instead of spawning. */
 export const MAX_TERMINALS_PER_CHAT = 4
@@ -148,6 +179,36 @@ const listeners = new Set<() => void>()
  * and on explicit discard, so a later inline reopen can't resurrect stale
  * content over a newer save. */
 const inlineDrafts = new Map<string, string>()
+
+/* ── Auto-open bookkeeping for MCP App tabs ───────────────────────────────
+ * Which (slot, tool-call) renders the auto-open effect has ALREADY acted on.
+ *
+ * Module scope, not a component ref, for the same reason the buckets above are:
+ * a `useRef` in ChatPage is recreated on every ChatPage mount, so navigating to
+ * Settings and back re-armed the effect and it re-opened — and re-focused — a
+ * tab the user had deliberately closed. Keyed by slot + tool-call id so the same
+ * render in two slots is tracked independently.
+ *
+ * In-memory only. A full page reload legitimately re-arms auto-open: the tab
+ * strip does not persist app tabs (see `serializeBucket`), so nothing would
+ * re-open the panel otherwise.
+ *
+ * Nested rather than a composite `slot|id` string key: no separator to collide
+ * with, and no string-building that reads like user copy to the i18n gate. */
+const autoOpenedApps = new Map<string, Set<string>>()
+
+/** Claim the one auto-open this (slot, tool-call) render is allowed. Returns
+ *  true exactly once per pair — the caller opens the tab only on a true. */
+export function claimAppAutoOpen(slot: string, toolCallId: string): boolean {
+  let seen = autoOpenedApps.get(slot)
+  if (!seen) { seen = new Set<string>(); autoOpenedApps.set(slot, seen) }
+  if (seen.has(toolCallId)) return false
+  seen.add(toolCallId)
+  return true
+}
+
+/** Test seam: forget every auto-open claim. */
+export function __resetAppAutoOpen(): void { autoOpenedApps.clear() }
 // The store OWNS the draft key format (slot + path). Callers pass slot and path
 // separately and never build the key themselves — a single owner prevents the
 // four coordination sites (open / open-inline / save / slot-reset) from drifting
@@ -160,6 +221,46 @@ export function clearInlineDraft(slot: string, path: string): void { inlineDraft
 function subscribe(cb: () => void): () => void {
   listeners.add(cb)
   return () => { listeners.delete(cb) }
+}
+
+/** EVERY live app tab, across every slot, in a stable order.
+ *
+ *  SidePanel renders all of them from this ONE list with each tab's own id as
+ *  the React key, and toggles visibility — so an app frame keeps its identity
+ *  when the active chat changes. An earlier version rendered the active slot's
+ *  tab through the normal tab loop and other slots' through a second loop with a
+ *  `bg:`-prefixed key; switching chats moved a tab between the two lists, the key
+ *  changed, and React remounted the very iframe the split existed to preserve.
+ *
+ *  Ordered by slot then insertion so the list does not reshuffle between renders
+ *  (a reorder would not remount, but it makes the DOM churn for no reason).
+ *
+ *  Bounded by the per-slot warm cap (MAX_APP_TABS_PER_CHAT) times the number of
+ *  slots holding app tabs — under the per-slot payload cap that already governs
+ *  how many frames can be live at once. */
+export function useAllAppTabs(): PanelTab[] {
+  const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  return useMemo(() => {
+    const out: PanelTab[] = []
+    for (const slot of Object.keys(bySlot).sort()) {
+      for (const t of bySlot[slot].tabs) if (t.kind === 'app') out.push(t)
+    }
+    return out
+  }, [bySlot])
+}
+
+/** Whether ANY slot holds a live app tab.
+ *
+ *  The mount guard must consult every slot, not just the active one: with
+ *  cross-slot hosting, a frame belonging to chat A lives in the panel subtree
+ *  while chat B is active, so deciding to unmount on B's (empty) tab list would
+ *  destroy A's canvas. */
+export function useAnyLiveAppTab(): boolean {
+  const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  return useMemo(
+    () => Object.values(bySlot).some(b => b.tabs.some(t => t.kind === 'app')),
+    [bySlot],
+  )
 }
 function getSnapshot(): BySlot { return store }
 
@@ -180,16 +281,19 @@ function mutateSlot(key: string, fn: (b: Bucket) => Bucket): void {
  *  tab METADATA (path / slug / sessionId / cwd / order / focus) are kept, so
  *  document tabs restore as lightweight references and re-fetch their content
  *  on demand; artifact tabs self-hydrate by slug via ArtifactPanel's query. */
-/** Lean single-bucket projection for persistence. Diff tabs are transient — a
- *  restored diff can only re-fetch the CURRENT working-tree diff, never the
- *  original turn snapshot, so it renders a misleading/unreliable diff; drop
- *  them (they still survive in-memory across in-app nav, where content is
- *  intact). Heavy content bodies are stripped (can be MBs). */
+/** Lean single-bucket projection for persistence. Diff and app tabs are
+ *  transient — a restored diff can only re-fetch the CURRENT working-tree diff,
+ *  never the original turn snapshot, so it renders a misleading/unreliable diff;
+ *  an MCP App tab is worse still, because its render payload arrives ONLY on a
+ *  live `mcp_app_render` event and is never persisted, so a rehydrated app tab
+ *  could never show anything at all. Drop both (they still survive in-memory
+ *  across in-app nav, where content is intact). Heavy content bodies are
+ *  stripped (can be MBs). */
 function serializeBucket(b: Bucket): string {
   const tabs = b.tabs
-    .filter(t => t.kind !== 'diff')
+    .filter(t => t.kind !== 'diff' && t.kind !== 'app')
     .map(t => { const copy = { ...t }; delete copy.content; return copy })
-  // If the focused tab was a dropped diff tab, refocus a surviving tab.
+  // If the focused tab was a dropped diff/app tab, refocus a surviving tab.
   const activeId = tabs.some(t => t.id === b.activeId)
     ? b.activeId
     : (tabs.length ? tabs[tabs.length - 1].id : null)
@@ -246,6 +350,7 @@ function flushPersist(): void {
 export function __resetPanelTabs(): void {
   store = {}
   inlineDrafts.clear()
+  autoOpenedApps.clear()
   clearTimeout(persistTimer)
   dirtySlots.clear()
   if (typeof localStorage !== 'undefined') {
@@ -361,6 +466,60 @@ export function usePanelTabs(slotKey: string | null = null) {
     upsert({ id: `folder:${path}`, kind: 'folder', title: basename(path), path, slot })
   }, [upsert])
 
+  /** Open (or refocus) the app tab hosting one MCP App render. Keyed by
+   *  tool-call id, so a re-render of the same app reuses its tab instead of
+   *  stacking duplicates.
+   *
+   *  Bounded by MAX_APP_TABS_PER_CHAT with least-recently-used eviction. The cap
+   *  runs INSIDE `update` rather than against the `tabs` closure — unlike
+   *  `openTerminal`, this is called from an effect that loops over every pending
+   *  render, so two same-tick opens would both read a stale pre-insert `tabs` and
+   *  each conclude there was room. The currently-focused tab is never a candidate
+   *  (belt-and-braces: focus stamping already sorts it last). */
+  const openApp = useCallback((toolCallId: string, title: string, slot: string | null = null) => {
+    const id = `app:${toolCallId}`
+    update(b => {
+      const now = Date.now()
+      const i = b.tabs.findIndex(t => t.id === id)
+      if (i !== -1) {
+        const next = b.tabs.slice()
+        next[i] = { ...next[i], title, appToolCallId: toolCallId, slot, appActiveAt: now }
+        return { tabs: next, activeId: id }
+      }
+      let kept = b.tabs
+      // Count EVERY app tab toward the budget (including the focused one), but
+      // only ever evict from the unfocused ones.
+      //
+      // There is deliberately NO "spare the tabs the user worked in" exemption. An
+      // earlier version exempted tabs marked visited, which protected the WRONG set:
+      // auto-open focuses a tab without marking it visited, so the frame a user is
+      // most likely to draw in — the one that just appeared — was the first evicted,
+      // while a tab they merely clicked and left was kept. A null-origin sandboxed
+      // frame cannot be asked whether its canvas is dirty, so no proxy for that is
+      // available; a bound that is honest about evicting beats a heuristic that
+      // claims to protect work and does not. Eviction stays recoverable: the payload
+      // survives in `chat.mcpApps`, so the chat bubble's control rebuilds the frame.
+      const allApps = kept.filter(t => t.kind === 'app')
+      const need = allApps.length + 1 - MAX_APP_TABS_PER_CHAT
+      if (need > 0) {
+        // `slice(0, need)` stops short when there are not enough discardable
+        // frames, leaving the set temporarily over the cap rather than throwing
+        // away work. That is bounded anyway: a frame unmounts once its payload
+        // is evicted, and payloads are already capped by MCP_APPS_PER_SLOT_MAX.
+        const doomed = new Set(
+          allApps
+            .filter(t => t.id !== b.activeId)
+            .sort((x, y) => (x.appActiveAt ?? 0) - (y.appActiveAt ?? 0))
+            .slice(0, need)
+            .map(t => t.id),
+        )
+        kept = kept.filter(t => !doomed.has(t.id))
+      }
+      const tab: PanelTab = { id, kind: 'app', title, appToolCallId: toolCallId, slot, appActiveAt: now }
+      return { tabs: [...kept, tab], activeId: id }
+    })
+  }, [update])
+
   const openArtifact = useCallback((art: { slug: string; kind: Artifact['kind'] }, content: string, slot: string | null = null) => {
     upsert({ id: `artifact:${art.slug}`, kind: 'artifact', title: art.slug, artifactSlug: art.slug, artifactKind: art.kind, content, slot })
   }, [upsert])
@@ -392,7 +551,18 @@ export function usePanelTabs(slotKey: string | null = null) {
 
   const closeAll = useCallback(() => { update(() => ({ tabs: [], activeId: null })) }, [update])
 
-  const setActive = useCallback((id: string | null) => { update(b => ({ ...b, activeId: id })) }, [update])
+  /** Focus a tab. Focusing an app tab stamps `appActiveAt` so the warm-set cap
+   *  evicts by least-recent USE rather than by open order. Other kinds take the
+   *  identity-preserving path so consumers memoizing on a tab don't churn. */
+  const setActive = useCallback((id: string | null) => {
+    update(b => {
+      const i = id ? b.tabs.findIndex(t => t.id === id) : -1
+      if (i === -1 || b.tabs[i].kind !== 'app') return { ...b, activeId: id }
+      const next = b.tabs.slice()
+      next[i] = { ...next[i], appActiveAt: Date.now() }
+      return { tabs: next, activeId: id }
+    })
+  }, [update])
 
   /** Replace the tab order wholesale (drag-to-reorder in the strip). */
   const setOrder = useCallback((next: PanelTab[]) => { update(b => ({ ...b, tabs: next })) }, [update])
@@ -439,8 +609,8 @@ export function usePanelTabs(slotKey: string | null = null) {
 
   return useMemo(() => ({
     tabs, activeId, activeTab,
-    openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact, openFolder,
+    openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact, openFolder, openApp,
     patchTab, closeTab, closeAll, setActive, setOrder, syncPinned,
     hasTabs: tabs.length > 0,
-  }), [tabs, activeId, activeTab, openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact, openFolder, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
+  }), [tabs, activeId, activeTab, openView, openTerminal, adoptTerminal, openFile, openDiff, openArtifact, openFolder, openApp, patchTab, closeTab, closeAll, setActive, setOrder, syncPinned])
 }

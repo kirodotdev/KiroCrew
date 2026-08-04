@@ -184,6 +184,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.mcp-apps-in-side-panel",
+    "label": "MCP Apps in Side Panel",
+    "description": "Render interactive MCP Apps (such as Excalidraw diagrams) in the right side panel instead of inline in the chat. The panel opens automatically.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.merge-queued-messages",
     "label": "Merge Queued Messages",
     "description": "Combine follow-up messages into a single labeled prompt while the agent is busy",
@@ -482,9 +490,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "voice.aws-profile-polly",
-    "label": "AWS Profile (Polly)",
-    "description": "AWS credentials profile for Polly",
+    "id": "voice.aws-profile-amazon-polly",
+    "label": "AWS Profile (Amazon Polly)",
+    "description": "AWS credentials profile for Amazon Polly",
     "tab": "voice",
     "type": "input",
     "occurrence": 1
@@ -498,9 +506,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "voice.aws-region-polly",
-    "label": "AWS Region (Polly)",
-    "description": "AWS region for Polly API",
+    "id": "voice.aws-region-amazon-polly",
+    "label": "AWS Region (Amazon Polly)",
+    "description": "AWS region for Amazon Polly API",
     "tab": "voice",
     "type": "input",
     "occurrence": 1
@@ -532,7 +540,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.engine",
     "label": "Engine",
-    "description": "Polly engine type",
+    "description": "Amazon Polly engine type",
     "tab": "voice",
     "type": "select",
     "occurrence": 1
@@ -594,7 +602,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.provider-2",
     "label": "Provider",
-    "description": "Piper runs locally and offline; Polly uses AWS credentials + network",
+    "description": "Piper runs locally and offline; Amazon Polly uses AWS credentials + network",
     "tab": "voice",
     "type": "select",
     "occurrence": 2
@@ -626,7 +634,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.voice",
     "label": "Voice",
-    "description": "AWS Polly voice for TTS",
+    "description": "Amazon Polly voice for TTS",
     "tab": "voice",
     "type": "select",
     "occurrence": 1

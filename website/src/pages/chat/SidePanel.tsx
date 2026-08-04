@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } fro
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight } from 'lucide-react'
 import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
@@ -16,12 +16,14 @@ import { countLines } from '../../components/FileChangeChips'
 import { useTerminalEnabled, useTerminalTitle } from '../../utils/terminalRegistry'
 import { adoptTab as adoptBottomTerminal } from '../../hooks/useBottomTerminal'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
-import { PINNED_VIEWS } from '../../hooks/usePanelTabs'
+import { PINNED_VIEWS, useAllAppTabs } from '../../hooks/usePanelTabs'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useListboxKeyboard } from '../../hooks/useListboxKeyboard'
 import { safeSetItem } from '../../utils/safeStorage'
 import { useAppSelector } from '../../store'
 import { selectSlotSubagents, selectSlotToolLog } from '../../store/chatSlice'
+import { mcpAppKey } from '../../store/chatSlice'
+import McpAppFrame from '../../components/McpAppFrame'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
@@ -31,6 +33,7 @@ const KIND_ICON: Record<TabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Component size={16} />, folder: <Folder size={16} />,
+  app: <PanelRight size={16} />,
 }
 
 /**
@@ -235,6 +238,9 @@ export default function SidePanel({
   inlinePreviewPath, onInlinePreviewChange, expanded, fillWidth,
 }: SidePanelProps) {
   const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
+  // EVERY app frame, every slot, rendered from one stable-keyed list below so a
+  // chat switch cannot change a frame's React key and remount its iframe.
+  const allAppTabs = useAllAppTabs()
   // Subscribed HERE rather than passed down from ChatPage. Both maps are
   // mutated per streamed sub-agent / tool chunk, and this panel is closed by
   // default — holding the subscription in ChatPage re-rendered the whole page
@@ -526,6 +532,9 @@ export default function SidePanel({
           // invisible editor swallow Escape and drop the draft; so unmount it.
           // Cross-slot safety: the inline-preview path is reset by ChatPage when
           // the active chat slot changes.
+          // App tabs render from `allAppTabs` below (one stable key for every slot);
+          // rendering them here too would mount the same iframe twice.
+          if (t.kind === 'app') return null
           if (VIEW_KINDS.has(t.kind)) {
             if (!isActive) return null
             return (
@@ -582,6 +591,27 @@ export default function SidePanel({
             </div>
           )
         })}
+        {/* Every MCP App frame, from every chat slot, in ONE list keyed by the tab's
+            own id. Only the tab that is active in the CURRENT slot is shown; the
+            rest stay mounted and hidden. Keying and mounting here (rather than
+            splitting active vs background) is what lets a frame survive a chat
+            switch: its key never changes, so React never remounts the iframe. */}
+        {allAppTabs.map(t => {
+          // Key and visibility BOTH carry the slot. A tool-call id is only unique
+          // within a session -- `chat.mcpApps` keys by session + tool-call id for
+          // exactly that reason -- so keying on the tab id alone let two slots
+          // collide: duplicate React keys, and `shown` true for both, so another
+          // session's frame overlaid the current one and took its interactions.
+          // The tab's OWN slot never changes, so this key is still stable across a
+          // chat switch (which is what stops the iframe remounting).
+          const tabSlot = t.slot ?? slot
+          const shown = t.id === activeId && tabSlot === slot
+          return (
+            <div key={`${tabSlot}\u001F${t.id}`} className="absolute inset-0" style={{ display: shown ? 'block' : 'none' }} aria-hidden={!shown}>
+              <McpAppTabBody tab={t} slot={tabSlot} />
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -592,6 +622,34 @@ export default function SidePanel({
  *  type on every SidePanel render, forcing React to unmount/remount the whole
  *  subtree — which reset editor state and re-fired xterm's focus-on-visible
  *  effect, stealing focus from the chat input on every keystroke. */
+/** Host for one MCP App, keyed by session + tool-call id — the same
+ *  `chat.mcpApps` store the inline path (`ToolCallLine`) reads, so the panel and
+ *  the chat bubble are never two sources of truth.
+ *
+ *  A missing payload is a real, reachable state rather than a bug: render
+ *  payloads carry multi-MB HTML and are capped per slot
+ *  (`MCP_APPS_PER_SLOT_MAX`), so a long session's oldest app can be evicted
+ *  while its tab is still open. Returning `null` there left an empty tab that
+ *  read as a broken render, so say what happened instead. (A page reload cannot
+ *  reach this: `serializeBucket` drops app tabs precisely because the payload
+ *  never persists.) */
+function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
+  const sk = tab.slot || slot
+  const payload = useAppSelector(s =>
+    tab.appToolCallId && sk ? s.chat.mcpApps?.[mcpAppKey(sk, tab.appToolCallId)] : undefined,
+  )
+  if (!payload) {
+    return (
+      <div className="flex items-center justify-center h-full px-6">
+        <div className="text-[13px] text-muted text-center max-w-[280px]">
+          {i18nT('pages.chat.sidePanel.this_app_render_is_no_longer_available')}
+        </div>
+      </div>
+    )
+  }
+  return <div className="h-full w-full overflow-auto"><McpAppFrame payload={payload} /></div>
+}
+
 function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange, onPathChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
   onClose: () => void
@@ -609,6 +667,7 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
 }) {
   if (tab.kind === 'terminal') return <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} onSendToChat={onTerminalSendToChat} />
   if (tab.kind === 'browser') return <WebPreviewPanel sessionKey={slot} active={active} />
+  if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
   if (tab.kind === 'file') {
     return (
       <MarkdownPanel

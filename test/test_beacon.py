@@ -89,6 +89,16 @@ class TestInstallId:
         assert beacon.install_id(create=False) == ""
         assert not (_isolated_home / beacon.INSTALL_ID_FILE).exists()
 
+    def test_create_false_never_returns_process_local_fallback(
+        self, _isolated_home, monkeypatch
+    ):
+        def denied():
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(beacon, "config_dir", denied)
+        assert beacon.install_id(create=False) == ""
+        assert beacon.install_id(create=True) == beacon._IN_MEMORY_ID
+
     def test_corrupt_id_is_regenerated(self, _isolated_home):
         (_isolated_home / beacon.INSTALL_ID_FILE).write_text("not-a-valid-id")
         fresh = beacon.install_id()

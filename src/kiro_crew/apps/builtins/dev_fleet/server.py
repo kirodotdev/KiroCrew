@@ -224,19 +224,30 @@ try:
     from kiro_crew.pod.config import PodConfig
 
     _POD_IMPORTED = True
-    # Pods are systemd --user units — they can only exist on Linux with
-    # systemctl present. On other platforms skip pod-state checks entirely
-    # instead of failing closed on every removal.
+    # Pods are per-user service-manager units: systemd --user on Linux, launchd
+    # user agents on macOS. On a platform with neither, skip pod-state checks
+    # entirely instead of failing closed on every removal.
+    #
+    # NOTE this gate is about PODS only. Make-live (repointing the LIVE gateway's
+    # unit) is a separate feature with its own Linux-only gates further down —
+    # macOS support for pods deliberately does not imply macOS make-live.
     if sys.platform == "linux" and shutil.which("systemctl"):
         _POD_AVAILABLE = True
-    elif sys.platform != "linux":
+    elif sys.platform == "darwin" and shutil.which("launchctl"):
+        _POD_AVAILABLE = True
+    elif sys.platform == "darwin":
         _POD_ERROR = (
-            f"Pods are Linux systemd --user units; this host is {sys.platform}. "
-            "Preview a worktree with ./dev-backend.sh instead."
+            "Pods are launchd user agents on macOS, but no `launchctl` was found "
+            "on PATH."
+        )
+    elif sys.platform == "linux":
+        _POD_ERROR = (
+            "Pods require `systemctl --user`, but no `systemctl` was found on PATH."
         )
     else:
         _POD_ERROR = (
-            "Pods require `systemctl --user`, but no `systemctl` was found on PATH."
+            f"Pods need systemd --user (Linux) or launchd (macOS); this host is "
+            f"{sys.platform}. Preview a worktree with ./dev-backend.sh instead."
         )
 except ImportError as exc:
     _POD_ERROR = f"the pod subsystem could not be imported: {exc}"

@@ -677,26 +677,49 @@ def _validate_source(source: str) -> str:
 
 
 def _strip_session_scope(key: str) -> str:
-    """Drop a leading ``dashboard:`` scope so slot identities compare equal.
+    """Canonicalize a session key so both spellings of ONE conversation match.
 
     The store's two provenance fields disagree by construction, and neither is
     wrong on its own:
 
-    * ``Artifact.session_key`` is written from the dashboard's BARE slot key
-      (``chat-7-1785396512``) on the browser create path.
-    * an event's ``session_id`` comes from the caller's FULL session key
-      (``dashboard:chat-7-1785396512``), because MCP callers resolve identity
-      through ``KIROCREW_SESSION_KEY`` / the signed pid sidecar, which are
+    * ``Artifact.session_key`` is written from the dashboard's BARE slot key —
+      ``chat-7-1785396512`` for a dashboard-born tab, ``slack_1785370133.085469``
+      for a channel-born one — on the browser create path.
+    * an event's ``session_id`` comes from the caller's FULL session key —
+      ``dashboard:chat-7-1785396512``, or the channel's own
+      ``slack:1785370133.085469`` — because MCP callers resolve identity through
+      ``KIROCREW_SESSION_KEY`` / the signed pid sidecar, which are
       scope-qualified.
 
-    A literal comparison therefore matches the origin case and *never* the
-    event case — the involvement scope would silently degrade to the plain
-    origin filter it exists to widen. Only ``dashboard:`` is stripped: a
-    ``slack:``/``discord:``/``cron:`` key has no bare chat-slot twin, so
-    collapsing those would merge genuinely different sessions.
+    A literal comparison therefore matches the origin case and *never* the event
+    case — the involvement scope would silently degrade to the plain origin
+    filter it exists to widen. Each family needs the fold that turns its session
+    key into its slot name, because the slot name is what the origin field
+    holds:
+
+    * a dashboard slot's name is its session key minus the ``dashboard:`` scope.
+    * a channel-born slot's name is its session key run through
+      ``history._safe_key`` (see ``channel_slots.channel_slot_name``) — the same
+      fold that names the transcript, which is why the tab and the thread share
+      one file.
+
+    The namespace itself is never dropped: ``slack:X`` canonicalizes to
+    ``slack_X``, never to ``X``, so a channel conversation cannot collide with a
+    dashboard slot. Keys with no second spelling to reconcile (``cron:``,
+    ``subagent:``, ``taskrunner:``) are returned untouched.
+
+    Both channel helpers are imported lazily: ``validation`` reads this module's
+    ``MAX_CONTENT_BYTES`` at import time, so a top-level ``kiro_crew.messaging``
+    import here closes a cycle through ``messaging.driver`` -> ``acp`` ->
+    ``validation``.
     """
     prefix = "dashboard:"
-    return key[len(prefix):] if key.startswith(prefix) else key
+    if key.startswith(prefix):
+        return key[len(prefix):]
+    from kiro_crew.history import _safe_key
+    from kiro_crew.messaging.link import is_channel_session_key
+
+    return _safe_key(key) if is_channel_session_key(key) else key
 
 
 def _session_touched(art: "Artifact", session_key: str) -> bool:

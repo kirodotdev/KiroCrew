@@ -24,7 +24,7 @@ import logging
 from aiohttp import web
 
 from kiro_crew import security
-from kiro_crew.dashboard.chat_utils import _history_key_for
+from kiro_crew.dashboard.chat_utils import _history_key_for, effective_session_key
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session, _read_session_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.mcp_apps_render import load_spool
@@ -181,10 +181,25 @@ async def api_mcp_apps_call(request: web.Request) -> web.Response:
         return web.json_response({"error": "unknown or expired app"}, status=404)
     record_session = str(record.get("session_key") or "")
     caller_session = _read_session_key(request)
-    # The record stores the CANONICAL producing key (``dashboard:<slot>``) while
-    # the honest client sends the bare slot key; canonicalize before comparing
-    # or a legitimate owner call is always refused as a mismatch.
-    caller_canonical = _history_key_for(caller_session) if caller_session else ""
+    # The record names the session that PRODUCED the app — its own key, which is
+    # ``dashboard:<slot>`` for a dashboard-born session and the channel's own key
+    # for one that started on a channel — while the honest client echoes the bare
+    # slot key. Canonicalize the caller's spelling or a legitimate owner is always
+    # refused as a mismatch. Which canonical form is correct is a property of the
+    # slot, not of the string: prefixing a channel-born key yields
+    # ``dashboard:slack:<ts>``, a key no session ever has. So ask the slot the
+    # caller named what session it runs, the same rule the render side binds on,
+    # and fall back to the prefix form when no such slot is open.
+    #
+    # Still fail-closed: identity is a single-valued function of the key the
+    # caller supplied, the accepted set stays two spellings of that one key, and
+    # the binding read here is written server-side from the session map — a
+    # caller can only ever resolve to the session it already claims to be.
+    caller_slot = request.app["state"]._slots.get(caller_session) if caller_session else None
+    if caller_slot is not None:
+        caller_canonical = effective_session_key(caller_slot)
+    else:
+        caller_canonical = _history_key_for(caller_session) if caller_session else ""
     if record_session and record_session not in (caller_session, caller_canonical):
         try:
             SecurityEventLog().log_api_access(

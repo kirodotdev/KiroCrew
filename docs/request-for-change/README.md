@@ -95,6 +95,9 @@ Fix it in the same PR that discovers the drift.
 
 ## Writing a new RFC
 
+[GOVERNANCE.md](../../GOVERNANCE.md) covers who decides whether an RFC is
+accepted, and the scope test for when a change needs one at all.
+
 - File as `rfc-<topic>.md`, kebab-case. Framework or policy docs that propose no
   reviewable change to a named component drop the prefix and set `kind: framework`.
 - Open with front matter, then an H1 `# RFC: <Title>`, then the prose header.

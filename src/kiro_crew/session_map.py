@@ -13,7 +13,13 @@ import tempfile
 from pathlib import Path
 
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
-from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink, canonical_key
+from kiro_crew.messaging.link import (
+    SLACK_NAMESPACE,
+    ChannelLink,
+    canonical_key,
+    is_channel_session_key,
+    legacy_dashboard_mirror_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +379,28 @@ class SessionMap:
             entry.pop("mirror_accepts_inbound", None)
         self._save()
 
+    def _mirror_key(self, key: str) -> str:
+        """The key a session's mirror binding is actually stored under.
+
+        A channel conversation's binding belongs on its own session key — the key
+        its dashboard turns run under. Bindings written before that unification
+        sit on the sanitized ``dashboard:`` spelling
+        (:func:`~kiro_crew.messaging.link.legacy_dashboard_mirror_key`); when
+        that row holds the only binding it is still the live one, so reads and
+        clears resolve to it instead of silently dropping a link the user set. A
+        binding on the canonical key always wins, so a rebind supersedes the
+        legacy row rather than being shadowed by it.
+        """
+        canon = canonical_key(key)
+        entry = self._data.get(canon)
+        if entry and entry.get("mirror") is not None:
+            return canon
+        if is_channel_session_key(canon):
+            legacy = self._data.get(legacy_dashboard_mirror_key(canon))
+            if legacy and legacy.get("mirror") is not None:
+                return legacy_dashboard_mirror_key(canon)
+        return canon
+
     def get_mirror_link(self, key: str) -> ChannelLink | None:
         """Return a session's outbound mirror target as a channel-neutral link.
 
@@ -381,7 +409,7 @@ class SessionMap:
         synthesizes the equivalent Slack ``ChannelLink`` so callers never have
         to special-case Slack. Returns None when the session mirrors nowhere.
         """
-        entry = self._data.get(canonical_key(key))
+        entry = self._data.get(self._mirror_key(key))
         if not entry:
             return None
         raw = entry.get("mirror")
@@ -440,8 +468,12 @@ class SessionMap:
 
         A non-Slack ``mirror`` field is dropped directly; a Slack binding is
         cleared via ``clear_slack_link`` so its reverse index is evicted too.
+        Resolves through :meth:`_mirror_key` so an unlink reaches a binding still
+        held under the legacy spelling — otherwise a mirror that reads as live
+        could not be turned off.
         """
-        entry = self._data.get(canonical_key(key))
+        mkey = self._mirror_key(key)
+        entry = self._data.get(mkey)
         if not entry:
             return False
         if entry.get("mirror") is not None:
@@ -450,7 +482,7 @@ class SessionMap:
             self._save()
             return True
         if entry.get("slack_thread_ts") or entry.get("slack_channel_id"):
-            return self.clear_slack_link(key)
+            return self.clear_slack_link(mkey)
         return False
 
     def max_generation(self, bucket: str) -> int:
@@ -481,6 +513,29 @@ class SessionMap:
             if sid == session_id:
                 return k
         return None
+
+    def channel_key_for_stem(self, stem: str) -> str:
+        """The real channel session key whose transcript filename is *stem*.
+
+        ``history._safe_key`` folds every ``:`` in a session key to ``_`` to
+        build the filename, and that fold is NOT reversible: given
+        ``discord_kirocrew_direct_123`` there is no way to tell which
+        underscores were colons, and an agent name may legitimately contain
+        one. This map holds the unfolded keys, so it is the only authority.
+
+        Returns ``""`` when no mapped session matches, which callers must treat
+        as "leave it unbound" rather than guessing — binding a tab to a
+        wrongly-spelled key would answer the user from a session the channel
+        never sees.
+        """
+        if not stem:
+            return ""
+        from kiro_crew.history import _safe_key
+
+        for k in self._data:
+            if is_channel_session_key(k) and _safe_key(k) == stem:
+                return k
+        return ""
 
     def get_link(self, key: str) -> ChannelLink | None:
         """Return the session's OWN inbound-channel link, or None.

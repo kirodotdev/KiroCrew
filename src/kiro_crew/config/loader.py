@@ -1771,6 +1771,16 @@ class DashboardConfig:
             "Opt-in: enable terminal-style split view to run multiple chat sessions side by side.",
         ),
     )
+    mcp_app_panel: bool = field(
+        default=False,
+        metadata=_meta(
+            "Open MCP Apps in the side panel",
+            "Render interactive MCP Apps (such as Excalidraw diagrams) in the right "
+            "side panel instead of inline in the chat bubble. The panel opens "
+            "automatically and can be expanded; the chat keeps a compact "
+            "placeholder linking to it.",
+        ),
+    )
     terminal: dict = field(
         default_factory=lambda: {"enabled": True},
         metadata=_meta(
@@ -4622,6 +4632,7 @@ class KiroCrewConfig:
                 auto_open_browser=dashboard_data.get("auto_open_browser", True),
                 quick_send=dashboard_data.get("quick_send", False),
                 session_grid=dashboard_data.get("session_grid", False),
+                mcp_app_panel=dashboard_data.get("mcp_app_panel", False),
                 widget_density=dashboard_data.get("widget_density", "more"),
                 verbosity=dashboard_data.get("verbosity", "default"),
                 link_previews=_safe_bool(dashboard_data.get("link_previews"), False),

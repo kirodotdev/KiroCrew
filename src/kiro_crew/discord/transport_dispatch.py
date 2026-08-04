@@ -50,7 +50,7 @@ from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn
 from kiro_crew.messaging.link import (
     ChannelLink,
     build_dm_session_key,
-    dashboard_mirror_key,
+    legacy_dashboard_mirror_key,
     seed_generation,
 )
 from kiro_crew.messaging.transport import InboundMessage
@@ -951,8 +951,12 @@ class DiscordDispatcher:
                 "⚠️ A resumed session is active here. Send `!unlink` first.",
             )
             return
-        key = dashboard_mirror_key(self._session_key(user_id, thread_id))
+        key = self._session_key(user_id, thread_id)
         self.sessions.set_mirror_link(key, ChannelLink("discord", channel_id=channel_id))
+        # Drop any pre-unification row so a stale binding cannot outlive the
+        # rebind (reads prefer the channel key, but a leftover row would still
+        # answer a clear).
+        self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key))
         await self.client.send_message(
             channel_id,
             "✅ Linked. Replies from the dashboard for this conversation will "
@@ -970,8 +974,11 @@ class DiscordDispatcher:
                 "✅ Left the resumed session. Back to your Discord conversation.",
             )
             return
-        key = dashboard_mirror_key(self._session_key(user_id, thread_id))
+        key = self._session_key(user_id, thread_id)
         was_linked = self.sessions.clear_mirror_link(key)
+        was_linked = (
+            self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key)) or was_linked
+        )
         await self.client.send_message(
             channel_id,
             "✅ Unlinked." if was_linked else "This conversation wasn't linked.",

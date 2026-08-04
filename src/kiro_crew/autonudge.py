@@ -665,8 +665,29 @@ class AutoNudgeService:
         return list(self._loops.values())
 
     def _find_by_slot(self, slot_key: str) -> NudgeLoop | None:
+        """The loop bound to *slot_key*, which may be a binding key OR a tab name.
+
+        A channel-born conversation is bound under its channel session key
+        (``slack:<ts>``) — the fire path needs that key to route the turn — but
+        its dashboard tab knows itself only by slot NAME
+        (``slack_<ts>``: the same key folded to the filename charset). The
+        turn-lifecycle hooks and the tab's own loop lookups pass that name, so
+        matching it here is what keeps one loop addressable from both sides
+        instead of invisible from the dashboard.
+
+        Exact match wins; the fold is a fallback, and is computed with the
+        dashboard's own normalizer so no second derivation of the name exists.
+        """
         for lp in self._loops.values():
             if lp.slot_key == slot_key:
+                return lp
+        if not slot_key or is_channel_key(slot_key):
+            return None
+        # Lazy: autonudge is imported BY the dashboard chat layer.
+        from kiro_crew.dashboard.state import _normalize_slot_key
+
+        for lp in self._loops.values():
+            if is_channel_key(lp.slot_key) and _normalize_slot_key(lp.slot_key) == slot_key:
                 return lp
         return None
 

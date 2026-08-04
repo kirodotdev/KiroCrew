@@ -6,7 +6,7 @@ import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { pickToolLabel } from '../../utils/toolLabel'
-import { LoaderCircle, CircleSlash, CircleDot, Lock } from 'lucide-react'
+import { LoaderCircle, CircleSlash, CircleDot, Lock, PanelRight } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { ChatMessage } from '../../types'
@@ -35,7 +35,7 @@ const revealedToolIds = new Set<string>()
 
 /** Inline tool call pill. Click toggles an expanded panel below the pill that
  *  shows purpose / input / output. */
-export default memo(function ToolCallLine({ message, running: _running, slot, onFileOpen, disclosure, disclosureKey, onDisclosureChange }: { message: ChatMessage; running: boolean; slot?: string; onFileOpen?: (path: string) => void; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void }) {
+export default memo(function ToolCallLine({ message, running: _running, slot, onFileOpen, disclosure, disclosureKey, onDisclosureChange, appInPanel, onOpenApp }: { message: ChatMessage; running: boolean; slot?: string; onFileOpen?: (path: string) => void; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void; appInPanel?: boolean; onOpenApp?: (toolCallId: string) => void }) {
   const dispatch = useAppDispatch()
   const label = message.content.replace(/^🔧\s*/, '')
   const toolCallId = message.meta?.tool_call_id as string | undefined
@@ -425,7 +425,24 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       {/* MCP App (SEP-1865): inline sandboxed render attached to this tool
           call. Appears below the details panel; presence is driven by the
           `mcp_app_render` WS event stored in chat.mcpApps. */}
-      {mcpApp && <McpAppFrame payload={mcpApp} />}
+      {/* With dashboard.mcp_app_panel on, the app is hosted by its own side-panel
+          tab instead of here. The bubble keeps a compact affordance: a
+          historical transcript has no live panel, and an empty gap where a
+          diagram used to be reads as a broken render. Clicking it re-focuses —
+          or re-creates — the tab, which is the route back after the user closes
+          it, since auto-open does not re-open a tab they dismissed. */}
+      {mcpApp && (appInPanel
+        ? (
+          <button
+            type="button"
+            onClick={() => { if (toolCallId) onOpenApp?.(toolCallId) }}
+            className="mt-1.5 flex items-center gap-1.5 px-1.5 py-0.5 -ml-1.5 rounded text-[12px] text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+          >
+            <PanelRight size={13} aria-hidden />
+            <span>{i18nT('pages.chat.toolCallLine.opened_in_the_side_panel')}</span>
+          </button>
+        )
+        : <McpAppFrame payload={mcpApp} />)}
     </div>
   )
 })

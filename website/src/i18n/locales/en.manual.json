@@ -1812,7 +1812,8 @@
       "toolCallLine": {
         "aria_awaiting_approval": "Awaiting approval for tool: {{label}}",
         "aria_hide_details": "Hide details for tool: {{label}}",
-        "aria_show_details": "Show details for tool: {{label}}"
+        "aria_show_details": "Show details for tool: {{label}}",
+        "opened_in_the_side_panel": "Opened in the side panel"
       }
     },
     "chatPage": {
@@ -1867,6 +1868,8 @@
       "last_7_days": "Last 7 Days",
       "dashboard_source": "Dashboard",
       "mirroring_to": "Mirroring to {{label}}",
+      "two_way_with_channel": "This session is two-way with {{channel}}: replies are delivered there, and messages sent there arrive here.",
+      "two_way_with_direct_message": "This session is two-way with a direct message: replies are delivered there, and messages sent there arrive here.",
       "session_source": "Session",
       "new": "New",
       "new_chat": "New chat",
@@ -2671,7 +2674,16 @@
         "yolo_duration_next_activation_note": "Applies the next time you turn auto-approve on.",
         "failed_to_save_yolo_duration": "Could not save the duration.",
         "yolo_active_until_restart": "Auto-approve is on and stays on until KiroCrew restarts.",
-        "yolo_active_expires_at": "Auto-approve is on until {{time}}."
+        "yolo_active_expires_at": "Auto-approve is on until {{time}}.",
+        "third_party_apps_section": "Third-party apps",
+        "third_party_apps_state_unknown": "Unavailable",
+        "third_party_apps_unavailable": "Could not read the current setting, so it cannot be shown or changed here. If it was already on, third-party apps stay allowed — reload the page to try again.",
+        "third_party_apps_title": "Let third-party apps run their own code",
+        "third_party_apps_desc": "Apps that did not ship with KiroCrew cannot run their own code until you allow it. Leave this off and such an app will install but refuse to start.",
+        "third_party_apps_tip": "Applies to any app that is not built into KiroCrew. Built-in apps are unaffected and keep working either way.",
+        "third_party_apps_on_warning": "This trusts every third-party app, including ones you install later — not just the one you were trying to start. A trusted app runs with the same access KiroCrew has: your files, your saved credentials, and the internet.",
+        "third_party_apps_scope_note": "Takes effect the next time an app's code is loaded. Turning it back off stops KiroCrew admitting that code again; an app already running stays up until it is switched off or KiroCrew restarts.",
+        "third_party_apps_save_failed": "Could not save this setting."
       },
       "sharedMcpGatewayToggle": {
         "active_sessions_share_pooled_mcp_backends_see_th": "Active — sessions share pooled MCP backends. See the live pool under Developer > System.",
@@ -2732,7 +2744,7 @@
       },
       "voicePanel": {
         "failed_to_save_voice_config": "Failed to save voice config",
-        "aws_polly_cloud": "AWS Polly (cloud)",
+        "amazon_polly_cloud": "Amazon Polly (cloud)",
         "faster": "Faster",
         "fastest": "Fastest",
         "normal": "Normal",
@@ -2938,8 +2950,11 @@
     "notSendingNote": "No heartbeat is being sent right now: {{reason}}.",
     "overlayOverrideNote": "A telemetry.beacon_enabled entry in config.local.json overrides this setting. Remove it there to manage telemetry here.",
     "governanceOverrideNote": "Your administrator's security policy turns this off. It can't be changed here.",
+    "installReceiptBody": "After a successful install or update from Kiro Crew's official catalog, one anonymous receipt is sent. External registries, local apps, and self-registered apps are never reported.",
+    "installReceiptFields": "Official app slug · per-app anonymous token (not linkable across apps) · fresh/update flag · Kiro Crew version",
+    "installReceiptTitle": "Official app install receipts",
     "payloadFields": "Random installation ID · app version · Python minor version · install channel · first-run flag",
-    "noticeBody": "Kiro Crew sends one anonymous ping a day — your app version and install type, nothing more. Never your prompts, files, or credentials.",
+    "noticeBody": "Kiro Crew sends one anonymous ping a day and a per-app receipt after official app installs or updates. Never your prompts, files, or credentials.",
     "noticeTitle": "Privacy at a glance",
     "settingsDescription": "Telemetry, local data, and privacy controls",
     "settingsLabel": "Privacy",

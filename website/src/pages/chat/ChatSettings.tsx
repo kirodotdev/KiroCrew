@@ -101,6 +101,7 @@ export interface DashboardConfig {
   session_grid: boolean
   tail_fork_enabled: boolean
   link_previews: boolean
+  mcp_app_panel: boolean
 }
 
 export default function ChatSettings({ config, onChange }: { config: ChatConfig; onChange: (c: ChatConfig) => void }) {
@@ -108,7 +109,7 @@ export default function ChatSettings({ config, onChange }: { config: ChatConfig;
   const btnRef = useRef<HTMLButtonElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
-  const { data: dashCfg = { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' as const, verbosity: 'default' as const, quick_send: false, session_grid: false, tail_fork_enabled: false, link_previews: false } } = useQuery<DashboardConfig>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig() })
+  const { data: dashCfg = { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' as const, verbosity: 'default' as const, quick_send: false, session_grid: false, tail_fork_enabled: false, link_previews: false, mcp_app_panel: false } } = useQuery<DashboardConfig>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig() })
   const dashMut = useMutation({
     mutationFn: (next: DashboardConfig) => api.updateDashboardConfig(next),
     onMutate: async (next) => {
