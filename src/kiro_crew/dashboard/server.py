@@ -2417,8 +2417,16 @@ async def start_dashboard(
     # empty set (should this fail) simply fails closed (owns-server calls prompt).
     async def _warm_builtin_app_names() -> None:
         try:
-            from kiro_crew.apps.execution import builtin_app_mcp_servers, builtin_app_names
-            from kiro_crew.hooks import set_builtin_app_mcp_servers, set_builtin_app_names
+            from kiro_crew.apps.execution import (
+                builtin_app_agents,
+                builtin_app_mcp_servers,
+                builtin_app_names,
+            )
+            from kiro_crew.hooks import (
+                set_builtin_app_agents,
+                set_builtin_app_mcp_servers,
+                set_builtin_app_names,
+            )
 
             names = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), builtin_app_names
@@ -2428,6 +2436,12 @@ async def start_dashboard(
                 subprocess_executor(), builtin_app_mcp_servers
             )
             set_builtin_app_mcp_servers(servers)
+            # Agent → owning app, so a builtin whose UI is not an app iframe
+            # (empty Slot._app) can still auto-approve calls to its OWN server.
+            agents = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), builtin_app_agents
+            )
+            set_builtin_app_agents(agents)
         except Exception:  # noqa: BLE001 — a warm failure only costs an extra prompt
             logger.warning("Failed to warm builtin app-name set for the gate", exc_info=True)
 

@@ -15,7 +15,7 @@ import os
 import stat as _stat
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -410,6 +410,7 @@ class HookManager:
         is_shell: bool = False,
         mcp_server_name: str = "",
         mcp_tool_name: str = "",
+        resolved_agent: str = "",
     ) -> ToolHookResult:
         """Check if a tool should be auto-approved, denied, or handled normally.
 
@@ -635,9 +636,28 @@ class HookManager:
         # SHIPPED manifest (``_is_declared_builtin_mcp_server``, an in-memory set
         # warmed at boot from immutable manifests — same discipline as
         # ``_BUILTIN_APP_NAMES``) so only a genuinely app-own server auto-approves.
+        #
+        # Recover an app identity for a builtin whose slot carries NONE. Only a
+        # request with an authenticated app scope sets ``Slot._app``, so a
+        # builtin whose UI is not an app iframe (an Electron window using the
+        # dashboard session cookie) binds its slot with an empty app and every
+        # condition below keyed on it fails — the app could not talk to its own
+        # server. Prefer the slot's own ``app`` whenever it HAS one, so an
+        # app-scoped session behaves exactly as before; the derived value is used
+        # ONLY for this auto-approve and is never written back to the slot (see
+        # ``_builtin_app_for_agent`` — ``_app`` also drives app isolation).
+        #
+        # Keyed on ``resolved_agent`` (what ACTUALLY ran), NEVER on ``agent``:
+        # the latter is the slot's ALIAS, which ``resolve_agent_bindings`` maps to
+        # a concrete kiro agent before dispatch, so a user-defined alias named
+        # after a builtin's agent could otherwise borrow that app's identity for
+        # a completely different runtime agent. An empty ``resolved_agent`` (an
+        # uncached permission event, or a caller that does not thread it through)
+        # yields no identity — fail-closed to interactive approval.
+        owner_app = app or _builtin_app_for_agent(resolved_agent)
         if (
-            _app_owns_mcp_server(mcp_server_name, app)
-            and _is_first_party_app(app)
+            _app_owns_mcp_server(mcp_server_name, owner_app)
+            and _is_first_party_app(owner_app)
             and _is_declared_builtin_mcp_server(mcp_server_name)
         ):
             # Govern the REAL tool by its TRUSTED _meta.kiro identity before
@@ -1051,6 +1071,63 @@ def _is_first_party_app(app: str) -> bool:
     Fail-closed before the set is warmed.
     """
     return bool(app) and app.casefold() in _BUILTIN_APP_NAMES
+
+
+# Agent name → owning builtin app, populated ONCE at gateway boot via
+# ``set_builtin_app_agents``. Parallel to ``_BUILTIN_APP_NAMES`` /
+# ``_BUILTIN_APP_MCP_SERVERS`` and kept as a plain module global for the same
+# reason — the PreToolUse gate does ZERO filesystem I/O. Keys are casefolded on
+# ingest so the lookup is a pure dict hit. Empty until warmed → fail-closed: an
+# unrecognised agent yields no app identity and its own-server calls simply
+# prompt, exactly as before this map existed.
+_BUILTIN_APP_AGENTS: dict[str, str] = {}
+
+
+def set_builtin_app_agents(mapping: "Mapping[str, str]") -> None:
+    """Install the agent → owning-builtin-app map for the gate.
+
+    Called once at gateway boot with ``apps.execution.builtin_app_agents()`` —
+    derived only from shipped manifests whose install is builtin-owned, with
+    ambiguous names already dropped. Dependency-inverted like
+    ``set_builtin_app_names`` so ``hooks`` never imports ``apps``. Idempotent; a
+    later call replaces the map.
+    """
+    global _BUILTIN_APP_AGENTS
+    _BUILTIN_APP_AGENTS = {
+        agent.casefold(): app
+        for agent, app in mapping.items()
+        if isinstance(agent, str) and agent and isinstance(app, str) and app
+    }
+
+
+def _builtin_app_for_agent(resolved_agent: str) -> str:
+    """The builtin app that SHIPS *resolved_agent*, or ``""`` when none provably does.
+
+    Recovers an app identity for a slot whose ``_app`` is empty. ``Slot._app``
+    comes from the request's AUTHENTICATED app scope, so a builtin app whose UI
+    is not an app iframe — e.g. an Electron window that authenticates with the
+    dashboard session cookie — binds its slot with NO app identity, and its
+    calls to its OWN MCP server never satisfy the app-own-server auto-approve
+    below (``_app_owns_mcp_server`` returns False for a blank app).
+
+    The argument MUST be the RESOLVED agent (what actually served the turn, i.e.
+    ``AcpClient._agent`` / ``read_effective_agent``), never ``Slot.agent``. The
+    slot's agent is an ALIAS that ``resolve_agent_bindings`` maps to a concrete
+    kiro agent before dispatch — a slot set to ``default`` can be served by
+    ``kirocrew`` — so an alias NAMED after a builtin's agent would otherwise lend
+    that app's identity to a different runtime agent entirely. Keying on the
+    resolved id makes the grant follow what ran, matching the precedence
+    ``read_effective_agent`` already establishes for usage attribution. The map
+    itself is built solely from IMMUTABLE shipped manifests, so nothing the
+    client sent decides which app an agent belongs to.
+
+    Used ONLY to satisfy the app-own-server auto-approve. Deliberately NOT
+    written back to ``Slot._app``: that field also drives app ISOLATION (which
+    app may delete or retitle a slot), so marking a dashboard-created slot
+    app-owned would widen those checks. Pure in-memory lookup; fail-closed before
+    the map is warmed and for an empty resolved agent.
+    """
+    return _BUILTIN_APP_AGENTS.get(resolved_agent.casefold(), "") if resolved_agent else ""
 
 
 def _cu_read_only_auto_approve(tool_name: str) -> bool:

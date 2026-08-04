@@ -3714,6 +3714,11 @@ async def _run_chat(
                         is_shell=event.is_shell,
                         mcp_server_name=event.mcp_server_name,
                         mcp_tool_name=event.tool_name,
+                        # The RESOLVED agent (what actually served the turn), not
+                        # slot.agent — that is an alias resolve_agent_bindings
+                        # maps to a concrete kiro agent, so it must never decide
+                        # which builtin app an agent belongs to.
+                        resolved_agent=read_effective_agent(client),
                     )
                     if tool_result.action == TOOL_DENY:
                         await client.reject_tool(event.request_id)

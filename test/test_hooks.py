@@ -752,6 +752,118 @@ class TestAppOwnMcpServerAutoApprove:
         )
         assert r.action == TOOL_AUTO_APPROVE
 
+    @pytest.fixture
+    def _agent_owned(self, monkeypatch):
+        """``myagent`` is declared by builtin ``myapp``'s shipped manifest."""
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "_BUILTIN_APP_AGENTS", {"myagent": "myapp"})
+
+    def test_own_server_auto_approved_when_slot_app_empty(self, _builtin, _agent_owned):
+        # A builtin whose UI is not an app iframe (e.g. an Electron window using
+        # the dashboard session cookie) binds its slot with NO authenticated app
+        # scope, so Slot._app is empty and every app-keyed condition would fail —
+        # the app could not call its OWN server. The owner is recovered from the
+        # non-model-authored agent via shipped-manifest provenance.
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__do_thing",
+            app="",
+            agent="myalias",
+            resolved_agent="myagent",
+            mcp_server_name="myapp:srv",
+            mcp_tool_name="do_thing",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_AUTO_APPROVE
+
+    def test_unmapped_agent_with_empty_app_not_auto_approved(self, _builtin, _agent_owned):
+        # No shipped manifest declares this agent, so no app identity can be
+        # proven: fail closed to interactive approval rather than guessing.
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__do_thing",
+            app="",
+            resolved_agent="stranger",
+            mcp_server_name="myapp:srv",
+            mcp_tool_name="do_thing",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_slot_agent_alias_cannot_impersonate_app_agent(self, _builtin, _agent_owned):
+        # The slot's `agent` is an ALIAS that resolve_agent_bindings maps to a
+        # concrete kiro agent before dispatch, so an alias NAMED after a builtin's
+        # agent must NOT lend that app's identity to whatever actually ran. Only
+        # the resolved identity decides ownership.
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__do_thing",
+            app="",
+            agent="myagent",  # alias spelled like the builtin's agent
+            resolved_agent="kirocrew",  # …but a different agent served the turn
+            mcp_server_name="myapp:srv",
+            mcp_tool_name="do_thing",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_missing_resolved_agent_not_auto_approved(self, _builtin, _agent_owned):
+        # Without a resolved identity we cannot prove WHICH agent ran, so the
+        # alias is never used as a substitute — fail closed.
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__do_thing",
+            app="",
+            agent="myagent",
+            resolved_agent="",
+            mcp_server_name="myapp:srv",
+            mcp_tool_name="do_thing",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_derived_owner_cannot_reach_another_apps_server(self, _agent_owned, monkeypatch):
+        # The derived identity is still only ITS OWN server: it must not
+        # auto-approve a different app's app-scoped server. Both apps are
+        # first-party and both servers declared, so ONLY the ownership check can
+        # be what rejects this.
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(
+            hooks_mod, "_is_first_party_app", lambda app: app.casefold() in {"myapp", "otherapp"}
+        )
+        monkeypatch.setattr(
+            hooks_mod, "_BUILTIN_APP_MCP_SERVERS", frozenset({"myapp:srv", "otherapp:srv"})
+        )
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__otherapp:srv__do_thing",
+            app="",
+            agent="myalias",
+            resolved_agent="myagent",
+            mcp_server_name="otherapp:srv",
+            mcp_tool_name="do_thing",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_slot_app_takes_precedence_over_derived_owner(self, _builtin, _agent_owned):
+        # An app-scoped session keeps its AUTHENTICATED identity: the agent map is
+        # a fallback for an empty _app, never an override that could lend one app
+        # another's identity.
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__do_thing",
+            app="otherapp",
+            agent="myalias",
+            resolved_agent="myagent",
+            mcp_server_name="myapp:srv",
+            mcp_tool_name="do_thing",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_ALLOW
+
     def test_own_server_without_trusted_tool_name_not_auto_approved(self, _builtin):
         # No trusted _meta.kiro.toolName → we cannot identify WHICH tool this is
         # to govern it, so the app-own-server auto-approve does NOT fire; the

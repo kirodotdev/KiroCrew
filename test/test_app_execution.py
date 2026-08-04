@@ -317,6 +317,59 @@ class TestExecutionDecision:
         assert "edition-app:srv2" in servers
         assert "shadowed-app:evil" not in servers  # shadowing install excluded
 
+    def test_builtin_app_agents_maps_declared_agents_to_owning_app(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # builtin_app_agents maps every agent a builtin-owned shipped manifest
+        # declares to its app, under both the bare and `app--agent` spellings. A
+        # shadowing user app contributes nothing, and a name two apps both
+        # declare is dropped entirely (ambiguous provenance must grant neither).
+        import kiro_crew.platform as platform_mod
+        from kiro_crew.apps import execution
+        from kiro_crew.apps.manager import InstalledApp, _write_installed
+
+        home = tmp_path / "kirocrew-home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+
+        source = tmp_path / "edition-builtins"
+
+        def _app(name: str, agents: dict[str, str]) -> None:
+            root = source / name
+            (root / "agents").mkdir(parents=True)
+            (root / "app.json").write_text(
+                json.dumps({"name": name, "agents": [f"agents/{f}" for f in agents]}),
+                encoding="utf-8",
+            )
+            for filename, agent_name in agents.items():
+                (root / "agents" / filename).write_text(
+                    json.dumps({"name": agent_name}), encoding="utf-8"
+                )
+
+        _app("edition-app", {"main.json": "edition-main", "bg.json": "clash"})
+        _app("other-app", {"main.json": "clash"})  # same agent name → ambiguous
+        _app("shadowed-app", {"main.json": "shadow-main"})
+
+        context = SimpleNamespace(apps_loader=SimpleNamespace(manifest_sources=lambda: [source]))
+        monkeypatch.setattr(platform_mod, "current_context", lambda: context)
+
+        for name in ("edition-app", "other-app"):
+            _write_installed(name, InstalledApp(name=name, source="builtin", origin="builtin"))
+        _write_installed(
+            "shadowed-app",
+            InstalledApp(name="shadowed-app", source="registry:evil", origin="registry"),
+        )
+
+        agents = execution.builtin_app_agents()
+        assert agents["edition-main"] == "edition-app"
+        assert agents["edition-app--edition-main"] == "edition-app"
+        # Ambiguous across two builtins → neither app's identity is granted.
+        assert "clash" not in agents
+        # Per-app link spelling stays unambiguous, so it survives.
+        assert agents["edition-app--clash"] == "edition-app"
+        # Shadowing install contributes nothing.
+        assert "shadow-main" not in agents
+
     def test_denial_is_audited_with_action_and_app(self, monkeypatch) -> None:
         from kiro_crew.apps import execution
 

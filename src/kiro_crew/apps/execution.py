@@ -200,6 +200,93 @@ def builtin_app_mcp_servers() -> frozenset[str]:
     return frozenset(servers)
 
 
+def builtin_app_agents() -> dict[str, str]:
+    """Map each agent DECLARED by a shipped builtin manifest to its owning app.
+
+    For every first-party manifest (the SAME sources and builtin-owned-install
+    narrowing as :func:`builtin_app_names`), read each entry of its ``agents``
+    list and map that agent's declared ``name`` to the app that ships it. Both
+    the bare name and the ``f"{app}--{agent}"`` link form (the filename
+    ``bridges._safe_link_name`` registers it under) are emitted, because a chat
+    slot may carry either spelling depending on which surface bound it; both are
+    derived from the same IMMUTABLE manifest and identify the same app agent.
+
+    This exists so the PreToolUse gate can recover an app identity for a slot
+    that has none. ``Slot._app`` is set from the request's AUTHENTICATED app
+    scope, so a builtin whose UI is not an app iframe — e.g. an Electron window
+    authenticating with the dashboard session cookie — creates its slot with an
+    empty ``_app`` and its calls to its OWN MCP server never satisfy the
+    app-own-server auto-approve. Deriving the owner from the agent restores that
+    intra-app UX without trusting anything the client sent: the mapping comes
+    only from shipped manifests, exactly like :func:`builtin_app_mcp_servers`.
+
+    An agent name declared by MORE than one app is dropped entirely rather than
+    resolved arbitrarily — ambiguous provenance must not grant either app's
+    identity (fail-closed). Filesystem I/O (manifest + one read per declared
+    agent file); callers warm it ONCE off the event loop. A source, manifest, or
+    agent file that fails to read is skipped, never widening the mapping.
+    """
+    # Deferred import: manager imports this module at load time (see
+    # builtin_app_names), so the reverse edge resolves lazily.
+    from kiro_crew.apps.manager import builtin_owns_installed
+
+    mapping: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    owned: dict[str, bool] = {}
+    for source in _builtin_manifest_sources():
+        try:
+            entries = sorted(source.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                root = entry.resolve(strict=True)
+                if not root.is_dir() or not root.is_relative_to(source):
+                    continue
+                manifest_path = (root / "app.json").resolve(strict=True)
+                if not manifest_path.is_file() or not manifest_path.is_relative_to(root):
+                    continue
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(manifest, dict):
+                continue
+            name = manifest.get("name")
+            agents = manifest.get("agents")
+            if not (isinstance(name, str) and name and isinstance(agents, list)):
+                continue
+            if name not in owned:
+                owned[name] = builtin_owns_installed(name)
+            if not owned[name]:
+                continue
+            for rel in agents:
+                if not isinstance(rel, str) or not rel:
+                    continue
+                try:
+                    # Confine the declared path to the app root: a manifest is
+                    # immutable shipped data, but resolving before the
+                    # containment check keeps a symlinked entry from reading an
+                    # agent file outside the app it claims to ship.
+                    agent_path = (root / rel).resolve(strict=True)
+                    if not agent_path.is_file() or not agent_path.is_relative_to(root):
+                        continue
+                    agent_doc = json.loads(agent_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(agent_doc, dict):
+                    continue
+                agent_name = agent_doc.get("name")
+                if not (isinstance(agent_name, str) and agent_name):
+                    continue
+                for key in (agent_name, f"{name}--{agent_name}"):
+                    if mapping.get(key, name) != name:
+                        ambiguous.add(key)
+                    mapping[key] = name
+    for key in ambiguous:
+        mapping.pop(key, None)
+    return mapping
+
+
 def shipped_builtin_module_path(app_name: str, module_name: str) -> Path | None:
     """Resolve a ``python -m`` target only when it belongs to ``app_name``'s package."""
     root = shipped_builtin_app_root(app_name)
