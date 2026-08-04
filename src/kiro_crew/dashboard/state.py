@@ -3279,7 +3279,26 @@ class _ChatSlot:
             "linked_session_key": self.linked_session_key,
             "app": self._app,
             "origin": self._origin,
+            "execution": self._execution_payload(),
         }
+
+    def _execution_payload(self) -> dict[str, str | None] | None:
+        """Currently always None: the recorded verdict cannot be attributed to
+        one session, and a wrong answer here is worse than no answer.
+
+        The verdict is recorded per WORK DIR, but several sessions can share a
+        project. A session that fell back to the host, followed by a later
+        session on the same project that did enter a container, would read the
+        newer verdict and render "in container" -- the precise false reassurance
+        this indicator exists to prevent. Over-warning would be tolerable;
+        under-warning is not.
+
+        Reporting resumes once the verdict is keyed by the identity of the
+        process that resolved it rather than by its working directory. The
+        recording side (``devcontainer.resolve_with_locus``) stays in place and
+        tested, and the frontend already renders nothing for an absent value.
+        """
+        return None
 
 
 class DashboardState:
