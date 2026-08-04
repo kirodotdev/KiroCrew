@@ -226,6 +226,15 @@ class AppResult:
             d["message"] = self.message
         if self.error:
             d["error"] = self.error
+        # `code` is the repo's wire contract for a machine-readable failure
+        # (test_error_code_contract.py); `error` is advisory prose. This field
+        # existed but was never serialized, so every structured code set by a
+        # caller was silently dropped on the way to the client -- leaving the
+        # frontend with untranslatable English prose and no way to tell WHICH
+        # failure it was, which is why an execution-policy denial could not be
+        # given an actionable affordance.
+        if self.error_code:
+            d["code"] = self.error_code
         return d
 
 
@@ -878,6 +887,7 @@ def enable_app(name: str) -> AppResult:
             ok=False,
             name=name,
             error=f"blocked by execution policy: {execution_denied}",
+            error_code="app_execution_denied",
         )
 
     if meta.enabled:

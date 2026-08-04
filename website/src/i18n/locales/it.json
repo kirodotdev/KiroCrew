@@ -4592,6 +4592,8 @@
       "enabled": "Attivato",
       "failed_to_load_app": "Caricamento dell'app non riuscito",
       "failed_to_uninstall": "Disinstallazione non riuscita",
+      "third_party_blocked": "Le app che non sono incluse in Kiro Crew non possono ancora eseguire il proprio codice, quindi questa non può avviarsi. Puoi consentirlo in Impostazioni → Sicurezza.",
+      "open_security_settings": "Apri le impostazioni di sicurezza",
       "features": "Funzionalità",
       "fix_with_ai": "Correggi con l'IA",
       "install": "Installa",

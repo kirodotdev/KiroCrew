@@ -4592,6 +4592,8 @@
       "enabled": "Activée",
       "failed_to_load_app": "Échec du chargement de l’application",
       "failed_to_uninstall": "Échec de la désinstallation",
+      "third_party_blocked": "Les applications qui ne sont pas fournies avec Kiro Crew ne sont pas encore autorisées à exécuter leur propre code, donc celle-ci ne peut pas démarrer. Tu peux l’autoriser dans Paramètres → Sécurité.",
+      "open_security_settings": "Ouvrir les paramètres de sécurité",
       "features": "Fonctionnalités",
       "fix_with_ai": "Corriger avec l'IA",
       "install": "Installer",

@@ -1520,6 +1520,8 @@
       "enabled": "Enabled",
       "failed_to_load_app": "Failed to load app",
       "failed_to_uninstall": "Failed to uninstall",
+      "third_party_blocked": "Apps that did not ship with Kiro Crew are not allowed to run their own code yet, so this one cannot start. You can allow it in Settings → Security.",
+      "open_security_settings": "Open Security settings",
       "install_complete": "Install complete",
       "install_failed": "Install failed",
       "installed_version": "Installed (v{{version}})",

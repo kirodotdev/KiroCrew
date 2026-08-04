@@ -79,6 +79,33 @@ interface AppPermissions {
   [key: string]: unknown
 }
 
+/** True when a failure is the third-party-app execution gate refusing.
+ *
+ *  The repo's wire contract (test_error_code_contract.py) is that `code` is
+ *  machine-readable and `error` is advisory prose, so this keys off `code` only
+ *  — never off the sentence, which is English, unlocalizable, and free to be
+ *  reworded by the backend at any time.
+ *
+ *  Two shapes reach us, because the two call paths fail differently:
+ *   - the registry install resolves a payload object carrying `code`;
+ *   - `enableApp` REJECTS with an `ApiError`, which keeps the payload as a raw
+ *     JSON *string* on `.body` rather than as own properties — reading
+ *     `err.code` finds nothing, so `.body` has to be parsed first (same
+ *     approach as `embedModelErrorMessage`).
+ */
+function isExecutionDenied(source: unknown): boolean {
+  if (source == null || typeof source !== 'object') return false
+  let obj = source as Record<string, unknown>
+  const raw = obj.body
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') obj = { ...obj, ...parsed }
+    } catch { /* not JSON — fall through to whatever fields are already there */ }
+  }
+  return obj.code === 'app_execution_denied'
+}
+
 /** A registry app entry from /api/apps/registry — a superset of the fields we
  *  read here, spread into AppInfo when there's no installed app. */
 interface RegistryEntry extends Partial<AppInfo> {
@@ -193,6 +220,21 @@ export default function AppDetailPage() {
   const [app, setApp] = useState<AppInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // Tracked separately from `error` because it changes what the banner OFFERS,
+  // not just what it says: this is the one failure the user can act on from
+  // here, and until now they were handed an English sentence naming a config
+  // key with nothing to click.
+  const [deniedByPolicy, setDeniedByPolicy] = useState(false)
+  /** Clear BOTH error fields together.
+   *
+   *  Resetting only `error` would leave `deniedByPolicy` set, so the next
+   *  unrelated failure would render the third-party-gate copy and an
+   *  "open security settings" button for something that has nothing to do with
+   *  it. Routing every reset through here is what keeps the two in step. */
+  const clearError = useCallback(() => {
+    setError('')
+    setDeniedByPolicy(false)
+  }, [])
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [installLog, setInstallLog] = useState('')
   const [showInstallLog, setShowInstallLog] = useState(false)
@@ -217,7 +259,7 @@ export default function AppDetailPage() {
   const load = useCallback(async () => {
     if (!name) return
     setLoading(true)
-    setError('')
+    clearError()
     try {
       // Try installed app first
       const installed = await api.getApp(name).catch(() => null)
@@ -287,7 +329,7 @@ export default function AppDetailPage() {
     } finally {
       setLoading(false)
     }
-  }, [name])
+  }, [name, clearError])
 
   useEffect(() => { load() }, [load])
 
@@ -318,7 +360,7 @@ export default function AppDetailPage() {
     setInstallLog('')
     setInstallDone(false)
     setShowInstallLog(true)
-    setError('')
+    clearError()
     setClientInstall(null)
     installAbortRef.current?.abort()
     const controller = new AbortController()
@@ -350,11 +392,13 @@ export default function AppDetailPage() {
         await load()
         window.dispatchEvent(new Event('mc:apps-changed'))
       } else {
+        setDeniedByPolicy(isExecutionDenied(result))
         setError(result.error || i18nT('pages.appDetailPage.install_failed'))
       }
     } catch (e: unknown) {
       if (e instanceof Error && e.name === 'AbortError') return
       setInstallDone(true)
+      setDeniedByPolicy(isExecutionDenied(e))
       setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.install_failed'))
     } finally {
       // Only clear loading if this is still the active install —
@@ -375,7 +419,7 @@ export default function AppDetailPage() {
       return
     }
     setActionLoading(action)
-    setError('')
+    clearError()
     try {
       if (action === 'enable') await api.enableApp(app.name)
       else if (action === 'disable') await api.disableApp(app.name)
@@ -386,6 +430,7 @@ export default function AppDetailPage() {
       await load()
       window.dispatchEvent(new Event('mc:apps-changed'))
     } catch (e: unknown) {
+      setDeniedByPolicy(isExecutionDenied(e))
       setError(e instanceof Error ? e.message : `Failed to ${action}`)
     } finally {
       setActionLoading(null)
@@ -395,7 +440,7 @@ export default function AppDetailPage() {
   const confirmUninstall = async () => {
     if (!app) return
     setActionLoading('uninstall')
-    setError('')
+    clearError()
     try {
       const res = await api.uninstallApp(app.name, keepData)
       if (res.uninstall_log) setInstallLog(res.uninstall_log)
@@ -471,9 +516,27 @@ export default function AppDetailPage() {
 
         {/* Error */}
         {error && (
-          <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-center gap-3 animate-rise">
-            <span className="text-danger text-sm flex-1">{error}</span>
-            <button aria-label={i18nT('pages.appDetailPage.dismiss_error')} className="text-danger/60 hover:text-danger text-sm" onClick={() => setError('')}><X className="lucide-inline" /></button>
+          <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
+            <div className="flex-1 min-w-0">
+              {/* An execution-policy denial is the one failure here the user can
+                  actually resolve, so it gets localized copy plus the switch —
+                  not the backend's English sentence naming a config key. Every
+                  other failure still renders the prose, which is better than
+                  swallowing an unrecognized backend error. */}
+              <span className="text-danger text-sm block">
+                {deniedByPolicy
+                  ? i18nT('pages.appDetailPage.third_party_blocked')
+                  : error}
+              </span>
+              {deniedByPolicy && (
+                <div className="mt-2">
+                  <Btn danger onClick={() => navigate('/settings?tab=security')}>
+                    {i18nT('pages.appDetailPage.open_security_settings')}
+                  </Btn>
+                </div>
+              )}
+            </div>
+            <button aria-label={i18nT('pages.appDetailPage.dismiss_error')} className="text-danger/60 hover:text-danger text-sm shrink-0" onClick={clearError}><X className="lucide-inline" /></button>
           </div>
         )}
 

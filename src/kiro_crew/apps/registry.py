@@ -2447,6 +2447,9 @@ async def install_from_registry(
             "ok": False,
             "name": name,
             "error": f"blocked by execution policy: {execution_denied}",
+            # Same wire contract as the openCommand denial in routes.py: the
+            # frontend keys its affordance off `code`, never off this prose.
+            "code": "app_execution_denied",
             "log": "\n".join(log_lines),
         }
 
