@@ -35,6 +35,11 @@ interface PendingQuestionCardProps {
  * silently start a second turn and strand the blocked tool call. One
  * implementation means a pane cannot drift from the main view.
  */
+/* The in-flight lock is keyed by ask_id, but a handoff card is a legacy
+   (ask_id-less) card, so it needs its own key. Not a bare boolean and not null:
+   null means "idle" and would leave the double-click guard open. */
+const _HANDOFF_LOCK = '__plan_handoff__'
+
 export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectSend }: PendingQuestionCardProps) {
   const dispatch = useAppDispatch()
   // Optional-chained: existing tests build partial preloaded chat state without
@@ -56,7 +61,9 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
 
   const cardSlot = pending.slot
   const askId = pending.ask_id
-  const busy = !!askId && busyFor === askId
+  // Covers the handoff lock too: that card has no ask_id, so keying busy on
+  // ask_id alone would leave Submit live while the disarm is in flight.
+  const busy = (!!askId && busyFor === askId) || busyFor === _HANDOFF_LOCK
   const asText = (answers: Record<string, string>) => Object.values(answers).join('\n')
 
   /* Clearing by ask_id, never by slot: a slow response for ask A must not erase
@@ -101,6 +108,25 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
       })
   }
 
+  /* Leaving plan mode is a single server-side action, NOT a message: the
+     endpoint disarms the gate and starts the implementation turn in that order,
+     because a go-ahead sent while the gate is still armed just earns the agent
+     another refusal on its first write. So this path deliberately does not send
+     the answer text at all -- the endpoint appends its own.
+
+     Fails CLOSED. If the call fails (a turn started in the meantime, offline,
+     5xx) the card stays put and plan mode stays on, which costs the user a
+     retry; the alternative -- clearing the card on a failed disarm -- strands
+     them with a plan, no card, and a gate they did not know was still armed. */
+  const startImplementing = () => {
+    if (busyFor === _HANDOFF_LOCK) return
+    setBusyFor(_HANDOFF_LOCK)
+    Promise.resolve(api.approvePlan?.(cardSlot))
+      .then(() => clearThisCard())
+      .catch(() => { /* keep the card so the user can retry */ })
+      .finally(() => setBusyFor((current) => (current === _HANDOFF_LOCK ? null : current)))
+  }
+
   return (
     <QuestionCard
       // Remount per ask: QuestionCard holds the selections and custom-answer
@@ -114,7 +140,12 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
       // withholding the control there left a card that could ONLY be answered,
       // parked on top of the composer until the session was reset.
       onDismiss={() => { if (askId) resolve(undefined); else clearThisCard() }}
-      onSubmit={(answers) => {
+      planHandoff={!!pending.plan_handoff}
+      onSubmit={(answers, handoff) => {
+        if (handoff === 'start') {
+          startImplementing()
+          return
+        }
         if (!askId) {
           // Legacy card: nothing is blocked, so the answer is just a message —
           // and it is sent RIGHT NOW. Falls back to onFallbackSend only when no

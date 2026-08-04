@@ -15,8 +15,13 @@ transcript / WS / hook surfaces, it does NOT replace the model's tool result.
 That is why the tool bodies phrase their own message to not over-claim an effect
 this consumer applies (and may refuse) after the fact.
 
-IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, with ``session_surface`` the one
-exception: it imports nothing from ``kiro_crew``, so it cannot cycle. ``sel`` is
+IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, with two exceptions.
+``session_surface`` imports nothing from ``kiro_crew``, so it cannot cycle.
+``plan_mode`` is a leaf too — it imports only stdlib plus ``bash_readonly`` and
+``tool_identity``, neither of which reaches the dashboard package — and it is
+imported as a MODULE, so its attributes resolve at call time and a patch of the
+source module is still observed; neither deferral rationale below applies to it.
+``sel`` is
 a genuine cycle (``sel`` -> config -> apps -> dashboard, and chat_runner imports
 this module before it imports sel). The rest (autonudge, autonudge_authz,
 chat_utils, security, chat_handlers) are deferred on purpose: they keep this
@@ -34,6 +39,7 @@ import os
 import time
 from typing import Any
 
+from kiro_crew import plan_mode
 from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger(__name__)
@@ -353,11 +359,27 @@ async def _ask_question(state: Any, slot: Any, args: dict[str, Any]) -> str:
     post = getattr(state, "post_question_card", None)
     if post is None:
         return "Question card could not be delivered (no card channel)."
-    clients = int(await post(slot.key, args.get("questions") or []))
+
+    # The model can REQUEST the end-of-plan handoff, but only this process can
+    # authorize it: the plan-mode registry lives here, and mcp_core (a separate
+    # process) cannot read it. An unarmed session therefore gets an ordinary
+    # card, so the flag can never conjure a control that leaves a gate which was
+    # never on.
+    handoff = bool(args.get("plan_handoff")) and plan_mode.is_active(
+        plan_mode.session_key_for_slot(slot)
+    )
+    clients = int(await post(slot.key, args.get("questions") or [], plan_handoff=handoff))
     if clients == 0:
         return (
             "Question posted, but no dashboard client is attached to see it — "
             "ask in plain text and end your turn instead."
+        )
+    if handoff:
+        return (
+            "Handoff card shown in this session. End your turn now — if the user "
+            "chooses to start implementing, plan mode is turned off for you and "
+            "the work begins in a fresh turn; if they have feedback it arrives as "
+            "your next message and you are still planning."
         )
     return (
         "Question card shown in this session. End your turn now — the user's "

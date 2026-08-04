@@ -26,7 +26,7 @@ import {
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
 import { interceptSlashCommand } from './chat/ChatInput'
-import { sseSlotTitle, triggerRefresh } from '../store/dashboardSlice'
+import { sseSlotTitle, triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
@@ -135,7 +135,7 @@ import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip } from 'lucide-react'
+import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Map as MapIcon, Clock, Undo2, Columns2, ExternalLink, Paperclip } from 'lucide-react'
 import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
 
 import InfoTip from '../components/InfoTip'
@@ -3204,6 +3204,42 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [activeSlot, setPendingProject])
 
   const currentSlot = slots.find(s => s.key === activeSlot)
+
+  // Plan mode is server-owned, unlike browse mode: the backend gate keys
+  // on the persisted slot flag, so the UI reads it from the slot instead of
+  // holding its own copy. Optimistic flip with rollback — the endpoint refuses
+  // with 409 while a turn is running.
+  const planMode = currentSlot?.plan_mode ?? false
+  const togglePlanMode = () => {
+    const slot = activeSlotRef.current
+    if (!slot) return
+    const prev = planMode
+    dispatch(updateSlot({ key: slot, plan_mode: !prev }))
+    Promise.resolve(api.setSlotPlanMode?.(slot, !prev))
+      .then(res => {
+        // The server echo is authoritative: it reports the flag it actually set.
+        if (res && typeof res.plan_mode === 'boolean' && res.plan_mode !== !prev) {
+          dispatch(updateSlot({ key: slot, plan_mode: res.plan_mode }))
+        }
+      })
+      .catch((e: unknown) => {
+        // Surface WHY: the endpoint refuses with a coded 409 while a turn or a
+        // sub-agent is running, and both are routine here. A silent snap-back
+        // just reads as a broken switch, so show the server's own reason.
+        dispatch(updateSlot({ key: slot, plan_mode: prev }))
+        const reason = (e as { message?: string } | null)?.message
+        dispatch(addNotification({
+          ts: uniqueNotificationTs(),
+          kind: 'agent',
+          priority: 'info',
+          title: !prev
+            ? i18nT('pages.chatPage.could_not_turn_plan_mode_on')
+            : i18nT('pages.chatPage.could_not_turn_plan_mode_off'),
+          body: reason || i18nT('pages.chatPage.the_session_is_busy_wait_for_the_current_turn_an'),
+          slot,
+        }))
+      })
+  }
   // Refs so the "run in terminal" listener (registered once) always sees the
   // live panel controller + this chat's working directory.
   const tabsCtlRef = useRef(tabsCtl); tabsCtlRef.current = tabsCtl
@@ -4579,6 +4615,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <div className="flex w-fit items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md bg-bg-hover">
                   {currentSlot?.memory_mode === 'incognito' && <span title={i18nT('pages.chatPage.incognito_memory_writes_disabled')}><EyeOff size={13} className="shrink-0 text-warn" /></span>}
                   {currentSlot?.memory_mode === 'temporary' && <span title={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')}><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
+                  {currentSlot?.plan_mode && <span title={i18nT('pages.chatPage.plan_mode_is_on_the_agent_will_write_a_plan_but')}><MapIcon size={13} className="shrink-0 text-clarify" /></span>}
                   <Input className="session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 flex-none outline-none max-w-[50vw] focus:!shadow-none" size={Math.min(Math.max(titleDraft.length + 2, 6), 80)} autoFocus value={titleDraft} onChange={e => setTitleDraft(e.target.value)} onBlur={() => { if (!cancelTitleRef.current && titleDraft.trim() && activeSlot && titleDraft !== title) { dispatch(sseSlotTitle({ key: activeSlot, title: titleDraft.trim() })); api.renameSlot(activeSlot, titleDraft.trim()).catch(() => {}) } cancelTitleRef.current = false; setEditingTitle(false) }} onCompositionStart={() => { composingRef.current = true }} onCompositionEnd={() => { composingRef.current = true; setTimeout(() => { composingRef.current = false }, 50) }} onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && !composingRef.current) (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { cancelTitleRef.current = true; setEditingTitle(false) } }} />
                 </div>
               ) : (
@@ -4586,6 +4623,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   <Clickable className="flex items-center gap-1" onClick={() => { if (activeSlot && generatingTitleSlots.has(activeSlot)) return; setEditingTitle(true); setTitleDraft(title) }}>
                     {currentSlot?.memory_mode === 'incognito' && <span title={i18nT('pages.chatPage.incognito_memory_writes_disabled')}><EyeOff size={13} className="shrink-0 text-warn" /></span>}
                     {currentSlot?.memory_mode === 'temporary' && <span title={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')}><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
+                    {currentSlot?.plan_mode && <span title={i18nT('pages.chatPage.plan_mode_is_on_the_agent_will_write_a_plan_but')}><MapIcon size={13} className="shrink-0 text-clarify" /></span>}
                     <TypewriterText text={title} className="session-header-title text-sm font-semibold text-muted font-body truncate max-w-[50vw]" />
                     <Pen size={13} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-60 transition-opacity" />
                   </Clickable>
@@ -5083,6 +5121,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onAutoNudgeChange={setAutoNudgeLoop}
               browseMode={browseMode}
               onBrowseToggle={toggleBrowseMode}
+              planMode={planMode}
+              onPlanModeToggle={togglePlanMode}
               onOptimizeResult={handleOptimizeResult}
               memoryMode={currentSlot?.memory_mode ?? 'persistent'}
               cleanMode={currentSlot?.clean_mode}

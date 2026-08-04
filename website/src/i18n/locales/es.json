@@ -2734,6 +2734,7 @@
       "force_reset_session_taking_longer_than_expected": "Forzar reinicio de la sesión (está tardando más de lo esperado)",
       "force_reset_taking_longer_than_expected": "Forzar reinicio — está tardando más de lo esperado",
       "gateway_offline_message_will_not_send": "Gateway sin conexión — el mensaje no se enviará",
+      "have_the_agent_plan_before_it_changes_anything": "Que el agente planifique antes de cambiar nada",
       "it_can_click_type_and_navigate_pages_not_just_re": "Puede hacer clic, escribir y navegar por las páginas, no solo leerlas. Déjalo desactivado si prefieres que no actúe en sitios donde has iniciado sesión.",
       "killing": "Terminando…",
       "killing_session": "Terminando la sesión",
@@ -2745,6 +2746,9 @@
       "optimize_prompt_busy_optimizing_another_chat": "Optimizar el prompt — ocupado optimizando otro chat",
       "optimizing_another_chat_please_wait": "Optimizando otro chat — espera un momento",
       "optimizing_prompt": "Optimizando el prompt…",
+      "plan_mode": "Modo de planificación",
+      "plan_mode_is_on_click_to_turn_it_off_without_sta": "El modo de planificación está activado: haz clic para desactivarlo sin empezar el trabajo",
+      "plan_mode_overrides_this_while_it_is_on": "El modo de planificación anula esto mientras está activado",
       "plan_pre_filled_add_context_then_send": "Plan precargado — añade contexto y pulsa Enviar",
       "project": "Proyecto",
       "queue_message": "Poner el mensaje en cola",
@@ -2789,7 +2793,8 @@
       "voice_input": "Entrada de voz",
       "queue": "Poner en cola",
       "queue_desc": "Se ejecuta cuando termine el turno actual",
-      "steer_desc": "Se inyecta en el turno en curso de inmediato"
+      "steer_desc": "Se inyecta en el turno en curso de inmediato",
+      "the_agent_looks_into_things_and_writes_you_a_pla": "El agente investiga y te escribe un plan en lugar de hacer cambios. Las ediciones de archivos y los comandos se bloquean antes de ejecutarse: una protección sólida, no un sandbox. La lectura y la búsqueda web siguen funcionando."
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -3770,8 +3775,11 @@
       "dismiss": "Descartar",
       "dismiss_question_without_answering": "Descartar la pregunta sin responder",
       "expand_all": "Expandir todo",
+      "i_have_feedback_on_the_plan": "Tengo comentarios sobre el plan",
+      "leaves_plan_mode_and_starts_the_work": "Sale del modo de planificación y empieza el trabajo",
       "not_answered_yet": "Sin responder",
       "or_type_a_custom_answer": "O escribe una respuesta personalizada...",
+      "start_implementing_this": "Empezar a implementarlo",
       "submit": "Enviar"
     },
     "queueStack": {
@@ -5576,6 +5584,8 @@
       "continue_a_previous_chat": "¿Continuar un chat anterior?",
       "could_not_set_the_agent_default_model": "No se pudo definir el modelo predeterminado del agente",
       "could_not_start_a_new_session": "No se pudo iniciar una sesión nueva",
+      "could_not_turn_plan_mode_off": "No se pudo desactivar el modo de planificación",
+      "could_not_turn_plan_mode_on": "No se pudo activar el modo de planificación",
       "dismiss_error": "Descartar el error",
       "dismiss_upload_error": "Descartar el error de subida",
       "enter_split_view": "Entrar en vista dividida",
@@ -5640,6 +5650,8 @@
       "knowledge_item_many": "{{count}} elementos de conocimiento",
       "knowledge_item_one": "{{count}} elemento de conocimiento",
       "knowledge_item_other": "{{count}} elementos de conocimiento",
+      "plan_mode_is_on_the_agent_will_write_a_plan_but": "El modo plan está activado: el agente escribirá un plan en lugar de hacer cambios. Haz clic en el chip Modo plan para desactivarlo.",
+      "the_session_is_busy_wait_for_the_current_turn_an": "La sesión está ocupada: espera a que terminen el turno actual y los subagentes, y vuelve a intentarlo.",
       "this_session_has_no_project_directory_to_branch": "Esta sesión no tiene un directorio de proyecto desde el que crear una rama.",
       "worktree_creation_returned_no_path": "La creación del worktree no devolvió ninguna ruta"
     },

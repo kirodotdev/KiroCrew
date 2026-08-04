@@ -2698,6 +2698,7 @@
       "force_reset_session_taking_longer_than_expected": "Sitzung zwangsweise zurücksetzen (dauert länger als erwartet)",
       "force_reset_taking_longer_than_expected": "Zwangsweise zurücksetzen — dauert länger als erwartet",
       "gateway_offline_message_will_not_send": "Gateway offline — Nachricht wird nicht gesendet",
+      "have_the_agent_plan_before_it_changes_anything": "Den Agenten planen lassen, bevor er etwas ändert",
       "it_can_click_type_and_navigate_pages_not_just_re": "Er kann Seiten anklicken, dort tippen und navigieren — nicht nur lesen. Lassen Sie es aus, wenn er auf Seiten, bei denen Sie angemeldet sind, nicht handeln soll.",
       "killing": "Wird beendet…",
       "killing_session": "Sitzung wird beendet",
@@ -2709,6 +2710,9 @@
       "optimize_prompt_busy_optimizing_another_chat": "Prompt optimieren — anderer Chat wird gerade optimiert",
       "optimizing_another_chat_please_wait": "Anderer Chat wird optimiert — bitte warten",
       "optimizing_prompt": "Prompt wird optimiert…",
+      "plan_mode": "Planungsmodus",
+      "plan_mode_is_on_click_to_turn_it_off_without_sta": "Planungsmodus ist aktiv — klicken, um ihn auszuschalten, ohne die Arbeit zu starten",
+      "plan_mode_overrides_this_while_it_is_on": "Der Planungsmodus setzt dies außer Kraft, solange er aktiv ist",
       "plan_pre_filled_add_context_then_send": "Plan vorbefüllt — Kontext hinzufügen und dann senden",
       "project": "Projekt",
       "queue_message": "Nachricht in die Warteschlange stellen",
@@ -2753,7 +2757,8 @@
       "voice_input": "Spracheingabe",
       "queue": "Warteschlange",
       "queue_desc": "Wird nach Abschluss des aktuellen Zugs ausgeführt",
-      "steer_desc": "Wird sofort in den laufenden Zug eingesteuert"
+      "steer_desc": "Wird sofort in den laufenden Zug eingesteuert",
+      "the_agent_looks_into_things_and_writes_you_a_pla": "Der Agent recherchiert und schreibt dir einen Plan, anstatt Änderungen vorzunehmen. Dateiänderungen und Befehle werden blockiert, bevor sie ausgeführt werden – ein starker Schutz, keine Sandbox. Lesen und Websuche funktionieren weiterhin."
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -3723,8 +3728,11 @@
       "dismiss": "Schließen",
       "dismiss_question_without_answering": "Frage ohne Antwort schließen",
       "expand_all": "Alle ausklappen",
+      "i_have_feedback_on_the_plan": "Ich habe Feedback zum Plan",
+      "leaves_plan_mode_and_starts_the_work": "Beendet den Planungsmodus und startet die Arbeit",
       "not_answered_yet": "Noch nicht beantwortet",
       "or_type_a_custom_answer": "Oder geben Sie eine eigene Antwort ein…",
+      "start_implementing_this": "Umsetzung jetzt starten",
       "submit": "Absenden"
     },
     "queueStack": {
@@ -5513,6 +5521,8 @@
       "continue_a_previous_chat": "Einen früheren Chat fortsetzen?",
       "could_not_set_the_agent_default_model": "Standardmodell des Agenten konnte nicht festgelegt werden",
       "could_not_start_a_new_session": "Neue Sitzung konnte nicht gestartet werden",
+      "could_not_turn_plan_mode_off": "Planungsmodus konnte nicht deaktiviert werden",
+      "could_not_turn_plan_mode_on": "Planungsmodus konnte nicht aktiviert werden",
       "dismiss_error": "Fehler schließen",
       "dismiss_upload_error": "Upload-Fehler schließen",
       "enter_split_view": "Geteilte Ansicht öffnen",
@@ -5576,6 +5586,8 @@
       "what_can_i_do_for_you": "Was kann ich für Sie tun?",
       "knowledge_item_one": "{{count}} Wissenselement",
       "knowledge_item_other": "{{count}} Wissenselemente",
+      "plan_mode_is_on_the_agent_will_write_a_plan_but": "Planmodus ist aktiv – der Agent schreibt einen Plan, anstatt Änderungen vorzunehmen. Klicke auf den Planmodus-Chip, um ihn auszuschalten.",
+      "the_session_is_busy_wait_for_the_current_turn_an": "Die Sitzung ist beschäftigt — warten Sie, bis der aktuelle Durchlauf und alle Sub-Agenten fertig sind, und versuchen Sie es dann erneut.",
       "this_session_has_no_project_directory_to_branch": "Diese Sitzung hat kein Projektverzeichnis, von dem verzweigt werden kann.",
       "worktree_creation_returned_no_path": "Die Worktree-Erstellung hat keinen Pfad zurückgegeben"
     },

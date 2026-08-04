@@ -2662,6 +2662,7 @@
       "force_reset_session_taking_longer_than_expected": "强制重置会话（耗时超出预期）",
       "force_reset_taking_longer_than_expected": "强制重置 — 耗时超出预期",
       "gateway_offline_message_will_not_send": "网关离线 — 消息不会发送",
+      "have_the_agent_plan_before_it_changes_anything": "让智能体在做任何更改前先规划",
       "it_can_click_type_and_navigate_pages_not_just_re": "智能体可以点击、输入和跳转页面，而不只是读取内容。如果你不希望它在你已登录的网站上执行操作，请保持关闭。",
       "killing": "正在终止…",
       "killing_session": "正在终止会话",
@@ -2673,6 +2674,9 @@
       "optimize_prompt_busy_optimizing_another_chat": "优化提示词 — 正在优化另一个聊天",
       "optimizing_another_chat_please_wait": "正在优化另一个聊天 — 请稍候",
       "optimizing_prompt": "正在优化提示词…",
+      "plan_mode": "规划模式",
+      "plan_mode_is_on_click_to_turn_it_off_without_sta": "规划模式已开启 — 点击可关闭它而不开始动手",
+      "plan_mode_overrides_this_while_it_is_on": "规划模式开启期间，此设置不生效",
       "plan_pre_filled_add_context_then_send": "计划已预填 — 补充上下文后发送",
       "project": "项目",
       "queue_message": "排队消息",
@@ -2717,7 +2721,8 @@
       "voice_input": "语音输入",
       "queue": "排队",
       "queue_desc": "在当前轮次结束后运行",
-      "steer_desc": "立即注入正在运行的轮次"
+      "steer_desc": "立即注入正在运行的轮次",
+      "the_agent_looks_into_things_and_writes_you_a_pla": "助手会先调查并为你写出计划，而不是直接做改动。文件编辑和命令会在运行前被拦截——这是一道有力的防护，但不是沙箱。读取和网页搜索仍然可用。"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -3676,8 +3681,11 @@
       "dismiss": "忽略",
       "dismiss_question_without_answering": "忽略问题而不回答",
       "expand_all": "全部展开",
+      "i_have_feedback_on_the_plan": "我对计划有反馈",
+      "leaves_plan_mode_and_starts_the_work": "退出计划模式并开始执行",
       "not_answered_yet": "尚未回答",
       "or_type_a_custom_answer": "或输入自定义回答…",
+      "start_implementing_this": "开始实施",
       "submit": "提交"
     },
     "queueStack": {
@@ -5450,6 +5458,8 @@
       "continue_a_previous_chat": "继续之前的聊天？",
       "could_not_set_the_agent_default_model": "无法设置代理的默认模型",
       "could_not_start_a_new_session": "无法启动新会话",
+      "could_not_turn_plan_mode_off": "无法关闭规划模式",
+      "could_not_turn_plan_mode_on": "无法开启规划模式",
       "dismiss_error": "忽略错误",
       "dismiss_upload_error": "忽略上传错误",
       "enter_split_view": "进入分屏视图",
@@ -5512,6 +5522,8 @@
       "upload_failed_error": "上传失败：{{error}}",
       "what_can_i_do_for_you": "我能帮你做什么？",
       "knowledge_item_other": "{{count}} 个知识条目",
+      "plan_mode_is_on_the_agent_will_write_a_plan_but": "计划模式已开启——助手会写出计划，而不是直接做改动。点击“计划模式”标签即可关闭。",
+      "the_session_is_busy_wait_for_the_current_turn_an": "会话正忙 — 请等待当前轮次和所有子智能体结束后再试。",
       "this_session_has_no_project_directory_to_branch": "此会话没有可用于开分支的项目目录路径。",
       "worktree_creation_returned_no_path": "创建工作树未返回路径"
     },

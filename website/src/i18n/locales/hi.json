@@ -2698,6 +2698,7 @@
       "force_reset_session_taking_longer_than_expected": "सत्र को ज़बरदस्ती रीसेट करें (अपेक्षा से अधिक समय लग रहा है)",
       "force_reset_taking_longer_than_expected": "ज़बरदस्ती रीसेट करें — अपेक्षा से अधिक समय लग रहा है",
       "gateway_offline_message_will_not_send": "गेटवे ऑफ़लाइन — संदेश नहीं भेजा जाएगा",
+      "have_the_agent_plan_before_it_changes_anything": "एजेंट से कुछ बदलने के पहले योजना बनवाएँ",
       "it_can_click_type_and_navigate_pages_not_just_re": "यह पेजों पर क्लिक कर सकता है, टाइप कर सकता है और नेविगेट कर सकता है — केवल पढ़ना नहीं। यदि आप नहीं चाहते कि यह उन साइटों पर कार्रवाई करे जहाँ आप साइन इन हैं, तो इसे बंद रखें।",
       "killing": "बंद किया जा रहा है…",
       "killing_session": "सत्र बंद किया जा रहा है",
@@ -2709,6 +2710,9 @@
       "optimize_prompt_busy_optimizing_another_chat": "प्रॉम्प्ट ऑप्टिमाइज़ करें — दूसरी चैट ऑप्टिमाइज़ हो रही है",
       "optimizing_another_chat_please_wait": "दूसरी चैट ऑप्टिमाइज़ हो रही है — कृपया प्रतीक्षा करें",
       "optimizing_prompt": "प्रॉम्प्ट ऑप्टिमाइज़ हो रहा है…",
+      "plan_mode": "योजना मोड",
+      "plan_mode_is_on_click_to_turn_it_off_without_sta": "योजना मोड चालू है — काम शुरू किए बिना इसे बंद करने के लिए क्लिक करें",
+      "plan_mode_overrides_this_while_it_is_on": "योजना मोड चालू रहने तक यह सेटिंग निष्प्रभावी रहती है",
       "plan_pre_filled_add_context_then_send": "प्लान पहले से भरा गया — संदर्भ जोड़ें, फिर भेजें",
       "project": "प्रोजेक्ट",
       "queue_message": "संदेश कतार में डालें",
@@ -2753,7 +2757,8 @@
       "voice_input": "वॉइस इनपुट",
       "queue": "कतार में डालें",
       "queue_desc": "मौजूदा टर्न ख़त्म होने के बाद चलाएँ",
-      "steer_desc": "चल रहे टर्न में तुरंत डालें"
+      "steer_desc": "चल रहे टर्न में तुरंत डालें",
+      "the_agent_looks_into_things_and_writes_you_a_pla": "एजेंट बदलाव करने के बजाय जाँच करता है और तुम्हारे लिए एक योजना लिखता है। फ़ाइल संपादन और कमांड चलने से पहले रोक दिए जाते हैं — यह एक मज़बूत सुरक्षा है, सैंडबॉक्स नहीं। पढ़ना और वेब खोज पहले की तरह काम करते हैं।"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",
@@ -3723,8 +3728,11 @@
       "dismiss": "खारिज करें",
       "dismiss_question_without_answering": "उत्तर दिए बिना प्रश्न खारिज करें",
       "expand_all": "सभी विस्तृत करें",
+      "i_have_feedback_on_the_plan": "योजना पर सुझाव देने हैं",
+      "leaves_plan_mode_and_starts_the_work": "प्लान मोड बंद करके काम शुरू होता है",
       "not_answered_yet": "अभी उत्तर नहीं दिया",
       "or_type_a_custom_answer": "या कस्टम उत्तर लिखें...",
+      "start_implementing_this": "इसे लागू करना शुरू करें",
       "submit": "सबमिट करें"
     },
     "queueStack": {
@@ -5513,6 +5521,8 @@
       "continue_a_previous_chat": "पिछली चैट जारी रखें?",
       "could_not_set_the_agent_default_model": "एजेंट का डिफ़ॉल्ट मॉडल सेट नहीं हो सका",
       "could_not_start_a_new_session": "नया सेशन शुरू नहीं हो सका",
+      "could_not_turn_plan_mode_off": "योजना मोड बंद नहीं हो सका",
+      "could_not_turn_plan_mode_on": "योजना मोड चालू नहीं हो सका",
       "dismiss_error": "त्रुटि खारिज करें",
       "dismiss_upload_error": "अपलोड त्रुटि खारिज करें",
       "enter_split_view": "स्प्लिट व्यू में जाएँ",
@@ -5576,6 +5586,8 @@
       "what_can_i_do_for_you": "मैं आपके लिए क्या कर सकता हूँ?",
       "knowledge_item_one": "{{count}} ज्ञान आइटम",
       "knowledge_item_other": "{{count}} ज्ञान आइटम",
+      "plan_mode_is_on_the_agent_will_write_a_plan_but": "प्लान मोड चालू है — एजेंट बदलाव करने के बजाय एक योजना लिखेगा। इसे बंद करने के लिए प्लान मोड चिप पर क्लिक करें।",
+      "the_session_is_busy_wait_for_the_current_turn_an": "सत्र व्यस्त है — चालू टर्न और सभी सब-एजेंट पूरे होने की प्रतीक्षा करें, फिर दोबारा कोशिश करें।",
       "this_session_has_no_project_directory_to_branch": "इस सत्र के पास ब्रांच बनाने के लिए कोई प्रोजेक्ट डायरेक्टरी नहीं है।",
       "worktree_creation_returned_no_path": "वर्कट्री बनाने पर कोई पथ नहीं मिला"
     },

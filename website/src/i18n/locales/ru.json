@@ -2770,6 +2770,7 @@
       "force_reset_session_taking_longer_than_expected": "Принудительно сбросить сессию (выполняется дольше, чем ожидалось)",
       "force_reset_taking_longer_than_expected": "Принудительный сброс — выполняется дольше, чем ожидалось",
       "gateway_offline_message_will_not_send": "Шлюз офлайн — сообщение не отправится",
+      "have_the_agent_plan_before_it_changes_anything": "Пусть агент составит план перед любыми изменениями",
       "it_can_click_type_and_navigate_pages_not_just_re": "Он может нажимать, вводить текст и переходить по страницам, а не только читать их. Оставьте выключенным, если не хотите, чтобы он действовал на сайтах, где вы вошли в аккаунт.",
       "killing": "Завершение…",
       "killing_session": "Завершение сессии",
@@ -2781,6 +2782,9 @@
       "optimize_prompt_busy_optimizing_another_chat": "Улучшить промпт — идёт улучшение в другом чате",
       "optimizing_another_chat_please_wait": "Идёт улучшение в другом чате — подожди",
       "optimizing_prompt": "Оптимизация промпта…",
+      "plan_mode": "Режим планирования",
+      "plan_mode_is_on_click_to_turn_it_off_without_sta": "Режим планирования включён — нажмите, чтобы выключить его, не начиная работу",
+      "plan_mode_overrides_this_while_it_is_on": "Пока режим планирования включён, эта настройка не действует",
       "plan_pre_filled_add_context_then_send": "План подставлен — добавьте контекст и нажмите «Отправить»",
       "project": "Проект",
       "queue_message": "Добавить в очередь",
@@ -2825,7 +2829,8 @@
       "voice_input": "Голосовой ввод",
       "queue": "В очередь",
       "queue_desc": "Выполнить после текущего хода",
-      "steer_desc": "Сразу вставить в выполняющийся ход"
+      "steer_desc": "Сразу вставить в выполняющийся ход",
+      "the_agent_looks_into_things_and_writes_you_a_pla": "Агент исследует и составляет для вас план вместо внесения изменений. Изменения файлов и команды блокируются до выполнения — надёжная защита, но не песочница. Чтение и веб-поиск продолжают работать."
     },
     "chatPane": {
       "agent_list": "Список агентов",
@@ -3817,8 +3822,11 @@
       "dismiss": "Скрыть",
       "dismiss_question_without_answering": "Скрыть вопрос без ответа",
       "expand_all": "Развернуть все",
+      "i_have_feedback_on_the_plan": "Есть замечания к плану",
+      "leaves_plan_mode_and_starts_the_work": "Выходит из режима плана и начинает работу",
       "not_answered_yet": "Нет ответа",
       "or_type_a_custom_answer": "Или введите свой ответ...",
+      "start_implementing_this": "Начать реализацию",
       "submit": "Отправить"
     },
     "queueStack": {
@@ -5639,6 +5647,8 @@
       "continue_a_previous_chat": "Продолжить предыдущий чат?",
       "could_not_set_the_agent_default_model": "Не удалось назначить модель по умолчанию для агента",
       "could_not_start_a_new_session": "Не удалось начать новую сессию",
+      "could_not_turn_plan_mode_off": "Не удалось выключить режим планирования",
+      "could_not_turn_plan_mode_on": "Не удалось включить режим планирования",
       "dismiss_error": "Закрыть ошибку",
       "dismiss_upload_error": "Закрыть ошибку загрузки",
       "enter_split_view": "Перейти в разделённый вид",
@@ -5704,6 +5714,8 @@
       "knowledge_item_many": "{{count}} элементов знаний",
       "knowledge_item_one": "{{count}} элемент знаний",
       "knowledge_item_other": "{{count}} элемента знаний",
+      "plan_mode_is_on_the_agent_will_write_a_plan_but": "Режим плана включён — агент составит план вместо внесения изменений. Нажмите на чип «Режим плана», чтобы отключить его.",
+      "the_session_is_busy_wait_for_the_current_turn_an": "Сессия занята — дождитесь завершения текущего хода и всех субагентов, затем попробуйте снова.",
       "this_session_has_no_project_directory_to_branch": "У этой сессии нет каталога проекта, от которого можно создать ветку.",
       "worktree_creation_returned_no_path": "Создание worktree не вернуло путь"
     },

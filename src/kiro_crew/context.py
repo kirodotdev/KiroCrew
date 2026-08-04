@@ -140,6 +140,10 @@ _STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"\[\s*END\s*OF\s*SESSION\s*CONTEXT\s*\]", re.IGNORECASE),
     re.compile(r"\[\s*CRITICAL\s*RULES\s*[-]{1,2}", re.IGNORECASE),
     re.compile(r"\[\s*CURRENT\s*USER\s*REQUEST\s*[-]{1,2}", re.IGNORECASE),
+    # Plan mode's own fence. Both dash spellings are covered (the block itself
+    # uses an em dash) so pasted text cannot close the read-only instruction.
+    re.compile(r"\[\s*PLAN\s*MODE\s*[-\u2014]{1,2}", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*PLAN\s*MODE\s*\]", re.IGNORECASE),
 )
 _STRUCTURAL_MARKER_NEUTRALIZED = "[marker-removed]"
 
@@ -919,6 +923,37 @@ _CRITICAL_RULES = (
     'next action ("I\'ll merge it", "Let me show the diff", "I can rebase '
     'first"), and never phrase it as a question back to the user.\n'
     "[END CRITICAL RULES]\n\n"
+)
+
+
+# Plan mode — injected on every turn while the session's read-only gate is armed
+# (see kiro_crew/plan_mode.py, which enforces it at the tool-approval pre-rung).
+# The wording is deliberately specific about what still works, because a model
+# told only "you cannot write" tends to either stop investigating or spend the
+# turn asking for permission. Its open/close markers are in
+# _STRUCTURAL_MARKER_RES so a user's own text cannot forge or close the block.
+PLAN_MODE_BLOCK = (
+    "[PLAN MODE — standing instruction for this turn, not a user request]\n"
+    "Plan mode is ON for this session. Investigation still works: reading "
+    "files, searching the codebase, LSP lookups, web search, and read-only "
+    "shell commands all run normally. Editor file writes, mutating shell "
+    "commands, git, and package installs are denied at the tool gate and will "
+    "not run. The gate does not reach every tool — the code tool's write "
+    "operations and auto-approved MCP servers sit outside it — so treat those "
+    "as off limits yourself instead of relying on the gate to stop you.\n"
+    "So: finish investigating, then write the plan and stop.\n"
+    "- Say what you found, then what you propose to do, in order.\n"
+    "- Name the specific files, commands, and tradeoffs involved.\n"
+    "- Flag anything you could not verify without running or writing.\n"
+    "- Do not attempt the change, and do not ask to be allowed to attempt it.\n"
+    "Close the plan by calling ask_question with plan_handoff set true and one "
+    "short question, e.g. \"Ready to implement this?\" — the card supplies the "
+    "choices itself, so pass no options. Then end your turn. If the user chooses "
+    "to start implementing, plan mode is turned off for you and the work begins "
+    "in a fresh turn; if they have feedback, it arrives as your next message and "
+    "you are still planning. Do not tell them to find a toggle, and do not start "
+    "implementing in this turn.\n"
+    "[END PLAN MODE]\n\n"
 )
 
 
@@ -1842,6 +1877,7 @@ class ContextBuilder:
         exclude_last_n: int = 0,
         folder_path: str | None = None,
         model_window: int | None = None,
+        plan_mode: bool = False,
     ) -> tuple[str, HookResult]:
         """Build the full message with context and hook processing.
 
@@ -2139,6 +2175,15 @@ class ContextBuilder:
                 "Folders group related sessions by project or topic. Sessions in "
                 "the same folder are likely about the same work.\n\n"
             )
+
+        # Plan mode — injected on EVERY turn while the gate is armed, for the
+        # same reason [PROJECT] is: it can be toggled after session start, and
+        # the session-start system prompt cannot carry it. The tool gate in
+        # kiro_crew/plan_mode.py enforces this independently; this block exists
+        # so the model plans deliberately instead of discovering the gate by
+        # having a tool call denied.
+        if plan_mode:
+            parts.append(PLAN_MODE_BLOCK)
 
         # Triggered skills (on-demand, any message) — skip for custom agents
         if not is_custom and not minimal_context:

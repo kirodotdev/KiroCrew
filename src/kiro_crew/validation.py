@@ -1072,6 +1072,11 @@ ASK_QUESTION_SCHEMA = ToolSchema(
         # 540 not 1800: the ACP tool-stall watchdog (600s) kills the turn
         # first, and an answer arriving after that has no turn to return to.
         FieldSpec("timeout_secs", int, min_val=15, max_val=540),
+        # Marks the card as the end-of-plan handoff. Only a REQUEST: the server
+        # ignores it unless plan mode is actually armed for the session, and the
+        # frontend supplies the option labels, so the model can neither invent a
+        # handoff nor mislabel the control that lifts its own gate.
+        FieldSpec("plan_handoff", bool),
     ],
 )
 

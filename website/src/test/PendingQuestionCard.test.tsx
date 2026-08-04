@@ -476,3 +476,93 @@ describe('resolvedSince + reconcileQuestions — resolution for a never-held car
     expect(resolvedSince(log, 3)).toEqual([])
   })
 })
+
+/**
+ * The end-of-plan handoff card.
+ *
+ * This card is the only exit from plan mode besides the user's own toggle, so
+ * these tests pin the two properties that make it safe: the disarm rides a
+ * TYPED choice derived from the option index (never a text match, which would
+ * misfire on a translated build or an edited answer), and every non-affirmative
+ * path leaves the gate armed.
+ */
+describe('PendingQuestionCard — plan handoff', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  // Server-authored English labels; the card displays localized copy over them
+  // but keeps these as the selection value.
+  const HANDOFF = [
+    {
+      question: 'Ready to implement this?',
+      options: [{ label: 'Start implementing this' }, { label: 'I have feedback on the plan' }],
+    },
+  ]
+
+  const withHandoff = () =>
+    createTestStore({
+      chat: {
+        activeSlot: 'chat-1',
+        pendingQuestions: {
+          'chat-1': { slot: 'chat-1', plan_handoff: true, questions: HANDOFF },
+        },
+      },
+    } as never)
+
+  it('renders the localized handoff copy, not the payload labels', () => {
+    renderCard(withHandoff())
+    expect(screen.getByText('Start implementing this')).toBeTruthy()
+    expect(screen.getByText('Leaves plan mode and starts the work')).toBeTruthy()
+  })
+
+  it('leaves plan mode through the endpoint and sends no message', async () => {
+    const approve = vi.spyOn(api, 'approvePlan').mockResolvedValue({} as never)
+    const send = renderCard(withHandoff())
+    pick('Start implementing this')
+    await act(async () => { submit() })
+    await waitFor(() => expect(approve).toHaveBeenCalledWith('chat-1'))
+    // The endpoint appends its own go-ahead; a message from here would double it.
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('keeps plan mode armed when the user picks feedback', async () => {
+    const approve = vi.spyOn(api, 'approvePlan').mockResolvedValue({} as never)
+    const send = renderCard(withHandoff())
+    pick('I have feedback on the plan')
+    await act(async () => { submit() })
+    expect(approve).not.toHaveBeenCalled()
+    // Feedback is an ordinary message, so the agent resumes still planning.
+    await waitFor(() => expect(send).toHaveBeenCalled())
+  })
+
+  it('treats a typed answer as feedback however affirmative it reads', async () => {
+    // The prose-matching trap: "yes go ahead" is text, not a decision. Guessing
+    // it means approval lifts a security gate the user did not click to lift.
+    const approve = vi.spyOn(api, 'approvePlan').mockResolvedValue({} as never)
+    const send = renderCard(withHandoff())
+    fireEvent.change(screen.getByLabelText('Custom answer'), {
+      target: { value: 'yes, start implementing' },
+    })
+    await act(async () => { submit() })
+    expect(approve).not.toHaveBeenCalled()
+    await waitFor(() => expect(send).toHaveBeenCalled())
+  })
+
+  it('keeps the card when the disarm fails, so plan mode never silently stays on', async () => {
+    // Fails closed. Clearing the card here would strand the user with a plan,
+    // no control, and a gate they think is off.
+    vi.spyOn(api, 'approvePlan').mockRejectedValue(new Error('409'))
+    renderCard(withHandoff())
+    pick('Start implementing this')
+    await act(async () => { submit() })
+    await waitFor(() => expect(screen.queryByText('Start implementing this')).not.toBeNull())
+  })
+
+  it('ignores the handoff branch on an ordinary card', async () => {
+    const approve = vi.spyOn(api, 'approvePlan').mockResolvedValue({} as never)
+    const send = renderCard(withCard())
+    pick('Carve-out')
+    await act(async () => { submit() })
+    expect(approve).not.toHaveBeenCalled()
+    await waitFor(() => expect(send).toHaveBeenCalled())
+  })
+})

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime
     from kiro_crew.providers.base import LLMProvider
 
-from kiro_crew import platform_compat
+from kiro_crew import plan_mode, platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import ContextBuilder, window_for_provider_client
 from kiro_crew.context_management import (
@@ -3540,6 +3540,11 @@ class SubagentManager:
     async def _run(self, info: SubagentInfo) -> None:
         """Execute a subagent task in its own session."""
         session_key = info.conversation_key or f"subagent:{info.id}"
+        # A subagent spawned while its parent is planning inherits plan mode.
+        # The gate is keyed on the child's OWN session key, so without this a
+        # planning session could spawn a helper that writes freely — which is
+        # also why spawn_run is on the plan-mode allowlist at all.
+        plan_inherited = plan_mode.inherit(info.parent_session_key, session_key)
         try:
             await asyncio.wait_for(
                 self._run_inner(info, session_key), timeout=self._default_timeout
@@ -3618,6 +3623,12 @@ class SubagentManager:
                 self._write_tombstone(info, "error")
             logger.exception("Subagent %s failed", info.id)
         finally:
+            # Release ONLY an entry this run actually created. Deactivating
+            # unconditionally would clear the gate of any independently-planning
+            # session that happened to share this key.
+            if plan_inherited and session_key != info.parent_session_key:
+                plan_mode.deactivate(session_key)
+
             # Guard 3 of 3 — the terminal REPORT, owned by the finalize claim.
             # Taken (and the report task SPAWNED) before the teardown awaits
             # below, so a cancellation landing anywhere in teardown cannot

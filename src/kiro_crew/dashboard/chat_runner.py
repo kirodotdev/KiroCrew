@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlparse
 
-from kiro_crew import mcp_apps_render, model_registry, session_directive
+from kiro_crew import mcp_apps_render, model_registry, plan_mode, session_directive
 from kiro_crew.acp.client import AcpAuthRequired, AcpError, AcpProcessDied, _is_safe_oauth_url
 from kiro_crew.acp.types import (
     EVENT_AGENT_SWITCHED,
@@ -2795,6 +2795,12 @@ async def _run_chat(
         else:
             state.sessions.set_approval_policy(session_key, "")
 
+        # The slot is the source of truth for plan mode; the enforcement
+        # registry is process-global and starts empty after a restart. Re-sync
+        # every turn so a restored planning session is still gated, and so a
+        # session that left plan mode does not keep a stale entry.
+        plan_mode.set_active(session_key, bool(getattr(slot, "plan_mode", False)))
+
         # Drain MCP OAuth requests captured during session init. kiro-cli
         # buffers `_kiro.dev/mcp/oauth_request` notifications during MCP
         # server bring-up; the AcpClient collected them into
@@ -3045,6 +3051,7 @@ async def _run_chat(
                 memory_store=memory_store,
                 compressed_history=compressed,
                 mode=slot.mode,
+                plan_mode=bool(getattr(slot, "plan_mode", False)),
                 blocks_reads=slot.blocks_reads,
                 provider_type=cfg.agent.provider,
                 runtime_source="dashboard",

@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from kiro_crew import platform_compat, security
+from kiro_crew import plan_mode, platform_compat, security
 from kiro_crew.platform import current_context
 from kiro_crew.platform.governance import (
     CU_CLASS_OBSERVE,
@@ -479,6 +479,30 @@ class HookManager:
                 "Blocked: shell command could not be verified for security "
                 "policy (deny-by-default)"
             )
+
+        # Plan mode: while a session is planning, every mutating call is denied
+        # here — before auto-approve, trusted patterns, trust-reads, trust, and
+        # YOLO, all of which live downstream in each surface's own ladder. The
+        # point of plan mode is that it cannot be waived by a convenience
+        # setting the user already turned on. It only ever denies; a read-only
+        # call returns "" and falls through to the checks below.
+        if session_key and plan_mode.is_active(session_key):
+            plan_deny = plan_mode.deny_reason(
+                tool_name,
+                command=command,
+                is_shell=is_shell,
+                raw_params=raw_params,
+                # The canonical _meta.kiro identity, NOT the title: the title is
+                # LLM-authored, so a write tool described as "Read" would match
+                # the read allowlist and be waived through to whatever
+                # auto-approval this slot already has. ``mcp_tool_name`` carries
+                # ``_meta.kiro.toolName`` for builtins too, not only MCP-served
+                # calls, so it is the right source for the whole allow decision.
+                trusted_tool_name=mcp_tool_name,
+                trusted_server_name=mcp_server_name,
+            )
+            if plan_deny:
+                return ToolHookResult.deny(plan_deny)
 
         # Strip display prefixes (e.g. "Running: ls *" → "ls *") so config
         # patterns like "ls" or "rm *" match without the prefix.

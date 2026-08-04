@@ -1,5 +1,17 @@
 {
   "toolSearch.enabled": true,
   "toolSearch.minPct": 0,
-  "toolSearch.minTokens": 0
+  "toolSearch.minTokens": 0,
+  "chat.modelDefaults": {
+    "gpt-5.6-sol": {
+      "reasoning": {
+        "effort": "high"
+      }
+    },
+    "claude-opus-5": {
+      "output_config": {
+        "effort": "high"
+      }
+    }
+  }
 }

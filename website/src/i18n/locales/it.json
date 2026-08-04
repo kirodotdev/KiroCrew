@@ -2734,6 +2734,7 @@
       "force_reset_session_taking_longer_than_expected": "Forza il ripristino della sessione (sta impiegando più tempo del previsto)",
       "force_reset_taking_longer_than_expected": "Forza il ripristino — sta impiegando più tempo del previsto",
       "gateway_offline_message_will_not_send": "Gateway offline — il messaggio non verrà inviato",
+      "have_the_agent_plan_before_it_changes_anything": "Fai pianificare l'agente prima che modifichi qualcosa",
       "it_can_click_type_and_navigate_pages_not_just_re": "Può cliccare, digitare e navigare tra le pagine — non solo leggerle. Lascialo disattivato se preferisci che non agisca sui siti in cui hai effettuato l'accesso.",
       "killing": "Chiusura forzata…",
       "killing_session": "Chiusura forzata della sessione",
@@ -2745,6 +2746,9 @@
       "optimize_prompt_busy_optimizing_another_chat": "Ottimizza il prompt — ottimizzazione di un'altra chat in corso",
       "optimizing_another_chat_please_wait": "Ottimizzazione di un'altra chat in corso — attendi",
       "optimizing_prompt": "Ottimizzazione del prompt…",
+      "plan_mode": "Modalità pianificazione",
+      "plan_mode_is_on_click_to_turn_it_off_without_sta": "La modalità pianificazione è attiva — fai clic per disattivarla senza iniziare il lavoro",
+      "plan_mode_overrides_this_while_it_is_on": "La modalità pianificazione prevale su questo mentre è attiva",
       "plan_pre_filled_add_context_then_send": "Piano precompilato — aggiungi il contesto e poi invia",
       "project": "Progetto",
       "queue_message": "Metti il messaggio in coda",
@@ -2789,7 +2793,8 @@
       "voice_input": "Input vocale",
       "queue": "Metti in coda",
       "queue_desc": "Esegui al termine del turno corrente",
-      "steer_desc": "Inserisci subito nel turno in corso"
+      "steer_desc": "Inserisci subito nel turno in corso",
+      "the_agent_looks_into_things_and_writes_you_a_pla": "L'agente indaga e ti scrive un piano invece di apportare modifiche. Le modifiche ai file e i comandi vengono bloccati prima di essere eseguiti: una protezione solida, non una sandbox. La lettura e la ricerca web continuano a funzionare."
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",
@@ -3770,8 +3775,11 @@
       "dismiss": "Ignora",
       "dismiss_question_without_answering": "Ignora la domanda senza rispondere",
       "expand_all": "Espandi tutto",
+      "i_have_feedback_on_the_plan": "Ho un riscontro sul piano",
+      "leaves_plan_mode_and_starts_the_work": "Esce dalla modalità piano e avvia il lavoro",
       "not_answered_yet": "Nessuna risposta",
       "or_type_a_custom_answer": "Oppure digita una risposta personalizzata...",
+      "start_implementing_this": "Inizia a implementarlo",
       "submit": "Invia"
     },
     "queueStack": {
@@ -5576,6 +5584,8 @@
       "continue_a_previous_chat": "Continuare una chat precedente?",
       "could_not_set_the_agent_default_model": "Impossibile impostare il modello predefinito dell'agente",
       "could_not_start_a_new_session": "Impossibile avviare una nuova sessione",
+      "could_not_turn_plan_mode_off": "Non è stato possibile disattivare la modalità pianificazione",
+      "could_not_turn_plan_mode_on": "Non è stato possibile attivare la modalità pianificazione",
       "dismiss_error": "Ignora l'errore",
       "dismiss_upload_error": "Ignora l'errore di caricamento",
       "enter_split_view": "Attiva la vista divisa",
@@ -5640,6 +5650,8 @@
       "knowledge_item_many": "{{count}} elementi di conoscenza",
       "knowledge_item_one": "{{count}} elemento di conoscenza",
       "knowledge_item_other": "{{count}} elementi di conoscenza",
+      "plan_mode_is_on_the_agent_will_write_a_plan_but": "La modalità piano è attiva: l'agente scriverà un piano invece di apportare modifiche. Fai clic sul chip Modalità piano per disattivarla.",
+      "the_session_is_busy_wait_for_the_current_turn_an": "La sessione è occupata: attendi che il turno corrente e gli eventuali subagenti finiscano, poi riprova.",
       "this_session_has_no_project_directory_to_branch": "Questa sessione non ha una directory di progetto da cui creare un branch.",
       "worktree_creation_returned_no_path": "La creazione del worktree non ha restituito alcun percorso"
     },

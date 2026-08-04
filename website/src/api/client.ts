@@ -1259,6 +1259,8 @@ export const api = {
   setSlotFolder: (slot: string, folderId: string | null) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/folder', { folder_id: folderId || '' }).then(j),
   setSlotColor: (slot: string, colorIndex: number | null) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/color', { color_index: colorIndex }).then(j),
   setSlotPin: (slot: string, pinned: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/pin', { pinned }).then(j),
+  setSlotPlanMode: (slot: string, planMode: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/plan-mode', { plan_mode: planMode }).then(j) as Promise<{ ok: boolean; plan_mode: boolean }>,
+  approvePlan: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/plan-approve', {}).then(j) as Promise<{ ok: boolean; plan_mode: boolean; started: boolean }>,
   setSlotMode: (slot: string, mode: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/mode', { mode }).then(j),
   // Tags
   chatTags: () => fetch('/api/chat/tags', { headers: { ..._sk } }).then(j),
@@ -1322,7 +1324,7 @@ export const api = {
   resolveApproval: (id: string, action: 'approve' | 'reject') => post('/api/approvals/' + encodeURIComponent(id) + '/' + action, {}).then(j),
   /** Question cards still awaiting an answer, for rehydration after a reload or
    *  websocket reconnect (`question_card` is a one-shot broadcast). */
-  pendingQuestions: (): Promise<{ ask_id: string; slot: string; questions: { question: string; header?: string; multiSelect?: boolean; options: { label: string; description?: string }[] }[]; ts?: number }[]> =>
+  pendingQuestions: (): Promise<{ ask_id: string; slot: string; plan_handoff?: boolean; questions: { question: string; header?: string; multiSelect?: boolean; options: { label: string; description?: string }[] }[]; ts?: number }[]> =>
     fetch('/api/ask-question/pending').then(j),
   /** Resolve a pending agent question (ask_question MCP tool). Pass no answers
    *  to dismiss, which unblocks the agent with a timeout-equivalent result. */

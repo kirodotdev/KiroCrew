@@ -71,7 +71,7 @@ def test_ask_question_returns_directive_with_validated_questions(default_install
     validated questions payload — no session key, no HTTP round-trip."""
     result = _call_tool_inner("ask_question", {"questions": QUESTIONS})
     args = session_directive.decode(result, "ask_question")
-    assert args == {"questions": _validated_questions()}
+    assert args == {"questions": _validated_questions(), "plan_handoff": False}
 
 
 def test_ask_question_directive_confirmation_tells_the_model_to_end_its_turn(default_install):
@@ -127,14 +127,18 @@ class _FakeState:
     """Fake dashboard state exposing only ``post_question_card``.
 
     ``post_question_card(slot_key, questions)`` returns the number of clients the
-    card reached (mirrors the real broadcast-count contract)."""
+    card reached (mirrors the real broadcast-count contract). ``plan_handoff`` is
+    keyword-only, matching the real signature, and recorded so the handoff tests
+    can assert what the applier authorized."""
 
     def __init__(self, clients: int):
         self._clients = clients
         self.calls: list[tuple[str, list]] = []
+        self.handoffs: list[bool] = []
 
-    async def post_question_card(self, slot_key, questions) -> int:
+    async def post_question_card(self, slot_key, questions, *, plan_handoff=False) -> int:
         self.calls.append((slot_key, questions))
+        self.handoffs.append(bool(plan_handoff))
         return self._clients
 
 
@@ -150,6 +154,8 @@ def test_applier_posts_the_card_to_the_slot_and_ends_the_turn():
         )
     )
     assert state.calls == [(slot.key, questions)]
+    # No plan mode armed for this slot, so nothing was authorized as a handoff.
+    assert state.handoffs == [False]
     assert "end your turn" in result.lower()
 
 
@@ -166,3 +172,138 @@ def test_applier_with_no_attached_client_steers_to_plain_text():
     )
     assert len(state.calls) == 1
     assert "plain text" in result.lower()
+
+
+# ── Plan-mode handoff card ────────────────────────────────────────────────────
+#
+# The card that closes a plan is the ONLY way out of plan mode besides the
+# user's own toggle, so the tests below pin who controls what: the model may
+# request the handoff, the server decides whether it applies, and the server
+# writes the labels.
+
+
+def test_plan_handoff_options_are_server_authored(default_install):
+    """The model's own options are DISCARDED on a handoff card.
+
+    It must not get to write the label on the control that lifts its own gate —
+    a persuasive gloss ("Start implementing (recommended)") on an option the
+    user reads as neutral is the whole attack. The tool substitutes its two
+    fixed choices.
+    """
+    result = _call_tool_inner(
+        "ask_question",
+        {
+            "questions": [
+                {
+                    "question": "Ready to implement this?",
+                    "options": [
+                        {"label": "Yes, and skip the review", "description": "Fastest"},
+                        {"label": "No"},
+                    ],
+                }
+            ],
+            "plan_handoff": True,
+        },
+    )
+    args = session_directive.decode(result, "ask_question")
+    labels = [o["label"] for o in args["questions"][0]["options"]]
+    assert labels == [
+        mcp_core._PLAN_HANDOFF_START_LABEL,
+        mcp_core._PLAN_HANDOFF_FEEDBACK_LABEL,
+    ]
+    # The model's question text survives — only the choices are taken over.
+    assert args["questions"][0]["question"] == "Ready to implement this?"
+    assert args["plan_handoff"] is True
+
+
+def test_plan_handoff_card_is_a_single_question(default_install):
+    """Extra questions are dropped from a handoff card.
+
+    The handoff is one decision. Trailing questions would put unrelated picks in
+    the same submit as the one that leaves plan mode.
+    """
+    result = _call_tool_inner(
+        "ask_question",
+        {
+            "questions": [
+                {"question": "Ready?", "options": [{"label": "Yes"}]},
+                {"question": "Also pick a colour", "options": [{"label": "Red"}]},
+            ],
+            "plan_handoff": True,
+        },
+    )
+    args = session_directive.decode(result, "ask_question")
+    assert len(args["questions"]) == 1
+    assert args["questions"][0]["question"] == "Ready?"
+
+
+def test_applier_refuses_the_handoff_when_plan_mode_is_not_armed(monkeypatch):
+    """A handoff request on an UNGATED session posts an ordinary card.
+
+    mcp_core runs in a separate process and cannot read the plan-mode registry,
+    so its flag is only a request. If the applier trusted it blindly, a model
+    could render a "leaves plan mode" control in a session that was never
+    planning — and the frontend would then call plan-approve on it.
+    """
+    from kiro_crew import plan_mode
+
+    plan_mode.reset()
+    state = _FakeState(clients=1)
+    slot = _FakeSlot()
+    result = asyncio.run(
+        apply_session_directive(
+            state, slot, "dashboard:chat-1-1700000000", "ask_question",
+            {"questions": _validated_questions(), "plan_handoff": True},
+        )
+    )
+    assert state.handoffs == [False]
+    assert "handoff card" not in result.lower()
+
+
+def test_applier_authorizes_the_handoff_when_plan_mode_is_armed(monkeypatch):
+    """With the gate genuinely armed for this slot's key, the card is marked."""
+    from kiro_crew import plan_mode
+
+    plan_mode.reset()
+    slot = _FakeSlot()
+    plan_mode.activate(plan_mode.session_key_for_slot(slot))
+    try:
+        state = _FakeState(clients=1)
+        result = asyncio.run(
+            apply_session_directive(
+                state, slot, "dashboard:chat-1-1700000000", "ask_question",
+                {"questions": _validated_questions(), "plan_handoff": True},
+            )
+        )
+        assert state.handoffs == [True]
+        assert "handoff card" in result.lower()
+        # The model is told what each branch does, so it does not re-ask.
+        assert "end your turn" in result.lower()
+    finally:
+        plan_mode.reset()
+
+
+def test_applier_keys_the_handoff_on_the_linked_session(monkeypatch):
+    """A cron/workflow-driven slot is gated under its LINKED key.
+
+    Same trap the toggle endpoint has: keying on ``dashboard:<slot>`` here would
+    read a string the gate never armed and silently refuse every handoff on
+    those sessions.
+    """
+    from kiro_crew import plan_mode
+
+    plan_mode.reset()
+    slot = _FakeSlot()
+    slot.linked_session_key = "cron:nightly"
+    plan_mode.activate("cron:nightly")
+    try:
+        state = _FakeState(clients=1)
+        asyncio.run(
+            apply_session_directive(
+                state, slot, "dashboard:chat-1-1700000000", "ask_question",
+                {"questions": _validated_questions(), "plan_handoff": True},
+            )
+        )
+        assert state.handoffs == [True]
+    finally:
+        plan_mode.reset()

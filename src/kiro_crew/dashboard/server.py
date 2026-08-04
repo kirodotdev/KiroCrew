@@ -2191,6 +2191,8 @@ async def start_dashboard(
     app.router.add_delete("/api/chat/folders/{id}", chat.api_chat_folder_delete)
     app.router.add_patch("/api/chat/slots/{slot}/folder", chat.api_chat_slot_folder)
     app.router.add_patch("/api/chat/slots/{slot}/pin", chat.api_chat_slot_pin)
+    app.router.add_patch("/api/chat/slots/{slot}/plan-mode", chat.api_chat_slot_plan_mode)
+    app.router.add_post("/api/chat/slots/{slot}/plan-approve", chat.api_chat_plan_approve)
     app.router.add_patch("/api/chat/slots/{slot}/mode", chat.api_chat_slot_mode)
     # Tags
     app.router.add_get("/api/chat/tags", chat.api_chat_tags)

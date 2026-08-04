@@ -2734,6 +2734,7 @@
       "force_reset_session_taking_longer_than_expected": "Forçar redefinição da sessão (está demorando mais que o esperado)",
       "force_reset_taking_longer_than_expected": "Forçar redefinição — está demorando mais que o esperado",
       "gateway_offline_message_will_not_send": "Gateway offline — a mensagem não será enviada",
+      "have_the_agent_plan_before_it_changes_anything": "Fazer o agente planejar antes de alterar qualquer coisa",
       "it_can_click_type_and_navigate_pages_not_just_re": "Ele pode clicar, digitar e navegar pelas páginas, não apenas lê-las. Deixe desativado se preferir que ele não aja em sites onde você está conectado.",
       "killing": "Encerrando à força…",
       "killing_session": "Encerrando a sessão à força",
@@ -2745,6 +2746,9 @@
       "optimize_prompt_busy_optimizing_another_chat": "Otimizar prompt — ocupado otimizando outro chat",
       "optimizing_another_chat_please_wait": "Otimizando outro chat — aguarde",
       "optimizing_prompt": "Otimizando prompt…",
+      "plan_mode": "Modo de planejamento",
+      "plan_mode_is_on_click_to_turn_it_off_without_sta": "O modo de planejamento está ativo — clique para desativá-lo sem iniciar o trabalho",
+      "plan_mode_overrides_this_while_it_is_on": "O modo de planejamento prevalece sobre isto enquanto está ativo",
       "plan_pre_filled_add_context_then_send": "Plano pré-preenchido — adicione contexto e clique em Enviar",
       "project": "Projeto",
       "queue_message": "Enfileirar mensagem",
@@ -2789,7 +2793,8 @@
       "voice_input": "Entrada de voz",
       "queue": "Enfileirar",
       "queue_desc": "Executar depois que o turno atual terminar",
-      "steer_desc": "Injetar imediatamente no turno em execução"
+      "steer_desc": "Injetar imediatamente no turno em execução",
+      "the_agent_looks_into_things_and_writes_you_a_pla": "O agente investiga e escreve um plano para você em vez de fazer alterações. Edições de arquivos e comandos são bloqueados antes de serem executados — uma proteção forte, não um sandbox. Leitura e busca na web continuam funcionando."
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -3770,8 +3775,11 @@
       "dismiss": "Descartar",
       "dismiss_question_without_answering": "Descartar pergunta sem responder",
       "expand_all": "Expandir tudo",
+      "i_have_feedback_on_the_plan": "Tenho comentários sobre o plano",
+      "leaves_plan_mode_and_starts_the_work": "Sai do modo de planejamento e inicia o trabalho",
       "not_answered_yet": "Ainda sem resposta",
       "or_type_a_custom_answer": "Ou digite uma resposta personalizada...",
+      "start_implementing_this": "Começar a implementar",
       "submit": "Enviar"
     },
     "queueStack": {
@@ -5576,6 +5584,8 @@
       "continue_a_previous_chat": "Continuar um chat anterior?",
       "could_not_set_the_agent_default_model": "Não foi possível definir o modelo padrão do agente",
       "could_not_start_a_new_session": "Não foi possível iniciar uma nova sessão",
+      "could_not_turn_plan_mode_off": "Não foi possível desativar o modo de planejamento",
+      "could_not_turn_plan_mode_on": "Não foi possível ativar o modo de planejamento",
       "dismiss_error": "Descartar erro",
       "dismiss_upload_error": "Descartar erro de upload",
       "enter_split_view": "Entrar na visualização dividida",
@@ -5640,6 +5650,8 @@
       "knowledge_item_many": "{{count}} itens de conhecimento",
       "knowledge_item_one": "{{count}} item de conhecimento",
       "knowledge_item_other": "{{count}} itens de conhecimento",
+      "plan_mode_is_on_the_agent_will_write_a_plan_but": "O modo plano está ativado — o agente escreverá um plano em vez de fazer alterações. Clique no chip Modo plano para desativá-lo.",
+      "the_session_is_busy_wait_for_the_current_turn_an": "A sessão está ocupada: aguarde o término do turno atual e dos subagentes e tente novamente.",
       "this_session_has_no_project_directory_to_branch": "Esta sessão não tem um diretório de projeto do qual criar uma branch.",
       "worktree_creation_returned_no_path": "A criação da worktree não retornou nenhum caminho"
     },

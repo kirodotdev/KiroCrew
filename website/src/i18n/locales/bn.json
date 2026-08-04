@@ -2698,6 +2698,7 @@
       "force_reset_session_taking_longer_than_expected": "জোর করে সেশন রিসেট করুন (প্রত্যাশার চেয়ে বেশি সময় নিচ্ছে)",
       "force_reset_taking_longer_than_expected": "জোর করে রিসেট — প্রত্যাশার চেয়ে বেশি সময় নিচ্ছে",
       "gateway_offline_message_will_not_send": "গেটওয়ে অফলাইন — মেসেজ যাবে না",
+      "have_the_agent_plan_before_it_changes_anything": "কিছু বদলানোর আগে এজেন্টকে পরিকল্পনা করতে দিন",
       "it_can_click_type_and_navigate_pages_not_just_re": "এটি পেজে ক্লিক করতে, টাইপ করতে এবং নেভিগেট করতে পারে — শুধু পড়া নয়। আপনি যে সাইটগুলিতে সাইন ইন করা আছেন সেখানে এটি কাজ না করুক চাইলে বন্ধ রাখুন।",
       "killing": "বন্ধ করা হচ্ছে…",
       "killing_session": "সেশন বন্ধ করা হচ্ছে",
@@ -2709,6 +2710,9 @@
       "optimize_prompt_busy_optimizing_another_chat": "প্রম্পট অপ্টিমাইজ করো — এখন অন্য একটি চ্যাট অপ্টিমাইজ হচ্ছে",
       "optimizing_another_chat_please_wait": "অন্য একটি চ্যাট অপ্টিমাইজ হচ্ছে — অপেক্ষা করো",
       "optimizing_prompt": "প্রম্পট অপ্টিমাইজ করা হচ্ছে…",
+      "plan_mode": "পরিকল্পনা মোড",
+      "plan_mode_is_on_click_to_turn_it_off_without_sta": "পরিকল্পনা মোড চালু আছে — কাজ শুরু না করে এটি বন্ধ করতে ক্লিক করুন",
+      "plan_mode_overrides_this_while_it_is_on": "পরিকল্পনা মোড চালু থাকলে এটি প্রযোজ্য হয় না",
       "plan_pre_filled_add_context_then_send": "প্ল্যান আগেই পূরণ করা হয়েছে — কনটেক্সট যোগ করে তারপর পাঠান",
       "project": "প্রজেক্ট",
       "queue_message": "বার্তা সারিতে রাখুন",
@@ -2753,7 +2757,8 @@
       "voice_input": "ভয়েস ইনপুট",
       "queue": "কিউ",
       "queue_desc": "বর্তমান টার্ন শেষ হলে চালাও",
-      "steer_desc": "চলমান টার্নে সঙ্গে সঙ্গে ঢুকিয়ে দাও"
+      "steer_desc": "চলমান টার্নে সঙ্গে সঙ্গে ঢুকিয়ে দাও",
+      "the_agent_looks_into_things_and_writes_you_a_pla": "এজেন্ট পরিবর্তন করার বদলে অনুসন্ধান করে আপনার জন্য একটি পরিকল্পনা লেখে। ফাইল সম্পাদনা ও কমান্ড চালানোর আগেই আটকে দেওয়া হয় — এটি একটি শক্তিশালী সুরক্ষা, স্যান্ডবক্স নয়। পড়া ও ওয়েব সার্চ আগের মতোই কাজ করে।"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
@@ -3723,8 +3728,11 @@
       "dismiss": "খারিজ করুন",
       "dismiss_question_without_answering": "উত্তর না দিয়ে প্রশ্নটি খারিজ করুন",
       "expand_all": "সব প্রসারিত করুন",
+      "i_have_feedback_on_the_plan": "পরিকল্পনা নিয়ে মতামত আছে",
+      "leaves_plan_mode_and_starts_the_work": "প্ল্যান মোড বন্ধ করে কাজ শুরু হয়",
       "not_answered_yet": "এখনও উত্তর দেওয়া হয়নি",
       "or_type_a_custom_answer": "অথবা একটি কাস্টম উত্তর লিখুন...",
+      "start_implementing_this": "এটি বাস্তবায়ন শুরু করুন",
       "submit": "জমা দিন"
     },
     "queueStack": {
@@ -5513,6 +5521,8 @@
       "continue_a_previous_chat": "আগের কোনো চ্যাট চালিয়ে যাবেন?",
       "could_not_set_the_agent_default_model": "এজেন্টের ডিফল্ট মডেল সেট করা যায়নি",
       "could_not_start_a_new_session": "নতুন সেশন শুরু করা যায়নি",
+      "could_not_turn_plan_mode_off": "পরিকল্পনা মোড বন্ধ করা যায়নি",
+      "could_not_turn_plan_mode_on": "পরিকল্পনা মোড চালু করা যায়নি",
       "dismiss_error": "ত্রুটি বাদ দিন",
       "dismiss_upload_error": "আপলোড ত্রুটি বাদ দিন",
       "enter_split_view": "স্প্লিট ভিউতে যান",
@@ -5576,6 +5586,8 @@
       "what_can_i_do_for_you": "আপনার জন্য কী করতে পারি?",
       "knowledge_item_one": "{{count}}টি নলেজ আইটেম",
       "knowledge_item_other": "{{count}}টি নলেজ আইটেম",
+      "plan_mode_is_on_the_agent_will_write_a_plan_but": "প্ল্যান মোড চালু আছে — এজেন্ট পরিবর্তন করার বদলে একটি পরিকল্পনা লিখবে। এটি বন্ধ করতে প্ল্যান মোড চিপে ক্লিক করুন।",
+      "the_session_is_busy_wait_for_the_current_turn_an": "সেশনটি ব্যস্ত — চলতি টার্ন এবং সব সাব-এজেন্ট শেষ হওয়া পর্যন্ত অপেক্ষা করুন, তারপর আবার চেষ্টা করুন।",
       "this_session_has_no_project_directory_to_branch": "এই সেশনের ব্রাঞ্চ করার মতো কোনো প্রজেক্ট ডিরেক্টরি নেই।",
       "worktree_creation_returned_no_path": "worktree তৈরি করে কোনো পাথ ফেরত আসেনি"
     },

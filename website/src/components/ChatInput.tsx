@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, Map as MapIcon, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import { Toggle } from './ui'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -332,6 +332,10 @@ interface ChatInputProps {
   /** Browse mode — when true, [BROWSE] prefix is prepended to sent messages */
   browseMode?: boolean
   onBrowseToggle?: () => void
+  /** Plan mode — when true the session is read-only: the agent researches and
+   *  writes a plan, and mutating tool calls are denied server-side. */
+  planMode?: boolean
+  onPlanModeToggle?: () => void
   /** Gateway WebSocket connection state. When false, send is blocked and a
    *  warning banner appears above the input. Defaults to true so callers that
    *  don't track connectivity (e.g. tests, embedded previews) keep working. */
@@ -501,6 +505,8 @@ function ChatInput({
   autoFocusKey,
   browseMode = false,
   onBrowseToggle,
+  planMode = false,
+  onPlanModeToggle,
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
@@ -2203,7 +2209,7 @@ function ChatInput({
       <div
         data-testid="input-wrapper"
         ref={wrapperRef}
-        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(cleanMode || memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} ${dragOver ? 'border-accent bg-accent/10' : cleanMode ? 'border-accent bg-bg-elevated' : memoryMode === 'temporary' ? 'border-aim bg-bg-elevated' : memoryMode === 'incognito' ? 'border-warn bg-bg-elevated' : 'border-border bg-bg-elevated focus-within:border-accent/50'}`}
+        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(cleanMode || planMode || memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} ${dragOver ? 'border-accent bg-accent/10' : cleanMode ? 'border-accent bg-bg-elevated' : planMode ? 'border-clarify bg-bg-elevated' : memoryMode === 'temporary' ? 'border-aim bg-bg-elevated' : memoryMode === 'incognito' ? 'border-warn bg-bg-elevated' : 'border-border bg-bg-elevated focus-within:border-accent/50'}`}
 
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
@@ -2357,6 +2363,15 @@ function ChatInput({
                         <div className="pt-0.5"><Toggle checked={browseMode} onChange={() => onBrowseToggle()} label={i18nT('components.chatInput.let_the_agent_use_the_browser')} /></div>
                       </div>
                     )}
+                    {onPlanModeToggle && (
+                      <div className="flex items-start justify-between gap-2 mt-2 pt-2.5 border-t border-border">
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-medium text-text flex items-center gap-1.5"><MapIcon size={13} className="text-muted shrink-0" />{i18nT('components.chatInput.have_the_agent_plan_before_it_changes_anything')}</div>
+                          <div className="text-[11px] text-muted mt-0.5 leading-snug">{i18nT('components.chatInput.the_agent_looks_into_things_and_writes_you_a_pla')}</div>
+                        </div>
+                        <div className="pt-0.5"><Toggle checked={planMode} onChange={() => onPlanModeToggle()} label={i18nT('components.chatInput.have_the_agent_plan_before_it_changes_anything')} /></div>
+                      </div>
+                    )}
                   </div>,
                   document.body
                 )}
@@ -2373,12 +2388,34 @@ function ChatInput({
                   onChange={onAutoNudgeChange || (() => {})}
                 />
               )}
+              {planMode && onPlanModeToggle && (
+                <button
+                  type="button"
+                  onClick={() => onPlanModeToggle()}
+                  title={i18nT('components.chatInput.plan_mode_is_on_click_to_turn_it_off_without_sta')}
+                  aria-label={i18nT('components.chatInput.plan_mode_is_on_click_to_turn_it_off_without_sta')}
+                  className="h-7 px-2 rounded-lg text-[12px] font-medium bg-clarify-subtle text-clarify border border-clarify flex items-center gap-1.5 cursor-pointer transition-all shrink-0 whitespace-nowrap"
+                >
+                  <MapIcon size={13} className="shrink-0" aria-hidden="true" />
+                  {i18nT('components.chatInput.plan_mode')}
+                </button>
+              )}
               {!isMobile && approvalMode && (
-                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} />
+                <span
+                  className={planMode ? 'opacity-40' : ''}
+                  title={planMode ? i18nT('components.chatInput.plan_mode_overrides_this_while_it_is_on') : undefined}
+                >
+                  <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} />
+                </span>
               )}
             </div>
             {isMobile && approvalMode && (
-              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact />
+              <span
+                className={planMode ? 'opacity-40' : ''}
+                title={planMode ? i18nT('components.chatInput.plan_mode_overrides_this_while_it_is_on') : undefined}
+              >
+                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact />
+              </span>
             )}
           </div>
           <div className="flex items-center gap-1 shrink-0">

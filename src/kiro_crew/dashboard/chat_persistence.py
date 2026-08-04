@@ -456,6 +456,8 @@ def _rehydrate_slot_from_history(
         slot._artifact = _artifact_meta
     if meta.get("pinned"):
         slot.pinned = True
+    if meta.get("plan_mode"):
+        slot.plan_mode = True
     if meta.get("color_index") is not None:
         slot.color_index = meta["color_index"]
     raw_tags = meta.get("tags")
@@ -737,6 +739,8 @@ def _restore_recent_sessions_steps(
             slot._artifact = _artifact_meta
         if meta.get("pinned"):
             slot.pinned = True
+        if meta.get("plan_mode"):
+            slot.plan_mode = True
         if meta.get("color_index") is not None:
             slot.color_index = meta["color_index"]
         if meta.get("color_theme"):
@@ -1317,7 +1321,17 @@ def _save_slot_to_history(
         else:
             disk_older = slot._disk_older_count
             window = list(slot.messages)
-    if not window:
+    if not window and not force:
+        # An unused slot writes nothing. A FORCED save proceeds even with an empty
+        # window, because the metadata mutation endpoints (pin / folder / tag /
+        # mode) call this with force=True and their edit is the whole point of the
+        # write -- there may legitimately be no messages yet. Plan mode is the case
+        # that makes this load-bearing rather than cosmetic: arming the gate on a
+        # fresh slot and restarting would otherwise come back with the gate OFF,
+        # because `_run_chat` re-syncs it from this metadata. Failing to persist a
+        # security flag fails OPEN, so it must reach disk. The guard below spells
+        # out the same intent for the no-op case: "closed/force/rewrite always
+        # proceed."
         return
     # Skip a pure no-op: a freshly resumed slot with no new AND no edited
     # messages. ``slot._dirty`` is set by both append and in-place edits
@@ -1412,6 +1426,8 @@ def _save_slot_to_history(
                 meta_line["artifact"] = slot._artifact
             if slot.pinned:
                 meta_line["pinned"] = True
+            if slot.plan_mode:
+                meta_line["plan_mode"] = True
             if slot.color_index is not None:
                 meta_line["color_index"] = slot.color_index
             if slot.color_theme:

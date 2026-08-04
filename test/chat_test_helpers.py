@@ -129,6 +129,7 @@ def _make_folder_app(state: DashboardState) -> web.Application:
         api_chat_folders,
         api_chat_slot_folder,
         api_chat_slot_pin,
+        api_chat_slot_plan_mode,
     )
 
     app = web.Application()
@@ -139,6 +140,7 @@ def _make_folder_app(state: DashboardState) -> web.Application:
     app.router.add_delete("/api/chat/folders/{id}", api_chat_folder_delete)
     app.router.add_patch("/api/chat/slots/{slot}/folder", api_chat_slot_folder)
     app.router.add_patch("/api/chat/slots/{slot}/pin", api_chat_slot_pin)
+    app.router.add_patch("/api/chat/slots/{slot}/plan-mode", api_chat_slot_plan_mode)
     app.router.add_get("/api/chat/slots", api_chat_slots)
     return app
 

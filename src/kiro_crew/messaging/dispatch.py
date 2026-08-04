@@ -127,6 +127,8 @@ def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callab
             raw_params=getattr(event, "raw_tool_params", None),
             command=getattr(event, "shell_command", None),
             is_shell=bool(getattr(event, "is_shell", False)),
+            mcp_tool_name=getattr(event, "tool_name", "") or "",
+            mcp_server_name=getattr(event, "mcp_server_name", "") or "",
         )
         if result.action == TOOL_DENY:
             return "deny"

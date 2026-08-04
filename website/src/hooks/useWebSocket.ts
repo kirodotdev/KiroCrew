@@ -280,7 +280,7 @@ export function useWebSocket() {
       )
       for (const askId of drop) dispatch(resolveQuestionCard({ ask_id: askId }))
       for (const q of add) {
-        dispatch(setQuestionCard({ slot: q.slot as string, ask_id: q.ask_id, questions: q.questions }))
+        dispatch(setQuestionCard({ slot: q.slot as string, ask_id: q.ask_id, plan_handoff: !!q.plan_handoff, questions: q.questions }))
       }
     } catch { /* ignore */ }
   }, [dispatch])

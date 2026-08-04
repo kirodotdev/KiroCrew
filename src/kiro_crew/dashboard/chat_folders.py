@@ -10,8 +10,11 @@ import uuid
 
 from aiohttp import web
 
+from kiro_crew import plan_mode
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
@@ -425,6 +428,245 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
         outcome="allowed", source="dashboard", resources=name,
     )
     return web.json_response({"ok": True, "pinned": slot.pinned})
+
+
+def _plan_session_key(slot: _ChatSlot) -> str:
+    """The session key plan mode is keyed on for *slot*.
+
+    Delegates to :func:`plan_mode.session_key_for_slot`, which the question-card
+    handoff path also uses. One definition on purpose: two copies of this rule
+    that drift would arm one string and enforce on another.
+    """
+    return plan_mode.session_key_for_slot(slot)
+
+
+def _deny_non_owner_plan(request: web.Request, operation: str) -> web.Response | None:
+    """Require the dashboard owner on the plan-mode endpoints. 403 or None.
+
+    Both endpoints take a slot name from the caller and act on it, so route
+    scope alone is not enough authorization. The middleware's
+    ``_enforce_app_scope`` only checks that the *route* is in the calling app's
+    manifest ``permissions.api`` allowlist — it does not check slot ownership.
+    An app that lists ``/api/chat`` could therefore disarm ANOTHER slot's plan
+    gate, or call plan-approve to start that slot's implementation turn, which
+    by design runs the write tools plan mode was holding back.
+
+    Denying app identities is not sufficient on its own: a dashboard session
+    token is also minted for every allowed Slack user (``!dashboard``) and
+    carries an empty app identity, so it would clear an app-only check while
+    belonging to someone who is not the owner. Hence owner-only, matching the
+    ``ask_question`` endpoints' reasoning — those are owner-only for the same
+    shape of cross-slot abuse.
+
+    ``is_owner_dashboard_request`` is reused rather than re-derived so there
+    stays one definition of "owner" in the dashboard.
+    """
+    app_name = request.get("app", "")
+    if app_name:
+        try:
+            sel().log_api_access(
+                caller=app_name,
+                operation=operation,
+                outcome="denied",
+                source="app_isolation",
+                resources="/api/chat/slots/plan-mode",
+                error="app identities are not permitted on plan-mode endpoints",
+            )
+        except Exception:
+            logger.warning("SEL audit failed for app denial", exc_info=True)
+        return web.json_response(
+            {"error": "app token not permitted for this endpoint",
+             "code": "app_not_permitted"},
+            status=403,
+        )
+    if is_owner_dashboard_request(request):
+        return None
+    try:
+        sel().log_api_access(
+            caller=str(request.get("user") or "anonymous"),
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources="/api/chat/slots/plan-mode",
+            error="plan-mode endpoints are owner-only",
+        )
+    except Exception:
+        logger.warning("SEL audit failed for non-owner denial", exc_info=True)
+    return web.json_response({"error": "forbidden", "code": "not_owner"}, status=403)
+
+
+async def api_chat_slot_plan_mode(request: web.Request) -> web.Response:
+    """PATCH /api/chat/slots/{slot}/plan-mode — toggle the read-only plan gate.
+
+    Refused while the session is running (mirrors the mode switch): flipping the
+    gate mid-turn would either strand an approved tool call or let queued writes
+    through, and neither is what the button appears to promise.
+    """
+
+    deny = _deny_non_owner_plan(request, "chat.slot_plan_mode")
+    if deny is not None:
+        return deny
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    raw = body.get("plan_mode", False)
+    if not isinstance(raw, bool):
+        return web.json_response(
+            {"error": "plan_mode must be a boolean", "code": "invalid_plan_mode"}, status=400
+        )
+    if slot.running:
+        sel().log_api_access(
+            caller="dashboard", operation="chat.slot_plan_mode",
+            outcome="denied", source="dashboard", resources=name,
+        )
+        return web.json_response(
+            {
+                "error": "cannot change plan mode while session is running",
+                "code": "session_running",
+            },
+            status=409,
+        )
+    # Also refuse while this session has live sub-agents. A fire-and-forget
+    # spawn outlives the parent turn, so slot.running alone is False while
+    # children are still executing — and a child only inherits plan mode at ITS
+    # start, so arming now would leave those children ungated for the rest of
+    # their run. Same guard chat_handlers uses before starting a new turn.
+    if state.subagents is not None and state.subagents.running_agents_for(
+        _plan_session_key(slot)
+    ):
+        sel().log_api_access(
+            caller="dashboard", operation="chat.slot_plan_mode",
+            outcome="denied", source="dashboard", resources=name,
+        )
+        return web.json_response(
+            {
+                "error": "cannot change plan mode while sub-agents are running",
+                "code": "subagents_running",
+            },
+            status=409,
+        )
+    slot.plan_mode = raw
+    # Keep the enforcement registry in step with the slot immediately, so the
+    # gate is armed before the next turn rather than at turn start. _run_chat
+    # re-syncs on every turn, which is what restores the gate after a restart.
+    # Must be the SAME key the runner syncs, or a linked slot (cron- or
+    # workflow-driven) would arm one string and enforce on another.
+    plan_mode.set_active(_plan_session_key(slot), slot.plan_mode)
+    await save_slot_off_loop(state, slot, force=True)
+    state.push_slots_update()
+    sel().log_api_access(
+        caller="dashboard", operation="chat.slot_plan_mode",
+        outcome="allowed", source="dashboard", resources=name,
+    )
+    return web.json_response({"ok": True, "plan_mode": slot.plan_mode})
+
+
+#: Injected as the user turn when a plan is approved. Deliberately terse: the
+#: plan itself is already in the transcript, so restating it would only compete
+#: with what the agent wrote.
+_PLAN_APPROVED_MESSAGE = "Approved — implement the plan you just wrote."
+
+
+async def api_chat_plan_approve(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/plan-approve — leave plan mode and start work.
+
+    The one-click handoff at the end of a plan. Two steps (clear the gate, then
+    send a go-ahead) is where users got stuck: saying "go ahead" while the gate
+    is still armed just earns another refusal. This does both, in that order.
+
+    A TYPED action rather than a matched phrase on purpose — deciding "this
+    message means approval" by inspecting prose breaks as soon as the button is
+    translated or the user edits the text before sending. Mirrors the
+    orchestrator's ``go`` / ``cancel`` vocabulary.
+    """
+
+    deny = _deny_non_owner_plan(request, "chat.plan_approve")
+    if deny is not None:
+        return deny
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if not slot.plan_mode:
+        return web.json_response(
+            {"error": "session is not in plan mode", "code": "not_in_plan_mode"}, status=400
+        )
+    if slot.running:
+        # Approving mid-turn would race the turn that is still writing the plan.
+        sel().log_api_access(
+            caller="dashboard", operation="chat.plan_approve",
+            outcome="denied", source="dashboard", resources=name,
+        )
+        return web.json_response(
+            {"error": "cannot approve while the session is running", "code": "session_running"},
+            status=409,
+        )
+    # Also refuse while this session has live sub-agents, mirroring the toggle
+    # endpoint. A fire-and-forget spawn outlives the parent turn, so
+    # ``slot.running`` alone is False while children are still executing.
+    # Approving here would start the implementation turn alongside them, and
+    # their completion events would interleave with it -- and because approval
+    # DISARMS the gate first, those still-running children would keep the plan
+    # gate they inherited while the parent had already left plan mode.
+    if state.subagents is not None and state.subagents.running_agents_for(
+        _plan_session_key(slot)
+    ):
+        sel().log_api_access(
+            caller="dashboard", operation="chat.plan_approve",
+            outcome="denied", source="dashboard", resources=name,
+        )
+        return web.json_response(
+            {
+                "error": "cannot approve while sub-agents are running",
+                "code": "subagents_running",
+            },
+            status=409,
+        )
+
+    # Order matters twice over. The in-memory disarm has to happen before the
+    # turn starts, or the first tool call of the implementation turn is denied by
+    # the gate we are in the middle of lifting -- and both writes below are
+    # synchronous, so they land before anything else can run.
+    #
+    # Persistence, by contrast, must NOT happen here. `slot.running` is derived
+    # from `slot.task`, and `enqueue_or_run_prompt` documents the invariant this
+    # relies on: the `running` check and the `slot.task` assignment must have no
+    # `await` between them, or two callers both observe an idle slot and start
+    # two turns on one slot, the second overwriting `slot.task`. An `await` here
+    # is exactly that gap, so the disk write is deferred until after the task is
+    # registered (below).
+    slot.plan_mode = False
+    plan_mode.set_active(_plan_session_key(slot), False)
+
+    sel().log_api_access(
+        caller="dashboard", operation="chat.plan_approve",
+        outcome="allowed", source="dashboard", resources=name,
+    )
+
+    slot.append("user", _PLAN_APPROVED_MESSAGE, "msg msg-u")
+    state.broadcast_ws(
+        "chat_message",
+        {"slot": slot.key, "role": "user", "content": _PLAN_APPROVED_MESSAGE},
+    )
+    task = asyncio.create_task(_run_chat(state, slot, _PLAN_APPROVED_MESSAGE))
+    slot.task = task
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    # Now that the slot reads as busy, persisting is safe. `_run_chat` re-syncs
+    # the gate from the IN-MEMORY `slot.plan_mode` (already False above), not
+    # from this file, so the deferral cannot re-arm the gate under the turn. A
+    # crash before this line leaves plan mode persisted as ON, which restores the
+    # gate on restart -- the fail-safe direction.
+    await save_slot_off_loop(state, slot, force=True)
+    state.push_slots_update()
+    return web.json_response({"ok": True, "plan_mode": False, "started": True})
 
 
 _VALID_MODES = ("", "orchestrator")

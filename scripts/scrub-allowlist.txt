@@ -21,6 +21,9 @@ src/kiro_crew/transcribe.py:.*brazil
 
 # Deny-pattern strings and security config (reference internal names as blocklist)
 src/kiro_crew/dashboard/state.py:.*brazil
+# Same read-only-allowlist strings, after the classifier moved to a leaf module
+# so security gates can import it without the dashboard package.
+src/kiro_crew/bash_readonly.py:.*brazil
 src/kiro_crew/config/defaults.json
 
 # Eval test scenarios (fictional stories using internal tool names as test data)

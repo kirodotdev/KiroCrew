@@ -581,6 +581,23 @@ def call_tool_with_logging(
     downstream_service: str,
 ) -> str:
     """Validate args, call inner tool function, and log the invocation."""
+    # NOTE: plan mode is deliberately NOT enforced here. A gate at this point
+    # would run inside the mcp-core / mcp-cron stdio CHILD process that kiro-cli
+    # spawns, while the plan-mode registry (`plan_mode._ACTIVE`) is mutated only
+    # in the gateway process — nothing crosses that boundary, so `is_active()`
+    # here would return False unconditionally and the gate would be inert while
+    # appearing to work.
+    #
+    # The consequence is a real and documented limit on plan mode's reach: the
+    # shipped agent spec auto-approves the whole kirocrew-core server via
+    # allowedTools, and an auto-approved tool is approved locally by kiro-cli
+    # with NO permission request emitted, so those calls reach neither this
+    # function's (absent) gate nor the permission-plane gate in
+    # hooks.on_tool_call. Closing it needs the flag to reach this process —
+    # plausibly by extending the GET /api/session-tool-policy response this
+    # module already fetches — which needs its own cache-TTL and
+    # fail-open-vs-closed design, so it is tracked separately rather than
+    # half-built here. See docs/system-specs/modules/plan-mode.md.
     try:
         args = validate_fn(name, raw_args)
     except ValidationError as e:

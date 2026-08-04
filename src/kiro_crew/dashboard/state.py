@@ -24,6 +24,15 @@ from aiohttp import web
 
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.atomic_write import atomic_write
+
+# Re-exported: the classifier moved to a leaf module so hooks.py (a security
+# leaf) can reuse it for plan mode without importing the dashboard package.
+# Callers and tests that import these from here keep working.
+from kiro_crew.bash_readonly import (  # noqa: F401
+    _classify_bash,
+    is_read_only_bash,
+    unsafe_bash_reason,
+)
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.constants import OPTIONS_RE_LINE
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
@@ -207,131 +216,9 @@ def _log_task_exception(task: asyncio.Task[Any]) -> None:
 
 
 # ── Read-only bash command classification ──
-
-_READ_ONLY_BASH_PREFIXES: tuple[str, ...] = (
-    "ls",
-    "cat",
-    "head",
-    "tail",
-    "grep",
-    "egrep",
-    "fgrep",
-    "wc",
-    "which",
-    "file",
-    "stat",
-    "du",
-    "df",
-    "tree",
-    "diff",
-    "pwd",
-    "echo",
-    "date",
-    "whoami",
-    "hostname",
-    "uname",
-    "readlink",
-    "realpath",
-    "basename",
-    "dirname",
-    "git status",
-    "git log",
-    "git diff",
-    "git show",
-    "git branch",
-    "git tag",
-    "git remote",
-    "git rev-parse",
-    "git describe",
-    "git ls-files",
-    "git ls-tree",
-    "git cat-file",
-    "git blame",
-    "brazil ws show",
-    "brazil ws list",
-    "brazil workspace show",
-    "brazil workspace list",
-    "brazil versionset print",
-    "brazil versionset show",
-    "brazil-path",
-    "python --version",
-    "python3 --version",
-    "node --version",
-    "java -version",
-    "javac -version",
-)
-
-_READ_ONLY_PIPE_RE = re.compile(
-    r"^\s*(grep|egrep|fgrep|head|tail|wc|sort|uniq|cut|less|more|cat)\b"
-)
-
-# Reject redirections and command substitutions — conservative.
-_UNSAFE_SHELL_RE = re.compile(r">|`|\$\(|<\(|(?<!&)&(?!&)")
-
-# Discard-only redirect idioms that are read-only despite containing '>'/'&':
-# `2>/dev/null`, `>/dev/null`, `&>/dev/null`, `2>>/dev/null`, and `2>&1`.
-# These sink or merge output, never writing a real file, so they must be
-# stripped before _UNSAFE_SHELL_RE — otherwise every `find … 2>/dev/null`
-# falls through to an interactive prompt. A redirect to any real path
-# (e.g. `cmd > out.txt`) still trips _UNSAFE_SHELL_RE and stays unsafe.
-# The `(?![\w./-])` guard pins the match to the literal device `/dev/null`:
-# without it, `>/dev/nullx` or `>/dev/null/../etc/passwd` would be scrubbed as
-# a sink, smuggling a real-file write past the unsafe-shell check.
-_DEVNULL_REDIR_RE = re.compile(r"(?:\d*>>?|&>)\s*/dev/null(?![\w./-])|\d*>&\d+")
-
-
-def _classify_bash(cmd: str) -> str:
-    """Single source of truth for read-only bash classification.
-
-    Returns "" when the command is read-only, otherwise a human-readable
-    reason it was rejected. :func:`is_read_only_bash` and
-    :func:`unsafe_bash_reason` both delegate here so the two can never
-    diverge — the invariant "reason is non-empty iff not read-only" holds
-    by construction rather than by parallel maintenance. Deny-by-default.
-    """
-    if not cmd.strip():
-        return "empty command"
-    # Strip discard-only redirects (output sinks / stderr-merge) before the
-    # unsafe-shell check; they are read-only but contain '>' / '&'.
-    scrubbed = _DEVNULL_REDIR_RE.sub(" ", cmd)
-    if _UNSAFE_SHELL_RE.search(scrubbed):
-        return "unsafe shell pattern (redirect, command/process substitution, or backgrounding)"
-    parts = re.split(r"\s*(?:&&|\|\||;|\n)\s*", cmd.strip())
-    for part in parts:
-        if not part.strip():
-            continue
-        pipe_parts = [p.strip() for p in part.split("|") if p.strip()]
-        if not pipe_parts:
-            return "unsafe shell pattern"
-        first = pipe_parts[0].strip().lower()
-        if not (
-            first.endswith("--help")
-            or first.endswith("--version")
-            or any(first == p or first.startswith(p + " ") for p in _READ_ONLY_BASH_PREFIXES)
-        ):
-            base = first.split()[0] if first.split() else first
-            return f"command '{base}' is not on the read-only allowlist"
-        for target in pipe_parts[1:]:
-            if not _READ_ONLY_PIPE_RE.match(target):
-                tgt = target.split()[0] if target.split() else target
-                return f"pipe target '{tgt}' is not a read-only filter"
-    return ""
-
-
-def is_read_only_bash(cmd: str) -> bool:
-    """Check if a bash command is read-only. Deny-by-default."""
-    return _classify_bash(cmd) == ""
-
-
-def unsafe_bash_reason(cmd: str) -> str:
-    """Human-readable reason a bash command failed read-only classification.
-
-    Used to make rejection messages specific ("unsafe shell pattern …")
-    instead of the generic adapter default ("User refused permission to run
-    tool"). Returns "" when the command IS read-only (no reason to reject on
-    safety grounds).
-    """
-    return _classify_bash(cmd)
+#
+# Moved to kiro_crew/bash_readonly.py (leaf module). The three public names are
+# re-exported from this module's import block above.
 
 
 # ── Shared helpers ──
@@ -805,6 +692,7 @@ class _ChatSlot:
         "folder_id",
         "_folder_changed",
         "pinned",
+        "plan_mode",
         "tags",
         "_pending_subagent_failures",
         "_pending_synthesis",
@@ -948,6 +836,10 @@ class _ChatSlot:
         self.folder_id: str = ""  # project folder assignment
         self._folder_changed: bool = False  # re-inject [FOLDER] breadcrumb next turn after move
         self.pinned: bool = False  # pinned to top of sidebar
+        # Plan mode: while True the agent researches and plans but every
+        # mutating tool call is denied (see kiro_crew/plan_mode.py). Persisted,
+        # so a page reload or gateway restart does not silently re-arm writes.
+        self.plan_mode: bool = False
         self.tags: list[str] = []  # assigned tag ids (see DashboardState._tags)
         self._pending_subagent_failures: list[str] = []
         # Fix 2 (B1): armed by gateway when the LAST sub-agent of a fan-out
@@ -1636,6 +1528,7 @@ class _ChatSlot:
             "slack_thread_ts": self._slack_thread_ts,
             "folder_id": self.folder_id,
             "pinned": self.pinned,
+            "plan_mode": self.plan_mode,
             "tags": list(self.tags),
             "color_index": self.color_index,
             "color_theme": self.color_theme,
@@ -2274,7 +2167,9 @@ class DashboardState:
             safe_questions.append(sq)
         return safe_questions
 
-    async def post_question_card(self, slot_key: str, questions: list[dict]) -> int:
+    async def post_question_card(
+        self, slot_key: str, questions: list[dict], *, plan_handoff: bool = False
+    ) -> int:
         """Broadcast a NON-BLOCKING question card (no ``ask_id``) to *slot_key*'s
         owner clients; return the number delivered.
 
@@ -2283,9 +2178,20 @@ class DashboardState:
         sends the answers as an ordinary chat message, so the agent resumes in a
         fresh turn (#755 stateless ``ask_question``) rather than blocking. Shares
         :meth:`_redact_questions` (may raise ``ValueError`` on a post-redaction
-        collapse). Owner-only, same grounds as request_question's broadcast."""
+        collapse). Owner-only, same grounds as request_question's broadcast.
+
+        ``plan_handoff`` marks the card that closes a plan. Already authorized
+        against the plan-mode registry by the caller, so the frontend may treat
+        it as trustworthy and render its own localized choices; picking the first
+        one leaves plan mode through the plan-approve endpoint.
+        """
         safe_questions = self._redact_questions(questions)
-        payload = {"slot": slot_key, "questions": safe_questions, "ts": time.time()}
+        payload = {
+            "slot": slot_key,
+            "questions": safe_questions,
+            "ts": time.time(),
+            "plan_handoff": bool(plan_handoff),
+        }
         return int(await self.deliver_ws_owners("question_card", payload))
 
     async def request_question(

@@ -15,9 +15,22 @@ interface Question {
   multiSelect?: boolean
 }
 
+/** Which branch of the end-of-plan handoff the user took. Reported as a typed
+ *  value derived from the option INDEX, never by matching the answer text: the
+ *  labels are localized and the free-text field can hold anything, so a caller
+ *  that decided "this string means approval" would leave plan mode on a
+ *  translated build or a lightly edited answer. */
+export type HandoffChoice = 'start' | 'feedback'
+
 interface QuestionCardProps {
   questions: Question[]
-  onSubmit: (answers: Record<string, string>) => void
+  onSubmit: (answers: Record<string, string>, handoff?: HandoffChoice) => void
+  /** Renders the first question as the end-of-plan handoff: the two choices are
+   *  labelled from THIS catalog rather than from the payload, because the agent
+   *  requested the card and must not author the wording on the control that
+   *  lifts its own restriction. Already authorized server-side against real
+   *  plan-mode state before it is ever set. */
+  planHandoff?: boolean
   /** Unblock the agent with no answer, or — for a legacy card, where nothing is
    *  blocked — just take the card off screen. Always supplied by
    *  PendingQuestionCard: a card the user can neither answer nor remove sits on
@@ -28,7 +41,7 @@ interface QuestionCardProps {
   busy?: boolean
 }
 
-function QuestionCard({ questions, onSubmit, onDismiss, busy = false }: QuestionCardProps) {
+function QuestionCard({ questions, onSubmit, onDismiss, busy = false, planHandoff = false }: QuestionCardProps) {
   const [selections, setSelections] = useState<Record<number, Set<string>>>({})
   const [customInputs, setCustomInputs] = useState<Record<number, string>>({})
   const reduceMotion = useReducedMotion()
@@ -110,7 +123,22 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false }: Question
       const answer = answerOf(i)
       if (answer) answers[q.question] = answer
     })
-    onSubmit(answers)
+    // Ordinary cards are called with ONE argument, exactly as before: a
+    // trailing undefined would be a visible signature change for every existing
+    // caller and assertion.
+    if (planHandoff) onSubmit(answers, handoffChoice())
+    else onSubmit(answers)
+  }
+
+  /* 'start' ONLY on a clean pick of the first option. A typed custom answer is
+     feedback however affirmative it reads -- the user wrote prose, not a
+     decision, and guessing wrong here lifts a security gate. Same for the
+     second option. Fails toward staying in plan mode. */
+  const handoffChoice = (): HandoffChoice => {
+    const startLabel = questions[0]?.options?.[0]?.label
+    if (customInputs[0]?.trim()) return 'feedback'
+    if (startLabel && selections[0]?.has(startLabel) && selections[0]?.size === 1) return 'start'
+    return 'feedback'
   }
 
   /* Every question must be answered before Submit unlocks. The answer map is
@@ -170,8 +198,18 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false }: Question
                       padding, it would survive height:0 (border-box) and leave a
                       residual strip that jumps away when the animation ends. */}
                   <div className="pt-2.5 flex flex-col gap-1.5">
-                  {q.options.map(opt => {
+                  {q.options.map((opt, optIdx) => {
                     const isSelected = selections[qIdx]?.has(opt.label)
+                    const isHandoff = planHandoff && qIdx === 0
+                    // Positional, matching the two server-authored options. The
+                    // payload's English labels remain the selection VALUE (and
+                    // what the transcript shows); only the display text is
+                    // localized.
+                    const shown = isHandoff
+                      ? (optIdx === 0
+                          ? i18nT('components.questionCard.start_implementing_this')
+                          : i18nT('components.questionCard.i_have_feedback_on_the_plan'))
+                      : opt.label
                     return (
                       <button
                         key={opt.label}
@@ -182,8 +220,14 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false }: Question
                             : 'border-border text-muted hover:text-text hover:border-accent/40 bg-bg'
                         }`}
                       >
-                        <span className="font-medium">{opt.label}</span>
-                        {opt.description && <span className="text-muted text-[12px] ml-2">{opt.description}</span>}
+                        <span className="font-medium">{shown}</span>
+                        {!isHandoff && opt.description && <span className="text-muted text-[12px] ml-2">{opt.description}</span>}
+                        {isHandoff && optIdx === 0 && (
+                          // Own line, not the inline `ml-2` descriptions use:
+                          // this gloss is a full clause and ran together with
+                          // the label.
+                          <span className="block text-muted text-[12px] mt-0.5">{i18nT('components.questionCard.leaves_plan_mode_and_starts_the_work')}</span>
+                        )}
                       </button>
                     )
                   })}

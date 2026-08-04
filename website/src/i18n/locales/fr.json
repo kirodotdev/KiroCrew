@@ -2734,6 +2734,7 @@
       "force_reset_session_taking_longer_than_expected": "Forcer la réinitialisation de la session (délai plus long que prévu)",
       "force_reset_taking_longer_than_expected": "Réinitialisation forcée — délai plus long que prévu",
       "gateway_offline_message_will_not_send": "Passerelle hors ligne — le message ne partira pas",
+      "have_the_agent_plan_before_it_changes_anything": "Faire planifier l'agent avant toute modification",
       "it_can_click_type_and_navigate_pages_not_just_re": "Il peut cliquer, saisir du texte et naviguer dans les pages, pas seulement les lire. Laissez-le désactivé si vous préférez qu'il n'agisse pas sur les sites où vous êtes connecté.",
       "killing": "Arrêt forcé…",
       "killing_session": "Arrêt forcé de la session",
@@ -2745,6 +2746,9 @@
       "optimize_prompt_busy_optimizing_another_chat": "Optimiser le prompt — optimisation d’un autre chat en cours",
       "optimizing_another_chat_please_wait": "Optimisation d’un autre chat — patiente",
       "optimizing_prompt": "Optimisation du prompt…",
+      "plan_mode": "Mode planification",
+      "plan_mode_is_on_click_to_turn_it_off_without_sta": "Le mode planification est actif — cliquez pour le désactiver sans lancer le travail",
+      "plan_mode_overrides_this_while_it_is_on": "Le mode planification prévaut sur ceci tant qu'il est actif",
       "plan_pre_filled_add_context_then_send": "Plan pré-rempli — ajoutez du contexte puis Envoyer",
       "project": "Projet",
       "queue_message": "Mettre le message en file d'attente",
@@ -2789,7 +2793,8 @@
       "voice_input": "Saisie vocale",
       "queue": "Mettre en file",
       "queue_desc": "Exécuter après le tour en cours",
-      "steer_desc": "Injecter immédiatement dans le tour en cours"
+      "steer_desc": "Injecter immédiatement dans le tour en cours",
+      "the_agent_looks_into_things_and_writes_you_a_pla": "L'agent enquête et vous rédige un plan au lieu d'effectuer des modifications. Les modifications de fichiers et les commandes sont bloquées avant leur exécution — une protection solide, pas un bac à sable. La lecture et la recherche web fonctionnent toujours."
     },
     "chatPane": {
       "agent_list": "Liste des agents",
@@ -3770,8 +3775,11 @@
       "dismiss": "Ignorer",
       "dismiss_question_without_answering": "Ignorer la question sans répondre",
       "expand_all": "Tout développer",
+      "i_have_feedback_on_the_plan": "J'ai des retours sur le plan",
+      "leaves_plan_mode_and_starts_the_work": "Quitte le mode plan et démarre le travail",
       "not_answered_yet": "Pas encore répondu",
       "or_type_a_custom_answer": "Ou saisissez une réponse personnalisée...",
+      "start_implementing_this": "Commencer la mise en œuvre",
       "submit": "Envoyer"
     },
     "queueStack": {
@@ -5576,6 +5584,8 @@
       "continue_a_previous_chat": "Reprendre un chat précédent ?",
       "could_not_set_the_agent_default_model": "Impossible de définir le modèle par défaut de l’agent",
       "could_not_start_a_new_session": "Impossible de démarrer une nouvelle session",
+      "could_not_turn_plan_mode_off": "Impossible de désactiver le mode planification",
+      "could_not_turn_plan_mode_on": "Impossible d'activer le mode planification",
       "dismiss_error": "Ignorer l'erreur",
       "dismiss_upload_error": "Ignorer l'erreur d'envoi",
       "enter_split_view": "Passer en vue divisée",
@@ -5640,6 +5650,8 @@
       "knowledge_item_many": "{{count}} éléments de connaissance",
       "knowledge_item_one": "{{count}} élément de connaissance",
       "knowledge_item_other": "{{count}} éléments de connaissance",
+      "plan_mode_is_on_the_agent_will_write_a_plan_but": "Le mode plan est activé — l'agent rédigera un plan au lieu d'effectuer des modifications. Cliquez sur la puce Mode plan pour le désactiver.",
+      "the_session_is_busy_wait_for_the_current_turn_an": "La session est occupée — attendez la fin du tour en cours et des sous-agents, puis réessayez.",
       "this_session_has_no_project_directory_to_branch": "Cette session n’a aucun répertoire de projet depuis lequel créer une branche.",
       "worktree_creation_returned_no_path": "La création du worktree n’a renvoyé aucun chemin"
     },

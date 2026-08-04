@@ -579,6 +579,15 @@ async def _resolve_permission(
         _log("denied", error=_deny_reason, metadata={"mechanism": "always_deny"})
         return False
 
+    # No plan-mode check here on purpose. This function's only caller
+    # (stream_and_collect, below) passes no session_key, so a gate keyed on
+    # session identity could never fire — a mirror here would be dead code
+    # claiming to be a defence layer. Plan mode has exactly ONE live
+    # chokepoint: hooks.on_tool_call (the permission plane, which every surface
+    # consults before its own trust ladder). Tools kiro-cli auto-approves emit
+    # no permission request and so reach no gate at all — a documented limit,
+    # not a second layer. test_plan_mode_gate.py pins that contract.
+
     # Defense-in-depth: also inspect event.tool_input for sensitive paths/commands.
     # The title usually carries the full path/command (kiro-cli convention), but
     # tool_input may contain additional arguments or the actual path when the

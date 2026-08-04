@@ -1579,6 +1579,18 @@ def _list_tools() -> list[dict[str, Any]]:
                             "How long to wait for the answer (15-540, default 300)"
                         ),
                     },
+                    "plan_handoff": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true ONLY on the card that closes a plan while "
+                            "plan mode is on. The card then renders the two "
+                            "handoff choices itself — starting implementation, or "
+                            "giving feedback on the plan — so supply the question "
+                            "text and leave options empty. Picking the first one "
+                            "leaves plan mode and starts the work; ignored when "
+                            "plan mode is not on."
+                        ),
+                    },
                 },
                 "required": ["questions"],
             },
@@ -3375,6 +3387,15 @@ def _do_select_crew(crew: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+#: Fallback English labels for the end-of-plan handoff card. The dashboard
+#: localizes these positionally when it sees ``plan_handoff`` (index 0 leaves
+#: plan mode and starts the work, index 1 keeps planning), so these are what an
+#: older client — or a transcript — shows. Server-owned rather than model-owned:
+#: see the ``plan_handoff`` branch in the ``ask_question`` handler.
+_PLAN_HANDOFF_START_LABEL = "Start implementing this"
+_PLAN_HANDOFF_FEEDBACK_LABEL = "I have feedback on the plan"
 
 
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
@@ -5331,6 +5352,25 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "ask_question":
         args = validate_tool_args(args, ASK_QUESTION_SCHEMA)
+        handoff = bool(args.get("plan_handoff"))
+        if handoff:
+            # Server-authored choices, replacing whatever the model supplied.
+            # The model asks for the handoff; it does not get to write the label
+            # on the control that leaves plan mode, or a persuasive gloss could
+            # talk the user through their own gate. The frontend localizes these
+            # positionally (index 0 starts work, index 1 keeps planning) and
+            # falls back to this English copy if it does not know the flag.
+            questions = args.get("questions") or []
+            if questions and isinstance(questions[0], dict):
+                questions[0] = {
+                    **questions[0],
+                    "options": [
+                        {"label": _PLAN_HANDOFF_START_LABEL},
+                        {"label": _PLAN_HANDOFF_FEEDBACK_LABEL},
+                    ],
+                    "multiSelect": False,
+                }
+            args["questions"] = questions[:1]
         # Stateless: return a directive. The session-aware consumer
         # (chat_runner) broadcasts a NON-BLOCKING question card (no ask_id) to
         # ITS OWN slot and the agent ends its turn; the user's answer arrives as
@@ -5354,7 +5394,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # per-question/option checks), not the shallow-schema args: a
             # malformed nested question must be rejected HERE, not surface as a
             # card-post failure after the model was told it posted.
-            {"questions": validate_ask_user_question(args)},
+            {
+                "questions": validate_ask_user_question(args),
+                # Forwarded as a REQUEST. Whether it is honoured is decided in
+                # the gateway, which owns the plan-mode registry; this process
+                # cannot see it.
+                "plan_handoff": handoff,
+            },
             "Question card requested for this session. End your turn now — if it "
             "renders, the user's answer arrives as your next message (do NOT "
             "re-ask or guess in the meantime). If no dashboard client is "
