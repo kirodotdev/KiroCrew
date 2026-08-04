@@ -46,6 +46,26 @@ export const SEQUENTIAL_MERGE_TOKEN = 'merge prs'
  * contract, and widening it would suggest the endpoint accepts this verb. */
 export const MERGE_READY_ACTION = 'merge_ready'
 
+/** The merge methods, in the provider-neutral vocabulary the API speaks.
+ *
+ * Wire values (the server compares them by value and forwards them to the provider),
+ * so they are spelled here rather than inlined at each call site. The bulk bar's
+ * confirmation NAMES the method it will use, and that copy has to be derived from the
+ * value actually sent: a hardcoded `'SQUASH'` at the call site and a separately
+ * hardcoded "squash" in the sentence are two places to change and one to forget. */
+export const MERGE_METHOD = {
+  merge: 'MERGE',
+  squash: 'SQUASH',
+  rebase: 'REBASE',
+} as const
+
+/** The method the bulk bar's sequential merge sends.
+ *
+ * Named once so the value sent and the method named in the confirmation are the SAME
+ * symbol. Squash because it is the only method both providers accept unconditionally
+ * (GitLab has no rebase option on `/merge`), and this surface offers no picker. */
+export const SEQUENTIAL_MERGE_METHOD = MERGE_METHOD.squash
+
 /** Provider merge-state values that mean the PR's protections are SATISFIED.
  *
  * Mirrors the server's `_MERGE_ALLOWED_STATES`. `unstable` is deliberately absent: it

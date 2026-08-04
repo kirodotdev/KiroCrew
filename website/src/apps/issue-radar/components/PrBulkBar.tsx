@@ -34,9 +34,11 @@ import {
 } from '../lib/prActions'
 import {
   BULK_PR_CLOSE_TOKEN as CLOSE_TOKEN, MERGE_READY_ACTION, SEQUENTIAL_MERGE_TOKEN,
+  SEQUENTIAL_MERGE_METHOD,
 } from '../lib/wireValues'
+import { fmtList } from '../../../i18n/format'
 import { useIssueRadar } from '../context'
-import { providerTerms, isGitlab } from '../lib/links'
+import { providerTerms, isGitlab, repoScopeKey } from '../lib/links'
 import type { BulkPrAction } from '../api'
 
 import { i18nT } from '../../../i18n/t'
@@ -48,6 +50,12 @@ import { i18nT } from '../../../i18n/t'
 export { BULK_PR_CLOSE_TOKEN, SEQUENTIAL_MERGE_TOKEN } from '../lib/wireValues'
 
 
+
+// The confirmation's two explanatory lines, referenced by the input's
+// `aria-describedby`: a screen-reader user tabbing to the field would otherwise hear only
+// "type the confirmation word" and never the set being merged or the method.
+const CONFIRM_WARNING_ID = 'pr-bulk-confirm-warning'
+const CONFIRM_TARGETS_ID = 'pr-bulk-confirm-targets'
 
 /** Which actions need a body, and which need the typed confirmation. */
 const NEEDS_BODY = new Set<BulkPrAction>(['comment'])
@@ -80,11 +88,51 @@ export default function PrBulkBar() {
   // `runSequentialMerge`.
   const [armedMerge, setArmedMerge] = useState<Array<{ number: number; headSha: string }>>([])
   // Held in a ref so the selection-change effect can clear the run report while staying
-  // keyed on the selection ALONE. Depending on `seq.reset` directly would re-key the
-  // effect on an unstable identity and re-fire it on unrelated renders, wiping a typed
-  // confirmation mid-entry.
-  const seqResetRef = useRef(seq.reset)
-  seqResetRef.current = seq.reset
+  // keyed on the selection ALONE. Depending on `seq.clearReport` directly would re-key
+  // the effect on an unstable identity and re-fire it on unrelated renders, wiping a
+  // typed confirmation mid-entry.
+  //
+  // `clearReport`, NOT `reset`: `reset` also aborts, and this effect fires on selection
+  // changes the RUN ITSELF causes (see `mergedByRun`), so the abort reached a merge loop
+  // that was still going.
+  const seqClearReportRef = useRef(seq.clearReport)
+  seqClearReportRef.current = seq.clearReport
+  // Read by the disarm effect without being a dependency of it, for the same reason as
+  // every other ref here: that effect must re-key on the selection alone.
+  const seqBusyRef = useRef(seq.busy)
+  seqBusyRef.current = seq.busy
+  // The numbers THIS RUN merged, so the selection changes it causes are not mistaken for
+  // the user reselecting.
+  //
+  // A successful merge changes the selection twice over: the per-row cache invalidation
+  // drops the row out of the refetched list (so it leaves `numbers`, which is intersected
+  // with what is rendered), and `runSequentialMerge` unticks it afterwards. Both are the
+  // run's own bookkeeping, but the reset effect below could not tell them from a user
+  // click, so a 3+ row run aborted itself midway, and the per-row report the whole
+  // feature is built around was wiped the moment it was complete.
+  const mergedByRun = useRef<Set<number>>(new Set())
+  // Belt and braces on the above: the exemption is meaningless outside the repo it was
+  // recorded in (PR numbers are per-repo), and this component is NOT remounted by a repo
+  // switch, so the ref would otherwise carry repo A's merged numbers into repo B.
+  const scopeKey = repoScopeKey(active)
+  const lastScope = useRef(scopeKey)
+  if (lastScope.current !== scopeKey) {
+    lastScope.current = scopeKey
+    mergedByRun.current = new Set()
+  }
+  // Whether a row is STILL ticked, read at the moment the run reaches it.
+  //
+  // The run walks the frozen `armedMerge` so a poll cannot change what executes, but an
+  // operator unticking a queued PR mid-run is withdrawing consent for that PR and the
+  // frozen set cannot represent that. A ref-held predicate keeps this out of the
+  // selection effect's dependencies (keying that effect on anything but the selection
+  // re-fires it on unrelated renders and wipes a confirmation mid-entry) while still
+  // reading the LIVE ticked set each time the loop asks.
+  //
+  // A per-row veto, not an abort: the rows after it were not withdrawn, and `abort` is
+  // what Cancel means.
+  const stillTicked = useRef<(n: number) => boolean>(() => true)
+  stillTicked.current = (n: number) => checkedPulls.has(n)
   // How many rows the LAST run started with, so the "N not attempted" line has a fixed
   // denominator. `armedMerge` is cleared when the run ends and the live target list
   // shrinks as rows merge, so neither can measure the run after the fact.
@@ -174,23 +222,49 @@ export default function PrBulkBar() {
     headSha: seen.get(p.number) as string,
   }))
 
-  // Reset the in-progress action whenever the selection changes.
+  // TWO keys, because the two things this effect used to do want different answers.
   //
-  // Keyed on the selection's IDENTITY, not its size. Keying on the count let a
-  // same-size swap (7,8 -> 7,9) keep an armed confirmation or a typed body: the
-  // effect never fired, so Apply stayed enabled and closed a PR the user had never
-  // confirmed, or posted prose written about a different set.
+  // `selectionKey` is the literal ticked set, and it disarms an in-progress action: a
+  // confirmation or a typed body must never survive a change to what it applies to. Keyed
+  // on IDENTITY, not size, since a same-size swap (7,8 -> 7,9) otherwise left Apply armed
+  // and closed a PR the user had never confirmed.
+  //
+  // It must stay the LITERAL set. Folding the run's merged numbers in here made the
+  // exemption able to mask an ADDITION too, not just the run's own disappearance: with
+  // `mergedByRun = {7}` (recorded in another repo, since nothing resets it on a repo
+  // switch and this component is not remounted by one), ticking a live #7 left the key
+  // unchanged at `7,9`, so a typed close confirmation stayed armed and Apply closed it.
   const selectionKey = numbers.join(',')
+  // `reportKey` decides only whether the RUN REPORT is stale, and that is where the run's
+  // own churn has to be invisible: a merged row leaves the list (its invalidation
+  // refetches) and then unticks itself, and neither is a user reselection. Merged numbers
+  // are ADDED BACK rather than filtered out, which is the subtlety: a merged row WAS in
+  // the key before it merged, so removing it changes the key just as much as its
+  // disappearance did (`7,8` -> `8`). Re-adding reproduces the pre-run key exactly.
+  // Sorted because the union's insertion order is not the render order.
+  const reportKey = [...new Set([...numbers, ...mergedByRun.current])]
+    .sort((a, b) => a - b)
+    .join(',')
   useEffect(() => {
+    // NOT while a sequential merge is running. Cancel lives in this composer, and the
+    // first merged row changes the ticked set (its invalidation refetches, so the row
+    // leaves the list), which would clear `pending` and take the only control that stops
+    // the remaining rows off screen mid-run. An irreversible loop has to stay
+    // interruptible for as long as it is running; the run ends by clearing these itself.
+    if (seqBusyRef.current) return
     setPending(null)
     setText('')
     setConfirmText('')
     setArmedMerge([])
-    // The previous run's per-row report goes too. It names PR numbers and counts
-    // "remaining" against the set it ran on, so carrying it into a different selection
-    // reports another selection's failures as if they were this one's.
-    seqResetRef.current()
   }, [selectionKey])
+  useEffect(() => {
+    // The previous run's per-row report names PR numbers and counts "remaining" against
+    // the set it ran on, so carrying it into a different selection reports another
+    // selection's failures as if they were this one's. Clearing it does NOT abort: this
+    // fires on the run's own churn as well, and a caller that only tidies the UI must not
+    // be able to stop a merge in flight.
+    seqClearReportRef.current()
+  }, [reportKey])
 
   // The bar stays mounted while it has an OUTCOME to report, even once the
   // selection is empty. Returning null on `count === 0` alone meant a fully clean
@@ -220,7 +294,21 @@ export default function PrBulkBar() {
   const runSequentialMerge = async () => {
     if (!armedMerge.length || seq.busy) return
     setMergeRunSize(armedMerge.length)
-    const done = await seq.mergeAll(armedMerge)
+    // A fresh run owns a fresh exemption set. Carrying the previous run's numbers would
+    // make re-ticking one of them look like the run's own bookkeeping and suppress the
+    // reset a real reselection must perform.
+    mergedByRun.current = new Set()
+    const done = await seq.mergeAll(armedMerge, {
+        // Recorded BEFORE react-query refetches, so the row is already exempt from
+        // `selectionKey` by the time it drops out of the list.
+        onMerged: (number) => mergedByRun.current.add(number),
+      // Asked per row against the LIVE selection, so a PR the user deselected while the
+      // run was working is skipped instead of merged from the frozen set.
+      stillWanted: (number) => stillTicked.current(number),
+      // The SAME symbol the confirmation names, so the copy cannot drift from the
+      // method actually sent.
+      method: SEQUENTIAL_MERGE_METHOD,
+    })
     // Untick only what actually merged, so a run that stopped early leaves the
     // outstanding rows selected and a retry covers exactly them.
     for (const row of done) if (row.status === 'merged') togglePullChecked(row.number)
@@ -442,7 +530,7 @@ export default function PrBulkBar() {
           )}
           {needsConfirm && (
             <>
-              <div className="text-[12px] text-danger mb-1.5">
+              <div id={CONFIRM_WARNING_ID} className="text-[12px] text-danger mb-1.5">
                 {isMergePending
                   // The FROZEN count, matching exactly what Apply will merge.
                   ? i18nT('apps.issueRadar.components.prBulkBar.merge_warning', {
@@ -450,6 +538,34 @@ export default function PrBulkBar() {
                   })
                   : i18nT('apps.issueRadar.components.prBulkBar.close_warning', { count })}
               </div>
+              {/* The frozen SET, not just its count. An irreversible action should be
+                  inspectable before it runs, and a count alone cannot be checked against
+                  what the user believes they ticked. Bounded by `prBulkMax`, so this is
+                  always a short line. The method is named for the same reason: it is
+                  hardcoded, so a merge-commit repo would otherwise discover the squash
+                  only afterwards.
+                  NOT muted: this is the only line naming WHICH pull requests are about to
+                  be merged irreversibly, so it must not read as subordinate to the count
+                  above it. It wraps rather than truncating, deliberately - at the cap of
+                  50 that is a few lines, and clipping the identifiers would defeat the
+                  inspection the line exists for. */}
+              {isMergePending && armedMerge.length > 0 && (
+                <div id={CONFIRM_TARGETS_ID} className="text-[12px] text-text mb-1.5">
+                  {i18nT('apps.issueRadar.components.prBulkBar.merge_targets', {
+                    // The PROVIDER's own sigil, like every other reference on this
+                    // surface (the run report below renders `{terms.sigil}{number}`).
+                    // GitLab writes `!7`, and this path is reachable there: only the two
+                    // AUTO-merge buttons are GitLab-gated, not merge-now.
+                    //
+                    // Raw digits, NOT `fmtNumber`: a PR number is an identifier, so a
+                    // grouping separator would both misrender it (`#1,291`) and break
+                    // copying it into a search. `fmtList` still supplies the locale's own
+                    // enumeration (zh-CN uses `、`, not `, `).
+                    numbers: fmtList(armedMerge.map((t) => `${terms.sigil}${t.number}`)),
+                    method: SEQUENTIAL_MERGE_METHOD.toLowerCase(),
+                  })}
+                </div>
+              )}
               <input
                 value={confirmText}
                 onChange={(e) => setConfirmText(e.target.value)}
@@ -471,6 +587,16 @@ export default function PrBulkBar() {
                 }}
                 placeholder={requiredToken}
                 aria-label={i18nT('apps.issueRadar.components.prBulkBar.type_to_confirm')}
+                // Names the warning AND the target set, so the field is not read in
+                // isolation from what it is about to authorize.
+                aria-describedby={
+                  isMergePending && armedMerge.length > 0
+                    ? `${CONFIRM_WARNING_ID} ${CONFIRM_TARGETS_ID}`
+                    : CONFIRM_WARNING_ID
+                }
+                // The confirmation is the last step before an irreversible action, so the
+                // caret belongs in it rather than several tab stops away.
+                autoFocus
                 className="w-full bg-bg-elevated border border-border rounded-md px-2.5 py-1.5 text-[13px] text-text placeholder:text-muted outline-none transition-colors focus-ring font-body"
               />
             </>

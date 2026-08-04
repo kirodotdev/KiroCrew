@@ -850,6 +850,7 @@
           "merge_halted_other": "剩余 {{count}} 个拉取请求未尝试。",
           "merge_ready_hint": "合并已就绪的所选拉取请求 — 逐个进行，每个都固定到其行中显示的提交。首次被拒绝时停止。",
           "merge_ready_other": "合并 {{count}} 个已就绪",
+          "merge_targets": "将使用 {{method}} 合并 {{numbers}}。",
           "merge_warning_other": "会立即逐个合并 {{count}} 个拉取请求，此操作无法撤销。",
           "merged_ok": "已合并",
           "reopen": "重新打开",

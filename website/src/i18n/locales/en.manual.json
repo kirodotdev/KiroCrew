@@ -202,6 +202,7 @@
           "merge_ready_hint": "Merge the selected pull requests that are already ready — one at a time, each pinned to the commit shown on its row. Stops at the first refusal.",
           "merge_ready_one": "Merge {{count}} ready",
           "merge_ready_other": "Merge {{count}} ready",
+          "merge_targets": "Merging {{numbers}} using {{method}}.",
           "merge_warning_one": "This merges {{count}} pull request now. It cannot be undone.",
           "merge_warning_other": "This merges {{count}} pull requests now, one at a time. It cannot be undone.",
           "merged_ok": "merged"

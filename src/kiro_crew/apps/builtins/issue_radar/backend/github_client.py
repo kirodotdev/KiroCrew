@@ -1916,6 +1916,9 @@ def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[d
     by-number lookup. Without it those rows would report ``0`` additions and no
     checks — unavailable data rendered as a confident "no diff, no checks".
 
+    BOTH calls are topped up that way, the card summaries and the separate merge
+    readiness, since both are capped at the same window while the list is not.
+
     Best effort by design: on any failure the affected rows report ``None`` for
     diff size and check state (unknown, not "nothing"), so the list still renders
     and the route declines to cache the incomplete rows.
@@ -1940,6 +1943,26 @@ def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[d
         readiness = fetch_pr_readiness(owner, repo, state)
     except GhCliError:
         readiness = {}
+    # Topped up by number for the same reason the summaries are: the state-scoped query
+    # is capped at `first:100` while the REST list paginates ALL open PRs, so on a repo
+    # with more than 100 the tail came back with no readiness at all. Unknown readiness
+    # is offered NEITHER merge verb, so those rows were silently unactionable in the
+    # bulk bar, precisely on the large repos bulk actions exist for.
+    #
+    # Membership, NOT truthiness. `UNKNOWN` is a legitimate ANSWER, not an absent one:
+    # GitHub computes mergeability asynchronously and roughly half a cold page comes back
+    # that way, and `_parse_readiness_rows` records it as the string `'unknown'`. So the
+    # key IS present, and testing the value instead would re-request every such row on
+    # every fetch: a guaranteed extra query per list load that answers `UNKNOWN` again.
+    missing_readiness = [
+        n for n in (pr.get("number") for pr in pulls)
+        if isinstance(n, int) and n not in readiness
+    ]
+    if missing_readiness:
+        try:
+            readiness.update(fetch_pr_readiness_by_number(owner, repo, missing_readiness))
+        except GhCliError:
+            pass
     return _apply_summaries(pulls, summaries, readiness)
 
 

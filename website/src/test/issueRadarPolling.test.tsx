@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IssueRadarProvider, useIssueRadar } from '../apps/issue-radar/context'
 import {
   LIST_POLL_MS, LIST_POLL_CHOICES_MS, STALE_TIME_CHOICES_MS, REFRESH_DEFAULTS,
-  coerceInterval, coerceRefreshPrefs,
+  CACHE_RETENTION_MS, coerceInterval, coerceRefreshPrefs,
 } from '../apps/issue-radar/lib/format'
 
 // The list routes are cache-first with NO server-side TTL, so a plain refetch
@@ -334,5 +334,38 @@ describe('issue-radar list polling', () => {
     expect(searchPulls).not.toHaveBeenCalled()
     expect(pulls).not.toHaveBeenCalled()
     unmount()
+  })
+})
+
+describe('cached surfaces survive a tab switch', () => {
+  // Each dashboard mounts its own queries and unmounts them on the way out (the views are
+  // SWAPPED, not hidden), so a surface's data lives only `gcTime` past that unmount. The
+  // app-wide default is react-query's 5 minutes, which is shorter than a triage session:
+  // leaving Tagging for six minutes evicted its queue, so coming back showed a loading
+  // line and refetched from scratch. Once per tab click.
+  it('retains issue-radar query data far longer than the app-wide default', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: 30_000 } } })
+    qc.setQueryDefaults(['issue-radar'], { gcTime: CACHE_RETENTION_MS })
+    expect(qc.getQueryDefaults(['issue-radar', 'tagging', 'gh:github.com:o/r']).gcTime)
+      .toBe(CACHE_RETENTION_MS)
+    // Comfortably past a normal detour between surfaces, where 5 minutes is not.
+    expect(CACHE_RETENTION_MS).toBeGreaterThan(5 * 60_000)
+  })
+
+  it('scopes the retention to this app, not the whole dashboard', () => {
+    // A global gcTime bump would retain every other page's queries too, which is memory
+    // spent on data nothing asked to keep.
+    const qc = new QueryClient()
+    qc.setQueryDefaults(['issue-radar'], { gcTime: CACHE_RETENTION_MS })
+    expect(qc.getQueryDefaults(['chat-slots']).gcTime).toBeUndefined()
+  })
+
+  it('paints retained rows instead of a spinner, because the query is not pending', async () => {
+    // What makes retention sufficient on its own: the surfaces gate their loading copy on
+    // `isLoading`, which is false whenever data is present, so a remount within the
+    // retention window renders rows immediately and any refetch happens behind them.
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: 0 } } })
+    await qc.fetchQuery({ queryKey: ['issue-radar', 'tagging'], queryFn: async () => 'rows' })
+    expect(qc.getQueryState(['issue-radar', 'tagging'])?.status).toBe('success')
   })
 })

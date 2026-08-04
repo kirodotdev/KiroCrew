@@ -22,6 +22,7 @@ import {
 import { repoScopeKey } from './links'
 import {
   MERGE_READY_STATES as READY_STATES, MERGE_STATE_DIRTY, MERGE_STATE_UNKNOWN,
+  MERGE_METHOD,
 } from './wireValues'
 
 /**
@@ -43,11 +44,11 @@ export const DEFAULT_BULK_CHUNK = 25
  * to `SQUASH`, which both providers accept — so this stays one type rather than
  * splitting per provider for a value the UI never sends.
  */
-export type MergeMethod = 'MERGE' | 'SQUASH' | 'REBASE'
+export type MergeMethod = typeof MERGE_METHOD[keyof typeof MERGE_METHOD]
 
-// `MERGE_READY_STATES` is a PROTOCOL value set — see `lib/wireValues.ts`, which is
-// where every by-value provider/server string in this surface lives.
-export { MERGE_READY_STATES } from './wireValues'
+// `MERGE_READY_STATES` and `MERGE_METHOD` are PROTOCOL values; see `lib/wireValues.ts`,
+// which is where every by-value provider/server string in this surface lives.
+export { MERGE_READY_STATES, MERGE_METHOD } from './wireValues'
 
 /**
  * Whether a row/detail is mergeable RIGHT NOW, from its provider merge state.
@@ -339,8 +340,28 @@ export function useSequentialMerge(ref: RepoRef) {
       // window re-point the action at an unreviewed commit, and the server-side pin
       // cannot catch that because the request would carry the new sha.
       targets: Array<{ number: number; headSha: string }>,
-      method: MergeMethod = 'SQUASH',
+      opts: {
+        /** Called with each number as it merges, BEFORE that row's caches are
+         * invalidated, so a caller that has to exempt the row from its own
+         * selection bookkeeping has recorded it before the refetch drops it. */
+        onMerged?: (number: number) => void
+        /** Called with each number as the loop REACHES it, before the request goes out.
+         * Lets a caller track what the run still owes: a row that has been attempted is
+         * no longer pending whether it merged or was refused. */
+        onAttempt?: (number: number) => void
+        /** Asked before each row, so a row the user has DESELECTED since the
+         * confirmation is skipped rather than merged.
+         *
+         * The target set is frozen on purpose (a poll must not change what executes), but
+         * an operator unticking a queued PR is withdrawing consent for that PR, and the
+         * frozen set cannot represent that on its own. Returning false skips ONE row and
+         * lets the run continue: this is a per-row veto, not `abort`, which stops
+         * everything and is what Cancel means. */
+        stillWanted?: (number: number) => boolean
+        method?: MergeMethod
+      } = {},
     ): Promise<SequentialMergeRow[]> => {
+      const { onMerged, onAttempt, stillWanted, method = MERGE_METHOD.squash } = opts
       // A second concurrent run would merge a row twice and break stop-on-first-failure.
       if (!targets.length || inFlight.current) return []
       inFlight.current = true
@@ -352,10 +373,23 @@ export function useSequentialMerge(ref: RepoRef) {
         for (const { number, headSha } of targets) {
           // Checked per row, so Cancel spares everything not yet sent.
           if (aborted.current) break
+          // Deselected since the confirmation: skip this ONE row and carry on. Recorded
+          // as attempted first, so the caller stops counting it as owed.
+          if (stillWanted && !stillWanted(number)) {
+            onAttempt?.(number)
+            continue
+          }
           setRunning(number)
+          // Before the request: this row is no longer owed, whichever way it goes.
+          onAttempt?.(number)
           try {
             await issueRadarApi.mergePr(ref, number, headSha, method)
             done.push({ number, status: 'merged' })
+            // BEFORE the invalidation, which is what makes the row leave the rendered
+            // list: the caller uses this to exempt the row from its own selection
+            // bookkeeping, and doing it after leaves a window where the row has already
+            // dropped out but is not yet recorded as this run's doing.
+            onMerged?.(number)
             // Per row, so a long run shows progress instead of jumping at the end.
             invalidate([number], PR_ACTION.merge)
             setRows([...done])
@@ -385,6 +419,15 @@ export function useSequentialMerge(ref: RepoRef) {
     rows,
     /** Stop before the next row. The in-flight merge cannot be recalled. */
     abort: useCallback(() => { aborted.current = true }, []),
+    /** Drop the finished run's report WITHOUT aborting anything.
+     *
+     * Split from `reset` because conflating the two made a selection change kill a
+     * live run: the run's own per-row list invalidation drops merged rows out of the
+     * rendered list, which changes the selection, which fired the bar's
+     * selection-reset effect, which called `reset`, so a 3+ row run aborted itself
+     * partway with no refusal to show for it. A caller that only wants to clear
+     * stale UI must not be able to stop a merge in flight. */
+    clearReport: useCallback(() => { setRows([]) }, []),
     reset: useCallback(() => { aborted.current = true; setRows([]) }, []),
   }
 }

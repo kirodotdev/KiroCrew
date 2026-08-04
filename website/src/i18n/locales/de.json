@@ -875,6 +875,7 @@
           "merge_ready_hint": "Die ausgewählten Pull Requests zusammenführen, die bereits bereit sind — einzeln, jeder an den in seiner Zeile angezeigten Commit gebunden. Stoppt bei der ersten Ablehnung.",
           "merge_ready_one": "{{count}} bereite zusammenführen",
           "merge_ready_other": "{{count}} bereite zusammenführen",
+          "merge_targets": "{{numbers}} werden mit {{method}} zusammengeführt.",
           "merge_warning_one": "Dies führt jetzt {{count}} Pull Request zusammen. Es kann nicht rückgängig gemacht werden.",
           "merge_warning_other": "Dies führt jetzt {{count}} Pull Requests einzeln zusammen. Es kann nicht rückgängig gemacht werden.",
           "merged_ok": "zusammengeführt",

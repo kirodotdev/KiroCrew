@@ -7,8 +7,11 @@ lists coerced to de-duplicated strings), default to the backwards-compatible
 Disconnect is local-only: it removes the config entry AND the cache dir but
 never touches GitHub.
 """
+import json
+import os
 import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -190,6 +193,99 @@ class TestRecommendationsAndLabelCache(unittest.TestCase):
         # No labels cache exists — must NOT create a partial 1-label cache that
         # would mask the real set until a refresh.
         store.add_label_to_cache("o", "r", {"name": "x", "color": "d93f0b", "description": ""}, root=self.tmp)
+        self.assertIsNone(store.read_labels_cache("o", "r", self.tmp))
+
+    def test_the_label_ttl_is_pinned_to_its_documented_value(self):
+        # Every other test here derives its aging FROM this constant, so they stay green
+        # for any value at all: raising it to a year would leave the cache effectively
+        # unbounded (the defect the TTL exists to fix) with no test objecting. The spec
+        # states 600s, so the number itself is pinned.
+        self.assertEqual(store.LABELS_CACHE_TTL_SEC, 600.0)
+
+    def test_an_expired_labels_cache_reads_as_a_MISS(self):
+        # The cache had no expiry at all, and nothing polls the /labels query, so the
+        # first fetch of a repo was served forever and a label created on GitHub
+        # afterwards never appeared. That reads as a TRUNCATED label list, not a stale
+        # one: nothing on screen says the set is incomplete and the missing labels are
+        # silently unfilterable.
+        store.add_connected_repo("o", "r", root=self.tmp)
+        store.write_labels_cache(
+            "o", "r", [{"name": "bug", "color": "d73a4a", "description": ""}], root=self.tmp,
+        )
+        self.assertIsNotNone(store.read_labels_cache("o", "r", self.tmp))
+        path = store.labels_cache_path("o", "r", self.tmp)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["fetched_at"] = time.time() - (store.LABELS_CACHE_TTL_SEC + 1)
+        path.write_text(json.dumps(data), encoding="utf-8")
+        # A miss, so the route refetches and picks up labels created since.
+        self.assertIsNone(store.read_labels_cache("o", "r", self.tmp))
+        # Still readable by the write-through patch, which must not drop an append
+        # just because the file it is patching is due a refetch.
+        self.assertIsNotNone(store.read_labels_cache("o", "r", self.tmp, max_age_sec=None))
+
+    def test_appending_a_label_does_not_RESET_the_cache_age(self):
+        # `add_label_to_cache` rewrites the file without refetching, so re-stamping it
+        # would mean a repo whose labels are edited regularly never ages its cache out,
+        # exactly the staleness the TTL exists to bound. Same payload-vs-mtime reasoning
+        # as the list caches' `_list_cache_age_sec`.
+        store.add_connected_repo("o", "r", root=self.tmp)
+        store.write_labels_cache(
+            "o", "r", [{"name": "bug", "color": "d73a4a", "description": ""}], root=self.tmp,
+        )
+        path = store.labels_cache_path("o", "r", self.tmp)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        aged = time.time() - (store.LABELS_CACHE_TTL_SEC - 5)
+        data["fetched_at"] = aged
+        path.write_text(json.dumps(data), encoding="utf-8")
+        store.add_label_to_cache(
+            "o", "r", {"name": "new", "color": "d93f0b", "description": ""}, root=self.tmp,
+        )
+        after = json.loads(path.read_text(encoding="utf-8"))
+        self.assertAlmostEqual(after["fetched_at"], aged, places=3)
+        # The append still landed.
+        self.assertIn("new", [lab["name"] for lab in after["labels"]])
+
+    def test_appending_to_a_PRESTAMP_cache_does_not_reset_its_TTL_clock(self):
+        # A pre-stamp file was written only by a real fetch, so its mtime IS its fetch
+        # time. Treating the missing stamp as "stamp it now" reset the clock on every
+        # append: a cache nine minutes into its ten-minute life got a fresh ten, and one
+        # label creation per interval could defer the refetch indefinitely.
+        store.add_connected_repo("o", "r", root=self.tmp)
+        store.write_labels_cache(
+            "o", "r", [{"name": "bug", "color": "d73a4a", "description": ""}], root=self.tmp,
+        )
+        path = store.labels_cache_path("o", "r", self.tmp)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        del data["fetched_at"]
+        path.write_text(json.dumps(data), encoding="utf-8")
+        aged = time.time() - (store.LABELS_CACHE_TTL_SEC - 60)
+        os.utime(path, (aged, aged))
+        store.add_label_to_cache(
+            "o", "r", {"name": "new", "color": "d93f0b", "description": ""}, root=self.tmp,
+        )
+        # The carried-over stamp reflects the ORIGINAL fetch, not the append.
+        after = json.loads(path.read_text(encoding="utf-8"))
+        self.assertAlmostEqual(after["fetched_at"], aged, delta=2)
+        self.assertIn("new", [lab["name"] for lab in after["labels"]])
+        # And it still expires on the original schedule rather than a renewed one.
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["fetched_at"] = time.time() - (store.LABELS_CACHE_TTL_SEC + 1)
+        path.write_text(json.dumps(data), encoding="utf-8")
+        self.assertIsNone(store.read_labels_cache("o", "r", self.tmp))
+
+    def test_a_prestamp_labels_cache_falls_back_to_mtime(self):
+        # A cache written before `fetched_at` existed was only ever written by a real
+        # fetch, so its mtime IS its fetch time; it must not be treated as ageless.
+        store.add_connected_repo("o", "r", root=self.tmp)
+        store.write_labels_cache(
+            "o", "r", [{"name": "bug", "color": "d73a4a", "description": ""}], root=self.tmp,
+        )
+        path = store.labels_cache_path("o", "r", self.tmp)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        del data["fetched_at"]
+        path.write_text(json.dumps(data), encoding="utf-8")
+        old = time.time() - (store.LABELS_CACHE_TTL_SEC + 60)
+        os.utime(path, (old, old))
         self.assertIsNone(store.read_labels_cache("o", "r", self.tmp))
 
 

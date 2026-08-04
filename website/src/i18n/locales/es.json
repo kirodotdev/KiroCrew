@@ -872,6 +872,7 @@
           "merge_ready_many": "Fusionar {{count}} listas",
           "merge_ready_one": "Fusionar {{count}} lista",
           "merge_ready_other": "Fusionar {{count}} listas",
+          "merge_targets": "Se fusionarán {{numbers}} mediante {{method}}.",
           "merge_warning_many": "Esto fusiona {{count}} solicitudes ahora, una a una. No se puede deshacer.",
           "merge_warning_one": "Esto fusiona {{count}} solicitud ahora. No se puede deshacer.",
           "merge_warning_other": "Esto fusiona {{count}} solicitudes ahora, una a una. No se puede deshacer.",

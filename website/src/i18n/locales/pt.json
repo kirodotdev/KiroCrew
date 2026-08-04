@@ -872,6 +872,7 @@
           "merge_ready_many": "Mesclar {{count}} prontas",
           "merge_ready_one": "Mesclar {{count}} pronta",
           "merge_ready_other": "Mesclar {{count}} prontas",
+          "merge_targets": "Serão mesclados {{numbers}} usando {{method}}.",
           "merge_warning_many": "Isso mescla {{count}} solicitações agora, uma por vez. Não pode ser desfeito.",
           "merge_warning_one": "Isso mescla {{count}} solicitação agora. Não pode ser desfeito.",
           "merge_warning_other": "Isso mescla {{count}} solicitações agora, uma por vez. Não pode ser desfeito.",

@@ -127,6 +127,24 @@ export const DETAIL_POLL_CHOICES_MS = [15_000, 30_000, 60_000, 120_000] as const
  * from cache instead of re-fetching. */
 export const STALE_TIME_CHOICES_MS = [0, 30_000, 120_000, 600_000] as const
 
+/** How long an UNMOUNTED query's data is kept before react-query garbage-collects it.
+ *
+ * This is the dial that decides whether clicking between surfaces feels instant. Every
+ * dashboard here mounts its own queries and unmounts them when you leave (the views are
+ * SWAPPED, not hidden - see `views/registry.tsx`), so a surface's data is retained only
+ * for `gcTime` after the last component reading it unmounts. The app-wide default is
+ * react-query's 5 minutes, which is shorter than a normal triage session: leave the
+ * Tagging dashboard for six minutes, come back, and its queue is gone from the cache and
+ * refetched from scratch behind a "Loading the untagged queue" line.
+ *
+ * 30 minutes, because the cost of a retained entry is memory, not requests: freshness is
+ * still governed by `staleTime` and the poll intervals, so a longer `gcTime` only means
+ * "repaint from what we already had while any refetch happens", never "serve something
+ * stale instead of fetching". Bounded rather than `Infinity` so a long-lived tab that has
+ * visited many repos does not retain every one of their lists forever.
+ */
+export const CACHE_RETENTION_MS = 30 * 60_000
+
 /** Defaults for the refresh preferences — the historical hardcoded behaviour, so
  * an existing user's app behaves identically until they change something. */
 export const REFRESH_DEFAULTS = {

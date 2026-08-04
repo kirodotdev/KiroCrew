@@ -883,6 +883,7 @@
           "merge_ready_many": "Слить {{count}} готовых",
           "merge_ready_one": "Слить {{count}} готовый",
           "merge_ready_other": "Слить {{count}} готовых",
+          "merge_targets": "Будут слиты {{numbers}} с помощью {{method}}.",
           "merge_warning_few": "Это сольёт {{count}} запроса сейчас, по одному. Отменить нельзя.",
           "merge_warning_many": "Это сольёт {{count}} запросов сейчас, по одному. Отменить нельзя.",
           "merge_warning_one": "Это сольёт {{count}} запрос сейчас. Отменить нельзя.",

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -778,6 +778,376 @@ describe('PrBulkBar', () => {
     it('the merge token is a code constant and differs from the close token', () => {
       expect(SEQUENTIAL_MERGE_TOKEN).toBe('merge prs')
       expect(SEQUENTIAL_MERGE_TOKEN).not.toBe(BULK_PR_CLOSE_TOKEN)
+    })
+
+    /** Render with a context that reacts to the run the way the LIVE app does: a merged
+     * row leaves the rendered list mid-loop, and `togglePullChecked` really unticks.
+     *
+     * Every test above passes an inert `vi.fn()` and a static `sortedPulls`, so the run's
+     * own selection churn never came back at all, which is exactly why a defect that
+     * only fires when it does went unseen. Two distinct feedbacks matter, and the
+     * mid-run one is the one that actually aborted the loop:
+     *
+     *  * **mid-run**: each successful merge invalidates that row's queries, react-query
+     *    refetches, and the merged PR is gone from the list. `numbers` is intersected
+     *    with what is RENDERED, so the row leaves the selection while the loop is still
+     *    running. That re-fired the reset effect, whose `reset()` set `aborted`, and
+     *    every remaining row was skipped with no refusal to show for it.
+     *  * **after the loop**: `runSequentialMerge` unticks what merged.
+     *
+     * The row is dropped when the component INVALIDATES that row's queries, not when
+     * `api.mergePr` resolves. That is what the real app does (invalidate, refetch, row
+     * gone) and it is the only wiring under which the ordering inside the merge loop is
+     * observable: if the exemption were recorded AFTER the invalidation instead of
+     * before, the row would leave the list while still unexempt and the run would abort.
+     *
+     * Outcomes are passed in rather than queued with `mockResolvedValueOnce`, because a
+     * once-queue takes priority over `mockImplementation` in Vitest: a queued test would
+     * silently bypass this whole harness (measured: the mid-run path ran 0 times) and
+     * only exercise the post-loop untick it is not written about. */
+    function renderWithLiveSelection(
+      rows: Array<Record<string, unknown>>,
+      /** Per-PR outcome. A number absent from the map merges successfully. */
+      failures: Record<number, string> = {},
+    ) {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      // A fresh element per render: React can bail out on an identical element reference.
+      const el = () => <QueryClientProvider client={qc}><PrBulkBar /></QueryClientProvider>
+      let rerender = (_: React.ReactElement) => {}
+      let live = [...rows]
+      const checked = new Set(rows.map((r) => r.number as number))
+      const apply = () => setCtx({
+        checkedPulls: new Set(checked),
+        sortedPulls: live,
+        togglePullChecked: (n: number) => { checked.delete(n); apply() },
+      })
+      const merged = new Set<number>()
+      api.mergePr.mockImplementation(async (_ref: unknown, n: number) => {
+        if (failures[n]) throw new Error(failures[n])
+        merged.add(n)
+        return { ...REF, number: n, merged: true, sha: 'x', message: '' }
+      })
+      // The row leaves the rendered list when ITS invalidation fires, mirroring the
+      // refetch that invalidation triggers in the app.
+      const realInvalidate = qc.invalidateQueries.bind(qc)
+      vi.spyOn(qc, 'invalidateQueries').mockImplementation((filters?: never) => {
+        const key = (filters as unknown as { queryKey?: unknown[] })?.queryKey
+        if (Array.isArray(key) && key[1] === 'pulls' && merged.size) {
+          live = live.filter((r) => !merged.has(r.number as number))
+          apply()
+          act(() => rerender(el()))
+        }
+        return realInvalidate(filters)
+      })
+      apply()
+      const res = render(el())
+      rerender = res.rerender
+      // `repaint` re-renders with a FRESH element (React can bail out on an identical
+      // reference), which is how a test delivers a user-driven selection change after
+      // calling `setCtx` itself.
+      return {
+        ...res,
+        repaint: () => act(() => rerender(el())),
+        /** Replace the ticked set, then repaint. Goes through the harness's own `apply`
+         * so a later mid-run update does not overwrite it (a bare `setCtx` would be). */
+        select: (nums: number[]) => {
+          checked.clear()
+          for (const n of nums) checked.add(n)
+          apply()
+          act(() => rerender(el()))
+        },
+        /** Put rows back on screen, the way switching to the merged/closed filter does.
+         * `numbers` is intersected with what is RENDERED, so a row the run dropped cannot
+         * re-enter the selection until it is visible again. */
+        show: (rows2: Array<Record<string, unknown>>) => {
+          live = [...rows2]
+          apply()
+          act(() => rerender(el()))
+        },
+      }
+    }
+
+    it('merges EVERY confirmed row even though each merge unticks its own', async () => {
+      // The defect: a merged row's cache invalidation + untick changed the selection,
+      // the selection-reset effect fired, and `reset()` aborted the loop, so a 3-row
+      // confirmation merged one row and silently stopped, with no refusal to explain it.
+      const CLEAN_9 = {
+        ...PULL, number: 9, head_sha: 'ghi9999', mergeable_state: 'clean', mergeable: true,
+      }
+      renderWithLiveSelection([CLEAN, CLEAN_8, CLEAN_9])
+      await userEvent.click(screen.getByRole('button', { name: /merge 3 ready/i }))
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      // All THREE, not just the first.
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(3))
+      expect(api.mergePr).toHaveBeenNthCalledWith(3, REF, 9, 'ghi9999', 'SQUASH')
+    })
+
+    it('keeps the run report on screen after the rows untick themselves', async () => {
+      // The report is the ONLY surface that says which rows landed and where a partial
+      // run stopped, and it was wiped at the exact moment it became complete.
+      renderWithLiveSelection([CLEAN, CLEAN_8], { 8: 'required status check is failing' })
+      await userEvent.click(screen.getByRole('button', { name: /merge 2 ready/i }))
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(2))
+      // Both halves of the outcome survive the untick: the row that landed AND the
+      // refusal that stopped the run.
+      expect(screen.getByText(/required status check is failing/)).toBeTruthy()
+      expect(screen.getByText(/#7/)).toBeTruthy()
+    })
+
+    it('still resets when the USER changes the selection', async () => {
+      // The exemption must be NARROW: only the numbers this run actually merged. A
+      // genuine reselection has to keep clearing a stale report, or the bar reports one
+      // selection's failures as if they were another's.
+      //
+      // The run merges #7 and FAILS #8, so the exemption set is non-empty (a run that
+      // merged nothing cannot tell an over-broad exemption from a correct one) while #8
+      // stays out of it. Then the user ticks #9, which no run ever merged.
+      const CLEAN_9 = {
+        ...PULL, number: 9, head_sha: 'ghi9999', mergeable_state: 'clean', mergeable: true,
+      }
+      const { repaint } = renderWithLiveSelection(
+        [CLEAN, CLEAN_8, CLEAN_9], { 8: 'required status check is failing' },
+      )
+      await userEvent.click(screen.getByRole('button', { name: /merge 3 ready/i }))
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() => expect(screen.getByText(/required status check is failing/)).toBeTruthy())
+      // A REAL selection change. After the run the live selection is {8,9} (#7 merged
+      // and unticked itself), so re-asserting {8,9} would be no change at all. The user
+      // dismisses the failed row instead, leaving {9}.
+      setCtx({
+        checkedPulls: new Set([9]),
+        sortedPulls: [CLEAN_8, CLEAN_9],
+        togglePullChecked: vi.fn(),
+      })
+      repaint()
+      await waitFor(() =>
+        expect(screen.queryByText(/required status check is failing/)).toBeNull())
+    })
+
+    it('gives each run a FRESH exemption set', async () => {
+      // `mergedByRun` is cleared when a run ARMS. Clearing it at the END (or never)
+      // leaves the first run's numbers exempt during the second, so the second run's own
+      // churn is judged against a stale set.
+      //
+      // Two runs over DISJOINT rows: run 1 merges #7, run 2 merges #8 and is refused by
+      // #9. Run 2's report has to survive its own churn, which it can only do if the
+      // exemption set it accumulates is its own.
+      const CLEAN_9 = {
+        ...PULL, number: 9, head_sha: 'ghi9999', mergeable_state: 'clean', mergeable: true,
+      }
+      const runMerge = async (expected: RegExp) => {
+        await userEvent.click(screen.getByRole('button', { name: expected }))
+        await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+        await userEvent.click(
+          screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+        )
+      }
+      const { select } = renderWithLiveSelection(
+        [CLEAN, CLEAN_8, CLEAN_9], { 9: 'second run refusal' },
+      )
+      select([7])                       // run 1: only #7
+      await runMerge(/merge 1 ready/i)
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(1))
+      select([8, 9])                    // run 2: the OTHER two rows
+      await runMerge(/merge 2 ready/i)
+      // Both rows attempted, and run 2's own report survived to name the refusal.
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(3))
+      expect(screen.getByText(/second run refusal/)).toBeTruthy()
+    })
+
+    it('a merged row stops being exempt once the NEXT run arms', async () => {
+      // `mergedByRun` is cleared when a run ARMS. Clearing it at the end, or never,
+      // leaves run 1's numbers exempt for the rest of the session, and an exemption that
+      // outlives its run suppresses a reset the user really did ask for.
+      //
+      // Reachable because a merged PR is still rendered under the merged/closed filter,
+      // so its number CAN return to the ticked set. Sequence: run 1 merges #7, run 2 is
+      // refused by #9, then the user ticks #7 again. That must clear run 2's report,
+      // which it can only do if #7 left the exemption set when run 2 armed.
+      const CLEAN_9 = {
+        ...PULL, number: 9, head_sha: 'ghi9999', mergeable_state: 'clean', mergeable: true,
+      }
+      const runMerge = async (label: RegExp) => {
+        await userEvent.click(screen.getByRole('button', { name: label }))
+        await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+        await userEvent.click(
+          screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+        )
+      }
+      const { select, repaint } = renderWithLiveSelection(
+        [CLEAN, CLEAN_9], { 9: 'run two refusal' },
+      )
+      select([7])
+      await runMerge(/merge 1 ready/i)
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(1))
+      select([9])
+      await runMerge(/merge 1 ready/i)
+      await waitFor(() => expect(screen.getByText(/run two refusal/)).toBeTruthy())
+      // #7 is visible again (the merged filter renders it) and the user ticks it. Run 2
+      // never merged #7, so this is a real selection change.
+      setCtx({
+        checkedPulls: new Set([7, 9]),
+        sortedPulls: [CLEAN, CLEAN_9],
+        togglePullChecked: vi.fn(),
+      })
+      repaint()
+      await waitFor(() => expect(screen.queryByText(/run two refusal/)).toBeNull())
+    })
+
+    it('STOPS when the user unticks a row the run has not reached yet', async () => {
+      // Deselecting a queued PR mid-run is a withdrawal of consent for that PR, and the
+      // loop reads the FROZEN `armedMerge` (deliberately, so a poll cannot change what
+      // executes) so nothing else would notice. Before the run-churn exemption existed
+      // this was covered incidentally, by an unconditional reset that also aborted the
+      // run's own progress; the exemption has to keep the honest half of that.
+      const CLEAN_9 = {
+        ...PULL, number: 9, head_sha: 'ghi9999', mergeable_state: 'clean', mergeable: true,
+      }
+      let release: (v: unknown) => void = () => {}
+      const gate = new Promise((res) => { release = res })
+      const { select } = renderWithLiveSelection([CLEAN, CLEAN_8, CLEAN_9])
+      // #7 blocks until released, so #8 and #9 are still queued while we untick #9.
+      const passthrough = api.mergePr.getMockImplementation()!
+      api.mergePr.mockImplementation(async (...args: unknown[]) => {
+        if (args[1] === 7) await gate
+        return passthrough(...args)
+      })
+      await userEvent.click(screen.getByRole('button', { name: /merge 3 ready/i }))
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(1))
+      // The user changes their mind about #9 while #7 is still in flight.
+      select([7, 8])
+      release(null)
+      // #7 (already sent) and #8 land; #9 is spared rather than merged from the frozen set.
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(2))
+      expect(api.mergePr).not.toHaveBeenCalledWith(REF, 9, 'ghi9999', 'SQUASH')
+    })
+
+    it('does not let a run exemption keep an armed CLOSE confirmation alive', async () => {
+      // The run-churn exemption belongs to the run report, not to the confirmation guard.
+      // Folded into one key it could mask an ADDITION as well as the run's own
+      // disappearance: with #7 recorded as merged, ticking a live #7 left the key
+      // unchanged, so a typed close confirmation stayed armed and Apply closed a PR the
+      // warning's count never included.
+      const { select, show } = renderWithLiveSelection([CLEAN, CLEAN_8])
+      select([7])
+      await userEvent.click(screen.getByRole('button', { name: /merge 1 ready/i }))
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(1))
+      // #7 is now in the run's exemption set. Arm a bulk CLOSE over #8...
+      select([8])
+      await userEvent.click(screen.getByRole('button', { name: /^close/i }))
+      await userEvent.type(screen.getByRole('textbox'), BULK_PR_CLOSE_TOKEN)
+      let apply = screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))
+      expect((apply as HTMLButtonElement).disabled).toBe(false)
+      // ...then also tick #7. It is on screen again (the merged filter renders it) and the
+      // user has NOT confirmed closing it.
+      show([CLEAN, CLEAN_8])
+      select([7, 8])
+      // Disarmed: the composer closed (`pending` cleared), so there is no armed Apply at
+      // all. Without the split it stayed enabled and one click closed #7 as well.
+      apply = screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))
+      expect(apply === undefined || (apply as HTMLButtonElement).disabled).toBe(true)
+      expect(api.bulkPrAction).not.toHaveBeenCalled()
+    })
+
+    it('keeps Cancel reachable while the run is still merging', async () => {
+      // Cancel lives in the confirmation composer, which renders only while `pending` is
+      // set. The first merged row changes the ticked set (its invalidation refetches and
+      // the row leaves the list), and the disarm effect clears `pending` on any selection
+      // change - so the composer vanished mid-run and the operator lost the only control
+      // that stops the remaining rows. An irreversible loop must stay interruptible for as
+      // long as it is running.
+      const CLEAN_9 = {
+        ...PULL, number: 9, head_sha: 'ghi9999', mergeable_state: 'clean', mergeable: true,
+      }
+      let release: (v: unknown) => void = () => {}
+      const gate = new Promise((res) => { release = res })
+      const { select } = renderWithLiveSelection([CLEAN, CLEAN_8, CLEAN_9])
+      const passthrough = api.mergePr.getMockImplementation()!
+      api.mergePr.mockImplementation(async (...args: unknown[]) => {
+        const out = await passthrough(...args)
+        // Block on the SECOND row, so the first has already merged and churned the
+        // selection while the run is unmistakably still going.
+        if (args[1] === 8) await gate
+        return out
+      })
+      select([7, 8, 9])
+      await userEvent.click(screen.getByRole('button', { name: /merge 3 ready/i }))
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(2))
+      // #7 has merged and #8 is in flight: Cancel must still be on screen.
+      expect(screen.getByRole('button', { name: /^cancel$/i })).toBeTruthy()
+      release(null)
+    })
+
+    it('names the frozen SET and the merge method in the confirmation', async () => {
+      // A count alone cannot be checked against what the user believes they ticked, and
+      // the method is hardcoded, so a merge-commit repo would otherwise discover the
+      // squash only after the fact.
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [CLEAN, CLEAN_8] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(screen.getByRole('button', { name: /merge 2 ready/i }))
+      const targets = screen.getByText(/#7/)
+      expect(targets.textContent).toMatch(/#7/)
+      expect(targets.textContent).toMatch(/#8/)
+      expect(targets.textContent).toMatch(/squash/i)
+      // The PR numbers are IDENTIFIERS: no grouping separator, or the reference is
+      // both wrong and uncopyable.
+      expect(targets.textContent).not.toMatch(/#[\d,.]*[,.]\d/)
+    })
+
+    it('names the targets with the PROVIDER\'s sigil, not a hardcoded #', async () => {
+      // GitLab writes `!7`, and merge-now is reachable there: only the two AUTO-merge
+      // buttons are GitLab-gated. A hardcoded `#` made the confirmation disagree with the
+      // run report directly below it, which renders `{terms.sigil}{number}` - so on the
+      // one screen whose purpose is inspection before an irreversible act, the operator
+      // could not match the identifiers against their own tab.
+      setCtx({
+        active: { ...REF, provider: 'gitlab', host: 'gitlab.com' },
+        checkedPulls: new Set([7, 8]),
+        sortedPulls: [CLEAN, CLEAN_8],
+      })
+      wrap(<PrBulkBar />)
+      await userEvent.click(screen.getByRole('button', { name: /merge 2 ready/i }))
+      const targets = screen.getByText(/!7/)
+      expect(targets.textContent).toMatch(/!7/)
+      expect(targets.textContent).toMatch(/!8/)
+      expect(targets.textContent).not.toMatch(/#\d/)
+    })
+
+    it('sends the method the confirmation named', async () => {
+      // One symbol drives both, so the copy cannot drift from the request.
+      setCtx({ checkedPulls: new Set([7]), sortedPulls: [CLEAN] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(screen.getByRole('button', { name: /merge 1 ready/i }))
+      const named = screen.getByText(/#7/).textContent ?? ''
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalled())
+      const sent = api.mergePr.mock.calls[0][3] as string
+      expect(named.toLowerCase()).toContain(sent.toLowerCase())
     })
 
     it('Cancel ABORTS the run, sparing every row not yet sent', async () => {

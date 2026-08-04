@@ -30,7 +30,7 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET | `/issues` | List open/closed issues (cached, paginated). `poll=1` takes the probe-gated path — see Client-Side List Polling |
 | GET | `/issue` | Full issue detail + timeline |
 | GET | `/ref` | Compact summary of one referenced issue/PR (hover preview + issue-vs-PR resolution). One `gh` call, no timeline, short-TTL cache |
-| GET | `/labels` | Repo label set |
+| GET | `/labels` | Repo label set (cached with a **10-min TTL**; see "The label cache expires") |
 | GET | `/members` | Repo collaborators (authoritative API or fallback) |
 | GET | `/repos` | Connected repos list (with permission self-heal) |
 | GET | `/recent-repos` | Repos the `gh` user contributed to recently (connect-dialog picker) |
@@ -39,7 +39,7 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET/PUT | `/settings` | Per-repo triage settings. The PUT replaces the whole document, so it carries the `revision` it read and is refused with **409** if the stored revision has moved — otherwise a stale tab would erase a label appended meanwhile |
 | POST | `/settings/role` | APPEND one label to a triage-label role, under the config lock. Exists because the PUT replaces the whole document, so a client read-modify-write only serializes itself — two dashboard tabs would each read the same settings and the later full replacement would drop the other's label |
 | GET | `/issue-ai` | AI summary + suggested labels (kirocrew-lite) |
-| GET | `/pulls` | List open/closed PRs (cached, `poll=1` probe-gated as for `/issues`; rows enriched with diff size + check tally + merge readiness via ONE GraphQL call, topped up by number for rows outside its window). Rows whose enrichment failed carry `null` (unknown, not zero) and are deliberately NOT written to the cache, so the next read retries |
+| GET | `/pulls` | List open/closed PRs (cached, `poll=1` probe-gated as for `/issues`; rows enriched with diff size + check tally via one GraphQL call and merge readiness via a second, lean one, each topped up by number for rows outside its `first:100` window). Rows whose enrichment failed carry `null` (unknown, not zero) and are deliberately NOT written to the cache, so the next read retries |
 | GET | `/pulls/search` | PRs matching a per-person filter, resolved server-side by GitHub search (escapes the list's page cap). Paginates only as far as its own cap and reports `truncated` so the UI says "newest N" rather than implying completeness |
 | GET | `/pull` | Full PR detail + conversation (issue timeline merged with inline review comments) + automated checks on the head commit. Cache-first with a short server-side TTL (`PR_DETAIL_CACHE_TTL_SEC`), so a plain GET self-refreshes and no caller has to pass `refresh=1` to stay current |
 | GET | `/pull-ai` | AI summary of a PR (description + whole conversation + check state), cached against a fingerprint that hashes the conversation's CONTENT — so an edited comment invalidates it, not just a new one |
@@ -114,7 +114,7 @@ config.json                         # Connected repos, per-repo settings
 repos/<owner>/<repo>/
   issues-cache.json                 # Open issues (schema-versioned, + poll probe)
   issues-closed-cache.json          # Closed issues (capped at 100)
-  labels-cache.json                 # Repo label definitions
+  labels-cache.json                 # Repo label definitions (10-min TTL, + fetched_at)
   members-cache.json                # Collaborators roster + source
   issue-<N>.json                    # Per-issue detail cache
   issue-<N>-ai.json                 # AI summary cache
@@ -377,6 +377,18 @@ summaries' 100, because the by-number form asks for N computed fields in one que
 card selection, and `test_readiness_survives_a_FAILED_card_enrichment_and_vice_versa`
 pins the independence.
 
+**Both calls are topped up by number, and the top-up tests MEMBERSHIP.** The
+state-scoped readiness query is capped at `first:100` like the summaries', while the REST
+list paginates every open PR, so on a repo with more than 100 the tail carried no
+readiness at all, and since unknown readiness is offered NEITHER verb those rows were
+silently unactionable in the bulk bar, on exactly the large repos bulk actions exist for.
+The top-up asks for the numbers whose key is ABSENT from the result, never the ones whose
+*value* is falsy. `UNKNOWN` is a real answer rather than a missing one, recorded as the
+string `'unknown'` (the `None` mapping belongs to the separate `mergeable` field), and it
+is roughly half a cold page, so a truthiness test would re-request every such row on every
+list fetch and get `UNKNOWN` back. `test_readiness_is_topped_up_past_the_hundred_row_window` and
+`test_the_top_up_tests_MEMBERSHIP_not_truthiness` pin the two halves.
+
 Three further properties are load-bearing:
 
 - **Normalized into REST's vocabulary at the parse boundary.** GraphQL SHOUTS its enums
@@ -442,6 +454,62 @@ Four properties make it safe to offer, each one a defect a review found and clos
   stream in one at a time and "which PR did it stop on" is the only question that
   matters afterwards. The "N not attempted" line counts against the size the run
   STARTED with, since merged rows untick themselves and so leave the live target list.
+- **The run's OWN selection churn is exempt from the selection-reset effect.** A
+  successful merge changes the selection twice. The per-row invalidation refetches the
+  list, so the merged PR leaves it (and `numbers` is intersected with what is RENDERED),
+  and the run unticks it afterwards. That effect could not tell either from a user click,
+  so it fired mid-run: it wiped the per-row report at the moment it completed, and its
+  `reset()` set `aborted`, silently skipping every remaining row of a 3+ row confirmation
+  with no refusal to explain it. Two changes close it, each independently load-bearing
+  (each has its own failing test under mutation):
+  - `mergedByRun` records what the run merged, and the REPORT key adds those numbers back
+    rather than filtering them out, because a merged row was in the key before it merged, so
+    removing it changes the key just as much as its disappearance did (`7,8` -> `8`);
+    re-adding reproduces the pre-run key exactly. A genuine reselection still resets,
+    because it moves a number the run never merged.
+  - **TWO keys, and the exemption belongs to only one of them.** `selectionKey` is the
+    LITERAL ticked set and disarms an in-progress action; `reportKey` carries the exemption
+    and decides only whether the run report is stale. Folding them into one key let the
+    exemption mask an ADDITION as well as the run's own disappearance: with `mergedByRun =
+    {7}`, ticking a live #7 left the key unchanged, so a typed CLOSE confirmation stayed
+    armed and Apply closed a PR whose count the warning never included. `mergedByRun` is
+    also reset when `scopeKey` changes, since PR numbers are per-repo and this component is
+    not remounted by a repo switch.
+  - **The disarm stands down while a merge run is BUSY.** Cancel lives in the confirmation
+    composer, which renders only while `pending` is set, and the first merged row changes
+    the ticked set, so disarming on it took the only control that stops the remaining rows
+    off screen mid-run. An irreversible loop has to stay interruptible for as long as it is
+    running; the run clears the composer itself when it ends. This is independent of the
+    per-row veto above, which reads the live selection rather than the composer.
+  - the effect calls `clearReport`, which drops the stale report WITHOUT aborting;
+    `reset` (which aborts) stays for Cancel and the explicit clear. A caller that only
+    wants to tidy the UI must not be able to stop a merge in flight.
+  The test harness feeds both feedbacks back (`renderWithLiveSelection`); the inert
+  `vi.fn()` every other case passes is why this went unseen, and the mid-run drop is the
+  half that reproduces the abort.
+- **Unticking a QUEUED row still stops that row, as a per-row veto.** Exempting the run's
+  own churn removed the one thing the old unconditional reset got right: an operator
+  deselecting a PR the run has not reached yet is withdrawing consent for that PR, and the
+  loop reads the frozen `armedMerge` precisely so a poll cannot change what executes, so
+  nothing else would notice. `mergeAll` therefore asks `stillWanted(number)` against the
+  LIVE ticked set as it reaches each row and skips a deselected one. It is a per-row veto,
+  NOT `abort`: the rows after it were not withdrawn, and `abort` is what Cancel means. The
+  predicate is ref-held so it never enters the selection effect's dependencies, which must
+  stay keyed on the selection alone or an unrelated render wipes a confirmation mid-entry.
+- **The confirmation names the frozen SET and the merge METHOD, not just a count.** A
+  count cannot be checked against what the user believes they ticked, and the method is
+  hardcoded, so a merge-commit repo would otherwise discover the squash only afterwards.
+  The list is bounded by `bulk_max` so it is always short, goes through `fmtList` for the
+  locale's own enumeration, and renders each number as raw digits behind the PROVIDER's own
+  sigil (`terms.sigil`, so GitLab reads `!7`, matching the run report directly below it and
+  the operator's own tab; merge-now is reachable on GitLab, only the two AUTO-merge buttons
+  are gated there). Raw digits because a PR number is an IDENTIFIER: a grouping separator
+  would both misrender it (`#1,291`) and break copying it. `SEQUENTIAL_MERGE_METHOD` is the
+  single symbol behind both the copy and the request, so the two cannot drift. The line is
+  NOT muted, being the only one that names WHICH pull requests are about to merge, and it
+  wraps rather than truncating: clipping the identifiers would defeat the inspection it
+  exists for. The confirmation input points at both lines with `aria-describedby` and takes
+  focus when it arms.
 
 This deliberately accepts bulk-merge's blast radius; the mitigations are the readiness
 precondition, the cap, the frozen typed confirmation, and stop-on-first-failure.
@@ -486,6 +554,35 @@ Two safeguards, both deliberate:
   poll is a real provider search (up to 3 pages) against the same quota with nothing to
   absorb it. Honouring the toggle would let a person filter someone left on months ago
   spend that quota indefinitely — exactly what its surface gate exists to prevent.
+
+### Surfaces stay CACHED across a tab switch
+
+Every dashboard mounts its own queries and unmounts them on the way out: the views are
+SWAPPED, not hidden (`views/registry.tsx` maps a tab to one component). Data for an
+unmounted query survives only `gcTime` past that unmount, and the dashboard-wide default is
+react-query's **5 minutes**, which is shorter than an ordinary triage session. Leave the
+Tagging dashboard for six minutes, come back, and its queue has been evicted: a loading
+line, then a full refetch. Once per tab click.
+
+`IssueRadarPage` therefore sets ONE query default for the whole `['issue-radar', ...]` key
+space: `gcTime = CACHE_RETENTION_MS` (**30 min**). Four properties:
+
+- **Set once, for the key space** rather than repeated across the ~30 query sites, because
+  a per-site option is one a newly added query silently forgets. Every key in the app
+  already starts with the `issue-radar` segment, which is what makes one default reach all
+  of them.
+- **Scoped to this app.** Raising the global default would retain every other page's
+  queries too, which is memory spent on data nothing asked to keep.
+- **Retention is not freshness.** `staleTime` and the poll intervals still decide when a
+  refetch happens, so a longer `gcTime` only changes whether there is something to paint
+  WHILE that refetch runs. It can never serve something stale *instead* of fetching.
+- **Bounded, not `Infinity`**, so a long-lived tab that has visited many repos does not
+  retain every one of their lists for the life of the session.
+
+That is sufficient on its own because the surfaces gate their loading copy on `isLoading`,
+which is false whenever data is present: a remount inside the retention window paints the
+retained rows immediately and any refetch runs behind them. `issueRadarPolling.test.ts`
+pins the retention, its scoping, and the not-pending property.
 
 The lists additionally keep their previous rows on screen while a new key loads, so
 changing a filter repaints instantly instead of blanking to a spinner. That costs no
@@ -651,6 +748,44 @@ flags — the base list stands down as soon as a person filter is *requested*, t
 search query only starts once `/me` resolves — `pullsLoading` covers the gap
 between them, or restoring a persisted person filter would render "no pull
 requests" until the login lands.
+
+### The label cache expires, because an unbounded one reads as a TRUNCATED list
+
+`labels-cache.json` had **no expiry**, and unlike the issue/PR lists nothing polls the
+`/labels` query (it is a plain `useQuery` with no `refetchInterval`). So the first fetch
+of a repo was served forever: a label created on GitHub afterwards, by a teammate or by
+automation, was absent from the left-rail palette, the filter list and every picker until
+the user happened to press Refresh. That presents as an **incomplete label set** rather
+than a stale one, which is the reason it is worth a TTL: nothing on screen says the list is
+partial, and the missing labels are silently unfilterable, so the user's conclusion is "the
+app does not show all my labels".
+
+`LABELS_CACHE_TTL_SEC` is **600s**, and `read_labels_cache` treats an older file as a MISS
+so the route refetches. Three properties, each with its own test:
+
+- **The TTL is the DEFAULT, not a per-caller argument.** Freshness is a property of the
+  cache (the same rule `read_pr_detail_cache` follows), so a new route cannot forget it.
+  `max_age_sec=None` is the explicit opt-out, and `add_label_to_cache` is the one caller
+  that takes it, because it patches whatever is on disk, and reading an expired file as absent
+  there would silently drop the append of a just-created label.
+- **The age comes from a `fetched_at` stamp INSIDE the payload, not from mtime**, because
+  `add_label_to_cache` rewrites the file without refetching. This is the same trap
+  `_list_cache_age_sec` documents for the list caches, and it matters more here: the
+  append carries the ORIGINAL stamp through, so creating labels in a repo cannot keep
+  deferring the refetch that picks up everyone *else's* labels.
+- **A pre-stamp cache falls back to mtime, on BOTH paths.** Such a file was only ever
+  written by a real fetch, so its mtime *is* its fetch time: it must age out rather than be
+  treated as ageless on read, and the write-through append must carry that mtime over
+  rather than stamping the current time. Stamping there reset the TTL clock, so a cache nine
+  minutes into its ten-minute life got a fresh ten and one label creation per interval could
+  defer the refetch indefinitely.
+
+A plain TTL rather than the lists' probe-gated poll: labels are ONE `per_page=100` request
+against the 5,000/hr core budget (not the 30/min search quota the probes share), so the
+worst case is ~6 requests an hour per open repo, and a probe here would cost about as much as
+the refetch it guards. Both providers already paginate the label fetch (`--paginate` on
+GitHub, explicit `page=N` walking on GitLab), so a repo with more than 100 labels was never
+the truncation; the cache was.
 
 ## In-App Cross-References
 

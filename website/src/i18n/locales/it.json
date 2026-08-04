@@ -872,6 +872,7 @@
           "merge_ready_many": "Unisci {{count}} pronte",
           "merge_ready_one": "Unisci {{count}} pronta",
           "merge_ready_other": "Unisci {{count}} pronte",
+          "merge_targets": "Verranno uniti {{numbers}} tramite {{method}}.",
           "merge_warning_many": "Questo unisce {{count}} pull request ora, una alla volta. Non può essere annullato.",
           "merge_warning_one": "Questo unisce {{count}} pull request ora. Non può essere annullato.",
           "merge_warning_other": "Questo unisce {{count}} pull request ora, una alla volta. Non può essere annullato.",

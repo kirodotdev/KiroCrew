@@ -310,7 +310,34 @@ class TestPrSearch(unittest.TestCase):
         self.assertEqual(m.call_count, 1)
 
 
-class TestPrListEnrichment(unittest.TestCase):
+class _NoRealGhBase(unittest.TestCase):
+    """Fail loudly if a test in this class reaches a real ``gh`` subprocess.
+
+    AGENTS.md: "Mock external processes (kiro-cli) - never spawn real processes in
+    tests." ``enrich_pulls`` fans out to FOUR calls (card summaries + its by-number
+    top-up, merge readiness + its by-number top-up), and each top-up fires whenever
+    the mocked first call does not cover every row, so a test that mocks only some of
+    them silently shells out. That measurably happened when the readiness top-up was
+    added: three tests here began depending on network and on a logged-in CLI, and
+    passed only because `gh` happened to error on the fixture repo.
+
+    A base class rather than a bare mixin so it carries ``TestCase``'s own
+    ``setUp``/``addCleanup`` types. Applied at the CLASS level so a new test inherits
+    the guard instead of having to remember it; a test that legitimately drives
+    ``_gh_run`` patches it itself, which overrides this.
+    """
+
+    def setUp(self):  # noqa: N802 - unittest's own casing
+        super().setUp()
+        patcher = mock.patch.object(
+            gh, "_gh_run",
+            side_effect=AssertionError("test reached a real `gh` subprocess"),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class TestPrListEnrichment(_NoRealGhBase):
     """The list cards' diff size + aggregate check state come from ONE GraphQL
     call, and the whole thing is optional — a failure must never break the list."""
 
@@ -430,7 +457,8 @@ class TestPrListEnrichment(unittest.TestCase):
             2: {"additions": 0, "deletions": 0, "checks_state": None},
         }
         with mock.patch.object(gh, "fetch_pr_summaries", return_value=summaries), \
-                mock.patch.object(gh, "fetch_pr_readiness", return_value={}):
+                mock.patch.object(gh, "fetch_pr_readiness", return_value={}), \
+                mock.patch.object(gh, "fetch_pr_readiness_by_number", return_value={}):
             out = gh.enrich_pulls("o", "r", pulls, "open")
         self.assertEqual(out[0]["additions"], 7)
         self.assertEqual(out[0]["checks_state"], "failure")
@@ -442,7 +470,9 @@ class TestPrListEnrichment(unittest.TestCase):
         with mock.patch.object(gh, "fetch_pr_summaries", side_effect=gh.GhCliError("boom")), \
                 mock.patch.object(
                     gh, "fetch_pr_summaries_by_number", side_effect=gh.GhCliError("boom")), \
-                mock.patch.object(gh, "fetch_pr_readiness", side_effect=gh.GhCliError("boom")):
+                mock.patch.object(gh, "fetch_pr_readiness", side_effect=gh.GhCliError("boom")), \
+                mock.patch.object(
+                    gh, "fetch_pr_readiness_by_number", side_effect=gh.GhCliError("boom")):
             out = gh.enrich_pulls("o", "r", pulls, "open")
         self.assertEqual(out[0]["title"], "t")
         # UNKNOWN, not zero: 0 would claim the PR changes nothing, and the route
@@ -516,9 +546,13 @@ class TestPrListMergeReadiness(unittest.TestCase):
         """Fail loudly if a test reaches a real ``gh`` process.
 
         AGENTS.md: "Mock external processes — never spawn real processes in tests."
-        ``enrich_pulls`` now makes THREE calls (summaries, by-number top-up, readiness),
-        so mocking only the first leaves the others to shell out — which measurably
-        happened, and which makes the suite depend on network and on a logged-in CLI.
+        ``enrich_pulls`` makes FOUR calls (summaries + its by-number top-up, readiness +
+        its by-number top-up), so mocking only some leaves the rest to shell out, which
+        measurably happened, and which makes the suite depend on network and on a
+        logged-in CLI. Both top-ups fire whenever the mocked first call does not cover
+        every row in ``pulls``, so a test returning a partial dict must mock its top-up
+        too. This guard is what turns that omission into an immediate failure instead
+        of a live network call.
         """
         return mock.patch.object(
             gh, "_gh_run",
@@ -611,7 +645,8 @@ class TestPrListMergeReadiness(unittest.TestCase):
                 mock.patch.object(gh, "fetch_pr_summaries", side_effect=gh.GhCliError("boom")), \
                 mock.patch.object(
                     gh, "fetch_pr_summaries_by_number", side_effect=gh.GhCliError("boom")), \
-                mock.patch.object(gh, "fetch_pr_readiness", return_value={1: "clean"}):
+                mock.patch.object(gh, "fetch_pr_readiness", return_value={1: "clean"}), \
+                mock.patch.object(gh, "fetch_pr_readiness_by_number", return_value={}):
             out = gh.enrich_pulls("o", "r", pulls, "open")
         self.assertEqual(out[0]["mergeable_state"], "clean")   # readiness survived
         self.assertIsNone(out[0]["additions"])                 # enrichment did not
@@ -624,7 +659,9 @@ class TestPrListMergeReadiness(unittest.TestCase):
                          "mergeable": True}}
         with self._no_spawn(), \
                 mock.patch.object(gh, "fetch_pr_summaries", return_value=summaries), \
-                mock.patch.object(gh, "fetch_pr_readiness", side_effect=gh.GhCliError("boom")):
+                mock.patch.object(gh, "fetch_pr_readiness", side_effect=gh.GhCliError("boom")), \
+                mock.patch.object(
+                    gh, "fetch_pr_readiness_by_number", side_effect=gh.GhCliError("boom")):
             out = gh.enrich_pulls("o", "r", pulls, "open")
         self.assertEqual(out[0]["additions"], 7)               # enrichment survived
         self.assertIsNone(out[0]["mergeable_state"])           # readiness did not
@@ -662,7 +699,8 @@ class TestPrListMergeReadiness(unittest.TestCase):
                             "pr_merged_at": "2026-08-03T06:45:33Z"}}
         with self._no_spawn(), \
                 mock.patch.object(gh, "fetch_pr_summaries", return_value=summaries), \
-                mock.patch.object(gh, "fetch_pr_readiness", return_value={}):
+                mock.patch.object(gh, "fetch_pr_readiness", return_value={}), \
+                mock.patch.object(gh, "fetch_pr_readiness_by_number", return_value={}):
             out = gh.enrich_pulls("o", "r", pulls, "open")
         self.assertEqual(out[0]["state"], "closed")
         # Written TOGETHER with the state: a `closed` with no timestamp renders as
@@ -677,11 +715,71 @@ class TestPrListMergeReadiness(unittest.TestCase):
                 mock.patch.object(gh, "fetch_pr_summaries", side_effect=gh.GhCliError("boom")), \
                 mock.patch.object(
                     gh, "fetch_pr_summaries_by_number", side_effect=gh.GhCliError("boom")), \
-                mock.patch.object(gh, "fetch_pr_readiness", side_effect=gh.GhCliError("boom")):
+                mock.patch.object(gh, "fetch_pr_readiness", side_effect=gh.GhCliError("boom")), \
+                mock.patch.object(
+                    gh, "fetch_pr_readiness_by_number", side_effect=gh.GhCliError("boom")):
             out = gh.enrich_pulls("o", "r", pulls, "open")
         self.assertIn("mergeable_state", out[0])
         self.assertIsNone(out[0]["mergeable_state"])
         self.assertIsNone(out[0]["mergeable"])
+
+    def test_readiness_is_topped_up_past_the_hundred_row_window(self):
+        # The state-scoped readiness query is capped at `first:100` while the REST list
+        # paginates ALL open PRs, so on a repo with more than 100 the tail came back with
+        # no readiness at all. Unknown readiness is offered NEITHER merge verb, so those
+        # rows were silently unactionable in the bulk bar, on exactly the large repos
+        # bulk actions exist for.
+        pulls = [{"number": n, "title": "t"} for n in range(1, 121)]
+        windowed = {n: "clean" for n in range(1, 101)}
+        with self._no_spawn(), \
+                mock.patch.object(gh, "fetch_pr_summaries", return_value={}), \
+                mock.patch.object(gh, "fetch_pr_summaries_by_number", return_value={}), \
+                mock.patch.object(gh, "fetch_pr_readiness", return_value=windowed), \
+                mock.patch.object(
+                    gh, "fetch_pr_readiness_by_number",
+                    return_value={n: "blocked" for n in range(101, 121)}) as by_number:
+            out = gh.enrich_pulls("o", "r", pulls, "open")
+        # Asked for EXACTLY the rows the window missed, not the whole list again.
+        self.assertEqual(by_number.call_args.args[2], list(range(101, 121)))
+        states = {row["number"]: row["mergeable_state"] for row in out}
+        self.assertEqual(states[100], "clean")
+        self.assertEqual(states[120], "blocked")
+
+    def test_the_top_up_tests_MEMBERSHIP_not_truthiness(self):
+        # `UNKNOWN` is a legitimate ANSWER (recorded as the string `'unknown'`), not an
+        # absent key, and GitHub returns it for roughly half a cold page. Testing the
+        # VALUE instead of key presence would re-request every such row on every list
+        # fetch: a guaranteed extra GraphQL query per load, answering `UNKNOWN` again.
+        # Row 1 is the REAL shape of the common case ('unknown', truthy-but-uninformative),
+        # row 2 the `None` a genuinely absent field parses to, row 3 a normal answer. None
+        # of the three is missing from the result, so none may be re-requested.
+        pulls = [{"number": n, "title": "t"} for n in (1, 2, 3)]
+        with self._no_spawn(), \
+                mock.patch.object(gh, "fetch_pr_summaries", return_value={}), \
+                mock.patch.object(gh, "fetch_pr_summaries_by_number", return_value={}), \
+                mock.patch.object(
+                    gh, "fetch_pr_readiness",
+                    return_value={1: "unknown", 2: None, 3: "clean"}), \
+                mock.patch.object(gh, "fetch_pr_readiness_by_number") as by_number:
+            out = gh.enrich_pulls("o", "r", pulls, "open")
+        by_number.assert_not_called()
+        self.assertEqual(out[0]["mergeable_state"], "unknown")
+        self.assertIsNone(out[1]["mergeable_state"])
+
+    def test_a_failed_readiness_top_up_leaves_the_windowed_rows_intact(self):
+        # Same best-effort contract as every other call here: the top-up failing costs
+        # only the rows it was for, never the ones the first call already answered.
+        pulls = [{"number": 1, "title": "t"}, {"number": 2, "title": "t"}]
+        with self._no_spawn(), \
+                mock.patch.object(gh, "fetch_pr_summaries", return_value={}), \
+                mock.patch.object(gh, "fetch_pr_summaries_by_number", return_value={}), \
+                mock.patch.object(gh, "fetch_pr_readiness", return_value={1: "clean"}), \
+                mock.patch.object(
+                    gh, "fetch_pr_readiness_by_number",
+                    side_effect=gh.GhCliError("boom")):
+            out = gh.enrich_pulls("o", "r", pulls, "open")
+        self.assertEqual(out[0]["mergeable_state"], "clean")
+        self.assertIsNone(out[1]["mergeable_state"])
 
     def test_a_live_row_keeps_its_own_merged_at(self):
         # Only ever fills a GAP — a row that already carries a timestamp keeps it.
@@ -690,7 +788,8 @@ class TestPrListMergeReadiness(unittest.TestCase):
                          "pr_state": "closed", "pr_merged_at": "2026-08-03T06:45:33Z"}}
         with self._no_spawn(), \
                 mock.patch.object(gh, "fetch_pr_summaries", return_value=summaries), \
-                mock.patch.object(gh, "fetch_pr_readiness", return_value={}):
+                mock.patch.object(gh, "fetch_pr_readiness", return_value={}), \
+                mock.patch.object(gh, "fetch_pr_readiness_by_number", return_value={}):
             out = gh.enrich_pulls("o", "r", pulls, "open")
         self.assertEqual(out[0]["merged_at"], "2026-01-01T00:00:00Z")
 
@@ -1060,7 +1159,7 @@ class TestCheckBucketTablesAgree(unittest.TestCase):
             self.assertEqual(gh._check_bucket(None, value), "other", value)
 
 
-class TestPrTimelineAndChecksRobustness(unittest.TestCase):
+class TestPrTimelineAndChecksRobustness(_NoRealGhBase):
     def test_pr_timeline_merges_inline_review_comments(self):
         timeline = [{"kind": "comment", "actor": "a", "created_at": "2024-01-02T00:00:00Z"}]
         inline = [{"kind": "review_comment", "actor": "b", "created_at": "2024-01-01T00:00:00Z",
@@ -1204,7 +1303,8 @@ class TestPrTimelineAndChecksRobustness(unittest.TestCase):
             return_value={1: {"additions": 5, "deletions": 0, "changed_files": 1,
                               "checks_state": "success", "checks_counts": {}}},
         ), mock.patch.object(gh, "fetch_pr_summaries_by_number") as by_number, \
-                mock.patch.object(gh, "fetch_pr_readiness", return_value={}):
+                mock.patch.object(gh, "fetch_pr_readiness", return_value={}), \
+                mock.patch.object(gh, "fetch_pr_readiness_by_number", return_value={}):
             by_number.return_value = {
                 2: {"additions": 7, "deletions": 1, "changed_files": 2,
                     "checks_state": "failure", "checks_counts": {}},

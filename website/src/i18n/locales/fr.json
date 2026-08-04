@@ -888,6 +888,7 @@
           "merge_ready_many": "Fusionner {{count}} prêtes",
           "merge_ready_one": "Fusionner {{count}} prête",
           "merge_ready_other": "Fusionner {{count}} prêtes",
+          "merge_targets": "Fusion de {{numbers}} avec {{method}}.",
           "merge_warning_many": "Ceci fusionne {{count}} demandes maintenant, une par une. C’est irréversible.",
           "merge_warning_one": "Ceci fusionne {{count}} demande maintenant. C’est irréversible.",
           "merge_warning_other": "Ceci fusionne {{count}} demandes maintenant, une par une. C’est irréversible.",
