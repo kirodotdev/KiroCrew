@@ -3235,7 +3235,7 @@ def _is_credential_mint(text_lower: str) -> bool:
     program is the product CLI and one of whose words is exactly ``token``.
 
     Does NOT match the word appearing in a path or another program's arguments:
-    ``cd /workplace/nrb/kirocrew-wt-x && pytest test/test_token_auth.py`` has no
+    ``cd /workplace/user/kirocrew-wt-x && pytest test/test_token_auth.py`` has no
     argv whose PROGRAM is the CLI, and ``kirocrew doctor | grep token`` puts the
     word in ``grep``'s argv, not the CLI's.
     """

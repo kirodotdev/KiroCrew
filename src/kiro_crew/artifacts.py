@@ -1082,7 +1082,7 @@ class ArtifactStore:
         captured as a numbered version with a lifecycle event. When False
         (the default), the save is silent — the version dropdown stays the
         same and no event is emitted (explicit-snapshot
-        model, requested by nrb).
+        model).
 
         ``actor`` distinguishes lifecycle event types when a snapshot is
         taken: ``"user"`` (default) emits an ``edited`` event; ``"agent"``

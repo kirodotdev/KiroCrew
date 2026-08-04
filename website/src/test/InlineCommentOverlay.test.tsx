@@ -28,7 +28,7 @@ afterEach(() => {
 
 function mk(over: Partial<ArtifactComment> = {}): ArtifactComment {
   return {
-    id: 'c1', origin: 'local', scope: 'private', author: 'nrb', is_agent: false,
+    id: 'c1', origin: 'local', scope: 'private', author: 'alice', is_agent: false,
     body: 'b', thread_id: 'c1', status: 'open', sync_state: 'local_only',
     created_at: '', updated_at: '', ...over,
   }

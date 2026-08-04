@@ -976,7 +976,7 @@ class TestInterpreterArgvLiteralMint:
         "cmd",
         [
             "echo hi | xargs ls",
-            "echo /workplace/nrb/{n}-wt-x | xargs ls",
+            "echo /workplace/alice/{n}-wt-x | xargs ls",
         ],
     )
     def test_xargs_without_a_protected_command_allowed(self, cmd):
@@ -1165,7 +1165,7 @@ class TestInterpreterArgvLiteralMint:
         assert _denied_by(text) == rule
 
     def test_process_substitution_of_something_harmless_allowed(self):
-        assert _denied_by(f"cat <(ls /workplace/nrb/{_NAME}-wt-x)") is None
+        assert _denied_by(f"cat <(ls /workplace/alice/{_NAME}-wt-x)") is None
 
     @pytest.mark.parametrize(
         "cmd,rule",
@@ -1195,12 +1195,12 @@ class TestInterpreterArgvLiteralMint:
         assert _denied_by(f"echo {_NAME} {_TOK}") is None
 
     def test_alias_to_an_unprotected_program_allowed(self):
-        assert _denied_by(f"bash -c 'alias x=ls; x /workplace/nrb/{_NAME}-wt-x'") is None
+        assert _denied_by(f"bash -c 'alias x=ls; x /workplace/alice/{_NAME}-wt-x'") is None
         assert _denied_by("printf '%s\\n' hello | bash") is None
 
     def test_env_without_a_protected_payload_allowed(self):
-        assert _denied_by(f"env -S 'ls /workplace/nrb/{_NAME}-wt-x'") is None
-        assert _denied_by(f"env FOO=1 ls /workplace/nrb/{_NAME}-wt-x") is None
+        assert _denied_by(f"env -S 'ls /workplace/alice/{_NAME}-wt-x'") is None
+        assert _denied_by(f"env FOO=1 ls /workplace/alice/{_NAME}-wt-x") is None
 
     @pytest.mark.parametrize(
         "cmd",
@@ -1559,7 +1559,7 @@ class TestSelfProtectionKillTargetScoping:
         "cmd",
         [
             "X=$(date); echo $X {v}",
-            "X=$(cat /workplace/nrb/{n}-wt-x/f); echo $X {v}",
+            "X=$(cat /workplace/alice/{n}-wt-x/f); echo $X {v}",
         ],
     )
     def test_computed_assignment_without_a_protected_name_allowed(self, cmd):
@@ -1942,9 +1942,9 @@ class TestSelfProtectionKillTargetScoping:
     @pytest.mark.parametrize(
         "cmd",
         [
-            "awk '{{print $1}}' /workplace/nrb/{n}-wt-x/log",
-            "awk '/{v}/ {{print}}' /workplace/nrb/{n}-wt-x/log",
-            "sed -n '1,5p' /workplace/nrb/{n}-wt-x/README.md",
+            "awk '{{print $1}}' /workplace/alice/{n}-wt-x/log",
+            "awk '/{v}/ {{print}}' /workplace/alice/{n}-wt-x/log",
+            "sed -n '1,5p' /workplace/alice/{n}-wt-x/README.md",
         ],
     )
     def test_ordinary_text_processing_still_allowed(self, cmd):
@@ -2182,7 +2182,7 @@ class TestSelfProtectionKillTargetScoping:
         "cmd",
         [
             f"{_PK} -f other; echo {_NAME}",
-            f"{_PK} -f other && ls /workplace/nrb/{_NAME}-wt-x",
+            f"{_PK} -f other && ls /workplace/alice/{_NAME}-wt-x",
         ],
     )
     def test_kill_of_something_else_then_a_mention_allowed(self, cmd):
@@ -2330,8 +2330,8 @@ class TestCredentialMintSegmentScoping:
     @pytest.mark.parametrize(
         "cmd",
         [
-            f'bash -c "cd /workplace/nrb/{_NAME}-wt-x && pytest test/test_{_TOK}_auth.py"',
-            f'sh -c "ls /workplace/nrb/{_NAME}-wt-x"',
+            f'bash -c "cd /workplace/alice/{_NAME}-wt-x && pytest test/test_{_TOK}_auth.py"',
+            f'sh -c "ls /workplace/alice/{_NAME}-wt-x"',
             f'bash -c "{_NAME} doctor | grep {_TOK}"',
         ],
     )
@@ -2394,9 +2394,9 @@ class TestCredentialMintSegmentScoping:
     @pytest.mark.parametrize(
         "cmd",
         [
-            f"true;ls /workplace/nrb/{_NAME}-wt-x",
-            f"echo hi&&cat /workplace/nrb/{_NAME}-wt-x/docs/{_TOK}.md",
-            f"cd /workplace/nrb/{_NAME}-wt-x;pytest test/test_{_TOK}_auth.py",
+            f"true;ls /workplace/alice/{_NAME}-wt-x",
+            f"echo hi&&cat /workplace/alice/{_NAME}-wt-x/docs/{_TOK}.md",
+            f"cd /workplace/alice/{_NAME}-wt-x;pytest test/test_{_TOK}_auth.py",
             f"true;{_NAME} doctor | grep {_TOK}",
         ],
     )
@@ -2484,9 +2484,9 @@ class TestCredentialMintSegmentScoping:
     @pytest.mark.parametrize(
         "cmd",
         [
-            f"$(which cat) /workplace/nrb/{_NAME}-wt-x/docs/{_TOK}.md",
+            f"$(which cat) /workplace/alice/{_NAME}-wt-x/docs/{_TOK}.md",
             f'cd /workplace/x/{_NAME}-wt-y && "$(command -v pytest)" test/test_{_TOK}_auth.py',
-            f"$(which cat) /workplace/nrb/{_NAME}-wt-x/out>/tmp/copy",
+            f"$(which cat) /workplace/alice/{_NAME}-wt-x/out>/tmp/copy",
         ],
     )
     def test_substitution_peel_does_not_reach_into_arguments(self, cmd):

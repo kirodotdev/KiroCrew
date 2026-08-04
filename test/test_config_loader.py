@@ -204,7 +204,7 @@ def test_registry_branchless_legacy_entry_preserves_mainline():
 
 
 def test_publish_relocate_roots_parsed_and_round_trips():
-    # Regression (PR #14 nrb): publish.relocate_roots was declared + consumed by
+    # Regression (PR #14 alice): publish.relocate_roots was declared + consumed by
     # the relocate handler but NOT parsed in from_dict, so an operator value was
     # silently dropped (permanently []) and lost on round-trip.
     loaded = _load_from_dict(

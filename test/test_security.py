@@ -1060,14 +1060,14 @@ class TestKiroCliBundledDeniedCommands:
 
     def test_skill_create_sh_kirocrew_domain_allowed(self) -> None:
         """The brazil-workspace skill scaffold must not be blocked."""
-        cmd = "/Users/meyffret/.kirocrew/skills/brazil-workspace/create.sh --domain kirocrew"
+        cmd = "/Users/user/.kirocrew/skills/brazil-workspace/create.sh --domain kirocrew"
         assert not self._is_denied(cmd)
 
     def test_skills_dir_listing_allowed(self) -> None:
         assert not self._is_denied("ls ~/.kirocrew/skills/")
 
     def test_skill_run_with_kirocrew_arg_allowed(self) -> None:
-        cmd = "/Users/meyffret/.kirocrew/skills/coder/run.sh kirocrew --dry-run"
+        cmd = "/Users/user/.kirocrew/skills/coder/run.sh kirocrew --dry-run"
         assert not self._is_denied(cmd)
 
     def test_bash_skill_script_allowed(self) -> None:

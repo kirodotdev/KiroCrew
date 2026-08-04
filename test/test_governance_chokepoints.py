@@ -1712,7 +1712,7 @@ class TestPublishGovernanceGate:
         assert reason is not None and "governance could not be evaluated" in reason
 
     def test_internal_resolve_error_fails_closed(self, monkeypatch):
-        # Regression (PR #14 nrb): governance_permits SWALLOWS its own internal
+        # Regression (PR #14 alice): governance_permits SWALLOWS its own internal
         # errors and, by default, degrades to a permissive Decision. The publish
         # gate calls it with fail_closed=True, so an error raised INSIDE
         # governance_permits (e.g. resolve() throwing) must still DENY — the
@@ -1790,7 +1790,7 @@ class TestPublishGovernanceGate:
 
     @pytest.mark.asyncio
     async def test_republish_gates_on_existing_provider(self, tmp_path, monkeypatch):
-        # Regression (PR #14 nrb): a re-publish with NO explicit provider in the
+        # Regression (PR #14 alice): a re-publish with NO explicit provider in the
         # body must gate on the EXISTING publication's provider, not the default
         # "provider-a". publish_sync.publish() dispatches to the existing
         # provider, so gating on "provider-a" while the artifact is published to

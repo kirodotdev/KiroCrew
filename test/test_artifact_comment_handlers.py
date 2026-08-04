@@ -304,7 +304,7 @@ class TestEditComment:
                 origin="liveprov:5",
                 provider="liveprov",
                 scope="shared",
-                author="nrb",
+                author="alice",
                 body="orig",
                 thread_id="cx",
                 target_provider="liveprov",
@@ -341,7 +341,7 @@ class TestEditComment:
                 origin="mirrorprov:9",
                 provider="mirrorprov",
                 scope="shared",
-                author="nrb",
+                author="alice",
                 body="orig",
                 thread_id="ca",
                 target_provider="mirrorprov",
@@ -365,7 +365,7 @@ class TestEditComment:
 
     @pytest.mark.asyncio
     async def test_edit_gated_by_publish_governance(self, store, monkeypatch):
-        # Regression (PR #14 nrb): a shared-comment edit is outbound egress and
+        # Regression (PR #14 alice): a shared-comment edit is outbound egress and
         # must pass the same capabilities.publish gate as artifact publish. A
         # policy that DENIES the destination keeps the edit LOCAL (remote_synced
         # False) even though the provider supports COMMENTS_EDIT.
@@ -384,7 +384,7 @@ class TestEditComment:
                 origin="liveprov:5",
                 provider="liveprov",
                 scope="shared",
-                author="nrb",
+                author="alice",
                 body="orig",
                 thread_id="cg",
                 target_provider="liveprov",

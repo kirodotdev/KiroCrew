@@ -4206,7 +4206,7 @@ class AcpClient:
         "grep"), then a follow-up `tool_call_update` once `chunk.input` is
         fully streamed — that update carries the populated `rawInput` and a
         refined `title`/`kind` from the upstream `toolInfoFromToolUse`
-        (e.g. `"ls /local/home/hugocost/.kiro/crew/workspace"`).
+        (e.g. `"ls /local/home/user/.kiro/crew/workspace"`).
 
         We yield an EVENT_TOOL_CALL_UPDATE so the dashboard can patch the
         existing pill / persisted message in place — see the matching

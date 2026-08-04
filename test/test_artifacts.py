@@ -700,10 +700,10 @@ class TestLifecycleEvents:
 
 class TestSourcePath:
     def test_create_persists_source_path(self, store: ArtifactStore) -> None:
-        art = store.create(name="brd", content="# hi", source_path="/home/nrb/brd.md")
-        assert art.source_path == "/home/nrb/brd.md"
+        art = store.create(name="brd", content="# hi", source_path="/home/alice/brd.md")
+        assert art.source_path == "/home/alice/brd.md"
         loaded = store.get("brd")
-        assert loaded.source_path == "/home/nrb/brd.md"
+        assert loaded.source_path == "/home/alice/brd.md"
 
     def test_create_default_source_path_is_empty(self, store: ArtifactStore) -> None:
         art = store.create(name="brd", content="# hi")

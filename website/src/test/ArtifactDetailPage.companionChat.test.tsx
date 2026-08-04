@@ -239,7 +239,7 @@ describe('ArtifactDetailPage companion chat', () => {
     // A comment arriving now would flip the panel to 'comments' without the guard.
     vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({
       comments: [{
-        id: 'c1', origin: 'local', scope: 'private', author: 'nrb', body: 'note',
+        id: 'c1', origin: 'local', scope: 'private', author: 'alice', body: 'note',
         thread_id: 't1', status: 'open', sync_state: 'local',
         created_at: '2026-05-21T22:00:00Z', updated_at: '2026-05-21T22:00:00Z',
       }],
@@ -269,7 +269,7 @@ describe('ArtifactDetailPage companion chat', () => {
     seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
     vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({
       comments: [{
-        id: 'c1', origin: 'local', scope: 'private', author: 'nrb', body: 'tighten this',
+        id: 'c1', origin: 'local', scope: 'private', author: 'alice', body: 'tighten this',
         thread_id: 't1', status: 'open', sync_state: 'local',
         anchor: { quote: 'CR Queue' },
         created_at: '2026-05-21T22:00:00Z', updated_at: '2026-05-21T22:00:00Z',
@@ -471,7 +471,7 @@ describe('ArtifactDetailPage companion chat', () => {
     // comments query to simulate the count changing while chat is open.
     vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({
       comments: [{
-        id: 'c1', origin: 'local', scope: 'private', author: 'nrb', body: 'note',
+        id: 'c1', origin: 'local', scope: 'private', author: 'alice', body: 'note',
         thread_id: 't1', status: 'open', sync_state: 'local',
         anchor: { quote: 'Rollout plan' },
         created_at: '2026-05-21T22:00:00Z', updated_at: '2026-05-21T22:00:00Z',

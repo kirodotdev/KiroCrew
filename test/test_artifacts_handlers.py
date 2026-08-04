@@ -531,7 +531,7 @@ class TestCreate:
         # the same widget content must produce two separate artifacts —
         # NOT silently merge into one — because a chat-backed artifact's
         # identity is its slug, not its source. Regression guard for the
-        # bug nrb hit where a markdown file's "Add to artifacts" was
+        # bug alice hit where a markdown file's "Add to artifacts" was
         # matching a previously-saved widget because the lookup degraded
         # to "first artifact in list".
         body = {"name": "widget", "content": "<p>hi</p>", "kind": "widget", "source": "chat"}
@@ -1232,7 +1232,7 @@ class TestDenialAudit:
 class TestRelocate:
     """api_artifact_relocate confines source_path to $HOME (+ configured roots),
     so an agent cannot aim an artifact at /etc/passwd or another user's files
-    and exfiltrate them via a later GET (PR #14 nrb + CodeQL py/path-injection)."""
+    and exfiltrate them via a later GET (PR #14 alice + CodeQL py/path-injection)."""
 
     @pytest.mark.asyncio
     async def test_home_file_allowed(self, isolated_store, patch_restricted, tmp_path, monkeypatch):
