@@ -585,6 +585,34 @@ def _isolate_kiro_window_cache():
 
 
 @pytest.fixture(autouse=True)
+def _reset_options_control_state():
+    """Clear the per-message OPTIONS registries between tests.
+
+    ``kiro_crew.slack.outbound`` holds two process-global maps keyed by
+    ``(channel, ts)``: the per-message edit lock, and the once-only answer claim
+    that stops a second Send click dispatching a duplicate turn. Both are
+    correct as process state in the gateway, where a control's ts is unique and
+    lives as long as the message does.
+
+    Tests are the opposite: fixtures reuse a fixed pair like ``("CH1", "msg1")``
+    across unrelated cases, so without this the first test to submit claims the
+    control and every later test's click is silently dropped as a duplicate.
+    Reset per test rather than making production defensive about it.
+    """
+    from kiro_crew.slack import outbound
+
+    outbound._ANSWERED.clear()
+    outbound._EDIT_LOCKS.clear()
+    outbound._ANSWER_ROUTING.clear()
+    outbound._LOCK_USERS.clear()
+    yield
+    outbound._ANSWERED.clear()
+    outbound._EDIT_LOCKS.clear()
+    outbound._ANSWER_ROUTING.clear()
+    outbound._LOCK_USERS.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_subagents_dir(_isolation_dirs, monkeypatch):
     """Pin the subagent registry dir to a tmp dir for the whole suite.
 

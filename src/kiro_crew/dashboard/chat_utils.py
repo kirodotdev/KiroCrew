@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMEvent
+    from kiro_crew.slack.outbound import PostedOptions
 
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
@@ -33,10 +34,11 @@ from kiro_crew.dashboard.state import (
     parse_cls_meta,
 )
 from kiro_crew.hooks import safe_read_file
-from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.messaging.link import canonical_key, is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import SecurityEvent, sel
 from kiro_crew.session_surface import has_dashboard_surface, set_dashboard_surfaced
+from kiro_crew.slack.outbound import expire_options, mark_options_terminal, options_edit_lock
 from kiro_crew.validation import (
     MAX_TOOL_NAME_LEN,
     THEME_CONSENT_SHA_RE,
@@ -531,6 +533,420 @@ def effective_session_key(slot: _ChatSlot) -> str:
     the cases that genuinely start from a slot key with no slot in hand.
     """
     return getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
+
+
+def slack_options_slot(state: DashboardState, session_key: str) -> _ChatSlot | None:
+    """The slot holding *session_key*'s Slack OPTIONS state, if one exists.
+
+    Deliberately not routed through :func:`dashboard_slot_key`, which answers
+    "is a tab open?". A slot can hold OPTIONS state with no tab currently open,
+    and one lookup reaches both flavours of slot: a channel-born slot
+    (``slack_<ts>``) and a dashboard slot mirroring out to Slack
+    (``chat-<n>-<epoch>``) both live in the same registry.
+
+    Returns None rather than raising for any state object that cannot answer the
+    question. OPTIONS bookkeeping is best-effort cleanup and must never be able
+    to abort the turn that triggered it.
+
+    The key is required to be a real ``str``: ``_normalize_slot_key`` strips a
+    repeated ``dashboard_`` prefix with an unbounded ``while``, which only
+    terminates for a genuine string. Handing it anything whose ``startswith``
+    is always truthy spins forever, allocating as it goes -- so a non-string
+    key is refused here rather than normalized.
+    """
+    if not isinstance(session_key, str):
+        return None
+    getter = getattr(state, "get_slot", None)
+    if not callable(getter):
+        return None
+    try:
+        slot = getter(_normalize_slot_key(session_key))
+        if slot is not None:
+            return slot
+        # The fold is FILENAME-shaped, so any slot whose name is not its session
+        # key folded is unreachable through it. A cron slot is named
+        # ``cron-<id>`` while its session key is ``cron:<id>``, which folds to
+        # ``cron_<id>`` and matches nothing — so a persistent cron's OPTIONS
+        # control was never tracked at all, and the follow-up turn had nothing
+        # to expire, leaving it clickable into a superseded question.
+        #
+        # Such a slot still knows its own identity (``linked_session_key``), so
+        # ask the slots rather than guessing at more spellings. Only on a miss,
+        # so the common path stays a single dict lookup.
+        for candidate in (getattr(state, "_slots", None) or {}).values():
+            if effective_session_key(candidate) == session_key:
+                return candidate
+        return None
+    except Exception:
+        logger.debug("Slack OPTIONS slot lookup failed", exc_info=True)
+        return None
+
+
+def slack_options_turn_counter(state: DashboardState | None, session_key: str) -> int | None:
+    """*session_key*'s monotonic turn counter, or None if it cannot be read.
+
+    Tells "a turn happened" from "a turn is running", which
+    ``SessionManager.is_busy`` cannot: a turn that starts and finishes inside a
+    single await window reports idle at both ends. ``_ChatSlot.total_messages``
+    is a lifetime count that survives the slot's trim cap, so it moves for a turn
+    that came and went.
+
+    Lives here, beside the resolver it depends on, because more than one Slack
+    posting path needs it and a second copy would drift from this one.
+
+    Returns None on any failure. This feeds best-effort OPTIONS cleanup and must
+    never abort the turn that triggered it; a None on either side of a comparison
+    simply reads as "no observed change".
+
+    Only comparable against itself: two counters read from DIFFERENT sessions say
+    nothing about each other, so a caller whose owner may have changed has to
+    treat that change as supersession instead of comparing.
+    """
+    try:
+        if state is None:
+            return None
+        slot = slack_options_slot(state, session_key)
+        return None if slot is None else int(slot.total_messages)
+    except Exception:
+        logger.debug("Could not read the turn counter for OPTIONS bookkeeping", exc_info=True)
+        return None
+
+
+def slack_options_linked_slot(state: DashboardState | None, thread_ts: str) -> _ChatSlot | None:
+    """The dashboard slot that owns *thread_ts*, if a session mirrors into it.
+
+    Prefers the thread -> slot reverse index, then falls back to scanning slots
+    for a matching ``_slack_thread_ts``. The fallback exists because the index is
+    written by one helper that a caller can forget: relying on it alone made this
+    resolver silently return nothing for a freshly-linked thread.
+    """
+    if not thread_ts or state is None:
+        return None
+    linked = getattr(state, "get_linked_slot", None)
+    if callable(linked):
+        try:
+            slot = linked(thread_ts)
+        except Exception:
+            slot = None
+        if slot is not None:
+            return slot
+    slots = getattr(state, "_slots", None)
+    if not isinstance(slots, dict):
+        return None
+    for slot in slots.values():
+        if getattr(slot, "_slack_linked", False) and (
+            getattr(slot, "_slack_thread_ts", "") == thread_ts
+        ):
+            return slot
+    return None
+
+
+def _persisted_thread_owner(state: DashboardState | None, thread_ts: str) -> str:
+    """The session key the PERSISTED thread index maps *thread_ts* to.
+
+    Distinct from :func:`slack_options_linked_slot`, which only knows the
+    dashboard SLOT index. A cron thread is linked with ``cron:<id>`` and has no
+    slot at all, so the slot index cannot see it — yet that is the key a control
+    on such a thread is recorded under, because the record sites resolve the owner
+    through this same index. Leaving it out of the ownership helpers made the
+    record and the forget disagree: the control was filed under ``cron:<id>`` and
+    then never cleared, so a later expiry found it and overwrote the selection.
+
+    Returns "" when unknown. The ``isinstance`` check is deliberate: the index is
+    typed ``str | None``, and anything else means the caller handed us a stub.
+    """
+    if state is None or not thread_ts:
+        return ""
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return ""
+    try:
+        owner = sessions.get_session_for_thread(thread_ts)
+    except Exception:
+        logger.debug("Could not resolve the persisted owner of %s", thread_ts, exc_info=True)
+        return ""
+    return owner if isinstance(owner, str) and owner else ""
+
+
+def slack_options_owner_key(state: DashboardState | None, thread_ts: str) -> str:
+    """The single session key that owns the conversation living in *thread_ts*.
+
+    Use this when RECORDING a control — it has to land on the one session whose
+    next turn should spend it. Use :func:`slack_options_session_keys` when
+    CLEARING, where covering every candidate is correct.
+
+    The slot index is consulted first and the persisted thread index second. Where
+    both know the thread they agree (``link_slack`` writes both), so the order only
+    matters for a thread ONE of them can see — and a cron-linked thread is visible
+    only to the persisted one.
+    """
+    slot = slack_options_linked_slot(state, thread_ts)
+    if slot is not None:
+        mirrored = effective_session_key(slot)
+        if mirrored:
+            return mirrored
+    persisted = _persisted_thread_owner(state, thread_ts)
+    if persisted:
+        return persisted
+    return canonical_key(thread_ts) if thread_ts else ""
+
+
+def slack_options_session_keys(state: DashboardState | None, thread_ts: str) -> list[str]:
+    """Every session key under which *thread_ts*'s OPTIONS control may be recorded.
+
+    One Slack thread belongs to one conversation, but that conversation is
+    addressed by several different keys depending on which side owns it: a
+    Slack-born session is ``slack:<ts>``, a dashboard session mirroring out to the
+    thread is ``dashboard:<slot>``, and a persistent cron is ``cron:<id>``. A
+    caller holding only the thread timestamp cannot tell which, so return every
+    candidate — they name the same conversation, so acting on all of them is
+    correct rather than merely safe.
+
+    Missing the cron spelling here is what let a selection leave its record
+    behind: the forget cleared the keys it could guess, the ``cron:<id>`` record
+    survived, and the next expiry edited over the user's answer.
+    """
+    if not thread_ts:
+        return []
+    keys = [canonical_key(thread_ts)]
+    slot = slack_options_linked_slot(state, thread_ts)
+    if slot is not None:
+        mirrored = effective_session_key(slot)
+        if mirrored and mirrored not in keys:
+            keys.append(mirrored)
+    persisted = _persisted_thread_owner(state, thread_ts)
+    if persisted and persisted not in keys:
+        keys.append(persisted)
+    return keys
+
+
+def options_records(state: DashboardState | None, session_key: str) -> tuple[PostedOptions, ...]:
+    """Every OPTIONS control still outstanding for *session_key*.
+
+    The store is keyed by SESSION KEY, on ``DashboardState``, not held on the
+    slot. A plain Slack thread frequently has no dashboard slot, and a slot-held
+    record was simply dropped for those sessions — so nothing tracked the control,
+    no later turn could expire it, and the stale click this whole lifecycle exists
+    to prevent stayed possible (#1694). Keying by session key makes the slotless
+    case ordinary instead of special, and it cannot go stale when a slot appears
+    or disappears mid-conversation.
+    """
+    if state is None or not session_key:
+        return ()
+    store = getattr(state, "_slack_options_by_key", None)
+    if not isinstance(store, dict):
+        return ()
+    return store.get(canonical_key(session_key), ())
+
+
+def set_options_records(
+    state: DashboardState | None, session_key: str, records: tuple[PostedOptions, ...]
+) -> None:
+    """Replace *session_key*'s outstanding controls, dropping the key when empty.
+
+    Pruning on empty is the ONLY bound, and it is the right one: an entry exists
+    exactly as long as a question is still unanswered, and it leaves the moment the
+    lifecycle completes — the expiry settles it, a click forgets it, or an unlink
+    clears it.
+
+    Deliberately NOT capped with eviction. A cap sounds prudent and is actively
+    harmful here: evicting a record for a control that is still clickable means no
+    later turn can retire it, which is precisely the untracked control this whole
+    lifecycle exists to eliminate — so a bound would reintroduce the defect at
+    scale, silently, on the busiest instances. The footprint is also no worse than
+    what it replaced: records used to hang off ``_ChatSlot``, and slots are
+    themselves unbounded in number, so this holds strictly fewer entries (only
+    conversations with a live unanswered question) than the store it came from.
+    """
+    if state is None or not session_key:
+        return
+    store = getattr(state, "_slack_options_by_key", None)
+    if not isinstance(store, dict):
+        return
+    key = canonical_key(session_key)
+    if records:
+        store[key] = records
+    else:
+        store.pop(key, None)
+
+
+def remember_slack_options(
+    state: DashboardState | None,
+    session_key: str,
+    posted: PostedOptions | None,
+) -> None:
+    """Record the live OPTIONS control just posted for *session_key*.
+
+    APPENDS rather than replaces. A turn can post more than one OPTIONS message,
+    and the same slot is reachable from several posting paths, so overwriting
+    would leave the earlier control on screen with nothing tracking it — a click
+    on it would then answer a question the conversation has already passed.
+    Every outstanding record is kept so expiry can drain all of them.
+
+    A no-op when there is no control or no dashboard state. Note there is NO
+    slot requirement: the store is keyed by session key precisely so a plain
+    Slack thread without a slot still gets its control tracked (#1694).
+    """
+    if posted is None or state is None or not session_key:
+        return
+    current = options_records(state, session_key)
+    # Same message posted twice (a retry, or two paths recording one post)
+    # must not queue two edits for one control.
+    if posted not in current:
+        set_options_records(state, session_key, (*current, posted))
+
+
+def forget_slack_options(
+    state: DashboardState | None, session_key: str, ts: str | None = None
+) -> None:
+    """Drop the recorded control for *session_key* without editing Slack.
+
+    For when something else has already spent the control — a Send click
+    re-renders the message with the user's selection, and striking every choice
+    through afterwards would erase the choice they made.
+
+    Pass *ts* to drop ONLY the control posted as that message. A click spends one
+    control, not every control outstanding in the conversation: dropping them all
+    would leave any other one on screen with nothing tracking it, so a later click
+    on it would answer a superseded question. Omitting *ts* clears all of them,
+    which is right when the whole conversation is going away (an unlink).
+    """
+    if state is None or not session_key:
+        return
+    if ts is None:
+        set_options_records(state, session_key, ())
+        return
+    set_options_records(
+        state,
+        session_key,
+        tuple(p for p in options_records(state, session_key) if p.ts != ts),
+    )
+
+
+def slack_options_owner_keys_snapshot(
+    state: DashboardState | None, thread_ts: str
+) -> tuple[str, ...]:
+    """The keys *thread_ts*'s control could be recorded under, captured NOW.
+
+    A caller that is about to await Slack has to take this BEFORE the await and
+    forget against it afterwards. Recomputing after the fact reads the keys of
+    whoever owns the thread THEN: a relink landing during a submit's edit moves the
+    thread to another session, so the recomputed list names the new owner, the
+    previous owner's record survives the click, and that session's next turn edits
+    straight over the selection the user just made.
+    """
+    return tuple(slack_options_session_keys(state, thread_ts))
+
+
+def forget_slack_options_for_thread(
+    state: DashboardState | None,
+    thread_ts: str,
+    ts: str | None = None,
+    keys: tuple[str, ...] | None = None,
+) -> None:
+    """Drop the recorded control for the conversation living in *thread_ts*.
+
+    For callers that hold a Slack thread timestamp rather than a session key —
+    the interaction handlers, which see a click on a message and not the session
+    behind it. Clears every key the thread's conversation can be recorded under,
+    so a control posted by the dashboard mirror is forgotten too.
+
+    *ts* scopes it to the ONE control posted as that message, which is what a
+    click spends. Without it every outstanding control in the conversation is
+    dropped, leaving any other one clickable with nothing tracking it.
+
+    Pass *keys* from :func:`slack_options_owner_keys_snapshot` when an await sits
+    between reading ownership and clearing it — a relink during that window would
+    otherwise leave the previous owner's record behind. Omitting *keys* resolves
+    now, which is right only for a caller that has not awaited.
+    """
+    for key in keys if keys is not None else slack_options_session_keys(state, thread_ts):
+        forget_slack_options(state, key, ts)
+
+
+async def expire_slack_options(
+    state: DashboardState | None, session_key: str, ts: str | None = None
+) -> None:
+    """Spend the OPTIONS control left from *session_key*'s previous turn.
+
+    Called as a new turn begins, whichever surface it arrives on, so a control
+    the conversation has moved past stops inviting a click that would answer a
+    superseded question.
+
+    Records stay TRACKED across the Slack edit and are only ever REMOVED
+    afterwards, never re-added. A write-back that re-adds cannot tell "still
+    outstanding" from "deliberately removed while I was awaiting": a click landing
+    mid-await calls :func:`forget_slack_options`, and re-adding would resurrect
+    the control it just answered, so every later turn would re-edit the message
+    and overwrite the user's selected summary. Removing only what settled leaves
+    a concurrent forget authoritative. A record whose edit failed *transiently* is
+    simply never removed, so it is still retried later — dropping it would leave a
+    live control on screen with nothing tracking it, the exact stale click this
+    whole lifecycle exists to prevent. A failure that will never succeed (deleted
+    message, a channel we are not in) counts as settled, so it cannot be retried
+    on every later turn forever.
+
+    Two concurrent expiries can therefore both edit the same control. That is
+    deliberate: both write byte-identical spent blocks, so the cost is a wasted
+    API call, whereas resurrecting an answered control corrupts what the user
+    sees.
+
+    Drains EVERY outstanding control, not just the newest: a turn can leave more
+    than one on screen, and any one left untracked stays clickable into a
+    superseded question.
+
+    Pass *ts* to spend ONLY the control posted as that message. A caller that is
+    cleaning up after ITSELF has to narrow this way: a concurrent turn can record
+    its own fresh control in the same slot while this caller is still awaiting
+    Slack, and a session-wide drain would strike that newer question through too
+    — leaving the question the conversation is actually waiting on unanswerable.
+    Omitting *ts* drains all of them, which is what a NEW turn wants (it
+    supersedes everything before it) and what an unlink wants (the whole
+    conversation is going away).
+    """
+    if state is None or not session_key:
+        return
+    outstanding = options_records(state, session_key)
+    if not outstanding:
+        return
+    if ts is not None:
+        outstanding = tuple(posted for posted in outstanding if posted.ts == ts)
+        if not outstanding:
+            # Already spent by whoever else tracked it; nothing of ours to edit.
+            return
+    slack = getattr(state, "slack_client", None)
+    if slack is None:
+        # Nothing was spent, so nothing may be dropped: with no client the
+        # controls are still live on screen and must stay tracked.
+        return
+    settled: list[PostedOptions] = []
+    for posted in outstanding:
+        # Serialize against the Send handler's edit to this SAME message, and
+        # re-read the record INSIDE the lock. A click that won the race has
+        # already rewritten the message with the user's selection and dropped the
+        # record, so finding it gone means "do not edit" -- without the re-read,
+        # a late expiry would erase the answer the user just gave. The lock makes
+        # that check trustworthy; the check is what makes the lock useful.
+        async with options_edit_lock(posted.channel, posted.ts):
+            if posted not in options_records(state, session_key):
+                continue
+            if await expire_options(slack, posted):
+                # Retire the control for clicks too, not just for our records. A
+                # Send click queued behind this expiry would otherwise find the
+                # answer claim unheld, take it, and dispatch an answer to the
+                # question we just struck through. Marked while we still hold the
+                # lock, so the queued click cannot slip between the edit and this.
+                mark_options_terminal(posted.channel, posted.ts)
+                settled.append(posted)
+    if settled:
+        # Remove by identity against the CURRENT records, not by reassigning a
+        # remembered tuple: a turn that finished while we awaited Slack may have
+        # recorded its own control here, and it must survive.
+        set_options_records(
+            state,
+            session_key,
+            tuple(p for p in options_records(state, session_key) if p not in settled),
+        )
 
 
 _INCOGNITO_PREFIX = (

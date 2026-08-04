@@ -40,7 +40,12 @@ from kiro_crew.browser.setup import (
 )
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
-from kiro_crew.dashboard.chat_utils import _remove_queued_by_id, dashboard_slot_key
+from kiro_crew.dashboard.chat_utils import (
+    _remove_queued_by_id,
+    dashboard_slot_key,
+    remember_slack_options,
+    slack_options_owner_key,
+)
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.origin import is_direct_local_request, is_loopback
 from kiro_crew.dashboard.state import (
@@ -55,6 +60,7 @@ from kiro_crew.notifications.bus import (
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_pid_sig import verify_session_pid
 from kiro_crew.slack.format import build_options_blocks, extract_options
+from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.subagent_persistence import _agent_dir, read_state
 from kiro_crew.validation import (
     _EMOJI_NAME_RE,
@@ -1336,12 +1342,41 @@ async def api_send_message(request: web.Request) -> web.Response:
                             )
                             if options:
                                 try:
-                                    await state.slack_client.post_blocks(
+                                    option_blocks = build_options_blocks(options)
+                                    # Fallback text is the SAFE stub, not the
+                                    # message body. Slack parses entities in a
+                                    # message's top-level `text` -- which is what
+                                    # notifications render -- so an agent-authored
+                                    # body containing `<!channel>` would ping the
+                                    # whole channel, and the expiry would ping it
+                                    # AGAIN every time it replays this text on its
+                                    # edit. Nothing is lost: the body was already
+                                    # posted as its own message just above, so here
+                                    # it was pure duplication. This is the same stub
+                                    # the other three posting paths use.
+                                    option_ts = await state.slack_client.post_blocks(
                                         channel,
-                                        build_options_blocks(options),
-                                        text,
+                                        option_blocks,
+                                        OPTIONS_FALLBACK_TEXT,
                                         thread_ts=thread_ts,
                                     )
+                                    # A thread IS a conversation, so bind the
+                                    # control to whichever session owns that
+                                    # thread — a dashboard session mirroring into
+                                    # it, or the Slack-born one. Without a thread
+                                    # there is no conversation to supersede it, so
+                                    # nothing is recorded.
+                                    if thread_ts and option_ts:
+                                        remember_slack_options(
+                                            state,
+                                            slack_options_owner_key(state, str(thread_ts)),
+                                            PostedOptions(
+                                                channel=channel,
+                                                ts=option_ts,
+                                                choices=tuple(options),
+                                                blocks=tuple(option_blocks),
+                                            ),
+                                        )
                                 except Exception:
                                     logger.debug(
                                         "send_message: failed to post OPTIONS blocks",

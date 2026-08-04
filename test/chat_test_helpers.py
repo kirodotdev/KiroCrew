@@ -37,6 +37,28 @@ def _make_state(tmp_path, **kwargs):
     sessions.remove = AsyncMock()
     sessions.recycle_background = AsyncMock()
     sessions.get_pid = MagicMock(return_value=None)
+    # Real in-memory Slack-link store rather than bare MagicMocks. The unlink
+    # path unpacks get_slack_link into (thread_ts, channel_id) and branches on
+    # whether a link is PRESENT, and a MagicMock satisfies neither: it iterates
+    # empty (ValueError on unpack) and is unconditionally truthy. Parity with
+    # SessionStore: absent -> (None, None); clear -> True iff a link was there.
+    _slack_links: dict[str, tuple[str, str]] = {}
+
+    def _set_slack_link(key, thread_ts, channel_id):
+        if thread_ts or channel_id:
+            _slack_links[key] = (thread_ts, channel_id)
+        else:
+            _slack_links.pop(key, None)
+
+    def _get_slack_link(key):
+        return _slack_links.get(key, (None, None))
+
+    def _clear_slack_link(key):
+        return _slack_links.pop(key, None) is not None
+
+    sessions.set_slack_link = MagicMock(side_effect=_set_slack_link)
+    sessions.get_slack_link = MagicMock(side_effect=_get_slack_link)
+    sessions.clear_slack_link = MagicMock(side_effect=_clear_slack_link)
     state = DashboardState(
         sessions=sessions,
         crons=MagicMock(list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})),

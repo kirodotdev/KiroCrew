@@ -29,6 +29,10 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from kiro_crew.dashboard.state import DashboardState
 
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
@@ -53,6 +57,11 @@ from kiro_crew.cron import (
     compute_next_run_ts,
     format_schedule,
     get_local_tz,
+)
+from kiro_crew.dashboard.chat_utils import (
+    expire_slack_options,
+    remember_slack_options,
+    slack_options_turn_counter,
 )
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import ConversationLog, HistoryConsolidator
@@ -103,6 +112,7 @@ from kiro_crew.slack.format import (
     split_message,
     strip_thinking_tags,
 )
+from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.sessions_view import (
     _SESSIONS_DEFAULT_LIMIT,
     _build_sessions_blocks,
@@ -2157,6 +2167,28 @@ def build_timing_footer(
     return blocks, footer_text
 
 
+def _turn_counter_for(session_key: str) -> int | None:
+    """This session's monotonic turn counter, or None if it cannot be read.
+
+    Used to tell "a turn happened" from "a turn is running", which
+    ``SessionManager.is_busy`` cannot distinguish: a turn that starts and
+    finishes inside a single await window reports as idle at both ends.
+    ``_ChatSlot.total_messages`` is a lifetime count that survives the slot's
+    trim cap, so it moves for a turn that came and went.
+
+    Returns None on any failure. This feeds best-effort OPTIONS cleanup and must
+    never be able to abort the turn that triggered it. A None on either side of
+    the comparison simply reads as "no observed change", leaving the ``is_busy``
+    half of the check to decide.
+
+    Delegates to :func:`slack_options_turn_counter` so this path and the
+    transport-dispatch path cannot drift apart on how the counter is read.
+    """
+    return slack_options_turn_counter(
+        cast("DashboardState | None", get_dashboard_state()), session_key
+    )
+
+
 def _append_footer_actions(
     footer_blocks: list[dict],
     options: list[str] | None,
@@ -2611,6 +2643,7 @@ async def handle_message(
     # ── Linked thread intercept: route to dashboard slot if linked ──
     if await maybe_route_linked_thread(text, session_key, user_id, channel, slack, reply_ts):
         return
+
     logger.info(
         "🔍 handle_message: thread_ts=%s msg_ts=%s → session_key=%s channel=%s",
         thread_ts,
@@ -2796,6 +2829,31 @@ async def handle_message(
         channel_agent=channel_agent,
     ):
         return
+
+    # A new turn supersedes whatever question the previous one ended on, so any
+    # OPTIONS control still live in this thread stops being answerable.
+    #
+    # Placed HERE, below every short-circuit above, because only a message that
+    # actually starts a turn supersedes anything. ``status``, a permission
+    # denial, a modifier-only message, a hook's canned reply and the keyword
+    # commands all answer and return WITHOUT running the agent, so the
+    # conversation has not moved and the pending question is still the one being
+    # waited on. Expiring for those spends a LIVE control and leaves valid
+    # choices unanswerable — the exact inverse of the stale click this lifecycle
+    # exists to prevent. The denial case matters most: an unauthorized caller in
+    # the thread must not be able to destroy the owner's pending question.
+    # Keeping this at one point below the short-circuits, rather than guarding
+    # each of them, means a shortcut added later inherits the right behaviour.
+    #
+    # Resolve the OWNING session, not the ``slack:<ts>`` key derived above: the
+    # control is recorded under whichever session owns the thread, and for a
+    # dashboard-linked thread that is its ``dashboard:chat-N`` key — the same
+    # distinction the linked-thread lookup relies on. Expiring under the wrong
+    # key silently no-ops and leaves the control clickable.
+    await expire_slack_options(
+        cast("DashboardState | None", get_dashboard_state()),
+        sessions.get_session_for_thread(reply_ts) or session_key,
+    )
 
     status_ctrl = StatusReactionController(
         slack,
@@ -3005,6 +3063,15 @@ async def handle_message(
             session_key, agent=_agent, channel_id=channel
         )
         _acquired = True
+        # Expire AGAIN now the turn is serialized — see the same call in
+        # transport_dispatch. The pass earlier in this function runs before
+        # `get_or_create` waits its turn, so two messages arriving together both
+        # clear the OLD control and neither clears the NEW one the first turn
+        # posts on its way out, leaving live buttons for a superseded question.
+        await expire_slack_options(
+            cast("DashboardState | None", get_dashboard_state()),
+            sessions.get_session_for_thread(reply_ts) or session_key,
+        )
         if is_new:
             await sessions.set_channel(session_key, channel)
         if not linked_session_key:
@@ -3825,7 +3892,108 @@ async def handle_message(
         linked_session_key,
         _dashboard_state,
     )
-    await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
+    # Baseline BEFORE the footer post. `is_busy` alone only answers "is a turn in
+    # flight right now", so a superseding turn that both STARTS and FINISHES
+    # inside this window reads as not-busy and the check below would miss it.
+    # total_messages is monotonic and survives the slot's trim cap, so it moves
+    # for a turn that came and went.
+    #
+    # Sampled on the thread's owner AT THIS MOMENT, not on the key this turn
+    # started under: a dashboard link landing during the post moves the
+    # conversation to a different session, and a baseline taken on the old key can
+    # never observe the new owner's turns — so the guard would report "nothing
+    # moved" precisely when everything had.
+    _pre_owner = sessions.get_session_for_thread(reply_ts) or session_key
+    _pre_footer_total = _turn_counter_for(_pre_owner)
+    _footer_ts = await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
+    if options and _footer_ts:
+        # Remember this turn's OPTIONS control so the next turn can strike it
+        # through once the conversation has moved past the question it asked.
+        #
+        # Resolved ONCE and reused by the cleanup below. The record and the
+        # expiry have to agree on the owner key or they can never pair up: a
+        # thread linked to a dashboard mid-turn changes owner, so recording under
+        # the key this turn started with files the control where the next turn's
+        # expiry will not look. Reading it twice would reopen the same split if a
+        # link landed in between.
+        _options_owner = sessions.get_session_for_thread(reply_ts) or session_key
+        try:
+
+            remember_slack_options(
+                cast("DashboardState | None", get_dashboard_state()),
+                _options_owner,
+                PostedOptions(
+                    channel=channel,
+                    ts=_footer_ts,
+                    choices=tuple(options),
+                    blocks=tuple(footer_blocks),
+                    text=footer_text,
+                ),
+            )
+        except Exception:
+            logger.debug("Failed to record OPTIONS control", exc_info=True)
+
+        # The session permit was released well before this footer went up (the
+        # `finally` above), so a message that queued behind this turn can have
+        # acquired it and run ITS expiry pass already — over a record that did
+        # not exist yet. That leaves this control live for a question the
+        # conversation has moved past, which is the defect this PR exists to
+        # remove. If a turn is in flight now, OR one came and went while the
+        # footer was posting, we lost that race: spend the control ourselves
+        # rather than leaving it clickable.
+        #
+        # Both halves are needed. `is_busy` catches the turn still running;
+        # the counter catches the turn that already finished, which `is_busy`
+        # reports as idle.
+        #
+        # And an owner CHANGE is supersession in its own right: the thread now
+        # belongs to a different session, so the question we just posted would be
+        # answered into a conversation that has moved on. It short-circuits before
+        # the counter comparison on purpose — counters read from two different
+        # sessions say nothing about each other, so comparing them would be
+        # meaningless rather than merely unhelpful.
+        def _counter_moved() -> bool:
+            """True only when BOTH readings exist and differ.
+
+            ``_turn_counter_for`` returns None when the counter cannot be read at
+            all — most often because the session has no dashboard slot, which is
+            the normal state for a Slack conversation until something surfaces
+            one. A slot appearing (the channel surface reconciler creates one) or
+            vanishing mid-post would otherwise flip None against an int and read
+            as "a turn happened", expiring the control we just posted the instant
+            it landed. A slot's existence is not a turn, so an unreadable
+            counter must ABSTAIN rather than vote — which is what the helper's
+            own contract already promises.
+            """
+            after = _turn_counter_for(_options_owner)
+            return (
+                _pre_footer_total is not None
+                and after is not None
+                and after != _pre_footer_total
+            )
+
+        _superseded = (
+            _options_owner != _pre_owner
+            or sessions.is_busy(_options_owner)
+            or _counter_moved()
+        )
+        if _superseded:
+            try:
+                # Narrowed to OUR footer's ts, never a session-wide drain: the
+                # very turn that superseded us can finish while we were awaiting
+                # post_blocks and record its OWN live control on this session, and
+                # draining the slot would strike that newer question through --
+                # silencing the one the conversation is now waiting on.
+                await expire_slack_options(
+                    cast("DashboardState | None", get_dashboard_state()),
+                    _options_owner,
+                    ts=_footer_ts,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to expire OPTIONS control superseded mid-post",
+                    exc_info=True,
+                )
 
     # ── Voice reply (fire-and-forget, non-blocking) ──
     # Triggers when: (a) user has opted in globally or per-thread via !voice,

@@ -20,8 +20,12 @@ import asyncio
 import logging
 import re
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.dashboard.chat_utils import (
+    expire_slack_options,
+    remember_slack_options,
+)
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.llm_helpers import save_conversation_turn_off_loop
@@ -50,6 +54,7 @@ from kiro_crew.stats import Stats
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
     from kiro_crew.cron import CronService
+    from kiro_crew.dashboard.state import DashboardState
     from kiro_crew.history import ConversationLog, HistoryConsolidator
     from kiro_crew.providers.base import LLMProvider
     from kiro_crew.session import SessionManager
@@ -296,6 +301,29 @@ async def handle_message_transport(
     ):
         return
 
+    # A new turn supersedes whatever question the previous one ended on, so any
+    # OPTIONS control still live in this thread stops being answerable.
+    #
+    # Placed HERE, below every short-circuit above, because only a message that
+    # actually starts a turn supersedes anything. ``ping``, ``status``, a
+    # modifier-only message, a hook's canned reply and the keyword commands all
+    # answer and return WITHOUT running the agent, so the conversation has not
+    # moved and the pending question is still the one being waited on --
+    # expiring for those spends a live control and leaves valid choices
+    # unanswerable, the exact inverse of the stale click this lifecycle exists to
+    # prevent. Keeping it at one point below the short-circuits, rather than
+    # guarding each of them, means a shortcut added later inherits the right
+    # behaviour instead of silently reintroducing this.
+    #
+    # Resolve the OWNING session, not the key derived above: the control is
+    # recorded under whichever session owns the thread, and for a
+    # dashboard-linked thread that is its ``dashboard:chat-N`` key. Expiring
+    # under the wrong key silently no-ops and leaves the control clickable.
+    await expire_slack_options(
+        cast("DashboardState | None", get_dashboard_state()),
+        sessions.get_session_for_thread(reply_ts) or session_key,
+    )
+
     client: LLMProvider | None = None
     _acquired = False
     renderer: SlackRenderer | None = None
@@ -365,6 +393,19 @@ async def handle_message_transport(
             session_key, agent=_agent, channel_id=channel
         )
         _acquired = True
+        # Expire AGAIN, now that the turn is serialized. The pass above (just
+        # before the turn machinery) runs before `get_or_create` waits its turn,
+        # so two messages arriving together both clear the control while it is
+        # still the OLD one — then the first turn ends by posting a NEW control,
+        # which the second turn never expires because its only pass already
+        # happened. The user is left with live buttons from a question the
+        # conversation has already moved past, which is the exact defect this
+        # path exists to prevent. Same staleness reasoning as the FRESH thread
+        # read below.
+        await expire_slack_options(
+            cast("DashboardState | None", get_dashboard_state()),
+            sessions.get_session_for_thread(reply_ts) or session_key,
+        )
         if is_new:
             await sessions.set_channel(session_key, channel)
         if not linked_session_key and not sessions.get_session_for_thread(reply_ts):
@@ -498,6 +539,11 @@ async def handle_message_transport(
             # a DENY is un-overridable by auto/trust/YOLO).
             tool_gate=_tool_gate,
         )
+        # The thread's owner as of the moment the turn starts producing output.
+        # A dashboard link landing during the run moves the conversation to a
+        # different session, which makes any control this turn posts stale the
+        # instant it lands — compared after the run below.
+        _pre_run_owner = sessions.get_session_for_thread(reply_ts) or session_key
         accumulated = await driver.run(full_message)
 
         # ── Post-turn bookkeeping ──
@@ -507,6 +553,48 @@ async def handle_message_transport(
         # to the outer except and double-record the turn as a failure.
         sessions.record_success(session_key)
         Stats().inc_message_success()
+
+        # Remember this turn's OPTIONS control, if it posted one, so the next
+        # turn on this thread can strike it through.
+        try:
+            # The LIVE owner of the thread, not the key this turn started
+            # under. A thread linked to a dashboard mid-turn changes owner,
+            # and the next turn's expiry looks the control up under the new
+            # key — so recording under the old one files it where nothing
+            # will ever find it, leaving the control clickable into a
+            # question the conversation has already passed.
+            _options_owner = sessions.get_session_for_thread(reply_ts) or session_key
+            remember_slack_options(
+                cast("DashboardState | None", get_dashboard_state()),
+                _options_owner,
+                renderer.posted_options,
+            )
+            # An owner change during the run IS supersession: the thread now
+            # belongs to a different session, so the control this turn just
+            # posted asks a question the conversation has moved past. Spend it
+            # ourselves — narrowed to our own ts, so a control the new owner
+            # recorded meanwhile survives.
+            #
+            # Deliberately NOT also checking ``sessions.is_busy`` here, unlike the
+            # native footer path. There the permit is released before the footer
+            # goes up, so a busy session means somebody ELSE. Here the turn still
+            # holds its semaphore at this point (``record_success`` resets the
+            # failure counter, it does not release), so ``is_busy`` would report
+            # OUR OWN turn and strike every fresh control through the moment it
+            # was posted — a worse defect than the one this guards.
+            _posted = renderer.posted_options
+            if _posted is not None and _options_owner != _pre_run_owner:
+                await expire_slack_options(
+                    cast("DashboardState | None", get_dashboard_state()),
+                    _options_owner,
+                    ts=_posted.ts,
+                )
+        except Exception:
+            logger.debug(
+                "transport_dispatch: failed to record OPTIONS control session=%s",
+                session_key,
+                exc_info=True,
+            )
 
         try:
             sessions.check_context_usage(session_key, client)

@@ -36,6 +36,7 @@ from kiro_crew.slack.handler import (
     _tool_to_phase,
     build_timing_footer,
 )
+from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.transport import SLACK_CAPABILITIES
 
 #: Block Kit action_id prefixes for tool approve/deny buttons.
@@ -239,6 +240,9 @@ class SlackRenderer(Renderer):
         self._now = now or time.monotonic
         self._stream_ts: str | None = None
         self._use_slack_stream = True  # False => chat.update cursor fallback
+        # Set at turn end when this turn's footer carried an OPTIONS control, so
+        # the dispatcher can record it against the session and expire it later.
+        self.posted_options: PostedOptions | None = None
         self._accumulated = ""
         self._bracket_hold = ""  # held text from '[' until ']' to filter [OPTIONS:]
         self._stream_buffer = ""  # unsent text buffered between throttled flushes
@@ -595,4 +599,17 @@ class SlackRenderer(Renderer):
         turn_elapsed = (self._now() - self._t0) if self._t0 else 0.0
         footer_blocks, footer_text = build_timing_footer(turn_elapsed, None)
         footer_blocks = _append_footer_actions(footer_blocks, options, self.thread_ts, None, None)
-        await self.slack.post_blocks(self.channel, footer_blocks, footer_text, self.thread_ts)
+        footer_ts = await self.slack.post_blocks(
+            self.channel, footer_blocks, footer_text, self.thread_ts
+        )
+        if options and footer_ts:
+            # The footer carries this turn's OPTIONS control. Record where it
+            # landed so the next turn can strike it through once the
+            # conversation has moved past the question it asked.
+            self.posted_options = PostedOptions(
+                channel=self.channel,
+                ts=footer_ts,
+                choices=tuple(options),
+                blocks=tuple(footer_blocks),
+                text=footer_text,
+            )
