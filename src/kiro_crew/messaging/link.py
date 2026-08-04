@@ -77,6 +77,65 @@ def channel_namespace_of(key: str) -> str:
     return ""
 
 
+#: Non-channel session-key prefixes that still deserve their own telemetry label.
+#: Kept in sync with the prefixes ``SessionManager`` mints; anything absent here
+#: folds into ``"other"`` so an unrecognised key can never mint a metric series.
+_TELEMETRY_LOCAL_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("dashboard", "dashboard"),
+    ("cron", "cron"),
+    ("subagent", "subagent"),
+    ("taskrunner", "taskrunner"),
+    ("secretary", "secretary"),
+    ("side", "side"),
+    ("wf-pool", "workflow_pool"),
+    # ``channel:`` is a namespace of its own (reply-token-bound sends), distinct
+    # from the per-transport namespaces above.
+    ("channel", "channel"),
+)
+
+#: Exact keys for the two singleton sessions.
+_TELEMETRY_EXACT_KEYS: dict[str, str] = {
+    "_bg": "background",
+    "_hb": "heartbeat",
+}
+
+#: Every value :func:`telemetry_channel_of` can return. Metric attributes must
+#: draw from a closed set — an unbounded label (a raw session key) would mint one
+#: time series per conversation and blow up the metric store.
+TELEMETRY_CHANNELS: frozenset[str] = frozenset(
+    list(CHANNEL_SESSION_NAMESPACES)
+    + [label for _, label in _TELEMETRY_LOCAL_PREFIXES]
+    + list(_TELEMETRY_EXACT_KEYS.values())
+    + ["unknown", "other"]
+)
+
+
+def telemetry_channel_of(key: str | None) -> str:
+    """Classify *key* into a bounded metric label for the conversation source.
+
+    Answers "who paid this cost" for latency instruments, which otherwise record
+    a duration with no way to group it by where the conversation came from.
+
+    Returns a member of :data:`TELEMETRY_CHANNELS`: a transport namespace
+    (``telegram``, ``slack``, …) for channel keys, a local label
+    (``dashboard``, ``cron``, ``subagent``, …) for the rest, ``"unknown"`` when
+    no key is available, and ``"other"`` for a key shape this function does not
+    recognise. Never returns the key itself, so cardinality stays bounded no
+    matter what a caller passes.
+    """
+    if not key:
+        return "unknown"
+    if key in _TELEMETRY_EXACT_KEYS:
+        return _TELEMETRY_EXACT_KEYS[key]
+    ns = channel_namespace_of(key)
+    if ns:
+        return ns
+    for prefix, label in _TELEMETRY_LOCAL_PREFIXES:
+        if key.startswith((f"{prefix}:", f"{prefix}_")):
+            return label
+    return "other"
+
+
 @dataclass
 class ChannelLink:
     """The inbound channel a session belongs to (its OWN channel).

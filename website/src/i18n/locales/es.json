@@ -8755,6 +8755,8 @@
       "hit_2": "aciertos ·",
       "hottest_sessions_by_peak_occupancy": "Sesiones con mayor ocupación máxima del contexto · la compactación se activa al 90 %",
       "internal_phase_breakdown": "Desglose de fases internas · spawn_init = arranque del proceso, session_new = negociación de la sesión, set_model = selección del modelo · componentes de un solo arranque, no varios arranques",
+      "startup_by_channel": "Inicio por canal · unknown = origen no registrado",
+      "p50_p90_with_sample_count": "p50 arriba · p90 {{p90}} · n {{count}}",
       "key_metrics": "Métricas clave",
       "loading_telemetry": "Cargando la telemetría…",
       "loads": "cargas",

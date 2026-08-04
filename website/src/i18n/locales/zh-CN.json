@@ -8583,6 +8583,8 @@
       "hit_2": "命中 ·",
       "hottest_sessions_by_peak_occupancy": "按上下文峰值占用率排序的会话 · 达到 90% 时触发压缩",
       "internal_phase_breakdown": "内部阶段拆解 · spawn_init = 进程启动，session_new = 会话握手，set_model = 选择模型 · 属于一次启动的组成部分，而非多次启动",
+      "startup_by_channel": "各渠道启动耗时 · unknown = 未记录来源",
+      "p50_p90_with_sample_count": "上方为 p50 · p90 {{p90}} · n {{count}}",
       "key_metrics": "关键指标",
       "loading_telemetry": "正在加载遥测数据…",
       "loads": "次加载",

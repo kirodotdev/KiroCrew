@@ -14,13 +14,17 @@ from kiro_crew.acp.client import AcpAuthRequired, AcpClient, AcpError
 
 
 class _CapturingRecorder:
-    """Stand-in recorder that records every histogram() call's attributes."""
+    """Stand-in recorder that records every histogram() and counter() call."""
 
     def __init__(self) -> None:
         self.calls: list = []
+        self.counters: list = []
 
     def histogram(self, name, value, *, unit="ms", attrs=None, **kwargs) -> None:
         self.calls.append((name, dict(attrs or {})))
+
+    def counter(self, name, value=1, *, unit="1", attrs=None, **kwargs) -> None:
+        self.counters.append((name, dict(attrs or {})))
 
 
 def _client() -> AcpClient:

@@ -101,7 +101,13 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
-from kiro_crew.messaging.link import ChannelLink, canonical_key, legacy_key
+from kiro_crew.messaging.link import (
+    ChannelLink,
+    canonical_key,
+    legacy_key,
+    telemetry_channel_of,
+)
+from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.providers.base import CancelOutcome, LLMProvider
 from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
 from kiro_crew.sel import sel
@@ -260,6 +266,22 @@ _WON_RACE_MAX_RETRIES = 8
 _SUBAGENT_PREFIX = "subagent:"
 _CHANNEL_PREFIX = "channel:"
 _SIDE_PREFIX = "side:"
+
+#: Every value the ``kirocrew.session.pool.decision`` counter can report. A
+#: warm-pool claim either happens or is refused for exactly one reason; keeping
+#: the set closed keeps the metric's cardinality bounded.
+POOL_DECISIONS: frozenset[str] = frozenset(
+    {
+        "hit",
+        "miss_empty",
+        "bypass_resume",
+        "bypass_stateless",
+        "bypass_cwd",
+        "bypass_env",
+        "disabled",
+        "other",
+    }
+)
 
 # Stateless session-key prefixes — skip resume across restarts.
 _WORKFLOW_POOL_PREFIX = "wf-pool:"
@@ -1562,6 +1584,25 @@ class SessionManager:
                 )
                 self._dispatch_hard_kill(provider)
 
+    def _record_pool_decision(self, decision: str, key: str) -> None:
+        """Count one warm-pool decision, tagged by conversation source.
+
+        Best-effort: telemetry never affects session provisioning. ``decision``
+        is drawn from :data:`POOL_DECISIONS`; an unrecognised value is folded to
+        ``"other"`` so a future caller cannot mint unbounded series.
+        """
+        try:
+            get_recorder().counter(
+                "kirocrew.session.pool.decision",
+                1,
+                attrs={
+                    "outcome": decision if decision in POOL_DECISIONS else "other",
+                    "channel": telemetry_channel_of(key),
+                },
+            )
+        except Exception:
+            logger.debug("pool decision metric emit failed", exc_info=True)
+
     def _claim_from_pool(self, agent: str | None) -> tuple[LLMProvider, float] | None:
         """Try to claim a pre-warmed provider if the agent matches.
         Deny-by-default: normalize both sides and positively compare.
@@ -2160,11 +2201,28 @@ class SessionManager:
         # from the default workspace dir (which pool processes already use).
         _provider_switched = False
         cwd_blocks_pool = bool(cwd and cwd != self._pool_cwd)
-        pooled = (
-            None
-            if resume_sid or is_stateless or not self._pool_size or cwd_blocks_pool or extra_env
-            else await self._drain_and_claim(agent)
-        )
+        # Deny-by-default, but record WHICH disqualifier fired. The startup
+        # histogram shows how long a rebuild took; only this counter shows
+        # whether the pool could have avoided the rebuild at all — without it
+        # the pool's hit rate is unobservable. The disjunction below is
+        # order-independent for the outcome (any one true means no pool), so the
+        # branch order only decides which single reason gets reported.
+        if not self._pool_size:
+            pool_decision = "disabled"
+        elif resume_sid:
+            pool_decision = "bypass_resume"
+        elif is_stateless:
+            pool_decision = "bypass_stateless"
+        elif cwd_blocks_pool:
+            pool_decision = "bypass_cwd"
+        elif extra_env:
+            pool_decision = "bypass_env"
+        else:
+            pool_decision = ""
+        pooled = None if pool_decision else await self._drain_and_claim(agent)
+        if not pool_decision:
+            pool_decision = "hit" if pooled is not None else "miss_empty"
+        self._record_pool_decision(pool_decision, key)
         if pooled is not None:
             provider = pooled
             try:

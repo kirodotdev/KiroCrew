@@ -8669,6 +8669,8 @@
       "hit_2": "हिट ·",
       "hottest_sessions_by_peak_occupancy": "सर्वाधिक शिखर कॉन्टेक्स्ट उपयोग वाले सेशन · 90% पर कॉम्पैक्शन शुरू होता है",
       "internal_phase_breakdown": "आंतरिक चरण विभाजन · spawn_init = प्रोसेस शुरू, session_new = सेशन हैंडशेक, set_model = मॉडल चयन · ये एक ही स्टार्टअप के हिस्से हैं, अलग स्टार्टअप नहीं",
+      "startup_by_channel": "चैनल के अनुसार स्टार्टअप · unknown = स्रोत रिकॉर्ड नहीं किया गया",
+      "p50_p90_with_sample_count": "ऊपर p50 · p90 {{p90}} · n {{count}}",
       "key_metrics": "मुख्य मेट्रिक्स",
       "loading_telemetry": "टेलीमेट्री लोड हो रही है…",
       "loads": "लोड",

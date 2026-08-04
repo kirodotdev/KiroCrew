@@ -8669,6 +8669,8 @@
       "hit_2": "Treffer ·",
       "hottest_sessions_by_peak_occupancy": "Sitzungen mit der höchsten Spitzenbelegung des Kontexts · Komprimierung startet bei 90 %",
       "internal_phase_breakdown": "Interne Phasenaufteilung · spawn_init = Prozessstart, session_new = Sitzungs-Handshake, set_model = Modellauswahl · Bestandteile eines Starts, nicht mehrere Starts",
+      "startup_by_channel": "Start nach Kanal · unknown = Quelle nicht erfasst",
+      "p50_p90_with_sample_count": "p50 oben · p90 {{p90}} · n {{count}}",
       "key_metrics": "Wichtige Metriken",
       "loading_telemetry": "Telemetrie wird geladen…",
       "loads": "Ladevorgänge",

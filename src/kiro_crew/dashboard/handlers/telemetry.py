@@ -342,6 +342,7 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     warm = _Hist()  # spawned == False
     daily: dict[str, dict[str, _Hist]] = {}  # day -> {"cold"|"warm": _Hist}
     phases: dict[str, _Hist] = {}  # startup internal phase -> _Hist
+    by_channel: dict[str, _Hist] = {}  # conversation source -> _Hist
     # generic surface for every other kirocrew.* metric
     other_hist: dict[str, _Hist] = {}
     # name -> "attr=value" -> _Hist, for _OTHER_SPLIT_ATTRS only
@@ -387,6 +388,13 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
                                         spawned = bool(attrs.get("spawned"))
                                         oc = str(attrs.get("outcome", "unknown"))
                                         (cold if spawned else warm).add(dp)
+                                        # Which conversation source paid this
+                                        # startup. Older shards predate the
+                                        # attribute, so they aggregate under
+                                        # "unknown" rather than being dropped.
+                                        by_channel.setdefault(
+                                            str(attrs.get("channel", "unknown")), _Hist()
+                                        ).add(dp)
                                         # Outcomes go through _Hist so they are
                                         # scoped to the same bounds generation as
                                         # the count and percentiles reported.
@@ -486,6 +494,12 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
             # are components of one startup, not startups.
             "phases": [
                 {"name": n, **phases[n].stats()} for n in sorted(phases)
+            ],
+            # Startup cost grouped by conversation source, so a slow surface can
+            # be identified directly instead of being inferred by correlating
+            # export windows against the gateway log.
+            "by_channel": [
+                {"name": n, **by_channel[n].stats()} for n in sorted(by_channel)
             ],
         },
         "turn": turn_block,

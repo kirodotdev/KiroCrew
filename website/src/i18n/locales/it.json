@@ -8755,6 +8755,8 @@
       "hit_2": "successi ·",
       "hottest_sessions_by_peak_occupancy": "Sessioni con la maggiore occupazione di picco del contesto · la compattazione parte al 90%",
       "internal_phase_breakdown": "Suddivisione delle fasi interne · spawn_init = avvio del processo, session_new = handshake della sessione, set_model = selezione del modello · componenti di un singolo avvio, non avvii distinti",
+      "startup_by_channel": "Avvio per canale · unknown = origine non registrata",
+      "p50_p90_with_sample_count": "p50 sopra · p90 {{p90}} · n {{count}}",
       "key_metrics": "Metriche chiave",
       "loading_telemetry": "Caricamento della telemetria…",
       "loads": "caricamenti",

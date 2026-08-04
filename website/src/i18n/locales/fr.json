@@ -8755,6 +8755,8 @@
       "hit_2": "de réussite ·",
       "hottest_sessions_by_peak_occupancy": "Sessions à l'occupation de contexte la plus élevée · le compactage démarre à 90 %",
       "internal_phase_breakdown": "Répartition des phases internes · spawn_init = démarrage du processus, session_new = établissement de la session, set_model = choix du modèle · composantes d'un seul démarrage, pas plusieurs démarrages",
+      "startup_by_channel": "Démarrage par canal · unknown = source non enregistrée",
+      "p50_p90_with_sample_count": "p50 ci-dessus · p90 {{p90}} · n {{count}}",
       "key_metrics": "Indicateurs clés",
       "loading_telemetry": "Chargement de la télémétrie…",
       "loads": "chargements",

@@ -8669,6 +8669,8 @@
       "hit_2": "হিট ·",
       "hottest_sessions_by_peak_occupancy": "সর্বোচ্চ কনটেক্সট ব্যবহারের সেশনগুলি · ৯০% এ কম্প্যাকশন শুরু হয়",
       "internal_phase_breakdown": "অন্তর্বর্তী ধাপের বিভাজন · spawn_init = প্রসেস চালু, session_new = সেশন হ্যান্ডশেক, set_model = মডেল নির্বাচন · এগুলি একটি স্টার্টআপের অংশ, পৃথক স্টার্টআপ নয়",
+      "startup_by_channel": "চ্যানেল অনুসারে স্টার্টআপ · unknown = সোর্স রেকর্ড করা হয়নি",
+      "p50_p90_with_sample_count": "উপরে p50 · p90 {{p90}} · n {{count}}",
       "key_metrics": "মূল মেট্রিক",
       "loading_telemetry": "টেলিমেট্রি লোড হচ্ছে…",
       "loads": "লোড",

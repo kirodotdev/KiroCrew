@@ -27,6 +27,7 @@ type Startup = {
   daily: { date: string; count: number; cold_p50_ms: number; cold_p90_ms: number; warm_p50_ms: number }[]
   distribution: { buckets: number[]; bounds: number[] }
   phases: (Stat & { name: string })[]
+  by_channel: (Stat & { name: string })[]
 }
 type Turn = Stat & { outcome: Record<string, number>; fault_rate: number }
 type ContextSession = {
@@ -395,6 +396,20 @@ export default function TelemetryPanel() {
                     <div className="text-[10px] text-muted font-mono">{p.name}</div>
                     <div className="text-[15px] font-bold">{fmtMs(p.p50_ms)}</div>
                     <div className="text-[10px] text-muted">p90 {fmtMs(p.p90_ms)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {s.by_channel?.length > 0 && (
+            <div className="card-glow border border-border bg-card rounded-xl p-3.5 mb-3">
+              <div className="text-[10px] text-muted mb-2">{i18nT('pages.telemetryPanel.startup_by_channel')}</div>
+              <div className="grid gap-2.5 grid-cols-[repeat(auto-fit,minmax(120px,1fr))]">
+                {s.by_channel.map(c => (
+                  <div key={c.name}>
+                    <div className="text-[10px] text-muted font-mono">{c.name}</div>
+                    <div className="text-[15px] font-bold">{fmtMs(c.p50_ms)}</div>
+                    <div className="text-[10px] text-muted">{i18nT('pages.telemetryPanel.p50_p90_with_sample_count', { p90: fmtMs(c.p90_ms), count: c.count })}</div>
                   </div>
                 ))}
               </div>

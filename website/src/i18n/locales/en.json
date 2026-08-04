@@ -6133,6 +6133,8 @@
       "hit_2": "hit ·",
       "hottest_sessions_by_peak_occupancy": "Hottest sessions by peak context occupancy · compaction triggers at 90%",
       "internal_phase_breakdown": "Internal phase breakdown · spawn_init = process spawn, session_new = session handshake, set_model = model select · components of one startup, not startups",
+      "startup_by_channel": "Startup by channel · unknown = source not recorded",
+      "p50_p90_with_sample_count": "p50 above · p90 {{p90}} · n {{count}}",
       "key_metrics": "Key metrics",
       "loading_telemetry": "Loading telemetry…",
       "loads": "loads",
