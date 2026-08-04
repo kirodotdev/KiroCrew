@@ -136,6 +136,28 @@ test("bindPanelIpc registers the pet→panel channels (idempotently)", () => {
   assert.strictEqual(ipcHandlers["mochi-pet:open-settings"], undefined);
 });
 
+test("the panel is a non-activating panel on macOS only", () => {
+  const { mod, ipcHandlers, created } = loadModule();
+  mod.bindPanelIpc(BASE);
+  ipcHandlers["mochi-pet:open-chat"]();
+
+  assert.strictEqual(created.length, 1, "should create the panel window");
+  const { type } = created[0].opts;
+  if (process.platform === "darwin") {
+    // NSWindowStyleMaskNonactivatingPanel. Without it, focusing the panel
+    // activates the app, and the shell's app.on("activate") pulls a
+    // deliberately-hidden dashboard window back up -- clicking the pet would
+    // reopen the whole app instead of just the chat panel. Asserted on the
+    // shipped option because dropping it regresses that SILENTLY.
+    assert.strictEqual(type, "panel");
+  } else {
+    // `type` legal values are per-platform: "panel" is not one of Linux's
+    // (desktop/dock/toolbar/splash/notification) nor Windows' (toolbar), and
+    // the panel IS reachable off macOS via the toggle shortcut.
+    assert.strictEqual(type, undefined);
+  }
+});
+
 test("open-memories opens the panel and shows the memories view", () => {
   const { mod, ipcHandlers, created } = loadModule();
   mod.bindPanelIpc(BASE);

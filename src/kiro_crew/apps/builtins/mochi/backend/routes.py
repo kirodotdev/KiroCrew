@@ -41,6 +41,7 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
+from kiro_crew import mcp_discovery
 from kiro_crew.apps.builtins.mochi import activity_log, hooks
 from kiro_crew.apps.builtins.mochi import queue_file as qf
 from kiro_crew.apps.builtins.mochi import watchlist_file as wf
@@ -84,6 +85,9 @@ from kiro_crew.apps.builtins.mochi.watchlist_file import watchlist_mutation
 from kiro_crew.apps.builtins.mochi.watchlist_service import _ARCHIVE_FILE, _WATCHLIST_FILE
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.hooks import safe_read_file
+from kiro_crew.mcp_discovery import list_servers, probe_server
+from kiro_crew.mcp_utils import mcp_server_alias
 
 logger = logging.getLogger(__name__)
 
@@ -614,6 +618,192 @@ async def _handle_pack_detail(request: web.Request) -> web.Response:
     return web.json_response(detail)
 
 
+#: Names currently being probed, so click-spam on "discover tools" cannot spawn
+#: one server process per click. Core guards its whole-inventory probe the same
+#: way (`handlers/mcp.py::_mcp_probe_in_progress`); this is the per-name form,
+#: because here the name comes from the request rather than from the config.
+_mcp_probe_inflight: set[str] = set()
+
+
+def _mcp_scope_specs_strict() -> list[dict[str, Any]]:
+    """Every MCP scope's ``mcpServers`` map, or raise if ANY scope is unusable.
+
+    Deliberately NOT ``mcp_discovery._load_mcp_json_by_source``: that helper
+    logs and ``continue``s past a file it cannot read or parse, so a scope
+    holding ``disabled: true`` simply vanishes from its result. A consent check
+    built on it fails OPEN — the flag is missing, the row looks enabled, and the
+    server the user switched off gets spawned. Here a per-source failure is
+    propagated so the caller can refuse.
+
+    Paths are composed exactly as discovery composes them (core sources plus any
+    platform-seam scopes) so the two cannot drift into scanning different files.
+    Reads go through ``safe_read_file``, which re-validates the RESOLVED target
+    and refuses a symlink into a credential path.
+    """
+    paths = list(mcp_discovery._mcp_json_paths())
+    paths += [p for p, _ in mcp_discovery._extra_scope_sources()]
+    out: list[dict[str, Any]] = []
+    for p in paths:
+        if not p.is_file():
+            continue
+        # Let OSError / JSONDecodeError propagate: unreadable is NOT "empty".
+        data = json.loads(safe_read_file(str(p)))
+        # A malformed SHAPE is unreadable too. Skipping it silently here would
+        # reintroduce the very fail-open this function exists to close:
+        # ``{"mcpServers": []}`` parses fine, carries no server map, and would
+        # drop a scope that may hold the ``disabled: true`` — so the caller
+        # would see no disable and spawn the server. Only an ABSENT
+        # ``mcpServers`` is legitimately empty (a config with no servers).
+        if not isinstance(data, dict):
+            raise ValueError(f"{p}: top level is {type(data).__name__}, not an object")
+        servers = data.get("mcpServers")
+        if servers is None:
+            continue
+        if not isinstance(servers, dict):
+            raise ValueError(f"{p}: mcpServers is {type(servers).__name__}, not an object")
+        out.append(servers)
+    return out
+
+
+def _mcp_effectively_disabled(name: str, server: Any) -> bool:
+    """True when ``name`` is disabled in ANY MCP scope (or on the merged row).
+
+    Consent lives per scope, so the single flag on the merged row is not the
+    answer: ``list_servers`` only sets ``disabled`` from an entry in the Kiro
+    Crew scope, while ``/api/mcp/toggle`` writes ``disabled: true`` into the
+    KIRO-GLOBAL ``mcp.json``. Reading only the row therefore MISSES a server the
+    user switched off in the dashboard whenever a retained agent entry
+    introduced the row first — and probing it would spawn the process consent
+    exists to gate. ``api_mcp_servers`` reports the same OR as its ``enabled``
+    field.
+
+    Scope keys are matched through ``mcp_server_alias`` because ``list_servers``
+    CANONICALIZES row names (step 3b): a server configured as
+    ``npm:@playwright/mcp`` is reported as ``playwright-mcp``, so a raw-keyed
+    ``disabled: true`` would never be found by an exact lookup — and the
+    canonical row can be retained from the agent config, which is the bypass.
+
+    Blocking file I/O — call from a thread.
+
+    Fails CLOSED, per source: a scope that cannot be read or parsed means the
+    consent state is UNKNOWN, not absent, so the probe is refused. A refused
+    discover is visible and recoverable; spawning a server the user turned off
+    is neither.
+    """
+    if getattr(server, "disabled", False):
+        return True
+    try:
+        scopes = _mcp_scope_specs_strict()
+    except Exception:
+        logger.warning(
+            "MCP scope read failed while checking %r; refusing the probe", name
+        )
+        return True
+    target = mcp_server_alias(name)
+    for specs in scopes:
+        for key, spec in specs.items():
+            if not isinstance(spec, dict) or not spec.get("disabled"):
+                continue
+            if key == name or mcp_server_alias(key) == target:
+                return True
+    return False
+
+
+async def _handle_mcp_tools_probe(request: web.Request) -> web.Response:
+    """POST /api/apps/mochi/mcp-tools/{name} — tools for ONE MCP server.
+
+    Backs the settings panel's "discover tools" action. Core exposes the whole
+    inventory as ``GET /api/mcp`` and register/remove as PUT/DELETE on
+    ``/api/mcp/servers/{name}``, but never a per-server read — so the panel's
+    fetch resolved that path, missed on method, and took a 405. Both the api
+    helper and the click handler swallow failures, so the button did nothing at
+    all, visibly or in a log.
+
+    POST, not GET, because this SPAWNS A PROCESS. The dashboard's CSRF
+    middleware exempts ``{"GET", "HEAD", "OPTIONS"}`` from the Origin check, so
+    as a GET this would be reachable by cross-site top-level navigation carrying
+    the Lax auth cookie — a foreign page could make the dashboard start any
+    configured MCP server. Side effect => unsafe method => Origin enforced. It
+    also matches core's own split, where probing is a POST and only the cached
+    read is a GET.
+
+    Probing lives here rather than in a new core route because the inventory is
+    already reachable from the app: ``mcp_discovery`` is public API, and
+    ``probe_server`` writes through to the same cache ``GET /api/mcp`` reads, so
+    a discover here also freshens the core view.
+    """
+    name = (request.match_info.get("name") or "").strip()
+    if not name:
+        return web.json_response(
+            {"error": "server name is required", "code": "invalid_name"}, status=400
+        )
+
+    # Config read touches the filesystem across every MCP scope — off the loop.
+    servers = await asyncio.to_thread(list_servers)
+    server = next((s for s in servers if s.name == name), None)
+    if server is None:
+        return web.json_response(
+            {"error": "unknown MCP server", "code": "server_not_found"}, status=404
+        )
+
+    # A consent-disabled row must NEVER be probed: probing SPAWNS the server, and
+    # the user has not agreed to run it. ``probe_all`` filters these out before
+    # it ever calls ``probe_server`` (see mcp_discovery.probe_all's docstring),
+    # and ``probe_server`` itself does NOT enforce it — so this per-server entry
+    # point has to repeat the check or it becomes a way around the consent gate.
+    #
+    # ``McpServerInfo.disabled`` alone is NOT that check. list_servers() only
+    # sets it for an entry in the Kiro Crew scope, but /api/mcp/toggle writes
+    # ``disabled: true`` into the KIRO-GLOBAL mcp.json — so a server the user
+    # switched off in the UI still arrives with ``disabled = False`` whenever a
+    # retained agent entry introduced the row first. The effective state is the
+    # OR across every scope, which is what api_mcp_servers reports as
+    # ``enabled``.
+    if await asyncio.to_thread(_mcp_effectively_disabled, name, server):
+        return web.json_response(
+            {"error": "MCP server is disabled", "code": "server_disabled"}, status=409
+        )
+
+    if name in _mcp_probe_inflight:
+        return web.json_response(
+            {"error": "probe already running", "code": "probe_in_progress"}, status=409
+        )
+    _mcp_probe_inflight.add(name)
+    try:
+        probed = await probe_server(server)
+    finally:
+        _mcp_probe_inflight.discard(name)
+
+    # ``McpServerInfo.tools`` is a list of NAMES; the panel's row renderer takes
+    # objects so a description can be added later without a shape change.
+    #
+    # ``probed.error`` is deliberately NOT returned. It is the server's own
+    # stderr/exception text, so it can carry a credential (a token in a URL an
+    # MCP server echoed back, for instance) and this response reaches the
+    # dashboard. Redacting it would still ship best-effort-scrubbed remote text
+    # for no benefit: the panel renders a translated message keyed off ``code`` /
+    # ``status`` and never the prose, and ``probe_server`` already logs the real
+    # reason gateway-side for operators.
+    # ``tools`` is filtered to non-empty STRINGS. Both extraction paths in
+    # ``mcp_discovery`` keep whatever a server put under ``name`` — the
+    # comprehension guards the element with ``isinstance(t, dict)`` and then
+    # binds ``name := t.get("name", "")`` on truthiness alone — so a server
+    # answering ``{"name": {"x": 1}}`` or ``{"name": ["a"]}`` lands a dict/list
+    # in the list. Serialized as-is it reaches the panel, which renders each
+    # name as a React child, and a non-primitive child throws and blanks the
+    # settings tree. A hostile or merely broken MCP server must not be able to
+    # do that, so the untrusted shape is narrowed at this boundary rather than
+    # trusted from upstream.
+    return web.json_response(
+        {
+            "name": probed.name,
+            "tools": [{"name": t} for t in probed.tools if isinstance(t, str) and t],
+            "status": probed.status,
+            "cached": False,
+        }
+    )
+
+
 #: Content types for the file kinds a pack may hold. Keys must stay in step with
 #: ``appearance_store._ALLOWED_SUFFIXES`` — that is what may be IN a pack, this
 #: is how it is served back. A hardcoded image/png here mislabelled every
@@ -787,6 +977,17 @@ def register_routes(app: web.Application) -> None:
     app.router.add_get(f"{_BASE}/packs/{{pack_id}}/file/{{filename}}", _handle_pack_file)
     app.router.add_get(f"{_BASE}/petdex/installed", _handle_petdex_installed)
     app.router.add_post(f"{_BASE}/petdex/import", _handle_petdex_import)
+    # POST, not GET, even though this reads: it SPAWNS the configured server
+    # process. The dashboard's CSRF Origin check only guards mutating methods
+    # (see dashboard/origin.py -- ``check_host`` runs for every method, the CSRF
+    # boundary does not), and the auth cookie is SameSite=Lax, which a browser
+    # still attaches to a cross-site TOP-LEVEL navigation. As a GET this was
+    # therefore reachable by pointing a malicious page's location at it: no
+    # CSRF check, cookie attached, and a configured MCP server gets executed.
+    # A side-effecting endpoint has to be an unsafe method to inherit that gate.
+    app.router.add_post(
+        f"{_BASE}/mcp-tools/{{name}}", _require_enabled(_handle_mcp_tools_probe)
+    )
 
 
 # ── Movement reports ───────────────────────────────────────────────────────
