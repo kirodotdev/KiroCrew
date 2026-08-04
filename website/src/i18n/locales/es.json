@@ -6169,6 +6169,7 @@
       "view_cards_tooltip": "Tarjetas amplias que muestran lo que usa cada equipo",
       "view_list": "Lista",
       "view_list_tooltip": "Tabla compacta, una fila por equipo",
+      "additional_stores_coming_with_memory_v2": "Por ahora solo está disponible el almacén predeterminado; pronto habrá más almacenes de memoria.",
       "which_store_its_lessons_and_history_are_written": "Dónde se guardan las lecciones y el historial de este crew. Si lo cambias, el crew empieza con la memoria en blanco; la anterior se conserva.",
       "workspace": "espacio de trabajo",
       "workspace_2": "Espacio de trabajo",

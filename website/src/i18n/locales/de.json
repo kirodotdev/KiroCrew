@@ -6099,6 +6099,7 @@
       "view_cards_tooltip": "Großzügige Karten mit den Ressourcen jeder Crew",
       "view_list": "Liste",
       "view_list_tooltip": "Kompakte Tabelle, eine Zeile pro Crew",
+      "additional_stores_coming_with_memory_v2": "Derzeit ist nur der Standardspeicher verfügbar – Unterstützung für weitere Speicher folgt bald.",
       "which_store_its_lessons_and_history_are_written": "Wo die Lektionen und der Verlauf dieser Crew gespeichert werden. Wenn du das wechselst, startet die Crew mit leerer Erinnerung; die alte bleibt erhalten.",
       "workspace": "Workspace",
       "workspace_2": "Workspace",

@@ -6169,6 +6169,7 @@
       "view_cards_tooltip": "Cartes aérées montrant ce qu’utilise chaque équipe",
       "view_list": "Liste",
       "view_list_tooltip": "Tableau compact, une ligne par équipe",
+      "additional_stores_coming_with_memory_v2": "Seul le magasin par défaut est disponible pour l’instant ; la prise en charge d’autres magasins de mémoire arrive bientôt.",
       "which_store_its_lessons_and_history_are_written": "Là où les leçons et l’historique de ce crew sont enregistrés. Si tu le changes, le crew repart d’une mémoire vide ; l’ancienne est conservée.",
       "workspace": "espace de travail",
       "workspace_2": "Espace de travail",

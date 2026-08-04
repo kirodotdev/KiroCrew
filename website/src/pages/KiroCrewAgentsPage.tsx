@@ -285,6 +285,16 @@ function BindingFields({
       </Field>
       <Field label={i18nT('pages.kiroCrewAgentsPage.memory_store')} hint={i18nT('pages.kiroCrewAgentsPage.which_store_its_lessons_and_history_are_written')}>
         <SimpleSelect options={withCurrent(memoryStoreOptions, memoryStore)} value={memoryStore} onChange={setMemoryStore} aria-label={i18nT('pages.kiroCrewAgentsPage.memory_store')} />
+        {/* Show the "more coming" note only when `default` is the sole option —
+            an install that has declared extra `memory_stores` in config already
+            has a real choice here, and the copy must not contradict a picker
+            that is visibly offering other stores. */}
+        {memoryStoreOptions.length <= 1 && (
+          <span className="flex items-start gap-1.5 text-[11.5px] leading-relaxed text-accent">
+            <Sparkles className="lucide-inline h-3 w-3 mt-0.5 shrink-0" aria-hidden="true" />
+            {i18nT('pages.kiroCrewAgentsPage.additional_stores_coming_with_memory_v2')}
+          </span>
+        )}
       </Field>
       {modelOptions && setModel && model !== undefined && (
         <Field label={i18nT('pages.kiroCrewAgentsPage.model')}>

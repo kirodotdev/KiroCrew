@@ -6169,6 +6169,7 @@
       "view_cards_tooltip": "Cartões amplos mostrando o que cada equipe usa",
       "view_list": "Lista",
       "view_list_tooltip": "Tabela compacta, uma linha por equipe",
+      "additional_stores_coming_with_memory_v2": "Por enquanto, apenas o armazenamento padrão está disponível; o suporte a mais armazenamentos de memória chega em breve.",
       "which_store_its_lessons_and_history_are_written": "Onde as lições e o histórico deste crew são salvos. Se você trocar, o crew começa com a memória em branco; a antiga é mantida.",
       "workspace": "espaço de trabalho",
       "workspace_2": "Espaço de trabalho",

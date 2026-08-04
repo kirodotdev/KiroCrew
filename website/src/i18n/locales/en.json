@@ -4292,6 +4292,7 @@
       "view_cards_tooltip": "Roomy cards showing what each crew uses",
       "view_list": "List",
       "view_list_tooltip": "Compact table, one row per crew",
+      "additional_stores_coming_with_memory_v2": "Only the default store is available today — support for more memory stores is coming soon.",
       "which_store_its_lessons_and_history_are_written": "Where this crew’s lessons and history are saved. Switch it and the crew starts from a blank memory; the old one is kept.",
       "workspace": "workspace",
       "workspace_2": "Workspace",
