@@ -980,7 +980,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             if folder_id != slot.folder_id:
                 slot._folder_changed = True
             slot.folder_id = folder_id
-            _unhide_folder(state, folder_id)
+            await _unhide_folder(state, folder_id)
         _sync_dashboard_slots(state)
         # Guarantee a frame. get_or_create_slot pushes for a NEW slot, but
         # returns an existing named slot without pushing — and this handler is
@@ -2664,11 +2664,15 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         slot.project = meta["project"]
     if meta.get("mode"):
         slot.mode = meta["mode"]
+    if meta.get("channel_folder_filed"):
+        # Resuming from History must carry the filing marker forward, or the
+        # next save of this slot drops it and the conversation is re-filed.
+        slot._channel_folder_filed = True
     if meta.get("folder_id"):
         slot.folder_id = meta["folder_id"]
         # Re-engaging a hidden empty folder (Model B) un-hides it so it stays
         # visible until the user hides it again.
-        _unhide_folder(state, meta["folder_id"])
+        await _unhide_folder(state, meta["folder_id"])
     if meta.get("pinned"):
         slot.pinned = True
     if meta.get("color_index") is not None:

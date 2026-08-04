@@ -2653,7 +2653,8 @@
         "reactions_enabled": true,
         "show_thinking": true,
         "home_tab_sessions_per_kind": 5,
-        "use_tunnel_url": false
+        "use_tunnel_url": false,
+        "session_folder": ""
       }
     },
     {
@@ -2912,6 +2913,22 @@
       "defaultValue": false
     },
     {
+      "path": "slack.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "publish",
       "kind": "core",
       "type": "object",
@@ -3010,7 +3027,8 @@
         "allow_all_users": false,
         "ws_url": "wss://openws.work.weixin.qq.com",
         "soft_threshold_pct": 80,
-        "hard_threshold_pct": 95
+        "hard_threshold_pct": 95,
+        "session_folder": ""
       }
     },
     {
@@ -3124,6 +3142,22 @@
       "defaultValue": 95
     },
     {
+      "path": "wecom.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "wecom"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "telegram",
       "kind": "core",
       "type": "object",
@@ -3143,7 +3177,8 @@
         "allowed_user_ids": [],
         "soft_threshold_pct": 80,
         "allow_forum": false,
-        "allowed_forum_chat_ids": []
+        "allowed_forum_chat_ids": [],
+        "session_folder": ""
       }
     },
     {
@@ -3271,6 +3306,22 @@
       "defaultValue": null
     },
     {
+      "path": "telegram.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "weixin",
       "kind": "core",
       "type": "object",
@@ -3292,7 +3343,8 @@
         "dm_policy": "allowlist",
         "allowed_user_ids": [],
         "soft_threshold_pct": 80,
-        "hard_threshold_pct": 95
+        "hard_threshold_pct": 95,
+        "session_folder": ""
       }
     },
     {
@@ -3438,6 +3490,22 @@
       "defaultValue": 95
     },
     {
+      "path": "weixin.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "weixin"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "discord",
       "kind": "core",
       "type": "object",
@@ -3456,7 +3524,8 @@
         "bot_token": "",
         "allowed_user_ids": [],
         "allowed_thread_ids": [],
-        "soft_threshold_pct": 80
+        "soft_threshold_pct": 80,
+        "session_folder": ""
       }
     },
     {
@@ -3568,6 +3637,22 @@
       "defaultValue": 80
     },
     {
+      "path": "discord.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "webex",
       "kind": "core",
       "type": "object",
@@ -3586,7 +3671,8 @@
         "bot_token": "",
         "allowed_emails": [],
         "soft_threshold_pct": 80,
-        "hard_threshold_pct": 95
+        "hard_threshold_pct": 95,
+        "session_folder": ""
       }
     },
     {
@@ -3684,6 +3770,22 @@
       "defaultValue": 95
     },
     {
+      "path": "webex.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "webex"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "teams",
       "kind": "core",
       "type": "object",
@@ -3704,7 +3806,8 @@
         "tenant_id": "",
         "allowed_emails": [],
         "soft_threshold_pct": 80,
-        "hard_threshold_pct": 95
+        "hard_threshold_pct": 95,
+        "session_folder": ""
       }
     },
     {
@@ -3832,6 +3935,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 95
+    },
+    {
+      "path": "teams.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "teams"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "dashboard",

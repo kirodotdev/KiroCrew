@@ -2495,6 +2495,15 @@ function ChatSidebar({
                *  path is the ⋯-menu Rename item, so scope-disable the interaction rule. */}
               {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
               <span className="flex-1 text-[13px] font-medium text-text truncate text-left" title={i18nT('pages.chatSidebar.double_click_to_rename')} onDoubleClick={e => { e.stopPropagation(); setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}>{folder.name}</span>
+              {/* Channel-owned folder (created by per-channel session filing):
+               *  show the channel's brand mark so the folder reads as "these are
+               *  the Discord conversations" at a glance. Guarded the same way the
+               *  session rows are — a channel with no brand asset shows nothing
+               *  rather than ChannelBrandIcon's generic Link2 fallback, which
+               *  means "live mirroring" elsewhere in this sidebar. */}
+              {folder.channel && hasChannelBrandIcon(folder.channel) && (
+                <span className="shrink-0 opacity-80" aria-hidden><ChannelBrandIcon channel={folder.channel} size={11} /></span>
+              )}
               {folder.project_dir && <span className="text-[10px] text-accent/60 shrink-0" title={folder.project_dir}><Link2 size={9} /></span>}
               {hasUnread && folder.collapsed && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--accent)' }} />}
               <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>

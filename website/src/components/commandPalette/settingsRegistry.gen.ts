@@ -22,6 +22,27 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "channels.file-sessions-in-a-folder",
+    "label": "File sessions in a folder",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
+    "id": "channels.folder-name",
+    "label": "Folder name",
+    "description": "Created for you when you save these settings, if it does not exist yet.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
     "id": "channels.owner-slack-member-id",
     "label": "Owner Slack member ID",
     "description": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W.",

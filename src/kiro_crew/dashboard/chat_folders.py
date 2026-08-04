@@ -7,6 +7,7 @@ import logging
 import os
 import unicodedata
 import uuid
+from typing import Any
 
 from aiohttp import web
 
@@ -109,11 +110,20 @@ async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
 async def _generate_folder_icon(state: DashboardState, folder: dict) -> None:
     """Background task: ask LLM for a single emoji for the folder name."""
     icon = await generate_emoji_for_name(state, folder["name"])
-    if icon:
-        if any(f["id"] == folder["id"] for f in state._folders):
-            folder["icon"] = icon
-            state.save_folders()
-            state.push_slots_update()
+    if not icon:
+        return
+
+    def _apply(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
+        # Re-find under the store lock: the folder may have been deleted while
+        # the model call was in flight.
+        target = next((f for f in folders if f["id"] == folder["id"]), None)
+        if target is None:
+            return False, False
+        target["icon"] = icon
+        return True, True
+
+    if await state.mutate_folders(_apply):
+        state.push_slots_update()
 
 
 def _folder_history_counts(state: DashboardState) -> dict[str, int]:
@@ -140,20 +150,24 @@ def _folders_with_history_counts(state: DashboardState) -> list[dict]:
     return [{**f, "history_count": counts.get(f["id"], 0)} for f in state._folders]
 
 
-def _unhide_folder(state: DashboardState, folder_id: str) -> None:
+async def _unhide_folder(state: DashboardState, folder_id: str) -> None:
     """Clear a folder's `hidden` flag when a session re-engages it.
 
     Model-B semantics: reviving or moving a session into a folder un-hides it so
-    it stays visible until the user hides it again. Persists on change; the
-    caller is responsible for pushing the slots update.
+    it stays visible until the user hides it again. Persists on change (and only
+    on change); the caller is responsible for pushing the slots update.
     """
     if not folder_id:
         return
-    for f in state._folders:
-        if f["id"] == folder_id and f.get("hidden"):
-            f["hidden"] = False
-            state.save_folders()
-            return
+
+    def _apply(folders: list[dict[str, Any]]) -> tuple[bool, None]:
+        for f in folders:
+            if f["id"] == folder_id and f.get("hidden"):
+                f["hidden"] = False
+                return True, None
+        return False, None
+
+    await state.mutate_folders(_apply)
 
 
 async def api_chat_folders(request: web.Request) -> web.Response:
@@ -251,8 +265,13 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     }
     if icon:
         folder["icon"] = icon[:16]
-    state._folders.append(folder)
-    state.save_folders()
+
+    def _append(folders: list[dict[str, Any]]) -> tuple[bool, None]:
+        folder["order"] = len(folders)  # recount under the lock
+        folders.append(folder)
+        return True, None
+
+    await state.mutate_folders(_append)
     state.push_slots_update()
     # Generate icon in background — don't block the response. Skipped when the
     # caller chose an icon: _generate_folder_icon writes unconditionally on
@@ -299,10 +318,20 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if "default_agent" in body:
         val = body["default_agent"]
         changes["default_agent"] = str(val).strip() if val is not None else ""
-    if "parent_id" in body:
+    reparenting = "parent_id" in body
+    new_parent = ""
+    if reparenting:
         # Re-parent: move this folder into another folder, or to the top
         # level ("" / null). Reject self-parenting and cycles (the new
         # parent must not be the folder itself or any of its descendants).
+        #
+        # Self-parenting is state-independent, so it is decided here. The other
+        # two conditions depend on the CURRENT tree, and this check runs before
+        # the store lock is taken — so it is only a fast reject. The
+        # authoritative parent-exists / cycle test is repeated inside ``_apply``
+        # under the lock: two opposite reparents (A into B, B into A) can both
+        # pass here against the same pre-state and would otherwise both apply,
+        # persisting a cycle that makes both folders unreachable in the tree.
         new_parent = str(body["parent_id"] or "")
         if new_parent:
             if new_parent == fid:
@@ -336,15 +365,51 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         if icon_val and not _is_single_emoji(icon_val):
             return web.json_response({"error": "icon must be a single emoji"}, status=400)
         changes["icon"] = icon_val[:16]
-    # All fields validated — apply atomically.
-    folder.update(changes)
+    # All fields validated — apply atomically under the store lock, re-finding
+    # the folder there so a concurrent delete cannot resurrect it, and
+    # re-deciding the tree-shape rules there so two concurrent reparents cannot
+    # each validate against the pre-state and persist a cycle between them.
+
+    def _apply(folders: list[dict[str, Any]]) -> tuple[bool, str]:
+        target = next((f for f in folders if f["id"] == fid), None)
+        if target is None:
+            return False, "not_found"
+        if reparenting and new_parent:
+            if not any(f["id"] == new_parent for f in folders):
+                return False, "parent_not_found"
+            if _is_descendant(folders, ancestor_id=fid, folder_id=new_parent):
+                return False, "cycle"
+        target.update(changes)
+        return True, ""
+
+    err = await state.mutate_folders(_apply)
+    if err == "not_found":
+        # Deleted between the validation above and acquiring the store lock.
+        return web.json_response(
+            {"error": "not found", "code": "folder_not_found"}, status=404
+        )
+    if err == "parent_not_found":
+        # The parent was deleted while this request waited for the lock.
+        return web.json_response(
+            {"error": "parent folder not found", "code": "folder_parent_not_found"},
+            status=400,
+        )
+    if err == "cycle":
+        # A concurrent reparent moved the target under this folder while this
+        # request waited for the lock; applying it now would persist a cycle.
+        return web.json_response(
+            {
+                "error": "cannot move a folder into its own descendant",
+                "code": "folder_cycle",
+            },
+            status=409,
+        )
     if body.get("regenerate_icon"):
         # "Reset to auto" — re-run the LLM emoji generator in the background.
         # _generate_folder_icon saves + pushes a slots update on success.
         task = asyncio.create_task(_generate_folder_icon(state, folder))
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
-    state.save_folders()
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard", operation="chat.folder_update",
@@ -360,15 +425,21 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     fid = request.match_info["id"]
     if not any(f["id"] == fid for f in state._folders):
         return web.json_response({"error": "not found"}, status=404)
-    for f in state._folders:
-        if f.get("parent_id") == fid:
-            f["parent_id"] = ""
-    state._folders = [f for f in state._folders if f["id"] != fid]
+
+    def _remove(folders: list[dict[str, Any]]) -> tuple[bool, None]:
+        for f in folders:
+            if f.get("parent_id") == fid:
+                f["parent_id"] = ""
+        # In place, not a rebind: mutate_folders snapshots the list object it
+        # was given, and other holders of state._folders must see the removal.
+        folders[:] = [f for f in folders if f["id"] != fid]
+        return True, None
+
+    await state.mutate_folders(_remove)
     for slot in state._slots.values():
         if slot.folder_id == fid:
             slot.folder_id = ""
             await save_slot_off_loop(state, slot, force=True)
-    state.save_folders()
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard", operation="chat.folder_delete",
@@ -395,7 +466,7 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     if folder_id != slot.folder_id:
         slot._folder_changed = True  # re-inject [FOLDER] breadcrumb on next turn
     slot.folder_id = folder_id
-    _unhide_folder(state, folder_id)
+    await _unhide_folder(state, folder_id)
     await save_slot_off_loop(state, slot, force=True)
     state.push_slots_update()
     sel().log_api_access(

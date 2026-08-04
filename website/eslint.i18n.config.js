@@ -348,6 +348,15 @@ export default [
               // to the whole value, so a sentence merely *containing* the brand is still
               // reported — only the bare name is exempt.
               '^Kiro ?Crew$',
+              // The messaging-channel product brands. Same class as the product
+              // brand above and covered by the do-not-translate glossary: "Slack"
+              // is "Slack" in every locale, and a localized spelling would name a
+              // product that does not exist. They reach the UI as a folder-name
+              // placeholder and an interpolated `{{channel}}` value in the
+              // per-channel settings panels. Enumerated and whole-value-anchored,
+              // so a sentence merely mentioning a channel is still reported —
+              // only the bare name is exempt.
+              '^(Slack|Discord|Telegram|Teams|Webex|WeCom|WeChat)$',
               // The PPTX Maker chat-token KEYWORDS (`[Style: name]`,
               // `[Template: name]`). Enumerated and whole-value-anchored, exactly like
               // the modifier-key caps below: the agent prompts parse this literal

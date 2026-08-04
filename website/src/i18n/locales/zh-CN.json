@@ -7578,7 +7578,11 @@
         "saving": "保存中…",
         "soft_context_threshold_must_be_a_number_between": "软上下文阈值必须是 1 到 100 之间的数字",
         "verified_with_channel_and_saved": "已通过 {{channel}} 验证并保存。重启网关后即可连接。",
-        "where_to_find_the_bot_token": "在哪里查找机器人令牌"
+        "where_to_find_the_bot_token": "在哪里查找机器人令牌",
+        "file_sessions_in_folder": "将会话归入文件夹",
+        "file_sessions_in_folder_desc": "新的 {{channel}} 对话会进入侧边栏的一个文件夹，而不是散落在外。",
+        "session_folder_name": "文件夹名称",
+        "session_folder_name_desc": "保存这些设置时若不存在会自动创建。"
       },
       "browserPanel": {
         "1_install_the": "1. 安装",

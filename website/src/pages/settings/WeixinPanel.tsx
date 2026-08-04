@@ -6,6 +6,8 @@ import { WeixinLogo } from '../../components/WeixinLogo'
 import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
+/** Brand name — do-not-translate, so it lives here rather than in the catalog. */
+const CHANNEL_NAME = "WeChat"
 const SETUP_GUIDE =
   'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/weixin-integration.md'
 
@@ -37,6 +39,13 @@ export function WeixinPanel() {
   const [errMsg, setErrMsg] = useState('')
   const [sessionId, setSessionId] = useState('')
   const deadlineRef = useRef(0)
+  // This panel saves on change, but a folder NAME must not fire a save per
+  // keystroke — hold it locally and commit on blur / Enter. Seeded from the
+  // server value whenever it changes so an external edit is picked up.
+  const [folderName, setFolderName] = useState('')
+  useEffect(() => {
+    setFolderName(data?.session_folder ?? '')
+  }, [data?.session_folder])
 
   // Server state goes through React Query, including the QR scan poll: the
   // status endpoint is polled via refetchInterval while a login session is open
@@ -262,6 +271,43 @@ export function WeixinPanel() {
             <option value="disabled">{i18nT('pages.settings.weixinPanel.nobody_ignore_all_messages')}</option>
           </select>
         </label>
+      </div>
+
+      {/* Optional session filing. Off by default: WeChat conversations stay
+          unfiled in the sidebar, as before. A configured name IS the on-state
+          (the backend has one field, where "" means off). */}
+      <div data-testid="weixin-session-folder">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={!!data?.session_folder}
+            disabled={readOnly}
+            onChange={e => save({ session_folder: e.target.checked ? CHANNEL_NAME : '' })}
+            data-testid="weixin-session-folder-toggle"
+          />
+          <span className="text-[13px] text-text">
+            {i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
+          </span>
+        </label>
+        <p className="text-[11.5px] text-muted mt-1 mb-0">
+          {i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+        </p>
+        {!!data?.session_folder && (
+          <input
+            type="text"
+            value={folderName}
+            disabled={readOnly}
+            placeholder={CHANNEL_NAME}
+            aria-label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
+            onChange={e => setFolderName(e.target.value)}
+            onBlur={() => save({ session_folder: folderName.trim() || CHANNEL_NAME })}
+            onKeyDown={e => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+            }}
+            data-testid="weixin-session-folder-name"
+            className="mt-2 text-sm px-2.5 py-2 rounded-md bg-bg border border-border text-text"
+          />
+        )}
       </div>
 
       {data?.dm_policy === 'allowlist' && (

@@ -7664,7 +7664,11 @@
         "saving": "सहेजा जा रहा है…",
         "soft_context_threshold_must_be_a_number_between": "सॉफ़्ट कॉन्टेक्स्ट थ्रेशोल्ड 1 और 100 के बीच की संख्या होनी चाहिए",
         "verified_with_channel_and_saved": "{{channel}} से सत्यापित और सहेजा गया। कनेक्ट करने के लिए गेटवे रीस्टार्ट करें।",
-        "where_to_find_the_bot_token": "बॉट टोकन कहाँ मिलेगा"
+        "where_to_find_the_bot_token": "बॉट टोकन कहाँ मिलेगा",
+        "file_sessions_in_folder": "सेशन एक फ़ोल्डर में रखें",
+        "file_sessions_in_folder_desc": "{{channel}} की नई बातचीत साइडबार के एक फ़ोल्डर में जाती है, बिना फ़ोल्डर नहीं रहती।",
+        "session_folder_name": "फ़ोल्डर का नाम",
+        "session_folder_name_desc": "इन सेटिंग्स को सेव करने पर यह बन जाता है, अगर पहले से मौजूद न हो।"
       },
       "browserPanel": {
         "1_install_the": "1. इंस्टॉल करें:",

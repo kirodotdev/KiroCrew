@@ -27,6 +27,8 @@ export interface BotChannelConfigData {
   /** Telegram forum per-topic config (optional; only Telegram sends these). */
   allow_forum?: boolean
   allowed_forum_chat_ids?: string[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off). */
+  session_folder?: string
 }
 
 /** Writable fields shared by every bot-token channel save endpoint. */
@@ -44,6 +46,7 @@ export interface BotChannelConfigSave {
   soft_threshold_pct: number
   allow_forum?: boolean
   allowed_forum_chat_ids?: string[]
+  session_folder?: string
 }
 
 /** Everything channel-specific: names, copy, endpoints, and guide content. */
@@ -141,6 +144,10 @@ type Draft = {
   soft_threshold_pct: string
   allow_forum: boolean
   allowed_forum_chat_ids: string[]
+  /** Whether this channel files its sessions in a folder at all (off = unfiled). */
+  session_folder_on: boolean
+  /** Folder name, kept while the toggle is off so turning it back on restores it. */
+  session_folder: string
 }
 
 function draftFrom(c: BotChannelConfigData): Draft {
@@ -152,6 +159,10 @@ function draftFrom(c: BotChannelConfigData): Draft {
     soft_threshold_pct: String(c.soft_threshold_pct),
     allow_forum: !!c.allow_forum,
     allowed_forum_chat_ids: [...(c.allowed_forum_chat_ids ?? [])],
+    // A configured name IS the on-state — the backend has one field, where ""
+    // means off, so the toggle is derived rather than separately persisted.
+    session_folder_on: !!c.session_folder,
+    session_folder: c.session_folder ?? '',
   }
 }
 
@@ -277,6 +288,11 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       payload.allow_forum = draft.allow_forum
       payload.allowed_forum_chat_ids = draft.allowed_forum_chat_ids
     }
+    // Off sends "" (the field's off-state); on with a blank name falls back to
+    // the channel's own name, which is what the toggle's description promises.
+    payload.session_folder = draft.session_folder_on
+      ? (draft.session_folder.trim() || spec.name)
+      : ''
     if (botClear) payload.bot_token_clear = true
     else if (botToken.trim()) payload.bot_token = botToken.trim()
     if (spec.secondCredential) {
@@ -483,6 +499,29 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             placeholder="80"
             disabled={ro}
           />
+          {/* Optional per-channel session filing. Off by default: sessions from
+              this channel stay unfiled in the sidebar, as before. */}
+          <div className="border-t border-border mt-4 pt-4">
+            <SettingsToggle
+              label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
+              description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: spec.name })}
+              checked={draft.session_folder_on}
+              onChange={v => upd({ session_folder_on: v })}
+              disabled={ro}
+            />
+            {draft.session_folder_on && (
+              <div className="mt-4">
+                <SettingsInput
+                  label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
+                  description={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
+                  value={draft.session_folder}
+                  onChange={v => upd({ session_folder: v })}
+                  placeholder={spec.name}
+                  disabled={ro}
+                />
+              </div>
+            )}
+          </div>
         </SettingsCard>
       </SettingsSection>
 

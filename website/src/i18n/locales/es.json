@@ -7750,7 +7750,11 @@
         "saving": "Guardando…",
         "soft_context_threshold_must_be_a_number_between": "El umbral de contexto suave debe ser un número entre 1 y 100",
         "verified_with_channel_and_saved": "Verificado con {{channel}} y guardado. Reinicia el gateway para conectarlo.",
-        "where_to_find_the_bot_token": "Dónde encontrar el token de bot"
+        "where_to_find_the_bot_token": "Dónde encontrar el token de bot",
+        "file_sessions_in_folder": "Archivar las sesiones en una carpeta",
+        "file_sessions_in_folder_desc": "Las conversaciones nuevas de {{channel}} van a una carpeta de la barra lateral en vez de quedar sin archivar.",
+        "session_folder_name": "Nombre de la carpeta",
+        "session_folder_name_desc": "Se crea al guardar esta configuración, si todavía no existe."
       },
       "browserPanel": {
         "1_install_the": "1. Instala la",

@@ -461,6 +461,8 @@ export interface PullRequestSource {
 
 export interface ChatFolder {
   id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; icon?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  /** Channel namespace when this folder was created by per-channel session filing (e.g. 'discord'). */
+  channel?: string
 }
 
 export interface ChatTag {

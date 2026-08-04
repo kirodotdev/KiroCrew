@@ -2,13 +2,15 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Check, AlertTriangle, Lock } from 'lucide-react'
 import { TeamsIcon } from '../../components/TeamsIcon'
-import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
+import { SettingsSection, SettingsCard, SettingsInput, SettingsToggle } from '../../components/settings'
 import { SecretField } from '../../components/SecretField'
 import { Btn } from '../../components/ui'
 import { TagListEditor } from './SlackPanel'
 import { api, type TeamsConfigData, type TeamsConfigSave } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
+/** Brand name — do-not-translate, so it lives here rather than in the catalog. */
+const CHANNEL_NAME = "Teams"
 const AZURE_BOT_URL = 'https://portal.azure.com/#create/Microsoft.AzureBot'
 const SETUP_GUIDE =
   'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/teams-integration.md'
@@ -26,6 +28,10 @@ type Draft = {
   app_id: string
   tenant_id: string
   allowed_emails: string[]
+  /** Whether this channel files its sessions in a folder at all (off = unfiled). */
+  session_folder_on: boolean
+  /** Folder name, kept while the toggle is off so turning it back on restores it. */
+  session_folder: string
 }
 
 function draftFrom(c: TeamsConfigData): Draft {
@@ -34,6 +40,10 @@ function draftFrom(c: TeamsConfigData): Draft {
     app_id: '',
     tenant_id: c.tenant_id,
     allowed_emails: [...c.allowed_emails],
+    // A configured name IS the on-state — the backend has one field, where ""
+    // means off, so the toggle is derived rather than separately persisted.
+    session_folder_on: !!c.session_folder,
+    session_folder: c.session_folder ?? '',
   }
 }
 
@@ -120,6 +130,9 @@ export function TeamsPanel() {
       enabled: draft.enabled,
       tenant_id: draft.tenant_id.trim(),
       allowed_emails: draft.allowed_emails,
+      // Off sends "" (the field's off-state); on with a blank name falls back
+      // to "Teams", which is what the toggle's description promises.
+      session_folder: draft.session_folder_on ? (draft.session_folder.trim() || CHANNEL_NAME) : '',
     }
     // App ID is masked as "set — paste to replace" once stored, so draft.app_id
     // loads blank. Only send it when the user actually (re)entered a value —
@@ -309,6 +322,29 @@ export function TeamsPanel() {
             validate={isValidPrincipal}
             readOnly={ro}
           />
+          {/* Optional per-channel session filing. Off by default: Teams
+              conversations stay unfiled in the sidebar, as before. */}
+          <div className="border-t border-border mt-4 pt-4">
+            <SettingsToggle
+              label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
+              description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+              checked={draft.session_folder_on}
+              onChange={v => upd({ session_folder_on: v })}
+              disabled={ro}
+            />
+            {draft.session_folder_on && (
+              <div className="mt-4">
+                <SettingsInput
+                  label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
+                  description={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
+                  value={draft.session_folder}
+                  onChange={v => upd({ session_folder: v })}
+                  placeholder={CHANNEL_NAME}
+                  disabled={ro}
+                />
+              </div>
+            )}
+          </div>
         </SettingsCard>
       </SettingsSection>
 

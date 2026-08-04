@@ -7750,7 +7750,11 @@
         "saving": "Enregistrement…",
         "soft_context_threshold_must_be_a_number_between": "Le seuil de contexte souple doit être un nombre entre 1 et 100",
         "verified_with_channel_and_saved": "Vérifié avec {{channel}} et enregistré. Redémarre la passerelle pour établir la connexion.",
-        "where_to_find_the_bot_token": "Où trouver le jeton de bot"
+        "where_to_find_the_bot_token": "Où trouver le jeton de bot",
+        "file_sessions_in_folder": "Classer les sessions dans un dossier",
+        "file_sessions_in_folder_desc": "Les nouvelles conversations {{channel}} arrivent dans un dossier de la barre latérale au lieu de rester non classées.",
+        "session_folder_name": "Nom du dossier",
+        "session_folder_name_desc": "Créé lors de l’enregistrement de ces paramètres, s’il n’existe pas encore."
       },
       "browserPanel": {
         "1_install_the": "1. Installez",

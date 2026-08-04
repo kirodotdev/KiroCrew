@@ -29,6 +29,11 @@ from kiro_crew.browser.setup import (
     register_playwright_proxy,
 )
 from kiro_crew.cron import CronStoreBusy
+from kiro_crew.dashboard.channel_folders import (
+    LIVE_RELOAD_FIELDS,
+    clean_session_folder,
+    ensure_channel_folder,
+)
 from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
 from kiro_crew.dashboard.chat_utils import _remove_queued_by_id
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
@@ -2334,6 +2339,7 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
             "allowed_enterprise_ids": list(slack.allowed_enterprise_ids),
             "reactions_enabled": slack.reactions_enabled,
             "show_thinking": slack.show_thinking,
+            "session_folder": slack.session_folder,
         }
     )
 
@@ -2477,6 +2483,15 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             staged[key] = val
             applied.append(key)
 
+    if "session_folder" in body:
+        try:
+            new_folder = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+        if new_folder != str(slack_cfg.get("session_folder", "") or ""):
+            staged["session_folder"] = new_folder
+            applied.append("session_folder")
+
     # ── Phase 1.5: verify newly pasted tokens against Slack before storing.
     # A token Slack rejects (invalid_auth etc.) fails the save right here,
     # where the user can act on it — instead of being stored and silently
@@ -2512,6 +2527,15 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     if staged:
         slack_cfg.update(staged)
         _atomic_json_write(path, data)
+
+    # Create the configured session folder now, on this user-initiated save,
+    # so the reconcile path never has to write the folder store. Best-effort:
+    # a failure leaves conversations unfiled until the next save.
+    _folder_name = str(slack_cfg.get("session_folder", "") or "")
+    if _folder_name:
+        _state = request.app.get("state")
+        if _state is not None:
+            await ensure_channel_folder(_state, "slack", _folder_name)
 
     _sel().log_api_access(
         caller=caller,
@@ -2605,6 +2629,7 @@ async def api_discord_config_get(request: web.Request) -> web.Response:
             "allowed_user_ids": [str(u) for u in dc.allowed_user_ids],
             "allowed_thread_ids": [str(t) for t in dc.allowed_thread_ids],
             "soft_threshold_pct": int(dc.soft_threshold_pct),
+            "session_folder": dc.session_folder,
         }
     )
 
@@ -2753,6 +2778,15 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
+    if "session_folder" in body:
+        try:
+            new_folder = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+        if new_folder != str(dc_cfg.get("session_folder", "") or ""):
+            staged["session_folder"] = new_folder
+            applied.append("session_folder")
+
     # ── Phase 1.5: verify a newly pasted token against Discord before storing.
     # A token Discord rejects fails the save right here, where the user can
     # act on it. Network failure is NOT a rejection: the save proceeds with a
@@ -2783,6 +2817,15 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         dc_cfg.update(staged)
         _atomic_json_write(path, data)
 
+    # Create the configured session folder now, on this user-initiated save,
+    # so the reconcile path never has to write the folder store. Best-effort:
+    # a failure leaves conversations unfiled until the next save.
+    _folder_name = str(dc_cfg.get("session_folder", "") or "")
+    if _folder_name:
+        _state = request.app.get("state")
+        if _state is not None:
+            await ensure_channel_folder(_state, "discord", _folder_name)
+
     _sel().log_api_access(
         caller=caller,
         operation="discord.config.update",
@@ -2795,7 +2838,8 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged),
+            "restart_required": bool(env_updates)
+            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -2867,6 +2911,7 @@ async def api_telegram_config_get(request: web.Request) -> web.Response:
             # accepts digit strings and stores canonical ints.
             "allowed_user_ids": [str(u) for u in tg.allowed_user_ids],
             "soft_threshold_pct": int(tg.soft_threshold_pct),
+            "session_folder": tg.session_folder,
             # Forum per-topic config. chat_ids are serialized as strings for
             # the tag editor UI; they are NEGATIVE (e.g. "-1001234567890"),
             # so the save path accepts a leading minus (not a digits-only check).
@@ -3004,6 +3049,15 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
+    if "session_folder" in body:
+        try:
+            new_folder = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+        if new_folder != str(tg_cfg.get("session_folder", "") or ""):
+            staged["session_folder"] = new_folder
+            applied.append("session_folder")
+
     if "allow_forum" in body:
         val = body.get("allow_forum")
         if not isinstance(val, bool):
@@ -3076,6 +3130,15 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
         # Off-loop: the atomic write (temp file + fsync + replace) must not
         # block the gateway event loop.
         await asyncio.to_thread(_atomic_json_write, path, data)
+
+    # Create the configured session folder now, on this user-initiated save,
+    # so the reconcile path never has to write the folder store. Best-effort:
+    # a failure leaves conversations unfiled until the next save.
+    _folder_name = str(tg_cfg.get("session_folder", "") or "")
+    if _folder_name:
+        _state = request.app.get("state")
+        if _state is not None:
+            await ensure_channel_folder(_state, "telegram", _folder_name)
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
@@ -3101,7 +3164,8 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged),
+            "restart_required": bool(env_updates)
+            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -3209,6 +3273,7 @@ async def api_teams_config_get(request: web.Request) -> web.Response:
             "enabled": cfg.teams.enabled,
             "tenant_id": cfg.teams.tenant_id,
             "allowed_emails": list(cfg.teams.allowed_emails),
+            "session_folder": cfg.teams.session_folder,
         }
     )
 
@@ -3305,6 +3370,12 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             return _deny(str(exc))
         staged["allowed_emails"] = new_ids
 
+    if "session_folder" in body:
+        try:
+            staged["session_folder"] = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+
     # ── Phase 2: commit under the repo-wide config lock (read fresh, merge only
     # the teams section, write atomic) so a concurrent save is never clobbered.
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
@@ -3330,6 +3401,10 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             "allowed_emails", []
         ):
             changes["allowed_emails"] = staged["allowed_emails"]
+        if "session_folder" in staged and staged["session_folder"] != str(
+            teams_cfg.get("session_folder", "") or ""
+        ):
+            changes["session_folder"] = staged["session_folder"]
         applied = list(changes.keys())
         # The secret is env-only; if a legacy plaintext app_password ever landed
         # in config.json, purge it so it can't shadow or outlive the .env value.
@@ -3340,6 +3415,15 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
         if changes:
             teams_cfg.update(changes)
             _atomic_json_write(path, data)
+
+        # Create the configured session folder now, on this user-initiated save,
+        # so the reconcile path never has to write the folder store. Best-effort:
+        # a failure leaves conversations unfiled until the next save.
+        _folder_name = str(teams_cfg.get("session_folder", "") or "")
+        if _folder_name:
+            _state = request.app.get("state")
+            if _state is not None:
+                await ensure_channel_folder(_state, "teams", _folder_name)
         if env_updates:
             # Off-loop: restrict_to_owner spawns whoami/icacls subprocesses on
             # Windows, which would stall the gateway loop if run inline.
@@ -3360,7 +3444,8 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(applied),
+            "restart_required": bool(env_updates)
+            or bool(set(applied) - LIVE_RELOAD_FIELDS),
             "verify_warning": "",
         }
     )
@@ -3395,6 +3480,7 @@ async def api_webex_config_get(request: web.Request) -> web.Response:
             "bot_token_preview": _mask_secret(token),
             "enabled": cfg.webex.enabled,
             "allowed_emails": list(cfg.webex.allowed_emails),
+            "session_folder": cfg.webex.session_folder,
         }
     )
 
@@ -3473,6 +3559,12 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
             return _deny(str(exc))
         staged["allowed_emails"] = new_emails
 
+    if "session_folder" in body:
+        try:
+            staged["session_folder"] = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+
     # ── Phase 1.5: verify a newly pasted token against Webex before storing.
     # Network failure is NOT a rejection: the save proceeds with a warning so
     # being offline never blocks config. Mirrors the Slack token verification.
@@ -3514,6 +3606,10 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
             "allowed_emails", []
         ):
             changes["allowed_emails"] = staged["allowed_emails"]
+        if "session_folder" in staged and staged["session_folder"] != str(
+            webex_cfg.get("session_folder", "") or ""
+        ):
+            changes["session_folder"] = staged["session_folder"]
         applied = list(changes.keys())
         # Any token set/clear also purges the legacy config.json
         # ``webex.bot_token`` fallback so a stale plaintext copy can't shadow
@@ -3527,6 +3623,15 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
         if changes:
             webex_cfg.update(changes)
             _atomic_json_write(path, data)
+
+        # Create the configured session folder now, on this user-initiated save,
+        # so the reconcile path never has to write the folder store. Best-effort:
+        # a failure leaves conversations unfiled until the next save.
+        _folder_name = str(webex_cfg.get("session_folder", "") or "")
+        if _folder_name:
+            _state = request.app.get("state")
+            if _state is not None:
+                await ensure_channel_folder(_state, "webex", _folder_name)
         if env_updates:
             _write_env_updates(env_updates)
             # Keep the live process environment in sync (see the Slack save path).
@@ -3547,7 +3652,8 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(applied),
+            "restart_required": bool(env_updates)
+            or bool(set(applied) - LIVE_RELOAD_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -3625,6 +3731,7 @@ async def api_wecom_config_get(request: web.Request) -> web.Response:
             # stored display names to surviving entries.
             "allowed_user_ids": userids,
             "soft_threshold_pct": int(wc.soft_threshold_pct),
+            "session_folder": wc.session_folder,
         }
     )
 
@@ -3786,6 +3893,15 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
+    if "session_folder" in body:
+        try:
+            new_folder = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+        if new_folder != str(wc_cfg.get("session_folder", "") or ""):
+            staged["session_folder"] = new_folder
+            applied.append("session_folder")
+
     # No Phase 1.5 credential verification: validating WeCom credentials
     # requires opening the AI-bot WebSocket long-connection (no cheap REST
     # "whoami" like Telegram's getMe), so credentials are stored as given and
@@ -3797,6 +3913,15 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
         # Off-loop: the atomic write (temp file + fsync + replace) must not
         # block the gateway event loop.
         await asyncio.to_thread(_atomic_json_write, path, data)
+
+    # Create the configured session folder now, on this user-initiated save,
+    # so the reconcile path never has to write the folder store. Best-effort:
+    # a failure leaves conversations unfiled until the next save.
+    _folder_name = str(wc_cfg.get("session_folder", "") or "")
+    if _folder_name:
+        _state = request.app.get("state")
+        if _state is not None:
+            await ensure_channel_folder(_state, "wecom", _folder_name)
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
@@ -3821,7 +3946,8 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged),
+            "restart_required": bool(env_updates)
+            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
             "verify_warning": "",
         }
     )

@@ -41,8 +41,13 @@ def test_save_denies_forwarded_loopback_request() -> None:
     assert resp.status == 403
 
 
-def _client_put(mod, monkeypatch, tmp_path, body):
-    """Run a save over a real TestClient with paths isolated to tmp_path."""
+def _client_put(mod, monkeypatch, tmp_path, body, state=None):
+    """Run a save over a real TestClient with paths isolated to tmp_path.
+
+    *state* seeds ``app["state"]``; the folder-creation hook is skipped when it is
+    absent, which is also the production guard for a request that arrives before
+    the dashboard state is wired.
+    """
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
@@ -55,6 +60,8 @@ def _client_put(mod, monkeypatch, tmp_path, body):
 
     async def _run():
         app = web.Application()
+        if state is not None:
+            app["state"] = state
         app.router.add_put("/api/discord/config", mod.api_discord_config_save)
         async with TestClient(TestServer(app)) as client:
             resp = await client.put("/api/discord/config", json=body)
@@ -277,3 +284,101 @@ def test_get_masks_token_and_reports_state(tmp_path: Path, monkeypatch) -> None:
     assert body["enabled"] is True
     assert body["allowed_user_ids"] == ["42"]
     assert body["allowed_thread_ids"] == ["99"]
+
+
+def test_save_persists_session_folder_without_asking_for_a_restart(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``session_folder`` is read live, so changing it alone needs no restart."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    (status_body, _) = _client_put(mod, monkeypatch, tmp_path, {"session_folder": " Discord "})
+    status, body = status_body
+    assert status == 200
+    assert body["restart_required"] is False
+    data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert data["discord"]["session_folder"] == "Discord"
+
+
+def test_save_creates_the_configured_folder(tmp_path: Path, monkeypatch) -> None:
+    """The folder is created HERE, on the save — never on the reconcile path.
+
+    Creation from the reconciler would put an ``fsync`` on the event loop and,
+    being reachable from both the 30s pass and every inbound channel message,
+    could drop a concurrent folder edit. The save endpoint is user-initiated and
+    already writes config.json, so it is the right owner.
+    """
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    created: list[tuple[str, str]] = []
+
+    async def fake_ensure(state, namespace: str, name: str) -> str:
+        created.append((namespace, name))
+        return "fid"
+
+    monkeypatch.setattr(mod, "ensure_channel_folder", fake_ensure)
+    (status_body, _) = _client_put(
+        mod, monkeypatch, tmp_path, {"session_folder": "Team chat"}, state=object()
+    )
+    assert status_body[0] == 200
+    assert created == [("discord", "Team chat")]
+
+
+def test_save_creates_no_folder_when_the_setting_is_off(tmp_path: Path, monkeypatch) -> None:
+    """Off is the default; a save that leaves it off must not create anything."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    created: list[tuple[str, str]] = []
+
+    async def fake_ensure(state, namespace: str, name: str) -> str:
+        created.append((namespace, name))
+        return ""
+
+    monkeypatch.setattr(mod, "ensure_channel_folder", fake_ensure)
+    (status_body, _) = _client_put(
+        mod, monkeypatch, tmp_path, {"enabled": True}, state=object()
+    )
+    assert status_body[0] == 200
+    assert created == []
+
+
+def test_save_still_asks_for_a_restart_for_boot_read_fields(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A live-reload field alongside a boot-read one still requires a restart."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    (status_body, _) = _client_put(
+        mod, monkeypatch, tmp_path, {"session_folder": "Discord", "enabled": True}
+    )
+    status, body = status_body
+    assert status == 200
+    assert body["restart_required"] is True
+
+
+def test_save_rejects_an_unusable_session_folder(tmp_path: Path, monkeypatch) -> None:
+    """A name that could not address a sidebar folder is refused, not coerced."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    for bad in ("nested/name", "back\\slash", "line\nbreak", "x" * 101, 42):
+        (status_body, _) = _client_put(mod, monkeypatch, tmp_path, {"session_folder": bad})
+        assert status_body[0] == 400, f"session_folder={bad!r} should be rejected"
+
+
+def test_get_reports_the_configured_session_folder(tmp_path: Path, monkeypatch) -> None:
+    """The panel reads the current value back, defaulting to off."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"discord": {"session_folder": "Discord"}}', encoding="utf-8")
+    monkeypatch.setattr(loader, "config_path", lambda: cfg)
+    monkeypatch.setattr(loader, "env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+
+    class _State:
+        discord_connected = False
+        discord_connect_error = ""
+
+    req = make_mocked_request("GET", "/api/discord/config", app={"state": _State()})
+    body = json.loads(asyncio.run(mod.api_discord_config_get(req)).text)
+    assert body["session_folder"] == "Discord"

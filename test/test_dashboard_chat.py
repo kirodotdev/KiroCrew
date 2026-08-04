@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1310,6 +1311,33 @@ class TestHistorySaveOnClose:
         assert "queued" not in roles
         assert "permission" not in roles
         assert roles == ["user", "tool", "assistant"]
+
+    @pytest.mark.asyncio
+    async def test_resume_restores_the_channel_filing_marker(self, tmp_path, monkeypatch):
+        """Resuming from History must carry the channel-filing marker into memory.
+
+        Four paths rebuild a slot from history. This one (the History page's
+        resume endpoint) is the one that reaches a channel conversation the user
+        opens by hand. Without the marker in memory the slot reports itself as
+        never-filed to every in-memory reader, and the save path would have to
+        rescue it from disk.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:filed1", "user", "hello")
+        log.update_metadata("dashboard:filed1", {"channel_folder_filed": True})
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/filed1/resume", json={"key": "dashboard:filed1"}
+            )
+            assert resp.status == 200
+
+        assert state._slots["filed1"]._channel_folder_filed is True, (
+            "resume dropped the filing marker; the slot now claims it was never "
+            "filed and a later save would re-file the conversation"
+        )
 
     @pytest.mark.asyncio
     async def test_no_save_for_unchanged_resumed_session(self, tmp_path, monkeypatch):
@@ -6727,6 +6755,80 @@ class TestFolderCRUD:
             assert (await resp.json())["parent_id"] == ""
 
     @pytest.mark.asyncio
+    async def test_concurrent_opposite_reparents_cannot_persist_a_cycle(
+        self, tmp_path, monkeypatch
+    ):
+        """Two opposite reparents must not both apply and orphan the pair.
+
+        The tree-shape rules (parent exists, target is not a descendant) are
+        checked once before the store lock as a fast reject, but a folder write
+        is serialized and off-loop, so while one is in flight BOTH requests can
+        validate against the same pre-state. If the winner's mutation were not
+        re-tested under the lock, `A -> B` and `B -> A` would both persist and
+        neither folder would be reachable from the root any more.
+
+        The lock is held deliberately here so both handlers are provably queued
+        on it before either applies -- the window is opened, not raced for.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            a = await (await client.post("/api/chat/folders", json={"name": "A"})).json()
+            b = await (await client.post("/api/chat/folders", json={"name": "B"})).json()
+
+            gate = asyncio.Event()
+
+            async def _hold_the_store() -> None:
+                async with state._folders_lock:
+                    await gate.wait()
+
+            holder = asyncio.create_task(_hold_the_store())
+            while not state._folders_lock.locked():
+                await asyncio.sleep(0)
+
+            t1 = asyncio.create_task(
+                client.patch(f"/api/chat/folders/{a['id']}", json={"parent_id": b["id"]})
+            )
+            t2 = asyncio.create_task(
+                client.patch(f"/api/chat/folders/{b['id']}", json={"parent_id": a["id"]})
+            )
+
+            async def _both_queued() -> None:
+                while len(getattr(state._folders_lock, "_waiters", None) or ()) < 2:
+                    await asyncio.sleep(0.01)
+
+            # Both requests have passed their pre-lock validation against the
+            # SAME pre-state and are now waiting on the store.
+            await asyncio.wait_for(_both_queued(), timeout=5)
+            gate.set()
+            r1, r2 = await asyncio.gather(t1, t2)
+            await holder
+
+            assert sorted([r1.status, r2.status]) == [200, 409], (
+                "both opposite reparents were accepted; the tree-shape rules are "
+                "not being re-tested under the store lock"
+            )
+
+            parents = {f["id"]: f.get("parent_id", "") for f in state._folders}
+
+            def _reaches_root(fid: str) -> bool:
+                seen: set[str] = set()
+                cur = fid
+                while cur:
+                    if cur in seen:
+                        return False
+                    seen.add(cur)
+                    cur = parents.get(cur, "")
+                return True
+
+            assert all(_reaches_root(fid) for fid in parents), (
+                f"a parent cycle was persisted: {parents}"
+            )
+            stored = json.loads((tmp_path / state._FOLDERS_FILE).read_text(encoding="utf-8"))
+            assert {f["id"]: f.get("parent_id", "") for f in stored} == parents
+
+    @pytest.mark.asyncio
     async def test_update_folder_reparent_self_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -7220,7 +7322,6 @@ class TestGenerateFolderIcon:
         mock_client = AsyncMock()
         mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
         state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
-        state.save_folders = MagicMock()
         state.push_slots_update = MagicMock()
 
         folder = {"id": "f1", "name": "Deploy"}
@@ -7228,7 +7329,10 @@ class TestGenerateFolderIcon:
         await _generate_folder_icon(state, folder)
 
         assert folder["icon"] == "🚀"
-        state.save_folders.assert_called_once()
+        # Persisted through the serialized writer, so assert the STORE, not a
+        # method call: the icon has to be readable back from folders.json.
+        stored = json.loads((tmp_path / state._FOLDERS_FILE).read_text(encoding="utf-8"))
+        assert [f.get("icon") for f in stored] == ["🚀"]
         state.push_slots_update.assert_called_once()
 
     @pytest.mark.asyncio
@@ -7259,7 +7363,11 @@ class TestGenerateFolderIcon:
         await _generate_folder_icon(state, folder)
 
         assert "icon" not in folder
-        state.save_folders.assert_not_called()
+        # Rejected output writes nothing, so the store must hold no icon.
+        stored_path = tmp_path / state._FOLDERS_FILE
+        if stored_path.exists():
+            stored = json.loads(stored_path.read_text(encoding="utf-8"))
+            assert all(not f.get("icon") for f in stored)
 
     @pytest.mark.asyncio
     async def test_ascii_two_char_rejected(self, tmp_path, monkeypatch):
@@ -7290,7 +7398,11 @@ class TestGenerateFolderIcon:
         await _generate_folder_icon(state, folder)
 
         assert "icon" not in folder
-        state.save_folders.assert_not_called()
+        # Rejected output writes nothing, so the store must hold no icon.
+        stored_path = tmp_path / state._FOLDERS_FILE
+        if stored_path.exists():
+            stored = json.loads(stored_path.read_text(encoding="utf-8"))
+            assert all(not f.get("icon") for f in stored)
 
     @pytest.mark.asyncio
     async def test_redaction_applied(self, tmp_path, monkeypatch):
@@ -7313,7 +7425,6 @@ class TestGenerateFolderIcon:
         mock_client = AsyncMock()
         mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
         state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
-        state.save_folders = MagicMock()
         state.push_slots_update = MagicMock()
 
         with patch("kiro_crew.dashboard.chat_folders.redact_exfiltration_urls", return_value=("🔥", False)) as mock_url, \
@@ -7346,7 +7457,6 @@ class TestGenerateFolderIcon:
         mock_client = AsyncMock()
         mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
         state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
-        state.save_folders = MagicMock()
         state.push_slots_update = MagicMock()
 
         folder = {"id": "f1", "name": "Love"}
@@ -7354,7 +7464,10 @@ class TestGenerateFolderIcon:
         await _generate_folder_icon(state, folder)
 
         assert folder["icon"] == "\u2764\uFE0F"
-        state.save_folders.assert_called_once()
+        # Persisted through the serialized writer, so assert the STORE rather
+        # than a method call.
+        stored = json.loads((tmp_path / state._FOLDERS_FILE).read_text(encoding="utf-8"))
+        assert [f.get("icon") for f in stored] == ["\u2764\uFE0F"]
 
     @pytest.mark.asyncio
     async def test_uses_background_session(self, tmp_path, monkeypatch):
@@ -7378,7 +7491,6 @@ class TestGenerateFolderIcon:
         mock_client = AsyncMock()
         mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
         state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
-        state.save_folders = MagicMock()
         state.push_slots_update = MagicMock()
 
         folder = {"id": "abc123", "name": "Test"}

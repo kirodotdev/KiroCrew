@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Coroutine, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
 from aiohttp import web
 
@@ -63,6 +63,9 @@ if TYPE_CHECKING:
     from kiro_crew.messaging.transport import MessagingTransport  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+#: Return type of a mutate_folders callback.
+_T = TypeVar("_T")
 
 _CHANNEL_ID_PREFIX_RE = re.compile(r"^([a-z][a-z0-9_-]*):(.*)$", re.IGNORECASE)
 _CHANNEL_LABELS = {
@@ -787,6 +790,7 @@ class _ChatSlot:
         "_title_in_flight",
         "_title_retry_pending",
         "_artifact",
+        "_channel_folder_filed",
         "_resumed_count",
         "_todo",
         "_on_message",
@@ -907,6 +911,15 @@ class _ChatSlot:
         # active binding from the slots snapshot, and the binding must survive
         # gateway restarts.
         self._artifact: str = ""
+        # True once per-channel default filing has been APPLIED to this
+        # conversation (see kiro_crew.dashboard.channel_folders). Persisted,
+        # because it is the only durable record that the automatic placement
+        # already happened: `folder_id` is omitted from the metadata line when
+        # empty, so a conversation the user drags out to the top level is
+        # otherwise indistinguishable from one that was never filed, and the
+        # next reconcile pass after a restart would file it right back in.
+        # Default filing is a first-surface action, not a recurring one.
+        self._channel_folder_filed: bool = False
         self._resumed_count: int = 0  # messages loaded from history on resume
         # Agent-authored TODO list, replaced wholesale from each todo_list tool
         # result (every command echoes the full list, so there is nothing to
@@ -1847,6 +1860,12 @@ class DashboardState:
         # never acquires it.
         self._context_snapshots_flush_lock = threading.Lock()
         self._folders: list[dict[str, Any]] = []  # project folder definitions
+        # Serializes read-modify-write of the folder store; see
+        # mutate_folders(). Constructed here rather than lazily so two
+        # concurrent first-callers cannot each make their own lock and
+        # serialize against nothing. asyncio.Lock binds no loop at
+        # construction (3.10+), so building it off-loop is safe.
+        self._folders_lock = asyncio.Lock()
         # Tag vocabulary: list of {id, name, color, order}. User-managed.
         self._tags: list[dict[str, Any]] = []
         # Sidebar columns — flat list of {id, name, tag_ids, mode, order, include_untagged}
@@ -3038,9 +3057,105 @@ class DashboardState:
             logger.warning("Failed to load folders", exc_info=True)
 
     def save_folders(self) -> None:
-        """Persist folder definitions to disk (atomic write)."""
+        """Persist folder definitions to disk (atomic write).
+
+        Synchronous and therefore ON the event loop when called from a handler.
+        Prefer :meth:`mutate_folders` for anything reachable from a request or a
+        background pass — it serializes the read-modify-write and moves the
+        ``fsync`` off the loop. This form remains for the boot path and for
+        callers that hold no loop.
+        """
         path = config_dir() / self._FOLDERS_FILE
         self._atomic_write_json(path, self._folders)
+
+    async def mutate_folders(self, mutate: Callable[[list[dict[str, Any]]], tuple[bool, _T]]) -> _T:
+        """Serialize one read-modify-write of the folder store; persist off-loop.
+
+        *mutate* receives the live folder list and returns
+        ``(changed, value)``: ``changed`` decides whether the store is written,
+        ``value`` is handed back to the caller. It must be **synchronous** — it
+        runs while the store lock is held, and that is what makes the whole
+        find-then-modify sequence atomic against another coroutine doing the
+        same thing. Do not call ``mutate_folders`` from inside *mutate*.
+
+        Why both halves matter, from two defects this replaced:
+
+        * **Serialized.** Every writer used to be a bare ``save_folders()``, so
+          the store was race-free only because no writer yielded mid-update —
+          the event loop was the lock by accident. The moment one writer
+          awaited, two of them could each read a stale list and the later write
+          would drop the other's folder. Holding one lock across
+          modify-and-persist removes that coupling.
+        * **Off the loop.** The write is a tempfile + ``os.fsync`` +
+          ``os.replace``; on slow or network storage that stalls chat and
+          heartbeat processing for as long as the flush takes. Only the IO
+          crosses the thread boundary.
+
+        The snapshot handed to the worker is taken here, under the lock, rather
+        than letting the thread read ``self._folders``: the list is mutated on
+        the loop, and serializing it from another thread could observe a
+        half-applied mutation.
+
+        If the write raises, the in-memory list is restored to its pre-callback
+        state before the exception propagates, so memory never silently diverges
+        from disk on a failed persist. The write is also *confirmed* before the
+        lock is released (see :meth:`_write_folders_confirmed`), so a mutation
+        that did not land is undone while the store is still held — no reader,
+        locked or not, can observe a folder that is about to be rolled back.
+        """
+        async with self._folders_lock:
+            before = [dict(f) for f in self._folders]
+            changed, value = mutate(self._folders)
+            if not changed:
+                return value
+            path = config_dir() / self._FOLDERS_FILE
+            snapshot = [dict(f) for f in self._folders]
+            try:
+                await asyncio.to_thread(self._write_folders_confirmed, path, snapshot)
+            except Exception:
+                self._folders[:] = before
+                raise
+            return value
+
+    async def read_folders(self, read: Callable[[list[dict[str, Any]]], _T]) -> _T:
+        """Run *read* against the folder list under the store lock.
+
+        The read-only counterpart to :meth:`mutate_folders`. Callers that only
+        inspect the store still need the lock: ``mutate_folders`` applies its
+        callback's mutation to the live list and only then persists it off-loop,
+        so an unlocked reader can observe a folder mid-transaction — including
+        one whose write is about to fail and be rolled back. Taking the lock
+        means a reader sees only committed state.
+
+        *read* must not mutate the list and must not call ``mutate_folders``
+        (re-entering the lock would deadlock).
+        """
+        async with self._folders_lock:
+            return read(self._folders)
+
+    def _write_folders_confirmed(self, path: Path, snapshot: list[dict[str, Any]]) -> None:
+        """Persist the folder list and prove it landed. Raises if it did not.
+
+        Runs in a worker thread, called with the store lock held.
+        :meth:`_atomic_write_json` LOGS and swallows every error, so a normal
+        return from it is not evidence of a write — a read-only or full disk
+        looks exactly like success. Reading the store back is evidence, and
+        doing it here rather than in the caller is what keeps the check inside
+        the lock: :meth:`mutate_folders` restores the in-memory list when this
+        raises, so an unwritten folder is never visible outside the transaction.
+        """
+        self._atomic_write_json(path, snapshot)
+        try:
+            on_disk = json.loads(path.read_bytes())
+        except Exception as exc:
+            raise OSError(f"folder store unreadable after write: {path.name}") from exc
+        # The WHOLE value, not just the id set: a rename, reparent, collapse or
+        # icon change leaves the ids untouched, so an id-only comparison would
+        # accept a silently-failed update and let the stale values come back on
+        # the next restart. Folder records are flat JSON scalars, so the snapshot
+        # round-trips exactly and equality is a faithful test.
+        if on_disk != snapshot:
+            raise OSError(f"folder store did not persist as intended: {path.name}")
 
     def folder_breadcrumb(self, folder_id: str, sep: str = " › ") -> str:
         """Render a folder's ancestry root→leaf as a breadcrumb string.

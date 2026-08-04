@@ -59,6 +59,7 @@ import time
 import weakref
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.channel_folders import lookup_channel_folder
 from kiro_crew.dashboard.state import _normalize_slot_key
 from kiro_crew.history import carry_provenance
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
@@ -216,6 +217,23 @@ def eligible_channel_sessions(
     return out
 
 
+def needs_default_filing(meta: dict[str, Any]) -> bool:
+    """True when per-channel default filing has never been applied to a session.
+
+    THE single definition, used both to decide whether a folder needs looking up
+    and to decide whether to apply one. Two separate decisions is what broke this
+    before: the lookup was skipped per-session but the resulting folder was then
+    applied per-NAMESPACE, so a conversation the user had moved to the top level
+    was re-filed from a folder resolved for a different conversation.
+
+    ``folder_id`` means the session currently sits in a folder;
+    ``channel_folder_filed`` means filing already ran and the user owns the
+    placement from here on — including the top level, where ``folder_id`` is
+    absent from the metadata line entirely.
+    """
+    return not (meta.get("folder_id") or meta.get("channel_folder_filed"))
+
+
 def surface_channel_session(
     state: "DashboardState",
     session_info: dict[str, Any],
@@ -223,6 +241,7 @@ def surface_channel_session(
     messages: list[dict[str, Any]],
     *,
     session_key: str = "",
+    folder_id: str = "",
 ) -> "_ChatSlot | None":
     """Create the dashboard slot for one channel session.
 
@@ -239,6 +258,13 @@ def surface_channel_session(
     surfaced but left unbound, so it shows the history without claiming to be
     two-way — a wrong key would route the user's replies to a session the
     channel never reads.
+
+    *folder_id* is the channel's configured session folder (see
+    :mod:`kiro_crew.dashboard.channel_folders`), applied only when the session
+    does not already carry a folder of its own — a conversation the user filed by
+    hand keeps where they put it. The caller withholds it for a conversation that
+    has already been filed once, so a later move (including a move back out to
+    the top level) is never undone; see :func:`reconcile_channel_slots`.
     """
     stem = session_info.get("key", "")
     if not stem or not is_channel_session_key(stem):
@@ -283,8 +309,21 @@ def surface_channel_session(
         slot.workspace = meta["workspace"]
     if meta.get("project"):
         slot.project = meta["project"]
+    if meta.get("channel_folder_filed"):
+        slot._channel_folder_filed = True
     if meta.get("folder_id"):
         slot.folder_id = meta["folder_id"]
+    elif folder_id and needs_default_filing(meta):
+        # Per-channel filing (off by default), applied on the pass that first
+        # surfaces the conversation. Re-tested here rather than trusting the
+        # caller: the folder is resolved once per NAMESPACE, so the same value
+        # reaches every pending conversation of that channel, and applying it to
+        # one that has already been filed would silently overwrite wherever the
+        # user moved it. `folder_id` is omitted from the metadata line when
+        # empty, so the marker is the only thing that distinguishes "moved to the
+        # top level" from "never filed".
+        slot.folder_id = folder_id
+        slot._channel_folder_filed = True
     if meta.get("pinned"):
         slot.pinned = True
 
@@ -698,6 +737,18 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
         # Off the loop: clear_closed takes the cross-process file lock.
         await loop.run_in_executor(None, _clear_stale_closed)
 
+    # Per-channel session filing (off unless configured). Resolved once per
+    # namespace, and only for conversations that still need it, so a pass with
+    # nothing to file reads no config at all.
+    folder_ids: dict[str, str] = {}
+    for s in pending:
+        key = s.get("key", "")
+        if not needs_default_filing(metadata.get(key) or {}):
+            continue
+        ns = channel_namespace_of(key)
+        if ns and ns not in folder_ids:
+            folder_ids[ns] = await lookup_channel_folder(state, ns)
+
     surfaced = 0
     # A tab can be closed around this pass — resumed from History and
     # dismissed while the executor work was in flight, or dismissed just
@@ -713,6 +764,14 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
     # call below.
     for s in pending:
         key = s.get("key", "")
+        # Per-SESSION, not per-namespace: `folder_ids` is resolved once per
+        # channel, so this is what keeps an already-filed conversation from
+        # being handed another conversation's folder.
+        to_file = (
+            folder_ids.get(channel_namespace_of(key), "")
+            if needs_default_filing(metadata.get(key) or {})
+            else ""
+        )
         if _tombstone_blocks(state, s):
             logger.debug("channel reconcile: %s closed by tombstone, skipping", key)
             continue
@@ -725,14 +784,46 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
             # Leave it for the next pass.
             logger.debug("channel reconcile: %s transcript unread, deferring", key)
             continue
+        if to_file:
+            # Persist the placement BEFORE the slot becomes visible.
+            # ``get_or_create_slot`` pushes a slots update, so the moment this
+            # conversation is surfaced the user can see it and drag it somewhere
+            # else — and their move saves immediately. A merge landing AFTER that
+            # would overwrite the move with the default folder and the next
+            # restart would put the session back, losing a user action. Writing
+            # first means nothing of ours can land after theirs.
+            #
+            # Under `key`, the session key this pass read its metadata from, so
+            # the record the skip decision consults is the record that gets the
+            # marker. Metadata-only merge, off the loop: it must not rewrite the
+            # transcript the channel side appends to, and it takes a
+            # cross-process lock.
+            try:
+                await asyncio.to_thread(
+                    log.update_metadata,
+                    key,
+                    {"folder_id": to_file, "channel_folder_filed": True},
+                )
+            except Exception:
+                # Could not record it, so do not apply it in memory either:
+                # an in-memory-only placement would be lost on restart and
+                # filed again by the next pass. Leave the conversation unfiled
+                # and let a later pass retry.
+                logger.warning(
+                    "channel reconcile: could not persist folder filing for %s", key,
+                    exc_info=True,
+                )
+                to_file = ""
         try:
-            if surface_channel_session(
+            slot = surface_channel_session(
                 state,
                 s,
                 metadata.get(key) or {},
                 transcripts[key],
                 session_key=state.sessions.channel_key_for_stem(key) if state.sessions else "",
-            ):
+                folder_id=to_file,
+            )
+            if slot:
                 surfaced += 1
         except Exception:
             logger.warning("channel reconcile: failed to surface %s", key, exc_info=True)
