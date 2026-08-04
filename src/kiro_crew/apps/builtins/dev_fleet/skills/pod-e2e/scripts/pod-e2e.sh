@@ -61,29 +61,44 @@ fi
 
 # Resolve the checkout path for $NAME via `git worktree list --porcelain`.
 # We search from either KIROCREW_POD_REPO or the script's own directory.
+#
+# This MUST mirror pod/runtime.py resolve_checkout(), or the harness can test a
+# different checkout than `kirocrew pod up` booted — a silently wrong QA verdict.
+# That function builds one keyspace with dict.setdefault (first occurrence wins)
+# over each worktree's basename, absolute path and FULL branch name (minus
+# refs/heads/), then does exactly two lookups:
+#     wts.get(name) or wts.get(f"feat/{name}")
+# Both are EXACT. Matching a branch *leaf* instead would pick `fix/foo` for
+# NAME=foo when the CLI picks `feat/foo`.
 _resolve_checkout() {
   local name="$1"
   local repo_hint="${KIROCREW_POD_REPO:-$HERE}"
   local wt_path=""
+  # Stage 1 = wts.get(name): first worktree, in porcelain order, whose directory
+  # basename or whose exact branch equals $name. Basename is checked as the
+  # `worktree` line is read, mirroring setdefault's within-record ordering.
   wt_path=$(git -C "$repo_hint" worktree list --porcelain 2>/dev/null | awk -v n="$name" '
-    /^worktree / { path = substr($0, 10) }
-    /^branch /   {
-      if (path != "") {
-        bname = path
-        gsub(/.*\//, "", bname)
-        if (bname == n) { print path; exit }
-      }
+    /^worktree / {
+      path = substr($0, 10)
+      bname = path
+      sub(/.*\//, "", bname)
+      if (bname == n) { print path; exit }
+      next
+    }
+    /^branch / {
+      ref = $2
+      sub(/^refs\/heads\//, "", ref)
+      if (ref == n) { print path; exit }
     }
   ')
-  # Fallback: match by directory basename (bare worktree, no branch line yet)
+  # Stage 2 = wts.get("feat/" + name): exact `feat/<name>` branch only.
   if [ -z "$wt_path" ]; then
     wt_path=$(git -C "$repo_hint" worktree list --porcelain 2>/dev/null | awk -v n="$name" '
-      /^worktree / {
-        path = substr($0, 10)
-        # basename match
-        bname = path
-        gsub(/.*\//, "", bname)
-        if (bname == n) { print path; exit }
+      /^worktree / { path = substr($0, 10) }
+      /^branch / {
+        ref = $2
+        sub(/^refs\/heads\//, "", ref)
+        if (ref == "feat/" n) { print path; exit }
       }
     ')
   fi
@@ -108,9 +123,49 @@ PW_RUNNER="$HERE/pod-playwright.py"
 # Artifact dir for this run (logs + results).
 # NAME was validated above (pod-name charset, no slashes or dots) so it
 # cannot traverse outside .e2e-artifacts; belt-and-braces verify anyway.
-ARTIFACT_DIR="$HOME/.kirocrew-pods/.e2e-artifacts/$NAME"
-case "$(readlink -f -- "$ARTIFACT_DIR" 2>/dev/null || echo "$ARTIFACT_DIR")" in
-  "$HOME/.kirocrew-pods/.e2e-artifacts/"*) : ;;
+#
+# The verification must resolve BOTH sides the same way. It previously resolved
+# the candidate with `readlink -f` but compared it against a pattern built from
+# the UNRESOLVED $HOME, so on any host where ~ is a symlink (the standard Amazon
+# dev-desktop layout, /home/<u> -> /local/home/<u>) the resolved candidate began
+# /local/home/... while the pattern began /home/... — every path "escaped" and
+# the suite aborted with exit 65 before running anything.
+#
+# `readlink -f` is also a GNU extension: BSD/macOS readlink has no -f before
+# Ventura, so it silently fell back to the unresolved path there. _realpath_dir
+# resolves physically with cd -P/pwd -P (POSIX) and tolerates a not-yet-created
+# leaf by resolving the deepest existing ancestor.
+_realpath_dir() {
+  local p="$1" tail="" seg out=""
+  while [ ! -d "$p" ] && [ "$p" != "/" ] && [ -n "$p" ]; do
+    tail="$(basename -- "$p")${tail:+/$tail}"
+    p="$(dirname -- "$p")"
+  done
+  if [ -d "$p" ]; then
+    p="$(cd -P -- "$p" 2>/dev/null && pwd -P)" || return 1
+  fi
+  out="${p%/}"
+  # Lexically normalise the not-yet-created tail. `readlink -f` collapses `..`;
+  # a bare cd/pwd loop does not, and re-appending the tail verbatim would let
+  # `<base>/../../x` keep the base as a literal prefix and satisfy a containment
+  # check it should fail. Collapse here so the guard stays at least as strict as
+  # the GNU implementation it replaces.
+  local IFS=/
+  for seg in $tail; do
+    case "$seg" in
+      '' | .) ;;
+      ..) out="${out%/*}" ;;
+      *) out="$out/$seg" ;;
+    esac
+  done
+  printf '%s\n' "${out:-/}"
+}
+
+E2E_ARTIFACT_BASE="$(_realpath_dir "$HOME/.kirocrew-pods/.e2e-artifacts")" \
+  || E2E_ARTIFACT_BASE="$HOME/.kirocrew-pods/.e2e-artifacts"
+ARTIFACT_DIR="$E2E_ARTIFACT_BASE/$NAME"
+case "$(_realpath_dir "$ARTIFACT_DIR")" in
+  "$E2E_ARTIFACT_BASE"/*) : ;;
   *) echo "FATAL: artifact dir escapes .e2e-artifacts: $ARTIFACT_DIR" >&2; exit 65 ;;
 esac
 mkdir -p "$ARTIFACT_DIR"
