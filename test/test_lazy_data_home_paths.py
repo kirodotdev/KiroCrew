@@ -166,6 +166,10 @@ def _frozen_path_constants() -> list[str]:
     for py in sorted(SRC.rglob("*.py")):
         if "__pycache__" in py.parts:
             continue
+        # App-internal test harnesses legitimately capture the real data-home
+        # path before monkeypatching (e.g. spec_builder's _REAL_STATE_DIR).
+        if "tests" in py.parts:
+            continue
         try:
             tree = ast.parse(py.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover - syntax is enforced elsewhere

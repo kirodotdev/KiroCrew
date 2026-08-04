@@ -88,7 +88,7 @@ class TaskRunner:
         fresh: bool = False,
         global_timeout: float = 0.0,
         token_budget: int = 0,
-        max_parallel_steps: int = _MAX_PARALLEL_TASKS,  # 3
+        max_parallel_steps: int | None = None,  # None/0 -> host-safe ceiling
     ) -> None: ...
 
     # Delegates to module-level functions: task_planner.decompose(),
@@ -223,40 +223,54 @@ Steps can be marked with `force_approval: true` in the spec. These gates block e
 - Useful for destructive operations (deploy, delete, publish)
 - Frontend: inline approval buttons rendered in project detail view
 
-## Parallel Batch Execution
+## Parallel Execution
 
-Parallel groups are executed in fixed-size batches to prevent resource
-exhaustion from simultaneous kiro-cli cold starts. Each kiro-cli process
-spawns ~4-5 MCP server child processes, so N parallel tasks = ~5N processes
-all initializing at once.
+Parallel groups are throttled to prevent resource exhaustion from simultaneous
+kiro-cli cold starts. Each kiro-cli process spawns ~4-5 MCP server child
+processes, so N parallel tasks = ~5N processes all initializing at once.
 
-The resolved tasks in a parallel group are chunked into batches of
-`_MAX_PARALLEL_TASKS` (3) and each batch runs via
-`asyncio.gather(..., return_exceptions=True)`; the next batch starts only
-after the current one completes (`taskrunner.py`):
+Every resolved task in a parallel group is dispatched at once and an
+`asyncio.Semaphore` caps how many run simultaneously, so a slot freed by a
+finished task is refilled immediately (`taskrunner.py`):
 
 ```python
-for batch_start in range(0, len(resolved), _MAX_PARALLEL_TASKS):
-    batch = resolved[batch_start : batch_start + _MAX_PARALLEL_TASKS]
-    batch_results = await asyncio.gather(
-        *(self._execute_single_task(run, t, history_key, session_key=...) for t in batch),
-        return_exceptions=True,
-    )
-    results.extend(batch_results)
+sem = asyncio.Semaphore(self._max_parallel_steps)
+
+async def _run_bounded(t: Task) -> bool:
+    async with sem:
+        return await self._execute_single_task(run, t, history_key, session_key=...)
+
+results = await asyncio.gather(
+    *(_run_bounded(t) for t in resolved),
+    return_exceptions=True,
+)
 ```
 
+The limit is `self._max_parallel_steps`, computed once in `__init__` as
+`min(taskrunner.max_parallel_steps, compute_max_subagents(cfg))`:
+
+- `compute_max_subagents` is the **host-safe ceiling** (derived from
+  `agent.subagent_auto_max`, clamped to host memory/CPU headroom). It exists to
+  prevent OOM, so it is always the upper bound.
+- A positive `taskrunner.max_parallel_steps` may only **lower** it (intentional
+  throttling for cost / rate limits). `0` or unset means "use the ceiling".
+- An explicit knob value can therefore never raise concurrency above the
+  host-safe maximum. A test that asserts a specific concurrency **must** pin
+  `compute_max_subagents`, or it measures the runner's hardware rather than the
+  knob — a small CI runner computes 3.
+
 Per-task sessions (`taskrunner:{task_id}:task{N}`) are reset in a `finally`
-block after the loop, so sessions are cleaned up even if `CancelledError`
-interrupts a batch.
+block after the gather, so sessions are cleaned up even if `CancelledError`
+interrupts it.
 
-There is no semaphore, per-index stagger delay, or `os.getloadavg()` load
-guard — batching is the sole throttling mechanism.
+There is no per-index stagger delay or `os.getloadavg()` load guard — the
+semaphore and the host-safe ceiling are the only throttling mechanisms.
 
-> **Note (possible code bug for the owner):** `__init__` accepts
-> `max_parallel_steps` and stores it as `self._max_parallel_steps`
-> (`taskrunner.py`), but the batch loop keys off the module constant
-> `_MAX_PARALLEL_TASKS`, so the stored knob does not currently affect the
-> batch size.
+**Superseded design.** Tasks were previously chunked into fixed batches of
+`_MAX_PARALLEL_TASKS` (3), with the next batch starting only after the whole
+current one finished — so one slow task left the rest of its batch's slots idle.
+The knob was read into `self._max_parallel_steps` but never consulted by that
+loop, so it had no effect on batch size.
 
 ## Runs Persistence
 
@@ -330,7 +344,7 @@ Loaded on `__init__` — survives gateway restarts.
 | `MAX_RECOVERIES` | 2 | Process crash recovery budget per step |
 | `MAX_REPLAN` | 2 | Plan revision attempts after step exhausts retries |
 | `MAX_TOTAL_TASKS` | 50 | Hard cap on total tasks (including replans) |
-| `_MAX_PARALLEL_TASKS` (in `taskrunner.py`) | 3 | Batch size for tasks in a parallel group |
+| `_MAX_PARALLEL_TASKS` (in `taskrunner.py`) | 3 | Ctor fallback only, used when `compute_max_subagents` raises; the live cap is `self._max_parallel_steps` |
 | `_MAX_CONCURRENT_TASKS` (in `taskrunner.py`) | 3 | Max simultaneous task runs |
 | `CONTEXT_COMPACT_PCT` | 80.0 | Compact threshold |
 | `TEST_TIMEOUT` | 5400 | 90 min for test command |

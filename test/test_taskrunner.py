@@ -3061,3 +3061,185 @@ class TestMaxParallelStepsClamp:
             runner = TaskRunner(sessions=sessions, auto_test=False, max_parallel_steps=0)
         # Falls back to _MAX_PARALLEL_TASKS (3) when the ceiling can't be computed.
         assert runner._max_parallel_steps == 3
+
+
+# ── Semaphore-based parallel scheduling (replaces batch loop) ──
+
+
+class TestSemaphoreParallelScheduling:
+    """Pin: _execute_tasks uses asyncio.Semaphore so that a finished slot is
+    refilled immediately -- a slow step must NOT block idle slots.
+
+    Regression: the old fixed-size batch loop caused batch-stall where one slow
+    step blocked the entire batch even when other slots were free.
+    """
+
+    @staticmethod
+    def _make_run(tmp_path: Path, n: int, task_id: str) -> TaskRun:
+        tasks = [Step(index=i, title=f"t{i}", description="d") for i in range(1, n + 1)]
+        run = TaskRun(
+            spec_path=str(tmp_path / "spec.md"),
+            spec_content="# spec",
+            tasks=tasks,
+            status="running",
+            task_id=task_id,
+            work_dir=str(tmp_path),
+        )
+        run.started_at = run.last_task_time = 1.0
+        return run
+
+    def _peak_tracker(self):
+        state = {"active": 0, "peak": 0}
+        lock = asyncio.Lock()
+
+        async def _fake_exec(run, task, history_key="", session_key="") -> bool:
+            async with lock:
+                state["active"] += 1
+                state["peak"] = max(state["peak"], state["active"])
+            await asyncio.sleep(0.02)  # hold slot so concurrency overlaps
+            async with lock:
+                state["active"] -= 1
+            task.status = StepStatus.PASSED
+            task.result = "ok"
+            return True
+
+        return state, _fake_exec
+
+    @pytest.mark.asyncio
+    async def test_semaphore_caps_concurrency_at_knob(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Peak concurrency == max_parallel_steps (3) when 8 tasks are dispatched.
+
+        The host-safe ceiling is pinned high on purpose. A small CI runner
+        computes a ceiling of 3, which equals the knob under test — the
+        assertion would then hold even if the knob were ignored entirely, so
+        without this the test proves nothing.
+        """
+        monkeypatch.setattr("kiro_crew.taskrunner.compute_max_subagents", lambda _cfg: 64)
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(
+            sessions=sessions, auto_test=False, work_dir=tmp_path, max_parallel_steps=3
+        )
+        state, fake_exec = self._peak_tracker()
+        runner._execute_single_task = fake_exec  # type: ignore[assignment]
+
+        run = self._make_run(tmp_path, n=8, task_id="cap_test")
+        await runner._execute_tasks(run, history_key="")
+
+        assert state["peak"] == 3, f"expected peak concurrency 3, got {state['peak']}"
+        assert all(t.status == StepStatus.PASSED for t in run.tasks)
+
+    @pytest.mark.asyncio
+    async def test_host_ceiling_still_caps_the_knob(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The host-safe ceiling is the upper bound; the knob may only lower it.
+
+        Counterpart to the two tests above, which pin the ceiling out of the way
+        to isolate the knob. This one pins it BELOW the knob to prove the OOM
+        guard still wins — the property those tests deliberately stop covering.
+        """
+        monkeypatch.setattr("kiro_crew.taskrunner.compute_max_subagents", lambda _cfg: 2)
+        runner = TaskRunner(
+            sessions=_make_mock_sessions(),
+            auto_test=False,
+            work_dir=tmp_path,
+            max_parallel_steps=6,
+        )
+        assert runner._max_parallel_steps == 2
+
+    @pytest.mark.asyncio
+    async def test_knob_lifts_above_legacy_cap_of_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A knob of 6 allows peak concurrency of 6, proving the legacy cap is gone.
+
+        The host-safe ceiling is pinned high because it is derived from the
+        machine's memory/CPU headroom: a small CI runner computes 3 — exactly the
+        legacy value this test exists to disprove — so leaving it live makes the
+        assertion depend on the runner's size rather than on the knob. The
+        ceiling's own authority is covered by
+        ``test_host_ceiling_still_caps_the_knob``.
+        """
+        monkeypatch.setattr("kiro_crew.taskrunner.compute_max_subagents", lambda _cfg: 64)
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(
+            sessions=sessions, auto_test=False, work_dir=tmp_path, max_parallel_steps=6
+        )
+        state, fake_exec = self._peak_tracker()
+        runner._execute_single_task = fake_exec  # type: ignore[assignment]
+
+        run = self._make_run(tmp_path, n=8, task_id="lift_test")
+        await runner._execute_tasks(run, history_key="")
+
+        assert state["peak"] == 6, f"expected peak concurrency 6, got {state['peak']}"
+        assert all(t.status == StepStatus.PASSED for t in run.tasks)
+
+    @pytest.mark.asyncio
+    async def test_no_batch_stall_slot_refilled_immediately(self, tmp_path: Path) -> None:
+        """KEY REGRESSION TEST: With limit=2 and 4 tasks where task 1 is slow,
+        task 3 must start BEFORE task 1 finishes (it fills the slot vacated by
+        task 2). The old batch loop would block because task 1 and 2 were in
+        the same batch, and task 3 could only start after that batch completed.
+        """
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(
+            sessions=sessions, auto_test=False, work_dir=tmp_path, max_parallel_steps=2
+        )
+
+        # Events to sequence and observe ordering
+        events: list[str] = []
+        task2_done = asyncio.Event()
+        task3_started = asyncio.Event()
+        task1_may_finish = asyncio.Event()
+
+        async def _fake_exec(run, task, history_key="", session_key="") -> bool:
+            idx = task.index
+            events.append(f"start:{idx}")
+            if idx == 1:
+                # Slow task: waits until told to finish
+                await task1_may_finish.wait()
+            elif idx == 2:
+                # Fast task: signals done quickly
+                await asyncio.sleep(0.01)
+                task2_done.set()
+            elif idx == 3:
+                # Must start while task 1 is still running (refills task 2's slot)
+                task3_started.set()
+                await asyncio.sleep(0.01)
+            else:
+                await asyncio.sleep(0.01)
+            events.append(f"end:{idx}")
+            task.status = StepStatus.PASSED
+            task.result = "ok"
+            return True
+
+        runner._execute_single_task = _fake_exec  # type: ignore[assignment]
+        run = self._make_run(tmp_path, n=4, task_id="stall_test")
+
+        async def _orchestrate():
+            # Wait for task 2 to finish, then verify task 3 starts before task 1 ends
+            await task2_done.wait()
+            await asyncio.sleep(0.05)  # give task 3 time to acquire semaphore
+            assert task3_started.is_set(), (
+                "BATCH STALL: task 3 did not start after task 2 freed its slot; "
+                "this means the scheduler is still using fixed batches"
+            )
+            # Now let task 1 finish
+            task1_may_finish.set()
+
+        # Run both concurrently
+        await asyncio.gather(
+            runner._execute_tasks(run, history_key=""),
+            _orchestrate(),
+        )
+
+        assert all(t.status == StepStatus.PASSED for t in run.tasks)
+        # task 3 started before task 1 ended -- proving slot was refilled immediately
+        start3_idx = events.index("start:3")
+        end1_idx = events.index("end:1")
+        assert start3_idx < end1_idx, (
+            f"task 3 started at index {start3_idx} but task 1 ended at {end1_idx}; "
+            "expected task 3 to start BEFORE task 1 finishes (slot refill)"
+        )
