@@ -36,6 +36,78 @@ _SIBLING_DIR_NAME = "KiroCrewWebsite"
 _INSTALL_TIMEOUT = 300
 _BUILD_TIMEOUT = 300
 
+# Env vars that select the frontend EDITION composition root (see
+# ``website/vite.config.ts`` ``editionExtensionPlugin`` and
+# ``website/docs/extension-seams.md``). ``KIROCREW_EDITION_DIR`` names the
+# edition's own ``extensions.tsx``; ``KIROCREW_ALLOW_EDITION=1`` is the
+# fail-closed opt-in that must accompany it.
+_EDITION_DIR_ENV = "KIROCREW_EDITION_DIR"
+_EDITION_OPT_IN_ENV = "KIROCREW_ALLOW_EDITION"
+# Composition-root filenames ``editionExtensionPlugin`` accepts, in its order.
+_EDITION_ENTRIES = ("extensions.tsx", "extensions.ts")
+
+
+def edition_sources_missing() -> bool:
+    """True when an edition dir is configured but its composition root is gone.
+
+    ``vite.config.ts`` resolves the entry EAGERLY and throws when the dir holds no
+    ``extensions.tsx``/``.ts``, deliberately: a silent degrade would ship an
+    edition build with none of its edition behavior. That is the right call at
+    build time and the wrong outcome for a RUNTIME rebuild, where the same
+    condition is routine — a packaged install (wheel or bundle) ships the built
+    ``dist`` but not the edition's TypeScript sources.
+
+    Rebuilding there can only produce a stock SPA staged over the edition
+    dashboard, so the caller SKIPS instead, leaving the shipped bundle in place.
+    Absent ``KIROCREW_EDITION_DIR`` this is ``False`` and the stock path is
+    untouched.
+    """
+    edition_dir = os.environ.get(_EDITION_DIR_ENV)
+    if not edition_dir:
+        return False
+    root = Path(edition_dir)
+    return not any((root / name).is_file() for name in _EDITION_ENTRIES)
+
+
+def _edition_build_env() -> Optional[dict[str, str]]:
+    """Environment for ``npm run build``, or ``None`` to inherit unchanged.
+
+    The runtime rebuild (``POST /api/update``, ``kirocrew update``, and the
+    gateway's auto-apply) shells ``npm run build`` in the SAME checkout the
+    edition was built from. Vite reads the edition seam from the environment, so
+    an inherited-but-incomplete environment decides which edition gets built —
+    and both failure modes are silent:
+
+    A downstream edition sets both vars in its own build script. If the rebuild
+    dropped them, it would compile the STOCK SPA over the served ``static/dist``
+    and silently replace the edition dashboard with upstream's.
+
+    **The opt-in is READ, never synthesized.** ``KIROCREW_ALLOW_EDITION=1`` is the
+    fail-closed gate on compiling an edition's proprietary sources into
+    ``website/dist``, which is staged into the packaged wheel — a published
+    release cannot be unpublished, so that is a one-way door and
+    ``website/AGENTS.md`` says never to set the opt-in outside the edition's own
+    build. Forcing it here would defeat exactly that gate: an edition dir left in
+    the environment without the opt-in would start producing edition-composed
+    packaged data instead of failing closed. So this returns ``None`` unless the
+    operator's own environment carries the opt-in, and vite's
+    ``KIROCREW_EDITION_DIR``-without-opt-in error still fires when it should.
+
+    Returning ``None`` also keeps the stock path byte-identical to inheriting
+    ``os.environ`` — the common case allocates nothing and changes nothing.
+    """
+    edition_dir = os.environ.get(_EDITION_DIR_ENV)
+    if not edition_dir:
+        return None
+    if os.environ.get(_EDITION_OPT_IN_ENV) != "1":
+        # Fail closed, deliberately: let vite raise its own explicit error rather
+        # than manufacturing consent to compile edition sources into the package.
+        return None
+    env = dict(os.environ)
+    env[_EDITION_DIR_ENV] = edition_dir
+    env[_EDITION_OPT_IN_ENV] = "1"
+    return env
+
 
 def _repo_root(kiro_crew_pkg_dir: Path) -> Path:
     """Return the repo root given the ``kiro_crew`` package directory.
@@ -193,6 +265,10 @@ def build_frontend_sync(
     lockfile) then ``npm run build`` in ``<proj>/website``, then copies
     ``website/dist`` into ``src/kiro_crew/static/dist``. Graceful no-op when
     there is no ``website/`` directory or ``npm`` is not installed.
+
+    The edition seam is threaded through the build (see
+    :func:`_edition_build_env`), so a downstream edition's rebuild recomposes THAT
+    edition rather than staging a stock bundle over it.
     """
     website_dir = proj_path / _DIR_NAME
     if not website_dir.is_dir():
@@ -200,6 +276,9 @@ def build_frontend_sync(
         return
     if not shutil.which("npm"):
         log("  ⚠️  npm not found — skipping frontend build")
+        return
+    if edition_sources_missing():
+        log("  ⚠️  Edition frontend sources not present — keeping the shipped dashboard")
         return
 
     log("  🔨 Building frontend (npm)…")
@@ -224,6 +303,7 @@ def build_frontend_sync(
         r = subprocess.run(
             ["npm", "run", "build"],
             cwd=str(website_dir), capture_output=True, timeout=_BUILD_TIMEOUT,
+            env=_edition_build_env(),
         )
     except subprocess.TimeoutExpired:
         log("  ⚠️  Frontend build timed out — dashboard may be stale")
@@ -246,6 +326,10 @@ async def build_frontend_async(
     timeouts + kill-on-timeout, then copies ``website/dist`` into
     ``src/kiro_crew/static/dist``. Graceful no-op when there is no
     ``website/`` directory or ``npm`` is not installed.
+
+    Threads the edition seam like the sync helper — this is the path
+    ``POST /api/update`` and the gateway auto-apply take, so an edition install
+    must not silently rebuild as stock here either.
     """
     proj_path = Path(proj)
     website_dir = proj_path / _DIR_NAME
@@ -259,6 +343,9 @@ async def build_frontend_async(
         return
     if not shutil.which("npm"):
         _warn("npm not found -- skipping frontend build")
+        return
+    if edition_sources_missing():
+        _warn("Edition frontend sources not present -- keeping the shipped dashboard")
         return
 
     install_args = (
@@ -291,6 +378,7 @@ async def build_frontend_async(
         cwd=str(website_dir),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        env=_edition_build_env(),
     )
     try:
         await asyncio.wait_for(npm_build.wait(), timeout=_BUILD_TIMEOUT)

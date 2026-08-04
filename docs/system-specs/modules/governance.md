@@ -879,8 +879,27 @@ effective ceiling across ALL scopes on the **host surface**, for the read-only
 Settings → Security viewer. It iterates `SCOPE_CATALOG` (so it auto-covers any
 scope a release or the companion registers), intersects each boot-frozen POLICY
 control with the host-surface PROFILE control using the model's own
-`_compose_controls`, and reports `{scope, archetype, governed, source, detail}`
-per scope plus `{version, has_policy, profile, unavailable}`.
+`_compose_controls`, and reports
+`{scope, archetype, governed, source, scope_note, detail}` per scope plus
+`{version, has_policy, profile, surface, other_bound_surfaces, unavailable}`.
+
+**A row describes ONE surface, and must say which.** The host profile governs
+in-process host actions, so it legitimately pins capabilities the host process
+never performs — `cron`, `messaging`, `spawn` — OFF, while the surfaces that do
+perform them enable them under their own profiles. Rendering such a row as an
+unqualified "disabled by policy" therefore reports a *working* feature as
+switched off. Two fields keep that honest:
+
+- **`scope_note`** — `host_profile` when the host-surface profile contributes to
+  the row (`source` of `profile` or `policy+profile`), so the value is that one
+  surface's posture; `policy_wide` when POLICY alone governs, which does apply to
+  every surface; `""` when ungoverned. A string enum, not a rendered sentence, so
+  the frontend maps it to a translated string and no English ships in a JSON body.
+- **`other_bound_surfaces`** — surface ids other than `host` that carry their own
+  bound profile (from `governance_profiles.bound_surfaces()`). **Names only**, no
+  control, count, or rule from those profiles, so the POSTURE-only boundary below
+  is unchanged. This answers the question a host-scoped row provokes: *is cron
+  really off, or is that just the host's ceiling?*
 
 **Posture, not contents (security boundary).** The serialized `detail` carries
 only POSTURE — set `mode`, entry COUNTS (`allow_count`/`deny_count`),
@@ -1343,7 +1362,9 @@ the `policy show` provenance reporting), `test_platform_admission.py`
 the per-transport inbound gates), `test_governance_channels_endpoint.py`
 (`/api/governance/channels`, incl. the eval-error→`null` distinction),
 `test_governance_policy_viewer.py` (`/api/governance/policy` posture-only, incl.
-`test_detail_never_leaks_rule_contents`), `test_governance_updates.py` (the
+`test_detail_never_leaks_rule_contents` and `TestScopeAttribution` — that a
+host-profile pin is reported as surface-scoped, not install-wide),
+`test_governance_updates.py` (the
 `updates` pins, the shared seam's fail-open-on-error disposition, and the
 tracked-remote resolution), and `test_computer_use_gate.py` (that the
 computer-use gate is audit-only and permits — see the section above).

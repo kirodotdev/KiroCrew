@@ -52,7 +52,11 @@ from kiro_crew.platform.governance import (
     _AndRuleset,
     _compose_controls,
 )
-from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY, resolve_active_scope
+from kiro_crew.platform.governance_profiles import (
+    HOST_SESSION_KEY,
+    bound_surfaces,
+    resolve_active_scope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -678,6 +682,68 @@ def _serialize_control(archetype: str, value: object) -> dict:
     return {}
 
 
+def _surface_scope_note(source: str, policy_control: object, archetype: str) -> str:
+    """Machine-readable caveat naming WHOSE ceiling a row describes.
+
+    Returns one of ``""`` / ``"host_profile"`` / ``"policy_wide"``:
+
+    * ``host_profile`` — the value is the HOST surface's posture alone. This is
+      what stops the viewer mis-reporting a host-only pin as an install-wide
+      "off": the shipped host profile disables ``cron``/``messaging``/``spawn``
+      because the host process performs none of them, while the cron and messaging
+      surfaces enable them under their own profiles.
+    * ``policy_wide`` — a Level-1 ceiling produces this value, and policy binds
+      every surface, so the row IS install-wide.
+    * ``""`` — ungoverned; there is nothing to caveat.
+
+    A composed ``policy+profile`` row needs the policy control itself, not just the
+    source label, to classify correctly. For a CAPABILITY, ``enabled`` composes by
+    AND across levels, so when the POLICY half is already off the result is off on
+    every surface however permissive the profile is — reporting that as
+    host-scoped would UNDER-claim a Level-1 ceiling, the same mislabel class this
+    function exists to prevent, merely inverted. Only the profile-decides case is
+    host-scoped.
+
+    A string enum rather than a rendered sentence: this is contract data the
+    frontend maps to a translated string, so it never ships English into a
+    JSON body (per the i18n gate) and stays stable across languages.
+    """
+    if source == "policy":
+        return "policy_wide"
+    if source == "policy+profile":
+        # A policy capability gate that is already OFF binds every surface.
+        if (
+            archetype == CAPABILITY
+            and isinstance(policy_control, CapabilityGate)
+            and not policy_control.enabled
+        ):
+            return "policy_wide"
+        return "host_profile"
+    if source == "profile":
+        return "host_profile"
+    return ""
+
+
+def _other_bound_surfaces() -> list[str]:
+    """Surface ids (excluding ``host``) that carry their OWN bound profile.
+
+    Names only, sorted — never a control, count, or rule from those profiles. The
+    viewer needs this to answer the question a host-only row provokes: "is cron
+    really off, or is that just the host's ceiling?" Listing which surfaces are
+    separately governed makes the host row's scope legible without widening the
+    endpoint's POSTURE-only contract (see :func:`_serialize_ruleset`).
+
+    Reads the same profile store ``resolve_active_scope`` uses, via the store's own
+    ``bound_surfaces()`` accessor. Best-effort: on any store error it returns
+    ``[]``, so the caveat degrades to absent rather than breaking the snapshot.
+    """
+    try:
+        return [s for s in bound_surfaces() if s != "host"]
+    except Exception:
+        logger.warning("could not enumerate bound surfaces", exc_info=True)
+        return []
+
+
 def build_governance_policy_snapshot() -> dict:
     """Compute the effective governance ceiling across ALL scopes (host surface).
 
@@ -690,6 +756,16 @@ def build_governance_policy_snapshot() -> dict:
     permits — the standalone default), so with NO policy and NO profile every
     scope is ``ungoverned`` and the response is byte-identical to a standalone
     host.
+
+    **The reported ceiling is the HOST surface's, and only the host's.** The host
+    profile governs in-process actions that no user-facing surface drives (app
+    activation, workspace admission), so it legitimately pins capabilities like
+    ``cron`` and ``messaging`` OFF — the host process itself never schedules a job
+    or sends a message. Those same capabilities are typically ENABLED for the
+    surfaces that do use them, under their own narrower profiles. A row therefore
+    describes one surface's posture, never the whole install's: ``scope_note``
+    carries that caveat per row (see :func:`_surface_scope_note`), so a viewer
+    cannot render "Disabled by policy" as though the feature were off everywhere.
 
     Synchronous — reading the ceiling is in-memory, but ``resolve_active_scope``
     may read profile files, so async callers MUST offload it (see
@@ -734,6 +810,7 @@ def build_governance_policy_snapshot() -> dict:
                     "archetype": spec.kind,
                     "governed": effective is not None,
                     "source": source,
+                    "scope_note": _surface_scope_note(source, policy_control, spec.kind),
                     "detail": _serialize_control(spec.kind, effective),
                 }
             )
@@ -747,6 +824,12 @@ def build_governance_policy_snapshot() -> dict:
             # The field makes that scope explicit so the viewer never overclaims to
             # be the whole effective ceiling for every surface.
             "surface": "host",
+            # Surfaces OTHER than host that carry their own profile. Names only.
+            # The host profile disables cron/messaging/spawn because the host
+            # process performs none of them; those surfaces enable what they need
+            # under these profiles. Naming them is what lets the viewer show a
+            # host row as one surface's posture instead of an install-wide "off".
+            "other_bound_surfaces": _other_bound_surfaces(),
             "unavailable": False,
             "scopes": scopes,
         }
@@ -758,6 +841,7 @@ def build_governance_policy_snapshot() -> dict:
             "has_policy": False,
             "profile": None,
             "surface": "host",
+            "other_bound_surfaces": [],
             "unavailable": True,
             "scopes": [],
         }

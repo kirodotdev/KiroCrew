@@ -263,6 +263,195 @@ class TestHostProfileIntersection:
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Whose ceiling a row describes (host-surface vs install-wide)
+# ──────────────────────────────────────────────────────────────────────────
+class TestScopeAttribution:
+    """A host-profile pin is ONE surface's posture, and must say so.
+
+    The host profile legitimately disables capabilities the host process never
+    performs (cron, messaging, spawn) while the surfaces that DO perform them
+    enable those under their own profiles. Rendering such a row as an unqualified
+    "Disabled by policy" reports a working feature as switched off, which is the
+    defect these tests pin: ``scope_note`` distinguishes a host-only pin from a
+    policy-wide one, and ``other_bound_surfaces`` names the surfaces that carry
+    their own ceiling.
+    """
+
+    def test_host_profile_pin_is_marked_host_scoped(self, profiles_dir):
+        # Exactly the shipped shape: a host profile that turns cron OFF because
+        # the host process schedules nothing, with no policy at all.
+        _install_ceiling(None)
+        _write(
+            profiles_dir,
+            "host",
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "capabilities": {"cron": {"enabled": False}},
+            },
+        )
+        row = _by_scope(build_governance_policy_snapshot())["capabilities.cron"]
+
+        assert row["governed"] is True
+        assert row["source"] == "profile"
+        assert row["detail"]["enabled"] is False
+        # The load-bearing assertion: the row is attributed to the host surface,
+        # so the viewer cannot render it as an install-wide "off".
+        assert row["scope_note"] == "host_profile"
+
+    def test_policy_pin_is_marked_install_wide(self, profiles_dir):
+        # A Level-1 ceiling DOES apply to every surface, so a policy-only row is
+        # correctly reported as install-wide — the caveat must not over-apply.
+        _install_ceiling(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"cron": {"enabled": False}},
+            }
+        )
+        row = _by_scope(build_governance_policy_snapshot())["capabilities.cron"]
+
+        assert row["source"] == "policy"
+        assert row["scope_note"] == "policy_wide"
+
+    def test_composed_row_is_policy_wide_when_policy_is_the_half_that_disables(
+        self, profiles_dir
+    ):
+        """The inverse mislabel: a Level-1 ceiling must not read as host-only.
+
+        ``CapabilityGate.enabled`` composes by AND, so a POLICY gate that is already
+        off makes the capability off on EVERY surface no matter how permissive the
+        profile is. Reporting that as host-scoped would under-claim an enterprise
+        ceiling on a security panel — the same defect as the original, inverted.
+        """
+        _install_ceiling(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"cron": {"enabled": False}},
+            }
+        )
+        # A permissive host profile ALSO governs the scope, so source is composed.
+        _write(
+            profiles_dir,
+            "host",
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "capabilities": {"cron": {"enabled": True}},
+            },
+        )
+        row = _by_scope(build_governance_policy_snapshot())["capabilities.cron"]
+
+        assert row["source"] == "policy+profile"
+        assert row["detail"]["enabled"] is False  # AND → off
+        assert row["scope_note"] == "policy_wide"
+
+    def test_composed_row_is_host_scoped(self, profiles_dir):
+        # policy ∩ host-profile: the profile half still makes the RESULT specific
+        # to the host surface, so it reports host_profile, not policy_wide.
+        _install_ceiling(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"spawn": {"enabled": True}},
+            }
+        )
+        _write(
+            profiles_dir,
+            "host",
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "capabilities": {"spawn": {"enabled": False}},
+            },
+        )
+        row = _by_scope(build_governance_policy_snapshot())["capabilities.spawn"]
+
+        assert row["source"] == "policy+profile"
+        assert row["detail"]["enabled"] is False
+        assert row["scope_note"] == "host_profile"
+
+    def test_ungoverned_rows_carry_no_caveat(self, profiles_dir):
+        _install_ceiling(None)
+        snap = build_governance_policy_snapshot()
+        assert all(row["scope_note"] == "" for row in snap["scopes"])
+
+    def test_every_row_carries_the_field(self, profiles_dir):
+        # The frontend switches on this value, so it must be present on EVERY row
+        # (a missing key would silently take the install-wide branch).
+        _install_ceiling({"version": 1, "boot": {"fail_closed": True}})
+        snap = build_governance_policy_snapshot()
+        assert snap["scopes"]
+        for row in snap["scopes"]:
+            assert "scope_note" in row, row["scope"]
+            assert row["scope_note"] in ("", "host_profile", "policy_wide")
+
+    def test_other_bound_surfaces_names_the_sibling_profiles(self, profiles_dir):
+        # This is what makes a host-scoped row legible: cron is off for the HOST,
+        # and cron-the-surface has its own profile where it is on.
+        _install_ceiling(None)
+        _write(
+            profiles_dir,
+            "host",
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "capabilities": {"cron": {"enabled": False}},
+            },
+        )
+        _write(
+            profiles_dir,
+            "cron",
+            {
+                "name": "cron",
+                "bind": {"type": "surface", "id": "cron"},
+                "capabilities": {"cron": {"enabled": True}},
+            },
+        )
+        snap = build_governance_policy_snapshot()
+
+        # host is EXCLUDED (it is the surface being reported), cron is named.
+        assert snap["other_bound_surfaces"] == ["cron"]
+        assert "host" not in snap["other_bound_surfaces"]
+
+    def test_other_bound_surfaces_excludes_app_and_task_binds(self, profiles_dir):
+        # Only surface binds are surfaces; an app/task profile is a different axis
+        # and naming it here would misdescribe the runtime.
+        _install_ceiling(None)
+        _write(
+            profiles_dir,
+            "app-x",
+            {"name": "app-x", "bind": {"type": "app", "id": "some-app"}},
+        )
+        _write(
+            profiles_dir,
+            "task-y",
+            {"name": "task-y", "bind": {"type": "task", "id": "some-task"}},
+        )
+        snap = build_governance_policy_snapshot()
+        assert snap["other_bound_surfaces"] == []
+
+    def test_unavailable_response_still_carries_the_field(self, profiles_dir, monkeypatch):
+        # The fail-safe branch is a separate literal, so it needs its own check —
+        # the frontend reads the key unconditionally.
+        #
+        # Patch the name BOUND IN THE HANDLER: security.py does `from ... import
+        # resolve_active_scope`, so patching governance_profiles' own attribute
+        # leaves the handler calling the original and the snapshot SUCCEEDS —
+        # which would make this test pass vacuously against the success branch.
+        import kiro_crew.dashboard.handlers.security as sec
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("resolution glitch")
+
+        monkeypatch.setattr(sec, "resolve_active_scope", _boom)
+        snap = build_governance_policy_snapshot()
+        assert snap["unavailable"] is True
+        assert snap["other_bound_surfaces"] == []
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Endpoint behavior (GET-only, fail-safe for display)
 # ──────────────────────────────────────────────────────────────────────────
 class TestEndpoint:

@@ -1112,13 +1112,29 @@ function useThemeState(): ThemeContextValue {
       return
     }
     if (!customThemesLoaded) return
-    if (
-      colorTheme.startsWith('custom-') &&
-      !customThemeDataMap.has(colorTheme.slice('custom-'.length))
-    ) {
-      setColorTheme(DEFAULT_COLOR_THEME)
+    //   3. A custom-<slug> that a REGISTERED theme shadows. The pack is still
+    //      installed, so case 2 does not fire, but the pack row is filtered out of
+    //      `allThemes` — leaving the user on the near-unstyled pack rendering with
+    //      no selected row in the picker and no way back. Migrate to the registered
+    //      slug, which is the same theme properly styled, rather than resetting to
+    //      the default and losing their choice entirely.
+    //      Scoped to INSTALLED packs, matching the `allThemes` filter: an
+    //      editor-created theme is never filtered out, so it is still selectable
+    //      and must not be migrated away from the user.
+    if (colorTheme.startsWith('custom-')) {
+      const slug = colorTheme.slice('custom-'.length)
+      const shadowed =
+        REGISTERED_THEMES.some(t => t.value === slug) &&
+        customThemes.some(t => t.value === colorTheme && t.installed)
+      if (shadowed) {
+        setColorTheme(slug)
+        return
+      }
+      if (!customThemeDataMap.has(slug)) {
+        setColorTheme(DEFAULT_COLOR_THEME)
+      }
     }
-  }, [customThemesLoaded, colorTheme, customThemeDataMap, setColorTheme])
+  }, [customThemesLoaded, colorTheme, customThemeDataMap, customThemes, setColorTheme])
 
   /** Add a new custom theme via API, inject CSS, and select it. */
   const addCustomTheme = useCallback(async (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => {
@@ -1143,10 +1159,34 @@ function useThemeState(): ThemeContextValue {
     broadcastCustomThemesChanged()
   }, [colorTheme, setColorTheme, loadCustomThemes])
 
-  // Combined themes list: built-in + custom. `builtinThemes()` (not `THEMES`) so
-  // a descriptive built-in name is resolved for the current language on every
-  // render; every consumer reads `allThemes`, so none of them needs a resolver.
-  const allThemes: ThemeEntry[] = [...builtinThemes(), ...REGISTERED_THEMES, ...customThemes]
+  // Combined themes list: built-in + registered + custom. `builtinThemes()` (not
+  // `THEMES`) so a descriptive built-in name is resolved for the current language
+  // on every render; every consumer reads `allThemes`, so none of them needs a
+  // resolver.
+  //
+  // An installed pack whose slug matches a REGISTERED theme is dropped, because
+  // the two would render as two picker rows for one theme and the pack row is the
+  // broken one. `registerTheme()` de-duplicates against `THEMES` and
+  // `REGISTERED_THEMES`, but an installed pack arrives asynchronously from
+  // `GET /api/themes` — long after registration — so it cannot be caught there.
+  // The values differ (`lcars` vs `custom-lcars`), which is exactly why nothing
+  // flagged it: a registered theme's CSS is keyed to `[data-theme="lcars-dark"]`
+  // while a pack renders under `[data-theme="custom-lcars-dark"]`, so the pack
+  // copy shows only the flat variables in its `variables.json` and loses every
+  // structural rule the registered theme ships. Registration wins: it is the
+  // build-time contribution that carries the real stylesheet.
+  // Scoped to INSTALLED packs. An editor-created custom theme that happens to
+  // share a slug is the user's own object with edit/delete affordances keyed off
+  // this list, so filtering it would hide it from the editor with no way to reach
+  // or remove it — a worse failure than the duplicate row.
+  const registeredSlugs = new Set(REGISTERED_THEMES.map(t => t.value))
+  const allThemes: ThemeEntry[] = [
+    ...builtinThemes(),
+    ...REGISTERED_THEMES,
+    ...customThemes.filter(
+      t => !(t.installed && registeredSlugs.has(t.value.replace(/^custom-/, ''))),
+    ),
+  ]
 
   const markOnboarded = useCallback(() => {
     safeSetItem('mc-onboarded', '1')

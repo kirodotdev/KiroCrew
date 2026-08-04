@@ -370,6 +370,13 @@ export interface GovernanceScope {
   /** false = neither policy nor profile governs it → the scope permits. */
   governed: boolean
   source: 'policy' | 'profile' | 'policy+profile' | 'ungoverned'
+  /** WHOSE ceiling this row describes, so a host-only pin is not read as
+   *  install-wide. `host_profile` = the host-surface profile contributes, so the
+   *  value is that ONE surface's posture (the host profile disables cron and
+   *  messaging because the host process performs neither; the cron and messaging
+   *  surfaces enable them under their own profiles). `policy_wide` = policy alone
+   *  governs, which applies to every surface. Absent/'' = ungoverned. */
+  scope_note?: '' | 'host_profile' | 'policy_wide'
   detail: GovernanceScopeDetail
 }
 
@@ -384,6 +391,10 @@ export interface GovernancePolicyData {
   /** The surface this snapshot resolved (always "host"); narrower per-surface/
    *  app/task profiles can tighten a scope further at runtime. */
   surface?: string
+  /** Surfaces OTHER than host that carry their own bound profile — names only.
+   *  Rendered so a reader can see that a host row's "disabled" is one surface's
+   *  posture, not the whole install's. */
+  other_bound_surfaces?: string[]
   /** True when governance resolution failed — the viewer shows a soft notice. */
   unavailable: boolean
   scopes: GovernanceScope[]
