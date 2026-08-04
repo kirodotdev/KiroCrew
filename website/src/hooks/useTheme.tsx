@@ -993,6 +993,16 @@ function useThemeState(): ThemeContextValue {
     bridge?.setThemeMode?.(mode)
   }, [mode])
 
+  // Sync the Windows titleBarOverlay colors whenever the resolved dark/light
+  // mode changes. The overlay strip must match the dashboard chrome at all
+  // times; sending on `resolved` (not `mode`) handles Auto switching correctly.
+  useEffect(() => {
+    const bridge = (window as unknown as {
+      electronAPI?: { setTitleBarOverlayTheme?: (mode: string) => void }
+    }).electronAPI
+    bridge?.setTitleBarOverlayTheme?.(resolved)
+  }, [resolved])
+
   // Report the resolved accent to the Electron shell (if present) so the NEXT
   // launch's boot splash (loading.html) paints in the user's chosen colour.
   // Reads the computed --accent after paint; a no-op in a plain browser.

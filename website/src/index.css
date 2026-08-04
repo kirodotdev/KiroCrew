@@ -1421,6 +1421,13 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 /* Fullscreen: AppKit hides the traffic lights, so the clearance inset drops
    and the branding sits flush left again (back to the header's own pl-5). */
 .mac-electron.mac-fullscreen header.topbar-glass{padding-left:1.25rem}
+
+/* ── Frameless Electron window (Windows) ──
+   titleBarOverlay places native caption controls (min/max/close) in a 138px
+   overlay strip at the top-right of the window. Inset the header's right side
+   so interactive elements (bell, settings, actions) stay clear of the overlay.
+   Keep 138px in sync with WIN_CAPTION_OVERLAY_WIDTH in src/lib/electron.ts. */
+.win-electron header.topbar-glass{padding-right:142px}
 /* Embedded remote pane (option B): the pane is a separate document loaded in an
    iframe, so its SPA can't see Electron — `isMacElectron` is false inside it and
    the `.mac-electron` rule never applies. The parent relays whether it is a

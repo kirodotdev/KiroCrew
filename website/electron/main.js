@@ -291,10 +291,10 @@ function quitOtherApp(appName) {
 // Function declarations are hoisted, so the helpers defined further down this
 // file are available here.
 //
-// Platforms without lsof//bin/ps (Windows) resolve to "unknown", which reuses.
-// That is the safe direction: reuse can never produce two gateways on one data
-// home, so the cross-app mutex still holds — only the eviction prompt is lost,
-// and eviction was already darwin-only (canTakeover below).
+// On Windows there is no lsof/ps, so classifyPortOwner returns "unknown" and
+// the caller reuses the port rather than force-killing an owner it cannot
+// identify. A Windows-native netstat/taskkill owner probe is a follow-up
+// (tracked separately) — it needs runtime verification on real Windows.
 function probeGatewayPortOwner(port) {
   return classifyPortOwner(port, {
     getListenPids: _lsofListenPids,
@@ -556,6 +556,17 @@ function spawnGateway(resolve) {
           if (fs.existsSync(pyExe)) {
             spawnBin = pyExe;
             spawnArgs = ["-s", "-m", "kiro_crew", ...spawnArgs];
+          } else {
+            // Bundled layout is present but python.exe is missing/corrupted.
+            // Surface this as a clear error instead of letting spawn() hang or
+            // emit a cryptic ENOENT for the .cmd shim.
+            const errMsg = `Bundled Python interpreter not found at ${pyExe}. `
+              + `The installation may be corrupted — reinstall the app.`;
+            glog(`spawn ERROR: ${errMsg}`);
+            gatewayStartFailure = { error: errMsg };
+            sendStatus(`Gateway failed: ${errMsg}`);
+            resolve(false);
+            return;
           }
         }
         const child = spawn(spawnBin, spawnArgs, {
@@ -622,14 +633,37 @@ function spawnGateway(resolve) {
  * Gracefully stop the embedded gateway and await its exit (POST /api/shutdown
  * -> SIGTERM -> SIGKILL). Core logic lives in gateway-stop.js for testability;
  * this thin wrapper binds the module-level child process + config.
+ *
+ * Uses call-time home resolution (secretCandidates) rather than the boot-time
+ * KIROCREW_HOME pin, because on the migration launch the boot-time dir may
+ * have been deleted by the backend — the secret lives in whichever candidate
+ * still exists at shutdown time.
  */
 async function stopGatewayGracefully({ timeoutMs = 15000 } = {}) {
   const proc = gatewayProcess;
   if (!proc || proc.exitCode !== null) { gatewayProcess = null; return; }
   console.log("Stopping gateway gracefully...");
+  // Resolve the secret location at call time: try each candidate in order
+  // (canonical first, legacy second) so graceful stop works even when the
+  // boot-time home was moved/deleted during migration.
+  // Resolve the secret location at call time: a migration may have moved or
+  // deleted the boot-time home, and a partial migration can leave BOTH a
+  // canonical and a legacy `.local_secret`. Collect every readable candidate
+  // value and let gateway-stop POST each one — the gateway answers 200 only to
+  // the secret it actually loaded, so a stale copy can't force a hard SIGTERM.
+  const candidates = secretCandidates();
+  const kirocrewHome = path.dirname(candidates[0]); // canonical dir (for logs/SIGTERM path)
+  const secrets = [];
+  for (const candidate of candidates) {
+    try {
+      const value = fs.readFileSync(candidate, "utf8").trim();
+      if (value) secrets.push(value);
+    } catch { /* candidate absent/unreadable */ }
+  }
   await _stopGatewayGracefully(proc, {
     backendUrl: BACKEND_URL,
-    kirocrewHome: KIROCREW_HOME,
+    kirocrewHome,
+    secrets,
     timeoutMs,
   });
   gatewayProcess = null;
@@ -1150,15 +1184,17 @@ function setupWindowContents(win, backendUrl) {
   view.webContents.on("page-title-updated", (e) => { e.preventDefault(); applyTitle(); });
 
   view.webContents.on("did-finish-load", () => {
-    // macOS + Linux only: the frameless window needs an injected drag region so
-    // the dashboard header can move the window. Windows uses a native title bar,
-    // which already provides dragging — injecting an app-region bar over the
-    // header would only risk swallowing clicks, so skip it there.
-    if (!IS_WIN) {
+    // macOS + Windows + Linux (non-native-frame): the frameless window needs
+    // an injected drag region so the dashboard header can move the window.
+    // On macOS titleBarStyle:"hidden" makes the whole window frameless; on
+    // Windows titleBarOverlay provides caption controls but no drag area.
+    // The drag bar is pointer-events:none so clicks pass through to the SPA;
+    // interactive controls are marked no-drag so they remain clickable.
+    if (IS_MAC || IS_WIN) {
       view.webContents.insertCSS(`
         #electron-drag-bar {
           position: fixed;
-          top: 0; left: 0; right: 0;
+          top: 0; left: 0; right: ${IS_WIN ? '138px' : '0'};
           height: 42px;
           -webkit-app-region: drag;
           z-index: 99999;
@@ -1276,14 +1312,20 @@ function createWindow() {
     minHeight: 600,
     backgroundColor: "#0f1117",
   };
-  // Frameless chrome is macOS-only: the dashboard's 42px header doubles as
-  // the title bar with the native traffic lights inset into it. Windows has
-  // no equivalent inset controls -- hiding the title bar there would ship
-  // windows with no minimize/maximize/close at all -- so it keeps the native
-  // frame, exactly like the shipped Linux AppImage (Electron ignores
-  // titleBarStyle on Linux). A Windows title-bar overlay with inset controls
-  // is the tracked follow-up.
+  // Frameless chrome: the dashboard's 42px header doubles as the title bar.
+  // macOS: titleBarStyle:"hidden" + native traffic lights inset into it.
+  // Windows: titleBarStyle:"hidden" + titleBarOverlay puts native caption
+  //   controls (minimize/maximize/close) in an overlay strip synced to theme.
+  // Linux: Electron ignores titleBarStyle, so it keeps the native frame.
   if (IS_MAC) opts.titleBarStyle = "hidden";
+  if (IS_WIN) {
+    opts.titleBarStyle = "hidden";
+    opts.titleBarOverlay = {
+      color: nativeTheme.shouldUseDarkColors ? "#0f1117" : "#f8fafc",
+      symbolColor: nativeTheme.shouldUseDarkColors ? "#e2e8f0" : "#1e293b",
+      height: 42,
+    };
+  }
   // Window + taskbar icon (Windows only): running unpackaged (`electron .`)
   // otherwise shows the default Electron icon. macOS takes its icon from the
   // .app bundle and Linux from the .desktop/AppImage, so leave those untouched.
@@ -1977,8 +2019,17 @@ async function openNewConnectionWindow() {
       backgroundColor: "#0f1117",
     };
     // Same platform-conditional chrome as the main window (see createWindow):
-    // frameless + inset traffic lights on macOS, native frame elsewhere.
+    // frameless + inset traffic lights on macOS, titleBarOverlay on Windows,
+    // native frame elsewhere (Linux).
     if (IS_MAC) connOpts.titleBarStyle = "hidden";
+    if (IS_WIN) {
+      connOpts.titleBarStyle = "hidden";
+      connOpts.titleBarOverlay = {
+        color: nativeTheme.shouldUseDarkColors ? "#0f1117" : "#f8fafc",
+        symbolColor: nativeTheme.shouldUseDarkColors ? "#e2e8f0" : "#1e293b",
+        height: 42,
+      };
+    }
     if (IS_MAC) connOpts.trafficLightPosition = trafficLightPositionForZoom(1);
     const connWin = new BaseWindow(connOpts);
 
@@ -2257,6 +2308,23 @@ app.whenReady().then(async () => {
   ipcMain.on("theme-mode-changed", (_event, pref) => {
     if (pref === "system" || pref === "dark" || pref === "light") {
       nativeTheme.themeSource = resolveThemeSource(pref, "");
+    }
+  });
+
+  // Windows titleBarOverlay color sync: when the resolved dark/light mode
+  // changes, update the overlay background and symbol colors to match. The
+  // renderer sends the resolved mode ("dark" | "light") after any theme change.
+  ipcMain.on("titlebar-overlay-theme", (_event, mode) => {
+    if (!IS_WIN) return;
+    const dark = mode === "dark";
+    const color = dark ? "#0f1117" : "#f8fafc";
+    const symbolColor = dark ? "#e2e8f0" : "#1e293b";
+    for (const win of BaseWindow.getAllWindows()) {
+      try {
+        if (typeof win.setTitleBarOverlay === "function") {
+          win.setTitleBarOverlay({ color, symbolColor, height: 42 });
+        }
+      } catch { /* window mid-teardown */ }
     }
   });
 
