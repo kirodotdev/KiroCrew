@@ -7,7 +7,7 @@ dashboard synth endpoint routes Piper through a single-clip non-streaming path.)
 ## Overview
 
 Real-time text-to-speech for dashboard chat responses. Two providers: **Piper**
-(local, offline, the default — no AWS needed) and **AWS Polly** (cloud). For
+(local, offline, the default — no AWS needed) and **Amazon Polly** (cloud). For
 Polly, voice playback starts as soon as the first sentence finishes streaming —
 no waiting for the full response. Piper produces a single local clip delivered
 whole. Sending a new message interrupts playback immediately.

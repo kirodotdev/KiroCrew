@@ -2732,7 +2732,7 @@
       },
       "voicePanel": {
         "failed_to_save_voice_config": "Failed to save voice config",
-        "aws_polly_cloud": "AWS Polly (cloud)",
+        "amazon_polly_cloud": "Amazon Polly (cloud)",
         "faster": "Faster",
         "fastest": "Fastest",
         "normal": "Normal",

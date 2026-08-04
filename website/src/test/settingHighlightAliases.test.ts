@@ -17,9 +17,16 @@ describe('resolveLegacyHighlightId', () => {
 
   it('maps the four positional voice AWS ids to their qualified forms', () => {
     expect(resolveLegacyHighlightId('voice.aws-profile')).toBe('voice.aws-profile-transcribe')
-    expect(resolveLegacyHighlightId('voice.aws-profile-2')).toBe('voice.aws-profile-polly')
+    expect(resolveLegacyHighlightId('voice.aws-profile-2')).toBe('voice.aws-profile-amazon-polly')
     expect(resolveLegacyHighlightId('voice.aws-region')).toBe('voice.aws-region-transcribe')
-    expect(resolveLegacyHighlightId('voice.aws-region-2')).toBe('voice.aws-region-polly')
+    expect(resolveLegacyHighlightId('voice.aws-region-2')).toBe('voice.aws-region-amazon-polly')
+  })
+
+  // The qualifier itself was renamed once the label was corrected to the
+  // service's real name, so the ids that shipped as `-polly` are legacy too.
+  it('maps the short-form Polly ids to the Amazon Polly forms', () => {
+    expect(resolveLegacyHighlightId('voice.aws-profile-polly')).toBe('voice.aws-profile-amazon-polly')
+    expect(resolveLegacyHighlightId('voice.aws-region-polly')).toBe('voice.aws-region-amazon-polly')
   })
 
   it('passes current ids through unchanged', () => {
@@ -32,6 +39,7 @@ describe('resolveLegacyHighlightId', () => {
     for (const legacy of [
       'slack.slash-command', 'slack.owner-slack-member-id', 'slack.phase-reactions', 'slack.show-thinking',
       'voice.aws-profile', 'voice.aws-profile-2', 'voice.aws-region', 'voice.aws-region-2',
+      'voice.aws-profile-polly', 'voice.aws-region-polly',
     ]) {
       const target = resolveLegacyHighlightId(legacy)
       expect(ids.has(target), `${legacy} -> ${target} missing from registry`).toBe(true)
