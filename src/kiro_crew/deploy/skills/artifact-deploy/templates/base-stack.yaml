@@ -120,12 +120,26 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      # Versioning makes the audit trail tamper-evident and recoverable: an
+      # overwrite or delete of a CloudTrail data-event or S3 access-log object
+      # leaves the prior version behind rather than being unrecoverable
+      # (CWE-1188, SAX-05/06/08 — audit buckets MUST enable versioning).
+      VersioningConfiguration:
+        Status: Enabled
       LifecycleConfiguration:
         Rules:
           - Id: expire-logs
             Status: Enabled
             Prefix: ''
             ExpirationInDays: 365
+          # Bound noncurrent versions so tamper-evidence retention does not grow
+          # storage without limit: prior versions of overwritten log objects are
+          # kept for the same 365-day audit window, then expired.
+          - Id: expire-noncurrent-logs
+            Status: Enabled
+            Prefix: ''
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 365
           - Id: abort-incomplete-multipart
             Status: Enabled
             Prefix: ''

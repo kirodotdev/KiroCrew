@@ -65,6 +65,47 @@ def test_policy_prefix_matches_template_bucket():
     assert iam_mod.S3_PREFIX == expected_prefix
 
 
+def test_audit_log_bucket_has_versioning_enabled():
+    """Regression (CWE-1188 / SEC-EE0CD7B3): the dedicated audit LogBucket -- the
+    delivery target for CloudTrail S3 data events and S3 server access logs --
+    MUST enable versioning for tamper-evidence, with a bounded
+    noncurrent-version expiration so retention does not grow storage forever.
+    """
+    import yaml
+
+    class _CfnLoader(yaml.SafeLoader):
+        pass
+
+    _CfnLoader.add_constructor(
+        "!Sub", lambda loader, node: {"Fn::Sub": loader.construct_scalar(node)})
+
+    def _cfn_ignore(loader, tag_suffix, node):
+        if isinstance(node, yaml.ScalarNode):
+            return loader.construct_scalar(node)
+        if isinstance(node, yaml.SequenceNode):
+            return loader.construct_sequence(node, deep=True)
+        return loader.construct_mapping(node, deep=True)
+
+    _CfnLoader.add_multi_constructor(None, _cfn_ignore)
+
+    template_path = _PKG / "skills" / "artifact-deploy" / "templates" / "base-stack.yaml"
+    with open(template_path) as f:
+        tmpl = yaml.load(f, Loader=_CfnLoader)  # noqa: S506
+
+    resources = tmpl["Resources"]
+    for name in ("OriginBucket", "LogBucket"):
+        props = resources[name]["Properties"]
+        assert props.get("VersioningConfiguration", {}).get("Status") == "Enabled", (
+            f"{name} must have VersioningConfiguration Status=Enabled"
+        )
+    # Versioning must not grow storage unbounded: the log bucket lifecycle must
+    # also expire noncurrent versions.
+    log_rules = resources["LogBucket"]["Properties"]["LifecycleConfiguration"]["Rules"]
+    assert any("NoncurrentVersionExpiration" in r for r in log_rules), (
+        "LogBucket lifecycle must expire noncurrent versions"
+    )
+
+
 def test_policy_covers_engine_bucket_prefix():
     """Regression (R8→R9): engine.py creates kirocrew-web-* buckets; IAM must cover them."""
     doc = iam_mod.policy_document()
