@@ -1098,6 +1098,33 @@ describe('Kiro credits pill', () => {
     expect(screen.getByText('Overage used')).toBeInTheDocument()
     expect(screen.getByText(/across chat, agents, MCP/)).toBeInTheDocument()
   })
+
+  it('renders the resolved account identity on the card so the numbers are attributable', async () => {
+    // Regression guard for issue #632: the credits card must show WHICH account
+    // the numbers belong to. The backend resolves the signed-in kiro-cli account
+    // (email / account_type / start_url) and returns it on the usage payload; the
+    // card renders it as the identity header. Before that identity was surfaced
+    // the numbers were unattributable, which is how a wrong-account readout went
+    // unnoticed. Values here are placeholders, never a real credential.
+    const { api } = await import('../api/client')
+    vi.mocked(api.sessionsUsage).mockResolvedValue({
+      usage: {
+        credits_used: 3044, credits_covered: 3044, credits_overage: 0,
+        credits_plan: 10000, resets: '2026-07-01', plan: 'KIRO POWER',
+        email: 'dev@example.com', account_type: 'IamIdentityCenter',
+        start_url: 'https://example.awsapps.com/start',
+      },
+    } as never)
+    renderWithProviders(<App />, { route: '/chat' })
+    const pill = await screen.findByTitle(/Kiro credits: 3,044/)
+    fireEvent.click(pill)
+    // The identity header shows the resolved account email...
+    expect(await screen.findByText('dev@example.com')).toBeInTheDocument()
+    // ...and the sign-in descriptor, which includes the issuer host derived from
+    // the start URL, so an org account is obvious at a glance.
+    const signedIn = screen.getByText(/Signed in with/)
+    expect(signedIn.textContent).toContain('example.awsapps.com')
+  })
 })
 
 describe('Kiro credits pill — edge cases', () => {
