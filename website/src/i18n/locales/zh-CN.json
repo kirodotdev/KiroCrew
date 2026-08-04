@@ -3792,6 +3792,7 @@
   },
   "pages": {
     "agentsPage": {
+      "delete_agent": "删除 {{name}}",
       "active_sessions_and_subagent_tasks": "活跃会话与子代理任务",
       "agent_templates": "代理模板",
       "agent_templates_grouped_by_package_update_and_un": "代理模板按包分组。更新和卸载以包为单位。单个代理可以删除（会移除配置文件）。",

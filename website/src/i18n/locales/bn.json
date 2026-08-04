@@ -3841,6 +3841,7 @@
   },
   "pages": {
     "agentsPage": {
+      "delete_agent": "{{name}} মুছুন",
       "active_sessions_and_subagent_tasks": "সক্রিয় সেশন ও সাবএজেন্ট টাস্ক",
       "agent_templates": "এজেন্ট টেমপ্লেট",
       "agent_templates_grouped_by_package_update_and_un": "প্যাকেজ অনুযায়ী সাজানো এজেন্ট টেমপ্লেট। আপডেট ও আনইনস্টল প্যাকেজ স্তরে হয়। আলাদা এজেন্ট মুছে ফেলা যায় (কনফিগ ফাইল সরিয়ে দেয়)।",

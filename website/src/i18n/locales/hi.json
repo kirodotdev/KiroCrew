@@ -3841,6 +3841,7 @@
   },
   "pages": {
     "agentsPage": {
+      "delete_agent": "{{name}} हटाएँ",
       "active_sessions_and_subagent_tasks": "सक्रिय सत्र और सबएजेंट कार्य",
       "agent_templates": "एजेंट टेम्पलेट",
       "agent_templates_grouped_by_package_update_and_un": "पैकेज के अनुसार समूहबद्ध एजेंट टेम्पलेट। अपडेट और अनइंस्टॉल पैकेज स्तर पर करें। अलग-अलग एजेंट मिटाए जा सकते हैं (कॉन्फ़िग फ़ाइल हट जाती है)।",

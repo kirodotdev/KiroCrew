@@ -3890,6 +3890,7 @@
   },
   "pages": {
     "agentsPage": {
+      "delete_agent": "Eliminar {{name}}",
       "active_sessions_and_subagent_tasks": "Sesiones activas y tareas de subagentes",
       "agent_templates": "Plantillas de agente",
       "agent_templates_grouped_by_package_update_and_un": "Plantillas de agentes agrupadas por paquete. Actualiza y desinstala a nivel de paquete. Los agentes individuales se pueden eliminar (se elimina el archivo de configuración).",

@@ -3939,6 +3939,7 @@
   },
   "pages": {
     "agentsPage": {
+      "delete_agent": "Удалить {{name}}",
       "active_sessions_and_subagent_tasks": "Активные сессии и задачи субагентов",
       "agent_templates": "Шаблоны агентов",
       "agent_templates_grouped_by_package_update_and_un": "Шаблоны агентов, сгруппированные по пакетам. Обновление и удаление — на уровне пакета. Отдельных агентов можно удалить (файл конфигурации будет удалён).",

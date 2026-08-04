@@ -3890,6 +3890,7 @@
   },
   "pages": {
     "agentsPage": {
+      "delete_agent": "Excluir {{name}}",
       "active_sessions_and_subagent_tasks": "Sessões ativas e tarefas de subagentes",
       "agent_templates": "Modelos de agente",
       "agent_templates_grouped_by_package_update_and_un": "Modelos de agentes agrupados por pacote. Atualize e desinstale no nível do pacote. Agentes individuais podem ser excluídos (remove o arquivo de configuração).",

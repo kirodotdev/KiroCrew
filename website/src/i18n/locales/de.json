@@ -3841,6 +3841,7 @@
   },
   "pages": {
     "agentsPage": {
+      "delete_agent": "{{name}} löschen",
       "active_sessions_and_subagent_tasks": "Aktive Sitzungen und Subagenten-Aufgaben",
       "agent_templates": "Agenten-Vorlagen",
       "agent_templates_grouped_by_package_update_and_un": "Agentenvorlagen nach Paket gruppiert. Aktualisieren und Deinstallieren auf Paketebene. Einzelne Agenten können gelöscht werden (entfernt die Konfigurationsdatei).",

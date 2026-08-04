@@ -3890,6 +3890,7 @@
   },
   "pages": {
     "agentsPage": {
+      "delete_agent": "Supprimer {{name}}",
       "active_sessions_and_subagent_tasks": "Sessions actives et tâches des sous-agents",
       "agent_templates": "Modèles d'agent",
       "agent_templates_grouped_by_package_update_and_un": "Modèles d’agents regroupés par paquet. Mise à jour et désinstallation au niveau du paquet. Les agents individuels peuvent être supprimés (supprime le fichier de configuration).",
