@@ -214,20 +214,42 @@ describe("uninstall data preservation contract", () => {
     }
   });
 
-  it("keeps the Squirrel uninstall handler shortcut-only", () => {
-    const match = main.match(
-      /else if \(cmd === "--squirrel-uninstall"\) \{([\s\S]*?)\n  \} else if/
-    );
-    assert.ok(match, "expected an explicit Squirrel uninstall branch");
-    assert.equal(
-      match[1].trim(),
-      'run(["--removeShortcut=" + target]);',
-      "Squirrel uninstall must remain shortcut-only and never touch the data home"
-    );
+  it("keeps the data home out of the Windows uninstaller's reach", () => {
+    // NSIS generates its own uninstaller, so there is no in-app uninstall
+    // handler to audit any more -- the guarantee moves entirely into config.
+    // deleteAppDataOnUninstall MUST stay false/absent: it would delete the
+    // Electron userData dir on uninstall, and the KiroCrew home under
+    // ~/.kiro/crew is user data that survives an uninstall by design.
     assert.notEqual(
       electronPkg.build.nsis?.deleteAppDataOnUninstall,
       true,
       "desktop uninstall must not opt into deleting app data"
     );
+  });
+
+  it("carries no Squirrel.Windows lifecycle handling", () => {
+    // Squirrel spawned the app with --squirrel-install/-updated/-uninstall and
+    // gave it ~15s to create/remove shortcuts and exit. NSIS does that itself,
+    // so the handler is gone; a re-introduction would be a silent regression
+    // back to a target electron-updater cannot drive.
+    assert.equal(main.includes("--squirrel-"), false, "no Squirrel lifecycle flags in main.js");
+    assert.equal(main.includes("Update.exe"), false, "no Squirrel Update.exe resolution in main.js");
+    assert.equal(
+      Object.hasOwn(electronPkg.build, "squirrelWindows"),
+      false,
+      "squirrelWindows config must not come back"
+    );
+    assert.deepEqual(electronPkg.build.win.target, ["nsis"]);
+  });
+
+  it("uses an assisted installer so nightly installs beside stable", () => {
+    // getWindowsInstallationDirName(appInfo, !oneClick || isPerMachine) in
+    // app-builder-lib only uses productFilename ("KiroCrew" / "KiroCrew
+    // Nightly") when that flag is true. Under oneClick+perUser it falls back to
+    // appInfo.sanitizedName -- the npm package name, "kirocrew-electron-mac" --
+    // which would put both channels in ONE directory with a nonsense name.
+    // build-desktop.sh's -c.nsis.guid override separates the registry half.
+    assert.equal(electronPkg.build.nsis.oneClick, false);
+    assert.equal(electronPkg.build.nsis.perMachine, false);
   });
 });

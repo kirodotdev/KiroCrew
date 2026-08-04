@@ -1,13 +1,11 @@
 // electron-builder custom Windows sign hook: Authenticode-sign via AWS Signer.
 //
-// WHY A HOOK RATHER THAN A POST-BUILD STEP: Squirrel.Windows nests its outputs.
-// electron-builder signs KiroCrew.exe and Update.exe, packs them into the
-// .nupkg, embeds that .nupkg INTO Setup.exe (WriteZipToSetup.exe), then signs
-// Setup.exe last. Signing after the build would mean unpacking and rebuilding
+// WHY A HOOK RATHER THAN A POST-BUILD STEP: the NSIS installer is a
+// self-extracting archive. electron-builder signs the app executable, compresses
+// it into the installer payload, and signs the installer and its generated
+// uninstaller -- so signing after the build would mean unpacking and rebuilding
 // that structure by hand. A hook signs each file at the moment electron-builder
-// would have called signtool, so the ordering stays theirs. It is also why the
-// .nupkg itself is never signed -- it only ever contains already-signed
-// binaries, which is fortunate because the service cannot sign Nuget packages.
+// would have called signtool, so the ordering stays theirs.
 //
 // There is no certificate on this machine: the private key lives in the signing
 // service and never leaves it. Signing is an S3 round-trip -- upload the file,
@@ -216,7 +214,8 @@ exports.default = async function signWindows(configuration) {
   // key, so collapse to a safe set.
   const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, '-')
   // Unique per invocation: electron-builder signs several files per build and
-  // may sign the same basename more than once (Squirrel's stub executables).
+  // may sign the same basename more than once (the app exe is signed both in
+  // win-unpacked and again as the installer payload's copy).
   const key = `${profileId}/${PLATFORM}/${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${safeName}`
 
   ensureCredentialProfile(artifactRole, externalId)

@@ -197,8 +197,8 @@ test("manualDownloadUrl: per-platform artifact on the byte host", () => {
 });
 
 test("manualDownloadUrl: null wherever there is no publish lane", () => {
-  // A dev build has no channel lane, and Windows has none until the NSIS
-  // migration -- offering a 404 is worse than offering nothing.
+  // A dev build has no channel lane, and Windows has none until
+  // publish-windows.yml lands -- offering a 404 is worse than offering nothing.
   assert.strictEqual(manualDownloadUrl("dev", "darwin"), null);
   assert.strictEqual(manualDownloadUrl("", "darwin"), null);
   assert.strictEqual(manualDownloadUrl("nightly", "win32"), null);

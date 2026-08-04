@@ -173,8 +173,8 @@ class TestReusableWorkflowPermissions:
         must never hold OIDC or write capabilities.
 
         build-windows.yml is deliberately NOT in this list: it Authenticode-signs
-        during the build (a Squirrel installer embeds its own already-signed
-        executables, so signing cannot be a downstream job) and therefore needs
+        during the build (the NSIS installer compresses its own already-signed
+        executable, so signing cannot be a downstream job) and therefore needs
         OIDC. Keeping it a separate workflow is what lets these two stay
         credential-free -- putting the Windows leg back into build-desktop.yml
         would hand OIDC to the mac and Linux legs as well. See

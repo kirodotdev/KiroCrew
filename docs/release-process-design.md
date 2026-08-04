@@ -147,7 +147,7 @@ CLI/EC2 distribution design, while this section covers the design shape.)
 The platform matrix today: `macos-14` builds the universal macOS app
 (DMG + zip), and `ubuntu-22.04` builds `linux-x64` (AppImage). The wheel is
 `py3-none-any`; KiroCrew is pure Python, so the same wheel serves every OS.
-Windows x64 builds a Squirrel.Windows `Setup.exe` as a CI artifact
+Windows x64 builds an NSIS `Setup.exe` as a CI artifact
 (installer-only; not yet published to the CDN), Linux arm64 remains TODO,
 and the supported Windows install path is still source
 (`docs/windows-install.md`).
@@ -335,10 +335,11 @@ Electron's built-in `autoUpdater` replaced is the hand-rolled wrapper
 around it (feed fetching, version compare, and publish-metadata authoring
 are now the library's). On Linux it replaces the AppImage in place, a new
 capability — the AppImage previously had no desktop update path. Windows
-is not migrated: its packaging is still Squirrel.Windows, which
-electron-updater's NSIS-based win32 path cannot drive, so win32 is
-excluded from the client's supported platforms until the NSIS migration
-lands (#598).
+is not migrated yet: its packaging is now NSIS, which
+electron-updater's win32 path (`NsisUpdater`) can drive, but win32 stays
+excluded from the client's supported platforms until a `latest.yml` feed is
+published and Authenticode signing is active — `NsisUpdater` verifies
+signatures fail-closed (#598).
 
 The feed contract: the client resolves `{feedBase}/{channel}/` as a
 directory and fetches the static electron-updater channel file from it —
@@ -481,7 +482,7 @@ Open as of 2026-07-28:
 | Rollback automation (P4) | **dropped** | Superseded by process decision: **there is no rollback — we roll forward by cutting a new version.** The `rollback.yml` + `blocked-versions` design described in P4/P5 above is not being built. The client-side capability remains (`allowDowngrade=true`, so a repointed feed *would* be offered), but the operational answer to a bad release is a new version cut from the release branch, not a feed rewind |
 | Forced minimum version (P5) | roadmap | Unbuilt and independent of rollback: a feed-served minimum-version floor that force-triggers the update flow for a critical security patch |
 | S3 lifecycle rules | roadmap | Designed (intermediates 7d, nightly 30d, insider 180d, stable forever); unmanaged growth is ~1 TB/year |
-| Windows lane | roadmap | CI builds a Squirrel.Windows `Setup.exe` (installer-only, unpublished); win32 auto-update stays disabled in the client until the NSIS migration (#598); the supported install path is still source |
+| Windows lane | roadmap | CI builds an NSIS `Setup.exe` (installer-only, unpublished); win32 auto-update stays disabled in the client until a `latest.yml` feed is published and signing is active (#598); the supported install path is still source |
 | Update-consent nudge polish, custom icon setting | roadmap | Nudge dots shipped; Settings card for custom icons deliberately deferred |
 
 ## 9. Design history and authorship

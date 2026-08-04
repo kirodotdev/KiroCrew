@@ -7,13 +7,13 @@ the same code path also runs on Windows.
 
 ## Desktop installer (preview, CI-built)
 
-CI's Windows lane (`build-windows.yml`) also builds a Windows desktop app:
-`KiroCrew Setup.exe` plus the Squirrel.Windows `RELEASES`/`.nupkg` pair, with
-the backend bundled (no separate Python install needed). It has its own
-workflow rather than being a leg of `build-desktop.yml` because Authenticode
-signing has to happen *during* the build — a Squirrel `Setup.exe` embeds its
-own already-signed executables — so that job needs AWS credentials the shared
-build workflow deliberately does not hold. Current status:
+CI's Windows lane (`build-windows.yml`) also builds a Windows desktop app: an
+NSIS `KiroCrew Setup <version>.exe` with the backend bundled (no separate Python
+install needed). It has its own workflow rather than being a leg of
+`build-desktop.yml` because Authenticode signing has to happen *during* the
+build — the installer compresses its own already-signed executable — so that job
+needs AWS credentials the shared build workflow deliberately does not hold.
+Current status:
 
 - **CI artifact only** — produced on nightly/release runs and the manual
   `workflow_dispatch` probe; not yet published to the download CDN (that is
@@ -22,12 +22,25 @@ build workflow deliberately does not hold. Current status:
   skips cleanly until the signing profiles are provisioned, so today's
   installers are still unsigned and SmartScreen shows an "unrecognized app"
   interstitial (More info > Run anyway).
-- **No auto-update yet** — the macOS/Linux client moved to
-  electron-updater (`latest-mac.yml` / `latest-linux.yml` feeds), but its
-  win32 path drives NSIS installers, not Squirrel.Windows, so win32 stays
-  excluded from the updater (`SUPPORTED_PLATFORMS` in `auto-update.js`)
-  until the NSIS migration lands (issue #598); installs update by running
-  a newer Setup.exe.
+- **No auto-update yet** — win32 remains outside `SUPPORTED_PLATFORMS` in
+  `auto-update.js`. The NSIS target removes the *packaging* blocker
+  (electron-updater's win32 path is `NsisUpdater`, and it has no
+  Squirrel.Windows support at all), but two prerequisites remain: a published
+  `latest.yml` feed alongside `latest-mac.yml`/`latest-linux.yml`, and active
+  signing — `NsisUpdater` verifies Authenticode fail-closed, so an unsigned
+  installer makes every update fail rather than merely warn. Tracked in
+  [issue #598](https://github.com/kirodotdev/KiroCrew/issues/598); until then,
+  installs update by running a newer Setup.exe.
+- **Assisted installer, per user by default** — `nsis.oneClick` is false and
+  `perMachine` is false, so the installer offers an install-mode page whose
+  default is a per-user install into a directory named from the product name,
+  with no UAC prompt. Choosing "for all users" on that page opts into an
+  elevated install under Program Files instead. The per-user default is what
+  keeps a nightly install (`KiroCrew Nightly`) side by side with a stable one
+  rather than replacing it; nightly additionally pins its own `nsis.guid` so
+  the two channels do not share an uninstall registry key. Either mode leaves
+  the KiroCrew home alone (`deleteAppDataOnUninstall` stays false, and
+  `~/.kiro/crew` is outside the install directory).
 
 The source install below remains the fully supported path.
 

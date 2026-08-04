@@ -52,7 +52,7 @@ Each packaging path stamps that value at build time into a generated
 `beacon.distribution()` prefers over the `KIROCREW_DISTRIBUTION` env var: a
 baked module ships with the artifact and a running install cannot change it,
 whereas the env var is inherited by child processes and settable by anyone with
-a shell. Windows (Squirrel) has no value in the set and reports `source`. The
+a shell. Windows (NSIS) has no value in the set and reports `source`. The
 field is read **only by telemetry**; no update code consults it.
 
 Three mechanisms:

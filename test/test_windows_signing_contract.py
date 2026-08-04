@@ -1,11 +1,11 @@
 """Contract tests for Windows Authenticode signing via AWS Signer.
 
 Windows signing is unlike the macOS path in one structural way, and every
-property below follows from it: **signing happens INSIDE the build**. Squirrel
-nests its outputs -- ``KiroCrew.exe`` and ``Update.exe`` are signed, packed into
-the ``.nupkg``, that ``.nupkg`` is embedded into ``Setup.exe``
-(``WriteZipToSetup.exe``), and ``Setup.exe`` is signed last -- so signing
-afterwards would mean rebuilding that structure by hand. Instead
+property below follows from it: **signing happens INSIDE the build**. The NSIS
+installer is a self-extracting archive -- the app executable is signed, then
+compressed into the installer payload, then the installer and its generated
+uninstaller are signed -- so signing afterwards would mean unpacking and
+rebuilding that structure by hand. Instead
 ``website/electron/scripts/sign-windows.js`` hooks electron-builder wherever it
 would have called ``signtool``.
 

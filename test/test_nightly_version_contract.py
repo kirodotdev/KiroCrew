@@ -6,14 +6,18 @@ of them in a way no PR-level check exercises (the probe builds that gate
 ``build-desktop.yml`` use ``0.0.0-probe.N``, whose prerelease identifier is a
 single digit -- so a malformed *real* stamp only fails on the nightly run):
 
-* **Squirrel.Windows** -- its bundled NuGet compares NUMERIC prerelease
+* **Int32-safe numeric identifiers** (HISTORICAL, still enforced) -- the Windows
+  target was Squirrel.Windows, whose bundled NuGet compared NUMERIC prerelease
   identifiers with ``Int32.Parse``
   (``NuGet.SemanticVersion.CompareTo`` -> ``ParseInt32``). An identifier above
-  ``2147483647`` throws ``System.OverflowException`` inside
-  ``ReleaseEntry.WriteReleaseFile``, so ``Update.com --releasify`` dies and
-  the whole Windows desktop leg fails. A single ``YYYYMMDDHHMMSS`` identifier
-  (~2.0e13) always overflows; ``YYYYMMDD`` (~2.0e7) and ``HHMMSS``
-  (<= 235959) as SEPARATE identifiers always fit.
+  ``2147483647`` threw ``System.OverflowException`` inside
+  ``ReleaseEntry.WriteReleaseFile``, killing ``Update.com --releasify``: a single
+  ``YYYYMMDDHHMMSS`` identifier (~2.0e13) always overflowed, while ``YYYYMMDD``
+  (~2.0e7) and ``HHMMSS`` (<= 235959) as SEPARATE identifiers always fit. The
+  target is now NSIS, which imposes neither this bound nor NuGet's 20-character
+  prerelease cap, so the constraint is no longer live -- but the assertion is
+  kept as a regression guard: shortening the stamp buys nothing, and any future
+  NuGet-based target (msi, appx) would re-impose it silently.
 * **Channel routing** -- the literal ``-nightly.`` substring is what
   ``auto-update.js`` ``channelForVersion``, ``instance-guard.js``
   ``identityFamily``, and ``packaging/build-desktop.sh``'s ``*-nightly.*``
@@ -78,12 +82,16 @@ def _rendered_nightly_version() -> str:
 
 
 def test_prerelease_fits_nuget_special_version_cap() -> None:
-    """NuGet / Squirrel reject a prerelease part longer than 20 characters.
+    """NuGet rejects a prerelease part longer than 20 characters.
 
-    The Squirrel target bundled with electron-builder-squirrel-windows 26.x
-    fails releasify with "The special version part cannot exceed 20 characters."
-    The old "nightly.<YYYYMMDD>t<HHMMSS>" was 23 chars and broke every Windows
-    nightly; the compact "nightly.<YYDDD>t<HHMMSS>" is exactly 20."""
+    HISTORICAL, still enforced. The Squirrel.Windows target bundled with
+    electron-builder-squirrel-windows 26.x failed releasify with "The special
+    version part cannot exceed 20 characters": the old
+    "nightly.<YYYYMMDD>t<HHMMSS>" was 23 chars and broke every Windows nightly,
+    and the compact "nightly.<YYDDD>t<HHMMSS>" is exactly 20. The target is now
+    NSIS, which imposes no such cap, so the bound is no longer live -- but the
+    assertion is kept as a regression guard: lengthening the stamp buys nothing,
+    and a future NuGet-based target (msi, appx) would re-impose it silently."""
     version = _rendered_nightly_version()
     _, _, prerelease = version.partition("-")
     assert prerelease, f"nightly version carries no prerelease part: {version!r}"
@@ -251,8 +259,9 @@ def test_documented_probe_example_satisfies_the_same_rules() -> None:
     overflow teaches the exact failure this PR fixes. Every semver-looking
     example is held to the same digit-run rule as the real stamp.
     """
-    # Both workflows document a probe stamp, and the Int32 hazard is Squirrel's
-    # -- so it is the WINDOWS workflow that actually releasifies. Checking only
+    # Both workflows document a probe stamp, and the version-format hazards
+    # these examples guard were Squirrel's -- so it is the WINDOWS workflow
+    # whose example historically had to satisfy them. Checking only
     # build-desktop.yml would leave the example that matters unguarded.
     for workflow in (DESKTOP_WORKFLOW, WINDOWS_WORKFLOW):
         text = workflow.read_text(encoding="utf-8")

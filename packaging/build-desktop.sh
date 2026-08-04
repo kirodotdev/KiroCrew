@@ -48,8 +48,8 @@ HOST_ARCH="$(uname -m)"
 # electron-builder target rather than the host: mac.target is dmg, linux.target
 # is AppImage (website/electron/package.json). Reading the host OS instead would
 # be wrong on Linux, where the same machine also builds wheels.
-# Windows ships a Squirrel installer, which has no KNOWN_DISTRIBUTIONS value;
-# "source" is the honest answer until one is added on both sides.
+# Windows ships an NSIS installer, which has no KNOWN_DISTRIBUTIONS value yet;
+# "source" is the honest answer until "nsis" is added on both sides.
 case "$OS" in
   darwin)  KC_DISTRIBUTION="dmg" ;;
   windows) KC_DISTRIBUTION="source" ;;
@@ -316,9 +316,9 @@ build_backend_windows() {
     echo "ERROR: dashboard dist not staged" >&2; exit 1
   }
 
-  # Beacon provenance. Squirrel has no KNOWN_DISTRIBUTIONS value, so the honest
-  # answer is "source", but stamp it explicitly rather than relying on the
-  # module's absence: pip installed from $ROOT, and a stale stamp left in a
+  # Beacon provenance. The NSIS installer has no KNOWN_DISTRIBUTIONS value, so
+  # the honest answer is "source", but stamp it explicitly rather than relying on
+  # the module's absence: pip installed from $ROOT, and a stale stamp left in a
   # developer's checkout would otherwise be copied in and mislabel the build.
   bash "$ROOT/scripts/stamp-distribution.sh" "$KC_DISTRIBUTION" "$sp/kiro_crew"
 
@@ -447,16 +447,27 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
       # space-free makes the packaged app abort with "Unable to find helper
       # app". Nightly re-overrides the static display name to keep its suffix.
       "-c.mac.extendInfo.CFBundleDisplayName=Kiro Crew Nightly"
-      # Squirrel.Windows keys the INSTALL identity off squirrelWindows.name
-      # (install dir %LocalAppData%\<name>, shortcuts, and the RELEASES/
-      # .nupkg feed identity). On mac, a distinct productName alone gives
-      # side-by-side installs; on Windows the package name is the
-      # separator, so nightly MUST get its own -- otherwise a nightly
-      # install replaces a stable install in place. This identity persists
-      # on user machines at first install: changing it later orphans
-      # installed updaters, so it is pinned from the first shipped build.
-      "-c.squirrelWindows.name=KiroCrewNightly"
-      "-c.squirrelWindows.iconUrl=https://raw.githubusercontent.com/kirodotdev/KiroCrew/main/website/electron/icon-nightly.ico"
+      # Squirrel.Windows keyed the INSTALL identity off squirrelWindows.name;
+      # NSIS keys it off two separate things, and nightly needs both:
+      #
+      # 1. The uninstall/upgrade registry key is a GUID, defaulting to
+      #    UUID v5(appId) (app-builder-lib NsisTarget.js: `options.guid ||
+      #    UUID.v5(appInfo.id, ELECTRON_BUILDER_NS_UUID)`). Nightly shares
+      #    appId with production (see above), so WITHOUT an explicit guid both
+      #    channels claim one registry key and an assisted nightly install
+      #    adopts -- then on uninstall removes -- the stable entry. The value
+      #    below is exactly what electron-builder would derive from a
+      #    hypothetical `com.amazon.kiro.crew.nightly` appId, so it is stable,
+      #    reproducible, and collision-free without moving the real appId.
+      # 2. The install DIRECTORY comes from productFilename (i.e. the spaced
+      #    productName above) only because nsis.oneClick is false --
+      #    getWindowsInstallationDirName() falls back to the npm package name
+      #    under one-click. That is why the target is an assisted installer.
+      #
+      # As on mac, this identity persists on user machines from first install:
+      # changing it later orphans installed updaters, so it is pinned from the
+      # first shipped build.
+      "-c.nsis.guid=0f417bf9-2759-51d6-acfb-f864805d1f41"
     )
   fi
   if [ "$OS" = "darwin" ]; then
@@ -522,6 +533,6 @@ if [ "$UNIVERSAL" = "1" ]; then
 fi
 
 log "Done. Installer(s) are in $ELECTRON_DIR/dist/"
-ls -1 "$ELECTRON_DIR/dist/"*.{dmg,AppImage,zip} "$ELECTRON_DIR/dist/squirrel-windows/"*.{exe,nupkg} "$ELECTRON_DIR/dist/squirrel-windows/"RELEASES 2>/dev/null | sed 's/^/   /' || true
+ls -1 "$ELECTRON_DIR/dist/"*.{dmg,AppImage,zip,exe} 2>/dev/null | sed 's/^/   /' || true
 echo ""
 echo "    The .app embeds the backend, so it runs with no PATH kirocrew needed."

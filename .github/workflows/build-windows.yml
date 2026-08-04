@@ -1,19 +1,19 @@
 name: Build Windows Desktop (reusable)
 
-# Reusable workflow: build the Windows desktop installer (Squirrel.Windows
-# Setup.exe) and Authenticode-sign it through AWS Signer during the build.
+# Reusable workflow: build the Windows desktop installer (NSIS Setup.exe) and
+# Authenticode-sign it through AWS Signer during the build.
 # Called by nightly.yml and release.yml beside build-desktop.yml.
 #
 # WHY THIS IS NOT A LEG OF build-desktop.yml
 #
-# Signing has to happen INSIDE the build here. Squirrel nests its outputs:
-# electron-builder signs KiroCrew.exe and Update.exe, packs them into the
-# .nupkg, embeds that .nupkg into Setup.exe (WriteZipToSetup.exe), then signs
-# Setup.exe last. Signing afterwards would mean unpacking and rebuilding that
-# structure by hand, so website/electron/scripts/sign-windows.js hooks
-# electron-builder wherever it would have called signtool. macOS can do the
-# opposite -- ship an unsigned .app to sign-and-notarize.yml -- because a .app
-# is a directory, not a self-extracting archive of signed parts.
+# Signing has to happen INSIDE the build here. electron-builder signs the app
+# executable, compresses it into the installer payload, then signs the
+# installer and its uninstaller -- so signing afterwards would mean unpacking
+# and rebuilding a self-extracting archive by hand. Instead
+# website/electron/scripts/sign-windows.js hooks electron-builder wherever it
+# would have called signtool. macOS can do the opposite -- ship an unsigned
+# .app to sign-and-notarize.yml -- because a .app is a directory, not a
+# self-extracting archive of signed parts.
 #
 # The consequence is that this job holds a production signing identity, and
 # build-desktop.yml deliberately holds NO credentials at all
@@ -24,11 +24,14 @@ name: Build Windows Desktop (reusable)
 # A separate workflow keeps the credentialed surface to exactly the platform
 # that cannot avoid it.
 #
-# INSTALLER-ONLY LANE for now: auto-update.js does not consume the Squirrel
-# feed on win32 yet -- RELEASES/.nupkg are produced dormant so the upcoming
-# publish+updater lane needs no packaging change. Unattested for now too: no
-# publish lane consumes these artifacts, so SLSA provenance lands in-lane with
-# publish-windows.yml (same pattern as publish-linux.yml).
+# INSTALLER-ONLY LANE for now: win32 is still outside SUPPORTED_PLATFORMS in
+# auto-update.js, because electron-updater needs a published latest.yml feed
+# and verifies Authenticode fail-closed -- neither exists yet. The NSIS target
+# is the prerequisite for both (electron-updater's win32 path is NsisUpdater and
+# has no Squirrel support at all), so packaging lands first and the
+# publish+updater lane follows in publish-windows.yml. Unattested for now too:
+# no publish lane consumes these artifacts, so SLSA provenance lands in-lane
+# with publish-windows.yml (same pattern as publish-linux.yml).
 
 on:
   workflow_call:
@@ -240,12 +243,11 @@ jobs:
           # policy requires it as sts:ExternalId.
           WINDOWS_SIGNING_EXTERNAL_ID: ${{ env.HAS_WINDOWS_SIGNING && 'KiroCrewWindows' || '' }}
 
-      # Squirrel.Windows output: electron-builder 25.x emits into
-      # dist/squirrel-windows/ (proven live: probe run 30150819154 uploaded
-      # Setup.exe + .nupkg + RELEASES from exactly these paths). The flat dist/
-      # set guards against the output dir moving across electron-builder
-      # versions -- upload-artifact errors only when NO pattern matches
-      # anything.
+      # NSIS output: electron-builder emits the installer flat into dist/ as
+      # "<productName> Setup <version>.exe", alongside a .blockmap (the
+      # differential-download index electron-updater consumes) and latest.yml
+      # when a publish provider is configured. dist/win-unpacked/ is the staged
+      # app tree, not a distributable, so it is deliberately not uploaded.
       #
       # These comments sit ABOVE the step, not inside `path:`. In a `|` block
       # scalar every line is literal text, so a '#' line there is not a comment
@@ -255,10 +257,8 @@ jobs:
         with:
           name: build-windows-x64
           path: |
-            website/electron/dist/squirrel-windows/*.exe
-            website/electron/dist/squirrel-windows/*.nupkg
-            website/electron/dist/squirrel-windows/RELEASES
-            website/electron/dist/*.nupkg
-            website/electron/dist/RELEASES
+            website/electron/dist/*.exe
+            website/electron/dist/*.exe.blockmap
+            website/electron/dist/latest.yml
           if-no-files-found: error
           retention-days: 14

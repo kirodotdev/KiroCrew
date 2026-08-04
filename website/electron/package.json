@@ -17,8 +17,7 @@
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
     "electron": "^43.2.0",
-    "electron-builder": "^26.15.3",
-    "electron-builder-squirrel-windows": "^26.15.3"
+    "electron-builder": "^26.15.3"
   },
   "overrides": {
     "fast-uri": "3.1.5",
@@ -126,15 +125,18 @@
     "win": {
       "icon": "icon.png",
       "target": [
-        "squirrel"
+        "nsis"
       ],
       "signtoolOptions": {
         "sign": "./scripts/sign-windows.js"
       }
     },
-    "squirrelWindows": {
-      "name": "KiroCrew",
-      "iconUrl": "https://raw.githubusercontent.com/kirodotdev/KiroCrew/main/website/electron/icon.ico"
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
     }
   },
   "author": "Kiro Crew"

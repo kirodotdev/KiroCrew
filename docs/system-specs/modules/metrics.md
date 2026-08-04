@@ -542,7 +542,7 @@ Two non-obvious constraints:
   because the baked value outranks the env var by design.
 - The value is derived from the electron-builder **target**, not the host OS
   (`mac.target: dmg`, `linux.target: AppImage`). A Linux host also builds wheels,
-  so branching on the host would mislabel them. Windows ships a Squirrel
+  so branching on the host would mislabel them. Windows ships an NSIS
   installer, which has no value in `KNOWN_DISTRIBUTIONS`, and reports `source`
   until one is added to both the frozenset and the stamping script.
 

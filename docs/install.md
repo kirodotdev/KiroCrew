@@ -199,11 +199,12 @@ the audit chain; none of the repository-controlled uninstall paths remove it:
 There is intentionally no implicit whole-home purge. Back up with `kirocrew
 snapshot` before manually removing a data home you no longer need.
 
-**External certification dependency.** Windows desktop releases use
-Squirrel.Windows, whose generated uninstaller is external to this repository.
-The repository's `--squirrel-uninstall` handler removes only the application
-shortcut and exits; it never resolves or removes the KiroCrew home, which is
-outside Squirrel's application install directory. Each signed Windows installer
+**External certification dependency.** Windows desktop releases use an NSIS
+installer, whose uninstaller electron-builder generates. `nsis.oneClick` is
+false and `nsis.deleteAppDataOnUninstall` is left false, so the uninstaller
+removes only the application install directory and its shortcuts; it never
+resolves or removes the KiroCrew home, which lives outside the install
+directory. Each signed Windows installer
 must nevertheless pass an install → create sentinel under
 `~/.kiro/crew` → uninstall → verify sentinel smoke test before release. A
 separate Kiro-family uninstaller could remove the parent `~/.kiro/` directory;

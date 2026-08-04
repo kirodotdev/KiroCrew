@@ -6,41 +6,6 @@ const { spawn, execFile } = require("child_process");
 const path = require("path");
 const http = require("http");
 
-// Squirrel.Windows fires the app with --squirrel-install / -updated /
-// -uninstall / -obsolete during install lifecycle events; the app must
-// handle them (shortcut creation/removal) and exit WITHOUT starting the
-// gateway or opening windows. No-op on macOS/Linux. Kept dependency-free
-// (no electron-squirrel-startup package) to match the repo's built-in
-// updater philosophy.
-(function handleSquirrelEvents() {
-  if (process.platform !== "win32" || process.argv.length < 2) return;
-  const cmd = process.argv[1];
-  if (!cmd.startsWith("--squirrel-")) return;
-  const { app } = require("electron");
-  const { spawn } = require("child_process");
-  const updateExe = path.resolve(path.dirname(process.execPath), "..", "Update.exe");
-  const target = path.basename(process.execPath);
-  const run = (args) => {
-    try {
-      spawn(updateExe, args, { detached: true, stdio: "ignore" }).unref();
-    } catch (_) {
-      /* Update.exe missing (dev run) -- nothing to do */
-    }
-  };
-  if (cmd === "--squirrel-install" || cmd === "--squirrel-updated") {
-    run(["--createShortcut=" + target]);
-  } else if (cmd === "--squirrel-uninstall") {
-    run(["--removeShortcut=" + target]);
-  } else if (cmd !== "--squirrel-obsolete") {
-    // --squirrel-firstrun (Squirrel's normal launch after a fresh install)
-    // and any unknown --squirrel-* flag: continue normal startup. Quitting
-    // here would make the app exit on every first launch.
-    return;
-  }
-  // Lifecycle events (install/updated/uninstall/obsolete) end here.
-  app.quit();
-  process.exit(0);
-})();
 const { findKirocrewBin } = require("./find-bin");
 const { findConfiguredDashboardPort } = require("./data-home");
 const { createTokenRetryHandler } = require("./token-retry");

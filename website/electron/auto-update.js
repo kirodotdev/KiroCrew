@@ -67,7 +67,12 @@ const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4h while running
 const LAUNCH_CHECK_DELAY_MS = 30 * 1000; // let startup settle first
 const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall
 
-/** Platforms with a working publish lane + updater. win32 lands with NSIS (#598). */
+/**
+ * Platforms with a working publish lane + updater. win32 is packaged as NSIS
+ * (which NsisUpdater can drive) but still waits on a published latest.yml feed
+ * and active Authenticode signing -- NsisUpdater verifies fail-closed, so an
+ * unsigned installer would fail every update rather than warn (#598).
+ */
 const SUPPORTED_PLATFORMS = new Set(["darwin", "linux"]);
 
 // Byte host for human (manual) downloads -- deliberately the same CDN the
@@ -164,7 +169,7 @@ function buildFeedBase({ base, channel }) {
 
 /**
  * Human download permalink for a channel + platform, or null when there is no
- * publish lane (dev builds, Windows until the NSIS migration).
+ * publish lane (dev builds, Windows until publish-windows.yml lands).
  *
  * Why the UI needs this: an update that downloads but fails to APPLY leaves the
  * user with no next step -- the card simply re-offers the same update after
