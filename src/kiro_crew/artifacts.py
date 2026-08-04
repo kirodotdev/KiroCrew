@@ -353,7 +353,7 @@ class Artifact:
     #: Recorded at CREATE time on purpose: :class:`ArtifactStore` re-validates
     #: root containment on every read, but it has no session handle then and so
     #: cannot ask "what project is open?". Without a recorded root, a linked
-    #: file outside ``$HOME`` (e.g. ``/workplace/nrb/repo/doc.md``) is refused
+    #: file outside ``$HOME`` (e.g. ``/workplace/user/repo/doc.md``) is refused
     #: on read and the artifact silently serves its stale snapshot instead.
     #: Added to the allowed-roots set by :meth:`allowed_source_roots`; the
     #: sensitive-path denylist still applies inside it.
@@ -1067,7 +1067,7 @@ class ArtifactStore:
         * every operator-configured ``publish.relocate_roots`` entry;
         * when supplied, the artifact's own ``source_root`` — the project root
           that authorized the link at create time. This is what lets a linked
-          project file outside ``$HOME`` (``/workplace/nrb/repo/doc.md``) be
+          project file outside ``$HOME`` (``/workplace/user/repo/doc.md``) be
           read at all, without widening the default set for every artifact.
 
         Callers MUST keep the ``p == r or p.is_relative_to(r)`` comparison
