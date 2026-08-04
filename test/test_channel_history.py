@@ -357,4 +357,7 @@ class TestChannelHistoryContext:
         builder = ContextBuilder()
         msg, _ = builder.build_message("hello", False, channel_id="C123")
 
-        assert msg.startswith("hello")
+        # The user text must appear in the assembled message.  Other context
+        # lines (e.g. [RESOURCES] advisory on memory-pressured hosts) may be
+        # prepended, so we assert containment rather than startswith.
+        assert "hello" in msg
