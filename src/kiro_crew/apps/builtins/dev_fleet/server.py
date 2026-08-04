@@ -758,14 +758,41 @@ async def _run_cmd(
                 pass
 
 
+def _kill_tree_sync(pid: int) -> None:
+    """Kill *pid*'s group, then any descendant that escaped it.
+
+    The group kill alone is not sufficient: a descendant spawned with its own
+    session (``start_new_session`` / ``CREATE_NEW_PROCESS_GROUP``) sits in a
+    different process group, so POSIX ``killpg`` never reaches it. Sync/provision
+    run worktree-controlled build tooling that does exactly this, and an escaped
+    npm/vite keeps rewriting ``website/dist`` after the run is declared dead —
+    a later sync then stages a bundle a live writer is still mutating.
+
+    Descendants are enumerated FIRST: killing reparents survivors to init and
+    erases the PPID links that identify them. Each survivor is killed via its
+    own tree kill so a nested group (npm -> vite) goes down with it.
+    """
+
+    descendants = platform_compat.process_descendants(pid)
+    try:
+        platform_compat.kill_process_tree(pid)
+    except (ProcessLookupError, OSError, ValueError):
+        pass
+    for child in descendants:
+        try:
+            platform_compat.kill_process_tree(child)
+        except (ProcessLookupError, OSError, ValueError):
+            # Already reaped by the group kill, or a pid we may no longer
+            # signal — the primary kill has happened either way.
+            continue
+
+
 async def _kill_tree(pid: int) -> None:
-    """Kill a process tree without blocking the event loop (taskkill/killpg
+    """Kill a process tree without blocking the event loop (taskkill/killpg/ps
     are synchronous syscalls/subprocesses — run them on the executor)."""
     loop = asyncio.get_running_loop()
     try:
-        await loop.run_in_executor(
-            subprocess_executor(), platform_compat.kill_process_tree, pid
-        )
+        await loop.run_in_executor(subprocess_executor(), _kill_tree_sync, pid)
     except (ProcessLookupError, OSError):
         pass
 
@@ -2338,24 +2365,26 @@ async def _sync_start_locked() -> dict:
     else:
         raw_steps += [
             ([npm_bin, "ci", "--prefix", "website"], "strict", _build_env(), "npm ci"),
-            ([npm_bin, "run", "build", "--prefix", "website"], "strict", _build_env(), "npm build"),
-            # `npm run build` writes website/dist; the dashboard SERVES
-            # src/kiro_crew/static/dist. Without a staging step the rebuild never
-            # reaches the served path and Pull+Build reports success while the
-            # gateway keeps serving the previous bundle. On a source-tree gateway
-            # start the gap is masked by the dev symlink; a packaged install has
-            # no such link, so nothing takes effect.
+            # Build and stage as ONE step, holding the staging lock across both.
+            # `npm run build` empties website/dist, so a peer flow (the
+            # dashboard's own update, pod provisioning) staging concurrently
+            # would copy a partially written tree — and a bundle's lazy chunks
+            # are not reachable from index.html, so no post-hoc inspection of
+            # the copy detects that reliably. Covering only the copy is not
+            # enough; the holder has to span the build.
             #
-            # Run with THIS backend's interpreter, not the target checkout's.
-            # Staging is a pure file copy between two paths inside MAIN_REPO, so
-            # the logic is revision-independent -- while resolving it from the
-            # target would make the step's very EXISTENCE contingent on the
-            # pulled revision already carrying stage_built_dist, turning an older
-            # target into an ImportError that fails the whole Pull+Build.
+            # Run with THIS backend's interpreter, not the target checkout's, for
+            # the same reason the staging step does: the logic is
+            # revision-independent, while resolving it from the target would make
+            # the step's very EXISTENCE contingent on the pulled revision
+            # carrying build_and_stage, turning an older target into an
+            # ImportError that fails the whole Pull+Build. The repo to build and
+            # npm's resolved trusted path are passed in rather than re-resolved.
             ([sys.executable, "-c",
-              "import sys;from kiro_crew.frontend import stage_built_dist;"
-              "stage_built_dist(sys.argv[1])", MAIN_REPO],
-             "strict", _build_env(), "stage dist"),
+              "import sys;from kiro_crew.frontend import build_and_stage;"
+              "sys.exit(0 if build_and_stage(sys.argv[1], npm=sys.argv[2]) else 1)",
+              MAIN_REPO, npm_bin],
+             "strict", _build_env(), "npm build + stage"),
         ]
     cleanups: list[str] = []
     wrapped_steps: list[dict] = []

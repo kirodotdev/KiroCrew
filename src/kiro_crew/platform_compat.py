@@ -643,6 +643,74 @@ def _descendants_from_parent_map(root_pid: int, parent_map: dict[int, int]) -> l
     return result
 
 
+_TRUSTED_SYSTEM_BIN_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+
+
+def trusted_system_bin(name: str) -> str | None:
+    """Resolve *name* from fixed system directories, ignoring ``PATH``.
+
+    A gateway's ``PATH`` can legitimately lead with agent-writable directories
+    (a worktree venv's ``bin``, ``~/.local/bin``), so a bare argv name lets a
+    planted shim run with the gateway's environment. Callers that shell out for
+    OS introspection resolve through here and treat ``None`` as "unavailable".
+    """
+
+    for directory in _TRUSTED_SYSTEM_BIN_DIRS:
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _posix_process_parent_map() -> dict[int, int]:
+    """Return one ``ps`` PID -> PPID snapshot; empty when enumeration fails."""
+
+    if IS_WINDOWS:
+        return {}
+    ps_bin = trusted_system_bin("ps")
+    if ps_bin is None:
+        return {}
+    try:
+        out = subprocess.check_output(
+            [ps_bin, "-Ao", "pid=,ppid="], timeout=5, stderr=subprocess.DEVNULL
+        ).decode(errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    parent_map: dict[int, int] = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            parent_map[int(parts[0])] = int(parts[1])
+        except ValueError:
+            continue
+    return parent_map
+
+
+def process_descendants(pid: int) -> list[int]:
+    """Return *pid*'s descendants, breadth-first, from a single OS snapshot.
+
+    Best-effort: an unreadable process table yields an empty list rather than
+    raising, so callers using this to broaden a kill still perform their
+    primary kill.
+
+    Snapshot BEFORE killing anything. A kill reparents surviving orphans to
+    init, erasing the PPID links that identify them, so a post-kill snapshot
+    cannot find the very processes a caller needs to clean up.
+    """
+
+    if type(pid) is not int or pid <= 1:
+        return []
+    try:
+        parent_map = (
+            _windows_process_parent_map() if IS_WINDOWS else _posix_process_parent_map()
+        )
+    except Exception:  # noqa: BLE001 - introspection must never break a kill path
+        return []
+    return _descendants_from_parent_map(pid, parent_map)
+
+
 def _windows_process_parent_map() -> dict[int, int]:
     """Return one Toolhelp PID -> PPID snapshot, raising if enumeration fails."""
 

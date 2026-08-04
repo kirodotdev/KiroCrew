@@ -2951,7 +2951,12 @@ async def _sync_step_argvs(monkeypatch) -> list:
 
 
 def _is_stage_step(argv: list) -> bool:
-    return any("stage_built_dist" in str(part) for part in argv)
+    # The sync stages via the combined build+stage entry point, which holds the
+    # staging lock across both halves.
+    return any(
+        "stage_built_dist" in str(part) or "build_and_stage" in str(part)
+        for part in argv
+    )
 
 
 @pytest.mark.asyncio
@@ -2965,11 +2970,19 @@ async def test_sync_stages_dist_on_a_stock_checkout(monkeypatch):
     monkeypatch.setattr(mod.frontend, "edition_configured", lambda: False)
     argvs = await _sync_step_argvs(monkeypatch)
     stage_at = [i for i, a in enumerate(argvs) if _is_stage_step(a)]
-    build_at = [i for i, a in enumerate(argvs)
-                if Path(a[0]).name == "npm" and "build" in a]
     assert stage_at, f"no staging step in {argvs}"
-    assert build_at and stage_at[0] > build_at[0], \
-        "staging must run AFTER the build that produces the bundle"
+    # It must be the COMBINED entry point: a staging-only step would put the
+    # build back outside the lock holder without tripping the guards below.
+    assert any("build_and_stage" in str(x) for x in argvs[stage_at[0]]), \
+        f"the stage step must also perform the build: {argvs[stage_at[0]]}"
+    # Staging cannot precede the build: they are the SAME step, which holds the
+    # staging lock across both so no peer flow can copy a half-written tree.
+    ci_at = [i for i, a in enumerate(argvs)
+             if Path(a[0]).name == "npm" and "ci" in a]
+    assert ci_at and stage_at[0] > ci_at[0], \
+        "the build+stage step must run after npm ci"
+    assert not any(Path(a[0]).name == "npm" and "build" in a for a in argvs), \
+        "a separate npm build step would run outside the staging lock holder"
     # THIS backend's interpreter, not the target checkout's: resolving the
     # helper from the pulled revision would make the step's existence contingent
     # on that revision already carrying it, so an older target would turn the
@@ -3032,12 +3045,12 @@ async def test_sync_build_steps_never_see_credential_helpers(monkeypatch):
     build_envs = [
         e for a, e in captured
         if _base(a) == ["git", "merge"] or "pip" in a or Path(a[0]).name == "npm"
-        # The dist-staging step is a build step too and must not be exempt from
+        # The build+stage step is a build step too and must not be exempt from
         # the credential-absence invariant just because it runs via `python -c`.
-        or any("stage_built_dist" in str(x) for x in a)
+        or any("build_and_stage" in str(x) for x in a)
     ]
     assert fetch_envs and all(key in e for e in fetch_envs)
-    assert len(build_envs) == 5  # merge + pip + npm ci + npm build + stage dist
+    assert len(build_envs) == 4  # merge + pip + npm ci + (npm build + stage)
     assert all(key not in e for e in build_envs)
 
 
@@ -4909,3 +4922,134 @@ def test_declared_platforms_all_resolve_to_a_real_sys_platform():
     cfg = PlatformConfig(os=manifest["platform"]["os"])
     for sys_platform in ("darwin", "linux", "win32"):
         assert cfg.supports_platform(sys_platform), sys_platform
+
+
+@pytest.mark.asyncio
+async def test_sync_builds_and_stages_under_one_lock_holder(monkeypatch, tmp_path):
+    """Pull+Build must build and stage inside ONE locked step.
+
+    Without a staging step the live gateway keeps serving through the symlink
+    ensure_dev_dist_symlink() points at ``website/dist``, so the build empties
+    and rewrites the assets it is serving. The step runs under the Dev Fleet
+    backend's OWN interpreter with the target repo passed as an argument:
+    resolving the helper from the target would make the step's existence
+    contingent on the pulled revision carrying it, so an older target would turn
+    the whole Pull+Build into an ImportError.
+    """
+    repo = tmp_path / "mainrepo"
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").write_text("")
+    monkeypatch.setattr(mod, "MAIN_REPO", str(repo))
+    monkeypatch.setattr(mod, "_SYNC_RID", None)
+
+    async def fake_remote():
+        return "origin"
+
+    monkeypatch.setattr(mod, "_upstream_remote", fake_remote, raising=False)
+    monkeypatch.setattr(mod, "_trusted_bin", lambda n: f"/usr/bin/{n}")
+    argvs: list[list[str]] = []
+
+    def fake_sandboxed(argv, mode, env=None):
+        argvs.append(list(argv))
+        return list(argv), dict(env or {}), None
+
+    monkeypatch.setattr(mod, "sandboxed_spawn_argv", fake_sandboxed)
+
+    async def fake_run_cmd(cmd, **kw):
+        return 0, "main", ""
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+
+    async def fake_start_run(label, cmd, **kw):
+        return "rid-stage"
+
+    monkeypatch.setattr(mod, "_start_run", fake_start_run)
+
+    res = await mod._sync_start_locked()
+    assert res.get("ok"), res
+
+    def _index(pred) -> int:
+        for i, a in enumerate(argvs):
+            if pred(a):
+                return i
+        raise AssertionError(f"step not found in {argvs}")
+
+    # Build and stage are ONE step so a single lock holder spans both: the build
+    # empties website/dist, and a peer flow staging concurrently would copy a
+    # partially written tree.
+    stage_i = _index(lambda a: any("build_and_stage" in x for x in a))
+    # THIS backend's interpreter, not the target checkout's: the logic is
+    # revision-independent, while resolving it from the target would make the
+    # step's very existence contingent on the pulled revision already carrying
+    # build_and_stage, turning an older target into an ImportError that fails the
+    # whole Pull+Build. The repo to build is passed as an argument instead.
+    assert argvs[stage_i][0] == sys.executable
+    assert str(repo) in argvs[stage_i], "the target repo must be passed explicitly"
+    assert argvs[stage_i][-1].endswith("npm"), "the trusted npm path is passed through"
+    assert not any(
+        a[1:] == ["run", "build", "--prefix", "website"] for a in argvs
+    ), "a separate unlocked npm build step would reintroduce the race"
+    # npm ci does not touch website/dist, so it stays its own step.
+    ci_i = _index(lambda a: a[1:] == ["ci", "--prefix", "website"])
+    assert ci_i < stage_i
+
+
+def test_kill_tree_reaps_a_descendant_that_escaped_the_process_group():
+    """A new-session descendant is outside the group, so killpg alone misses it."""
+    from kiro_crew.apps.builtins.dev_fleet import server as dev
+
+    killed: list[int] = []
+
+    with patch.object(dev.platform_compat, "process_descendants", return_value=[222]), \
+            patch.object(
+                dev.platform_compat,
+                "kill_process_tree",
+                side_effect=lambda pid, *a, **k: killed.append(pid) or True,
+            ):
+        dev._kill_tree_sync(111)
+
+    assert killed == [111, 222], (
+        "the group kill must run first, then each escaped descendant"
+    )
+
+
+def test_kill_tree_enumerates_descendants_before_killing_anything():
+    """Ordering is the whole mechanism.
+
+    A kill reparents survivors to init and erases the PPID links, so a snapshot
+    taken after the kill cannot see the processes that escaped.
+    """
+    from kiro_crew.apps.builtins.dev_fleet import server as dev
+
+    events: list[str] = []
+
+    with patch.object(
+        dev.platform_compat,
+        "process_descendants",
+        side_effect=lambda pid: events.append("enumerate") or [222],
+    ), patch.object(
+        dev.platform_compat,
+        "kill_process_tree",
+        side_effect=lambda pid, *a, **k: events.append(f"kill{pid}") or True,
+    ):
+        dev._kill_tree_sync(111)
+
+    assert events[0] == "enumerate", f"enumeration must precede any kill: {events}"
+    assert events == ["enumerate", "kill111", "kill222"]
+
+
+def test_kill_tree_survives_an_already_dead_descendant():
+    """The group kill usually reaps descendants; a dead pid must not raise."""
+    from kiro_crew.apps.builtins.dev_fleet import server as dev
+
+    def _kill(pid, *a, **k):
+        if pid == 222:
+            raise ProcessLookupError(pid)
+        return True
+
+    with patch.object(dev.platform_compat, "process_descendants", return_value=[222, 333]), \
+            patch.object(dev.platform_compat, "kill_process_tree", side_effect=_kill) as km:
+        dev._kill_tree_sync(111)
+
+    # 333 is still attempted after 222's ProcessLookupError.
+    assert [c.args[0] for c in km.call_args_list] == [111, 222, 333]

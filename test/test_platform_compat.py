@@ -1,8 +1,9 @@
 """Unit tests for kiro_crew.platform_compat — the cross-platform shim that lets
 KiroCrew run natively on Windows alongside macOS/Linux.
 
-These exercise the PURE / platform-dispatching surface without spawning real
-processes: the signal constants, the file-lock context managers (POSIX path on
+These exercise the PURE / platform-dispatching surface, spawning a real process
+only where the contract IS an OS behavior (process-session semantics): the
+signal constants, the file-lock context managers (POSIX path on
 this host; the Windows branch is asserted via its dispatch shape), the
 strftime directive translation (the one piece with a deterministic Windows
 output we can assert directly), and the process-helper return contracts.
@@ -1909,3 +1910,117 @@ class TestCurrentUserSidNeverSpawns:
         monkeypatch.setattr(pc.subprocess, "run", self._forbid_spawn)
 
         assert pc.current_user_sid() == "S-1-5-21-9-9-9-500"
+
+
+def test_process_descendants_snapshots_a_new_session_grandchild():
+    """A grandchild in its OWN session is still a descendant.
+
+    This is the case a bare ``killpg`` misses, so the walk that broadens a kill
+    must be able to see it.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX session semantics
+        pytest.skip("POSIX session semantics")
+
+    grandchild: int | None = None
+    child_code = (
+        "import subprocess,sys,time;"
+        "c=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],"
+        "start_new_session=True);"
+        "print(c.pid,flush=True);time.sleep(30)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_code],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        assert proc.stdout is not None
+        grandchild = int(proc.stdout.readline().strip())
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if grandchild in platform_compat.process_descendants(proc.pid):
+                break
+            time.sleep(0.05)
+        descendants = platform_compat.process_descendants(proc.pid)
+        assert grandchild in descendants
+        # It is genuinely outside the parent's process group -- otherwise this
+        # test would pass even without the escape it exists to describe.
+        assert os.getpgid(grandchild) != os.getpgid(proc.pid)
+    finally:
+        for pid in (grandchild, proc.pid):
+            if pid is None:
+                continue
+            try:
+                platform_compat.kill_process_tree(pid)
+            except (ProcessLookupError, OSError, ValueError):
+                pass
+        proc.wait(timeout=5)
+
+
+def test_process_descendants_is_best_effort_on_unreadable_table(monkeypatch):
+    """Introspection failure must not raise into a caller's kill path."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(
+        platform_compat,
+        "_posix_process_parent_map",
+        lambda: (_ for _ in ()).throw(OSError("boom")),
+    )
+    monkeypatch.setattr(
+        platform_compat, "_windows_process_parent_map", lambda: (_ for _ in ()).throw(OSError("boom"))
+    )
+    assert platform_compat.process_descendants(os.getpid()) == []
+
+
+def test_process_descendants_refuses_reserved_pids():
+    from kiro_crew import platform_compat
+
+    assert platform_compat.process_descendants(1) == []
+    assert platform_compat.process_descendants(0) == []
+
+
+def test_parent_map_ignores_a_planted_ps_earlier_on_path(tmp_path, monkeypatch):
+    """A gateway PATH can lead with agent-writable dirs, so PATH is not trusted.
+
+    The shim below would report a bogus tree (and could run any code) if the
+    lookup honored PATH.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    shim = tmp_path / "ps"
+    shim.write_text("#!/bin/sh\necho '999999 999998'\n")
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
+
+    parent_map = platform_compat._posix_process_parent_map()
+    assert 999999 not in parent_map, "planted PATH shim was executed"
+    # A real snapshot still came back, so this is not passing by returning {}.
+    assert os.getpid() in parent_map
+
+
+def test_trusted_system_bin_rejects_a_name_not_in_system_dirs(tmp_path, monkeypatch):
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    fake = tmp_path / "definitely-not-a-system-tool"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert platform_compat.trusted_system_bin("definitely-not-a-system-tool") is None
+    assert platform_compat.trusted_system_bin("ps") is not None
+
+
+def test_parent_map_is_empty_when_no_trusted_ps_exists(monkeypatch):
+    """No trusted binary must degrade to best-effort, never fall back to PATH."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: None)
+    assert platform_compat._posix_process_parent_map() == {}
+    assert platform_compat.process_descendants(os.getpid()) == []
