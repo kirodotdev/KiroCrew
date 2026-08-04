@@ -4277,6 +4277,24 @@ def test_state_guard_watches_the_whole_directory():
     assert "_REAL_STATE_DIR" in inspect.getsource(_live_state_snapshot)
 
 
+def test_state_guard_compares_the_real_dir_not_the_redirect():
+    """The captured dir must survive the autouse redirect active right now.
+
+    _REAL_STATE_DIR is captured on first use rather than at import (banned by
+    issue #874). The property that makes the guard work is that it holds the
+    un-redirected dir even while routes._STATE_DIR points at a tmp dir -- the
+    guard re-reads it AFTER its yield, with the redirect still applied. If the
+    memoization were ever dropped so it re-resolved live, before == after would
+    compare tmp-to-tmp and this app's tests could rewrite real user specs
+    undetected, which has already happened twice.
+    """
+    assert _REAL_STATE_DIR is not None, "the first-use capture did not run"
+    assert _REAL_STATE_DIR != routes._STATE_DIR, (
+        "the live-state guard is pointed at the redirected tmp dir, so it can no "
+        "longer detect a test writing to the user's real state"
+    )
+
+
 # ── GPT round-46 findings (#518) ───────────────────────────────────────────────
 
 
@@ -6696,7 +6714,10 @@ def test_prepare_handoff_unpinned_call_keeps_working(tmp_path, monkeypatch):
 
 #: Roles _ChatSlot.append suppresses the global SSE push for. Everything else is
 #: broadcast to every connected dashboard client, so its content leaves the
-#: process and must be redacted first.
+#: process and must be redacted first. "chunk"/"done" are skipped
+#: unconditionally; "user" is skipped only because this app never passes the
+#: host's ``broadcast_user=True`` opt-in (guarded by
+#: test_the_host_still_exempts_only_these_roles_from_broadcast).
 _NON_BROADCAST_ROLES = ("chunk", "done", "user")
 
 
@@ -6723,14 +6744,31 @@ class _NoopState:
 def test_the_host_still_exempts_only_these_roles_from_broadcast():
     """Fixture guard. The rule below is derived from _ChatSlot.append's skip set;
     if the host changes it, the derivation is stale and must be revisited rather
-    than silently protecting the wrong roles."""
+    than silently protecting the wrong roles.
+
+    The host skips "chunk"/"done" unconditionally, and skips "user" unless the
+    caller opts in via ``broadcast_user=True`` (added so a message typed in a
+    CHANNEL renders in its dashboard tab -- nothing rendered it optimistically
+    there). This app never passes that opt-in, so all three roles are still
+    non-broadcast HERE; the third assertion is what keeps that true.
+    """
     import inspect
 
     from kiro_crew.dashboard.state import _ChatSlot
 
     src = inspect.getsource(_ChatSlot.append)
-    assert 'role not in ("chunk", "done", "user")' in src, (
-        "the host's broadcast skip set changed; _NON_BROADCAST_ROLES is now stale"
+    assert 'role not in ("chunk", "done")' in src, (
+        "the host's unconditional broadcast skip set changed; "
+        "_NON_BROADCAST_ROLES is now stale"
+    )
+    assert '(role != "user" or broadcast_user)' in src, (
+        "the host no longer skips user rows by default; _NON_BROADCAST_ROLES is "
+        "now stale"
+    )
+    assert "broadcast_user" not in inspect.getsource(routes._dispatch_turn), (
+        "this app now opts into broadcasting user rows, so 'user' is broadcast "
+        "and must be REMOVED from _NON_BROADCAST_ROLES (its content would reach "
+        "every dashboard client unredacted)"
     )
 
 

@@ -1205,6 +1205,7 @@ class _ChatSlot:
         ts: str = "",
         *,
         broadcast: bool = True,
+        broadcast_user: bool = False,
         meta: dict | None = None,
     ) -> None:
         msg: dict[str, Any] = {
@@ -1222,11 +1223,18 @@ class _ChatSlot:
         self._pending.append(msg)
         self.event.set()
         # Broadcast via global SSE when no HTTP stream reader is active
-        # Skip: chunk (too noisy), done (internal), user (frontend adds optimistically)
+        # Skip: chunk (too noisy), done (internal). A "user" row is skipped by
+        # DEFAULT because the composer that submitted it already rendered it
+        # optimistically -- but that is only true of a message typed in this
+        # dashboard. A row replayed from a CHANNEL transcript was typed in
+        # Slack, so nothing rendered it here; those callers pass
+        # ``broadcast_user=True`` or the message stays invisible until a full
+        # transcript reload, arriving AFTER the reply it came before.
         if (
             broadcast
             and self._on_message
-            and role not in ("chunk", "done", "user")
+            and role not in ("chunk", "done")
+            and (role != "user" or broadcast_user)
             and not self._has_reader
         ):
             self._on_message(self.key, msg)  # type: ignore[operator]
@@ -2947,6 +2955,36 @@ class DashboardState:
                     namespaced = _split_namespaced_channel_id(_ch)
                     slot._slack_channel = namespaced[1] if namespaced else (_ch or "")
                     slot._slack_thread_ts = _ts or ""
+                    # Rebuild the thread -> slot index too, not just the fields:
+                    # inbound replies resolve through the index, so restoring
+                    # the fields alone leaves a mirrored session delivering to
+                    # Slack but not back to its tab after a restart.
+                    #
+                    # Index ONLY a genuine mirror-OUT. A channel-born session's
+                    # ``slack_thread_ts`` is a SELF-reference -- the thread the
+                    # session lives IN, not one it mirrors TO -- and indexing
+                    # that would make every inbound Slack message resolve to a
+                    # "linked" slot and run through the dashboard chat runner
+                    # instead of the Slack transport, silently changing the
+                    # execution engine and approval semantics of all Slack
+                    # traffic.
+                    #
+                    # Both tests are load-bearing and neither is a name
+                    # heuristic. A channel slot whose stem RESOLVED is caught by
+                    # ``linked_session_key``; one whose stem did NOT resolve
+                    # (leaving that field empty) is caught by comparing the link
+                    # against the slot's own filename stem, because a channel
+                    # slot is named for the very thread it lives in. A dashboard
+                    # slot that merely happens to be named ``slack_...`` matches
+                    # neither test and is still indexed.
+                    from kiro_crew.history import _safe_key
+                    from kiro_crew.messaging.link import canonical_key
+
+                    _self_ref = False
+                    if _ts:
+                        _self_ref = _safe_key(canonical_key(_ts)) == name
+                    if _ts and not slot.linked_session_key and not _self_ref:
+                        self._slack_to_slot[_ts] = name
         except Exception:
             pass
         self._slots[name] = slot
@@ -3021,11 +3059,19 @@ class DashboardState:
         #    other way would be a cycle.
         #
         # What makes that safe: live tool meta is redacted at source (_tool_meta),
-        # and no DISK-LOADED message is ever appended with broadcast=True — both
-        # restore loops pass broadcast=False. That invariant is what lets the load
-        # path skip meta redaction, and it is pinned by
+        # and a DISK-LOADED message reaches this path only when the caller opts
+        # in per-role. Both restore loops pass broadcast=False, and the ONE
+        # exception is refresh_channel_window, which replays a channel
+        # transcript's tail and passes broadcast_user=True so a message typed in
+        # Slack renders at all (nothing rendered it optimistically here). That
+        # exception cannot carry unredacted meta: ConversationLog.append writes
+        # only role/content/ts/source_thread/source_user for such a row -- no
+        # meta dict -- so the arm below never fires for it, and the row's
+        # content is human-typed, which is deliberately raw at every other
+        # boundary too. The invariant is pinned by
         # test_rehydrate_does_not_broadcast_replayed_messages and
-        # test_restore_recent_sessions_does_not_broadcast_either. Do not relax it.
+        # test_restore_recent_sessions_does_not_broadcast_either. Do not relax
+        # it further without re-checking that meta is still absent.
         direct_meta = msg.get("meta")
         if direct_meta and isinstance(direct_meta, dict):
             payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
