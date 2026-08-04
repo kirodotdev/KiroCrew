@@ -1,4 +1,0 @@
-{"_type": "archive", "reason": "rotate", "archived_at": "2025-12-20T09:00:00+00:00", "count": 3}
-{"role": "user", "content": "What was the original reason we went with SSE instead of WebSocket?", "ts": "2025-11-02T15:45:00+00:00", "source_thread": "dashboard", "source_user": "dashboard"}
-{"role": "assistant", "content": "Request/response tool calls dominate the traffic pattern, so stateless HTTP intermediaries buy us proxy-friendliness and easier debugging without losing anything essential. Anthropic's mod_mcp and aiohttp both handle SSE natively — low maintenance cost. We reserved WebSocket for the one or two endpoints that would genuinely benefit from push-style events.", "ts": "2025-11-02T15:45:18+00:00", "source_thread": "dashboard", "source_user": "dashboard"}
-{"role": "user", "content": "OK, dropping it into the design doc.", "ts": "2025-11-02T15:46:42+00:00", "source_thread": "dashboard", "source_user": "dashboard"}

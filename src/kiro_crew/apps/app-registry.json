@@ -1,8 +1,8 @@
 [
-   {
-     "name": "kodama",
-     "gitUrl": "https://github.com/amergrgic/kodama",
-     "repo": "https://github.com/amergrgic/kodama",
-     "branch": "main"
-   }
+  {
+    "name": "launchdarkly",
+    "gitUrl": "https://github.com/launchdarkly-labs/launchdarkly-kiro-crew-app",
+    "repo": "https://github.com/launchdarkly-labs/launchdarkly-kiro-crew-app",
+    "branch": "main"
+  }
 ]

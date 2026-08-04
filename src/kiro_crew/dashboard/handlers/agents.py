@@ -225,11 +225,11 @@ async def api_default_agent(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "failed to read config file", "code": "config_unreadable"}, status=500
             )
-        data.setdefault("agent", {})["default_agent"] = name
+        data["default_agent"] = name
         write_config_atomically(path, data)
         return web.json_response({"ok": True, "default_agent": name})
     cfg = KiroCrewConfig.load()
-    return web.json_response({"default_agent": cfg.agent.default_agent})
+    return web.json_response({"default_agent": cfg.default_agent})
 
 
 # ── Config Schema ──

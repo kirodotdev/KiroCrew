@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
-  <path d="M9,2 L9,8 L4,17 Q2.5,20 5,22 L19,22 Q21.5,20 20,17 L15,8 L15,2" fill="var(--ico-a, currentColor)" fill-opacity="0.2" stroke="var(--ico-a, currentColor)" stroke-width="1.8"/>
-  <line x1="7.5" y1="2" x2="16.5" y2="2" stroke="var(--ico-a, currentColor)" stroke-width="2.2" stroke-linecap="round"/>
-  <path d="M5.5,15 Q8.5,14 12,14.5 Q15.5,15 18.5,15 L20,17 Q21.5,20 19,22 L5,22 Q2.5,20 4,17 Z" fill="var(--ico-a, currentColor)" fill-opacity="0.5"/>
-  <circle cx="9" cy="17.5" r="1.7" fill="var(--ico-b, currentColor)"/>
-  <circle cx="13" cy="16" r="1.4" fill="var(--ico-b, currentColor)"/>
-  <circle cx="11" cy="19.5" r="1.05" fill="var(--ico-b, currentColor)" fill-opacity="0.85"/>
-</svg>

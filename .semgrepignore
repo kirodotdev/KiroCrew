@@ -1,9 +1,0 @@
-# A .semgrepignore file REPLACES semgrep's built-in defaults, so replicate
-# them first (.git + honor .gitignore), then add repo-specific entries.
-.git/
-:include .gitignore
-
-# Vendored third-party code (llama-cpp-python, MIT) — upstream source we must
-# not modify; carries its own urllib use in optional multimodal helpers that
-# KiroCrew never calls. Mirrors the .woke.yml and lint excludes for _vendor.
-src/kiro_crew/_vendor/
