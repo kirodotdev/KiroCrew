@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re as _re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -252,6 +253,90 @@ class TurnUsage:
     duration_ms: int = 0
 
 
+def _normalize_to_kebab(name: str) -> str:
+    """Convert PascalCase/camelCase to kebab-case for consistent deny matching.
+
+    ``DeleteStack`` → ``delete-stack``, ``send-command`` → ``send-command``
+    (already kebab, unchanged). This ensures the security deny globs (which are
+    authored in kebab-case, e.g. ``*delete-stack*``) match regardless of whether
+    kiro-cli or the LLM sends the AWS API PascalCase name or the CLI kebab name.
+
+    The transform is injective within the space of valid AWS operation names
+    (single-word PascalCase identifiers), so it cannot wrongly DENY a benign op
+    by colliding with a destructive one: AWS operation names are globally unique
+    per service, and the kebab form of each is equally unique.
+    """
+    # Insert hyphen before uppercase runs: "DeleteStack" → "Delete-Stack" → "delete-stack"
+    s = _re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", name)
+    s = _re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1-\2", s)
+    return s.lower()
+
+
+def _command_from_tool_params(params: dict) -> str | None:
+    """Recover the verifiable command string from a shell tool's params dict.
+
+    Returns the raw command for the Bash-style ``{"command": ...}`` shape, a
+    synthesized ``aws <service> <operation> …`` line for the structured
+    kiro-cli ``use_aws`` shape, or None when neither shape is present (the
+    caller then falls back to deny-by-default).
+
+    The ``use_aws`` synthesis serializes ``parameters`` / ``positional_args``
+    into the tail so the security gate scans the FULL payload — a shell
+    command smuggled inside ``ssm send-command`` parameters (e.g.
+    ``{"commands": ["cat ~/.aws/credentials"]}``) is visible to
+    ``is_sensitive_bash_command`` / ``audit_bash_exfiltration``, and
+    destructive operations (``delete-stack``) match the built-in deny globs.
+    Both fields come from the structured tool call kiro-cli executes, not
+    from any LLM-authored display text, so they are trustworthy inputs for
+    the gate (unlike ``title``/``description``).
+
+    Security hardening (2026-08-05):
+    - **Casing normalization**: ``operation_name`` is normalized from
+      PascalCase/camelCase to kebab-case before synthesis, so the deny globs
+      (authored in kebab) match regardless of the casing kiro-cli or the LLM
+      sends. Without this, ``DeleteStack`` silently bypasses ``*delete-stack*``.
+    - **Whitespace fail-closed**: ``service_name`` and ``operation_name``
+      containing whitespace return None (deny-by-default) rather than
+      synthesizing a multi-token string that could confuse downstream parsers.
+    - **Best-effort caveat**: the serialized ``parameters`` tail uses
+      ``json.dumps`` whose escaping (``\\"``, ``\\\\``) may render embedded
+      payloads in a form the shell-text matchers were not authored for. This is
+      acceptable for a single-user tool but is not a complete smuggling defense.
+    """
+    cmd = params.get("command")
+    if isinstance(cmd, str) and cmd:
+        return cmd
+    service = params.get("service_name")
+    operation = params.get("operation_name")
+    if isinstance(service, str) and service and isinstance(operation, str) and operation:
+        # Fail-closed: reject tokens containing whitespace — a multi-token
+        # service_name or operation_name could confuse regex-based deny rules.
+        if _re.search(r"\s", service) or _re.search(r"\s", operation):
+            return None
+        # Normalize operation_name to kebab-case so deny globs match regardless
+        # of input casing (PascalCase API names like "DeleteStack" and CLI-style
+        # "delete-stack" both produce "delete-stack"). service_name is left as-is
+        # because AWS CLI services are already single lowercase tokens
+        # ("cloudformation", "s3api", "dynamodb") and normalizing them would
+        # incorrectly hyphenate ("cloud-formation") breaking deny regex matches.
+        operation_norm = _normalize_to_kebab(operation)
+        parts = ["aws", service, operation_norm]
+        region = params.get("region")
+        if isinstance(region, str) and region:
+            parts.append(f"--region {region}")
+        parameters = params.get("parameters")
+        if isinstance(parameters, dict) and parameters:
+            try:
+                parts.append(json.dumps(parameters, sort_keys=True))
+            except (TypeError, ValueError):
+                parts.append(str(parameters))
+        positional = params.get("positional_args")
+        if isinstance(positional, list) and positional:
+            parts.append(" ".join(str(p) for p in positional))
+        return " ".join(parts)
+    return None
+
+
 @dataclass
 class AcpEvent:
     """Structured event from kiro-cli ACP stream."""
@@ -330,12 +415,28 @@ class AcpEvent:
           ``toolCall`` params are resolved into ``tool_input`` and
           ``raw_tool_params`` is NOT set — this is the dashboard's primary
           gate path, so the fallback is load-bearing, not a nicety).
+
+        Two parameter shapes are recognized within each source:
+        - Bash-style: a literal ``command`` string — returned verbatim.
+        - Structured AWS CLI (kiro-cli ``use_aws``): ``service_name`` +
+          ``operation_name`` (+ ``parameters``/``positional_args``). kiro-cli
+          reports ``use_aws`` with the shell tool kind, so without this shape
+          the deny-by-default backstop in ``HookManager.on_tool_call`` rejected
+          EVERY ``use_aws`` call ("shell command could not be verified") — the
+          v3.3.x regression that fully broke SSM for kiro-backend users. The
+          structured fields are the ground truth of what executes (kiro-cli
+          builds the CLI invocation from them, never from the display title),
+          so synthesizing ``aws <service> <operation> …`` gives the gate real
+          bytes to evaluate: destructive subcommands still match the built-in
+          deny globs (``*delete-stack*``), and shell payloads embedded in
+          parameters (e.g. ``ssm send-command`` ``commands``) are scanned by
+          the sensitive-path / exfiltration checks via the serialized tail.
         """
         if not self.is_shell:
             return None
         if isinstance(self.raw_tool_params, dict):
-            cmd = self.raw_tool_params.get("command")
-            if isinstance(cmd, str) and cmd:
+            cmd = _command_from_tool_params(self.raw_tool_params)
+            if cmd:
                 return cmd
         # Fallback: recover the command from the tool_input JSON payload.
         if self.tool_input:
@@ -344,8 +445,8 @@ class AcpEvent:
             except (ValueError, TypeError):
                 return None
             if isinstance(parsed, dict):
-                cmd = parsed.get("command")
-                if isinstance(cmd, str) and cmd:
+                cmd = _command_from_tool_params(parsed)
+                if cmd:
                     return cmd
         return None
 

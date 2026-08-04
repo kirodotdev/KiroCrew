@@ -411,6 +411,264 @@ class TestShellCommandProperty:
         assert ev.shell_command is None
 
 
+class TestShellCommandUseAws:
+    """kiro-cli reports ``use_aws`` with the shell tool kind but its params are
+    the structured {service_name, operation_name, ...} shape with NO "command"
+    key. Before the fix, extraction returned None and the deny-by-default
+    backstop rejected EVERY use_aws call ("shell command could not be verified
+    for security policy") — the v3.3.x regression that fully broke SSM.
+    """
+
+    def test_use_aws_from_raw_tool_params(self):
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="tool_call",
+            is_shell=True,
+            raw_tool_params={
+                "service_name": "ssm",
+                "operation_name": "send-command",
+                "region": "us-east-1",
+                "parameters": {
+                    "document-name": "AWS-RunShellScript",
+                    "parameters": {"commands": ["systemctl is-active clickhouse-server"]},
+                },
+            },
+        )
+        cmd = ev.shell_command
+        assert cmd is not None
+        assert cmd.startswith("aws ssm send-command")
+        assert "--region us-east-1" in cmd
+        # The serialized parameters tail must carry the embedded shell payload
+        # so the exfiltration / sensitive-path checks can scan it.
+        assert "systemctl is-active clickhouse-server" in cmd
+
+    def test_use_aws_from_tool_input_json_permission_event(self):
+        """permission_request events carry the params via tool_input JSON —
+        the dashboard's primary gate path, where the v3.3.x SSM block fired."""
+        import json as _json
+
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="permission_request",
+            is_shell=True,
+            tool_input=_json.dumps(
+                {"service_name": "s3api", "operation_name": "list-buckets"}
+            ),
+        )
+        assert ev.shell_command == "aws s3api list-buckets"
+
+    def test_use_aws_not_denied_by_default_gate(self):
+        """End-to-end through the gate: a benign use_aws call must NOT hit the
+        deny-by-default backstop once the command is recoverable."""
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="permission_request",
+            is_shell=True,
+            tool_input='{"service_name": "s3api", "operation_name": "list-buckets"}',
+        )
+        result = HookManager().on_tool_call(
+            "AWS: s3api list-buckets", command=ev.shell_command, is_shell=True
+        )
+        assert result.action != TOOL_DENY
+
+    def test_use_aws_destructive_operation_still_denied(self):
+        """The synthesized command must keep the built-in deny globs armed:
+        destructive AWS operations stay blocked."""
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="tool_call",
+            is_shell=True,
+            raw_tool_params={
+                "service_name": "cloudformation",
+                "operation_name": "delete-stack",
+                "parameters": {"stack-name": "prod-stack"},
+            },
+        )
+        result = HookManager().on_tool_call(
+            "AWS: cloudformation delete-stack", command=ev.shell_command, is_shell=True
+        )
+        assert result.action == TOOL_DENY
+
+    def test_use_aws_credential_read_payload_still_denied(self):
+        """A shell payload smuggled inside ssm send-command parameters must be
+        visible to the sensitive-path checks via the serialized tail."""
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="tool_call",
+            is_shell=True,
+            raw_tool_params={
+                "service_name": "ssm",
+                "operation_name": "send-command",
+                "parameters": {"commands": ["cat ~/.aws/credentials"]},
+            },
+        )
+        result = HookManager().on_tool_call(
+            "AWS: ssm send-command", command=ev.shell_command, is_shell=True
+        )
+        assert result.action == TOOL_DENY
+
+    def test_missing_operation_name_still_returns_none(self):
+        """Half a structured shape is not verifiable — deny-by-default must
+        stay armed for it."""
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="tool_call", is_shell=True, raw_tool_params={"service_name": "ssm"}
+        )
+        assert ev.shell_command is None
+
+    # ── Casing normalization hardening (2026-08-05) ──
+
+    def test_pascal_case_operation_normalized_to_kebab(self):
+        """PascalCase operation_name (the AWS API name, e.g. 'DeleteStack')
+        must be normalized to kebab-case so deny globs still match."""
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="tool_call",
+            is_shell=True,
+            raw_tool_params={
+                "service_name": "cloudformation",
+                "operation_name": "DeleteStack",
+                "parameters": {"stack-name": "prod-stack"},
+            },
+        )
+        cmd = ev.shell_command
+        assert cmd is not None
+        assert "delete-stack" in cmd, f"PascalCase not normalized: {cmd}"
+        assert "DeleteStack" not in cmd
+
+    def test_pascal_case_destructive_op_denied(self):
+        """End-to-end: PascalCase 'DeleteStack' must hit the deny gate
+        identically to kebab 'delete-stack'."""
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="tool_call",
+            is_shell=True,
+            raw_tool_params={
+                "service_name": "cloudformation",
+                "operation_name": "DeleteStack",
+                "parameters": {"stack-name": "prod-stack"},
+            },
+        )
+        result = HookManager().on_tool_call(
+            "AWS: cloudformation DeleteStack", command=ev.shell_command, is_shell=True
+        )
+        assert result.action == TOOL_DENY, (
+            f"PascalCase 'DeleteStack' bypassed deny gate: {result}"
+        )
+
+    def test_camel_case_operation_normalized(self):
+        """camelCase operation_name must also normalize (e.g. 'deleteStack')."""
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="tool_call",
+            is_shell=True,
+            raw_tool_params={
+                "service_name": "cloudformation",
+                "operation_name": "deleteStack",
+            },
+        )
+        cmd = ev.shell_command
+        assert cmd is not None
+        assert "delete-stack" in cmd
+
+    def test_kebab_case_operation_unchanged(self):
+        """Already-kebab operation_name must pass through unchanged."""
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="tool_call",
+            is_shell=True,
+            raw_tool_params={
+                "service_name": "s3api",
+                "operation_name": "list-buckets",
+            },
+        )
+        cmd = ev.shell_command
+        assert cmd == "aws s3api list-buckets"
+
+    def test_service_name_passed_through_verbatim(self):
+        """service_name is NOT normalized (AWS services are already lowercase
+        single tokens like 'cloudformation'). PascalCase service_name is passed
+        through as-is because normalizing it would break deny regex matches
+        (e.g. 'CloudFormation' → 'cloud-formation' ≠ 'cloudformation')."""
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="tool_call",
+            is_shell=True,
+            raw_tool_params={
+                "service_name": "cloudformation",
+                "operation_name": "DeleteStack",
+            },
+        )
+        cmd = ev.shell_command
+        assert cmd is not None
+        # service_name passes through verbatim, operation normalized
+        assert cmd == "aws cloudformation delete-stack"
+        # The gate denies
+        result = HookManager().on_tool_call("title", command=cmd, is_shell=True)
+        assert result.action == TOOL_DENY
+
+    # ── Whitespace fail-closed ──
+
+    def test_whitespace_in_service_name_returns_none(self):
+        """service_name with whitespace is rejected (fail-closed) — a
+        multi-token service could confuse regex-based deny rules."""
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="tool_call",
+            is_shell=True,
+            raw_tool_params={
+                "service_name": "s3api ; rm -rf /",
+                "operation_name": "list-buckets",
+            },
+        )
+        assert ev.shell_command is None
+
+    def test_whitespace_in_operation_name_returns_none(self):
+        """operation_name with whitespace is rejected (fail-closed)."""
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="tool_call",
+            is_shell=True,
+            raw_tool_params={
+                "service_name": "ssm",
+                "operation_name": "send-command ; cat /etc/shadow",
+            },
+        )
+        assert ev.shell_command is None
+
+    def test_permission_event_pascal_case_denied(self):
+        """permission_request path (tool_input JSON) also normalizes casing."""
+        import json as _json
+
+        from kiro_crew.acp.types import AcpEvent
+
+        ev = AcpEvent(
+            kind="permission_request",
+            is_shell=True,
+            tool_input=_json.dumps(
+                {"service_name": "dynamodb", "operation_name": "DeleteTable",
+                 "parameters": {"table-name": "users-prod"}}
+            ),
+        )
+        result = HookManager().on_tool_call(
+            "AWS: dynamodb DeleteTable", command=ev.shell_command, is_shell=True
+        )
+        assert result.action == TOOL_DENY
+
+
 class TestHooksConfigFromDict:
     def test_empty(self):
         cfg = HooksConfig.from_dict({})
