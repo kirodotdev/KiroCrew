@@ -13,9 +13,8 @@ describe('timeAgo', () => {
 
   it('formats a valid recent timestamp', () => {
     const now = Math.floor(Date.now() / 1000)
-    // `now` replaces the former 'just now': it is what CLDR words for a
-    // sub-threshold gap, in every language. The other three are byte-identical
-    // to the hand-rolled ladder this delegates away to `i18n/format.ts`.
+    // `now` is what CLDR words for a sub-threshold gap, in every language. The
+    // other three match the CLDR output from `i18n/format.ts`.
     expect(timeAgo(now)).toBe('now')
     expect(timeAgo(now - 120)).toBe('2m ago')
     expect(timeAgo(now - 7200)).toBe('2h ago')

@@ -22,6 +22,7 @@ import urllib.request
 from pathlib import Path
 
 from kiro_crew.platform_compat import IS_LINUX
+from kiro_crew.pod import provision as prov
 from kiro_crew.pod.config import PodConfig
 
 # Pod names become systemd instance names and path segments; keep them strict.
@@ -518,7 +519,7 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
         # PATH" probe — resolves the machine-wide shim instead of the checkout
         # under test, so the pod silently exercises the global install and stays
         # coupled to a symlink it does not own.
-        "PATH": os.pathsep.join([str(checkout / ".venv" / "bin"), cfg.gateway_path]),
+        "PATH": os.pathsep.join([str(prov.venv_bin_dir(checkout)), cfg.gateway_path]),
     }
     for key in [
         k
@@ -599,7 +600,7 @@ def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
             f"from inside a kirocrew checkout first"
         )
     checkout = Path(checkout_str).expanduser()
-    bin_path = checkout / ".venv" / "bin" / "kirocrew"
+    bin_path = prov.venv_bin(checkout)
     if not (bin_path.exists() and os.access(bin_path, os.X_OK)):
         raise PodError(f"no kirocrew venv at {bin_path} (provision {name} first)")
     env = build_pod_env(cfg, cfg.home_dir(name), derive_port(cfg, name), checkout)
@@ -607,11 +608,11 @@ def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
 
 
 # `pod exec` forwards to a real kirocrew, so it inherits the WHOLE CLI — including
-# verbs that manage the HOST rather than any one instance. An earlier revision
-# denied the dangerous ones by name and that list was incomplete three times over
-# (`stop`, then `restart` for a second reason, then `service`), because the set of
-# host-scoped verbs is open-ended. So this is an ALLOWLIST: every verb below acts
-# only on `KIROCREW_HOME` state, which `pod exec` has already pointed at the pod.
+# verbs that manage the HOST rather than any one instance. This is an ALLOWLIST
+# rather than a denylist because the set of host-scoped verbs is open-ended (a
+# by-name denylist repeatedly missed verbs — `stop`, then `restart`, then
+# `service`): every verb below acts only on `KIROCREW_HOME` state, which
+# `pod exec` has already pointed at the pod.
 # Anything else — present or newly added — is refused until it is deliberately
 # listed, so the failure mode of drift is "temporarily unavailable" rather than
 # "silently operated on the user's live machine".
@@ -792,7 +793,7 @@ def boot(cfg: PodConfig, name: str) -> int:
         return 3
     checkout = Path(checkout_str).expanduser()
     home_dir = cfg.home_dir(name)
-    bin_path = checkout / ".venv" / "bin" / "kirocrew"
+    bin_path = prov.venv_bin(checkout)
 
     if not (bin_path.exists() and os.access(bin_path, os.X_OK)):
         print(f"FATAL: no kirocrew venv at {bin_path} (provision {name} first)")

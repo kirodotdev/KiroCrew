@@ -229,11 +229,11 @@ class TestFetchUsageBg:
             "percentage": 413.4,
             "plan": "KIRO POWER",
             "resets": "2026-07-01",
-            "email": "cttong@amazon.com",
+            "email": "carol@amazon.com",
             "start_url": "https://amzn.awsapps.com/start",
             "source": "api",
         }
-        whoami = AsyncMock(return_value={"email": "cttong@amazon.com",
+        whoami = AsyncMock(return_value={"email": "carol@amazon.com",
                                          "start_url": "https://amzn.awsapps.com/start"})
         with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
              patch.object(sessions_mod, "_fetch_whoami", whoami), \
@@ -261,11 +261,11 @@ class TestFetchUsageBg:
             "credits_overage": 31336.0,
             "plan": "KIRO POWER",
             "resets": "2026-08-01",
-            "email": "cttong@amazon.com",
+            "email": "carol@amazon.com",
             "start_url": "https://amzn.awsapps.com/start",
             "source": "api",
         }
-        whoami = AsyncMock(return_value={"email": "cttong@amazon.com",
+        whoami = AsyncMock(return_value={"email": "carol@amazon.com",
                                          "start_url": "https://amzn.awsapps.com/start"})
         # SAMPLE_USAGE carries resets "2026-07-01" — a different cycle from the
         # cached "2026-08-01".
@@ -369,9 +369,9 @@ class TestNormalizeTextUsage:
 class TestTextScrapeRegressesApiValue:
     """The overage-blind text scrape must not clobber a richer API value."""
 
-    ID = {"email": "cttong@amazon.com"}
+    ID = {"email": "carol@amazon.com"}
 
-    ID = {"email": "cttong@amazon.com", "start_url": "https://amzn.awsapps.com/start"}
+    ID = {"email": "carol@amazon.com", "start_url": "https://amzn.awsapps.com/start"}
     CYCLE = {"resets": "2026-08-01"}
 
     def test_api_prior_with_more_usage_blocks_scrape(self):
@@ -406,10 +406,10 @@ class TestTextScrapeRegressesApiValue:
         # Same human email across two Identity Center orgs (different start_url)
         # is NOT the same account — must not preserve.
         prev = {"credits_used": 41336.0, "source": "api",
-                "email": "cttong@amazon.com", "start_url": "https://orgA.awsapps.com/start"}
+                "email": "carol@amazon.com", "start_url": "https://orgA.awsapps.com/start"}
         new = {"credits_used": 100.0}
         assert _text_scrape_regresses_api_value(
-            prev, new, {"email": "cttong@amazon.com", "start_url": "https://orgB.awsapps.com/start"}
+            prev, new, {"email": "carol@amazon.com", "start_url": "https://orgB.awsapps.com/start"}
         ) is False
 
     def test_different_reset_date_allows_scrape(self):

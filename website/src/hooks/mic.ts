@@ -38,12 +38,50 @@ export function micAudioConstraints(): MediaStreamConstraints {
   return { audio: id ? { deviceId: { ideal: id } } : true }
 }
 
+/**
+ * Ask the desktop shell to offer an OS-level recovery route for a mic denial.
+ *
+ * In a browser the toast is the whole story — the user re-grants via the
+ * omnibox. In the packaged app it is a dead end: macOS's mic prompt is one-shot,
+ * so once denied the OS never asks again and page JS cannot open System
+ * Settings. The shell re-checks the real OS status and shows the Privacy pane
+ * only if macOS is the one refusing. No-op in a plain browser, and best-effort
+ * everywhere — telling the user why must never be what throws.
+ */
+export function reportMicDenied(): void {
+  try {
+    ;(window as { electronAPI?: { reportMicDenied?: () => void } }).electronAPI?.reportMicDenied?.()
+  } catch {
+    /* no shell bridge (browser), or IPC unavailable */
+  }
+}
+
+/** True when a getUserMedia rejection means "the user/OS refused", not "no device". */
+function isPermissionDenial(e: unknown): boolean {
+  const name = (e as { name?: string } | null)?.name || ''
+  return name === 'NotAllowedError' || name === 'SecurityError'
+}
+
+/**
+ * Report a mic failure to the shell when — and only when — it was a denial.
+ *
+ * For capture paths that do NOT route through `humanizeMicError` (they show no
+ * message, or their own), so a denial still gets its OS-level recovery route.
+ */
+export function reportIfMicDenied(e: unknown): void {
+  if (isPermissionDenial(e)) reportMicDenied()
+}
+
 /** Map a getUserMedia rejection to a short, human-readable message. */
 export function humanizeMicError(e: unknown): string {
   const name = (e as { name?: string } | null)?.name || ''
   switch (name) {
     case 'NotAllowedError':
     case 'SecurityError':
+      // The chokepoint most mic capture paths funnel their failure through, so
+      // the recovery hand-off lives here rather than in each hook. Paths that
+      // don't produce a message call reportIfMicDenied() directly.
+      reportMicDenied()
       return i18nT('hooks.mic.microphone_permission_denied_allow_mic_access_in')
     case 'NotFoundError':
     case 'OverconstrainedError':

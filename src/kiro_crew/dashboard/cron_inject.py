@@ -55,7 +55,7 @@ def inject_cron_result_to_dashboard(
                 # append_if_absent performs the duplicate check under the SAME
                 # per-session cross-process lock as the write itself, so the
                 # existence test and the append are one atomic critical section.
-                # The previous unlocked read_messages() + append_off_loop left a
+                # An unlocked read_messages() + append_off_loop would leave a
                 # TOCTOU window in which a concurrent slot save (or a cron
                 # re-fire) could land the identical result between the check and
                 # the fire-and-forget append — duplicating it on disk and

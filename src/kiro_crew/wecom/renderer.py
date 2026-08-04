@@ -122,7 +122,7 @@ class WeComRenderer(Renderer):
         await self._push(force=False)
 
     async def on_thinking(self, text: str) -> None:
-        # WeCom does not surface reasoning inline (parity with prior behavior).
+        # WeCom does not surface reasoning inline.
         return None
 
     async def on_tool_call(

@@ -234,9 +234,9 @@ def _write_all(fd: int, payload: bytes) -> int:
 # Keyed per SESSION: in the pooled topology one backend process serves many
 # sessions (per-call identity via the caller-meta extension), so a single
 # process-global set would apply the FIRST session's policy — or a cached
-# fail-open — to every other session (GPT 5.6 PR #422 round 20). Non-pooled
-# backends see one key for the process lifetime, preserving the old behavior.
-# BOUNDED (round 21): a long-lived pooled backend serves churning sessions;
+# fail-open — to every other session. Non-pooled
+# backends see one key for the process lifetime.
+# BOUNDED: a long-lived pooled backend serves churning sessions;
 # FIFO-evict the oldest entry past the cap so the dict cannot grow without
 # limit. Eviction only costs a re-fetch on that session's next call.
 _EXCLUDED_TOOLS_CACHE_MAX = 256
@@ -249,7 +249,7 @@ _last_startup_race_time: float = 0.0      # no session key or 404 — recovers f
 _failure_count: int = 0
 # Long TTL applies only when the gateway is genuinely unreachable
 # (HTTP errors other than 404, connection refused, timeout).  Kept short
-# (60s, was 30s pre-fix) to keep the MCP-level fail-open window narrow:
+# (60s) to keep the MCP-level fail-open window narrow:
 # longer windows widen the period during which non-kiro-cli MCP hosts
 # (Claude Code, custom hosts) — exactly the clients this defense-in-depth
 # layer is supposed to protect — bypass tool exclusions.  60s is enough
@@ -311,7 +311,7 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
     # yet visible); a caller WITH a verified per-call identity is past that
     # race by definition, so honoring the global short window for it would
     # fail-open an identified pooled session on another session's race
-    # (GPT 5.6 round 21) — skip it when caller_session is present.
+    # — skip it when caller_session is present.
     if (
         (_last_failure_time and (now - _last_failure_time) < _NEGATIVE_CACHE_TTL)
         or (
@@ -781,8 +781,8 @@ def _run_stdio_dispatch_loop(
 
         ``session_key`` should be the request's parsed caller identity when
         available (pooled topology: the env var below attributes every
-        outcome to ``mcp`` or the wrong session in a shared backend — GPT
-        5.6 round 18); the env read is the single-session fallback.
+        outcome to ``mcp`` or the wrong session in a shared backend); the
+        env read is the single-session fallback.
 
         SEL failure must not break the response path, but a missed audit
         record must be visible (security-controls guideline: callback
@@ -1017,7 +1017,7 @@ def _run_stdio_dispatch_loop(
                 # to per-session spawn). Advertising is what makes the
                 # per-call ``_meta.kirocrew.caller`` path live end-to-end —
                 # without it the dispatch loop's caller slot never receives
-                # gateway-authored metadata (GPT 5.6 round 18).
+                # gateway-authored metadata.
                 _caps["experimental"] = caller_identity_capability()
             respond(
                 req_id,

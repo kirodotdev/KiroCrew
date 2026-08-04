@@ -114,10 +114,10 @@ async def handle_message_transport(
     # _is_slack_restricted — the hook auto-reply, the !temporary/!incognito
     # modifiers, and the keyword commands all gate conversation-log writes on it.
     # After a gateway restart the in-memory flag maps (_thread_incognito /
-    # _thread_temporary) start empty; hydrating late (at session acquisition, as
-    # this used to) let a hook/spawn/cron turn on a previously-incognito thread
+    # _thread_temporary) start empty; hydrating late (at session acquisition)
+    # would let a hook/spawn/cron turn on a previously-incognito thread
     # get logged before the durable flag was reloaded. Native hydrates right
-    # after session_key (handler.py:2449-2450), so we match it. Idempotent:
+    # after session_key, so we match it. Idempotent:
     # _hydrate_thread_overrides guards repeated I/O per session.
     _hydrate_thread_overrides(session_key, conversation_log)
     _hydrate_conv_flags(sessions, session_key)
@@ -259,7 +259,7 @@ async def handle_message_transport(
             await sessions.set_channel(session_key, channel)
         sessions.set_slack_link(session_key, reply_ts, channel)
         # Publish this turn's session identity so managed MCP tools resolve
-        # X-Session-Key; one shared writer lives in messaging.identity. (#232)
+        # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(sessions, session_key)
 
         # ── Build message with context ──

@@ -66,9 +66,9 @@ from kiro_crew.slack.blocks import (
 )
 from kiro_crew.slack.files import SLACK_AUDIO_MIMETYPES, process_slack_files
 from kiro_crew.slack.handler import (
-    _YOLO_TTL_SECS,
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
+    describe_grant_lifetime,
     handle_message,
     is_allowed_user,
     is_owner,
@@ -354,8 +354,7 @@ async def _handle_yolo(
 
     if arg == "on":
         if so.is_active():
-            remaining = so.remaining_secs()
-            await respond(f"🟢 YOLO mode is already *ON* ({remaining // 60}min remaining).")
+            await respond(f"🟢 YOLO mode is already *ON* ({describe_grant_lifetime()}).")
             return
         result = so.activate("slack")
         if not result.active:
@@ -371,7 +370,8 @@ async def _handle_yolo(
         if orch.dashboard_state:
             orch.dashboard_state.push_slots_update()
         await respond(
-            f"🟢 YOLO mode *ON* (auto-expires in {_YOLO_TTL_SECS // 60}min) — all tools auto-approved."
+            f"🟢 YOLO mode *ON* ({describe_grant_lifetime()})"
+            f" — all tools auto-approved."
         )
     elif arg == "off":
         from kiro_crew.slack.handler import (
@@ -406,9 +406,8 @@ async def _handle_yolo(
             await respond("🔴 YOLO mode is not active. Use `on` to activate first.")
     else:
         if so.is_active():
-            remaining = so.remaining_secs()
             await respond(
-                f"YOLO mode is currently *ON 🟢* ({remaining // 60}min remaining).\nUsage: `/{orch.slack_command} yolo on|off|renew`"
+                f"YOLO mode is currently *ON 🟢* ({describe_grant_lifetime()}).\nUsage: `/{orch.slack_command} yolo on|off|renew`"
             )
         else:
             await respond(
@@ -524,9 +523,9 @@ def _get_agent_names() -> list[str]:
             # UnicodeDecodeError (a ValueError subclass, NOT an OSError) is
             # raised by safe_read_file's utf-8 read on a non-UTF-8 *.json —
             # e.g. a macOS AppleDouble ._foo.json stub in ~/.kiro/agents.
-            # Without it here the raise escaped and killed the `/kirocrew
-            # channels` handler / channel-modal refresh task before it opened.
-            # Mirrors the 90e3cccc fix to agent.py's _load_json/_enforce_denied.
+            # Catching it here keeps a non-UTF-8 file from crashing the
+            # `/kirocrew channels` handler / channel-modal refresh task before
+            # it opens. Mirrors agent.py's _load_json.
             name = None
         names.append(name or f.stem)
     return sorted(names)
@@ -775,7 +774,7 @@ def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     set_tracking_channels(orch._tracking_channels)
     set_open_channels(orch._open_channels)
     set_owner_id(orch._owner_id)
-    if orch._cfg.agent.yolo:
+    if orch._cfg.agent.dangerously_skip_permissions:
         set_yolo_mode(True)
     set_orch_cfg(orch._cfg)
     if orch.dashboard_state:
@@ -2098,9 +2097,8 @@ async def _route_message(
                     orch.channel_history.set_user_name(sender_id, u["name"])
                 break
 
-    # Observe mode: record history from authorized users only.
-    # Previously recorded all channel traffic, but non-owner messages
-    # could influence LLM context.
+    # Observe mode: record history from authorized users only, so non-owner
+    # messages cannot influence LLM context.
     if activation == ACTIVATION_OBSERVE:
         if should_record_observe_history(orch.channel_history, _user_authorized):
             assert orch.channel_history is not None  # narrowed by helper

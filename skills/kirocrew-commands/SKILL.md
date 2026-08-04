@@ -96,12 +96,6 @@ See `src/kiro_crew/pod/README.md` for the full reference.
 | `kirocrew chat` | Interactive chat (REPL mode) |
 | `kirocrew chat -m "message"` | Single message (non-interactive) |
 | `kirocrew chat --model claude-opus` | Use specific model |
-| `kirocrew chat --tui` | Launch TUI instead of REPL |
-| `kirocrew tui` | Launch Terminal UI |
-| `kirocrew tui --yolo` | TUI with auto-approve all tools |
-| `kirocrew tui --session SESSION_KEY` | Resume a specific session |
-| `kirocrew tui --workspace NAME` | Start with a specific workspace |
-| `kirocrew tui --agent NAME` | Start with a specific agent |
 
 ## Browsing (Playwright MCP)
 

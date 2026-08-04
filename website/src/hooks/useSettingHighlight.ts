@@ -17,9 +17,9 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'voice.aws-region': 'voice.aws-region-transcribe',
   'voice.aws-profile-2': 'voice.aws-profile-polly',
   'voice.aws-region-2': 'voice.aws-region-polly',
-  // "Default Model" became "Fallback Model" when the per-agent tier landed, and
-  // registry ids derive from the label — without this, links saved or bookmarked
-  // against the old id silently lose their highlight.
+  // The "Default Model" row is labeled "Fallback Model", and registry ids
+  // derive from the label — without this, links saved or bookmarked against
+  // the old id silently lose their highlight.
   'chat.default-model': 'chat.fallback-model',
 }
 

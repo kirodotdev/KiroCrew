@@ -1290,7 +1290,7 @@ def _resolve_peer_identity(peer_pid: int) -> tuple[str, list[int]]:
       PID-namespace topology). Without the host chain in ``_CONN_INDEX`` the
       claim-push silently updates zero connections and the stub stays
       identity-less for life: orphan subagents with empty ``parent_session``
-      and undeliverable completion events (Mesh ticket 8abcd9fe).
+      and undeliverable completion events.
 
     The walk continues past a session-key match so the chain is complete for
     claim matching at any ancestry level.
@@ -1378,7 +1378,7 @@ def _apply_claim(frame: dict[str, Any]) -> dict[str, Any]:
     if not conns:
         # A claim naming a pid with NO indexed connection is the exact silent
         # failure that produced orphan subagents (host-pid claim vs
-        # namespace-pid index, Mesh ticket 8abcd9fe). It can also mean the
+        # namespace-pid index). It can also mean the
         # runtime's stubs disconnected — either way it deserves a loud trail,
         # not a silent {"updated": 0}.
         logger.warning(

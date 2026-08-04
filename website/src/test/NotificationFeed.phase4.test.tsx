@@ -98,9 +98,9 @@ describe('NotificationFeed Phase 4: generic url actions', () => {
   })
 
   it('legacy/corrupted rows with non-string action fields render safely', () => {
-    // GPT 5.6 HIGH regression: a persisted action with object id/label
-    // rendered as a React child would crash the whole feed. The row must
-    // render (title visible) with the malformed action filtered out.
+    // A persisted action with object id/label rendered as a React child would
+    // crash the whole feed. The row must render (title visible) with the
+    // malformed action filtered out.
     renderFeed([mkN({
       ts: '1', title: 'Corrupted row survives',
       actions: [
@@ -114,8 +114,8 @@ describe('NotificationFeed Phase 4: generic url actions', () => {
   })
 
   it('a truthy non-array actions field does not crash the feed', () => {
-    // GPT 5.6 HIGH round 2: `n.actions || []` passes a truthy non-array
-    // (e.g. `{}`) straight to .filter, throwing on every feed load.
+    // `n.actions || []` passes a truthy non-array (e.g. `{}`) straight to
+    // .filter, throwing on every feed load.
     renderFeed([mkN({
       ts: '1', title: 'Non-array actions survives',
       actions: {} as unknown as Notification['actions'],

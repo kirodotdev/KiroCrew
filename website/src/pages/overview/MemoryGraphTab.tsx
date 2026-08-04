@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Network as NetworkIcon, RefreshCw } from 'lucide-react'
 import Graph from 'graphology'
@@ -20,12 +20,39 @@ const GROUP_COLORS: Record<string, string> = {
 const DIM_COLOR = 'rgba(120,120,120,0.12)'
 
 const StatusDot = ({ color }: { color: string }) => <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
-const GROUP_LABELS: Record<string, ReactNode> = {
-  preference: <><StatusDot color="#3b82f6" /> Preferences</>,
-  project: <><StatusDot color="#22c55e" /> Projects</>,
-  semantic: <><StatusDot color="#a855f7" /> Semantic</>,
-  lesson: <><StatusDot color="#f97316" /> Lessons</>,
-  history: <><StatusDot color="#9ca3af" /> History</>,
+/**
+ * Catalog KEY for each group's legend/filter-button label, and the dot color
+ * beside it.
+ *
+ * Keys, not strings — and two flat tables rather than one table of JSX: the
+ * previous `Record<string, ReactNode>` held `<>… Preferences</>` fragments built
+ * at module load, so the copy inside them was frozen at import and could not
+ * re-resolve on a language switch. The `i18nT()` call now sits in the render
+ * below. Flat `Record`s indexed inline at the call are also the only shape
+ * `scripts/check-i18n-keys.mjs` can verify statically.
+ *
+ * Each label carries its own `{{count}}` rather than having the count appended
+ * outside the call, matching the `all_count` button beside it — a translator can
+ * move or re-punctuate the parenthesis, which is not the same in every locale.
+ *
+ * These hexes are the legend dots only, kept separate from GROUP_COLORS (which
+ * feeds sigma's WebGL node program). They agree for every group except `history`,
+ * which the legend has always drawn one step lighter (#9ca3af vs #6b7280);
+ * preserved verbatim so this conversion changes no pixels.
+ */
+const GROUP_LABEL_KEY: Record<string, string> = {
+  preference: 'pages.overview.memoryGraphTab.group_preferences_count',
+  project: 'pages.overview.memoryGraphTab.group_projects_count',
+  semantic: 'pages.overview.memoryGraphTab.group_semantic_count',
+  lesson: 'pages.overview.memoryGraphTab.group_lessons_count',
+  history: 'pages.overview.memoryGraphTab.group_history_count',
+}
+const GROUP_DOT_COLOR: Record<string, string> = {
+  preference: '#3b82f6',
+  project: '#22c55e',
+  semantic: '#a855f7',
+  lesson: '#f97316',
+  history: '#9ca3af',
 }
 
 interface GraphNode { id: string; label: string; group: string; title: string }
@@ -67,10 +94,10 @@ export default function MemoryGraphTab() {
   // Layout: a ONE-SHOT d3-force pass (settle within a time budget, then stop)
   // — the same "compute a diagram once, never run a live solver" model the
   // Knowledge Graph tab uses. d3's forceManyBody uses a Barnes-Hut quadtree
-  // (O(n log n)) and the pass is time-bounded + one-time, so it does NOT
-  // reintroduce the old freeze (vis-network's O(n²) forceAtlas2 that ran every
-  // frame on the main thread). Real edges (from the fixed backend edge rule)
-  // give connected memory clusters; disconnected nodes are kept in view by a
+  // (O(n log n)) and the pass is time-bounded + one-time, so it does NOT block
+  // the main thread (a live O(n²) forceAtlas2 solver every frame would freeze
+  // the UI). Real edges (from the backend edge rule) give connected memory
+  // clusters; disconnected nodes are kept in view by a
   // gentle forceX/forceY gravity. A golden-angle (sunflower) disc seeds initial
   // positions and is the fallback if d3 fails to load. The client fully owns
   // layout — the server sends only nodes/edges, no coordinates.
@@ -87,7 +114,7 @@ export default function MemoryGraphTab() {
 
     // Read theme-aware colors from the design-system CSS vars on <html> so the
     // graph is legible in BOTH light and dark modes (the Knowledge Graph tab
-    // reads the same vars). Hardcoding colors made text/edges/the hover pill
+    // reads the same vars). Hardcoding colors would make text/edges/the hover pill
     // wrong in one mode — sigma's default hover label paints a hardcoded WHITE
     // pill, which is jarring and low-contrast against light labels in dark mode.
     const readColors = () => {
@@ -296,8 +323,8 @@ export default function MemoryGraphTab() {
           placeholder={i18nT('pages.overview.memoryGraphTab.search_nodes')} value={searchImmediate} onChange={e => setSearchImmediate(e.target.value)}
         />
         <Btn onClick={() => setFilter(null)} className={!filter ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.memoryGraphTab.all_count', { count: nodes.length })}</Btn>
-        {Object.entries(GROUP_LABELS).map(([key, label]) => counts[key] ? (
-          <Btn key={key} onClick={() => setFilter(filter === key ? null : key)} className={filter === key ? '!border-accent !text-accent' : ''}>{label} ({counts[key]})</Btn>
+        {Object.keys(GROUP_LABEL_KEY).map(key => counts[key] ? (
+          <Btn key={key} onClick={() => setFilter(filter === key ? null : key)} className={filter === key ? '!border-accent !text-accent' : ''}><StatusDot color={GROUP_DOT_COLOR[key]} /> {i18nT(GROUP_LABEL_KEY[key], { count: counts[key] })}</Btn>
         ) : null)}
       </div>
       <div ref={containerRef} className="w-full border border-border rounded-md bg-bg-elevated" style={{ height: '500px' }} />

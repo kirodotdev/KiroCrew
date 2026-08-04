@@ -9,8 +9,7 @@ describe('formatCost', () => {
   })
 
   it('floors non-zero dust to <$0.01 instead of leaking 4dp noise', () => {
-    // The pre-fix rendering was "$0.0004" / "$0.0023" — a precision no user
-    // decision needs.
+    // 4dp dust like "$0.0004" / "$0.0023" is a precision no user decision needs.
     expect(formatCost(0.0004)).toBe('<$0.01')
     expect(formatCost(0.009)).toBe('<$0.01')
   })

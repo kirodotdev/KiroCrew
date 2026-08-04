@@ -1,10 +1,11 @@
 import { createElement } from 'react'
-import { LayoutGrid } from 'lucide-react'
+import { Component } from 'lucide-react'
 import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../../../api/client'
+import { i18nT } from '../../../i18n/t'
 import { fuzzyMatch, makeScoreThenNameComparator, substringIndices } from '../../../utils/fuzzyMatch'
 import type { Artifact } from '../../../types'
 import type { Result, ResourceProvider } from '../types'
@@ -31,7 +32,17 @@ import type { Result, ResourceProvider } from '../types'
  */
 
 const PROVIDER_ID = 'artifacts'
-const PROVIDER_LABEL = 'Artifacts'
+/**
+ * Catalog KEY for the tab label, not the label itself: this const is evaluated
+ * at module load, so an `i18nT()` here would freeze the boot language. The call
+ * happens in `createArtifactsProvider()`, which `useArtifactsProvider()` runs
+ * from a `useMemo` during render.
+ *
+ * REUSES the existing sidebar-nav key rather than adding a third copy of
+ * "Artifacts" to the catalog — the palette tab and the nav entry name the same
+ * feature, so they should move together when a locale revises the term.
+ */
+const PROVIDER_LABEL_KEY = 'nav.artifacts'
 
 /** Cache server responses briefly so retyping the same query is free. */
 const ARTIFACTS_STALE_MS = 30_000
@@ -55,7 +66,9 @@ export interface ArtifactsProviderDeps {
 }
 
 function artifactIcon() {
-  return createElement(LayoutGrid, { className: 'lucide-inline' })
+  // One glyph for artifacts everywhere: the SidePanel `artifacts` view + the
+  // opened-artifact tab use the same lucide `Component`.
+  return createElement(Component, { className: 'lucide-inline' })
 }
 
 /**
@@ -67,7 +80,14 @@ export function createArtifactsProvider(deps: ArtifactsProviderDeps): ResourcePr
 
   return {
     id: PROVIDER_ID,
-    label: PROVIDER_LABEL,
+    // A GETTER, not a plain call: the provider object is built inside a `useMemo`
+    // whose deps do not include the language, so `label: i18nT(...)` would resolve
+    // once and keep the pre-switch wording forever. `LanguageProvider` forces a
+    // re-RENDER via `cloneElement` (it deliberately does NOT remount — see its own
+    // comment rejecting `key={active}`), and a re-render does not recompute a memo.
+    // An accessor moves the lookup to the consumer's render, where the tab strip
+    // reads it. Satisfies `ResourceProvider.label: string`.
+    get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: artifactIcon(),
     async search(query: string): Promise<Result[]> {
       const q = query.trim()

@@ -114,7 +114,7 @@ describe('ModelEffortDropdown — per-agent default row', () => {
 describe('ModelEffortDropdown — effort footer value', () => {
   // The footer summarises what a turn WILL run at: a slot with no override
   // inherits the configured default, so showing a bare "Default" there hid the
-  // real level (the reported symptom on a freshly created session). Scoped to
+  // real level (as on a freshly created session). Scoped to
   // the footer row — the drill-in effort page is always mounted (off-screen)
   // and renders its own copy of the label.
   const footer = () => screen.getByRole('button', { name: /^Reasoning/ })

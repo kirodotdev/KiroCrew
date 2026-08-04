@@ -44,8 +44,8 @@ describe('splitUnits', () => {
   })
 
   it('reports text with no wrapper at all as pure orphan', () => {
-    // The case the predecessor detector dropped: a run with zero catalog units was
-    // skipped entirely, so a fully hardcoded component reported nothing.
+    // A run with zero catalog units is still scanned — skipping it would report
+    // nothing for a fully hardcoded component.
     expect(splitUnits('6m 38s')).toEqual({ units: [], orphans: ['6m 38s'] })
   })
 
@@ -76,7 +76,7 @@ describe('latinLeaks', () => {
 
   it('finds single-letter unit symbols', () => {
     // `8h 49m 29s` under a translated heading is a real shipped defect. A >=3-letter
-    // threshold (what the predecessor used) misses every one of these.
+    // threshold misses every one of these.
     expect(latinLeaks('8h 49m 29s')).toEqual(['h', 'm', 's'])
   })
 
@@ -137,8 +137,8 @@ describe('gradeRun', () => {
   })
 
   it('reports leaks in a run with NO catalog unit at all', () => {
-    // The regression guard for the predecessor's `units.length === 0` skip, which
-    // made the gate blinder the more untranslated a surface was.
+    // Guards the `units.length === 0` case: skipping a run with no catalog unit
+    // would make the gate blinder the more untranslated a surface is.
     const { leaks, fragments } = gradeRun('Cron Jobs')
     expect(leaks).toEqual(['Cron', 'Jobs'])
     expect(fragments).toEqual([])

@@ -9,6 +9,7 @@ import json
 import os
 import textwrap
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,6 +18,7 @@ from aiohttp import web  # noqa: F401  (used by builtin re-shell tests)
 from aiohttp.test_utils import TestClient, TestServer  # noqa: F401
 
 import kiro_crew.apps.builtins.dev_fleet.server as mod
+from kiro_crew import platform_compat
 
 
 # --- worktree porcelain parsing ---
@@ -50,6 +52,90 @@ def test_parse_worktree_porcelain_empty():
     from kiro_crew.apps.builtins.dev_fleet.server import _parse_worktree_porcelain
 
     assert _parse_worktree_porcelain("") == []
+
+
+def test_parse_worktree_porcelain_captures_prunable():
+    """`prunable` marks a record whose checkout directory is gone."""
+    from kiro_crew.apps.builtins.dev_fleet.server import _parse_worktree_porcelain
+
+    raw = textwrap.dedent("""\
+        worktree /home/user/kirocrew
+        HEAD abc1234567890abcdef1234567890abcdef123456
+        branch refs/heads/main
+
+        worktree /home/user/kirocrew-wt-deleted
+        HEAD def4567890abcdef1234567890abcdef12345678
+        branch refs/heads/gone
+        prunable gitdir file points to non-existent location
+
+        worktree /home/user/kirocrew-wt-bare-flag
+        HEAD def4567890abcdef1234567890abcdef12345678
+        detached
+        prunable
+
+    """)
+    entries = _parse_worktree_porcelain(raw)
+    assert len(entries) == 3
+    assert "prunable" not in entries[0]
+    assert entries[1]["prunable"] == "gitdir file points to non-existent location"
+    # A bare `prunable` line (no reason) must still register as prunable.
+    assert entries[2]["prunable"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_discover_worktrees_drops_prunable():
+    """A `rm -rf`'d worktree must not appear in the fleet.
+
+    git keeps reporting the admin record until `git worktree prune` runs, so
+    without this filter the ghost row survives every refresh.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    stdout = textwrap.dedent("""\
+        worktree /home/user/kirocrew
+        HEAD abc1234567890abcdef1234567890abcdef123456
+        branch refs/heads/main
+
+        worktree /home/user/kirocrew-wt-alive
+        HEAD def4567890abcdef1234567890abcdef12345678
+        branch refs/heads/alive
+
+        worktree /home/user/kirocrew-wt-deleted
+        HEAD 1234567890abcdef1234567890abcdef12345678
+        branch refs/heads/deleted
+        prunable gitdir file points to non-existent location
+
+    """)
+    with patch.object(mod, "_run_cmd", new=AsyncMock(return_value=(0, stdout, ""))):
+        entries = await mod._discover_worktrees()
+    paths = [e["path"] for e in entries]
+    assert paths == ["/home/user/kirocrew", "/home/user/kirocrew-wt-alive"]
+    assert entries[0]["is_main"] is True
+    assert entries[1]["is_main"] is False
+
+
+@pytest.mark.asyncio
+async def test_discover_worktrees_keeps_prunable_main():
+    """The primary checkout anchors is_main and is never filtered out."""
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    stdout = textwrap.dedent("""\
+        worktree /home/user/kirocrew
+        HEAD abc1234567890abcdef1234567890abcdef123456
+        branch refs/heads/main
+        prunable gitdir file points to non-existent location
+
+        worktree /home/user/kirocrew-wt-alive
+        HEAD def4567890abcdef1234567890abcdef12345678
+        branch refs/heads/alive
+
+    """)
+    with patch.object(mod, "_run_cmd", new=AsyncMock(return_value=(0, stdout, ""))):
+        entries = await mod._discover_worktrees()
+    assert [e["path"] for e in entries] == [
+        "/home/user/kirocrew", "/home/user/kirocrew-wt-alive",
+    ]
+    assert entries[0]["is_main"] is True
 
 
 # --- PR status ---
@@ -3199,6 +3285,94 @@ async def test_build_fleet_payload_has_context_fields():
 
 
 # =============================================================================
+# Non-Linux honesty: the fleet payload must DISCLOSE that pods cannot run here,
+# and must still report build state (a plain filesystem fact).
+# =============================================================================
+async def _fleet_with(worktrees, **patches):
+    """Build a fleet payload with everything external stubbed out."""
+    ginfo = {
+        "branch": "feat/x", "head": "abc1234", "dirty": False,
+        "ahead": 0, "behind": 0, "last_updated_at": 111,
+    }
+    defaults = {
+        "_live_worktree_path": AsyncMock(return_value=None),
+        "_discover_worktrees": AsyncMock(return_value=worktrees),
+        "_git_info": AsyncMock(return_value=ginfo),
+        "_pr_status_cached": AsyncMock(return_value=None),
+        "_git_ahead": AsyncMock(return_value=0),
+        "_context_cached": AsyncMock(
+            return_value={"issues": [], "tickets": [], "summary": None}
+        ),
+        "_gateway_service_active": AsyncMock(return_value=False),
+    }
+    with ExitStack() as stack:
+        for attr, repl in defaults.items():
+            stack.enter_context(patch.object(mod, attr, repl))
+        for attr, value in patches.items():
+            stack.enter_context(patch.object(mod, attr, value))
+        return await mod._build_fleet()
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_discloses_why_pods_are_unavailable():
+    """_POD_ERROR used to be computed and then read by NOTHING, so a non-Linux
+    user got pod controls that silently failed. It must reach the payload."""
+    reason = "Pods are Linux systemd --user units; this host is darwin."
+    fleet = await _fleet_with(
+        [{"path": "/repo", "branch": "main", "is_main": True}],
+        _POD_AVAILABLE=False,
+        _POD_ERROR=reason,
+        _load_cfg=lambda: None,
+    )
+    assert fleet["pods_available"] is False
+    assert fleet["pods_unavailable_reason"] == reason
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_reports_no_reason_when_pods_work():
+    fleet = await _fleet_with(
+        [{"path": "/repo", "branch": "main", "is_main": True}],
+        _POD_AVAILABLE=True,
+        _POD_ERROR="",
+        _load_cfg=lambda: None,
+    )
+    assert fleet["pods_available"] is True
+    assert fleet["pods_unavailable_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_build_state_is_reported_even_where_pods_cannot_run(tmp_path):
+    """Regression: has_venv/has_dist sat behind the pod-runnable gate, so every
+    worktree showed as "not built" off Linux even when it was fully built.
+    They are plain filesystem checks — knowable on every platform."""
+    wt = tmp_path / "repo-wt-built"
+    binp = wt / ".venv" / ("Scripts" if platform_compat.IS_WINDOWS else "bin")
+    binp.mkdir(parents=True)
+    exe = binp / ("kirocrew.exe" if platform_compat.IS_WINDOWS else "kirocrew")
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    (wt / "src" / "kiro_crew" / "static" / "dist").mkdir(parents=True)
+
+    fleet = await _fleet_with(
+        [
+            {"path": str(tmp_path / "repo"), "branch": "main", "is_main": True},
+            {"path": str(wt), "branch": "feat/x", "is_main": False},
+        ],
+        # Pods cannot run, and _load_cfg therefore yields no config — the exact
+        # state a macOS or Windows host is in.
+        _POD_AVAILABLE=False,
+        _POD_ERROR="pods require Linux systemd",
+        _load_cfg=lambda: None,
+    )
+    row = {w["name"]: w for w in fleet["worktrees"]}["repo-wt-built"]
+    assert row["has_venv"] is True
+    assert row["has_dist"] is True
+    # Pod state stays false — it genuinely cannot be known here.
+    assert row["running"] is False
+    assert row["port"] is None
+
+
+# =============================================================================
 # Regression: _find_cli must target a RUNNABLE entry point (issue #220)
 # =============================================================================
 def test_find_cli_targets_kiro_crew_package():
@@ -4014,3 +4188,273 @@ def test_health_registered_on_proxied_api_path():
     }
     assert "/health" in paths        # gateway-internal liveness poll (exempt)
     assert "/api/health" in paths    # proxied path the dashboard actually polls
+
+
+# =============================================================================
+# fleet cache: eviction on removal + single-flight rebuilds
+# =============================================================================
+
+
+@pytest.fixture
+def _clean_fleet_cache():
+    """Isolate the module-level fleet cache from other tests."""
+    saved = dict(mod._FLEET_CACHE)
+    saved_inflight = mod._FLEET_INFLIGHT
+    saved_epoch = mod._FLEET_EPOCH
+    saved_tombs = dict(mod._FLEET_TOMBSTONES)
+    mod._FLEET_CACHE.update({"data": None, "ts": 0.0})
+    mod._FLEET_INFLIGHT = None
+    mod._FLEET_EPOCH = 0
+    mod._FLEET_TOMBSTONES = {}
+    try:
+        yield
+    finally:
+        mod._FLEET_CACHE.clear()
+        mod._FLEET_CACHE.update(saved)
+        mod._FLEET_INFLIGHT = saved_inflight
+        mod._FLEET_EPOCH = saved_epoch
+        mod._FLEET_TOMBSTONES = saved_tombs
+
+
+def test_fleet_forget_evicts_row(_clean_fleet_cache):
+    """A removed worktree must vanish from the cached snapshot immediately.
+
+    Without this the stale-while-revalidate cache serves the pre-removal
+    snapshot, so the pruned row keeps rendering for a whole rebuild.
+    """
+    mod._FLEET_CACHE.update({
+        "data": {"worktrees": [{"name": "main"}, {"name": "wt-gone"}], "base_branch": "main"},
+        "ts": time.monotonic(),
+    })
+    mod._fleet_forget("wt-gone")
+
+    names = [w["name"] for w in mod._FLEET_CACHE["data"]["worktrees"]]
+    assert names == ["main"]
+    # Unrelated snapshot fields survive the surgical eviction.
+    assert mod._FLEET_CACHE["data"]["base_branch"] == "main"
+    # Timestamp zeroed so the next read schedules a rebuild for the rest.
+    assert mod._FLEET_CACHE["ts"] == 0.0
+
+
+def test_fleet_forget_no_cache_is_noop(_clean_fleet_cache):
+    """Removal before any snapshot exists must not crash or fabricate one."""
+    mod._fleet_forget("wt-gone")
+    assert mod._FLEET_CACHE["data"] is None
+
+
+def test_fleet_forget_does_not_mutate_served_dict(_clean_fleet_cache):
+    """The old dict may still be mid-serialization in a concurrent response."""
+    served = {"worktrees": [{"name": "main"}, {"name": "wt-gone"}]}
+    mod._FLEET_CACHE.update({"data": served, "ts": time.monotonic()})
+    mod._fleet_forget("wt-gone")
+    assert [w["name"] for w in served["worktrees"]] == ["main", "wt-gone"]
+    assert mod._FLEET_CACHE["data"] is not served
+
+
+@pytest.mark.asyncio
+async def test_worktree_remove_evicts_from_cache(_clean_fleet_cache):
+    """_worktree_remove is the single choke point for ALL removal paths
+    (manual remove, each prune worker, the auto-prune reaper)."""
+    mod._FLEET_CACHE.update({
+        "data": {"worktrees": [{"name": "main"}, {"name": "wt-x"}]},
+        "ts": time.monotonic(),
+    })
+    with patch.object(mod, "_find_worktree", new=AsyncMock(
+        return_value=({"path": "/repo/wt-x", "branch": "feat/x", "is_main": False}, None)
+    )), \
+            patch.object(mod, "_live_worktree_path", new=AsyncMock(return_value=None)), \
+            patch.object(mod, "_own_checkout_path", return_value=None), \
+            patch.object(mod, "_real_dirty", new=AsyncMock(return_value=False)), \
+            patch.object(mod, "_pr_status_cached", new=AsyncMock(
+                return_value={"state": "MERGED"})), \
+            patch.object(mod, "_own_commits_count", new=AsyncMock(return_value=0)), \
+            patch.object(mod, "_fetch_pr_head_oid", new=AsyncMock(return_value="deadbeef")), \
+            patch.object(mod, "_head_contained_in_pr", new=AsyncMock(return_value=True)), \
+            patch.object(mod, "_git", new=AsyncMock(return_value="deadbeef")), \
+            patch.object(mod, "_load_cfg", return_value=None), \
+            patch.object(mod, "_POD_AVAILABLE", False), \
+            patch.object(mod, "_run_cmd", new=AsyncMock(return_value=(0, "", ""))):
+        res = await mod._worktree_remove("wt-x")
+
+    assert res["ok"] is True
+    assert [w["name"] for w in mod._FLEET_CACHE["data"]["worktrees"]] == ["main"]
+
+
+@pytest.mark.asyncio
+async def test_inflight_rebuild_cannot_resurrect_an_evicted_worktree(_clean_fleet_cache):
+    """A rebuild that started BEFORE a removal must not put the row back.
+
+    Such a build read git before the worktree was removed, so its snapshot still
+    contains it. Storing that verbatim would undo the eviction and the deleted
+    row would reappear.
+    """
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_build():
+        entered.set()
+        await release.wait()
+        # The pre-removal view of git: wt-gone still present.
+        return {"worktrees": [{"name": "main"}, {"name": "wt-gone"}]}
+
+    with patch.object(mod, "_build_fleet", new=_slow_build):
+        task = mod._fleet_rebuild_task()
+        await entered.wait()
+        # Removal lands while that build is in flight.
+        mod._fleet_forget("wt-gone")
+        release.set()
+        built = await task
+
+    assert [w["name"] for w in built["worktrees"]] == ["main"]
+    assert [w["name"] for w in mod._FLEET_CACHE["data"]["worktrees"]] == ["main"]
+
+
+@pytest.mark.asyncio
+async def test_fresh_request_coalescing_onto_a_racing_build_still_omits_the_row(
+    _clean_fleet_cache,
+):
+    """The post-removal `fresh=1` refresh may coalesce onto a build that started
+    BEFORE the removal. That is safe only because the build re-applies the
+    eviction — otherwise the request would answer with the deleted row."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_build():
+        entered.set()
+        await release.wait()
+        return {"worktrees": [{"name": "main"}, {"name": "wt-gone"}]}
+
+    with patch.object(mod, "_build_fleet", new=_slow_build):
+        background = mod._fleet_rebuild_task()
+        await entered.wait()
+        mod._fleet_forget("wt-gone")
+        waiter = asyncio.create_task(mod._fleet_refresh())
+        await asyncio.sleep(0)
+        release.set()
+        served = await waiter
+        await background
+
+    assert [w["name"] for w in served["worktrees"]] == ["main"]
+
+
+@pytest.mark.asyncio
+async def test_tombstones_are_reaped_by_a_later_build(_clean_fleet_cache):
+    """Tombstones must not accumulate: once a build that started after the
+    eviction completes, git no longer reports the worktree and the entry is dead
+    weight. A stale tombstone would also hide a worktree later re-created under
+    the same name."""
+    mod._fleet_forget("wt-gone")
+    assert "wt-gone" in mod._FLEET_TOMBSTONES
+
+    with patch.object(mod, "_build_fleet", new=AsyncMock(
+        return_value={"worktrees": [{"name": "main"}]}
+    )):
+        await mod._fleet_refresh()
+    assert mod._FLEET_TOMBSTONES == {}
+
+    # Re-created under the same name: no stale tombstone hides it.
+    with patch.object(mod, "_build_fleet", new=AsyncMock(
+        return_value={"worktrees": [{"name": "main"}, {"name": "wt-gone"}]}
+    )):
+        again = await mod._fleet_refresh()
+    assert [w["name"] for w in again["worktrees"]] == ["main", "wt-gone"]
+
+
+@pytest.mark.asyncio
+async def test_fleet_refresh_coalesces_concurrent_builds(_clean_fleet_cache):
+    """Concurrent rebuilds share ONE build.
+
+    A rebuild costs a `gh pr` round-trip per branch, so parallel `fresh=1`
+    requests (Refresh clicked twice, several row actions finishing together)
+    must not each start their own.
+    """
+    calls = 0
+    gate = asyncio.Event()
+
+    async def _slow_build():
+        nonlocal calls
+        calls += 1
+        await gate.wait()
+        return {"worktrees": [{"name": "main"}]}
+
+    with patch.object(mod, "_build_fleet", new=_slow_build):
+        waiters = [asyncio.create_task(mod._fleet_refresh()) for _ in range(4)]
+        await asyncio.sleep(0)  # let every waiter reach the shared task
+        gate.set()
+        results = await asyncio.gather(*waiters)
+
+    assert calls == 1
+    assert all(r == {"worktrees": [{"name": "main"}]} for r in results)
+    assert mod._FLEET_CACHE["data"] == {"worktrees": [{"name": "main"}]}
+
+
+@pytest.mark.asyncio
+async def test_fleet_cached_serves_stale_and_schedules_rebuild(_clean_fleet_cache):
+    """Past the TTL the cached read stays non-blocking but does trigger a rebuild."""
+    mod._FLEET_CACHE.update({
+        "data": {"worktrees": [{"name": "stale"}]},
+        "ts": time.monotonic() - (mod._FLEET_TTL + 1),
+    })
+    with patch.object(mod, "_build_fleet", new=AsyncMock(
+        return_value={"worktrees": [{"name": "fresh"}]}
+    )):
+        served = await mod._fleet_cached()
+        assert served == {"worktrees": [{"name": "stale"}]}
+        assert mod._FLEET_INFLIGHT is not None
+        await mod._FLEET_INFLIGHT
+    assert mod._FLEET_CACHE["data"] == {"worktrees": [{"name": "fresh"}]}
+
+
+@pytest.mark.asyncio
+async def test_fleet_cached_background_failure_is_swallowed(_clean_fleet_cache):
+    """A failed background rebuild keeps serving the last good snapshot and must
+    not surface as an unretrieved task exception."""
+    mod._FLEET_CACHE.update({
+        "data": {"worktrees": [{"name": "stale"}]},
+        "ts": time.monotonic() - (mod._FLEET_TTL + 1),
+    })
+    with patch.object(mod, "_build_fleet", new=AsyncMock(side_effect=RuntimeError("git blew up"))):
+        served = await mod._fleet_cached()
+        assert served == {"worktrees": [{"name": "stale"}]}
+        task = mod._FLEET_INFLIGHT
+        assert task is not None
+        await asyncio.gather(task, return_exceptions=True)
+    assert task.exception() is not None
+    assert mod._FLEET_CACHE["data"] == {"worktrees": [{"name": "stale"}]}
+
+
+# --- manifest platform declaration ---
+def test_manifest_declares_every_platform_the_app_runs_on():
+    """`platform.os` summarises the whole app, and the non-pod half (fleet view,
+    Provision, Sync, Rebase, Prune) is git + filesystem work that runs anywhere.
+
+    Pinned because both narrower answers misinform: `["linux"]` reads as "does
+    not run on macOS", and omitting the block falls back to the implicit
+    ``["macos", "linux"]`` default, which silently drops Windows.
+    """
+    manifest = json.loads(
+        (Path(mod.__file__).parent / "app.json").read_text(encoding="utf-8")
+    )
+    assert manifest["platform"]["os"] == ["macos", "linux", "windows"]
+
+    # The pod requirement is carried in the UI copy, not the manifest gate.
+    assert any(
+        "Linux systemd" in h for h in manifest["highlights"]
+    ), "the highlight stating pods need Linux systemd is the honest half of this declaration"
+
+
+def test_declared_platforms_all_resolve_to_a_real_sys_platform():
+    """Every declared name must map to a sys.platform value.
+
+    An unmapped name is silently accepted into the list and then never matches,
+    so a declaration can claim a platform the gate rejects. `windows` was in
+    exactly that state until the mapping row landed.
+    """
+    from kiro_crew.apps.manifest import PlatformConfig
+
+    manifest = json.loads(
+        (Path(mod.__file__).parent / "app.json").read_text(encoding="utf-8")
+    )
+    cfg = PlatformConfig(os=manifest["platform"]["os"])
+    for sys_platform in ("darwin", "linux", "win32"):
+        assert cfg.supports_platform(sys_platform), sys_platform

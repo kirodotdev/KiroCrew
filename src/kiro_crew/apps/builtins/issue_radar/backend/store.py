@@ -82,18 +82,17 @@ def repo_slug_dir_name(owner: str, repo: str) -> str:
 
 # ── provider-scoped storage ─────────────────────────────────────────────────
 #
-# Issue Radar was GitHub-only, so a repo's data lived at
-# ``<data>/repos/{owner}/{repo}``. GitLab adds two dimensions to a repo's
-# identity -- the provider and, for self-managed instances, the HOST -- and both
-# must be part of the storage path, because ``group/project`` names an entirely
-# different project on gitlab.com than on a private instance, and a GitLab group
-# can share a name with a GitHub owner.
+# A GitHub repo's data lives at ``<data>/repos/{owner}/{repo}``. GitLab adds two
+# dimensions to a repo's identity -- the provider and, for self-managed
+# instances, the HOST -- and both must be part of the storage path, because
+# ``group/project`` names an entirely different project on gitlab.com than on a
+# private instance, and a GitLab group can share a name with a GitHub owner.
 #
-# Public GitHub keeps its ORIGINAL path. That is what makes this change
-# migration-free: an install that has been triaging GitHub issues keeps every
-# cache, setting, and investigation note exactly where it already is, and a bug
-# in the new layout cannot corrupt existing data because the new layout is only
-# ever entered by a non-GitHub key.
+# Public GitHub keeps its ORIGINAL path, which keeps the layout migration-free:
+# an install that has been triaging GitHub issues keeps every cache, setting, and
+# investigation note exactly where it already is, and a bug in the GitLab layout
+# cannot corrupt existing data because that layout is only ever entered by a
+# non-GitHub key.
 #
 # Everything else is rooted under a reserved segment that a GitHub owner can
 # never produce: ``parse_github_repo_url`` constrains owners to
@@ -519,17 +518,18 @@ def add_connected_repo(
     the UI can badge Read/Write access without a live call; updates it on
     reconnect if a fresh value is supplied.
 
-    Identity is CASE-INSENSITIVE for the owner/repo pair. GitHub names are
-    case-preserving but not case-sensitive, so ``acme/widget`` and ``Acme/Widget``
-    are one repo -- a case-sensitive match appended a second entry for it, and that
-    duplicate then carried its own independent caches and triage settings. The
-    first spelling connected stays the stored one, so existing entries are never
+    Identity follows the provider's own case semantics (see :func:`_same_repo`).
+    GitHub names are case-preserving but not case-sensitive, so ``acme/widget``
+    and ``Acme/Widget`` are one repo -- a case-sensitive match would append a
+    second entry with its own independent caches and triage settings; the first
+    spelling connected stays the stored one, so existing entries are never
     rewritten.
 
-    GitLab project paths ARE case-sensitive, but folding case here would only ever
-    merge two entries a user cannot distinguish in the UI anyway, and treating the
-    two providers differently would mean two identity rules to keep in sync. The
-    conservative single rule is kept.
+    GitLab project paths ARE case-sensitive, so ``group/Project`` and
+    ``group/project`` are distinct projects and are stored as distinct entries --
+    matching how the provider API and cache paths resolve them. Folding case for
+    GitLab would let the authorization gate admit a case-variant of a connected
+    project that the data-plane then resolves to a different project.
     """
     with _config_lock(root):
         config = read_config(root)
@@ -553,10 +553,41 @@ def add_connected_repo(
         write_config(config, root)
 
 
+# Providers whose owner/repo names are case-INSENSITIVE at the source. GitHub
+# names are case-preserving but not case-sensitive, so ``acme/widget`` and
+# ``Acme/Widget`` address the same repository. GitLab project paths ARE
+# case-sensitive: ``group/Project`` and ``group/project`` are different projects
+# on the server. Any provider not listed here is matched case-SENSITIVELY -- the
+# fail-safe default for an authorization gate, so an unknown/self-managed
+# provider never silently widens the allowlist to case-variants.
+_CASE_INSENSITIVE_NAME_PROVIDERS = frozenset({"github"})
+
+
+def _name_matches(a: str, b: str, provider: str) -> bool:
+    """Compare two owner/repo name segments using ``provider``'s case semantics.
+
+    Load-bearing for authorization: the gate MUST interpret the name exactly as
+    the data-plane does. The data-plane (``repo_data_dir`` and the provider API
+    call -- e.g. ``gitlab_client.project_path`` which addresses the raw-case
+    slug) is case-sensitive for GitLab, so casefolding here would let a
+    case-variant of a connected GitLab project pass the gate and then resolve to
+    a DIFFERENT project under the owner's credentials.
+    """
+    if provider.lower() in _CASE_INSENSITIVE_NAME_PROVIDERS:
+        return a.casefold() == b.casefold()
+    return a == b
+
+
 def _same_repo(
     entry: dict, owner: str, repo: str, *, provider: str = "github", host: str = "github.com"
 ) -> bool:
-    """Provider-, host-, and case-insensitive-name identity for a config entry.
+    """Provider-, host-, and provider-aware-case identity for a config entry.
+
+    Name case sensitivity follows the provider (see :func:`_name_matches`):
+    case-insensitive for GitHub, case-sensitive for GitLab and any other
+    provider. This keeps the authorization gate's interpretation of owner/repo
+    identical to the data-plane's, so a case-variant of a connected GitLab
+    project is NOT authorized against a different project.
 
     An entry missing ``provider``/``host`` predates GitLab support and therefore
     means public GitHub; it is treated as such rather than as a non-match, so
@@ -567,8 +598,8 @@ def _same_repo(
     return (
         entry_provider == provider.lower()
         and entry_host == host.lower()
-        and str(entry.get("owner", "")).casefold() == owner.casefold()
-        and str(entry.get("repo", "")).casefold() == repo.casefold()
+        and _name_matches(str(entry.get("owner", "")), owner, entry_provider)
+        and _name_matches(str(entry.get("repo", "")), repo, entry_provider)
     )
 
 
@@ -1547,7 +1578,13 @@ def write_investigation(
 #       was rendered at, and a v5 row has no such field — served as-is it would
 #       silently disable bulk approve for every cached repo until the TTL expired,
 #       which reads as a broken button rather than as a stale cache
-PULLS_CACHE_SCHEMA = 6
+#   v7: rows carry mergeable_state / mergeable. The bulk bar reads them to tell a PR
+#       that is not ready yet (arming auto-merge is meaningful) from one that is ready
+#       NOW (GitHub REFUSES to arm, "Pull request is in clean status"). A v6 row has
+#       neither field, and an absent value is indistinguishable from "not ready" — so
+#       serving one would keep offering the arm that fails, which is the whole defect
+#       this version exists to fix
+PULLS_CACHE_SCHEMA = 7
 
 
 def pulls_cache_path(owner: str, repo: str, root: Path | None = None, state: str = "open") -> Path:

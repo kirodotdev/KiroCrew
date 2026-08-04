@@ -16,13 +16,14 @@ import logging
 import os
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import sys
 import zlib
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
-from typing import Callable, Iterator, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 
 from kiro_crew.executors import subprocess_executor
 
@@ -493,7 +494,7 @@ def get_process_start_id(pid: int) -> str | None:
 
     Implementation is deliberately **in-process and non-blocking** on every
     platform — no ``subprocess``/fork — so it is safe to call directly from the
-    asyncio event loop (``AUTOSDE: no-blocking-call-on-event-loop``):
+    asyncio event loop:
 
     - Linux: ``/proc/<pid>/stat`` field 22 (starttime in clock ticks since boot).
     - macOS: ``libproc.proc_pidinfo`` ``pbi_start_tvsec``/``pbi_start_tvusec``
@@ -1611,6 +1612,50 @@ def chmod_safe(path: str | os.PathLike, mode: int) -> None:
             logger.warning("Cannot set permissions on %s", path)
 
 
+def _clear_readonly_and_retry(func: Any, path: str, _exc: BaseException) -> None:
+    """``shutil.rmtree`` error hook: drop the read-only bit, then retry once.
+
+    Windows checks the read-only ATTRIBUTE on the file being deleted, whereas
+    POSIX consults the parent directory's write bit. So a mode-``444`` file — of
+    which a git checkout is full, since loose objects are written read-only —
+    cannot be unlinked on Windows even when its directory is writable.
+    """
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except OSError:
+        logger.warning("Cannot remove %s", path)
+
+
+def rmtree_force(path: str | os.PathLike) -> bool:
+    """Remove a directory tree, defeating Windows read-only files. Never raises.
+
+    Returns True when *path* is gone afterwards.
+
+    ``shutil.rmtree(..., ignore_errors=True)`` is the usual spelling and is WRONG
+    for any tree that may contain a git checkout: on Windows the read-only loose
+    objects under ``.git/objects`` refuse to unlink, ``ignore_errors`` swallows
+    every one of those failures, and the caller reports success over a tree that
+    is still on disk — so the project name stays taken and the next create
+    answers 409.
+
+    The return value is what lets a caller tell a real deletion from a partial
+    one; the boolean is derived from the filesystem rather than from the hook,
+    because a surviving file is the only thing that actually matters.
+    """
+    # `onexc` replaced `onerror` in 3.12 and the old name warns; this project
+    # still supports 3.9+, so pick by capability rather than by version number.
+    kwarg = "onexc" if sys.version_info >= (3, 12) else "onerror"
+    if kwarg == "onerror":  # pragma: no cover - exercised on Python < 3.12
+        def _legacy(func: Any, target: str, exc_info: Any) -> None:
+            _clear_readonly_and_retry(func, target, exc_info[1])
+
+        shutil.rmtree(path, onerror=_legacy)
+    else:
+        shutil.rmtree(path, onexc=_clear_readonly_and_retry)  # type: ignore[call-arg]
+    return not os.path.exists(path)
+
+
 # Well-known SID for the file's *owner* (implicit). Under a self-relative DACL
 # with inheritance stripped, S-1-3-4 grants access to whoever currently owns
 # the file. See:
@@ -2094,7 +2139,7 @@ def find_python_interpreter(reject: Optional[Callable[[str], bool]] = None) -> s
     Single source of truth for "where is a usable system python" on every
     platform. Prefers versioned names (3.12/3.11), then bare ``python``/
     ``python3``, with free-threaded-prone ``python3.13`` LAST so a usable
-    3.12/3.11/3.10 wins first (matching the pre-shim caller loop order). Rejects
+    3.12/3.11/3.10 wins first. Rejects
     Brazil-path/build interpreters and — critically on Windows — the Microsoft
     Store alias stub (see :func:`_is_windows_store_python_stub`): running that
     stub is what emits the "Python was not found" nag, so we must never spawn it.
@@ -2103,8 +2148,7 @@ def find_python_interpreter(reject: Optional[Callable[[str], bool]] = None) -> s
     return True to skip it and FALL THROUGH to the next candidate (not abort).
     Callers with extra constraints the shared resolver can't express — e.g. the
     STT prereq probe needs pip and a non-free-threaded build — pass it here so a
-    single unusable interpreter no longer short-circuits the whole search (the
-    behavior the old per-caller loop had and a single-result helper had lost).
+    single unusable interpreter does not short-circuit the whole search.
 
     Returns the interpreter path, or None when none is usable. Callers that just
     need *an* interpreter to re-exec KiroCrew itself should prefer

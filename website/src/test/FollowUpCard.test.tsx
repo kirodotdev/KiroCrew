@@ -72,6 +72,29 @@ describe('FollowUpCard', () => {
     expect(screen.getByRole('button', { name: /add to this session/i })).not.toBeDisabled()
   })
 
+  it('demotes the disabled worktree button from the accent style so it does not read as the primary action', () => {
+    // A permanently-disabled button that keeps the accent background at 40%
+    // opacity still looks like the main CTA on a dark theme — users click it,
+    // meet a not-allowed cursor, and report a dead button. Unscoped sessions
+    // must render it in the secondary (bordered) look instead.
+    setup({ projectDir: undefined })
+    const worktree = screen.getByRole('button', { name: /start in new worktree/i })
+    expect(worktree.className).not.toContain('bg-accent')
+    expect(worktree.className).toContain('border-border')
+  })
+
+  it('keeps the accent style on the worktree button when the session is scoped', () => {
+    setup()
+    const worktree = screen.getByRole('button', { name: /start in new worktree/i })
+    expect(worktree.className).toContain('bg-accent')
+  })
+
+  it('explains the disabled worktree button in the footer instead of claiming both actions work', () => {
+    setup({ projectDir: undefined })
+    expect(screen.getByText(/this session has no project directory/i)).toBeInTheDocument()
+    expect(screen.queryByText(/^both actions pre-fill/i)).not.toBeInTheDocument()
+  })
+
   it('renders the worktree failure inline instead of throwing', async () => {
     const onStartInWorktree = vi.fn().mockRejectedValue(new Error('Branch already exists: feat/x'))
     setup({ onStartInWorktree })
@@ -96,8 +119,8 @@ describe('FollowUpCard', () => {
   })
 
   it('ignores a worktree failure that lands after the items changed', async () => {
-    // Round 9: the rejection would otherwise write its error against the NEW
-    // list's index, misattributing it to a different suggestion.
+    // The rejection would otherwise write its error against the NEW list's
+    // index, misattributing it to a different suggestion.
     let reject: ((e: Error) => void) | undefined
     const onStartInWorktree = vi.fn(() => new Promise<void>((_res, rej) => { reject = rej }))
     const a = item({ title: 'A' })
@@ -202,7 +225,7 @@ describe('followup card reducers', () => {
   })
 
   it('a stale dismiss does not delete an index from a newer card', () => {
-    // Round 9: a replacement card can land between render and Skip click; an
+    // A replacement card can land between render and Skip click; an
     // unqualified dismiss would drop that index from a card never seen.
     const withCard = reducer(initial, setFollowupCard({ slot: 'chat-1', items: [item({ title: 'A' }), item({ title: 'B' })], ts: 10 }))
     const replaced = reducer(withCard, setFollowupCard({ slot: 'chat-1', items: [item({ title: 'C' })], ts: 20 }))

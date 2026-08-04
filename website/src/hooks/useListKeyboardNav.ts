@@ -138,7 +138,7 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
       if (e.altKey && onAltEnterRef.current) {
         // Honor the documented onAltEnter contract: it returns true when it
         // handled the alternate action; false means fall through to the
-        // default choose (the earlier behavior the pickers rely on).
+        // default choose the pickers rely on.
         if (!onAltEnterRef.current(selectedRef.current)) {
           onChooseRef.current(selectedRef.current, false)
         }

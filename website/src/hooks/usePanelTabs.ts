@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import type { Artifact } from '../types'
+import { i18nT } from '../i18n/t'
 import { safeSetItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
 
@@ -42,9 +43,64 @@ export interface PanelTab {
   cwd?: string
 }
 
-const VIEW_TITLES: Record<ViewKind, string> = {
-  changes: 'Changes', issues: 'Issues', files: 'Files', artifacts: 'Artifacts', subagents: 'Subagents', workflows: 'Workflows',
-  logs: 'Logs', side: 'Side', browser: 'Browser',
+/**
+ * Catalog KEY for each singleton view's strip label.
+ *
+ * Keys, not strings: this table is evaluated at module load, so an `i18nT()`
+ * call here would freeze the boot language and never re-resolve on a language
+ * switch. Resolution happens in `viewTitle()` / `localiseTitles()`, which run
+ * during render.
+ *
+ * Shaped as a flat `Record` of full literal keys, indexed inline at the
+ * `i18nT()` call, because that is the form `scripts/check-i18n-keys.mjs` can
+ * resolve statically.
+ *
+ * The tab ID is the `ViewKind` itself and is unaffected: it is compared,
+ * persisted and rehydrated, so it must stay a stable identifier — only the
+ * displayed title is localised.
+ */
+const VIEW_TITLE_KEY: Record<ViewKind, string> = {
+  changes: 'hooks.usePanelTabs.changes',
+  issues: 'hooks.usePanelTabs.issues',
+  files: 'hooks.usePanelTabs.files',
+  artifacts: 'hooks.usePanelTabs.artifacts',
+  subagents: 'hooks.usePanelTabs.subagents',
+  workflows: 'hooks.usePanelTabs.workflows',
+  logs: 'hooks.usePanelTabs.logs',
+  side: 'hooks.usePanelTabs.side',
+  browser: 'hooks.usePanelTabs.browser',
+}
+
+/** Localised strip label for a singleton view. */
+function viewTitle(kind: ViewKind): string {
+  return i18nT(VIEW_TITLE_KEY[kind])
+}
+
+/**
+ * Project stored tabs onto CURRENT-language titles.
+ *
+ * A view tab's title is DERIVED from its `kind`, so it is re-resolved on every
+ * read rather than trusted from the store. Resolving only at open time would not
+ * be enough: `title` is persisted (see `serializeBucket`), so a strip rehydrated
+ * from localStorage — or one built before a language switch — would keep its
+ * labels in the language they were opened in. Deriving also makes the round trip
+ * through `setOrder`, which hands projected tabs back to the store, harmless.
+ *
+ * Document / terminal titles are real data (a basename, an artifact slug, a cwd)
+ * and pass through untouched.
+ *
+ * `hasOwnProperty`, not `in`: a rehydrated tab's `kind` comes from localStorage,
+ * so a persisted `kind: 'toString'` would otherwise resolve to an inherited
+ * Object.prototype member and hand a function to i18next. Tabs whose title is
+ * already correct keep their object identity, so consumers memoizing on a tab
+ * don't churn.
+ */
+function localiseTitles(tabs: PanelTab[]): PanelTab[] {
+  return tabs.map(tab => {
+    if (!Object.prototype.hasOwnProperty.call(VIEW_TITLE_KEY, tab.kind)) return tab
+    const title = viewTitle(tab.kind as ViewKind)
+    return title === tab.title ? tab : { ...tab, title }
+  })
 }
 
 /** Max concurrent terminal tabs per chat (each is a live PTY). At the cap,
@@ -65,8 +121,8 @@ const EMPTY_BUCKET: Bucket = { tabs: [], activeId: null }
 /* ── Module-level, persisted panel-tab store ──────────────────────────────
  * The strip must survive things that unmount ChatPage: activity-bar close,
  * activity-tab switches, chat switches, full route changes (ChatPage is a
- * route element), AND page reloads. Component-local useState died with the
- * route. So the per-slot buckets live here at module scope (read via
+ * route element), AND page reloads. Component-local useState would not survive
+ * that, so the per-slot buckets live here at module scope (read via
  * useSyncExternalStore) and are mirrored to localStorage. On reload the strip
  * is rehydrated; terminal tabs reconnect to the still-live PTY (backend orphan
  * window) and document tabs re-fetch their content lazily (see below). */
@@ -95,7 +151,7 @@ const inlineDrafts = new Map<string, string>()
 // The store OWNS the draft key format (slot + path). Callers pass slot and path
 // separately and never build the key themselves — a single owner prevents the
 // four coordination sites (open / open-inline / save / slot-reset) from drifting
-// on the key shape and silently reopening the data-loss bugs this closes.
+// on the key shape, which would silently reintroduce data-loss bugs.
 const inlineDraftKey = (slot: string, path: string): string => `${slot}::${path}`
 export function getInlineDraft(slot: string, path: string): string | undefined { return inlineDrafts.get(inlineDraftKey(slot, path)) }
 export function setInlineDraft(slot: string, path: string, content: string): void { inlineDrafts.set(inlineDraftKey(slot, path), content) }
@@ -206,10 +262,8 @@ export function __resetPanelTabs(): void {
 }
 
 /**
- * Tabbed side panel state. Replaces the old mutually-exclusive
- * usePanelState + useDiffPanel + activityTab model: every view (category views,
- * terminal) and every opened document (file / diff / artifact) is a tab in one
- * strip. Opening a document that's already open focuses its tab instead of
+ * Tabbed side panel state: every view (category views, terminal) and every
+ * opened document (file / diff / artifact) is a tab in one strip. Opening a document that's already open focuses its tab instead of
  * duplicating it. Content is held in the module store (not redux) to keep large
  * file bodies out of the store.
  *
@@ -226,7 +280,11 @@ export function __resetPanelTabs(): void {
 export function usePanelTabs(slotKey: string | null = null) {
   const key = slotKey ?? '__no_slot__'
   const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-  const { tabs, activeId } = bySlot[key] ?? EMPTY_BUCKET
+  const { tabs: storedTabs, activeId } = bySlot[key] ?? EMPTY_BUCKET
+  // View-tab labels are re-resolved from `kind` on every read so the strip is in
+  // the CURRENT language — see `localiseTitles`. Memoized on the stored array so
+  // an unchanged strip keeps a stable `tabs` identity.
+  const tabs = useMemo(() => localiseTitles(storedTabs), [storedTabs])
 
   /** Apply a bucket transform to the CURRENT slot's strip. */
   const update = useCallback((fn: (b: Bucket) => Bucket) => {
@@ -259,7 +317,7 @@ export function usePanelTabs(slotKey: string | null = null) {
   }, [update])
 
   const openView = useCallback((kind: ViewKind) => {
-    upsert({ id: kind, kind, title: VIEW_TITLES[kind] })
+    upsert({ id: kind, kind, title: viewTitle(kind) })
   }, [upsert])
 
   /** Reconcile the AUTO-managed pinned views (Changes / Files / Artifacts) to
@@ -273,7 +331,7 @@ export function usePanelTabs(slotKey: string | null = null) {
       const desired = PINNED_VIEWS.filter(k => available.includes(k))
       const dynamic = b.tabs.filter(t => !(PINNED_VIEWS as string[]).includes(t.id))
       const pinned = desired.map(
-        k => b.tabs.find(t => t.id === k) ?? { id: k, kind: k, title: VIEW_TITLES[k] },
+        k => b.tabs.find(t => t.id === k) ?? { id: k, kind: k, title: viewTitle(k) },
       )
       const nextTabs = [...pinned, ...dynamic]
       // Refocus if the active tab was a pinned view that just went away.

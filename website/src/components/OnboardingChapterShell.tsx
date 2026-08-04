@@ -224,8 +224,12 @@ export default function OnboardingChapterShell({
   panelFootnote: string
   // The uppercase eyebrow above the stage title, e.g. "CUSTOMIZE · 1 OF 2" or
   // "IMPORT SETUP · 1 OF 4". A plain node so each flow owns its counter logic.
+  // A single-screen chapter passes just its name, with no counter.
   eyebrow: ReactNode
-  onSkipAll: () => void
+  // Omit to render NO skip affordance at all — that is how a MANDATORY chapter
+  // (the Privacy chapter) is expressed: there is no handler because there is no
+  // way past it but forward. Every skippable chapter passes one.
+  onSkipAll?: () => void
   skipDisabled?: boolean
   // Stage title/description block. Nullable: the Import flow passes null for its
   // full-panel scanning/error/empty states, which carry their own headings.
@@ -260,15 +264,17 @@ export default function OnboardingChapterShell({
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
             {eyebrow}
           </p>
-          <button
-            type="button"
-            aria-label={i18nT('components.onboardingChapterShell.skip_all_setup_and_onboarding')}
-            disabled={skipDisabled}
-            onClick={onSkipAll}
-            className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted transition-colors hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {i18nT('components.onboardingChapterShell.skip_all')} <ArrowRight className="lucide-inline" />
-          </button>
+          {onSkipAll && (
+            <button
+              type="button"
+              aria-label={i18nT('components.onboardingChapterShell.skip_all_setup_and_onboarding')}
+              disabled={skipDisabled}
+              onClick={onSkipAll}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted transition-colors hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {i18nT('components.onboardingChapterShell.skip_all')} <ArrowRight className="lucide-inline" />
+            </button>
+          )}
         </div>
         {header}
       </header>

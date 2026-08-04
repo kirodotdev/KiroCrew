@@ -496,7 +496,7 @@ Cross-tab context: **removed** (budget redistributed to other caps). Previously 
 
 Streaming chunks are cleaned up after each response (only final assistant message kept). Transient roles (`chunk`, `done`, `queued`, `permission`) are excluded from history saves.
 
-**File-change snapshots** (`chat_runner.py::_snapshot_write_target`): captures before/after content for write-tool invocations, attached as `file_changes` meta on the last assistant message by `_flush_file_changes`. The 'before' content is sourced in priority order: (1) ACP diff content block `oldText` carried on the tool-call event (`AcpEvent.diff_old_text`, threaded from `acp/_dispatch.py::_build_tool_call_event`) — authoritative and race-free; for a create operation `oldText` is absent → before = `''`. (2) Disk read fallback — used only when no diff content block exists (e.g. the blocking `session/request_permission` path where the write has NOT yet executed). No-op entries (before == after) are kept and surfaced — the dashboard renders an explicit "no changes" caption for them (a backend drop would compare post-truncation/post-redaction content and silently discard real changes past the snapshot limit or inside redacted spans). Security invariants apply equally to content-block-sourced text: `validate_file_path` refuses sensitive paths, `_truncate_snapshot` caps content length, and credential/exfil-URL redaction in `_flush_file_changes` covers both sources.
+**File-change snapshots** (`chat_runner.py::_snapshot_write_target`): captures before/after content for write-tool invocations, attached as `file_changes` meta on the last assistant message by `_flush_file_changes`. The 'before' content is sourced in priority order: (1) **strReplace only** — full-file reconstruction via `_reconstruct_str_replace_before` (declines outright for `replaceAll` edits, where oldStr uniqueness is not enforced and reversal would over-revert pre-existing `newStr` occurrences): read the file (regular files only — `S_ISREG` at the stat gate, so `/dev/zero`/FIFOs never read — ≤ `_MAX_RECONSTRUCT_BYTES`, re-checked post-read) through `hooks.safe_read_file` (symlink-safe: resolved-target re-check + `O_NOFOLLOW`) and reverse-apply the substitution from the tool params. Both `_snapshot_write_target` call sites in `_run_chat` are offloaded via `asyncio.to_thread` so a slow/hung filesystem cannot stall the event loop. Classification: `newStr` absent → post-write excluded, pre-write proven iff `oldStr` unique; `newStr` present but not unique (overlap-safe `find()==rfind()`) → post-write can neither be excluded nor reversed → decline; `newStr` unique → the single reversal candidate decides (tool-consistent AND pre-write plausible → undecidable seam, decline; consistent only → reverse; inconsistent + pre-write plausible → pre-write proven). This exists because kiro-cli's diff content block `oldText` for strReplace is only the replaced **fragment** — using it verbatim diffed a fragment-before against the full-file after and counted the entire file as additions (the #920 race fix's full-file assumption holds for create, not strReplace). Reconstruction declines (falls through) on missing params, empty-`newStr` deletions (position unrecoverable), unreadable files, or neither needle matching. (2) ACP diff content block `oldText` carried on the tool-call event (`AcpEvent.diff_old_text`, threaded from `acp/_dispatch.py::_build_tool_call_event`) — authoritative and race-free for create (`''` for a new file, full previous content for an overwrite). (3) Disk read fallback — used only when no diff content block exists (e.g. the blocking `session/request_permission` path where the write has NOT yet executed). No-op entries (before == after) are kept and surfaced — the dashboard renders an explicit "no changes" caption for them (a backend drop would compare post-truncation/post-redaction content and silently discard real changes past the snapshot limit or inside redacted spans). Security invariants apply equally to content-block-sourced and reconstructed text: `validate_file_path` refuses sensitive paths before any source is consulted, `_truncate_snapshot` caps content length (after reconstruction, so the needle can't be cut mid-file), and credential/exfil-URL redaction in `_flush_file_changes` covers all sources.
 
 **Agent Config**: PUT saves to `~/.kiro/agents/kirocrew.json` and auto-restarts all kiro-cli sessions so changes take effect immediately.
 
@@ -522,6 +522,51 @@ A pending tool approval has **two** pieces of state that must stay in lockstep: 
 **`slot._dirty` obligation**: `_mark_permission_resolved` mutates `slot.messages` in place and returns `True` when it wrote. The periodic flush (`_flush_dirty_slots`, every 5s) **skips slots whose `_dirty` is `False`**, so a caller that marks without flagging the slot can lose the write on restart and resurrect the card. Every call site holding the owning slot sets `slot._dirty = True` on a `True` return. This invariant is enforced by convention at each call site, not by an owning helper — a new future-resolution path must honor both halves.
 
 **Runner backstop totality**: `outcome` is pre-seeded to `"rejected"` before the approval `await`, because the `finally` runs on *every* exit including `CancelledError` (slot deletion and cleanup endpoints cancel `slot.task`). Assigning it only inside `try`/`except` would raise `UnboundLocalError` from the `finally`, replacing the cancellation with a spurious exception and skipping both the message marking and the Slack prompt cleanup.
+
+### Mid-Turn Steer (dashboard transcript contract)
+
+A steer (`POST /api/chat` with `steer: true` while the slot is running) injects
+the message into the in-flight turn via kiro-cli `_session/steer`. kiro-cli does
+NOT end the current text segment at the steer, so both sides of the boundary
+must be handled explicitly or the transcript disagrees with what the user
+watched stream (the "stuck streaming marker" bug: the live streaming message is
+stranded ABOVE the steer bubble, the rest of the segment streams into it there,
+and the finalized reply jumps BELOW the bubble when the `chat_done` refresh
+rebuilds from server history).
+
+**Backend — segment cut at the steer boundary.** `_run_chat` publishes a sync
+closure on the slot (`slot._steer_segment_cut`, same lifecycle as
+`slot._acp_client`: set at turn start, cleared in the turn's `finally`). The
+steer handler calls it right BEFORE `slot.append("user", …, meta={"steer": True})`,
+so the accumulated segment text is flushed as its own assistant message and the
+persisted order is `[assistant(pre-steer), user(steer), assistant(post-steer)]`
+— identical to the live view. The cut persists SILENTLY: `broadcast=False`
+(no `chat_segment`), `quiet_persist=True` (no per-message `chat_message` from
+the append), and the wire redactor's withheld tail is dropped via
+`_wsred.reset()` rather than emitted (no late `chat_chunk`). At the cut
+boundary every client has already finalized its streaming message — the
+initiating tab froze at optimistic-push time, other tabs freeze on the
+`steer_push` echo — so any of those events would materialize a duplicate copy
+of the pre-steer text (or a phantom streaming bubble) below the steer bubble.
+No text is lost: `assistant_text` accumulates independently of the wire
+buffer and is re-redacted at persist. The cut also sets
+`_produced_visible_output` (the flushed segment is visible output; without it
+a stream→steer→quiet-end turn would trip the empty-response requeue). The cut
+is best-effort (a failure logs and never loses the steer) and also prevents the
+chunk-entry leak: without it, `_flush_segment`'s trailing-run walk stops at the
+mid-run steer user message and the pre-steer `chunk` entries stay in
+`slot.messages` for the life of the process.
+
+**Frontend — finalize-on-steer.** Every path that INSERTS a steer bubble first
+finalizes the live `streaming` message in place via `finalizeTrailingStreaming`
+(streaming → assistant; placeholder-only content is dropped, same rule as the
+`_segment` handlers, which share the helper): the optimistic push
+(`appendMessage`, `meta.steer`), a pane-scoped optimistic push, and the
+`steer_push` echo when no optimistic bubble exists to reconcile (another tab /
+scene-interaction steered). The reconcile path deliberately does NOT freeze — by
+echo time a new post-steer streaming message may be live below the bubble and
+must keep streaming. Pinned by `test_chat_steer.py` (cut ordering, cut-failure
+resilience) and the `finalize-on-steer` describe in `chatSlice.test.ts`.
 
 ### Agent Questions (`ask_question`)
 

@@ -204,7 +204,7 @@ def test_registry_branchless_legacy_entry_preserves_mainline():
 
 
 def test_publish_relocate_roots_parsed_and_round_trips():
-    # Regression (PR #14 nrb): publish.relocate_roots was declared + consumed by
+    # Regression (PR #14 alice): publish.relocate_roots was declared + consumed by
     # the relocate handler but NOT parsed in from_dict, so an operator value was
     # silently dropped (permanently []) and lost on round-trip.
     loaded = _load_from_dict(
@@ -2426,11 +2426,11 @@ class TestConfigCache:
         ):
             self._write(cfg_file, {"agent": {"yolo": False}})
             cfg = KiroCrewConfig.load()
-            assert cfg.agent.yolo is False
-            cfg.agent.yolo = True
+            assert cfg.agent.dangerously_skip_permissions is False
+            cfg.agent.dangerously_skip_permissions = True
             cfg.save()
             reloaded = KiroCrewConfig.load()
-        assert reloaded.agent.yolo is True
+        assert reloaded.agent.dangerously_skip_permissions is True
 
     def test_returned_config_is_independent(self, tmp_path: Path) -> None:
         """Mutating a loaded config must not corrupt the cached data for the next
@@ -3665,3 +3665,26 @@ class TestUnsatisfiableSubagentCwdRoots(unittest.TestCase):
             cfg.agent.subagent_cwd_allowed_roots,
             "field default and fallback must not drift apart again",
         )
+
+
+def test_agent_triggers_load() -> None:
+    """`triggers` loads from config verbatim; a crew without triggers has ''."""
+    cfg = _load_from_dict(
+        {
+            "agents": {
+                "oncall": {"kiro_agent": "kirocrew", "triggers": "incident, outage"},
+                "research": {"kiro_agent": "kirocrew", "description": "deep research crew"},
+                "weird": {"kiro_agent": "kirocrew", "triggers": 1},
+            },
+            "default_agent": "oncall",
+            "workspaces": {"default": {"dir": "workspace"}},
+        }
+    )
+    # Explicit triggers load verbatim.
+    assert cfg.agents["oncall"].triggers == "incident, outage"
+    # A crew that defines no triggers keeps an empty string — it is not a routing
+    # candidate (no fallback to the description).
+    assert cfg.agents["research"].triggers == ""
+    # A non-string triggers value is normalized to "" on load (never survives to
+    # select_crew's .strip()).
+    assert cfg.agents["weird"].triggers == ""

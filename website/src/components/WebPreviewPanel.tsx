@@ -5,6 +5,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useBrowserFrame } from '../hooks/useBrowserFrame'
+import { useNativeBrowser } from '../hooks/useNativeBrowser'
 
 import { i18nT } from '../i18n/t'
 import { fmtTimeNumeric } from '../i18n/format'
@@ -79,12 +80,15 @@ const SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-
  *  present = a fixed device-sized frame (mobile/tablet). */
 interface DevicePreset {
   id: string
-  label: string
+  /** Device NAME, verbatim — a hardware product name, never translated. Absent
+   *  for the responsive preset, whose label is descriptive copy and therefore
+   *  lives in `DEVICE_LABEL_KEY` instead. */
+  label?: string
   w?: number
   h?: number
 }
 const DEVICE_PRESETS: DevicePreset[] = [
-  { id: 'responsive', label: 'Responsive (desktop)' },
+  { id: 'responsive' },
   { id: 'iphone-se', label: 'iPhone SE', w: 375, h: 667 },
   { id: 'iphone-15', label: 'iPhone 15 / 14', w: 390, h: 844 },
   { id: 'iphone-15-pro-max', label: 'iPhone 15 Pro Max', w: 430, h: 932 },
@@ -92,6 +96,31 @@ const DEVICE_PRESETS: DevicePreset[] = [
   { id: 'galaxy-s20', label: 'Galaxy S20', w: 360, h: 800 },
   { id: 'ipad-mini', label: 'iPad Mini', w: 768, h: 1024 },
 ]
+
+/**
+ * Catalog KEY for the presets whose label is descriptive copy rather than a
+ * hardware product name — only the responsive one, which describes a BEHAVIOUR
+ * ("fill the panel") and not a device.
+ *
+ * A key rather than the string itself: `DEVICE_PRESETS` is module-level data
+ * evaluated at import, so an `i18nT()` call in it would freeze the boot language.
+ * `deviceLabel()` does the lookup during render. Flat `Record` of full literal
+ * keys, indexed inline at the call, because that is the shape
+ * `scripts/check-i18n-keys.mjs` can resolve statically.
+ */
+export const DEVICE_LABEL_KEY: Record<string, string> = {
+  responsive: 'components.webPreviewPanel.responsive_desktop',
+}
+
+/** A preset's display label for the CURRENT language. Product-named presets fall
+ *  through to their verbatim `label`. */
+function deviceLabel(d: DevicePreset): string {
+  // `hasOwnProperty`, not `in`: guards against a preset id colliding with an
+  // inherited Object.prototype member and handing a function to i18next.
+  return Object.prototype.hasOwnProperty.call(DEVICE_LABEL_KEY, d.id)
+    ? i18nT(DEVICE_LABEL_KEY[d.id])
+    : (d.label ?? d.id)
+}
 
 /** Coerce free-form input into a safe http(s) URL, or null if unusable. A bare
  *  `host:port` / `localhost:5173` gets an `http://` scheme; any explicit scheme
@@ -341,6 +370,27 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // session's panel. `sessionKey` must be present and equal the frame's key.
   const isLive = !!frame && !!lastTs && !!sessionKey && frameSessionKey === sessionKey
     && nowTick - lastTs < LIVE_FRAME_TTL_MS
+
+  // ── Transport selection ──
+  // The browsing surface has two backends and they are chosen by WHERE the
+  // browser actually runs, not by preference:
+  //
+  //   • Streamed frames are arriving  -> the browser lives in another process
+  //     (remote gateway / Playwright proxy), so the mirror is the only thing
+  //     that can show it. It wins.
+  //   • Otherwise, in the Electron shell -> embed a real Chromium view natively.
+  //
+  // `useNativeBrowser` reports `available: false` in a plain browser (no preload
+  // bridge), which collapses this to the mirror path automatically.
+  // `externalActive: isLive` drives the control handoff — streaming frames mean a
+  // Playwright-driven browser elsewhere is the agent's target, so PLAYWRIGHT
+  // claims ownership and LIGHT releases the embedded view. Scoped by
+  // sessionKey: each Browser panel owns its own view and authorization.
+  const native = useNativeBrowser(sessionKey || '', active && !isLive, {
+    externalActive: isLive,
+    agentActEnabled: browseOn,
+  })
+  const nativeOpen = native.available && !isLive && !!native.state?.open
   const requestInteraction = useCallback(() => {
     // Target the session whose page is on screen — which is THIS panel's
     // session, since isLive required a session_key match — never a global or
@@ -433,12 +483,36 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     // Loading supersedes any pending offer for this session.
     setPending(null)
     if (pendingKey) { try { localStorage.removeItem(pendingKey) } catch { /* ignore */ } }
-  }, [persist, pendingKey])
+    // A NON-loopback target goes to the native browser view when one is
+    // available. External sites routinely refuse to be framed
+    // (X-Frame-Options / frame-ancestors), so the iframe path renders them
+    // blank — a real embedded browser is the only thing that can show them.
+    // Loopback dev servers keep using the iframe: that is the local-preview
+    // feature, and framing works there.
+    if (!native.available) return
+    let host = ''
+    try { host = new URL(isolated).hostname } catch { /* normalizeUrl validated it */ }
+    if (host && !isLoopbackHost(host)) native.open(isolated)
+  }, [persist, pendingKey, native])
 
   const dismissPending = useCallback(() => {
     setPending(null)
     if (pendingKey) { try { localStorage.removeItem(pendingKey) } catch { /* ignore */ } }
   }, [pendingKey])
+
+  // Navigation while the NATIVE surface is showing. The iframe `commit` above is
+  // the wrong path here: it re-points a hidden iframe and only forwards
+  // non-loopback targets to the native view, so a loopback URL typed while the
+  // native browser is on screen would appear to do nothing. This drives the view
+  // the user is actually looking at, and keeps the address bar / persistence in
+  // step with it.
+  const commitNative = useCallback((raw: string) => {
+    const norm = normalizeUrl(raw)
+    if (!norm) return
+    setDraft(norm)
+    persist(norm)
+    native.navigate(norm)
+  }, [persist, native])
 
   const back = useCallback(() => {
     setNav(n => {
@@ -573,12 +647,61 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
       </div>
   )
 
+  // Native browse surface — the counterpart to `liveMirror` for the case where
+  // the browser runs in THIS process. The page is a real Chromium view the main
+  // process composites over `hostRef`'s rectangle, so the div below is
+  // deliberately empty: it exists to be measured, not painted. Nothing may be
+  // rendered inside it, because the native layer would cover it.
+  const nativeSurface = (
+    <div className="absolute inset-0 z-10 flex flex-col h-full min-h-0 bg-bg">
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0" style={{ backgroundColor: 'var(--bg-elevated)' }}>
+        <Monitor size={14} className="shrink-0 text-muted" />
+        <span className="shrink-0 text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.browser_live')}</span>
+        <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--ok)' }} aria-hidden />
+      </div>
+      {/* Address bar. The preview subtree below (which owns the other URL form)
+          is hidden while the native surface is up, so without this the user
+          could reach a page and then have no way to leave it. */}
+      <form
+        className="flex items-center gap-1 px-2 py-1.5 border-b border-border shrink-0"
+        onSubmit={e => { e.preventDefault(); commitNative(draft) }}
+      >
+        <div className="flex-1 min-w-0 flex items-center gap-0.5 h-7 pl-1 pr-1 rounded-md bg-bg-elevated border border-border focus-within:border-accent transition-colors">
+          <input
+            type="text"
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            placeholder={i18nT('components.webPreviewPanel.localhost_5173')}
+            aria-label={i18nT('components.webPreviewPanel.preview_url')}
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            className="flex-1 min-w-0 h-full bg-transparent border-none text-[12px] text-text placeholder:text-muted focus:outline-none px-1"
+          />
+          <a
+            href={native.state?.url || undefined}
+            target="_blank"
+            rel="noreferrer"
+            aria-disabled={!native.state?.url}
+            className={`flex items-center justify-center w-6 h-6 rounded text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 no-underline ${!native.state?.url ? 'opacity-40 pointer-events-none' : ''}`}
+            title={i18nT('components.webPreviewPanel.open_in_browser')}
+            aria-label={i18nT('components.webPreviewPanel.open_in_browser')}
+          >
+            <ExternalLink size={13} />
+          </a>
+        </div>
+      </form>
+      {/* Measured host for the native view. Empty by design. */}
+      <div ref={native.hostRef} className="flex-1 min-h-0 bg-black" />
+    </div>
+  )
+
   return (
     <div className="relative flex flex-col h-full min-h-0 bg-bg">
       {/* Preview subtree stays MOUNTED even while the live mirror overlays it,
           so the iframe document + unsaved form/SPA state survive an isLive
           toggle — visually hidden, never unmounted. */}
-      <div className={`flex flex-col h-full min-h-0 ${isLive ? 'invisible pointer-events-none' : ''}`} aria-hidden={isLive || undefined}>
+      <div className={`flex flex-col h-full min-h-0 ${isLive || nativeOpen ? 'invisible pointer-events-none' : ''}`} aria-hidden={isLive || nativeOpen || undefined}>
       {/* URL bar: [back][forward]  ( [reload] input )  [open][expand] | [device] */}
       <form
         className="flex items-center gap-1 px-2 py-1.5 border-b border-border shrink-0"
@@ -647,7 +770,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             className={`flex items-center h-7 px-1.5 rounded-md transition-colors bg-transparent border-none cursor-pointer ${
               isDeviceSized ? 'text-accent bg-accent-subtle hover:text-accent' : 'text-muted hover:text-text hover:bg-bg-hover'
             }`}
-            title={`Preview size: ${device.label}`}
+            title={`${i18nT('components.webPreviewPanel.preview_size')}: ${deviceLabel(device)}`}
             aria-label={i18nT('components.webPreviewPanel.preview_size')}
             aria-haspopup="menu"
             aria-expanded={deviceMenuOpen}
@@ -669,7 +792,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
                   onClick={() => { setDeviceId(d.id); setDeviceMenuOpen(false) }}
                 >
                   <span className="text-muted shrink-0">{d.w ? <Smartphone size={14} /> : <Monitor size={14} />}</span>
-                  <span className="flex-1">{d.label}</span>
+                  <span className="flex-1">{deviceLabel(d)}</span>
                   {d.w && <span className="text-[10px] text-muted font-mono shrink-0">{d.w}×{d.h}</span>}
                   {d.id === deviceId && <Check size={13} className="text-accent shrink-0" />}
                 </button>
@@ -801,7 +924,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         )}
       </div>
       </div>
-      {isLive && liveMirror}
+      {isLive ? liveMirror : nativeOpen ? nativeSurface : null}
     </div>
   )
 }

@@ -6,27 +6,27 @@
  * stack is hidden when the Local tab is active so the native dashboard (a
  * sibling pane) shows through — nothing is unmounted, so switching is instant.
  *
- * Load-bearing rules (carried over from the old InstancesPage):
+ * Load-bearing rules:
  * - **Hide-not-unmount**: every warm instance's <iframe> stays mounted; only
  *   `display` toggles. Unmounting would reload the remote + re-run the token
- *   handshake and lose scroll/session state. This now holds across Local<->remote
+ *   handshake and lose scroll/session state. This holds across Local<->remote
  *   switches too (the stack is display:none on Local, not unmounted).
  * - **Warm-set cap** (instances.warm_set_cap): keep at most K warm iframes;
  *   exceeding the cap evicts (unmounts) the least-recently-used non-active
  *   iframe. Eviction does NOT disconnect the tunnel — the tab persists and
  *   re-warms on next click. Tabs are removed only by an explicit disconnect.
- * - **Origin-validated unread relay** (§5.4): trust postMessage counts only
+ * - **Origin-validated unread relay**: trust postMessage counts only
  *   from a known loopback tunnel origin.
  *
  * For an active instance with no warm iframe (down / reconnecting after a
  * restart) it renders an in-pane error/reconnect panel; otherwise it renders
  * nothing only when nothing is warm.
  *
- * - **Pane readiness** (strand fix): a warm iframe is only trusted once its
+ * - **Pane readiness**: a warm iframe is only trusted once its
  *   embedded SPA posts `mc-embedded-ready` for the current src. Until then the
  *   active pane shows a loading overlay that carries the tab strip (the local
  *   header is hidden while a remote tab is active, so without it a slow or
- *   dead load stranded the user on a black pane with no tabs). If readiness
+ *   dead load would strand the user on a black pane with no tabs). If readiness
  *   never arrives within PANE_LOAD_TIMEOUT_MS the error panel surfaces with
  *   Retry, which force-reloads the iframe even for an identical re-minted src.
  */
@@ -99,7 +99,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const refreshingRef = useRef<Set<string>>(new Set())
   const lastRefreshRef = useRef<Map<string, number>>(new Map())
   // Live iframe elements by id, so the parent can postMessage the switcher model
-  // into each embedded pane (option B relay). Set/cleared by the iframe ref cb.
+  // into each embedded pane. Set/cleared by the iframe ref cb.
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
   // Read-only mirrors for the long-lived message listener, kept current without
   // re-subscribing (mirrors the warmRef / portToIdRef pattern already used here).
@@ -175,7 +175,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // pane is exactly the one the user wants restored.
         void refreshToken(id)
       } else if (data.type === 'mc-switch-instance') {
-        // The embedded pane's inline switcher (option B) asks the parent to flip
+        // The embedded pane's inline switcher asks the parent to flip
         // the active tab. The SENDER is already trusted (its origin resolved to a
         // warm tunnel above); validate the TARGET is Local (null) or a known
         // instance before honoring it.
@@ -318,7 +318,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
 
   // Build the switcher model relayed to the embedded pane `id`: the full tab
   // list (same rule as the local inline bar), which tab is active, this pane's
-  // OWN tunnel status (for its readout capsule, item 1), and the macOS inset.
+  // OWN tunnel status (for its readout capsule), and the macOS inset.
   const buildModelFor = useCallback(
     (id: string) => {
       const insts = instancesQuery.data?.instances ?? []
@@ -389,7 +389,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // but the embedded SPA hasn't announced readiness yet. Without this the
   // window between Retry succeeding (setWarm) and the remote SPA rendering its
   // embedded switcher is a black pane with NO tabs — the local header is
-  // display:none while a remote tab is active, so the user was stranded.
+  // display:none while a remote tab is active, so the user would be stranded.
   const showLoading = !showPanel && activeId !== null && !!warm[activeId] && !activeReady
   if (embedded || (warmIds.length === 0 && !showPanel)) return null
 
@@ -443,7 +443,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       )}
       {showPanel && activeId && (
         <div className="absolute inset-0 flex flex-col bg-bg">
-          {/* Escape hatch (bug: stranded on the disconnect view). While a remote
+          {/* Escape hatch. While a remote
               tab is active the local header — and with it the only top-level
               InstanceTabBar — is display:none, and the embedded switcher lives
               INSIDE the (now dead/absent) iframe. Without this strip the panel

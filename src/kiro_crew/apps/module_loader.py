@@ -131,7 +131,6 @@ def load_app_module(app_name: str, app_dir: Path, module_path: str) -> Callable[
             )
         _warn_third_party_execution(app_name)
 
-    # Load the module
     spec = importlib.util.spec_from_file_location(unique_name, str(file_path))
     if spec is None or spec.loader is None:
         raise ImportError(f"Failed to create module spec for {file_path}")
@@ -148,7 +147,6 @@ def load_app_module(app_name: str, app_dir: Path, module_path: str) -> Callable[
             f"Failed to execute module {file_path}: {exc}"
         ) from exc
 
-    # Get the callable
     if not hasattr(module, callable_name):
         sys.modules.pop(unique_name, None)
         raise ImportError(

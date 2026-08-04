@@ -196,8 +196,8 @@ def _build_pending() -> bool:
     a completed Pull+Build has artifacts waiting to be applied on the next restart."""
     try:
         # parents[3] == the kiro_crew package root (dev_fleet -> builtins ->
-        # apps -> kiro_crew). A relative parent-chain broke once already when
-        # this module moved from dashboard/handlers/ — the test pins the shape.
+        # apps -> kiro_crew). The relative parent-chain is location-sensitive,
+        # so a test pins the shape.
         dist = Path(__file__).resolve().parents[3] / "static" / "dist"
         if not dist.exists():
             return False
@@ -207,6 +207,15 @@ def _build_pending() -> bool:
 
 
 # --- pod availability ---
+# Two distinct flags, because they gate different things:
+#   _POD_IMPORTED  — the ``kiro_crew.pod`` modules are importable, so the
+#                    PLATFORM-NEUTRAL helpers (``prov.has_venv`` /
+#                    ``prov.has_dist``, both plain filesystem checks) may be
+#                    called. True on every platform unless the import failed.
+#   _POD_AVAILABLE — pods can actually RUN here, i.e. Linux with ``systemctl``.
+# Conflating the two used to report every worktree as "not built" off Linux,
+# even though the build state is knowable everywhere.
+_POD_IMPORTED = False
 _POD_AVAILABLE = False
 _POD_ERROR = ""
 try:
@@ -214,15 +223,23 @@ try:
     from kiro_crew.pod import runtime as rt
     from kiro_crew.pod.config import PodConfig
 
+    _POD_IMPORTED = True
     # Pods are systemd --user units — they can only exist on Linux with
     # systemctl present. On other platforms skip pod-state checks entirely
     # instead of failing closed on every removal.
     if sys.platform == "linux" and shutil.which("systemctl"):
         _POD_AVAILABLE = True
+    elif sys.platform != "linux":
+        _POD_ERROR = (
+            f"Pods are Linux systemd --user units; this host is {sys.platform}. "
+            "Preview a worktree with ./dev-backend.sh instead."
+        )
     else:
-        _POD_ERROR = "pods require Linux systemd (systemctl not available)"
+        _POD_ERROR = (
+            "Pods require `systemctl --user`, but no `systemctl` was found on PATH."
+        )
 except ImportError as exc:
-    _POD_ERROR = str(exc)
+    _POD_ERROR = f"the pod subsystem could not be imported: {exc}"
 
 
 # --- async run tracking ---
@@ -980,7 +997,7 @@ def _is_pr_merged(pr: dict | None) -> bool:
     return (pr or {}).get("state") == "MERGED"
 
 
-# --- per-worktree context: issue/ticket links + purpose one-liner (issue #147) ---
+# --- per-worktree context: issue/ticket links + purpose one-liner ---
 #
 # Best-effort and TTL-cached per branch exactly like the PR-state cache. Every
 # field degrades to empty/None on any git/gh failure so context resolution can
@@ -991,7 +1008,7 @@ def _is_pr_merged(pr: dict | None) -> bool:
 # trailing non-alphanumeric lookahead that rejects colour hexes (#1a2b, #fff)
 # and version-ish tokens — covers both; dedup collapses the keyworded overlap.
 _ISSUE_REF_RE = re.compile(r"#(\d{1,7})(?![0-9A-Za-z])")
-# Ticket IDs (JIRA / Taskei style): PROJECT-1234. Pattern fixed by issue #147.
+# Ticket IDs (JIRA / Taskei style): PROJECT-1234.
 _TICKET_ID_RE = re.compile(r"\b[A-Z][A-Za-z]{1,15}-\d{1,6}\b")
 # Subjects that are pure version bumps — skipped when picking the one-liner.
 _VERSION_BUMP_RE = re.compile(
@@ -1213,6 +1230,11 @@ def _parse_worktree_porcelain(raw: str) -> list[dict]:
             current["branch"] = ref.split("refs/heads/", 1)[-1] if "refs/heads/" in ref else ref
         elif line == "detached":
             current["branch"] = None
+        elif line == "prunable" or line.startswith("prunable "):
+            # git flags an entry `prunable` when its checkout directory is gone
+            # but the admin record survives (a `rm -rf` with no
+            # `git worktree prune`). The reason text is optional.
+            current["prunable"] = line[len("prunable"):].strip() or "unknown"
     if current:
         entries.append(current)
     return entries
@@ -1231,10 +1253,9 @@ async def _discover_worktrees() -> list[dict]:
             # Do NOT clip to the generic git-error length here. The sandbox layer
             # puts the *remedy* (which opt-in to set, or that an EPERM is a
             # Seatbelt nesting artifact rather than a missing backend) AFTER a
-            # ~180-char preamble, so the old 200-char cap surfaced the diagnosis
-            # and swallowed the fix — the Discovery Error banner ended mid-word at
-            # "Probe". Keep a generous bound purely to stop an unbounded stderr
-            # reaching the UI.
+            # ~180-char preamble, so a tight cap would surface the diagnosis and
+            # swallow the fix. Keep a generous bound purely to stop an unbounded
+            # stderr reaching the UI.
             raise RuntimeError(raw[:_SANDBOX_ERR_MAX])  # already prefixed by _run_cmd
         return []
     entries = _parse_worktree_porcelain(stdout)
@@ -1244,7 +1265,13 @@ async def _discover_worktrees() -> list[dict]:
     # repository discovery hint).
     for i, e in enumerate(entries):
         e["is_main"] = (i == 0)
-    return entries
+    # A `prunable` entry has no checkout on disk, so every git call against its
+    # path fails and it renders as a ghost row with no branch, behind count or
+    # timestamp — and no refresh ever clears it, because git keeps reporting the
+    # record until `git worktree prune` runs. Drop those. The primary checkout
+    # is never filtered: it anchors `is_main`, and losing it would promote a
+    # linked worktree to main.
+    return [e for e in entries if e.get("is_main") or not e.get("prunable")]
 
 
 async def _git(
@@ -1304,32 +1331,107 @@ async def _real_dirty(path: str) -> bool | None:
 # --- fleet cache ---
 _FLEET_TTL = 10.0
 _FLEET_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
-_FLEET_REFRESHING = False
+# The single in-flight rebuild. A rebuild costs one `gh pr` round-trip per
+# branch, so the background revalidate and every `fresh=1` request coalesce onto
+# the SAME task instead of each starting their own. Holding the reference here
+# also keeps a fire-and-forget rebuild from being garbage-collected mid-flight.
+_FLEET_INFLIGHT: asyncio.Task[dict] | None = None
+# Worktrees evicted by `_fleet_forget`, keyed to an eviction counter. A rebuild
+# that started BEFORE an eviction still reads the worktree from git, so storing
+# its result would resurrect the row the eviction just dropped. Entries are
+# reaped by the first build that started after them.
+_FLEET_EPOCH = 0
+_FLEET_TOMBSTONES: dict[str, int] = {}
 
 
-async def _fleet_refresh() -> dict:
+def _drop_worktrees(data: dict, names: set[str]) -> dict:
+    """A copy of ``data`` without the named worktrees.
+
+    Copies rather than mutates: a concurrent response may still hold the old
+    dict while aiohttp serializes it.
+    """
+    wts = data.get("worktrees")
+    if not isinstance(wts, list):
+        return data
+    kept = [w for w in wts if w.get("name") not in names]
+    if len(kept) == len(wts):
+        return data
+    return {**data, "worktrees": kept}
+
+
+async def _fleet_build() -> dict:
+    global _FLEET_TOMBSTONES
+    started = _FLEET_EPOCH
     data = await _build_fleet()
+    # Removals that landed DURING this build are invisible to it — the git state
+    # it read predates them. Re-apply them so a slow build cannot put back a row
+    # an eviction already removed.
+    data = _drop_worktrees(
+        data, {n for n, e in _FLEET_TOMBSTONES.items() if e > started}
+    )
+    # Evictions that predate this build's start need no tombstone: `_fleet_forget`
+    # runs only after git has removed the worktree, so no later build can see it.
+    _FLEET_TOMBSTONES = {n: e for n, e in _FLEET_TOMBSTONES.items() if e > started}
     _FLEET_CACHE["data"] = data
     _FLEET_CACHE["ts"] = time.monotonic()
     return data
 
 
+def _fleet_rebuild_task() -> asyncio.Task[dict]:
+    """The in-flight rebuild, starting one if none is running."""
+    global _FLEET_INFLIGHT
+    task = _FLEET_INFLIGHT
+    if task is None or task.done():
+        task = asyncio.ensure_future(_fleet_build())
+        _FLEET_INFLIGHT = task
+    return task
+
+
+async def _fleet_refresh() -> dict:
+    # shield: a client disconnecting mid-request must not cancel a rebuild that
+    # other waiters (and the cache) depend on. Coalescing onto a build already in
+    # flight is safe even for a `fresh=1` request that raced a removal:
+    # `_fleet_build` re-applies any eviction that landed mid-build.
+    return await asyncio.shield(_fleet_rebuild_task())
+
+
+def _fleet_forget(name: str) -> None:
+    """Evict one worktree from the cached snapshot and mark it for rebuild.
+
+    ``_fleet_cached`` is stale-while-revalidate: once past the TTL it serves the
+    PREVIOUS snapshot and only schedules a rebuild behind it. Without this hook a
+    just-removed worktree keeps rendering for the length of a full rebuild, so
+    the UI shows rows that no longer exist and refreshing does not help. Evicting
+    the row makes the very next response truthful at zero rebuild latency, and
+    zeroing the timestamp schedules the rebuild that refreshes the rest.
+    """
+    global _FLEET_EPOCH
+    _FLEET_EPOCH += 1
+    _FLEET_TOMBSTONES[name] = _FLEET_EPOCH
+    data = _FLEET_CACHE["data"]
+    if isinstance(data, dict):
+        _FLEET_CACHE["data"] = _drop_worktrees(data, {name})
+    _FLEET_CACHE["ts"] = 0.0
+
+
+def _log_fleet_rebuild_failure(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("dev-fleet: background fleet rebuild failed: %s", exc)
+
+
 async def _fleet_cached() -> dict:
-    global _FLEET_REFRESHING
     data, ts = _FLEET_CACHE["data"], _FLEET_CACHE["ts"]
     if data is None:
         return await _fleet_refresh()
-    if time.monotonic() - ts > _FLEET_TTL and not _FLEET_REFRESHING:
-        _FLEET_REFRESHING = True
-
-        async def _bg():
-            global _FLEET_REFRESHING
-            try:
-                await _fleet_refresh()
-            finally:
-                _FLEET_REFRESHING = False
-
-        asyncio.create_task(_bg())
+    if time.monotonic() - ts > _FLEET_TTL:
+        task = _fleet_rebuild_task()
+        # This caller does not await the rebuild, so consume its exception here
+        # or asyncio reports it as never-retrieved.
+        if not task.done():
+            task.add_done_callback(_log_fleet_rebuild_failure)
     return data
 
 
@@ -1355,9 +1457,24 @@ async def _build_fleet() -> dict:
         health = None
         has_venv = False
         has_dist = False
+        loop = asyncio.get_running_loop()
+        # Build state is a plain filesystem check (``.venv`` binary present /
+        # ``static/dist`` directory present) and is therefore knowable on EVERY
+        # platform — report it even where pods cannot run, so the Fleet view
+        # still tells the truth about which worktrees are built.
+        if _POD_IMPORTED and not is_main:
+            try:
+                has_venv = await loop.run_in_executor(
+                    subprocess_executor(), prov.has_venv, Path(path)
+                )
+                has_dist = await loop.run_in_executor(
+                    subprocess_executor(), prov.has_dist, Path(path)
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        # Pod state, by contrast, only exists where pods can run.
         if _POD_AVAILABLE and cfg and not is_main:
             try:
-                loop = asyncio.get_running_loop()
                 active = await loop.run_in_executor(
                     subprocess_executor(), rt.active_names, cfg
                 )
@@ -1369,12 +1486,6 @@ async def _build_fleet() -> dict:
                     health = await loop.run_in_executor(
                         subprocess_executor(), rt.health, port, 2
                     )
-                has_venv = await loop.run_in_executor(
-                    subprocess_executor(), prov.has_venv, Path(path)
-                )
-                has_dist = await loop.run_in_executor(
-                    subprocess_executor(), prov.has_dist, Path(path)
-                )
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1422,6 +1533,12 @@ async def _build_fleet() -> dict:
         "sync_run_id": _SYNC_RID,
         "build_pending": _build_pending(),
         "gateway_service_active": await _gateway_service_active(),
+        # Whether pods can run on THIS host, and if not, why. Previously
+        # _POD_ERROR was computed and then never read by anything, so a
+        # non-Linux user saw pod controls that silently failed with no
+        # explanation. The UI uses these to disable those controls and say why.
+        "pods_available": _POD_AVAILABLE,
+        "pods_unavailable_reason": _POD_ERROR or None,
     }
 
 
@@ -1703,8 +1820,8 @@ async def _pod_up(name: str) -> dict:
         return {"ok": False, "error": _redact(stderr or stdout)}
     # Post-start verification (symmetry with _pod_down): rc==0 is not proof the
     # pod is up. Confirm the unit is actually active, else fail closed rather
-    # than flash a false "started" — the same false-success class this fix kills,
-    # in the opposite direction.
+    # than flash a false "started" — the same false-success class as a false
+    # "stopped", in the opposite direction.
     cfg = _load_cfg()
     if _POD_AVAILABLE and cfg:
         try:
@@ -1734,7 +1851,7 @@ async def _pod_down(name: str) -> dict:
     if rc != 0:
         return {"ok": False, "error": _redact(stderr or stdout)}
     # Post-stop verification: a CLI exit 0 is NOT proof the unit stopped (a
-    # broken `-m` entry point historically no-op'd with rc 0, and a real stop
+    # broken `-m` entry point can no-op with rc 0, and a real stop
     # can still fail or time out). Re-check the live unit state and fail CLOSED
     # if the pod is still active — mirrors the post-shutdown recheck in
     # _worktree_remove so "Stopped" is never reported for a pod still running.
@@ -2043,6 +2160,10 @@ async def _worktree_remove(
                     f"refs/heads/{branch}", verdict_oid.strip(), timeout=10,
                 )
 
+    # Every removal path lands here — the single-worktree handler, each parallel
+    # prune worker, and the auto-prune reaper — so this is the one place the
+    # cached snapshot has to be told the row is gone.
+    _fleet_forget(name)
     return {"ok": True, "removed": True, "stopped_pod": stopped_pod, "pr": _redact_pr(pr)}
 
 
@@ -3036,8 +3157,7 @@ def _in_pod() -> bool | None:
     gateway. The ambiguous ``None`` case is fail-CLOSED by the caller
     (``_make_live`` refuses with ``pod_indeterminate``) — an unresolvable
     home must NEVER be treated as "not a pod", which would let a pod cut the
-    operator's live gateway (the previous fail-OPEN ``False`` did exactly
-    that)."""
+    operator's live gateway."""
     try:
         from kiro_crew.config.loader import config_dir
 
@@ -3425,7 +3545,7 @@ def create_app() -> web.Application:
     # (handle_app_api_proxy). The bare /health above is reachable only by the
     # gateway's own in-process liveness poll (127.0.0.1:<port>/health, and it is
     # the one path the HMAC middleware exempts). So the restart-identity
-    # handshake (issue #639) MUST poll a PROXIED path -- expose the same handler
+    # handshake MUST poll a PROXIED path -- expose the same handler
     # under /api/health, which the browser reaches at /apps/dev-fleet/api/health.
     app.router.add_get("/api/health", api_health)
     app.router.add_get("/api/fleet", api_dev_fleet_fleet)

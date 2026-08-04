@@ -178,9 +178,9 @@ describe('useColumnResize — collapsing', () => {
   })
 
   it('a drag-expand restores the saved width and grows from there', () => {
-    // Regression (mirror of the slow-collapse case): resolving to the raw pointer
-    // position reopened at the clamped minimum and banked it, so a 400px rail
-    // came back as 220px. The reopen must land ON the saved width.
+    // The reopen must land ON the saved width: resolving to the raw pointer
+    // position would reopen at the clamped minimum and bank it, so a 400px rail
+    // would come back as 220px.
     localStorage.setItem(RAIL_WIDTH_KEY, '400')
     localStorage.setItem(RAIL_COLLAPSED_KEY, '1')
     const { col, handle } = renderHarness(COLLAPSE)
@@ -195,9 +195,9 @@ describe('useColumnResize — collapsing', () => {
   })
 
   it('a slow collapse still reopens at the pre-drag width', () => {
-    // Regression: onMove used to bank every intermediate width, so dragging a
-    // 400px rail slowly THROUGH the minimum left 220 remembered and reopening
-    // lost the 400. A drag that ends collapsed must not bank what it swept past.
+    // A drag that ends collapsed must not bank what it swept past: if onMove
+    // banked every intermediate width, dragging a 400px rail slowly THROUGH the
+    // minimum would leave 220 remembered and reopening would lose the 400.
     localStorage.setItem(RAIL_WIDTH_KEY, '400')
     const { col, state, handle } = renderHarness(COLLAPSE)
     expect(col.style.width).toBe('400px')

@@ -150,9 +150,9 @@ class TestReviewedIndex(unittest.TestCase):
 
 
 class TestReviewedKeyCollision(unittest.TestCase):
-    """HIGH regression: two repos differing only by '-' vs '_' with the same PR
-    number must NOT share one durable reviewed-index key. The filesystem-safe
-    change-id sanitizes '-'->'_' (so it CAN collide); the reviewed key must not."""
+    """Two repos differing only by '-' vs '_' with the same PR number must NOT
+    share one durable reviewed-index key. The filesystem-safe change-id sanitizes
+    '-'->'_' (so it CAN collide); the reviewed key must not."""
 
     def test_change_id_collides_but_reviewed_key_does_not(self):
         u1 = "https://github.com/acme/service-api/pull/5"

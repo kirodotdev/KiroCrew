@@ -1,5 +1,5 @@
 /**
- * Sub-agent scale reducers (PR-4/PR-5, 60-100 concurrent agents):
+ * Sub-agent scale reducers (60-100 concurrent agents):
  *  - sseSubagentBatchUpdate applies one coalesced ~1s frame of per-agent
  *    deltas (tool/stalled/retrying), replacing per-event frames at scale.
  *  - sseSubagentBatchChunks appends concatenated streaming text per agent

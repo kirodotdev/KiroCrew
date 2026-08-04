@@ -78,7 +78,6 @@ describe('SkillDirectoryBrowser', () => {
 
     renderWithQuery(<SkillDirectoryBrowser skillKey="demo" />)
 
-    // Click into check.sh
     await waitFor(() => expect(screen.getByText('check.sh')).toBeInTheDocument())
     fireEvent.click(screen.getByText('check.sh'))
 

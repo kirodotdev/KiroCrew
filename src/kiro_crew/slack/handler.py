@@ -80,7 +80,12 @@ from kiro_crew.providers.base import (
     LLMEvent,
     LLMProvider,
 )
-from kiro_crew.safety_override import safety_override
+from kiro_crew.safety_override import (
+    SafetyOverride,
+    apply_config_duration,
+    grant_declared_yolo,
+    safety_override,
+)
 from kiro_crew.security import (
     StreamRedactor,
     is_sensitive_path,
@@ -487,7 +492,44 @@ class StatusReactionController:
 # trust: auto-approve tools for a specific session (via Trust button)
 # yolo: auto-approve all tools globally for all sessions (via !yolo on command, owner-only)
 _trusted_sessions: set[str] = set()
-_YOLO_TTL_SECS = 1800  # 30 minutes for !yolo on command
+# Deprecated alias kept for import compatibility. `!yolo on` is an AD-HOC
+# grant, so it now uses the SAME duration as the dashboard picker and the API
+# (agent.yolo_duration, default 6h) — a per-surface TTL made the behavior
+# unpredictable without buying security. Read the live value, never this.
+_YOLO_TTL_SECS = SafetyOverride._ADHOC_TTL_DEFAULT
+
+
+def _fmt_duration(secs: int) -> str:
+    """Render an ad-hoc TTL for a user-facing message (e.g. "6h", "30min")."""
+    if secs % 3600 == 0:
+        return f"{secs // 3600}h"
+    return f"{secs // 60}min"
+
+
+_NO_EXPIRY_TEXT = "stays on until KiroCrew restarts"
+
+
+def describe_grant_lifetime() -> str:
+    """Describe the LIVE grant's lifetime truthfully.
+
+    A grant can have no timed expiry at all, in which case ``remaining_secs()``
+    is -1. Claiming such a grant "auto-expires" would tell the operator the
+    skip-every-approval mode disarms itself when it never does.
+    """
+    so = safety_override()
+    if not so.is_active():
+        return "off"
+    if so.is_permanent:
+        return _NO_EXPIRY_TEXT
+    return f"{max(0, so.remaining_secs()) // 60}min remaining"
+
+
+def describe_new_grant(result_ttl: int) -> str:
+    """Describe the lifetime of a grant that was just created."""
+    if result_ttl <= 0:
+        return _NO_EXPIRY_TEXT
+    return f"auto-expires in {_fmt_duration(result_ttl)}"
+
 
 # Allowed user IDs for Slack access (set by gateway at startup).
 # Falls back to single KIROCREW_OWNER_ID for backward compatibility.
@@ -1134,9 +1176,17 @@ def set_owner_id(owner_id: str) -> None:
 
 
 def set_yolo_mode(enabled: bool) -> None:
-    """Set YOLO mode at startup from config (called by gateway)."""
+    """Set YOLO mode at startup from config (called by gateway).
+
+    ``dangerouslySkipPermissions`` is a standing instruction, so the grant does not
+    expire — see ``safety_override.grant_declared_yolo``. A headless
+    ``--slack-only`` gateway never runs the dashboard startup path, so the same
+    helper is called here or YOLO would still lapse for exactly the users
+    driving the agent from another channel.
+    """
+    apply_config_duration()
     if enabled:
-        safety_override().activate("config")
+        grant_declared_yolo()
 
 
 def set_orch_cfg(cfg: KiroCrewConfig) -> None:
@@ -1299,8 +1349,7 @@ def is_tracked_channel(channel_id: str) -> bool:
 class MessageContext:
     """Service references needed to process a Slack message.
 
-    Groups the 8 service/config parameters that were previously passed
-    individually to ``handle_message``.
+    Groups the 8 service/config parameters that ``handle_message`` needs.
     """
 
     sessions: SessionManager
@@ -1387,7 +1436,7 @@ async def _handle_slash_command(
                 await slack.post_message(channel, "YOLO mode is already off.", reply_ts)
         elif len(parts) >= 2 and parts[1].lower() == "on":
             if not yolo_active:
-                enable_yolo_with_ttl(_YOLO_TTL_SECS)
+                _result = safety_override().activate("slack")
                 sel().log_api_access(
                     caller=user_id,
                     operation="slack.yolo_mode",
@@ -1397,13 +1446,12 @@ async def _handle_slash_command(
                 )
                 await slack.post_message(
                     channel,
-                    f"🔓 YOLO mode enabled (auto-expires in {_YOLO_TTL_SECS // 60}min).",
+                    f"🔓 YOLO mode enabled ({describe_new_grant(_result.ttl)}).",
                     reply_ts,
                 )
             else:
-                remaining = safety_override().remaining_secs()
                 await slack.post_message(
-                    channel, f"YOLO mode is already on ({remaining // 60}min remaining).", reply_ts
+                    channel, f"YOLO mode is already on ({describe_grant_lifetime()}).", reply_ts
                 )
         elif len(parts) >= 2 and parts[1].lower() == "renew":
             result = safety_override().renew("slack")
@@ -1426,8 +1474,7 @@ async def _handle_slash_command(
                 )
         else:
             if yolo_active:
-                remaining = safety_override().remaining_secs()
-                status = f"ON 🔓 ({remaining // 60}min remaining)"
+                status = f"ON 🔓 ({describe_grant_lifetime()})"
             else:
                 status = "OFF 🔒"
             await slack.post_message(
@@ -2120,8 +2167,8 @@ async def _handle_compact_command(
     # Slack dispatches each message as its own task (asyncio.create_task), so a
     # bare get_provider() + compact() would race a normal turn that holds the
     # session and interleave two prompts on one stdio channel — corrupting
-    # session state (the reason Discord/Telegram guard the same way). Since
-    # #276 routes /compact through session/prompt, that collision now surfaces
+    # session state (the reason Discord/Telegram guard the same way). Because
+    # /compact routes through session/prompt, that collision surfaces
     # as "turn already active" and the except path would destroy a healthy
     # session; try_acquire() serializes against the in-flight turn and the
     # finally always releases.
@@ -2168,10 +2215,10 @@ async def _handle_compact_command(
         result_text: str | None = None
         outcome = "unknown"
         try:
-            # Compaction runs over the prompt transport (#276):
+            # Compaction runs over the prompt transport:
             # provider.compact() drives /compact via session/prompt (the
             # commands/execute path does NOT run compaction — it returns with
-            # no status, the pre-#276 bug). Bound compact()'s prompt turn here,
+            # no status). Bound compact()'s prompt turn here,
             # then let wait_for_compaction() own its OWN deadline for a status
             # emitted async after end_turn — it must NOT be nested inside
             # another timeout, or the graceful "timed out" branch is
@@ -2510,8 +2557,8 @@ async def handle_message(
     # dashboard _slack_to_slot). session_key is the namespaced form used for
     # everything session-scoped (registry, conversation log, thread overrides).
     # Deriving the canonical form HERE keeps the key stable across messages:
-    # previously the first message ran under the bare thread_ts while the
-    # second was rewritten to ``slack:<ts>`` by the linked-thread routing below
+    # otherwise the first message would run under the bare thread_ts while the
+    # second is rewritten to ``slack:<ts>`` by the linked-thread routing below
     # (the self-link canonicalizes), splitting the live session, the
     # conversation log, and the per-thread override maps across two keys.
     reply_ts = thread_ts or msg_ts
@@ -2947,7 +2994,7 @@ async def handle_message(
         )
 
         # Publish this turn's session identity so managed MCP tools resolve
-        # X-Session-Key; one shared writer lives in messaging.identity. (#232)
+        # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(sessions, session_key)
 
         # Build message with context injection
@@ -3074,7 +3121,7 @@ async def handle_message(
             await slack.set_thread_status(channel, reply_ts, "")
             return
 
-        # Lease-dispatch race gate (Codex HIGH): the session lease was taken by
+        # Lease-dispatch race gate: the session lease was taken by
         # get_or_create above, but the turn only opens on the first stream
         # iteration below. If a gateway restart moved the SessionManager into the
         # closing state during the async prep between, dispatching now would open

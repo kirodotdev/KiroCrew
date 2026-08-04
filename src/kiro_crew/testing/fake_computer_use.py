@@ -353,10 +353,6 @@ class FakeComputerUseBackend(ComputerUseBackend):
         #  * a TRUNCATED walk also gets none, because it cannot prove the window is
         #    free of a secure field — "unknown" has to behave like "present" at the
         #    one gate that decides whether pixels leave the process.
-        # The second was missing here, so ``snapshot(max_nodes=1, want_image=True)``
-        # returned ``truncated=True`` WITH an image attached and deleting the
-        # production branch left the whole suite green. A downstream consumer driving
-        # this fake would also have seen a capture the real driver refuses.
         want_image = req.want_image and not has_secure and not (truncated or depth_truncated)
         snap = Snapshot(
             app=app,

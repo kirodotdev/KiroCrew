@@ -1,6 +1,21 @@
+---
+title: Tips Kit (activity-aware, self-learning recommendations)
+status: draft
+author: zezhexu
+created: 2026-07-29
+last-audited: 2026-08-03
+audited-at: 0ab6ed48
+doc-pr: 720
+implementation-prs: []
+tracking-issues: []
+supersedes: []
+superseded-by: []
+---
 # RFC: Tips Kit (activity-aware, self-learning recommendations)
 
-- Status: DRAFT
+- Status: draft — **nothing from this RFC is on main.** T1 was fully implemented in PR #775 and then **retracted 42 minutes later despite green CI**, because its `_FEATURE_RULES` regex table made feature matching a hardcoded rulebook instead of LLM-driven, and because `tips_appearance_decay` keyed off id-keyed state that resets every 6h regeneration. The work survives on branch `feat/tips-kit-t1` @ `a9c84a5c`; no successor PR is open. T2 and T3 are unstarted. `tips_analyzer.py`, `CandidateRec`, `cron_create`, `setting_toggle` and `TipsState.weights` have zero hits repo-wide; `_TIP_ACTION_KINDS` is still `("route",)`.
+- **Unresolved tension:** the Design section below prescribes *deterministic detectors* with the LLM only phrasing and ranking, and Alternative 2 explicitly rejects LLM-led analysis. That is the shape #775 was retracted for. A faithful T1 implementation of this text would reproduce the rejected design — the doc needs revising before T1 is re-attempted.
+- **Baseline correction:** the claim that the engine "never analyzes the daily history" is imprecise — `tips.py:504` already reads `memory/history/*.md` and feeds it to the LLM. What is missing is deterministic pattern detection over a wider window. Also unmentioned: `_TIP_ALLOWED_FIELDS` (`tips.py:515`) excludes `action`, so LLM-authored executable targets require widening that projection first.
 - Author: zezhexu
 - Created: 2026-07-29
 - Related: `src/kiro_crew/tips.py` (the feature-tips engine this RFC extends), rfc-federated-app-platform.md (App Store install path), rfc-local-notification-bus.md + rfc-notification-bridge.md (delivery seam), `cron.py` (scheduling target)

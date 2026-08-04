@@ -135,8 +135,8 @@ ERR_GATEWAY_UNREACHABLE = (
 # by the ACP spawn path and ``KIROCREW_HOST_PID`` only by the Linux sandbox
 # launcher).
 #
-# Why this exists rather than an empty string (GPT 5.6 BLOCKING, and the aliasing
-# half of it was real): ``SnapshotIndex`` namespaces its entries by
+# Why this exists rather than an empty string: ``SnapshotIndex`` namespaces its
+# entries by
 # ``(session_key, window_key)``, so EVERY unresolved session shared the single
 # ``("", window)`` slot. Two concurrent macOS sessions observing the same window
 # therefore overwrote each other's element indices — and each one's own

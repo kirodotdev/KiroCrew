@@ -305,7 +305,7 @@ export function PanelSectionHeader({ label, count, trailing, className }: {
   )
 }
 
-export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: React.ReactNode }) {
+export function PageHeader({ title, subtitle, actions }: { title: React.ReactNode; subtitle?: string; actions?: React.ReactNode }) {
   return (
     <div className="flex items-end justify-between gap-4 px-6 pt-2 pb-3" data-testid="page-header">
       <div>

@@ -283,9 +283,9 @@ describe('ChannelsPanel — status polling', () => {
   })
 
   it('re-polls the channels-governance policy (Level-2 profiles hot-reload)', async () => {
-    // GPT round-10: the channels policy is a Level-2 PROFILE that hot-reloads at
-    // runtime, so the query must poll — an admin tightening a live profile flips
-    // a channel to "Off by admin" on an already-open page without a reload.
+    // The channels policy is a Level-2 PROFILE that hot-reloads at runtime, so
+    // the query must poll — an admin tightening a live profile flips a channel
+    // to "Off by admin" on an already-open page without a reload.
     vi.useFakeTimers()
     try {
       mockWidth = 1000

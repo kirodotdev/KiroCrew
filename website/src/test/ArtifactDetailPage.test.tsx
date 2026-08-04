@@ -181,9 +181,9 @@ describe('ArtifactDetailPage', () => {
 
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
-    // New model: dropdown defaults to "Live" — historical snapshots are
-    // numbered and ordered newest-first below it.
+    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
+    // Dropdown defaults to "Live" — historical snapshots are numbered and
+    // ordered newest-first below it.
     expect(select.value).toBe('live')
     expect(screen.getByText(/Showing Live \(v2\)/i)).toBeInTheDocument()
     // Numbered options exist for each historical version.
@@ -232,7 +232,7 @@ describe('ArtifactDetailPage', () => {
     expect(screen.queryByText('Hourly CR snapshot')).not.toBeInTheDocument()
   })
 
-  // ── Phase 2: native rendering for non-iframe kinds ──────────
+  // ── native rendering for non-iframe kinds ──────────
   it('markdown artifacts render natively (no iframe)', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({
@@ -280,7 +280,7 @@ describe('ArtifactDetailPage', () => {
     expect(document.querySelector('iframe')).not.toBeNull()
   })
 
-  // ── Phase 3: inline edit + revert ───────────────────────────
+  // ── inline edit + revert ───────────────────────────
   it('edit toggle is hidden for non-editable kinds (widget)', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'widget' }))
     vi.mocked(api).artifactVersions = vi
@@ -339,7 +339,7 @@ describe('ArtifactDetailPage', () => {
     // Current view: no Revert button.
     expect(screen.queryByTitle(/Revert to v/)).toBeNull()
     // Switch to v1.
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
     fireEvent.change(select, { target: { value: '1' } })
     await waitFor(() => expect(screen.getByTitle(/Revert to v1/)).toBeInTheDocument())
   })
@@ -372,7 +372,7 @@ describe('ArtifactDetailPage', () => {
     expect(screen.queryByText(/select text to anchor a comment/i)).toBeNull()
   })
 
-  // ── Phase 5: lifecycle event log + activity timeline ────────
+  // ── lifecycle event log + activity timeline ────────
   it('Activity section is always rendered', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact())
     vi.mocked(api).artifactVersions = vi
@@ -502,8 +502,8 @@ describe('ArtifactDetailPage', () => {
 
   it('Save and Snapshot buttons both render in edit mode with distinct titles', async () => {
     // Save = silent live update, Snapshot = bumps version. Both buttons
-    // appear together in edit mode under the new explicit-snapshot model
-    // (round 5). We can't drive the Monaco editor in jsdom so
+    // appear together in edit mode under the explicit-snapshot model. We can't
+    // drive the Monaco editor in jsdom so
     // we rely on the unit tests for the actual snapshot=true/false wiring
     // on the store side (test_artifacts.py::TestExplicitSnapshotModel).
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
@@ -533,18 +533,17 @@ describe('ArtifactDetailPage', () => {
       .mockResolvedValue({ slug: 'cr-queue', versions: [1, 2, 3] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
     const labels = Array.from(select.options).map((o) => o.textContent?.trim())
     expect(labels).toEqual(['Live', 'v3', 'v2', 'v1'])
   })
 
   it('selecting the latest version number reads that snapshot — NOT Live (round 11 regression)', async () => {
-    // Bug: when the user selected the highest version in the dropdown
-    // (e.g. v3 when art.version === 3), the page rendered Live content
-    // under the v3 label because isCurrent collapsed the two cases. After
-    // any silent save, "v3" appeared to mutate alongside Live until the
-    // user took a NEW snapshot, at which point v3 became "frozen" again.
-    // Fix: numbered versions ALWAYS read versions/v{N}.html, even N=latest.
+    // Numbered versions ALWAYS read versions/v{N}.html, even N=latest:
+    // selecting the highest version (e.g. v3 when art.version === 3) must
+    // render the frozen snapshot, not Live. Otherwise isCurrent would collapse
+    // the two cases and "v3" would appear to mutate alongside Live after a
+    // silent save until the next snapshot froze it again.
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown', version: 3, content: 'Live (now diverged)' }),
     )
@@ -558,7 +557,7 @@ describe('ArtifactDetailPage', () => {
 
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
     // Select v3 (the latest numbered snapshot).
     fireEvent.change(select, { target: { value: '3' } })
     // versionQuery must fire for v3 — the buggy code skipped it.
@@ -571,7 +570,7 @@ describe('ArtifactDetailPage', () => {
   })
 
   it('Snapshot button appears in view mode when artifact.live_dirty', async () => {
-    // Round 6: snapshot-anytime affordance — when live has drifted from
+    // Snapshot-anytime affordance — when live has drifted from
     // the latest version (silent saves or external file edits), the
     // detail page exposes a "Snapshot" button outside edit mode.
     vi.mocked(api).artifact = vi
@@ -614,7 +613,6 @@ describe('ArtifactDetailPage', () => {
     )
   })
 
-  // ── review round 12 polish ─────────────────────────────────────────────
   it('Back button confirms before discarding unsaved edits (round 12)', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown', content: '# v1' }),
@@ -647,7 +645,7 @@ describe('ArtifactDetailPage', () => {
     )
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
     expect(select.disabled).toBe(false)
     fireEvent.click(screen.getByText('Snapshot'))
     // Wait for the saving state to render (in-flight update).
@@ -656,7 +654,6 @@ describe('ArtifactDetailPage', () => {
     resolveUpdate?.(mkArtifact({ kind: 'markdown' }))
   })
 
-  // ── Coverage push: bump frontend new-line coverage above 60% ──────────────
   it('Cmd+S triggers handleSave when dirty in edit mode', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown', content: '# v1' }),
@@ -739,7 +736,7 @@ describe('ArtifactDetailPage', () => {
     vi.mocked(api).artifactVersion = versionFetch
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '2' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '2' } })
     await waitFor(() => expect(versionFetch).toHaveBeenCalledWith('cr-queue', 2))
     await waitFor(() => expect(screen.getByText(/historical v2/)).toBeInTheDocument())
     // Edit/Snapshot buttons hidden on historical view.
@@ -763,7 +760,7 @@ describe('ArtifactDetailPage', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '2' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '2' } })
     await waitFor(() => expect(screen.getByTitle(/Revert to v2/)).toBeInTheDocument())
     fireEvent.click(screen.getByTitle(/Revert to v2/))
     await waitFor(() =>
@@ -796,9 +793,9 @@ describe('ArtifactDetailPage', () => {
   })
 
   it('iterate button (with its comment-count badge) is absent while hidden', async () => {
-    // The comment-count badge lived on the Iterate button. With the button
- // hidden pending redesign neither the button nor the badge
-    // renders. Restore the badge assertion when the redesign re-enables it.
+    // The comment-count badge belongs to the Iterate button. While that button
+    // is hidden pending redesign, neither the button nor the badge renders;
+    // restore the badge assertion when the redesign re-enables it.
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown' }),
     )
@@ -861,7 +858,7 @@ describe('ArtifactDetailPage', () => {
     // Enter edit mode but stay clean — no dirty, no confirm needed.
     fireEvent.click(screen.getByTitle('Edit content'))
     const confirmSpy = vi.spyOn(window, 'confirm')
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '1' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '1' } })
     expect(confirmSpy).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
   })

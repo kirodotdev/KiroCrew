@@ -26,8 +26,8 @@ export default class ErrorBoundary extends Component<Props, State> {
   static getDerivedStateFromError(error: Error) { return { error } }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    // Surface the crash so blackouts are diagnosable. Previously these throws
-    // were swallowed by React's boundary contract with no logging anywhere.
+    // Surface the crash so blackouts are diagnosable — React's boundary
+    // contract otherwise swallows these throws with no logging anywhere.
     // eslint-disable-next-line no-console
     console.error(`[ErrorBoundary${this.props.scope ? `:${this.props.scope}` : ''}]`, error, info.componentStack)
     try {

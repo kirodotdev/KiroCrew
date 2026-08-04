@@ -547,10 +547,9 @@ describe('appendSlotMessage steer reconcile', () => {
   })
 
   it('does not consume a non-steer optimistic message even when content matches the echo exactly', () => {
-    // Code-review finding: the exact-content-match path must also
-    // require meta.steer — a plain optimistic user message that happens to
-    // have identical text to the steer echo is a different message and must
-    // keep its own bubble.
+    // The exact-content-match path must also require meta.steer — a plain
+    // optimistic user message that happens to have identical text to the steer
+    // echo is a different message and must keep its own bubble.
     let state = { ...initial, activeSlot: 'A', messages: [] as any[] }
     state = reducer(state, appendMessage({ role: 'user', content: 'same text', cls: 'msg msg-u', ts: 't1', meta: { optimistic: true } }))
     state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'same text', cls: 'msg msg-u', ts: 't2', meta: { steer: true } } }))
@@ -592,6 +591,73 @@ describe('appendSlotMessage steer reconcile', () => {
     expect(users).toHaveLength(1)
     expect(users[0].ts).toBe('client-ts')
     expect(users[0].meta?.clientTs).toBeUndefined()
+  })
+})
+
+describe('finalize-on-steer (stuck streaming marker fix)', () => {
+  const initial = reducer(undefined, { type: '@@INIT' })
+
+  it('optimistic steer bubble freezes the live streaming message; next chunk opens a NEW one below', () => {
+    // Repro of the bug: mid-text-stream steer. Without the freeze, the chunk
+    // reducer (backwards scan for role==='streaming') kept streaming the rest
+    // of the segment into the message ABOVE the bubble.
+    let state = { ...initial, activeSlot: 'A' }
+    state = reducer(state, sseChatMessage({ slot: 'A', role: 'chunk', content: 'pre-steer text' }))
+    state = reducer(state, appendMessage({ role: 'user', content: 'go left', cls: 'msg msg-u', ts: 't1', meta: { steer: true, optimistic: true } }))
+    // Pre-steer text is frozen as assistant ABOVE the bubble.
+    expect(state.messages.map(m => m.role)).toEqual(['assistant', 'user'])
+    expect(state.messages[0].content).toBe('pre-steer text')
+    expect(state.messages[0].rawText).toBe('pre-steer text')
+    // Post-steer chunks open a fresh streaming message BELOW the bubble.
+    state = reducer(state, sseChatMessage({ slot: 'A', role: 'chunk', content: 'post-steer text' }))
+    expect(state.messages.map(m => m.role)).toEqual(['assistant', 'user', 'streaming'])
+    expect(state.messages[2].content).toBe('post-steer text')
+  })
+
+  it('drops a placeholder-only streaming message instead of freezing it', () => {
+    let state = { ...initial, activeSlot: 'A' }
+    state = reducer(state, sseChatMessage({ slot: 'A', role: 'chunk', content: '…' }))
+    state = reducer(state, appendMessage({ role: 'user', content: 'go left', cls: 'msg msg-u', ts: 't1', meta: { steer: true, optimistic: true } }))
+    expect(state.messages.map(m => m.role)).toEqual(['user'])
+  })
+
+  it('steer echo with no optimistic bubble (other-tab view) freezes before inserting', () => {
+    // This tab did not initiate the steer — no optimistic bubble to reconcile,
+    // so appendSlotMessage inserts the echo. It must freeze first.
+    let state = { ...initial, activeSlot: 'A' }
+    state = reducer(state, sseChatMessage({ slot: 'A', role: 'chunk', content: 'pre-steer text' }))
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'go left', cls: 'msg msg-u', ts: 't2', meta: { steer: true } } }))
+    expect(state.messages.map(m => m.role)).toEqual(['assistant', 'user'])
+    state = reducer(state, sseChatMessage({ slot: 'A', role: 'chunk', content: 'post' }))
+    expect(state.messages.map(m => m.role)).toEqual(['assistant', 'user', 'streaming'])
+  })
+
+  it('steer echo freeze also applies to a backgrounded slot array', () => {
+    let state = { ...initial, activeSlot: 'A',
+      slotMessages: { 'B': [{ role: 'streaming' as const, content: 'bg partial', cls: 'msg msg-a' }] } }
+    state = reducer(state, appendSlotMessage({ slot: 'B', message: { role: 'user', content: 'go left', cls: 'msg msg-u', ts: 't2', meta: { steer: true } } }))
+    expect(state.slotMessages['B'].map(m => m.role)).toEqual(['assistant', 'user'])
+  })
+
+  it('echo reconcile does NOT freeze a live post-steer streaming message', () => {
+    // Freeze happened at optimistic-push time; by the time the echo arrives a
+    // NEW post-steer streaming message can be live below the bubble. The
+    // reconcile path must leave it streaming.
+    let state = { ...initial, activeSlot: 'A' }
+    state = reducer(state, sseChatMessage({ slot: 'A', role: 'chunk', content: 'pre' }))
+    state = reducer(state, appendMessage({ role: 'user', content: 'go left', cls: 'msg msg-u', ts: 't1', meta: { steer: true, optimistic: true } }))
+    state = reducer(state, sseChatMessage({ slot: 'A', role: 'chunk', content: 'post' }))
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'user', content: 'go left', cls: 'msg msg-u', ts: 't2', meta: { steer: true } } }))
+    expect(state.messages.map(m => m.role)).toEqual(['assistant', 'user', 'streaming'])
+    expect(state.messages[1].ts).toBe('t2')
+    expect(state.messages[2].content).toBe('post')
+  })
+
+  it('non-steer appendMessage does not touch a live streaming message', () => {
+    let state = { ...initial, activeSlot: 'A' }
+    state = reducer(state, sseChatMessage({ slot: 'A', role: 'chunk', content: 'streaming on' }))
+    state = reducer(state, appendMessage({ role: 'user', content: 'plain message', cls: 'msg msg-u', ts: 't1' }))
+    expect(state.messages.map(m => m.role)).toEqual(['streaming', 'user'])
   })
 })
 
@@ -1370,9 +1436,8 @@ describe('sseChatMessagePatchByTs', () => {
   })
 
   it('patches a slot the user is NOT currently viewing (slotMessages cache only)', () => {
-    // The active slot is "other", but the update is for "slot-1".  The fix
-    // for issue #1 in the review is that we still patch slotMessages so the
-    // user sees the right state after switching back.
+    // The active slot is "other", but the update is for "slot-1". We still
+    // patch slotMessages so the user sees the right state after switching back.
     const { state, ts } = withMcpOauthBanner('other')
     const out = reducer(state, {
       type: 'chat/sseChatMessagePatchByTs',
@@ -1804,7 +1869,7 @@ describe('selectComposerBusy', () => {
   })
 
   it('is busy on the live WS sub-agent signal even when the main turn is idle', () => {
-    // The regression this CR fixes: main idle but sub-agents running must queue.
+    // Main idle but sub-agents running must still queue.
     const state = reducer(withSlot, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 't', agent: '' }))
     expect(selectComposerBusy(wrap(state), 'slot-1')).toBe(true)
   })

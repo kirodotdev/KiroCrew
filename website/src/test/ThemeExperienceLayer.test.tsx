@@ -173,8 +173,8 @@ describe('ThemeExperienceLayer', () => {
     if (topbar?.contentWindow) {
       // A malicious runtime resize far beyond the 200px topbar ceiling must be
       // clamped — the topbar is click-through (pointer-events:none) but a
-      // full-width z=45 strip must still not grow to cover the viewport (arbiter
-      // MEDIUM). Height is clamped by its declared ceiling regardless.
+      // full-width z=45 strip must still not grow to cover the viewport.
+      // Height is clamped by its declared ceiling regardless.
       window.dispatchEvent(
         new MessageEvent('message', {
           data: { type: 'theme:resize', height: 9999 },

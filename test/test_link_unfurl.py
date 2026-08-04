@@ -718,36 +718,312 @@ def test_oversized_icon_is_dropped_end_to_end(monkeypatch) -> None:
 # --- endpoint: body caps ---------------------------------------------------
 
 
+def _raw(body: bytes, headers: Optional[Dict[str, str]] = None) -> Tuple[Any, List[int]]:
+    """A ``_RawResponse`` over *body* plus a list recording bytes yielded.
+
+    The recorder is what proves the cap stops pulling from the socket instead of
+    draining the whole body and trimming afterwards.
+    """
+    served: List[int] = []
+
+    async def _chunks() -> AsyncIterator[bytes]:
+        for i in range(0, max(len(body), 1), 8192):
+            chunk = body[i : i + 8192]
+            served.append(len(chunk))
+            yield chunk
+
+    return lm._RawResponse(status=200, headers=headers or {}, chunks=_chunks()), served
+
+
+def test_read_capped_truncates_a_page_to_the_cap() -> None:
+    """A page over the cap yields exactly the cap, reports the cut, and stops."""
+    payload = b"<html><head><title>t</title></head><body>" + b"A" * (lu.MAX_BODY_BYTES + 40960)
+    raw, served = _raw(payload)
+    body, cut = _run(lm._read_capped(raw, lu.MAX_BODY_BYTES, truncate=True))
+    assert (len(body), cut) == (lu.MAX_BODY_BYTES, True)
+    # Reading stopped on the chunk that crossed the cap — chunk granularity is as
+    # tight as a stream read gets — rather than draining the body and trimming.
+    assert sum(served) <= lu.MAX_BODY_BYTES + 8192 < len(payload)
+
+
+def test_read_capped_keeps_a_body_that_ends_exactly_at_the_cap() -> None:
+    """A body of exactly the cap is not a cut, so the caller's guard stays off."""
+    raw, served = _raw(b"A" * lu.MAX_BODY_BYTES)
+    body, cut = _run(lm._read_capped(raw, lu.MAX_BODY_BYTES, truncate=True))
+    assert (len(body), cut) == (lu.MAX_BODY_BYTES, False)
+    assert sum(served) == lu.MAX_BODY_BYTES
+
+
+def test_read_capped_ignores_an_honest_oversized_length_when_truncating() -> None:
+    """A page's declared length is not an early exit — only the read is a bound.
+
+    Amazon-shaped responses declare (or chunk) far more than the cap while their
+    ``<head>`` is tiny; short-circuiting on the header threw those away without
+    reading a byte.
+    """
+    raw, _served = _raw(b"tiny", {"Content-Length": str(lu.MAX_BODY_BYTES + 1)})
+    assert _run(lm._read_capped(raw, lu.MAX_BODY_BYTES, truncate=True)) == (b"tiny", False)
+
+
+def test_read_capped_rejects_an_oversized_icon() -> None:
+    """An icon is never truncated: half a PNG is corrupt, not smaller."""
+    raw, _served = _raw(b"x" * (lu.MAX_ICON_BYTES + 4096))
+    with pytest.raises(lm._UnfurlFailed):
+        _run(lm._read_capped(raw, lu.MAX_ICON_BYTES, truncate=False))
+
+
+def test_read_capped_accepts_an_icon_exactly_at_the_cap() -> None:
+    raw, _served = _raw(b"x" * lu.MAX_ICON_BYTES)
+    body, cut = _run(lm._read_capped(raw, lu.MAX_ICON_BYTES, truncate=False))
+    assert (len(body), cut) == (lu.MAX_ICON_BYTES, False)
+
+
+def test_read_capped_short_circuits_an_honest_oversized_icon_length() -> None:
+    raw, served = _raw(b"tiny", {"Content-Length": str(lu.MAX_ICON_BYTES + 1)})
+    with pytest.raises(lm._UnfurlFailed):
+        _run(lm._read_capped(raw, lu.MAX_ICON_BYTES, truncate=False))
+    assert served == []  # refused on the header, nothing read
+
+
+def test_oversized_page_is_previewed_from_its_head(monkeypatch) -> None:
+    """The bug this fixes: a page far over the cap still unfurls.
+
+    ``<head>`` arrives in the first few KB, so a 700 KB homepage (amazon.com's
+    shape) has delivered the whole preview long before the 256 KiB cap. It used
+    to 502 — indistinguishable, in the UI, from the feature being off.
+    """
+    page = (
+        b"<html><head><title>Amazon.com. Spend less. Smile more.</title>"
+        b'<meta name="description" content="Free shipping on millions of items.">'
+        b"</head><body>" + b"A" * (lu.MAX_BODY_BYTES * 3) + b"</body></html>"
+    )
+    _install(
+        monkeypatch,
+        {
+            "https://example.com/big": (200, _HTML_HEADERS, page),
+            "https://example.com/favicon.ico": (404, {}, b""),
+        },
+    )
+    status, body = _run(_call("https://example.com/big"))
+    assert status == 200
+    assert body["title"] == "Amazon.com. Spend less. Smile more."
+    assert body["description"] == "Free shipping on millions of items."
+
+
+def test_page_whose_head_overruns_the_cap_is_a_502(monkeypatch) -> None:
+    """A cut that took the metadata with it must not cache a titleless card.
+
+    502 puts it on the 10 min negative TTL; a 200 would pin an empty preview for
+    the 6 h positive TTL.
+    """
+    _install(
+        monkeypatch,
+        {
+            "https://example.com/fathead": (
+                200,
+                _HTML_HEADERS,
+                b"<html><head><style>" + b"z" * (lu.MAX_BODY_BYTES + 4096),
+            )
+        },
+    )
+    status, body = _run(_call("https://example.com/fathead"))
+    assert (status, body) == (502, {"code": "fetch_failed"})
+
+
+def test_head_end_markers_inside_a_script_do_not_pass_the_cut_guard(monkeypatch) -> None:
+    """The guard is the parser's verdict, not a byte search.
+
+    A fat head containing the literal ``</head>``/``<body>`` inside a `<script>`
+    would satisfy any byte-pattern check while `_HeadParser` — correctly — treats
+    them as script data and never leaves the head. The real `<title>` is past the
+    cut, so this must fail, not return an empty-title 200.
+    """
+    _install(
+        monkeypatch,
+        {
+            "https://example.com/tricky": (
+                200,
+                _HTML_HEADERS,
+                b"<html><head><script>var s = '</head><body>';"
+                + b"//" + b"z" * (lu.MAX_BODY_BYTES + 4096)
+                + b"</script><title>Never read</title></head>",
+            )
+        },
+    )
+    status, body = _run(_call("https://example.com/tricky"))
+    assert (status, body) == (502, {"code": "fetch_failed"})
+
+
+def test_title_straddling_the_cap_is_not_served_as_a_fragment(monkeypatch) -> None:
+    """A cut INSIDE `<title>` leaves a word-fragment that reads like a real title.
+
+    `<title>` never closes in the prefix, so `title_complete` is False and the page
+    takes the negative TTL instead of caching "Real Titl" for six hours. The whole
+    point of asking the parser: the fragment is non-empty, so a "did we get *a*
+    title" check would have accepted it.
+    """
+    filler = b"z" * (lu.MAX_BODY_BYTES - 40)
+    page = b"<html><head><!--" + filler + b"--><title>Real Title Here</title></head>"
+    _install(monkeypatch, {"https://example.com/straddle": (200, _HTML_HEADERS, page)})
+    status, body = _run(_call("https://example.com/straddle"))
+    assert (status, body) == (502, {"code": "fetch_failed"})
+
+
+def test_extract_meta_reports_whether_the_title_closed() -> None:
+    """`title_complete` is the parser's own verdict, per source of the title."""
+    closed = lu.extract_meta("<html><head><title>Done</title>", base_url="https://e.com/")
+    assert (closed.title, closed.title_complete) == ("Done", True)
+
+    open_tag = lu.extract_meta("<html><head><title>Half wa", base_url="https://e.com/")
+    assert (open_tag.title, open_tag.title_complete) == ("Half wa", False)
+
+    # An `og:title` lives in an attribute: it parses whole or not at all.
+    og = lu.extract_meta(
+        '<html><head><meta property="og:title" content="Whole">', base_url="https://e.com/"
+    )
+    assert (og.title, og.title_complete) == ("Whole", True)
+
+    none = lu.extract_meta("<html><head>", base_url="https://e.com/")
+    assert (none.title, none.title_complete) == ("", False)
+
+
+@pytest.mark.parametrize(
+    "html,expected_complete",
+    [
+        # A stray `</title>` before any `<title>` must not credit the later,
+        # unterminated element with the earlier close.
+        ("<html><head></title><title>Frag", False),
+        # Nor may a *previous* element's close carry over to a new one.
+        ("<html><head><title>First</title><title>Frag", False),
+        # Closed but empty is not a usable title, so it cannot be "complete".
+        ("<html><head><title></title>", False),
+        ("<html><head><title/>", False),
+        # Two closed elements: whatever the concatenation, nothing was cut.
+        ("<html><head><title>A</title><title>B</title>", True),
+    ],
+)
+def test_title_completeness_is_not_fooled_by_stray_or_repeated_tags(
+    html: str, expected_complete: bool
+) -> None:
+    assert lu.extract_meta(html, base_url="https://e.com/").title_complete is expected_complete
+
+
+_STRAY_CLOSE_SHAPES = {
+    # `</title>` arrives first, then the real element is cut mid-text.
+    "unmatched_close": b"<html><head></title><!--",
+    # A complete first title, then a second one cut mid-text.
+    "second_title": b"<html><head><title>First</title><!--",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_STRAY_CLOSE_SHAPES))
+def test_cut_title_after_a_stray_close_is_a_502(monkeypatch, shape: str) -> None:
+    """A close that did not terminate THIS title must not license a fragment."""
+    prefix = _STRAY_CLOSE_SHAPES[shape]
+    opener = b"--><title>"
+    # Land the cap five bytes into the title text, so the prefix ends mid-word and
+    # the element never closes: `...<title>Real`.
+    filler = b"z" * (lu.MAX_BODY_BYTES - len(prefix) - len(opener) - 5)
+    page = prefix + filler + opener + b"Real Title Here</title></head>"
+    _install(monkeypatch, {"https://example.com/stray": (200, _HTML_HEADERS, page)})
+    status, body = _run(_call("https://example.com/stray"))
+    assert (status, body) == (502, {"code": "fetch_failed"})
+
+
+def test_untruncated_page_with_no_title_still_previews(monkeypatch) -> None:
+    """`cut` is what gates the guard: a genuinely titleless small page is fine."""
+    _install(
+        monkeypatch,
+        {
+            "https://example.com/bare": (200, _HTML_HEADERS, b"<html><head></head><body>hi"),
+            "https://example.com/favicon.ico": (404, {}, b""),
+        },
+    )
+    status, body = _run(_call("https://example.com/bare"))
+    assert (status, body["title"], body["domain"]) == (200, "", "example.com")
+
+
+#: Head prefixes in which a literal ``</head>``/``<body>`` sits somewhere
+#: `_HeadParser` treats as data, so a byte search would wrongly clear them.
+_FAT_HEAD_DECOY_PREFIXES = {
+    "comment": b"<html><head><!-- </head><body> ",
+    "attribute": b'<html><head><meta name="a" content="</head><body>"><style>',
+    "style": b"<html><head><style>a{}</head><body>{}",
+}
+
+
+def _fat_head(prefix: bytes) -> bytes:
+    """*prefix*, filler past the cap, then the real title — which is never read."""
+    return prefix + b"z" * (lu.MAX_BODY_BYTES + 4096) + b"<title>Never read</title>"
+
+
+@pytest.mark.parametrize("shape", sorted(_FAT_HEAD_DECOY_PREFIXES))
+def test_fat_head_with_a_decoy_marker_is_a_502(monkeypatch, shape: str) -> None:
+    page = _fat_head(_FAT_HEAD_DECOY_PREFIXES[shape])
+    _install(monkeypatch, {"https://example.com/decoy": (200, _HTML_HEADERS, page)})
+    status, body = _run(_call("https://example.com/decoy"))
+    assert (status, body) == (502, {"code": "fetch_failed"})
+
+
+#: Truncated pages that DO carry their metadata before the cut. Each names the
+#: shape that could be mis-rejected by a stricter guard.
+_TRUNCATED_BUT_TITLED = {
+    # `<body/>` as the sole head terminator — a byte pattern keyed on `<body[\s>]`
+    # misses the self-closing form and would reject this.
+    "self_closing_body": (
+        b"<html><head><title>Ok</title><body/>" + b"A" * (lu.MAX_BODY_BYTES + 4096),
+        "Ok",
+    ),
+    # No `<title>` at all, but an `og:title` — `extract_meta` prefers og, so the
+    # preview is complete and the cut is harmless.
+    "og_title_only": (
+        b'<html><head><meta property="og:title" content="Via OG"><style>'
+        + b"z" * (lu.MAX_BODY_BYTES + 4096),
+        "Via OG",
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_TRUNCATED_BUT_TITLED))
+def test_truncated_page_keeps_its_preview_when_the_title_arrived(
+    monkeypatch, shape: str
+) -> None:
+    page, expected = _TRUNCATED_BUT_TITLED[shape]
+    _install(
+        monkeypatch,
+        {
+            "https://example.com/cut": (200, _HTML_HEADERS, page),
+            "https://example.com/favicon.ico": (404, {}, b""),
+        },
+    )
+    status, body = _run(_call("https://example.com/cut"))
+    assert (status, body["title"]) == (200, expected)
+
+
 def test_oversized_body_with_lying_content_length(monkeypatch) -> None:
-    """A truthful-looking small Content-Length must not raise the real bound."""
+    """A truthful-looking small Content-Length must not raise the real bound.
+
+    The header claims 42 bytes and the body is 260 KB. The read cap — not the
+    header — is what bounds it, so this succeeds off the truncated prefix.
+    """
     transport = _install(
         monkeypatch,
         {
             "https://example.com/big": (
                 200,
                 {"Content-Type": "text/html", "Content-Length": "42"},
-                b"<title>x</title>" + b"A" * (lu.MAX_BODY_BYTES + 4096),
-            )
+                b"<html><head><title>x</title></head><body>"
+                + b"A" * (lu.MAX_BODY_BYTES + 4096),
+            ),
+            "https://example.com/favicon.ico": (404, {}, b""),
         },
     )
     status, body = _run(_call("https://example.com/big"))
-    assert (status, body) == (502, {"code": "fetch_failed"})
-    assert transport.fetch_count == 1
-
-
-def test_honest_oversized_content_length_short_circuits(monkeypatch) -> None:
-    _install(
-        monkeypatch,
-        {
-            "https://example.com/big": (
-                200,
-                {"Content-Type": "text/html", "Content-Length": str(lu.MAX_BODY_BYTES + 1)},
-                b"tiny",
-            )
-        },
-    )
-    status, body = _run(_call("https://example.com/big"))
-    assert (status, body) == (502, {"code": "fetch_failed"})
+    assert (status, body["title"]) == (200, "x")
+    assert transport.requested == [
+        "https://example.com/big",
+        "https://example.com/favicon.ico",
+    ]
 
 
 def test_body_at_cap_is_accepted(monkeypatch) -> None:

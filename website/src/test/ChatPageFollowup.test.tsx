@@ -3,7 +3,7 @@
  *
  * The card component and the reducers are covered in FollowUpCard.test.tsx; what
  * is only reachable from the page is the ORDER and the failure handling of the
- * multi-step handoff (GPT review, PR #461 round 8): create the worktree, open a
+ * multi-step handoff: create the worktree, open a
  * session, scope it to the new directory, activate it, and only then prefill —
  * with the session deleted again if scoping fails, so a retry cannot accumulate
  * wrongly-scoped sessions.
@@ -160,9 +160,10 @@ describe('ChatPage follow-up worktree orchestration', () => {
   })
 
   it('does not activate the new session until scoping has completed', async () => {
-    // Round 9 HIGH: createSlot used to activate immediately, so the composer went
-    // live while chatSlotProject was still pending — a turn sent in that window
-    // would run in the DEFAULT directory, not the worktree.
+    // The new session must not activate until scoping completes: activating
+    // immediately would take the composer live while chatSlotProject is still
+    // pending, and a turn sent in that window would run in the DEFAULT
+    // directory, not the worktree.
     let releaseScope: (() => void) | undefined
     ;(api.chatSlotProject as ReturnType<typeof vi.fn>).mockImplementation(
       () => new Promise<void>(res => { releaseScope = () => res() }),
@@ -173,7 +174,7 @@ describe('ChatPage follow-up worktree orchestration', () => {
     await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalled())
     // Scoping is still in flight: the ORIGIN session is still active AND the new
     // slot is not published yet, so it cannot be selected from the sidebar and
-    // sent to while its CWD is still the default checkout (round 10 HIGH).
+    // sent to while its CWD is still the default checkout.
     expect(store.getState().chat.activeSlot).toBe('chat-1')
     expect(store.getState().dashboard.slots.map(s => s.key)).not.toContain('chat-2')
     releaseScope?.()
@@ -214,8 +215,8 @@ describe('ChatPage follow-up worktree orchestration', () => {
   })
 
   it('appends to an unsent draft instead of destroying it', async () => {
-    // Round 13 BLOCKING: the pending-input path replaces AND persists the draft,
-    // so a plain set discarded whatever the user was mid-way through typing.
+    // The pending-input path replaces AND persists the draft, so a plain set
+    // would discard whatever the user was mid-way through typing.
     const store = makeStore()
     await renderPage(store)
     fireEvent.change(composer(), { target: { value: 'half-written thought' } })

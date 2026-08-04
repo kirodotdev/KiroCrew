@@ -277,20 +277,31 @@ def workspace_root() -> Path:
     return _resolve_workspace_root(base / _WORKSPACE_DIR_NAME)
 
 
-def _safe_int(value: object, default: int) -> int:
+def _safe_int(value: object, default: int, lo: int | None = None, hi: int | None = None) -> int:
     """Convert a legacy numeric config value or return *default* on failure.
 
     Existing config files may contain numeric strings or integral floats from
     older writers. Preserve that compatibility while rejecting booleans.
+
+    *lo*/*hi* clamp the result, mirroring :func:`_safe_float`. Pass them for any
+    bounded knob: ``_clamp_security_bounds`` runs over the raw dict and skips
+    non-int values, so a numeric STRING (``"1"``) slips past it and then
+    coerces here — clamping at the coercion site is what actually enforces the
+    declared range.
     """
     if isinstance(value, bool):
         return default
     if isinstance(value, float) and not value.is_integer():
         return default
     try:
-        return int(value)  # type: ignore[call-overload]
+        result = int(value)  # type: ignore[call-overload]
     except (TypeError, ValueError, OverflowError):
-        return default
+        result = default
+    if lo is not None:
+        result = max(lo, result)
+    if hi is not None:
+        result = min(hi, result)
+    return result
 
 
 def _safe_nonnegative_int(value: object, default: int) -> int:
@@ -693,12 +704,11 @@ _VALID_JAIL_MODES = (JAIL_MODE_AUTO, JAIL_MODE_ON, JAIL_MODE_OFF)
 
 # Standard work-tree roots for ``agent.subagent_cwd_allowed_roots``.  Single
 # source of truth shared by the field default and the fallback in ``from_dict``.
-# The two had drifted — the field default listed two roots, the fallback four —
-# and the FALLBACK was the value real configs got, because ``from_dict`` always
-# passes an explicit value and an absent key reaches the same branch as a
-# malformed one.  Four is therefore what the product actually shipped, so the
-# field default moves to match it.  Narrowing to two instead would revoke
-# ~/workspaces and ~/workplaces from every config that omits the field.
+# Both use the same four roots.  The fallback is the value real configs get:
+# ``from_dict`` always passes an explicit value and an absent key reaches the
+# same branch as a malformed one.  Four is what the product ships; narrowing to
+# two would revoke ~/workspaces and ~/workplaces from every config that omits
+# the field.
 DEFAULT_CWD_ALLOWED_ROOTS = [
     "~/workspace",
     "~/workspaces",
@@ -795,15 +805,36 @@ class AgentConfig:
             enum=list(_VALID_JAIL_MODES),
         ),
     )
-    yolo: bool = field(
+    dangerously_skip_permissions: bool = field(
         default=False,
-        metadata=_meta("YOLO Mode", "Skip tool approval confirmations."),
+        metadata=_meta(
+            "Dangerously Skip Permissions",
+            "Skip EVERY tool approval confirmation, permanently. Declaring it here "
+            "is a standing instruction: the grant does not expire and is "
+            "re-established on every startup. This is the advanced, "
+            "config-file-only escape hatch — there is deliberately no dashboard "
+            "toggle for it. An enterprise policy can forbid it, which falls back "
+            "to the ad-hoc duration below.",
+        ),
+    )
+    yolo_duration: str = field(
+        default="6h",
+        metadata=_meta(
+            "Ad-hoc Auto-approve Duration",
+            "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from "
+            "the dashboard picker, Slack, or the API. Every one of those surfaces "
+            "uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or "
+            "until_shutdown to keep it on with no timed expiry until KiroCrew "
+            "restarts. Timed values are capped at 24h. Does NOT apply to a grant "
+            "declared via 'dangerously_skip_permissions' above, which persists.",
+            enum=["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
+        ),
     )
     notify_override_expiry: bool = field(
         default=True,
         metadata=_meta(
             "Notify on Override Expiry",
-            "DM the Slack owner when the time-limited safety override (YOLO) expires. "
+            "DM the Slack owner when a time-limited safety override (YOLO) expires. "
             "Disable to silence the recurring expiry DM; the dashboard banner still shows.",
         ),
     )
@@ -901,6 +932,18 @@ class AgentConfig:
             "SubAgent Memory Buffer %",
             "Percent of available memory and CPU reserved for the OS and other "
             "processes when auto-sizing the subagent cap (max_subagents=0).",
+        ),
+    )
+    chat_turn_timeout_secs: int = field(
+        default=7200,
+        metadata=_meta(
+            "Chat Turn Timeout (secs)",
+            "Wall-clock ceiling for one chat turn. This is a runaway backstop, "
+            "so it is clamped to 300s..7200s (2h) and can never be disabled. "
+            "Long babysit and monitoring turns approach the default, so hitting "
+            "it is no longer silent: the turn ends with a visible card naming "
+            "the limit. Values above the ACP transport's own prompt timeout are "
+            "clamped, because the transport bounds the turn first.",
         ),
     )
     subagent_cost_gb: float = field(
@@ -1651,6 +1694,20 @@ class DashboardConfig:
             "Seconds to wait for MCP server handshake during probe (5-120).",
         ),
     )
+    loop_stall_exit_after_secs: int = field(
+        default=25,
+        metadata=_meta(
+            "Loop-stall Hard-exit Budget (secs)",
+            "Seconds the gateway's event loop may go silent before it dumps all "
+            "thread stacks and exits so systemd can restart it. Raise it on a "
+            "host that does heavy subprocess work (long builds, test suites, "
+            "many child reaps), which can wedge the loop briefly without being "
+            "genuinely dead. Clamped to 10s..300s. Note the desktop app's "
+            "liveness probe kills at roughly 20s independently, so a value "
+            "above that only takes effect for a headless gateway — the desktop "
+            "probe wins first and the stack dump is lost.",
+        ),
+    )
     widget_density: str = field(
         default="more",
         metadata=_meta(
@@ -1904,6 +1961,15 @@ class KiroCrewAgentConfig:
     description: str = field(
         default="",
         metadata=_meta("Description", "Human-readable agent description."),
+    )
+    triggers: str = field(
+        default="",
+        metadata=_meta(
+            "Triggers",
+            "Routing intent for orchestrator crew selection: free-text 'when to "
+            "use this crew' guidance the main agent reads via select_crew. A crew "
+            "with no triggers is not offered for selection.",
+        ),
     )
     source: str = field(
         default="kirocrew",
@@ -2285,7 +2351,7 @@ _JSON_TYPE_LABELS: dict[str, str] = {
 # ``session.py`` for ``pool_size``); they live HERE so the API-write gate and
 # the load-time clamp below cannot drift apart.
 #
-# Why the loader must also clamp (pentest — config-loader bound bypass): the
+# Why the loader must also clamp: the
 # REST API rejects out-of-range writes, but a direct edit of ``config.json``
 # (any process running as the same OS user — including a prompt-injected agent
 # with file-write access) bypassed that gate entirely. Each of these knobs
@@ -2300,6 +2366,24 @@ _JSON_TYPE_LABELS: dict[str, str] = {
 SUBAGENT_AUTO_MAX_CEILING = 64  # agent.subagent_auto_max — concurrent subagent ceiling
 SUBAGENT_MAX_TURNS_CEILING = 200  # agent.subagent_max_turns — per-subagent turn budget
 POOL_SIZE_MAX = 10  # session.pool_size — pre-warmed process pool
+
+# agent.chat_turn_timeout_secs — wall-clock ceiling for one chat turn. The max
+# matches the ACP transport's own per-prompt timeout (acp/client.py
+# ``_DEFAULT_PROMPT_TIMEOUT``): above it the transport bounds the turn first, so
+# a larger value would advertise a limit the system does not honour. The floor
+# keeps a runaway backstop from being set so low it cuts ordinary work.
+CHAT_TURN_TIMEOUT_MIN = 300
+CHAT_TURN_TIMEOUT_MAX = 7200
+
+# dashboard.loop_stall_exit_after_secs — event-loop silence tolerated before the
+# gateway dumps all thread stacks and hard-exits for systemd to restart. The
+# floor keeps a stall from being declared faster than ordinary GC/IO pauses; the
+# ceiling keeps a wedged gateway from sitting unrecoverable for minutes. Above
+# ~20s the desktop app's own liveness probe kills first and the dump is lost,
+# which is a documented trade-off rather than a bound (a headless gateway has no
+# such probe), so it is not enforced here.
+LOOP_STALL_EXIT_AFTER_MIN = 10
+LOOP_STALL_EXIT_AFTER_MAX = 300
 
 # agent.max_subagents fixed-pin floor. 0 is the "auto-size" sentinel; any other
 # (explicit) value must be >= this floor. A pin of 1 or 2 would silently DISABLE
@@ -2319,6 +2403,8 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "subagent_auto_max", 3, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "subagent_max_turns", 1, SUBAGENT_MAX_TURNS_CEILING),
+    ("agent", "chat_turn_timeout_secs", CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX),
+    ("dashboard", "loop_stall_exit_after_secs", LOOP_STALL_EXIT_AFTER_MIN, LOOP_STALL_EXIT_AFTER_MAX),
     ("session", "pool_size", 0, POOL_SIZE_MAX),
 )
 
@@ -2532,6 +2618,60 @@ def _validated_completion_keep(value: object) -> str:
     raise ValueError(
         f"agent.completion_keep must be one of {list(_VALID_COMPLETION_KEEP)}, " f"got {value!r}"
     )
+
+
+_YOLO_DURATION_SECS: dict[str, int] = {
+    "30m": 1800,
+    "1h": 3600,
+    "6h": 21600,
+    "12h": 43200,
+    "24h": 86400,
+}
+_YOLO_DURATION_DEFAULT = "6h"
+# Not a timed value: an ad-hoc grant that stays on with no expiry until the
+# gateway process stops. In-memory only, so it cannot survive a restart.
+YOLO_UNTIL_SHUTDOWN = "until_shutdown"
+
+
+def _read_skip_permissions(agent_data: dict) -> bool:
+    """Read the standing auto-approve declaration, honouring older spellings.
+
+    The key was renamed from ``yolo`` so the config itself warns about what it
+    does. Canonical spelling is ``dangerously_skip_permissions`` — snake_case
+    like every other key in this file, which is also what ``save()`` writes, so
+    a save/load round-trip preserves it.
+
+    Two other spellings are accepted on read, most-specific first:
+    ``dangerouslySkipPermissions`` (the camelCase form used by other agent tools,
+    so a config copied from one still works) and the legacy ``yolo`` (so no
+    existing config silently loses auto-approve on upgrade).
+    """
+    for key in ("dangerously_skip_permissions", "dangerouslySkipPermissions", "yolo"):
+        if key in agent_data:
+            return bool(agent_data.get(key))
+    return False
+
+
+def _normalize_yolo_duration(value: object) -> str:
+    """Coerce ``agent.yolo_duration`` to a supported ad-hoc duration label.
+
+    Anything unrecognised (typo, removed value, wrong type) falls back to the
+    default rather than failing the whole config load — the value only widens or
+    narrows an already-bounded ad-hoc grant, and the 24h ceiling on timed values
+    is enforced independently in ``SafetyOverride``.
+    """
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in _YOLO_DURATION_SECS or v == YOLO_UNTIL_SHUTDOWN:
+            return v
+    return _YOLO_DURATION_DEFAULT
+
+
+def yolo_duration_to_secs(label: str) -> int:
+    """Seconds for a ``yolo_duration`` label; 0 means "no timed expiry"."""
+    if label == YOLO_UNTIL_SHUTDOWN:
+        return 0
+    return _YOLO_DURATION_SECS.get(label, _YOLO_DURATION_SECS[_YOLO_DURATION_DEFAULT])
 
 
 def _normalize_jail(value: object) -> str:
@@ -4079,12 +4219,16 @@ class KiroCrewConfig:
                     # raise AttributeError from the resolver instead of simply
                     # being ignored.
                     raw_model = entry.get("model", "")
+                    # Same guard as model: a non-string triggers (e.g. `1`) must
+                    # not survive load — select_crew's roster calls .strip() on it.
+                    raw_triggers = entry.get("triggers", "")
                     agents[name] = KiroCrewAgentConfig(
                         kiro_agent=entry.get("kiro_agent", ""),
                         workspace=entry.get("workspace", "default"),
                         memory_store=entry.get("memory_store", "default"),
                         model=raw_model if isinstance(raw_model, str) else "",
                         description=entry.get("description", ""),
+                        triggers=raw_triggers if isinstance(raw_triggers, str) else "",
                         source=entry.get("source", "kirocrew"),
                     )
 
@@ -4143,7 +4287,8 @@ class KiroCrewConfig:
                     agent_data.get("apps_allow_third_party", False), False
                 ),
                 jail=_normalize_jail(agent_data.get("jail", "auto")),
-                yolo=agent_data.get("yolo", False),
+                dangerously_skip_permissions=_read_skip_permissions(agent_data),
+                yolo_duration=_normalize_yolo_duration(agent_data.get("yolo_duration")),
                 notify_override_expiry=agent_data.get("notify_override_expiry", True),
                 conductor_skill=agent_data.get("conductor_skill", False),
                 tool_search=bool(agent_data.get("tool_search", True)),
@@ -4151,6 +4296,12 @@ class KiroCrewConfig:
                 max_subagents=agent_data.get("max_subagents", 0),
                 subagent_mem_buffer_pct=_safe_int(
                     agent_data.get("subagent_mem_buffer_pct", 20), 20
+                ),
+                chat_turn_timeout_secs=_safe_int(
+                    agent_data.get("chat_turn_timeout_secs", 7200),
+                    7200,
+                    CHAT_TURN_TIMEOUT_MIN,
+                    CHAT_TURN_TIMEOUT_MAX,
                 ),
                 subagent_cost_gb=_safe_float(agent_data.get("subagent_cost_gb", 0.5), 0.5),
                 subagent_cpu_cost_cores=_safe_float(
@@ -4235,11 +4386,11 @@ class KiroCrewConfig:
                 daily_reset_hour=_coerce_int(messaging_data.get("daily_reset_hour"), -1),
                 queue_mode=str(messaging_data.get("queue_mode", "steer")),
             ),
-            # orchestrator/watchdog were advertised in config-baseline.json and
-            # served by /api/config/schema, and real consumers read them
-            # (acp/session_handle.py, dashboard/chat_orchestrator.py), but load()
-            # never passed these kwargs — so config.json values were silently
-            # ignored and the dataclass defaults always won.
+            # orchestrator/watchdog are advertised in config-baseline.json,
+            # served by /api/config/schema, and read by real consumers
+            # (acp/session_handle.py, dashboard/chat_orchestrator.py), so load()
+            # passes these kwargs — without them config.json values would be
+            # silently ignored and the dataclass defaults would always win.
             orchestrator=OrchestratorConfig(
                 stage_timeout_seconds=_safe_int(
                     orchestrator_data.get("stage_timeout_seconds", 1800), 1800
@@ -4462,6 +4613,12 @@ class KiroCrewConfig:
                 mcp_probe_timeout_secs=_safe_int(
                     dashboard_data.get("mcp_probe_timeout_secs", 15), 15
                 ),
+                loop_stall_exit_after_secs=_safe_int(
+                    dashboard_data.get("loop_stall_exit_after_secs", 25),
+                    25,
+                    LOOP_STALL_EXIT_AFTER_MIN,
+                    LOOP_STALL_EXIT_AFTER_MAX,
+                ),
                 auto_open_browser=dashboard_data.get("auto_open_browser", True),
                 quick_send=dashboard_data.get("quick_send", False),
                 session_grid=dashboard_data.get("session_grid", False),
@@ -4516,8 +4673,8 @@ class KiroCrewConfig:
                 enabled=stt_data.get("enabled", False),
                 provider=_validated_stt_provider(stt_data.get("provider", "whisper")),
                 whisper_path=stt_data.get("whisper_path", ""),
-                # Default changed from "base" to "turbo" — turbo is faster and
-                # recommended for most users (809M vs 74M, but much better latency).
+                # Default "turbo" — faster and recommended for most users
+                # (809M vs 74M, but much better latency).
                 model=stt_data.get("model", "turbo"),
                 mlx_model=stt_data.get("mlx_model", "mlx-community/whisper-large-v3-turbo"),
                 device=stt_data.get("device", "cpu"),

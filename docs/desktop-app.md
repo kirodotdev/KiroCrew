@@ -421,6 +421,77 @@ a *different* app after a rebuild and re-prompt for grants you already gave.
 Distributing the signed + notarized DMG (above) keeps grants sticky across
 updates.
 
+### Device resources (microphone) need an ENTITLEMENT, not just a usage string
+
+Folder access above needs only consent. A **device** resource is different: under
+the hardened runtime the capability is granted by a `com.apple.security.device.*`
+entitlement, and the `Info.plist` usage string only supplies the prompt's
+wording. Get this wrong and the failure is deeply misleading:
+
+> **Symptom:** voice input reports *"Microphone permission denied"* instantly,
+> **no** system prompt ever appears, and there is no KiroCrew row under System
+> Settings › Privacy & Security › Microphone to switch on. The same mic works in
+> Chrome at the same origin on the same machine.
+
+Because under the hardened runtime the microphone requires
+`com.apple.security.device.audio-input` **in addition to** the usage string —
+without it access is refused and no prompt appears, so there is nothing to
+consent to and nothing to toggle. The entitlement is a Hardened Runtime
+*Resource Access* capability (Xcode's "Audio Input" checkbox), **not** an
+App-Sandbox-only key: this app is not sandboxed, and neither are Chrome, Slack
+or Zoom — all three are hardened-runtime, non-sandboxed, and all three ship
+audio-input. The usage string is not a substitute; both are load-bearing.
+
+It is worth being precise about *where* the capability lives, because the
+intuitive answer is wrong: in Chromium the audio capture runs in the **browser
+(main) process** — the renderer only requests it over IPC — and TCC attributes
+access to the responsible main bundle. Chrome's and Slack's *Renderer* helper
+apps carry no audio-input entitlement at all, and their microphones work. So the
+main bundle's `entitlements` is what matters; `entitlementsInherit` is set to the
+same file so helpers keep their JIT/library-validation keys.
+
+Two things follow, and both are pinned by `website/electron/test/packaging.test.js`:
+
+- **There are TWO signing lanes reading TWO different files.** electron-builder
+  signs local/dev builds with `website/electron/build/entitlements.mac.plist`;
+  the release lane signs with `packaging/signing/Entitlements.entitlements`. An
+  entitlement added to one and not the other ships a **broken bundle on the other
+  lane** — keep them in sync.
+- **The camera is deliberately absent.** `permission-handler.js` denies any
+  request that explicitly asks for video, so requesting the camera entitlement
+  would widen the TCC surface for a capability the app never uses.
+
+The prompt is also **one-shot**: once a user denies the mic, macOS never asks
+again. So `permission-handler.js` consults
+`getMediaAccessStatus('microphone')` on each request and branches —
+`not-determined` asks in-context (right when the user clicks the mic, rather than
+spending the single prompt at launch on an unrelated moment), while
+`denied`/`restricted` opens the Privacy pane via `showMicPermissionDialog()`,
+since the OS will not re-prompt on its own. Every failure mode in that probe
+fails **open**, so diagnosing permissions can never itself be what breaks the mic.
+The sinks (breadcrumb log, recovery dialog) are deliberately kept off the
+answer path: an earlier revision had them inside the promise chain upstream of a
+fail-open `.catch`, so a throwing logger turned a user's explicit **refusal into
+a grant**. Auditing must never be able to change a permission verdict.
+
+#### Developer gotcha: a stale TCC row survives a fix
+
+TCC rows are pinned to the app's **code-signing identity (cdhash)**, not just its
+bundle id — and ad-hoc local builds share one collapsed `Identifier=Electron`
+identity. So a machine that ran a dev build can hold a Microphone row for
+`com.amazon.kiro.crew` whose `csreq` matches a cdhash the Developer-ID release
+can never satisfy. The row reads *granted* in the TCC database and is still never
+honored, which looks exactly like the entitlement bug and survives fixing it.
+
+If the mic still fails after a rebuild, clear the row and let the app re-prompt:
+
+```bash
+tccutil reset Microphone com.amazon.kiro.crew
+```
+
+This is also why distributing the signed + notarized DMG matters (above): a
+stable identity is what keeps grants sticky instead of silently orphaning them.
+
 ## Remote tunnel mode
 
 The desktop app can also connect to a gateway running on a **remote** host (e.g.

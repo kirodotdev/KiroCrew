@@ -1,6 +1,6 @@
 /**
- * Tests for api.rewind — the new client method that calls the
- * /api/chat/slots/{slot}/rewind backend endpoint introduced in.
+ * Tests for api.rewind — the client method that calls the
+ * /api/chat/slots/{slot}/rewind backend endpoint.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

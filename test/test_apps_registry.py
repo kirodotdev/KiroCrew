@@ -370,3 +370,49 @@ async def test_install_script_timeout_routes_through_kill_process_group(monkeypa
     assert "timed out" in result["error"]
     # The timeout path routed through the reaping/escalating helper.
     assert kpg_calls == [proc]
+
+
+class TestMinimalEnvHonorsWindowsCaseInsensitivity:
+    """Windows env names are case-INSENSITIVE and `os.environ` upper-cases keys.
+
+    So `os.environ.items()` yields `SYSTEMROOT`, never the `SystemRoot` spelling
+    Microsoft documents and that the allowlist writes. A literal membership test
+    therefore dropped exactly the variables the list carries for Windows — silently
+    at the boundary, fatally in the child: a Windows process without `SystemRoot`
+    cannot resolve side-by-side assemblies and dies before `main()`.
+    """
+
+    def test_upper_cased_windows_keys_are_passed_through(self, monkeypatch) -> None:
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            registry.os,
+            "environ",
+            {"SYSTEMROOT": r"C:\Windows", "USERPROFILE": r"C:\Users\me", "TEMP": r"C:\Temp"},
+        )
+        env = registry.minimal_env()
+        assert env["SYSTEMROOT"] == r"C:\Windows"
+        assert env["USERPROFILE"] == r"C:\Users\me"
+        assert env["TEMP"] == r"C:\Temp"
+
+    def test_folding_did_not_admit_secrets(self, monkeypatch) -> None:
+        """The fold widens CASE, never the key set."""
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            registry.os,
+            "environ",
+            {"SYSTEMROOT": r"C:\Windows", "GITHUB_TOKEN": "ghp_x", "AWS_SECRET_ACCESS_KEY": "s"},
+        )
+        env = registry.minimal_env()
+        assert "GITHUB_TOKEN" not in env
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+
+    def test_posix_matching_stays_exact(self, monkeypatch) -> None:
+        """`PATH` and `Path` are DIFFERENT variables on POSIX.
+
+        Folding there would let a lookalike through, so the fold is Windows-only.
+        """
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(registry.os, "environ", {"PATH": "/usr/bin", "Path": "/sneaky"})
+        env = registry.minimal_env()
+        assert env["PATH"] == "/usr/bin"
+        assert "Path" not in env

@@ -19,9 +19,8 @@ import { CommentPopover } from './CommentOverlay'
  *
  * This is the SAME experience as the artifact detail page (overlay highlights,
  * gutter bubbles, floating thread popover, chronological sidebar) — the file
- * viewer uses it for file-backed artifacts instead of its legacy local-draft +
- * "Submit All to chat" system. Comments persist in the artifact store and are
- * never dumped to chat (Option 1: unify for artifact-backed files).
+ * viewer uses it for file-backed artifacts. Comments persist in the artifact
+ * store and are never dumped to chat.
  *
  * `requestAnchoredComment()` opens the create popover for the current text
  * selection — call it from the viewer's existing "Comment" selection action so

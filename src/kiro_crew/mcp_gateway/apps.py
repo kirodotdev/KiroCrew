@@ -58,8 +58,8 @@ MARKER_SUFFIX = "]"
 SCHEMA_VERSION = SPOOL_SCHEMA_VERSION
 
 # The ``ui`` extension writes the resource reference under ``_meta.ui`` per
-# SEP-1865; an earlier draft used a flat ``_meta["ui/resourceUri"]`` key which
-# we still read for backwards compatibility.
+# SEP-1865; a flat ``_meta["ui/resourceUri"]`` key is also read for
+# backwards compatibility with an earlier draft.
 _DEPRECATED_FLAT_URI_KEY = "ui/resourceUri"
 _UI_SCHEME = "ui://"
 
@@ -133,7 +133,7 @@ def write_spool(payload: dict) -> str:
         "server": payload.get("server", ""),
         "tool": payload.get("tool", ""),
         "session_key": payload.get("session_key", ""),
-        # Callback capability secret (#418): split from the render id so the
+        # Callback capability secret: split from the render id so the
         # model-visible marker (which carries only ``spool_id``) authorizes
         # NOTHING. This high-entropy secret is delivered ONLY over the
         # owner-only WS render frame and is REQUIRED to authorize any

@@ -29,7 +29,7 @@ describe('sseMcpAppRender reducer', () => {
       spool_id: 'uuid-1',
     })
     // The bare tool_call_id is NOT a key — cross-session reuse of an ACP id
-    // can never collide (GPT 5.6 finding: session-scoped keying).
+    // can never collide.
     expect(store.getState().chat.mcpApps['call-abc']).toBeUndefined()
   })
 

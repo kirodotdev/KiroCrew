@@ -13,6 +13,16 @@ export interface StatusData {
   commit?: string
   platform?: string
   yolo?: boolean
+  /** ISO timestamp when the current timed auto-approve grant expires ("" when none). */
+  yolo_expires_at?: string
+  /** Seconds left on the grant; -1 when it has no timed expiry. */
+  yolo_remaining_secs?: number
+  /** True when the active grant has no timed expiry (declared in config, or until_shutdown). */
+  yolo_until_shutdown?: boolean
+  /** Configured ad-hoc duration: a timed label, or 'until_shutdown'. */
+  yolo_duration?: '30m' | '1h' | '6h' | '12h' | '24h' | 'until_shutdown'
+  /** Whether enterprise governance currently allows the until_shutdown option. */
+  yolo_until_shutdown_permitted?: boolean
   no_crons?: boolean
   /** True when the gateway has a live Slack (Socket Mode) connection. */
   slack_connected?: boolean
@@ -232,9 +242,13 @@ export interface McpScopePresence {
 
 export interface McpServer {
   name: string; command: string; args?: string[]
+  url?: string
   status: string; error?: string; tools?: string[]
   source: string; enabled: boolean; disabledTools?: string[]
   presence?: McpScopePresence
+  /** Optional status-enrichment fields supplied by newer runtimes. */
+  accountLabel?: string
+  connectedSince?: string
   /** True when the entry lives in KiroCrew's own mcp.json — the scope the
    *  Edit JSON action reads and writes (consent-disabled rows included). */
   kirocrewManaged?: boolean
@@ -699,9 +713,9 @@ export interface Artifact {
   slug: string
   name: string
   kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp'
-  /** Provenance/origin bucket. Historically chat|cron|subagent|manual|import;
-   * now also carries the actual session origin (dashboard|slack|cli|task-runner|
-   * unknown), so treated as an open string. */
+  /** Provenance/origin bucket. Carries either a legacy bucket
+   * (chat|cron|subagent|manual|import) or the actual session origin
+   * (dashboard|slack|cli|task-runner|unknown), so treated as an open string. */
   source: string
   /** Originating chat session key (for the Source column's title resolution). */
   session_key?: string
@@ -718,8 +732,7 @@ export interface Artifact {
   source_path?: string
   /** True when the live state differs from the latest numbered snapshot.
    * Computed at GET time — accounts for both silent saves and external
-   * file edits to source_path. Drives the "Snapshot Live" button
-   * (round 6). */
+   * file edits to source_path. Drives the "Snapshot Live" button. */
   live_dirty?: boolean
   /** Publication state. Absent/null until the artifact has been
    * published to a sharing provider. */
@@ -736,6 +749,17 @@ export interface Artifact {
   /** User pin/favorite mark. Metadata-only (no version bump). Drives the
    * All | Pinned filter on the Artifacts page. */
   pinned?: boolean
+  /** True when the store created this record itself from a chat-emitted
+   * `<mcwidget>` rather than from an explicit save. Serialized straight off the
+   * backend dataclass field of the same name (`Artifact.to_dict` is an
+   * `asdict`, so every list/detail response already carried it — only this type
+   * was missing it). Load-bearing for the chat Artifacts panel: the store
+   * sweeps auto-registered records oldest-first past
+   * `MAX_AUTO_WIDGET_ARTIFACTS` (200) unless `pinned`, so an
+   * auto-registered-and-unpinned artifact is the ONLY one whose survival a
+   * "save permanently" action changes. Absent on older payloads — treat
+   * undefined as false. */
+  auto_registered?: boolean
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
   webapp_metadata?: WebAppMetadata
 }

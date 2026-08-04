@@ -1,11 +1,10 @@
 /**
  * A day-part word inside the user's own words is never a time.
  *
- * THIRD instance of one shape, so this asserts the invariant across the WHOLE table
- * rather than the reported string:
+ * Asserts the invariant across the WHOLE table. Example failure shapes:
  *
- *   round 3  bare 晚 inside 晚班    -> 交晚班报告 saved as 交班报告
- *   round 5  下午 inside 下午茶     -> 提醒我买下午茶 saved as 买茶 at 15:00
+ *   bare 晚 inside 晚班    -> 交晚班报告 saved as 交班报告
+ *   下午 inside 下午茶     -> 提醒我买下午茶 saved as 买茶 at 15:00
  *
  * Matched day parts are BLANKED out of the saved text, so a match inside a compound
  * does not mis-schedule the reminder — it rewrites what the user typed. The guard is
@@ -64,8 +63,8 @@ describe('real time phrases still resolve', () => {
   })
 
   it('a day part with an explicit clock is unaffected by the guard', () => {
-    // These go through the clock scans, which always required a clock and so were
-    // never part of this bug — pinned so the guard cannot regress them.
+    // These go through the clock scans, which always require a clock — pinned
+    // so the guard cannot regress them.
     for (const [input, hour] of [['下午三点提醒我吃药', 15], ['晚上八点提醒我吃药', 20]] as const) {
       const r = parse(input)
       expect(r!.text).toBe('吃药')

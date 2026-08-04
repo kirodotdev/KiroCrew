@@ -1,11 +1,9 @@
 /**
- * Chat sidebar "needs you" surfacing (converged design):
- * the per-row blue dot is redefined to mean "the agent finished its turn and you
- * haven't opened the session" (finished + unread), not "any unseen output" — it
- * no longer lights mid-stream; a pending tool approval shows a yellow "Needs
- * approval" subtitle instead (and suppresses the blue dot), and running / read /
- * idle rows show nothing. (The separate "Needs you" filter was dropped — it
- * overlapped the existing Unread filter.)
+ * Chat sidebar "needs you" surfacing:
+ * the per-row blue dot means "the agent finished its turn and you haven't opened
+ * the session" (finished + unread); it does not light mid-stream. A pending tool
+ * approval shows a yellow "Needs approval" subtitle instead (and suppresses the
+ * blue dot), and running / read / idle rows show nothing.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render } from '@testing-library/react'

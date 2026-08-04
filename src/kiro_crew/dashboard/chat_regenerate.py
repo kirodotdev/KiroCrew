@@ -72,7 +72,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         slot._resumed_count = 0
         # Window was truncated → next save MUST be the archive-safe rewrite path.
         # If the inline save below fails, the flag keeps the flush loop on the
-        # rewrite path so the dropped tail is still archived (#3).
+        # rewrite path so the dropped tail is still archived.
         slot._pending_rewrite = True
         slot._pending_variants = variants
 

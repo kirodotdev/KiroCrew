@@ -65,20 +65,20 @@ describe('InstancesPanel', () => {
     renderWithProviders(<InstancesPanel />)
 
     await screen.findByText(/No remote crews configured yet/i)
-    await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Shizuka')
-    await u.type(screen.getByPlaceholderText('host-1-alias'), 'shizuka-alias')
+    await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Nimbus')
+    await u.type(screen.getByPlaceholderText('host-1-alias'), 'nimbus-alias')
     await u.type(
       screen.getByPlaceholderText(/leave blank for standard installs/i),
-      '/home/shizuka/.local/bin/kirocrew',
+      '/home/nimbus/.local/bin/kirocrew',
     )
     await u.click(screen.getByRole('button', { name: 'Add remote crew' }))
 
     await waitFor(() =>
       expect(api.addInstance).toHaveBeenCalledWith(
         expect.objectContaining({
-          name: 'Shizuka',
-          ssh_host: 'shizuka-alias',
-          remote_bin: '/home/shizuka/.local/bin/kirocrew',
+          name: 'Nimbus',
+          ssh_host: 'nimbus-alias',
+          remote_bin: '/home/nimbus/.local/bin/kirocrew',
         }),
       ),
     )

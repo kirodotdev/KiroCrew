@@ -933,23 +933,23 @@ class TestMatchesTrustedPatternPiped:
     """Piped commands: each segment checked independently, ALL must match."""
 
     def test_all_segments_match(self):
-        patterns = {"cat /etc/*", "grep /Users/n*"}
-        cmd = "Running: cat /etc/hosts | grep /Users/nikhim"
+        patterns = {"cat /etc/*", "grep /Users/a*"}
+        cmd = "Running: cat /etc/hosts | grep /Users/alice"
         assert _matches_trusted_pattern(cmd, patterns) is not None
 
     def test_one_segment_fails(self):
-        patterns = {"cat /etc/*", "grep /Users/n*"}
-        cmd = "Running: cat /etc/hosts | grep /Users/zoozoo"
+        patterns = {"cat /etc/*", "grep /Users/a*"}
+        cmd = "Running: cat /etc/hosts | grep /Users/bob"
         assert _matches_trusted_pattern(cmd, patterns) is None
 
     def test_first_segment_fails(self):
-        patterns = {"cat /etc/*", "grep /Users/n*"}
-        cmd = "Running: cat /var/log/syslog | grep /Users/nikhim"
+        patterns = {"cat /etc/*", "grep /Users/a*"}
+        cmd = "Running: cat /var/log/syslog | grep /Users/alice"
         assert _matches_trusted_pattern(cmd, patterns) is None
 
     def test_both_segments_fail(self):
-        patterns = {"cat /etc/*", "grep /Users/n*"}
-        cmd = "Running: cat /var/log/syslog | grep /Users/zoozoo"
+        patterns = {"cat /etc/*", "grep /Users/a*"}
+        cmd = "Running: cat /var/log/syslog | grep /Users/bob"
         assert _matches_trusted_pattern(cmd, patterns) is None
 
     def test_single_command_still_works(self):
@@ -993,10 +993,10 @@ class TestMatchesTrustedPatternPiped:
         assert _matches_trusted_pattern(cmd, patterns) is not None
 
     def test_independent_patterns_per_segment(self):
-        # cat trusted for .z* paths, grep trusted for /Users/n* paths
-        patterns = {"cat /Users/nikhim/.z*", "grep /Users/n*"}
-        good = "Running: cat /Users/nikhim/.zshrc | grep /Users/nikhim"
-        bad = "Running: cat /Users/nikhim/.zshrc | grep /Users/zoozoo"
+        # cat trusted for .z* paths, grep trusted for /Users/a* paths
+        patterns = {"cat /Users/alice/.z*", "grep /Users/a*"}
+        good = "Running: cat /Users/alice/.zshrc | grep /Users/alice"
+        bad = "Running: cat /Users/alice/.zshrc | grep /Users/bob"
         assert _matches_trusted_pattern(good, patterns) is not None
         assert _matches_trusted_pattern(bad, patterns) is None
 

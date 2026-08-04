@@ -1,4 +1,4 @@
-"""Background run registry for dynamic workflows (M6.1).
+"""Background run registry for dynamic workflows.
 
 Lets a workflow run **outlive a single request** and be addressed by ``run_id``
 from anywhere — chat MCP tools, the Workflows dashboard tab, and result-to-chat
@@ -8,8 +8,7 @@ injection all share one registry. Without this, a run is just a synchronous
 A ``RunHandle`` holds the live state of one run: status, the event list as it
 grows, the final result/error, the originating session (for result injection),
 and the ``asyncio.Task`` driving it (for cancellation). The registry schedules
-runs on the running event loop and tracks them in-memory (bounded LRU) — the
-durable journal for resume is M6.6.
+runs on the running event loop and tracks them in-memory (bounded LRU).
 
 Thread-safety: the registry is loop-affine — all mutation happens on the gateway
 event loop, so no locks are needed for the in-process store. Snapshots returned
@@ -34,12 +33,12 @@ STATUS_CANCELLED = "cancelled"
 # Max concurrently-tracked runs kept in memory (oldest finished evicted first).
 DEFAULT_MAX_RUNS = 200
 
-# Callback fired (once) when a run reaches a terminal state. Used by M6.4 to
-# inject the result back into the originating chat session.
+# Callback fired (once) when a run reaches a terminal state, to inject the
+# result back into the originating chat session.
 #   on_done(run_id, snapshot: dict) -> None
 OnDoneFn = Callable[[str, dict], None]
 
-# Callback fired for each event as it is recorded (M6.5 live WS push).
+# Callback fired for each event as it is recorded (live WS push).
 #   on_event(run_id, event_json: dict) -> None
 OnEventFn = Callable[[str, dict], None]
 
@@ -140,10 +139,10 @@ class RunHandle:
                 return e.data.get("message", "")
         return ""
 
-    # --- durable persistence (FIX-21): full JSON form for the on-disk store ---
+    # --- durable persistence: full JSON form for the on-disk store ---
     # Distinct from ``snapshot`` (a UI view): this round-trips the COMPLETE run so a
     # restored handle supports list/result/rerun/restart-subtree across restarts.
-    # JSON only (BSC12 — never pickle). The asyncio.Task is intentionally dropped.
+    # JSON only (never pickle). The asyncio.Task is intentionally dropped.
     def to_store_json(self) -> dict:
         return {
             "run_id": self.run_id,
@@ -190,7 +189,7 @@ class RunHandle:
 class RunRegistry:
     """In-memory, loop-affine registry of background workflow runs.
 
-    When a ``store`` is provided (FIX-21) the registry mirrors each run to disk so
+    When a ``store`` is provided the registry mirrors each run to disk so
     runs survive a gateway restart: it saves on register, on terminal transition,
     and (throttled) as events accumulate; deletes on eviction; and ``load_persisted``
     rehydrates everything on startup. The in-memory ``OrderedDict`` stays the source
@@ -270,12 +269,12 @@ class RunRegistry:
     ) -> None:
         """Checkpoint ONE settled agent call onto the handle, as the call returns.
 
-        Called by the runner after each ``ctx.agent()`` call. Previously the results
-        reached the handle only in ``_drive``, AFTER the whole run finished, so a run
-        killed by the wall-clock ceiling wrote an empty ``agent_results`` and
-        discarded every payload it had already paid for. Landing them on the handle
-        here is what makes the ceiling survivable: the terminal paths read them back
-        and ``mark_terminal`` flushes the completed record to disk.
+        Called by the runner after each ``ctx.agent()`` call. Landing each result on
+        the handle as the call returns — rather than only in ``_drive`` after the
+        whole run finishes — is what makes the wall-clock ceiling survivable: a run
+        killed by the ceiling still holds every payload it has already paid for, the
+        terminal paths read them back, and ``mark_terminal`` flushes the completed
+        record to disk.
 
         Deliberately does NOT force a store write of its own. ``store.save``
         re-serializes and re-redacts the ENTIRE run record synchronously on the
@@ -384,7 +383,7 @@ async def start_background_run(
     to ``on_event``) as they happen. The driver should return ``(result, status,
     error, agent_results)`` — or raise, which is captured as a failed run.
     ``source``/``args`` are stored on the handle so a resume/restart-subtree can
-    re-run the same script (M6.6).
+    re-run the same script.
     """
     handle = RunHandle(
         run_id=run_id,

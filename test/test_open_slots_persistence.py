@@ -533,8 +533,8 @@ def test_restore_open_slots_rollback_also_discards_restricted_keys(tmp_path, mon
 # transcript. get_or_create_slot now folds keys to the filename charset, and
 # the restore paths apply the same fold so pre-fix snapshots self-heal.
 
-RAW_KEY = "Artifact: 2026 Code Activity Benchmark - nrb vs Dan Lloyd Org"
-FOLDED_KEY = "Artifact__2026_Code_Activity_Benchmark_-_nrb_vs_Dan_Lloyd_Org"
+RAW_KEY = "Artifact: 2026 Example Benchmark Report - alice vs Bob Smith Org"
+FOLDED_KEY = "Artifact__2026_Example_Benchmark_Report_-_alice_vs_Bob_Smith_Org"
 
 
 def test_restore_open_slots_folds_legacy_raw_keys(tmp_path, monkeypatch):
@@ -751,6 +751,13 @@ def test_restore_open_slots_async_yields_between_tabs(tmp_path, monkeypatch):
         restored = await restore_open_slots_async(state2)
         stop = True
         t.cancel()
+        # `cancel()` only requests cancellation; without awaiting it the ticker is
+        # still live when `asyncio.run` tears the loop down, leaving a "coroutine
+        # ignored GeneratorExit" for a later test to trip over.
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
         return restored
 
     restored = asyncio.run(_drive())

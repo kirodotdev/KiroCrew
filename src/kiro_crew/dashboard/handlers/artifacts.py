@@ -40,10 +40,12 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import publish_sync
+from kiro_crew import hooks, publish_sync
 from kiro_crew import sel as _sel_mod
+from kiro_crew.artifact_source import LINK, classify_source
 from kiro_crew.artifacts import (
     MAX_CONTENT_BYTES,
+    USER_SELECTABLE_KINDS,
     ArtifactAlreadyExistsError,
     ArtifactComment,
     ArtifactError,
@@ -94,9 +96,9 @@ logger = logging.getLogger(__name__)
 # store's content cap (MAX_CONTENT_BYTES = 25 MiB) PLUS headroom for JSON
 # envelope overhead (base64/escaping + the other body fields), so content the
 # store + validation accept (up to 25 MiB) is never rejected earlier at this
-# HTTP boundary. Previously pinned at 2 MiB, which silently became the effective
-# ceiling for dashboard/MCP artifact_save/update once the content cap was raised
-# 1 MiB -> 25 MiB (the "store enforces a stricter cap" assumption inverted).
+# HTTP boundary. A fixed cap smaller than the content cap would silently become
+# the effective ceiling for dashboard/MCP artifact_save/update whenever the
+# content cap is raised (the "store enforces a stricter cap" assumption inverts).
 _MAX_BODY_BYTES = MAX_CONTENT_BYTES + 8 * 1024 * 1024  # 25 MiB content + 8 MiB envelope headroom
 
 # Publish-provider name grammar. Upstream imports this from ``validation`` where
@@ -837,7 +839,7 @@ def _materialize_and_pin(
     chat history's ``file_changes`` (:func:`_recorded_doc_identities`).
     Authorizing the opened descriptor — rather than re-resolving the path a
     second time for the read — closes the symlink/dir-swap TOCTOU window: the
-    file we authorize is exactly the inode we read (AWS-33). Sensitive resolved
+    file we authorize is exactly the inode we read. Sensitive resolved
     targets (``~/.aws`` …) and non-documents are refused up front. Blocking;
     call via ``_run_off_loop``.
     """
@@ -1059,6 +1061,137 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
     return _json_response({"artifacts": out})
 
 
+async def _authoritative_promote_content(
+    path: str, root: str
+) -> tuple[str | None, str | None]:
+    """Read the bytes to persist for a promotion from the SOURCE, server-side.
+
+    The dashboard obtains its preview through ``/api/file-read``, which redacts
+    credential-shaped spans and can truncate. Persisting that response would
+    bake the placeholders into the artifact permanently -- the promoted copy
+    would differ from the file it claims to be, silently and irreversibly, and
+    for a copy there is no source pointer left to recover the real bytes from.
+
+    So the server re-reads the file it just validated and uses those bytes.
+    ``allow_truncate=False``: a file too large to store whole is REFUSED rather
+    than promoted partial, matching the client-side truncation guard.
+
+    Returns ``(content, None)`` on success or ``(None, message)`` on refusal.
+    """
+
+    def _read() -> tuple[str | None, str | None]:
+        try:
+            # NEVER within_root=None. A COPY (temp dir, Downloads) has no
+            # project root, and passing None skips the descriptor containment
+            # and sensitivity checks -- an ancestor swapped between validation
+            # and open could then redirect the read into a secrets directory and
+            # bake its contents into the artifact. With no project root, the
+            # file's own directory is the boundary: it still pins the opened
+            # descriptor to a known tree and keeps the sensitivity check on.
+            data = hooks.safe_read_file_bytes_nolink(
+                path,
+                within_root=root or os.path.dirname(path),
+                max_bytes=MAX_CONTENT_BYTES,
+                allow_truncate=False,
+            )
+        except (ValueError, OSError, hooks.FileTooLargeError) as exc:
+            # FileTooLargeError is NOT an OSError subclass, so without naming it
+            # here a source over the cap escaped as an unhandled exception and
+            # surfaced as a 500 instead of a refusal the caller can show.
+            return None, f"cannot read source file: {exc}"
+        if data is None:
+            return None, "source file is unreadable, too large, or not permitted"
+        try:
+            return data.decode("utf-8"), None
+        except UnicodeDecodeError:
+            return None, "source file is not valid UTF-8 text"
+
+    return await _run_off_loop(_read)
+
+
+async def _promote_verdict(
+    request: web.Request, raw_source_path: str
+) -> tuple[str, str, bool, str | None]:
+    """Decide whether a save with ``source_path`` links to the file or copies it.
+
+    Returns ``(source_path, source_root, copy_only, error)``. A non-None *error*
+    means the request named a file this endpoint will not accept, and the caller
+    must refuse it rather than fall back to the client's body.
+
+    ``source_path`` is kept on BOTH verdicts, because it is the only key
+    :meth:`ArtifactStore.find_by_source_path` dedups on — dropping it on a copy
+    made a second promotion of the same disposable file mint a duplicate
+    artifact. Liveness is carried by ``source_copy_only`` instead: a copy
+    records the path as provenance only, and the store never reads or writes
+    through it, so the dead-pointer failure this guards against cannot occur.
+
+    The verdict is derived from the path alone. Nothing the caller (or the agent)
+    can write nominates an authorizing root: a LINK is granted only by an
+    observable git repository root, which is re-verified on every read.
+    """
+    if not isinstance(raw_source_path, str) or not raw_source_path:
+        return "", "", False, None
+
+    # VALIDATE BEFORE PROBING. An existence probe on the raw path is itself an
+    # information leak: a copy verdict retains source_path, so the response
+    # distinguishes "this sensitive file exists" from "it does not". Run the
+    # sensitive-path gate first and probe only its canonical result, so a
+    # rejected path is indistinguishable from a missing one.
+    def _resolve() -> str:
+        try:
+            canonical = hooks.validate_file_path(raw_source_path)
+        except (ValueError, OSError):
+            # An embedded NUL byte makes realpath raise ValueError; a hostile or
+            # simply malformed path must be refused, never a 500.
+            return ""
+        if not canonical or not os.path.isabs(canonical):
+            return ""
+        # Keep a provenance path only for a file that actually exists: a path
+        # that never resolved is useless as dedup identity and actively
+        # misleading as provenance, so it is dropped rather than recorded.
+        return canonical if os.path.isfile(canonical) else ""
+
+    canonical_path = await _run_off_loop(_resolve)
+    if not canonical_path:
+        return "", "", False, None
+    verdict, root = await _run_off_loop(lambda: classify_source(canonical_path))
+    if verdict == LINK:
+        # A LINK already names a re-verifiable project root, which IS the
+        # deliberate widening this feature exists for (project files outside
+        # $HOME). Its reads are confined to that root.
+        return canonical_path, root, False, None
+
+    # COPY has no project root, so a retained path would leave the server-side
+    # promotion read confined only to the file's OWN directory -- a tautology.
+    # That would make `POST /api/artifacts {"source_path": "/etc/passwd"}` an
+    # arbitrary-local-file read whose bytes land in the library and come back in
+    # the 201 body, bypassing the fixed-root barrier every other store read
+    # honours. So a copy keeps its provenance pointer ONLY inside the store's
+    # allowed roots (home, data home, publish.relocate_roots); outside them the
+    # path is dropped and the save proceeds as ordinary content with no pointer.
+    def _within_allowed() -> bool:
+        p = Path(canonical_path)
+        for r in get_default_store().allowed_source_roots():
+            # Comparison kept INLINE (not factored into a helper): CodeQL's taint
+            # tracker only recognises the containment guard in this shape.
+            if p == r or p.is_relative_to(r):
+                return True
+        return False
+
+    if not await _run_off_loop(_within_allowed):
+        # REFUSE, rather than dropping the pointer and keeping the client's body.
+        # The dashboard's copy of the file came from /api/file-read, which redacts
+        # credential-shaped spans -- so falling back to it would persist
+        # placeholders AS the artifact's authoritative content, and for a copy
+        # there is no pointer left to ever recover the real bytes. Since the
+        # server will not read this path, the only honest answer is to decline.
+        return "", "", False, (
+            "source_path is outside the locations this instance may read "
+            "(home, data home, or a configured relocate root)"
+        )
+    return canonical_path, "", True, None
+
+
 async def api_artifacts_create(request: web.Request) -> web.Response:
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
@@ -1080,8 +1213,41 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     # paths idempotent — clicking it twice on the same file just produces v2,
     # not two separate artifacts. Returns 200 OK on bump (vs 201 Created on
     # genuine new save) so the caller can distinguish if it cares.
-    source_path = body.get("source_path") or ""
-    if isinstance(source_path, str) and source_path:
+    # The verdict runs BEFORE the dedup lookup because it is what canonicalizes
+    # the path. Deduping on the raw string missed an existing artifact whenever
+    # the two spellings differ -- promote a symlink (or any non-canonical path)
+    # twice and the second lookup found nothing, so it minted a duplicate
+    # alongside the canonical record.
+    raw_source_path = body.get("source_path")
+    link_source_path, link_source_root, link_copy_only, verdict_err = await _promote_verdict(
+        request, raw_source_path if isinstance(raw_source_path, str) else ""
+    )
+    if verdict_err:
+        _audit(
+            tool="artifact_save",
+            request=request,
+            outcome="denied",
+            error=verdict_err,
+            extra={"source_path": str(raw_source_path)[:256]},
+        )
+        return _err(verdict_err)
+    source_path = link_source_path
+    # For a validated promotion the SERVER decides the bytes, not the client.
+    promoted_content: str | None = None
+    if link_source_path:
+        promoted_content, perr = await _authoritative_promote_content(
+            link_source_path, link_source_root
+        )
+        if perr:
+            _audit(
+                tool="artifact_save",
+                request=request,
+                outcome="denied",
+                error=perr,
+                extra={"source_path": link_source_path},
+            )
+            return _err(perr)
+    if source_path:
         store = get_default_store()
         try:
             existing = store.find_by_source_path(source_path)
@@ -1092,9 +1258,8 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             logger.warning("source_path lookup failed: %s", exc)
             existing = None
         if existing is not None:
-            # R19 F5: run the SAME validation as the normal save path before
-            # the dedup update — the dedup branch previously skipped validation
-            # and silently dropped supplied fields.
+            # Run the SAME validation as the normal save path before the dedup
+            # update, so the dedup branch does not drop supplied fields.
             merr = _validate_inbound_webapp_metadata(body)
             if merr:
                 _audit(
@@ -1106,8 +1271,8 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
                 )
                 return _err(merr)
 
-            # R19 F5: kind conflict — if caller supplies a different kind than
-            # the existing artifact, that's a dedup conflict, not a silent update.
+            # Kind conflict — if caller supplies a different kind than the
+            # existing artifact, that's a dedup conflict, not a silent update.
             supplied_kind = body.get("kind")
             if supplied_kind and supplied_kind != existing.kind:
                 _audit(
@@ -1137,9 +1302,9 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             is_mcp = request.headers.get("X-Internal-Secret") is not None
             actor = "agent" if is_mcp else "user"
 
-            # R19 F5: pass through ALL supported fields (not just content).
+            # Pass through ALL supported fields (not just content).
             update_kwargs: dict[str, Any] = {
-                "content": body.get("content"),
+                "content": promoted_content if promoted_content is not None else body.get("content"),
                 "actor": actor,
                 "snapshot": True,
             }
@@ -1153,7 +1318,12 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             if wm is not None:
                 update_kwargs["webapp_metadata"] = webapp_metadata_from_dict(wm)
             try:
-                art = store.update(existing.slug, **update_kwargs)
+                # OFF the event loop, for the same reason as api_artifact_update:
+                # this dedup bump writes current.html, a version snapshot and --
+                # for a linked artifact -- the source file, and that write now
+                # fsyncs. Inline, a slow filesystem or a large file stalls the
+                # gateway (heartbeat included) for every other session.
+                art = await _run_off_loop(lambda: store.update(existing.slug, **update_kwargs))
             except ArtifactValidationError as exc:
                 _audit(
                     tool="artifact_save",
@@ -1197,10 +1367,18 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     if ferr:
         _audit(tool="artifact_save", request=request, outcome="denied", error=ferr)
         return _err(ferr)
+    # Copy-vs-link: a disposable file (temp dir / Downloads / Desktop, or
+    # anything with no project claim) is SNAPSHOTTED — we store no pointer at
+    # all. A file inside a real project is LINKED, and the project root that
+    # authorizes later reads is recorded with it. Until this ran, source_path
+    # was stored as an unvalidated raw string, so a project file outside $HOME
+    # produced a pointer the store then refused to read.
     try:
         art = get_default_store().create(
             name=body.get("name", ""),
-            content=body.get("content", ""),
+            content=(
+                promoted_content if promoted_content is not None else body.get("content", "")
+            ),
             slug=body.get("slug"),
             kind=body.get("kind"),
             # Honor an explicitly-supplied source (MCP tool / import path); for
@@ -1209,7 +1387,9 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             source=(body.get("source") or _artifact_source_for_request(request)),
             description=body.get("description", ""),
             tags=body.get("tags") or [],
-            source_path=body.get("source_path", ""),
+            source_path=link_source_path,
+            source_root=link_source_root,
+            source_copy_only=link_copy_only,
             folder_id=folder_id,
             # Originating chat session for the Source column. Only a real slot
             # key that passes the permitted grammar is stored (validated to
@@ -1399,18 +1579,52 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             from_version = int(raw_from_version) if raw_from_version is not None else None
         except (TypeError, ValueError):
             from_version = None
-        art = get_default_store().update(
-            slug,
-            content=body.get("content"),
-            description=body.get("description"),
-            tags=body.get("tags"),
-            name=body.get("name"),
-            webapp_metadata=webapp_metadata_from_dict(body.get("webapp_metadata")),
-            actor=actor,
-            session_id=session_id_hdr,
-            event_type=event_type,
-            from_version=from_version,
-            snapshot=snapshot,
+        # Explicit render-kind change (the type control on the artifact page).
+        # Restricted to the inline-editable kinds: `widget` / `html` render in a
+        # sandboxed iframe and are NOT editable, so letting a caller select one
+        # would strand the editor on a document the user is typing in — and
+        # `webapp` carries deploy metadata that a hand-flip would desynchronise.
+        # Setting a kind also PINS it: the store clears its auto-detect flag, so
+        # a document the user has typed a kind onto is never re-typed under them.
+        raw_kind = body.get("kind")
+        if raw_kind is not None:
+            # isinstance FIRST: a JSON body may carry any type here, and an
+            # unhashable one (list / dict) raises TypeError on the set lookup --
+            # a 500 where the caller deserves a 400.
+            if not isinstance(raw_kind, str) or raw_kind not in USER_SELECTABLE_KINDS:
+                msg = (
+                    f"kind must be one of {sorted(USER_SELECTABLE_KINDS)}; "
+                    f"got {raw_kind!r}"
+                )
+                _audit(
+                    tool="artifact_update",
+                    request=request,
+                    outcome="denied",
+                    error=msg,
+                    extra={"slug": slug, "kind": str(raw_kind)[:32]},
+                )
+                return _err(msg)
+        # OFF the event loop: update() writes current.html, a version snapshot
+        # and -- for a linked artifact -- the source file itself, so running it
+        # inline stalls the gateway for every other session on a large file or a
+        # slow filesystem. (The synchronous write predates the descriptor-pinned
+        # helper; offloading fixes the stall without giving up the O_NOFOLLOW
+        # guarantees that helper provides.)
+        art = await _run_off_loop(
+            lambda: get_default_store().update(
+                slug,
+                kind=raw_kind,
+                content=body.get("content"),
+                description=body.get("description"),
+                tags=body.get("tags"),
+                name=body.get("name"),
+                webapp_metadata=webapp_metadata_from_dict(body.get("webapp_metadata")),
+                actor=actor,
+                session_id=session_id_hdr,
+                event_type=event_type,
+                from_version=from_version,
+                snapshot=snapshot,
+            )
         )
         # store.update() only loads content into the returned Artifact when
         # the caller passed new content (because that path is on the write
@@ -1420,7 +1634,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
         # always returns the actual content. Refetch in that case so the MCP
         # tool / dashboard caller always sees a populated content field.
         if art.content is None:
-            art = get_default_store().get(slug)
+            art = await _run_off_loop(lambda: get_default_store().get(slug))
     except ArtifactNotFoundError as exc:
         _audit(
             tool="artifact_update",
@@ -1516,6 +1730,97 @@ async def api_artifact_update(request: web.Request) -> web.Response:
     return _json_response(_serialize(art, include_content=True))
 
 
+async def api_artifact_settle_blank(request: web.Request) -> web.Response:
+    """Atomically resolve a just-created blank document the user is leaving.
+
+    The library's "New artifact" action creates a document empty and opens its
+    editor. On leaving, exactly one of three things is right: keep it (something
+    was invested), save the draft still in the editor, or delete the abandoned
+    shell. The decision has to be atomic -- deciding in the browser means reading
+    the artifact and then acting, and a save landing in that gap from a popout
+    window or an agent would be overwritten or deleted. So the browser states its
+    intent and the store decides under its own lock.
+
+    Body: ``{"untitled_name": str, "draft": str}``. ``untitled_name`` is the
+    localised placeholder the creating client used, so the store can recognise an
+    unnamed document without owning a copy of the UI's copy.
+
+    Responds ``{"outcome": "kept" | "saved" | "deleted"}``.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_settle_blank",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session cannot settle artifacts", status=403)
+    slug = request.match_info.get("slug", "")
+
+    # Every rejection is audited, not just the ones the store raises: this
+    # endpoint can DELETE a document, so a refusal is exactly as interesting to an
+    # auditor as a success, and a silent 400 would leave the attempt with no trace.
+    def _denied(error: str) -> web.Response:
+        _audit(
+            tool="artifact_settle_blank",
+            request=request,
+            outcome="denied",
+            error=error,
+            extra={"slug": slug},
+        )
+        return _err(error)
+
+    try:
+        body = await _read_json_body(request)
+    except ArtifactValidationError as exc:
+        return _denied(str(exc))
+    untitled_name = body.get("untitled_name")
+    if not isinstance(untitled_name, str) or not untitled_name.strip():
+        return _denied("untitled_name is required")
+    raw_draft = body.get("draft", "")
+    if not isinstance(raw_draft, str):
+        return _denied("draft must be a string")
+    # A client that has issued its own writes sends allow_delete=false: those
+    # writes may not have been applied yet, so deletion cannot be made safe. It
+    # does not block the draft rescue, which only needs the stored content to be
+    # empty. Defaults to true so an omitted field is the ordinary leave-time call.
+    allow_delete = body.get("allow_delete", True)
+    if not isinstance(allow_delete, bool):
+        return _denied("allow_delete must be a boolean")
+    try:
+        outcome = await _run_off_loop(
+            lambda: get_default_store().settle_blank(
+                slug,
+                untitled_name=untitled_name,
+                draft=raw_draft,
+                allow_delete=allow_delete,
+            )
+        )
+    except ArtifactNotFoundError as exc:
+        # Already gone (double navigation, or deleted in another window). Nothing
+        # to settle and nothing to report as an error.
+        _audit(tool="artifact_settle_blank", request=request, outcome="success",
+               extra={"slug": slug, "result": "absent"})
+        return _json_response({"outcome": "kept", "detail": str(exc)})
+    except ArtifactValidationError as exc:
+        return _denied(str(exc))
+    except ArtifactError as exc:
+        _audit(tool="artifact_settle_blank", request=request, outcome="error", error=str(exc),
+               extra={"slug": slug})
+        return _err(str(exc), status=500)
+    _audit(
+        tool="artifact_settle_blank",
+        request=request,
+        outcome="success",
+        extra={"slug": slug, "result": outcome},
+    )
+    if outcome != "kept":
+        _notify_artifact_update(state, slug, 1, deleted=outcome == "deleted")
+    return _json_response({"outcome": outcome})
+
+
 async def api_artifact_delete(request: web.Request) -> web.Response:
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
@@ -1529,8 +1834,7 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
         return _err("restricted session cannot delete artifacts", status=403)
     slug = request.match_info.get("slug", "")
     # Capture the pre-delete version so the deleted-variant WS event carries the
-    # last-known version. The upstream cleanup block that fetched
-    # this was tied to the removed publishing path, so fetch it here directly.
+    # last-known version.
     try:
         _existing = get_default_store().get(slug)
     except ArtifactError:
@@ -1912,8 +2216,8 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
         existing_pub = (await _run_off_loop(lambda: get_default_store().get(slug))).publication
     except ArtifactNotFoundError:
         existing_pub = None
-    # nrb review #19: reject an explicit provider switch on an already-published
-    # artifact rather than silently ignoring it. publish() reuses the existing
+    # Reject an explicit provider switch on an already-published artifact rather
+    # than silently ignoring it. publish() reuses the existing
     # publication's provider, so honoring a switch here would leave the original
     # remote orphaned — require an explicit unpublish first.
     if (
@@ -2349,8 +2653,11 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
     # used in a path expression — this is also what CodeQL's path-injection taint
     # tracker requires as a sanitizer):
     #   1. ".." traversal guard on the raw request value;
-    #   2. FIXED-ROOT containment — the resolved path must live under the user's
-    #      home dir OR an operator-configured extra root (``publish.relocate_roots``);
+    #   2. FIXED-ROOT containment — the resolved path must live under one of the
+    #      roots produced by ``ArtifactStore.allowed_source_roots()`` (the user's
+    #      home dir, the data home, and any operator-configured
+    #      ``publish.relocate_roots``). Sharing that producer with the store's own
+    #      read/write barriers is what stops the three copies drifting apart;
     #   3. the ``is_sensitive_path`` denylist inside every allowed root.
     # The root confinement (2) is the barrier that turns relocate from an
     # arbitrary-local-file read primitive (an agent could aim an artifact at
@@ -2368,19 +2675,17 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
             )
             return _err("path traversal not allowed", status=403)
         resolved_path = Path(os.path.expanduser(source_path)).resolve()
-        # Fixed-root containment: resolve the allowed roots (home + configured
-        # extras) and require the target to be inside one. is_relative_to on the
-        # resolved Paths is the sanitizer CodeQL recognizes.
-        allowed_roots = [Path.home().resolve()]
-        try:
-            for extra in KiroCrewConfig.load().publish.relocate_roots:
-                if isinstance(extra, str) and extra.strip():
-                    allowed_roots.append(Path(os.path.expanduser(extra)).resolve())
-        except Exception:
-            logger.debug("relocate roots config load failed; home-only", exc_info=True)
-        # Fixed-root containment barrier — inlined (NOT via a helper) so CodeQL's
-        # intra-procedural taint tracker sees the ``is_relative_to`` sanitizer
-        # guarding the SAME ``resolved_path`` that the stat calls below use.
+        # Fixed-root containment. The root SET comes from the store's single
+        # producer (``ArtifactStore.allowed_source_roots``) so this barrier and
+        # the store's own read/write barriers cannot drift: this copy used to
+        # omit the data-home root, which meant relocate refused paths the store
+        # would then happily read. is_relative_to on the resolved Paths is the
+        # sanitizer CodeQL recognizes.
+        allowed_roots = get_default_store().allowed_source_roots()
+        # Fixed-root containment barrier — the COMPARISON stays inlined (NOT via
+        # a helper) so CodeQL's intra-procedural taint tracker sees the
+        # ``is_relative_to`` sanitizer guarding the SAME ``resolved_path`` that
+        # the stat calls below use. Only the root list is factored out.
         within_root = False
         for _root in allowed_roots:
             try:
@@ -3177,7 +3482,7 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
     is_agent = bool(body.get("is_agent"))
 
     # Author defaults to the dashboard user's alias (collaboration: comments
-    # show who left them, feedback #7). Agent comments keep their explicit
+    # show who left them). Agent comments keep their explicit
     # author (or the agent badge). getpass.getuser() is the alias on dev desks.
     # The author is LLM/agent-influenced on the MCP path and echoed to the
     # dashboard, so redact + cap it like the body (backend-security-controls).
@@ -3518,7 +3823,7 @@ async def api_artifact_resolve_comment(request: web.Request) -> web.Response:
 
 async def api_artifact_reopen_comment(request: web.Request) -> web.Response:
     """POST /api/artifacts/{slug}/comments/{id}/reopen — reopen a resolved
-    thread (set status back to open). Feedback #1: resolving was a one-way door.
+    thread (set status back to open).
     """
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):

@@ -2,11 +2,10 @@
 
 These constants exist in a dependency-free leaf module for one reason: the
 supervisor's SIGTERM→SIGKILL grace period MUST cover the daemon's own graceful
-shutdown budget, and the two used to be independent literals in two files that
-drifted into an *inverted* pair — ``manager._SHUTDOWN_GRACE_SECS = 5.0`` while
-``gatewayd._SHUTDOWN_DRAIN_SECS = 10.0``. The supervisor therefore SIGKILLed the
-daemon while it was still inside its own drain window, so ``pool.shutdown_all()``
-never ran and every restart with attached stubs ended in a hard kill.
+shutdown budget. As independent literals in two files they can drift into an
+*inverted* pair (grace < drain) — the supervisor then SIGKILLs the daemon while
+it is still inside its own drain window, so ``pool.shutdown_all()`` never runs
+and every restart with attached stubs ends in a hard kill.
 
 Deriving the grace period from the daemon's budget here makes that inversion
 unrepresentable: raising the drain window automatically raises the grace.

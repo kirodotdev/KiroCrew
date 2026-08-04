@@ -80,18 +80,35 @@ const AGENT_COLORS = [
 
 const agentColor = (idx: number) => AGENT_COLORS[idx % AGENT_COLORS.length]
 
+/**
+ * Agent state and listen-mode badges.
+ *
+ * The copy sits behind a `get label()` rather than a plain string because both
+ * tables are evaluated at module load, where an `i18nT()` call would freeze
+ * whatever language was active at boot and never re-resolve on a language
+ * switch. A getter runs on every property access — i.e. during render, at each of
+ * the four call sites below — so it follows the language without any of them
+ * changing shape. Each key is a literal at the `i18nT()` call, which is what lets
+ * `scripts/check-i18n-keys.mjs` resolve it statically.
+ *
+ * Every label in both tables is converted, not just the ones the lint reports:
+ * `eslint.i18n.config.js` exempts single lowercase words by shape (its stated
+ * false-negative class #1), so only `working` — which carries a `●` glyph — is
+ * actually flagged. Leaving its five siblings as literals would ship a badge row
+ * that is half-translated in every locale.
+ */
 const STATE_BADGE: Record<string, { variant: 'ok' | 'err' | 'warn'; label: ReactNode }> = {
-  pending: { variant: 'warn', label: <><Hourglass className="lucide-inline" /> pending</> },
-  working: { variant: 'ok', label: <>● working</> },
-  listening: { variant: 'ok', label: <><Ear className="lucide-inline" /> listening</> },
-  done: { variant: 'ok', label: <><Check className="lucide-inline" /> done</> },
-  failed: { variant: 'err', label: <><X className="lucide-inline" /> failed</> },
-  tool_running: { variant: 'ok', label: <><Wrench className="lucide-inline" /> running</> },
+  pending: { variant: 'warn', get label() { return <><Hourglass className="lucide-inline" /> {i18nT('pages.channelPage.state_pending')}</> } },
+  working: { variant: 'ok', get label() { return <>● {i18nT('pages.channelPage.state_working')}</> } },
+  listening: { variant: 'ok', get label() { return <><Ear className="lucide-inline" /> {i18nT('pages.channelPage.state_listening')}</> } },
+  done: { variant: 'ok', get label() { return <><Check className="lucide-inline" /> {i18nT('pages.channelPage.state_done')}</> } },
+  failed: { variant: 'err', get label() { return <><X className="lucide-inline" /> {i18nT('pages.channelPage.state_failed')}</> } },
+  tool_running: { variant: 'ok', get label() { return <><Wrench className="lucide-inline" /> {i18nT('pages.channelPage.state_running')}</> } },
 }
 const LISTEN_BADGE: Record<string, { variant: 'ok' | 'warn'; label: ReactNode }> = {
-  all: { variant: 'ok', label: <><Radio className="lucide-inline" /> all</> },
-  mention: { variant: 'warn', label: <><Ear className="lucide-inline" /> mention</> },
-  silent: { variant: 'warn', label: <><VolumeX className="lucide-inline" /> silent</> },
+  all: { variant: 'ok', get label() { return <><Radio className="lucide-inline" /> {i18nT('pages.channelPage.listen_all')}</> } },
+  mention: { variant: 'warn', get label() { return <><Ear className="lucide-inline" /> {i18nT('pages.channelPage.listen_mention')}</> } },
+  silent: { variant: 'warn', get label() { return <><VolumeX className="lucide-inline" /> {i18nT('pages.channelPage.listen_silent')}</> } },
 }
 
 // ── Components ──
@@ -201,16 +218,56 @@ function AgentControlRow({ agent, onDismiss, onListenChange, onClearContext }: {
 
 // ── Team Presets ──
 
+/**
+ * Client-side mirror of the built-in team presets.
+ *
+ * Only a FALLBACK: the picker normally renders what `GET /api/channels/presets`
+ * returns (`handlers_channel.py`), and this array is what is left on screen when
+ * that request fails. So the display copy cannot live here — a translation of
+ * this literal would be invisible on the healthy path and appear only on the
+ * error path. `PRESET_LABEL_KEY` below is keyed on the preset `id`, which both
+ * paths agree on, so one catalog key localises both.
+ *
+ * `role` and `task` stay verbatim on purpose, and are the same strings the
+ * backend sends. `role` is an IDENTIFIER as much as a label — it is posted to
+ * `POST /api/channels`, echoed back as `msg.fromRole`, and is what `@mention`
+ * matches on, so translating it would make an agent's handle locale-dependent.
+ * `task` is the seed PROMPT sent to that agent; `eslint.i18n.config.js` states
+ * the same boundary for `src/prompts/**` — translating it changes agent
+ * behaviour rather than localising a surface. Localising either properly is a
+ * backend-side change (the API would have to emit keys), tracked separately.
+ */
 const FALLBACK_PRESETS = [
-  { id: 'incident', label: 'Incident Response', agents: [
+  { id: 'incident', agents: [
     { role: 'Orchestrator', is_orchestrator: true, task: 'Coordinate investigation of {topic}' },
     { role: 'Logs Agent', task: 'Search logs related to {topic}' },
     { role: 'Code Agent', task: 'Check recent code changes related to {topic}' },
   ]},
-  { id: 'custom', label: 'Custom (empty)', agents: [] },
+  { id: 'custom', agents: [] },
 ]
 
-type Preset = { id: string; label: string; agents: { role: string; is_orchestrator?: boolean; task?: string }[] }
+/** Catalog KEY for each built-in preset's display name, by stable preset id. */
+const PRESET_LABEL_KEY: Record<string, string> = {
+  incident: 'pages.channelPage.preset_incident_response',
+  custom: 'pages.channelPage.preset_custom_empty',
+}
+
+type Preset = { id: string; label?: string; agents: { role: string; is_orchestrator?: boolean; task?: string }[] }
+
+/**
+ * Localised display name for a preset.
+ *
+ * `hasOwnProperty`, not `in`: the ids come from the API, so a backend that
+ * reported `toString` or `constructor` would otherwise resolve to an inherited
+ * Object.prototype member and hand a function to i18next. A preset this build
+ * has no key for (a newer backend, a user-defined preset) falls back to the
+ * server's own label, then to the id — never to fabricated copy.
+ */
+function presetLabel(p: Preset): string {
+  return Object.prototype.hasOwnProperty.call(PRESET_LABEL_KEY, p.id)
+    ? i18nT(PRESET_LABEL_KEY[p.id])
+    : p.label || p.id
+}
 
 // ── New Channel Dialog (Step 2) ──
 
@@ -242,7 +299,7 @@ function NewChannelDialog({ onClose, onCreate, presets }: { onClose: () => void;
           {presets.map(p => (
             <Btn key={p.id} onClick={() => setPreset(p.id)}
               className={`w-full text-left px-3 py-2 !rounded-lg text-sm ${preset === p.id ? '!border-accent bg-accent/10 text-text-strong' : '!border-border text-muted hover:bg-bg-hover'}`}>
-              <span className="font-medium">{p.label}</span>
+              <span className="font-medium">{presetLabel(p)}</span>
               {p.agents.length > 0 && <span className="text-[13px] text-muted ml-2">({p.agents.map(a => a.role).join(', ')})</span>}
             </Btn>
           ))}

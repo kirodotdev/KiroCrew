@@ -163,7 +163,7 @@ describe('ChatPage unmount slot persistence (real component)', () => {
     // Pre-seed a draft in localStorage as if the user had typed before.
     // On mount, ChatPage hydrates the in-memory drafts from localStorage.
     // beforeunload must NOT wipe this draft (regression guard for the
-    // flush-before-hydrate and stale-inputRef bugs flagged in review on rev 1).
+    // flush-before-hydrate and stale-inputRef bugs).
     localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'chat-2': 'mid-sentence crash content' }))
     localStorage.setItem('mc-chat-drafts-ts', JSON.stringify({ 'chat-2': Date.now() }))
     renderChatPage(undefined, 'chat-2', allSlots)
@@ -214,11 +214,11 @@ describe('ChatPage unmount slot persistence (real component)', () => {
   })
 
   it('keeps the Changes tab pinned when a settled slot has no source links (regression)', async () => {
-    // Before the fix, ChatPage's source-reconcile effect called
-    // tabsCtl.closeTab('changes') whenever sourceLinks was empty — fighting
-    // SidePanel's always-pinned model and making the Changes tab vanish
-    // mid-session (it only reappeared on reload, when syncPinned re-ran).
     // Changes is a permanent pinned tab; an empty source set must NOT close it.
+    // A source-reconcile effect that called tabsCtl.closeTab('changes') whenever
+    // sourceLinks was empty would fight SidePanel's always-pinned model and make
+    // the Changes tab vanish mid-session (reappearing only on reload, when
+    // syncPinned re-ran).
     const panel = renderHook(() => usePanelTabs('chat-2'))
     act(() => panel.result.current.openView('changes'))
     expect(panel.result.current.tabs.map(tab => tab.id)).toEqual(['changes'])

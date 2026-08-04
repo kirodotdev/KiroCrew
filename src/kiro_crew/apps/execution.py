@@ -83,6 +83,123 @@ def shipped_builtin_app_root(app_name: str) -> Path | None:
     return None
 
 
+def builtin_app_names() -> frozenset[str]:
+    """First-party app names: shipped-manifest provenance AND a builtin-owned install.
+
+    A name qualifies only when BOTH hold:
+
+    1. A shipped ``app.json`` declares it — the SAME manifest sources as
+       :func:`shipped_builtin_app_root` (core ``builtins/`` plus any
+       edition/companion source via the platform ``apps_loader``). This says the
+       app *could* be first party.
+    2. Its active ``installed.json`` record is builtin-owned
+       (:func:`manager.builtin_owns_installed`). This proves the builtin
+       actually occupies the slot rather than a user-installed app that shares
+       the name and made the builtin registration *stand down*
+       (see :func:`manager.register_builtin_apps`). A shadowing third-party app,
+       or a missing/unreadable record, is excluded.
+
+    ``installed.json`` is consulted ONLY to REMOVE trust, never to widen it: a
+    name absent from every shipped manifest can never enter this set regardless
+    of installed metadata, so a mutable record cannot forge first-party
+    provenance. The gate's sole consumer therefore auto-approves an app's calls
+    to its own MCP server only when that app is genuinely the shipped builtin —
+    not a user app that merely shadows a builtin name.
+
+    Does filesystem I/O (dir scan + manifest reads + one installed-record read
+    per candidate); callers warm it ONCE off the event loop. A source that fails
+    to read is skipped, and an unreadable installed record drops just that name
+    (fail-closed) — neither ever widens provenance.
+    """
+    candidates: set[str] = set()
+    for source in _builtin_manifest_sources():
+        try:
+            entries = sorted(source.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                root = entry.resolve(strict=True)
+                if not root.is_dir() or not root.is_relative_to(source):
+                    continue
+                manifest_path = (root / "app.json").resolve(strict=True)
+                if not manifest_path.is_file() or not manifest_path.is_relative_to(root):
+                    continue
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if isinstance(manifest, dict):
+                name = manifest.get("name")
+                if isinstance(name, str) and name:
+                    candidates.add(name)
+
+    # Narrow shipped-manifest candidates to those whose ACTIVE install is
+    # builtin-owned, so a user app shadowing a builtin's name is NOT trusted as
+    # first party. Deferred import: manager imports this module at load time, so
+    # the reverse edge must resolve lazily (manager is fully imported by the
+    # time this runs, off the event loop, at gateway boot).
+    from kiro_crew.apps.manager import builtin_owns_installed
+
+    return frozenset(name for name in candidates if builtin_owns_installed(name))
+
+
+def builtin_app_mcp_servers() -> frozenset[str]:
+    """Canonical ``<app>:<server>`` names DECLARED in shipped builtin manifests.
+
+    For each first-party manifest (the SAME sources as :func:`builtin_app_names`)
+    whose active install is builtin-owned, emit ``f"{name}:{server}"`` for every
+    key in its ``mcpServers``. This is the IMMUTABLE set of app-own MCP servers:
+    the gate's app-own-server auto-approve requires membership here so it trusts
+    only a server the app's SHIPPED manifest declares — never an arbitrary
+    ``<app>:``-prefixed entry that landed in the mutable global MCP config (which
+    ``bridges._own_mcp_servers`` injects into the agent by prefix). Narrowed to
+    builtin-owned installs exactly like :func:`builtin_app_names`, so a shadowing
+    user app cannot contribute declared servers.
+
+    Enumerates its own manifest loop (mirroring :func:`builtin_app_names`) rather
+    than sharing state with it, to keep that security-sensitive function
+    untouched. Filesystem I/O; callers warm it ONCE off the event loop. A source
+    or manifest that fails to read is skipped (fail-closed), never widening the
+    trusted set.
+    """
+    # Deferred import: manager imports this module at load time (see
+    # builtin_app_names), so the reverse edge resolves lazily.
+    from kiro_crew.apps.manager import builtin_owns_installed
+
+    servers: set[str] = set()
+    owned: dict[str, bool] = {}
+    for source in _builtin_manifest_sources():
+        try:
+            entries = sorted(source.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                root = entry.resolve(strict=True)
+                if not root.is_dir() or not root.is_relative_to(source):
+                    continue
+                manifest_path = (root / "app.json").resolve(strict=True)
+                if not manifest_path.is_file() or not manifest_path.is_relative_to(root):
+                    continue
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(manifest, dict):
+                continue
+            name = manifest.get("name")
+            mcp_servers = manifest.get("mcpServers")
+            if not (isinstance(name, str) and name and isinstance(mcp_servers, dict)):
+                continue
+            if name not in owned:
+                owned[name] = builtin_owns_installed(name)
+            if not owned[name]:
+                continue
+            for server_name in mcp_servers:
+                if isinstance(server_name, str) and server_name:
+                    servers.add(f"{name}:{server_name}")
+    return frozenset(servers)
+
+
 def shipped_builtin_module_path(app_name: str, module_name: str) -> Path | None:
     """Resolve a ``python -m`` target only when it belongs to ``app_name``'s package."""
     root = shipped_builtin_app_root(app_name)

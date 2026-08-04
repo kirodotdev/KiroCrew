@@ -75,9 +75,9 @@ function renderFor(repo: string) {
 
 describe('RepoSettings — autosave', () => {
   it('keeps the newest edit when a save conflicts', async () => {
-    // Every toggle autosaves. Two quick clicks used to send two writes built on
-    // the same revision: the first succeeded, the second 409'd, and clearing the
-    // draft threw away the newer edit — the user's last click silently undone.
+    // Every toggle autosaves. Two quick clicks send two writes built on the same
+    // revision: the first succeeds, the second 409's, and clearing the draft
+    // would throw away the newer edit — the user's last click silently undone.
     setCtx({ owner: 'o', repo: 'other-one' })
     const sent: Record<string, unknown>[] = []
     let call = 0
@@ -265,8 +265,8 @@ describe('RepoSettings — autosave', () => {
   })
 
   it('does not let an earlier save overwrite a newer queued edit', async () => {
-    // Rapid edits A then B: A's response used to replace the pending draft, so B
-    // re-sent A's document and the user's latest change silently vanished.
+    // Rapid edits A then B: if A's response replaced the pending draft, B would
+    // re-send A's document and the user's latest change would silently vanish.
     setCtx({ owner: 'o', repo: 'other-one' })
     const sent: Record<string, unknown>[] = []
     let releaseFirst: () => void = () => {}
@@ -299,8 +299,8 @@ describe('RepoSettings — autosave', () => {
 describe('RepoSettings — Open Tagging', () => {
   it('switches to this repo before navigating when it is not the active one', async () => {
     // The settings page can be open for a repo that is NOT active. Navigating
-    // without switching showed the Tagging dashboard for a different repository,
-    // so label writes would have gone to the wrong repo.
+    // without switching would show the Tagging dashboard for a different
+    // repository, so label writes would go to the wrong repo.
     setCtx({ owner: 'o', repo: 'active-one' })
     renderFor('other-one')
 

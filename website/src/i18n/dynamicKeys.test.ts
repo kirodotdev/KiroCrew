@@ -9,8 +9,7 @@
  * where a sentence should be.
  *
  * That is not a hypothetical. `AboutPanel.tsx` carries a comment recording a
- * missing key taking the whole Settings panel down through the error boundary,
- * and its keys were assembled from a prefix until this guard went in.
+ * missing key taking the whole Settings panel down through the error boundary.
  *
  * ## The rule
  *

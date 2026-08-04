@@ -183,6 +183,140 @@ class TestExecutionDecision:
             app_root=outside_root,
         )
 
+    def test_builtin_app_names_requires_builtin_owned_install(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A shipped manifest makes a name a CANDIDATE; it enters the first-party
+        # set only when its active installed record is builtin-owned. Both a
+        # core builtin and an edition/companion-contributed builtin count, so
+        # long as the builtin actually occupies the slot.
+        import kiro_crew.platform as platform_mod
+        from kiro_crew.apps import execution
+        from kiro_crew.apps.manager import InstalledApp, _write_installed
+
+        home = tmp_path / "kirocrew-home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+
+        source = tmp_path / "edition-builtins"
+        shipped_root = source / "edition-app"
+        shipped_root.mkdir(parents=True)
+        (shipped_root / "app.json").write_text(json.dumps({"name": "edition-app"}), encoding="utf-8")
+        context = SimpleNamespace(apps_loader=SimpleNamespace(manifest_sources=lambda: [source]))
+        monkeypatch.setattr(platform_mod, "current_context", lambda: context)
+
+        # Builtin registration won the slot for both the edition builtin and a
+        # real core builtin → builtin-owned installed records.
+        _write_installed(
+            "edition-app", InstalledApp(name="edition-app", source="builtin", origin="builtin")
+        )
+        _write_installed(
+            "file-explorer", InstalledApp(name="file-explorer", source="builtin", origin="builtin")
+        )
+
+        names = execution.builtin_app_names()
+        assert isinstance(names, frozenset)
+        assert "edition-app" in names  # edition/companion source, builtin-owned
+        assert "file-explorer" in names  # core builtin, builtin-owned
+
+    def test_builtin_app_names_excludes_shadowing_user_app(self, tmp_path, monkeypatch) -> None:
+        # A user-installed app that shares a builtin's name makes registration
+        # stand down and keeps its own (non-builtin) installed record. The
+        # shipped manifest still exists, but the name must NOT be trusted as
+        # first-party — otherwise the shadowing app's own-server MCP calls would
+        # be auto-approved without a prompt.
+        import kiro_crew.platform as platform_mod
+        from kiro_crew.apps import execution
+        from kiro_crew.apps.manager import InstalledApp, _write_installed
+
+        home = tmp_path / "kirocrew-home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+
+        source = tmp_path / "edition-builtins"
+        shipped_root = source / "shadowed-app"
+        shipped_root.mkdir(parents=True)
+        (shipped_root / "app.json").write_text(
+            json.dumps({"name": "shadowed-app"}), encoding="utf-8"
+        )
+        context = SimpleNamespace(apps_loader=SimpleNamespace(manifest_sources=lambda: [source]))
+        monkeypatch.setattr(platform_mod, "current_context", lambda: context)
+
+        # Pre-existing third-party install occupies the name (source/origin are
+        # NOT builtin), exactly as register_builtin_apps() leaves it on stand-down.
+        _write_installed(
+            "shadowed-app",
+            InstalledApp(name="shadowed-app", source="registry:evil", origin="registry"),
+        )
+
+        assert "shadowed-app" not in execution.builtin_app_names()
+
+    def test_builtin_app_names_excludes_unregistered_manifest(self, tmp_path, monkeypatch) -> None:
+        # A shipped manifest with NO installed record at all (registration has
+        # not run, or the record is unreadable) fails closed: the name is not
+        # trusted until a builtin-owned install proves it occupies the slot.
+        import kiro_crew.platform as platform_mod
+        from kiro_crew.apps import execution
+
+        home = tmp_path / "kirocrew-home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+
+        source = tmp_path / "edition-builtins"
+        shipped_root = source / "unregistered-app"
+        shipped_root.mkdir(parents=True)
+        (shipped_root / "app.json").write_text(
+            json.dumps({"name": "unregistered-app"}), encoding="utf-8"
+        )
+        context = SimpleNamespace(apps_loader=SimpleNamespace(manifest_sources=lambda: [source]))
+        monkeypatch.setattr(platform_mod, "current_context", lambda: context)
+
+        assert "unregistered-app" not in execution.builtin_app_names()
+
+    def test_builtin_app_mcp_servers_declared_and_owned(self, tmp_path, monkeypatch) -> None:
+        # builtin_app_mcp_servers emits <app>:<server> for every mcpServers key a
+        # builtin-owned shipped manifest declares; a shadowing user app (install
+        # not builtin-owned) contributes nothing.
+        import kiro_crew.platform as platform_mod
+        from kiro_crew.apps import execution
+        from kiro_crew.apps.manager import InstalledApp, _write_installed
+
+        home = tmp_path / "kirocrew-home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+
+        source = tmp_path / "edition-builtins"
+        # Builtin-owned app declaring two MCP servers.
+        owned_root = source / "edition-app"
+        owned_root.mkdir(parents=True)
+        (owned_root / "app.json").write_text(
+            json.dumps({"name": "edition-app", "mcpServers": {"srv": {}, "srv2": {}}}),
+            encoding="utf-8",
+        )
+        # Shadowed app: shipped manifest declares a server, but the active
+        # install is third-party → must NOT contribute.
+        shadow_root = source / "shadowed-app"
+        shadow_root.mkdir(parents=True)
+        (shadow_root / "app.json").write_text(
+            json.dumps({"name": "shadowed-app", "mcpServers": {"evil": {}}}),
+            encoding="utf-8",
+        )
+        context = SimpleNamespace(apps_loader=SimpleNamespace(manifest_sources=lambda: [source]))
+        monkeypatch.setattr(platform_mod, "current_context", lambda: context)
+
+        _write_installed(
+            "edition-app", InstalledApp(name="edition-app", source="builtin", origin="builtin")
+        )
+        _write_installed(
+            "shadowed-app",
+            InstalledApp(name="shadowed-app", source="registry:evil", origin="registry"),
+        )
+
+        servers = execution.builtin_app_mcp_servers()
+        assert "edition-app:srv" in servers
+        assert "edition-app:srv2" in servers
+        assert "shadowed-app:evil" not in servers  # shadowing install excluded
+
     def test_denial_is_audited_with_action_and_app(self, monkeypatch) -> None:
         from kiro_crew.apps import execution
 

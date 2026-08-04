@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.pod import cli as pod_cli
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
@@ -38,8 +39,10 @@ def _ready_worktree(root: Path, name: str, *, venv: bool = True, dist: bool = Tr
     co = root / name
     co.mkdir(parents=True, exist_ok=True)
     if venv:
-        (co / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
-        b = co / ".venv" / "bin" / "kirocrew"
+        # Mirror the real per-platform venv layout so the detectors are
+        # exercised against what a venv on THIS host actually looks like.
+        b = prov.venv_bin(co)
+        b.parent.mkdir(parents=True, exist_ok=True)
         b.write_text("#!/bin/sh\n")
         b.chmod(0o755)
     if dist:
@@ -309,6 +312,16 @@ class TestProvision:
         novenv = _ready_worktree(tmp_path, "novenv", venv=False, dist=True)
         assert not prov.has_venv(novenv) and prov.has_dist(novenv)
 
+    def test_venv_bin_follows_the_platform_venv_layout(self, tmp_path: Path) -> None:
+        """``has_venv`` is called on every platform to report build state in the
+        Dev Fleet view (pods themselves stay Linux-only), so a POSIX-only path
+        here would report a built Windows worktree as unbuilt."""
+        got = prov.venv_bin(tmp_path)
+        if platform_compat.IS_WINDOWS:
+            assert got == tmp_path / ".venv" / "Scripts" / "kirocrew.exe"
+        else:
+            assert got == tmp_path / ".venv" / "bin" / "kirocrew"
+
     def test_provision_venv_only_skips_build(self, tmp_path: Path) -> None:
         co = _ready_worktree(tmp_path, "be-only", venv=True, dist=False)
         with patch.object(prov, "build_dist", side_effect=AssertionError("must not build")):
@@ -325,8 +338,8 @@ class TestProvisionBuildPaths:
 
         def fake_run(cmd: list[str], cwd: Path) -> int:
             if cmd[1:3] == ["-m", "venv"]:
-                (co / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
-                b = co / ".venv" / "bin" / "kirocrew"
+                b = prov.venv_bin(co)
+                b.parent.mkdir(parents=True, exist_ok=True)
                 b.write_text("#!/bin/sh\n")
                 b.chmod(0o755)
             return 0
@@ -390,10 +403,12 @@ class TestProvisionDependencyInstall:
         def fake_run(cmd: list[str], cwd: Path) -> int:
             calls.append(cmd)
             if cmd[1:3] == ["-m", "venv"]:
-                b = co / ".venv" / "bin"
-                b.mkdir(parents=True, exist_ok=True)
-                (b / "kirocrew").write_text("#!/bin/sh\n")
-                (b / "kirocrew").chmod(0o755)
+                # Materialize the venv entry point at the layout THIS platform
+                # actually uses, so has_venv() and the pod runtime agree.
+                b = prov.venv_bin(co)
+                b.parent.mkdir(parents=True, exist_ok=True)
+                b.write_text("#!/bin/sh\n")
+                b.chmod(0o755)
             if group_fails and "--group" in cmd:
                 return 1
             return 0
@@ -488,7 +503,8 @@ class TestProvisionDependencyInstall:
         monkeypatch.setattr(prov, "_run", self._venv_seeding_run(co, calls, group_fails=True))
         assert prov.ensure_venv(co) is True
         assert any("--group" in c for c in calls)  # attempted --group dev
-        pip = str(co / ".venv" / "bin" / "pip")
+        pip = str(prov.venv_bin_dir(co)
+                  / ("pip.exe" if platform_compat.IS_WINDOWS else "pip"))
         assert [pip, "install", "--editable", str(co)] in calls  # then fell back
 
 

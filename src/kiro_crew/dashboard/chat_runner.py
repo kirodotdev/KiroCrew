@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import stat as stat_module
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,7 +36,6 @@ from kiro_crew.config.loader import (
     normalize_agent_model,
     resolve_agent_bindings,
 )
-from kiro_crew.constants import CHAT_TURN_TIMEOUT
 from kiro_crew.context_management import (
     ensure_go_all_option,
     looks_like_plan,
@@ -108,6 +108,7 @@ from kiro_crew.dashboard.state import (
     should_queue_refusal_recovery,
     unsafe_bash_reason,
 )
+from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
@@ -120,6 +121,7 @@ from kiro_crew.hooks import (
     _normalize_tool_name,
     _tool_matches,
     fire_tool_hooks,
+    safe_read_file,
     validate_file_path,
 )
 from kiro_crew.llm_helpers import (
@@ -387,6 +389,10 @@ def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
 
 _WRITE_COMMANDS = frozenset({"create", "strReplace", "insert"})
 _MAX_SNAPSHOT = 200_000  # cap per-file snapshot to bound message meta size
+# Reconstruction reads the whole file synchronously on the event loop; past
+# this size the stored snapshot is truncated to _MAX_SNAPSHOT anyway, so
+# reconstruction declines instead of stalling the loop on a huge file.
+_MAX_RECONSTRUCT_BYTES = 2_000_000
 
 
 def _truncate_snapshot(content: str) -> str:
@@ -422,6 +428,102 @@ def _safe_read_snapshot(path: str) -> str | None:
         return None
 
 
+def _reconstruct_str_replace_before(path: str, raw_params: dict) -> str | None:
+    """Reconstruct the FULL-FILE before-content for a strReplace edit.
+
+    kiro-cli's ACP diff content block carries only the replaced FRAGMENT as
+    ``oldText`` for strReplace — not the whole file. Using it verbatim as the
+    before-snapshot made the chip diff a one-line fragment against the
+    full-file after, counting the entire file as additions (regression from
+    the #920 race fix, which correctly assumed full-file ``oldText`` for
+    create but not for strReplace).
+
+    Instead, read the file from disk and classify it by testing BOTH
+    hypotheses explicitly, reconstructing only when exactly one is plausible
+    (needle presence alone proves nothing — ``oldStr`` can re-form across
+    the replacement seam, e.g. ``oldStr="ab", newStr="a", before="abb"`` →
+    after ``"ab"``):
+
+    * ``newStr`` absent → post-write excluded (post-write content always
+      contains ``newStr``); pre-write proven iff ``oldStr`` occurs exactly
+      once (the tool refuses ambiguous ``oldStr``).
+    * ``newStr`` present but not unique (overlap-safe ``find()==rfind()``)
+      → post-write can neither be excluded nor reversed → decline.
+    * ``newStr`` unique → the single reversal candidate decides: candidate
+      tool-consistent AND pre-write plausible → undecidable, decline (seam
+      shapes); consistent only → reverse; inconsistent with pre-write
+      plausible → pre-write proven (post-write excluded).
+
+    Returns None when reconstruction isn't provable (missing/empty params —
+    including an empty ``newStr`` deletion, whose position in the after-state
+    is unrecoverable — ``replaceAll`` edits, where oldStr uniqueness is not
+    enforced and reversal would over-revert pre-existing ``newStr``
+    occurrences, non-regular or oversized files (``_MAX_RECONSTRUCT_BYTES``),
+    unreadable files, or an undecidable/implausible state); the caller then
+    falls through to the pre-existing source-priority chain.
+    """
+    old_str = raw_params.get("oldStr")
+    new_str = raw_params.get("newStr")
+    if not isinstance(old_str, str) or not isinstance(new_str, str) or not old_str or not new_str:
+        return None
+    if raw_params.get("replaceAll"):
+        # replaceAll is the one mode where strReplace does NOT enforce oldStr
+        # uniqueness, so the pre-write proof below doesn't hold and reversing
+        # every newStr occurrence over-reverts any that pre-existed the edit
+        # (server review finding: fabricated counts). Position/count is
+        # unrecoverable — decline and fall through to the fragment chain.
+        return None
+    try:
+        # Bound the read (server review findings): only regular files —
+        # /dev/zero and FIFOs stat as 0 bytes but read unboundedly — and
+        # only up to _MAX_RECONSTRUCT_BYTES (re-checked after the read,
+        # since stat() races with an external writer growing the file).
+        st = Path(path).expanduser().stat()
+        if not stat_module.S_ISREG(st.st_mode) or st.st_size > _MAX_RECONSTRUCT_BYTES:
+            return None
+        # Read through hooks.safe_read_file — the symlink-safe chokepoint
+        # (re-checks the RESOLVED target + O_NOFOLLOW open, closing the
+        # validate→read TOCTOU window; AWS-33/AWS-62). Raw content, no
+        # truncation: the cap must apply AFTER the reverse substitution or
+        # the needle could be cut mid-file. PermissionError (sensitive
+        # target / symlink race) and ordinary read errors both decline via
+        # the except-fallback — file-chip capture must never block a turn.
+        content = safe_read_file(path)
+    except Exception:
+        return None
+    if len(content) > _MAX_RECONSTRUCT_BYTES:
+        # Re-check after the read: the stat() gate above races with an
+        # external writer growing the file, and the substring scans below
+        # are O(n) — keep them bounded.
+        return None
+    pre_write_plausible = content.count(old_str) == 1
+    # Post-write content ALWAYS contains newStr (the edit just inserted it),
+    # so newStr absent excludes post-write entirely.
+    if new_str not in content:
+        return content if pre_write_plausible else None
+    # newStr present but NOT unique (overlap-safe: find()==rfind()):
+    # post-write can neither be excluded (any occurrence could be the edit
+    # site) nor reversed (ambiguous). Server review finding: strReplace
+    # "ab"→"a" on "aabb" → "aab" looks pre-write-plausible (one "ab") but
+    # IS post-write — classifying it pre-write recorded the after as the
+    # before and erased the edit from the chip. Decline.
+    if content.count(new_str) != 1 or content.find(new_str) != content.rfind(new_str):
+        return None
+    # newStr unique: the single possible reversal candidate decides.
+    candidate = content.replace(new_str, old_str, 1)
+    post_write_consistent = candidate.count(old_str) == 1
+    if post_write_consistent and pre_write_plausible:
+        return None  # seam shapes: valid as both states — undecidable
+    if post_write_consistent:
+        return candidate
+    if pre_write_plausible:
+        # Post-write EXCLUDED (its only possible edit site is
+        # tool-inconsistent), so pre-write is proven even with newStr
+        # coincidentally present in the file.
+        return content
+    return None
+
+
 def _snapshot_write_target(
     raw_params: dict | None,
     diff_old_text: str | None = None,
@@ -429,11 +531,18 @@ def _snapshot_write_target(
 ) -> dict | None:
     """Return {"path", "content"} of a file before modification for write tools.
 
-    Prefers the authoritative ``diff_old_text`` from the ACP diff content block
-    (kiro-cli's in-band before-text) over a disk read, because by the time we
-    process the event the write has already landed on disk (the auto-approved
-    path is a one-way notification — kiro-cli does NOT wait for the dashboard
-    to drain its asyncio.Queue before executing the write).
+    For strReplace, FIRST reconstructs the full-file before via
+    ``_reconstruct_str_replace_before`` (disk read + reverse substitution),
+    because the ACP diff content block's ``oldText`` is only the replaced
+    fragment for that command.
+
+    Otherwise prefers the authoritative ``diff_old_text`` from the ACP diff
+    content block (kiro-cli's in-band before-text) over a disk read, because
+    by the time we process the event the write has already landed on disk
+    (the auto-approved path is a one-way notification — kiro-cli does NOT
+    wait for the dashboard to drain its asyncio.Queue before executing the
+    write). For create the content block IS full-file: ``""`` for a new
+    file, the entire previous content for an overwrite.
 
     Falls back to a disk read only when no content block is present
     (``diff_old_text is None``), which is the correct path for the
@@ -456,6 +565,15 @@ def _snapshot_write_target(
     # by the LLM-tool intercept layer, so the security boundary is identical.
     if validate_file_path(path) is None:
         return None
+
+    # strReplace: the content block's oldText is only the replaced fragment,
+    # never the full file — reconstruct the true full-file before from disk +
+    # reverse substitution. Falls through to the generic chain when
+    # reconstruction is impossible.
+    if cmd == "strReplace":
+        before_full = _reconstruct_str_replace_before(path, raw_params)
+        if before_full is not None:
+            return {"path": path, "content": _truncate_snapshot(before_full)}
 
     # Prefer authoritative content-block before-text when available.
     if diff_old_text is not None:
@@ -523,10 +641,10 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     # No-op entries (before == after, e.g. an idempotent format-on-save)
     # are deliberately KEPT: the dashboard renders an explicit "no changes"
     # caption for them (FileChangeChips) instead of a contentless diff, so
-    # the UI is the single place that answers the no-op state. A backend
-    # drop was tried first but compared post-truncation/post-redaction
-    # content, which silently discarded real changes past the snapshot
-    # limit or inside redacted spans (PR #920 review finding).
+    # the UI is the single place that answers the no-op state. Dropping them in
+    # the backend would compare post-truncation/post-redaction content, which
+    # would silently discard real changes past the snapshot limit or inside
+    # redacted spans.
     fc_list = list(deduped.values())
     # Attach to the most recent assistant message; if none exists (turn
     # aborted before any text), create a synthetic message so the chips
@@ -549,6 +667,17 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
             meta={"file_changes": fc_list},
         )
     logger.info("Attached %d file_changes to slot %s", len(fc_list), slot.key)
+    # Honour the in-place-mutation contract (see resolve_permission_message in
+    # state.py): "the periodic flush skips non-dirty slots, so an unflagged
+    # in-place mutation can be lost on restart". The assistant-message branch
+    # above mutates meta in place without appending, so nothing else marks the
+    # slot dirty. That matters on the error/cancel call path, which — unlike the
+    # success path — is NOT followed by an explicit save_slot_off_loop: without
+    # this flag a periodic flush that snapshotted the message just before this
+    # write clears _dirty, and the file_changes never reach disk.
+    # (slot.append in the else branch already sets it; setting it once here
+    # covers both branches and cannot be missed by a later edit.)
+    slot._dirty = True
     slot._file_changes = []
 
 
@@ -896,9 +1025,9 @@ def _mask_quoted_separators(text: str) -> tuple[str, dict[str, str]]:
 
 # Native kiro-cli subagents (``use_subagent``) are surfaced in the Activity tab
 # via the ``_kiro.dev/subagent/list_update`` notification (one card per
-# sub-agent), handled by ``_native_subagent_sync`` below. We no longer parse the
-# ``subagent`` tool call's ``stages`` — the list_update gives authoritative
-# per-sub-agent identity/status that the stages payload lacked.
+# sub-agent), handled by ``_native_subagent_sync`` below. The list_update gives
+# authoritative per-sub-agent identity/status, so the ``subagent`` tool call's
+# ``stages`` payload is not parsed.
 
 _NATIVE_SUBAGENT_STALE_SECS = 120.0  # auto-close cards with no progress after 2 min
 
@@ -1398,9 +1527,9 @@ async def _deliver_auth_error_to_slack(
 ) -> None:
     """Mirror an auth-required error to a linked Slack thread.
 
-    Preserves the delivery the pre-turn readiness gate used to perform: a user
-    driving the linked session from Slack must not be left without a response
-    when the CLI is signed out.
+    A user driving the linked session from Slack must not be left without a
+    response when the CLI is signed out, so the auth-required error is delivered
+    to the linked thread.
     """
 
     slack_client = getattr(state, "slack_client", None)
@@ -1510,8 +1639,19 @@ def _flush_segment(
     assistant_text: str,
     *,
     broadcast: bool = True,
+    quiet_persist: bool = False,
 ) -> None:
-    """Finalize current text block as a segment and persist it."""
+    """Finalize current text block as a segment and persist it.
+
+    ``quiet_persist`` additionally suppresses the per-message ``chat_message``
+    broadcast that ``slot.append`` emits for the finalized assistant message.
+    Used ONLY by the mid-turn steer cut: at that boundary every client has
+    already finalized its streaming message (optimistic freeze on the
+    initiating tab, steer_push freeze on the others), so a broadcast here
+    would render a DUPLICATE copy of the pre-steer text below the steer
+    bubble. Normal end-of-segment flushes keep the broadcast — there the
+    clients still hold a live streaming message for it to reconcile into.
+    """
 
     # Remove trailing chunk messages (they belong to this segment).
     # Also pull aside any stop_event interleaved with this segment's chunks
@@ -1552,7 +1692,7 @@ def _flush_segment(
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;
     # the chat_segment event tells it to finalize streaming → assistant.
-    slot.append("assistant", redacted, "msg msg-a")
+    slot.append("assistant", redacted, "msg msg-a", broadcast=not quiet_persist)
     last_msg: dict = slot.messages[-1]
     # If a regenerate is pending, attach the stashed variants to this fresh assistant message.
     if slot._pending_variants:
@@ -1818,7 +1958,7 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
     over the async ``AutoNudgeService`` (``add`` / ``get_by_slot`` / ``remove``);
     no autonudge-internals change. Subcommands: ``status`` (default/empty),
     ``clear``, else arm with an optional ``--max N`` budget (default 50, clamped
-    1..50). The judge gate at ``HOOK_EVENT_STOP`` is a follow-up CR.
+    1..50).
     """
     _goal_svc = get_instance()
     _parts = message.split(None, 1)
@@ -1950,7 +2090,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     Called from ``_run_chat``'s finally on every turn-exit path. A steer that
     kiro-cli never confirmed via ``steering_consumed`` died with the turn
     (stall-cancel, soft STOP, error, or a steer racing the turn's natural
-    end); before this fix it vanished silently (2026-07-17 incident).
+    end); without this it would vanish silently.
 
     Requeues at the HEAD of the slot queue — steers were meant to be injected
     before any queued item ran — preserving their relative order, and
@@ -2072,24 +2212,17 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         ),
     )
 
-    task = asyncio.create_task(
-        asyncio.wait_for(
-            _run_chat(state, slot, next_msg),
-            timeout=CHAT_TURN_TIMEOUT,
-        )
-    )
+    task = spawn_guarded_turn(state, slot, _run_chat(state, slot, next_msg))
     slot.task = task
-    state._background_tasks.add(task)
-    task.add_done_callback(state._background_tasks.discard)
     return True
 
 
 async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None:
     """Consume and run one armed synthesis turn.
 
-    Kiro readiness is no longer waited on here. Readiness is latched at boot and
-    only refreshed by an explicit user action, so a stale not-ready value would
-    have parked this waiter indefinitely instead of letting the ACP attempt
+    Kiro readiness is not waited on here. Readiness is latched at boot and only
+    refreshed by an explicit user action, so waiting on a stale not-ready value
+    would park this waiter indefinitely instead of letting the ACP attempt
     report the real auth state. The turn runs; a signed-out CLI surfaces as an
     ``AcpAuthRequired`` error card from ``_run_chat``.
     """
@@ -2112,13 +2245,17 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
 
         # All delivery guards hold. Consume immediately before the turn begins.
         slot._pending_synthesis = False
-        synthesis_task = asyncio.create_task(
-            asyncio.wait_for(
-                _run_chat(state, slot, SUBAGENT_SYNTHESIS_PROMPT),
-                timeout=CHAT_TURN_TIMEOUT,
-            )
+        synthesis_task = spawn_guarded_turn(
+            state, slot, _run_chat(state, slot, SUBAGENT_SYNTHESIS_PROMPT)
         )
-        await synthesis_task
+        try:
+            await synthesis_task
+        except (asyncio.TimeoutError, TimeoutError):
+            # The ceiling fired; spawn_guarded_turn's callback already rendered
+            # the card naming the limit. Swallow here so the timeout does not
+            # also propagate into this function's caller, which dispatches
+            # fire-and-forget and would drop it unretrieved.
+            pass
     finally:
         slot._synthesis_inflight = False
 
@@ -2251,11 +2388,16 @@ async def _run_chat(
         return injected
 
     assistant_text = ""
+    # Initialized HERE (not with the other turn-state flags below) because
+    # _steer_segment_cut declares it nonlocal — mypy requires the binding to
+    # exist textually before the nested def. Semantics unchanged: nothing
+    # touches it between here and the flag block.
+    _produced_visible_output = False
     last_heartbeat = time.time()
     chunk_seq = 0
     in_tool_group = False
     # Rolling-buffer redactor for the live chat_chunk wire stream. Per-chunk
-    # redaction misses a credential split across streaming boundaries (issue 3);
+    # redaction misses a credential split across streaming boundaries;
     # this withholds the trailing credential-class run until it is confirmed safe
     # so raw fragments never reach WS/SSE consumers. assistant_text (the source
     # for the final _flush_segment redaction) is accumulated independently and is
@@ -2285,6 +2427,50 @@ async def _run_chat(
         if wire:
             state.broadcast_ws("chat_thinking", {"slot": slot.key, "content": wire})
 
+    def _steer_segment_cut() -> None:
+        """Finalize the accumulated text as a segment at a mid-turn steer.
+
+        Published on the slot (next to ``_acp_client``) so the dashboard steer
+        handler can cut the segment right BEFORE it persists the steer user
+        message. Without the cut, kiro-cli keeps the segment open across the
+        steer, so ``_flush_segment`` at end-of-segment appends the WHOLE text
+        (pre-steer + post-steer) BELOW the steer bubble — the reply the user
+        watched stream above their steer jumps to the bottom when the chat_done
+        refresh rebuilds from server history — and the pre-steer ``chunk``
+        entries are stranded above the bubble forever (the trailing-run walk in
+        ``_flush_segment`` stops at the first non-chunk message).
+
+        ``broadcast=False``: the initiating tab already froze its streaming
+        message when it pushed the optimistic bubble, and other tabs freeze on
+        the ``steer_push`` echo (appendSlotMessage finalize-on-steer). A
+        chat_segment broadcast here could instead finalize a NEWER post-steer
+        streaming message that raced ahead on the initiating tab.
+
+        Sync on purpose — the handler and this turn share the event loop, so
+        the flush cannot interleave with chunk processing.
+        """
+        nonlocal assistant_text, _produced_visible_output
+        # Drop the wire redactor's withheld tail instead of emitting it: a
+        # chat_chunk broadcast here would arrive AFTER the clients froze their
+        # streaming message at the steer boundary, opening a phantom streaming
+        # bubble below the steer card. No text is lost — assistant_text
+        # accumulates the full segment independently of the wire buffer, and
+        # _flush_segment persists (and re-redacts) that full text.
+        _wsred.reset()
+        if assistant_text.strip():
+            # quiet_persist: the clients already hold this text in their
+            # frozen (pre-steer) message; the append's chat_message broadcast
+            # would render a duplicate copy below the steer bubble.
+            _flush_segment(state, slot, assistant_text, broadcast=False, quiet_persist=True)
+            # The flushed segment IS visible output. Every other mid-turn site
+            # that resets assistant_text (compaction, clear, agent switch,
+            # /compact) sets this flag too; without it, a turn that streamed
+            # text, got steered, and then ended with no further text would hit
+            # the empty-response branch and requeue the ORIGINAL prompt —
+            # re-running its side effects.
+            _produced_visible_output = True
+        assistant_text = ""
+
     # Partial-output guard for transient-5xx retry: flipped True once ANY
     # assistant token streams or a tool call fires this turn. A transient
     # backend 5xx is only retried while this is False, so a re-prompt can't
@@ -2296,14 +2482,14 @@ async def _run_chat(
     # again (infinite loop), so the synthetic recovery turn — detected by the
     # incoming message being the recover instruction — deliberately does NOT
     # refresh the allowance and inherits the True flag set when recovery was
-    # enqueued (finding #3). Suppressed/nested recoveries never set the flag, so
+    # enqueued. Suppressed/nested recoveries never set the flag, so
     # this reset is a no-op for them and a later real turn can still recover.
     if message not in _SYNTHETIC_RECOVERY_MSGS:
         slot._posttoken_retry_used = False
     # tool_call_id -> DISPLAY TITLE (LLM-authored prose for shell tools; used
     # only for PostToolUse hook name-matching — NOT trustworthy for security).
     _pending_tools: dict[str, str] = {}
-    # tool_call_id -> canonical directive-tool name (#755 forgery gate). Written
+    # tool_call_id -> canonical directive-tool name (forgery gate). Written
     # ONLY at EVENT_TOOL_CALL, ONLY from the out-of-band _meta.kiro identity
     # (event.tool_name + event.mcp_server_name), never from the title. This is
     # the ONLY map the session-directive gate below trusts.
@@ -2336,7 +2522,6 @@ async def _run_chat(
     needs_session_reset = False
     _auth_required = False
     saw_compaction = False
-    _produced_visible_output = False
     _turn_tool_calls = 0  # tool dispatches this turn (refusal diagnostic)
     _retrying_empty = False
     # Recoverable tool refusals (host-gate policy deny / read-only bash gate)
@@ -2380,7 +2565,7 @@ async def _run_chat(
     # ── /goal: arm / clear a goal-driven self-verdict loop (v0) ──
     # v0 rides AutoNudgeService unchanged: the nudge instructs the agent to
     # self-check its Definition of Done each cycle and call autonudge_stop when
-    # met. (The GoalJudge gate at HOOK_EVENT_STOP is a follow-up CR.)
+    # met.
     if first_word == "/goal":
         await _handle_goal_command(state, slot, message)
         return
@@ -2554,6 +2739,10 @@ async def _run_chat(
         # (the dashboard steer handler) can reach the running session's client
         # to inject a mid-turn steer. Cleared in the finally below.
         slot._acp_client = getattr(client, "client", None)
+        # Companion steer handle: lets the steer handler cut the current text
+        # segment at the steer boundary (see _steer_segment_cut). Same
+        # lifecycle as _acp_client.
+        slot._steer_segment_cut = _steer_segment_cut
         # Backfill slot.model from provider if user didn't explicitly set one.
         # AcpProvider stores the resolved model on client._model. For claude_code
         # that is a provider id; map it back to the canonical registry key so it
@@ -2607,7 +2796,7 @@ async def _run_chat(
             logger.warning("Failed to surface pending MCP OAuth requests", exc_info=True)
 
         # Publish this turn's session identity so managed MCP tools resolve
-        # X-Session-Key; one shared writer lives in messaging.identity. (#232)
+        # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(state.sessions, session_key)
 
         # ── @prompt expansion: resolve @name to SOP/prompt content ──
@@ -2779,7 +2968,7 @@ async def _run_chat(
                 folder_path = state.folder_breadcrumb(slot.folder_id) or None
                 slot._folder_changed = False
             _color_theme = getattr(slot, "color_theme", "")
-            # Governance gate (arbiter item 1): installed-pack persona injection
+            # Governance gate: installed-pack persona injection
             # is a governable capability. A policy can force-disable it wholesale
             # (default-allow standalone). Only consult when a persona could
             # actually be injected (new turn + installed "custom-" theme) to
@@ -2962,7 +3151,7 @@ async def _run_chat(
         _turn_cost_usd = 0.0
         _turn_msg_boundary = len(slot.messages)
 
-        # Lease-dispatch race gate (Codex HIGH): this session's semaphore lease
+        # Lease-dispatch race gate: this session's semaphore lease
         # was taken by get_or_create above, but the provider turn only opens on
         # the first stream iteration below. If a gateway restart / Make-Live
         # cutover moved the SessionManager into the closing state during the
@@ -3028,7 +3217,7 @@ async def _run_chat(
                 _turn_emitted = True  # tokens delivered — transient retry now unsafe
                 # Stream to the wire through the rolling buffer so a credential
                 # split across token boundaries can't cross a broadcast boundary
-                # unredacted (issue 3). Only the confirmed-safe prefix is emitted;
+                # unredacted. Only the confirmed-safe prefix is emitted;
                 # the trailing (possibly-partial-credential) run is withheld until
                 # the next chunk or the segment flush. assistant_text above still
                 # accumulates the full text for the authoritative final redaction.
@@ -3045,7 +3234,7 @@ async def _run_chat(
                 # Thinking content is not included in the main response text.
                 # Broadcast as a separate WS event for frontend rendering.
                 # Streamed through StreamRedactor so a credential split across
-                # thinking chunks can't cross the wire unredacted (issue 3);
+                # thinking chunks can't cross the wire unredacted;
                 # the withheld tail is flushed by _flush_thinking_stream when the
                 # thinking phase ends or the turn completes.
                 wire = _thinkred.feed(event.text)
@@ -3083,7 +3272,10 @@ async def _run_chat(
                 # flushed to assistant message meta in _flush_file_changes on turn end.
                 # Prefer the in-band diff_old_text from the ACP content block
                 # (authoritative) over a disk read which races with the write.
-                _file_snapshot = _snapshot_write_target(
+                # Offloaded: strReplace reconstruction reads the file from
+                # disk, and a slow/hung filesystem must not stall the loop.
+                _file_snapshot = await asyncio.to_thread(
+                    _snapshot_write_target,
                     event.raw_tool_params,
                     diff_old_text=event.diff_old_text,
                     diff_path=event.diff_path,
@@ -3146,7 +3338,7 @@ async def _run_chat(
                     _raw = _raw[9:]
                 if event.tool_call_id:
                     _pending_tools[event.tool_call_id] = _raw
-                    # Forgery gate (#755): record the directive-tool name ONLY
+                    # Forgery gate: record the directive-tool name ONLY
                     # from the trusted _meta.kiro identity and ONLY for a genuine
                     # call served by KiroCrew's OWN core MCP server — never the
                     # title, and never another (possibly third-party) MCP server
@@ -3228,8 +3420,10 @@ async def _run_chat(
                     # taken there; this is the first event with the file path.
                     # Prefer the in-band diff_old_text from the ACP content
                     # block (authoritative) over a disk read which races with
-                    # the write.
-                    _file_snapshot_upd = _snapshot_write_target(
+                    # the write. Offloaded: reconstruction reads from disk and
+                    # a slow/hung filesystem must not stall the loop.
+                    _file_snapshot_upd = await asyncio.to_thread(
+                        _snapshot_write_target,
                         event.raw_tool_params,
                         diff_old_text=event.diff_old_text,
                         diff_path=event.diff_path,
@@ -3338,7 +3532,7 @@ async def _run_chat(
                     # bare-vs-prefixed mismatch (silent no-render).
                     producing_session_key=slot.linked_session_key or _history_key_for(slot.key),
                 )
-                # Session directive (#755): a stateless session-bound tool
+                # Session directive: a stateless session-bound tool
                 # (monitor_start / monitor_update / autonudge_stop / set_project
                 # / suggest_followup / ask_question) returns a directive marker
                 # instead of resolving its own session identity. Apply it HERE,
@@ -3401,8 +3595,8 @@ async def _run_chat(
                             # tool via the canonical _meta identity, and this is
                             # the FINAL frame — so a marker that does not decode
                             # means the effect is being dropped outright. Never
-                            # let that be silent: this exact silence hid the
-                            # rawOutput-envelope escaping bug (#755) for a day.
+                            # let that be silent: this exact silence can hide a
+                            # rawOutput-envelope escaping bug.
                             # Mid-stream frames legitimately decode to None and
                             # are excluded by the tool_final guard.
                             logger.warning(
@@ -3513,10 +3707,13 @@ async def _run_chat(
                         event.title,
                         session_key=session_key,
                         agent=slot.agent or "",
+                        app=slot._app or "",
                         tool_kind=event.tool_kind,
                         raw_params=event.raw_tool_params,
                         command=event.shell_command,
                         is_shell=event.is_shell,
+                        mcp_server_name=event.mcp_server_name,
+                        mcp_tool_name=event.tool_name,
                     )
                     if tool_result.action == TOOL_DENY:
                         await client.reject_tool(event.request_id)
@@ -4070,7 +4267,7 @@ async def _run_chat(
                 # on that path: the finally would raise UnboundLocalError,
                 # replacing the CancelledError with a spurious exception and
                 # skipping both the message marking and the Slack cleanup —
-                # reintroducing this PR's own orphan-card bug on the cancel path.
+                # reintroducing the orphan-card bug on the cancel path.
                 # "rejected" is the correct reading: a cancelled turn never
                 # obtained consent.
                 outcome = "rejected"
@@ -4554,9 +4751,7 @@ async def _run_chat(
             if is_claude_backend(client):
                 msg = "✅ Conversation compacted."
                 _append_compaction_notice(state, slot, msg)
-                state.broadcast_context_usage(
-                    slot.key, _context_usage_payload(slot.key, client)
-                )
+                state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
             else:
                 # Tell frontend to show compacting state and disable input
                 logger.info("Deferred compaction: waiting for compaction result")
@@ -4783,7 +4978,7 @@ async def _run_chat(
             # START of a GENUINE new user turn (see the gated reset near
             # `_turn_emitted = False`), never on the synthetic recovery turn.
             # Resetting it on the recovery turn's completion would let a repeated
-            # post-token 5xx during recovery re-queue forever (finding #3).
+            # post-token 5xx during recovery re-queue forever.
 
         if _stop_reason == STOP_REASON_CANCELLED:
             logger.info("Turn cancelled by user for slot %s", slot.key)
@@ -4814,9 +5009,9 @@ async def _run_chat(
         # tool call, end-of-turn plan/OPTIONS processing applied) to Stop hooks.
         # fire() matches Stop hooks against this and puts it on stdin as
         # ``assistant_text``; run_script_hook caps ONLY the KIROCREW_HOOK_CONTEXT
-        # env var (ARG_MAX safety). Previously this was sliced to [:500] here,
-        # which hid the tail — e.g. the harness [OPTIONS:] line — from both the
-        # matcher and the hook body.
+        # env var (ARG_MAX safety). The full segment is passed (not sliced to
+        # [:500]) so the tail — e.g. the harness [OPTIONS:] line — reaches both
+        # the matcher and the hook body.
         _final = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
         await _fire(HOOK_EVENT_STOP, _final)
 
@@ -4981,10 +5176,10 @@ async def _run_chat(
             # The ACP subprocess is dead (pipe death) or busy — always reset the
             # session and count the failure, regardless of depth (mirrors the
             # AcpProcessDied / PromptBusyExhaustedError handlers). Only the
-            # re-queue is depth-0-gated. Previously this whole block was gated on
-            # `_prompt_depth == 0`, so a depth>0 pipe-death fell through to the
-            # generic else: no reset (next turn hit the dead process) and the
-            # failure never counted toward the exhaustion threshold.
+            # re-queue is depth-0-gated. Gating this whole block on
+            # `_prompt_depth == 0` would let a depth>0 pipe-death fall through to
+            # the generic else: no reset (the next turn hits the dead process)
+            # and the failure never counting toward the exhaustion threshold.
             needs_session_reset = True  # checked in finally block
             if assistant_text:
                 _safe, _ = redact_exfiltration_urls(assistant_text)
@@ -5086,7 +5281,7 @@ async def _run_chat(
             # the interrupted turn's full context — original prompt, streamed
             # partial text, and any completed tool results — so the model resumes
             # from where it stopped instead of restarting. This is why the
-            # tool-call case is no longer fail-fast: the continue prompt tells the
+            # tool-call case is not fail-fast: the continue prompt tells the
             # model NOT to re-run tools that already completed, so a post-tool
             # transient recovers safely (the model reads prior tool results and
             # continues) instead of double-running a side-effecting tool. We allow
@@ -5098,7 +5293,7 @@ async def _run_chat(
             # same one-shot post-activity rule. A fix to either copy's
             # predicate or budget rules must be mirrored in the other.
             #
-            # ACCEPTED TRADEOFF (finding #1, owner decision — do NOT re-add a
+            # ACCEPTED TRADEOFF (owner decision — do NOT re-add a
             # tool-call fail-fast guard): a mid-stream 5xx is rare, and the
             # CONTINUE instruction explicitly tells the model to resume rather
             # than re-run completed tools. A residual double-execution risk
@@ -5107,7 +5302,7 @@ async def _run_chat(
             # the owner accepts that narrow risk rather than failing the whole
             # turn fast. This is deliberate — recovering the turn is preferred.
             #
-            # ONE-SHOT ACCOUNTING (finding #3): the allowance is consumed ONLY
+            # ONE-SHOT ACCOUNTING: the allowance is consumed ONLY
             # when a recovery is actually enqueued (set immediately before the
             # queue_insert below, AFTER the eligibility check + backoff). Setting
             # it here — before the Stop-suppressed / nested / cancel-during-sleep
@@ -5153,7 +5348,7 @@ async def _run_chat(
                 # live session (no reset). The partial + notice are already shown;
                 # the model resumes from the preserved context and appends the
                 # continued answer as a new message below. Consume the one-shot
-                # allowance HERE — only a real enqueue burns it (finding #3).
+                # allowance HERE — only a real enqueue burns it.
                 await asyncio.sleep(_delay)
                 slot._posttoken_retry_used = True
                 slot.queue_insert(0, _POSTTOKEN_RECOVER_MSG, kind=SYNTHETIC_RECOVERY_KIND)
@@ -5193,6 +5388,9 @@ async def _run_chat(
         # Steer handle: turn is over, drop the live client ref so a late steer
         # can't target a dead session (the route also re-checks running state).
         slot._acp_client = None
+        # Same lifecycle for the segment-cut handle: a late steer must not
+        # flush into a finished turn's (already-flushed) locals.
+        slot._steer_segment_cut = None
         # Ensure file changes always surface, even on cancel/error. Wrapped so
         # a raise here cannot skip the re-arm below and re-introduce the orphan
         # bug this fix prevents.
@@ -5214,34 +5412,58 @@ async def _run_chat(
                 _autonudge.notify_turn_complete(slot.key)
         except Exception:
             logger.debug("autonudge.notify_turn_complete failed", exc_info=True)
-        # Clean up mirror stream on any exit path
-        if _mirror_stream_ts and state.slack_client and _mirror_chan:
-            try:
-                if _mirror_active_task:
-                    await state.slack_client.append_task(
-                        _mirror_chan,
-                        _mirror_stream_ts,
-                        _mirror_active_task,
-                        _mirror_active_task_title,
-                        "complete",
-                    )
-            except Exception:
-                logger.debug("Task append cleanup failed", exc_info=True)
-            try:
-                await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
-            except Exception:
-                logger.debug("Stream cleanup failed", exc_info=True)
-        if _acquired:
-            if needs_session_reset:
+        # Clean up mirror stream on any exit path.
+        #
+        # The release below MUST happen however this block exits. Each await in
+        # here is already guarded against ``Exception``, but ``CancelledError``
+        # derives from ``BaseException`` (since 3.8), so a cancellation
+        # delivered while one of them is suspended slips past every
+        # ``except Exception`` and skips the release entirely.
+        #
+        # The permit is keyed by SESSION, so leaking it does not merely lose
+        # this turn: the session reads as permanently busy, every later turn for
+        # it blocks forever, no queued turn drains, and only a gateway restart
+        # clears it. The nested try/finally makes the release unconditional
+        # while preserving the reset-then-release ordering.
+        try:
+            if _mirror_stream_ts and state.slack_client and _mirror_chan:
+                try:
+                    if _mirror_active_task:
+                        await state.slack_client.append_task(
+                            _mirror_chan,
+                            _mirror_stream_ts,
+                            _mirror_active_task,
+                            _mirror_active_task_title,
+                            "complete",
+                        )
+                except Exception:
+                    logger.debug("Task append cleanup failed", exc_info=True)
+                try:
+                    await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
+                except Exception:
+                    logger.debug("Stream cleanup failed", exc_info=True)
+            if _acquired and needs_session_reset:
                 try:
                     await state.sessions.reset(session_key)
                 except Exception:
                     logger.warning("Failed to reset session %s after agent switch", session_key)
-            state.sessions.release(session_key)
+        finally:
+            if _acquired:
+                # A successful reset() above already popped the key under its
+                # own lock, so this is a no-op on that path (the popped
+                # session's semaphore is discarded with it). Kept unconditional
+                # so a reset that failed or was cancelled still hands back the
+                # permit rather than stranding the session.
+                state.sessions.release(session_key)
         # End-of-turn fallback: catches set_project calls that fired mid-turn,
-        # after the start-of-turn consume already ran.
-        await _consume_pending_reset(state, slot)
-        # ── Requeue unconsumed steers (steer-loss fix, 2026-07-17 incident) ──
+        # after the start-of-turn consume already ran. Guarded because a raise
+        # here would skip the steer requeue and queue drain below, silently
+        # stranding queued work at the end of an otherwise successful turn.
+        try:
+            await _consume_pending_reset(state, slot)
+        except Exception:
+            logger.debug("_consume_pending_reset failed", exc_info=True)
+        # ── Requeue unconsumed steers ──
         # A steer handed to kiro-cli that never echoed steering_consumed dies
         # with the turn (stall-cancel, soft STOP, error, or a steer that raced
         # the turn's natural end). Degrade each one to an ordinary queue card

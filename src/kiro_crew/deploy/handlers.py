@@ -103,7 +103,7 @@ def _redact_text(s: str) -> str:
 def _sanitize_response(payload: Any) -> Any:
     """Recursively apply credential + exfiltration redaction to all str values in a response payload.
 
-    R19 F1: deploy handler error responses echo LLM-controlled values (local_dir,
+    Deploy handler error responses echo LLM-controlled values (local_dir,
     site_id, profile) without BOTH redaction passes. This helper walks dict/list
     structures and applies _redact_text to every str leaf. Applied at the three
     chokepoint handlers (_handle_deploy, _handle_recall, _handle_destroy) so
@@ -139,7 +139,7 @@ def _redact_profile_fields(profiles: list[dict[str, Any]]) -> list[dict[str, Any
 def _redact_pending_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Recursively redact every string value in pending entries before response.
 
-    Defense-in-depth (F2 R8): pending entries contain LLM-controlled fields
+    Defense-in-depth: pending entries contain LLM-controlled fields
     (site_id, local_dir, scan_summary, profile) that could carry injected
     credential strings. Same pipeline as _redact_profile_fields.
     """
@@ -174,7 +174,7 @@ _SITE_ID_MAX = 64
 
 
 def _reaper_remediation(profile: str, region: str) -> str:
-    """Exact operator command for the finite-TTL reaper precondition (FU-1).
+    """Exact operator command for the finite-TTL reaper precondition.
 
     Rendered with the request's real profile/region so the 409 payload is
     directly actionable. Installing the reaper is an operator step by design
@@ -339,7 +339,7 @@ def _staging_root() -> Path:
 
 
 def _stage_tree_safe(source: Path, staging_root: Path) -> Path:
-    """Hook-gated staging copy with hardlink rejection (R19 F2).
+    """Hook-gated staging copy with hardlink rejection.
 
     Replaces shutil.copytree: walks the source tree, reads each file through
     hooks.safe_read_file_bytes_nolink (O_NOFOLLOW + fstat nlink + is_sensitive_path gate), and
@@ -354,7 +354,7 @@ def _stage_tree_safe(source: Path, staging_root: Path) -> Path:
     os.makedirs(str(dst), mode=0o700, exist_ok=True)
 
     for dirpath, dirnames, filenames in os.walk(str(source), followlinks=False):
-        # R23 F3: a symlinked DIRECTORY appears in dirnames but is not
+        # A symlinked DIRECTORY appears in dirnames but is not
         # descended (followlinks=False) and carries no file entries — it would
         # silently vanish from the snapshot, deploying something different
         # from the approved tree. Reject explicitly instead.
@@ -375,7 +375,7 @@ def _stage_tree_safe(source: Path, staging_root: Path) -> Path:
                 raise RuntimeError(
                     f"symlink-in-tree: symlink found at {src_file} — deploy blocked"
                 )
-            # R19 F2: reject hardlinks (st_nlink > 1)
+            # Reject hardlinks (st_nlink > 1)
             try:
                 st = os.lstat(str(src_file))
             except OSError:
@@ -388,11 +388,11 @@ def _stage_tree_safe(source: Path, staging_root: Path) -> Path:
                     f"(hardlinked file) — deploy blocked"
                 )
             # Read through the hook gate (sensitive-path + O_NOFOLLOW).
-            # R30 F1: the nolink variant fstat()s the OPENED descriptor and
+            # The nolink variant fstat()s the OPENED descriptor and
             # rejects st_nlink > 1 / non-regular inodes — the lstat() above is
             # only a fast-path pre-check; the authoritative hardlink rejection
             # is pinned to the same inode that gets read (no lstat->open race).
-            # R33 F1: within_root pins containment to the OPENED fd — a nested
+            # within_root pins containment to the OPENED fd — a nested
             # dir swapped for a symlink after the walk cannot smuggle files
             # from outside the approved tree into the public deployment.
             try:
@@ -400,7 +400,7 @@ def _stage_tree_safe(source: Path, staging_root: Path) -> Path:
                     str(src_file), within_root=str(source)
                 )
             except FileTooLargeError as e:
-                # R33 F2: tree cap (200 MiB) > per-file cap — surface as a
+                # tree cap (200 MiB) > per-file cap — surface as a
                 # structured staging rejection (409), not an escaping 500.
                 raise RuntimeError(
                     f"file-too-large: {src_file} exceeds the per-file read cap "
@@ -422,7 +422,7 @@ def _compute_content_digest(src_dir: str) -> str:
 
     Produces a sha256 hash of a sorted manifest of (relative_path, size, content_hash)
     per file. Used at preview time and re-verified at confirm time to detect
-    content changes between preview and confirmation (F1 R8).
+    content changes between preview and confirmation.
     """
     import hashlib
 
@@ -606,7 +606,7 @@ def _scan_tree(src: Path) -> tuple[list, int]:
                 severity="credential",
             ))
             continue
-        # F2: Read as BYTES first to handle binary files (images, fonts, etc.)
+        # Read as BYTES first to handle binary files (images, fonts, etc.)
         # without crashing on UnicodeDecodeError. Binary files are identified by
         # null bytes in the first 8KiB — they skip content scanning but are NOT
         # exempt from sensitive-path rejection (already checked via safe_read_file_bytes).
@@ -621,7 +621,7 @@ def _scan_tree(src: Path) -> tuple[list, int]:
                 severity="credential",
             ))
             continue
-        # F1 (R11): Credential patterns MUST be evaluated on every file regardless
+        # Credential patterns MUST be evaluated on every file regardless
         # of binary classification. A NUL-prepended HTML/JS file is still parseable
         # by browsers and can contain secrets. Decode with errors="replace" so NUL
         # bytes become U+FFFD but AKIA patterns remain intact.
@@ -704,7 +704,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                 local_dir = validate_field(local_dir, _LOCAL_DIR_SPEC)
             except ValidationError as e:
                 return 400, {"error": f"invalid local_dir: {e}"}
-            # F7 (CodeQL path expression): string-level normalization barrier
+            # CodeQL path expression: string-level normalization barrier
             # BEFORE any Path construction — reject relative paths explicitly.
             local_dir_norm = os.path.normpath(os.path.expanduser(local_dir))
             if not os.path.isabs(local_dir_norm):
@@ -722,7 +722,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             # filesystem locations and being uploaded to a PUBLIC bucket.
             roots = await asyncio.to_thread(_allowed_local_roots)
             # Inline containment barrier (normpath+startswith) for static-analysis
-            # recognition at this critical call site (CodeQL path expression F6).
+            # recognition at this critical call site (CodeQL path expression).
             resolved_str = os.path.normpath(str(resolved))
             allowed = any(
                 resolved_str == os.path.normpath(str(r))
@@ -744,7 +744,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                 return 400, {"error": "local_dir is or contains a sensitive credential path"}
             src = resolved
 
-            # F3: TOCTOU defense — stage an immutable snapshot before scan+deploy.
+            # TOCTOU defense — stage an immutable snapshot before scan+deploy.
             # Size guard: refuse trees > 200 MiB before copying.
             _MAX_STAGE_BYTES = 200 * 1024 * 1024
 
@@ -767,7 +767,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
                 Returns (staged_path, staged_src). Raises if symlinks found in snapshot.
 
-                Security (F3 TOCTOU): pins the source directory inode with an
+                Security (TOCTOU): pins the source directory inode with an
                 O_DIRECTORY|O_NOFOLLOW fd before copying. A symlink swapped at the
                 root between containment-check and copytree is rejected by
                 O_NOFOLLOW (ELOOP). The fd pins the inode for the duration of the
@@ -778,7 +778,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                 sr = _staging_root()
                 sp = Path(tempfile.mkdtemp(prefix="deploy-stage-", dir=str(sr)))
 
-                # R23 F2: EVERY failure after mkdtemp must remove sp — the
+                # EVERY failure after mkdtemp must remove sp — the
                 # caller only learns the staging path on success, so a raise
                 # here would otherwise leak the tree until disk exhaustion.
                 try:
@@ -820,7 +820,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                                 "symlink-in-tree: source directory inode changed "
                                 "between containment check and staging (possible swap)"
                             )
-                        # R20 F1: stage through the hook-gated helper (per-file
+                        # Stage through the hook-gated helper (per-file
                         # safe_read_file_bytes + hardlink rejection) instead of
                         # shutil.copytree, walking via the pinned dir fd so the
                         # root cannot be swapped mid-copy.
@@ -841,7 +841,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                         )
 
                 staged = Path(staged_copy)
-                # F3: reject ANY symlink in the staged snapshot (fail closed)
+                # Reject ANY symlink in the staged snapshot (fail closed)
                 symlinks_found = [
                     str(p) for p in staged.rglob("*") if p.is_symlink()
                 ]
@@ -856,11 +856,9 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             try:
                 staged_path, staged_src = await asyncio.to_thread(_stage_tree, src)
             except RuntimeError as e:
-                # R23 F2: convert EVERY expected staging rejection into a
-                # structured 409 — hardlink and hook-gate rejections previously
-                # escaped as raw 500s.
-                # R35 F2: file-too-large was raised by R33 but never added
-                # here — it escaped as a raw 500 instead of the structured 409.
+                # Convert EVERY expected staging rejection into a structured
+                # 409 (hardlink, hook-gate, and file-too-large rejections)
+                # instead of letting them escape as raw 500s.
                 _rejects = ("symlink-in-tree", "hardlink-in-tree",
                             "staging-read-blocked", "file-too-large")
                 if any(tag in str(e) for tag in _rejects):
@@ -898,7 +896,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         if findings and params.get("override_scan") is not True:
             _audit("deploy", site_id, "scan-blocked",
                    error=f"{len(findings)} finding(s)")
-            # R18 F6: carry the preview bindings so an override-confirm is
+            # Carry the preview bindings so an override-confirm is
             # pinned to the scanned content and resolved identity (same
             # fields as the clean requires_confirm preview).
             scan_digest = await asyncio.to_thread(_compute_content_digest, src_dir)
@@ -908,7 +906,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                          "profile": profile, "region": region}
 
         # Validate ttl_hours BEFORE any AWS call — invalid value -> 400, no deploy.
-        # F4: strict type check — reject strings ("12"), floats (12.5), and bools (True).
+        # Strict type check — reject strings ("12"), floats (12.5), and bools (True).
         raw_ttl = params.get("ttl_hours")
         if raw_ttl is None:
             ttl_hours = 72
@@ -927,7 +925,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
         # Confirm-gate — publishing makes content world-readable (§9.3).
         if params.get("confirm") is not True:
-            # F1 (R8): include resolved canonical profile+region and a content digest
+            # Include resolved canonical profile+region and a content digest
             # in the preview response so pending_params can store them for staleness
             # checks at confirm time.
             content_digest = await asyncio.to_thread(_compute_content_digest, src_dir)
@@ -938,7 +936,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                          "content_digest": content_digest,
                          "message": "This will publish to a PUBLIC URL on your own AWS. Confirm to proceed."}
 
-        # F4 (R15): when the caller supplies expected_content_digest on a
+        # When the caller supplies expected_content_digest on a
         # confirm=true request, re-compute the current digest and reject with
         # 409 stale_preview if content changed between preview and confirm.
         expected_digest = str(params.get("expected_content_digest", "")).strip()
@@ -950,7 +948,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                     "code": "stale_preview",
                 }
 
-        # R17 F4: bind the previewed IDENTITY, not just content — a concurrent
+        # Bind the previewed IDENTITY, not just content — a concurrent
         # default-profile/region change between preview and confirm would
         # otherwise publish to a different AWS account than the one previewed.
         expected_profile = str(params.get("expected_profile", "")).strip()
@@ -985,7 +983,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             pass
 
         if not manifest_bucket and ttl_hours != 0:
-            # FU-1: precondition failures render the EXACT operator command
+            # Precondition failures render the EXACT operator command
             # with the request's real profile/region so remediation is
             # copy-paste, not archaeology.
             return 409, {
@@ -997,7 +995,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                 "remediation": _reaper_remediation(profile, region),
             }
 
-        # F3: Finite-TTL also requires the reaper Lambda stack (separate from base)
+        # Finite-TTL also requires the reaper Lambda stack (separate from base)
         if ttl_hours != 0:
             try:
                 reaper_rc, _, _ = await asyncio.to_thread(
@@ -1024,8 +1022,8 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         _audit("deploy", site_id, "ok")
 
         # Write the .kirocrew-deploy.json manifest (same shape that deploy.sh
-        # writes) so the reaper knows the TTL. Dashboard deploys previously
-        # accepted ttl_hours but never persisted it — now they do.
+        # writes) so the reaper knows the TTL. Dashboard deploys persist
+        # ttl_hours here.
         now_utc = datetime.now(timezone.utc)
         now_iso = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         if ttl_hours == 0:
@@ -1079,7 +1077,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
         if manifest_write_failed and ttl_hours != 0:
             _audit("deploy", site_id, "manifest_failed")
-            # F5: attempt best-effort rollback (recall empties S3, makes URL → 404)
+            # Attempt best-effort rollback (recall empties S3, makes URL → 404)
             rolled_back = False
             try:
                 await asyncio.to_thread(
@@ -1103,7 +1101,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         if manifest_write_failed and ttl_hours == 0:
             result["warning"] = "TTL manifest upload failed (non-critical for persistent deploys)"
 
-        # R16 F3: persist the strong-identity field into the artifact's
+        # Persist the strong-identity field into the artifact's
         # webapp_metadata so teardown can cross-verify the manifest belongs
         # to THIS deployment (slug alone is mutable/forgeable). Best-effort:
         # a metadata write failure must not fail a successful deploy.
@@ -1156,7 +1154,7 @@ async def _do_recall(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                          "message": ("Recall empties the site (URL → 404) but keeps the infra "
                                      "(reversible). Note: edge caches may serve briefly, and "
                                      "already-downloaded content cannot be recalled.")}
-        # R26 F1: mirror the destroy binding (R25) — recall empties the
+        # Mirror the destroy binding — recall empties the
         # bucket, so a site recreated between preview and confirm must not
         # be emptied under a stale dialog.
         exp_dist = str(params.get("expected_distribution_id", "") or "")
@@ -1199,7 +1197,7 @@ async def _do_destroy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                          "message": (f"DESTROY will permanently delete bucket "
                                      f"'{site.get('bucket', '')}' and distribution "
                                      f"'{site.get('distribution_id', '')}'. This cannot be undone.")}
-        # R25 F1: bind the confirmed destroy to the resources shown at
+        # Bind the confirmed destroy to the resources shown at
         # preview — if the site was recreated between preview and confirm,
         # the live ids differ from the previewed ones and we refuse.
         exp_dist = str(params.get("expected_distribution_id", "") or "")
@@ -1233,9 +1231,9 @@ async def _do_list() -> tuple[int, dict[str, Any]]:
     the same sites once, attributed to the first profile that returned them).
     Per-profile failures degrade to a warning instead of failing the fleet.
 
-    F6: bounded concurrency (semaphore=5) replaces serial iteration.
+    Bounded concurrency (semaphore=5) replaces serial iteration.
     """
-    # R12 F4: engine.list_sites spawns via subprocess preexec_fn — unsupported
+    # engine.list_sites spawns via subprocess preexec_fn — unsupported
     # on native Windows (deploy features are POSIX-only). Return a structured
     # unsupported result instead of an uncaught exception.
     if os.name == "nt":
@@ -1295,7 +1293,7 @@ def _is_internal_secret_request(request: web.Request) -> bool:
     return "X-Internal-Secret" in request.headers
 
 
-# F1: default-deny allowlist for internal-secret callers.
+# Default-deny allowlist for internal-secret callers.
 # Only these handler operations are reachable via MCP tool path (X-Internal-Secret).
 # ANY new handler added to register_routes is DENIED unless explicitly listed here.
 _INTERNAL_ALLOWED_HANDLERS: frozenset[str] = frozenset({"deploy", "list", "pricing"})
@@ -1361,7 +1359,7 @@ async def _handle_put_config(request: web.Request) -> web.Response:
         return web.json_response({"error": f"invalid config: {e}"}, status=400)
     result = await asyncio.to_thread(_save_config, profile, region)
     _audit("config_update", profile, "allowed")
-    # R26 F2: config responses echo profile/region strings — route through
+    # Config responses echo profile/region strings — route through
     # the sanitize chokepoint like every other deploy response.
     return web.json_response(_sanitize_response(result))
 
@@ -1411,7 +1409,7 @@ async def _handle_iam_policy(request: web.Request) -> web.Response:
         "policy": iam_mod.policy_json(include_custom_domain=custom, tier=tier),
     }
     if tier == "fullstack":
-        # R23 F1: fullstack requires the permissions-boundary policy to exist
+        # fullstack requires the permissions-boundary policy to exist
         # BEFORE the first deploy — iam:CreateRole is conditioned on it.
         payload["boundary_policy"] = json.dumps(
             iam_mod.boundary_policy_document(), indent=2)
@@ -1458,11 +1456,11 @@ async def _handle_verify(request: web.Request) -> web.Response:
         # Back-filling account/verified_at is a registry write — audited
         # like every other registry mutation in this file.
         _audit("profile_verify", profile, "allowed")
-    return web.json_response(_sanitize_response({**result, "profile": profile}))  # R26 F2
+    return web.json_response(_sanitize_response({**result, "profile": profile}))
 
 
 async def _handle_pricing(request: web.Request) -> web.Response:
-    """Live unit prices for cost estimates (NEW-1, Joe R1 follow-up).
+    """Live unit prices for cost estimates.
 
     Read-only: queries the AWS Pricing API through the resolved profile and
     returns per-unit USD prices with a ``source`` marker (``live`` vs
@@ -1494,7 +1492,7 @@ async def _handle_profiles_get(_request: web.Request) -> web.Response:
     reg = await asyncio.to_thread(profiles_mod.load_registry)
     discovered = await asyncio.to_thread(profiles_mod.discover_aws_profiles)
     registered = {p["name"] for p in reg["profiles"]}
-    # R18 F1: the blocking credential-redaction rule applies to EVERY
+    # The blocking credential-redaction rule applies to EVERY
     # profile-related string in the response -- `default` and the discovered
     # `available` names were the two unredacted stragglers.
     return web.json_response({
@@ -1522,7 +1520,7 @@ async def _handle_profiles_post(request: web.Request) -> web.Response:
         region = validate_field(str(body.get("region", "")) or DEFAULT_REGION, _REGION_SPEC)
     except ValidationError as e:
         return web.json_response({"error": f"invalid profile: {e}"}, status=400)
-    # R40 F1: validate_field skips the pattern check on an empty string and
+    # validate_field skips the pattern check on an empty string and
     # _PROFILE_SPEC is not required, so "" sails through — and downstream
     # engine._aws() OMITS --profile for an empty name, meaning
     # ``aws configure set`` would silently rewrite the user's DEFAULT AWS
@@ -1549,7 +1547,7 @@ async def _handle_profiles_post(request: web.Request) -> web.Response:
             return web.json_response({"error": _safe_err(Exception(err))}, status=400)
 
     # Atomic RMW under lock — concurrent POST/PUT/DELETE won't lose each other's writes.
-    # R37 F1: the capacity check must be re-verified INSIDE the lock. The
+    # The capacity check must be re-verified INSIDE the lock. The
     # pre-lock check above is only a fast-fail before the create_aws_profile
     # side effect; two concurrent POSTs at 49 profiles could both pass it,
     # append to 51, and load_registry()'s truncate-to-50 would silently drop
@@ -1574,7 +1572,7 @@ async def _handle_profiles_post(request: web.Request) -> web.Response:
     _audit("profile_register", name, "allowed")
     return web.json_response({
         "profiles": _redact_profile_fields(reg["profiles"]),
-        "default": _redact_text(str(reg["default"])),  # R18 F1
+        "default": _redact_text(str(reg["default"])),
     })
 
 
@@ -1623,7 +1621,7 @@ async def _handle_profiles_put(request: web.Request) -> web.Response:
     _audit("profile_update", name, "allowed")
     return web.json_response({
         "profiles": _redact_profile_fields(result["profiles"]),
-        "default": _redact_text(str(result["default"])),  # R20 F4
+        "default": _redact_text(str(result["default"])),
     })
 
 
@@ -1660,7 +1658,7 @@ async def _handle_profiles_delete(request: web.Request) -> web.Response:
     _audit("profile_delete", name, "allowed")
     return web.json_response({
         "profiles": _redact_profile_fields(result["profiles"]),
-        "default": _redact_text(str(result["default"])),  # R20 F4
+        "default": _redact_text(str(result["default"])),
     })
 
 
@@ -1687,7 +1685,7 @@ async def _expire_manifest_best_effort(art: Any) -> str:
     - "expired-now": manifest rewritten, reaper collects on next sweep
     - "skipped": the metadata records NO usable deploy identity (no
       deploy_target/profile/slug) — there is nothing to expire; the caller may
-      tombstone (R39 F2: this is distinct from a failed write)
+      tombstone (this is distinct from a failed write)
     - "unreachable": a usable identity exists but the expiry write FAILED —
       the caller must fail retryably instead of tombstoning, or a finite-TTL
       deployment would keep running until its original TTL while the UI
@@ -1707,7 +1705,7 @@ async def _expire_manifest_best_effort(art: Any) -> str:
     if not slug:
         return "skipped"
 
-    # R39 F2: no deploy_target or no recorded profile means the artifact never
+    # No deploy_target or no recorded profile means the artifact never
     # captured a usable deploy identity — there is no manifest we could expire.
     if meta.deploy_target is None or not meta.deploy_target.profile:
         return "skipped"
@@ -1760,7 +1758,7 @@ async def _expire_manifest_best_effort(art: Any) -> str:
         _audit("teardown-manifest", slug, "unreachable", error="missing bucket")
         return "unreachable"
 
-    # R12 F2: PATCH the existing manifest instead of replacing it — a fresh
+    # PATCH the existing manifest instead of replacing it — a fresh
     # write drops arch/bucket/distribution_id/oac_id, sending engine-arch
     # deployments down the wrong reaper path (S3-prefix-only) and leaking the
     # distribution + per-site bucket. Download, patch ONLY the expiry fields
@@ -1782,7 +1780,7 @@ async def _expire_manifest_best_effort(art: Any) -> str:
     except Exception as exc:  # noqa: BLE001 — read failure handled fail-closed below
         logger.debug("teardown manifest read failed: %s", exc)
 
-    # R17 F1 (fail-closed rework of R16 F3): a forged webapp artifact whose
+    # Fail-closed: a forged webapp artifact whose
     # slug matches another deployment must NOT be able to expire it.
     #  - No readable manifest -> REFUSE (a fresh expired manifest under an
     #    attacker-chosen slug key would direct the reaper at someone else's
@@ -1910,7 +1908,7 @@ async def _handle_teardown(request: web.Request) -> web.Response:
     profile_for_check = (meta.deploy_target.profile if meta and meta.deploy_target else None)
     region_for_check = (meta.deploy_target.region if meta and meta.deploy_target else None) or engine.DEFAULT_REGION
 
-    # ── Registry validation (F2 security fix) ──
+    # ── Registry validation ──
     # Profile and region come from LLM-writable webapp_metadata. Validate them
     # through the profiles registry BEFORE passing to any subprocess.
     if profile_for_check:
@@ -1954,7 +1952,7 @@ async def _handle_teardown(request: web.Request) -> web.Response:
             }, status=409)
 
     # ── Best-effort S3 manifest expiry FIRST (before tombstone) ──
-    # R39 F2: an unreachable manifest means the reaper cannot see an immediate
+    # An unreachable manifest means the reaper cannot see an immediate
     # expiry — for BOTH persistent and finite-TTL deploys. Tombstoning anyway
     # would report success while a finite-TTL deployment keeps running (and
     # billing) until its ORIGINAL TTL, with the card's live URL hidden and the
@@ -2007,7 +2005,7 @@ async def _handle_teardown(request: web.Request) -> web.Response:
     })
 
 
-# ── Pending confirmations (F6) ──────────────────────────────────────────────
+# ── Pending confirmations ──────────────────────────────────────────────
 
 
 @_internal_denied
@@ -2015,7 +2013,7 @@ async def _handle_pending_list(request: web.Request) -> web.Response:
     """GET /api/deploy/pending — list pending deploy confirmations.
 
     Only cookie/token-authenticated callers allowed (rejects internal-secret).
-    All string values are recursively redacted (F2 R8) to prevent credential
+    All string values are recursively redacted to prevent credential
     leakage through LLM-controlled scan_summary/local_dir/profile fields.
     """
     from kiro_crew.deploy.pending import list_pending
@@ -2029,7 +2027,7 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
 
     Re-runs _do_deploy with stored params + confirm=true. Only cookie/token-auth.
     Uses atomic claim_pending to prevent double-deploy from concurrent confirms.
-    Validates that the profile and content have not changed since preview (F1 R8).
+    Validates that the profile and content have not changed since preview.
     """
     denied = _deny_restricted(request, "pending_confirm")
     if denied:
@@ -2044,7 +2042,7 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
             {"error": "pending entry not found, expired, or already claimed"}, status=409
         )
 
-    # F1 (R8): staleness check — re-resolve profile and compare to stored canonical.
+    # Staleness check — re-resolve profile and compare to stored canonical.
     stored_profile = entry.get("profile", "")
     stored_region = entry.get("region", "")
     try:
@@ -2064,7 +2062,7 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
             status=409,
         )
 
-    # F1 (R8/R9): content digest staleness check for local_dir deploys.
+    # Content digest staleness check for local_dir deploys.
     # Re-validate path confinement + sensitive-path + size guard at confirm time
     # (the directory could have been swapped or grown between preview and confirm).
     stored_digest = entry.get("content_digest", "")
@@ -2072,7 +2070,7 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
         local_dir = entry["local_dir"]
         local_path = Path(os.path.normpath(os.path.expanduser(local_dir)))
 
-        # F2 (R11): consolidate ALL blocking confinement pre-checks into ONE
+        # Consolidate ALL blocking confinement pre-checks into ONE
         # asyncio.to_thread hop (is_dir + resolve + allowed-roots + sensitive).
         def _confirm_confinement_check(
             lp: Path,
@@ -2116,12 +2114,12 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
                 status=409,
             )
 
-        # R17 F2: the early live-path digest read (Path.read_bytes on an
+        # The early live-path digest read (Path.read_bytes on an
         # LLM-controlled path, racy vs staging) is removed — _do_deploy
         # verifies expected_content_digest against the SAFELY STAGED snapshot
         # (symlink-free, hooks-gated), which is the authoritative check.
 
-    # R10 F3: content-digest staleness check for ARTIFACT deploys too — the
+    # Content-digest staleness check for ARTIFACT deploys too — the
     # artifact can be edited (artifact_update) between preview and confirm,
     # deploying different content than was approved. Re-stage the CURRENT
     # artifact content and compare its digest with the one stored at preview.
@@ -2166,19 +2164,19 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
         params["region"] = entry["region"]
     if entry.get("ttl_hours") is not None:
         params["ttl_hours"] = entry["ttl_hours"]
-    # R18 F5: bind the stored (previewed) identity so _do_deploy's own
-    # comparison (R17 F4) closes the registry-change race after approval.
+    # Bind the stored (previewed) identity so _do_deploy's own
+    # comparison closes the registry-change race after approval.
     if entry.get("profile"):
         params["expected_profile"] = entry["profile"]
     if entry.get("region"):
         params["expected_region"] = entry["region"]
-    # R16 F2: pass expected_content_digest into _do_deploy so the staged
+    # Pass expected_content_digest into _do_deploy so the staged
     # snapshot is verified at deploy time (TOCTOU between handler check above
     # and _do_deploy's own staging). The handler's early check is fast-fail;
     # this param is the authoritative content-integrity gate.
     if stored_digest:
         params["expected_content_digest"] = stored_digest
-    # R24: entries flagged override_scan_required were scan-blocked at preview
+    # Entries flagged override_scan_required were scan-blocked at preview
     # by OVERRIDABLE (non-credential) findings. Confirming them requires the
     # human to send override_scan=true explicitly (the "deploy anyway" action
     # in the dashboard) — otherwise _do_deploy re-blocks on the same findings.
@@ -2238,12 +2236,12 @@ def register_routes(app: web.Application) -> None:
     r.add_post("/api/deploy/destroy", _handle_destroy)
     r.add_get("/api/deploy/list", _handle_list)
     r.add_post("/api/deploy/teardown/{slug}", _handle_teardown)
-    # ── Pending confirmations (F6) ──
+    # ── Pending confirmations ──
     r.add_get("/api/deploy/pending", _handle_pending_list)
     r.add_post("/api/deploy/pending/{id}/confirm", _handle_pending_confirm)
     r.add_post("/api/deploy/pending/{id}/dismiss", _handle_pending_dismiss)
 
-    # ── F1 registration-time assertion: every handler must be in the allowlist
+    # ── Registration-time assertion: every handler must be in the allowlist
     # or carry the @_internal_denied decorator. A new handler that forgets both
     # will crash at startup, not silently grant MCP callers access.
     _REGISTERED_HANDLERS = {
@@ -2278,7 +2276,7 @@ def register_routes(app: web.Application) -> None:
 
     # ── Deprecated compat aliases (old /api/apps/deploy-web/* surface) ──────────
     # Exact-match dict for static endpoints — Location values are literals,
-    # no user data flows into the header (CodeQL URL redirection F7).
+    # no user data flows into the header (CodeQL URL redirection).
     _COMPAT_STATIC_MAP: dict[str, str] = {
         "deploy": "/api/deploy/deploy",
         "recall": "/api/deploy/recall",

@@ -13,7 +13,7 @@
  * shortcuts/theme options), the core never CONSUMES edition API methods — they
  * are written and read only by the edition. A registry the core never reads adds
  * public, stringly-typed (`unknown`-cast) seam surface for zero composition
- * benefit (the reason such a seam was declined in the original seam PR). Exporting
+ * benefit. Exporting
  * the blessed transport gives an edition the one thing it actually needs —
  * `X-Session-Key` + the auth-recovery/`ApiError` pipeline by construction — while
  * letting it keep full static types in its own module and adding no new

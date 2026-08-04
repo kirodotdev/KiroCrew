@@ -7,12 +7,16 @@ suppression rules in the test, so drift in either fails here.
 from __future__ import annotations
 
 import http.client
+import importlib
 import json
 import socket
 import ssl
+import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +25,34 @@ from kiro_crew import beacon, platform_compat
 # Captured before any fixture can monkeypatch the module attribute, so the
 # dedicated tests below can exercise the REAL implementation.
 _REAL_IS_DEFAULT_HOME = beacon.is_default_home
+
+_STAMP_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "stamp-distribution.sh"
+_NO_BASH_REASON = "no working bash on PATH (the stamping script only runs on build hosts)"
+
+
+def _run_stamp(dist: str, pkg_dir) -> "subprocess.CompletedProcess[str]":
+    return subprocess.run(
+        ["bash", str(_STAMP_SCRIPT), dist, str(pkg_dir)], capture_output=True, text=True
+    )
+
+
+def _probe_bash() -> bool:
+    """Return whether bash can actually run this script.
+
+    Not a `shutil.which("bash")` check: Windows ships a WSL launcher stub at
+    that name which resolves, then fails with "install a distro" and cannot see
+    a Windows path at all. So probe by running the real script in a temp dir and
+    requiring the generated file, which is the capability the tests need.
+    """
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = _run_stamp("source", tmp)
+            return proc.returncode == 0 and (Path(tmp) / "_build_info.py").is_file()
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+_HAVE_BASH = _probe_bash()
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +68,10 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(beacon, "is_ci", lambda: False)
     monkeypatch.delenv(beacon.DISABLE_ENV, raising=False)
     monkeypatch.delenv(beacon.DIST_ENV, raising=False)
+    # Present the unstamped shape by default. A developer who has run a
+    # packaging script has a real (gitignored) _build_info.py in the checkout,
+    # which would otherwise outrank DIST_ENV and fail the env-var tests.
+    monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", "")
     return tmp_path
 
 
@@ -203,6 +239,105 @@ class TestPayloadAllowlist:
         monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen())
         beacon.send("https://example.invalid", "1.2.3", enabled=True)
         assert beacon.payload("1.2.3")["first_seen"] == "0"
+
+
+class TestDistributionStamp:
+    """`dist` must come from the ARTIFACT, not from the environment.
+
+    A checkout ships no ``_build_info``, so every unstamped run reports
+    "source". That is correct for a git clone and wrong for a package: when no
+    packaging path stamps, the field is a constant and the channel breakdown
+    answers nothing. These tests pin the precedence and the stamping script so
+    the build and the metric cannot drift apart silently.
+
+    Patched via the module-level ``_BAKED_DISTRIBUTION`` binding, never by
+    writing a real ``_build_info.py``: that file lives inside the installed
+    package, so it is process-wide shared state that races under the default
+    ``-n auto`` and would corrupt sibling tests on other workers.
+    """
+
+    def test_unstamped_checkout_reports_source(self, _isolated_home, monkeypatch):
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", "")
+        monkeypatch.delenv(beacon.DIST_ENV, raising=False)
+        assert beacon.baked_distribution() == ""
+        assert beacon.distribution() == "source"
+
+    @pytest.mark.parametrize("dist", sorted(beacon.KNOWN_DISTRIBUTIONS))
+    def test_baked_value_is_reported(self, _isolated_home, monkeypatch, dist):
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", dist)
+        monkeypatch.delenv(beacon.DIST_ENV, raising=False)
+        assert beacon.distribution() == dist
+
+    def test_baked_value_outranks_the_env_var(self, _isolated_home, monkeypatch):
+        """The env var must not be able to relabel a packaged install."""
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", "dmg")
+        monkeypatch.setenv(beacon.DIST_ENV, "docker")
+        assert beacon.distribution() == "dmg"
+
+    def test_unknown_baked_value_falls_through(self, _isolated_home, monkeypatch):
+        """A bad stamp must not put an unclamped value on the wire."""
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", "not-a-channel")
+        monkeypatch.setenv(beacon.DIST_ENV, "wheel")
+        assert beacon.baked_distribution() == ""
+        assert beacon.distribution() == "wheel"
+        assert beacon.payload("1.2.3")["dist"] in beacon.KNOWN_DISTRIBUTIONS
+
+    @pytest.mark.skipif(not _HAVE_BASH, reason=_NO_BASH_REASON)
+    def test_real_stamped_module_is_read(self, _isolated_home, monkeypatch, tmp_path):
+        """The binding must actually come from a real generated module.
+
+        Patching ``_BAKED_DISTRIBUTION`` everywhere else would still pass if the
+        import were wired to the wrong name, so import a script-generated module
+        from a temp dir and assert the value the packaging path would produce.
+        """
+        proc = _run_stamp("dmg", tmp_path)
+        assert proc.returncode == 0, proc.stderr
+        spec = importlib.util.spec_from_file_location("_stamped_probe", tmp_path / "_build_info.py")
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module.DISTRIBUTION == "dmg"
+        monkeypatch.setattr(beacon, "_BAKED_DISTRIBUTION", module.DISTRIBUTION)
+        assert beacon.distribution() == "dmg"
+
+    def test_stamp_script_exists(self):
+        """Asserted unconditionally: a deleted script must fail everywhere.
+
+        The behavioral tests below need a working bash and skip without one, so
+        without this the script could vanish and every platform lacking bash
+        would still report green.
+        """
+        assert _STAMP_SCRIPT.is_file(), f"missing stamping script: {_STAMP_SCRIPT}"
+
+    @pytest.mark.skipif(not _HAVE_BASH, reason=_NO_BASH_REASON)
+    def test_stamp_script_covers_every_known_distribution(self, tmp_path):
+        """Every KNOWN_DISTRIBUTIONS value must be accepted by the script.
+
+        Pins the two lists together: adding a channel to the frozenset without
+        teaching the script would otherwise fail only at release time.
+        """
+        for dist in sorted(beacon.KNOWN_DISTRIBUTIONS):
+            pkg = tmp_path / dist
+            pkg.mkdir()
+            proc = _run_stamp(dist, pkg)
+            assert proc.returncode == 0, f"{dist}: {proc.stderr}"
+            assert f'DISTRIBUTION = "{dist}"' in (pkg / "_build_info.py").read_text()
+
+    @pytest.mark.skipif(not _HAVE_BASH, reason=_NO_BASH_REASON)
+    def test_stamp_script_rejects_an_unknown_value(self, tmp_path):
+        """A typo must fail the build, not silently bake a rejected value.
+
+        Skipped without a usable bash rather than left running: a broken bash
+        also exits non-zero, so this would pass for the wrong reason.
+        """
+        proc = _run_stamp("flatpak", tmp_path)
+        assert proc.returncode != 0
+        assert not (tmp_path / "_build_info.py").exists()
+
+    def test_generated_module_is_gitignored(self):
+        """A committed stamp would mislabel every other build's beacon."""
+        root = Path(__file__).resolve().parents[1]
+        assert "src/kiro_crew/_build_info.py" in (root / ".gitignore").read_text()
 
 
 class TestVersionClamp:
@@ -537,10 +672,23 @@ class TestFailOpen:
 
         Pins the boot-path contract: even a beacon that hangs far past its own
         timeout costs the caller only the thread spawn.
+
+        The hang is RELEASED at the end rather than left running. ``beacon.send``
+        resolves state through the module-global ``config_dir``, which
+        ``_isolated_home`` repoints per test -- so a thread still inside ``send``
+        when this test ends goes on to mint ``beacon_install_id`` in whichever
+        LATER test's home is installed by then, and
+        ``TestStatusOutput.test_status_does_not_create_id`` then fails for
+        something this test did. Reproduced by running this file followed by any
+        second file; a uuid4 stack trace showed the id being minted on this thread.
         """
+        released = threading.Event()
 
         def hang(*_a, **_k):
-            time.sleep(30)
+            # Indistinguishable from a 30s hang at the assertion below -- still
+            # unfinished when it runs -- but releasable before teardown.
+            released.wait(30)
+            raise OSError("released")
 
         monkeypatch.setattr(beacon.urllib.request, "urlopen", hang)
         start = time.monotonic()
@@ -554,6 +702,9 @@ class TestFailOpen:
         elapsed = time.monotonic() - start
         assert elapsed < 1.0, f"spawning the beacon cost {elapsed:.2f}s"
         assert thread.daemon, "must not pin interpreter exit"
+        released.set()
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "the beacon thread outlived its test"
 
     def test_gateway_wiring_is_detached_and_daemon(self):
         """The gateway must never await the beacon.
@@ -1190,12 +1341,12 @@ class TestGovernancePin:
         from kiro_crew.cli_config import _config_cmd
         from kiro_crew.dashboard.handlers.core import _beacon_governance_pinned_off
 
-        assert _tools_for(
-            lambda: beacon.send("https://e.invalid", "1.2.3", enabled=True)
-        ) == ["beacon_send"]
-        assert _tools_for(
-            lambda: _telemetry(argparse.Namespace(telemetry_action="enable"))
-        ) == ["telemetry_enable_cli"]
+        assert _tools_for(lambda: beacon.send("https://e.invalid", "1.2.3", enabled=True)) == [
+            "beacon_send"
+        ]
+        assert _tools_for(lambda: _telemetry(argparse.Namespace(telemetry_action="enable"))) == [
+            "telemetry_enable_cli"
+        ]
         assert _tools_for(
             lambda: _config_cmd(
                 argparse.Namespace(
@@ -1272,9 +1423,7 @@ class TestGenericConfigSetterIsGated:
     def _args(self, key, value, local=False):
         import argparse
 
-        return argparse.Namespace(
-            config_action="set", key=key, value=value, local=local, file=None
-        )
+        return argparse.Namespace(config_action="set", key=key, value=value, local=local, file=None)
 
     def _pin(self, monkeypatch, pinned):
         from kiro_crew import beacon as beacon_mod
@@ -1282,9 +1431,7 @@ class TestGenericConfigSetterIsGated:
         # **kwargs, not a bare lambda: the enforcement call sites pass
         # ``audit_tool=`` so the decision is SEL-audited, and a fixed-arity stub
         # would fail with a TypeError that looks like a production bug.
-        monkeypatch.setattr(
-            beacon_mod, "is_governance_pinned_off", lambda **_kwargs: pinned
-        )
+        monkeypatch.setattr(beacon_mod, "is_governance_pinned_off", lambda **_kwargs: pinned)
 
     @pytest.mark.parametrize("local", [False, True])
     def test_enable_is_refused_under_a_pin(self, _isolated_home, monkeypatch, local):

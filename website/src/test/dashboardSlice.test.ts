@@ -182,7 +182,7 @@ describe('dashboardSlice', () => {
 
     it('falls back to slot.mode when slot.surface is absent (back-compat)', () => {
       // Older backend payloads without a `surface` field must still route
-      // via `mode` so this refactor doesn't require a coupled deploy.
+      // via `mode` so a `surface`-aware client doesn't require a coupled deploy.
       const slot: ChatSlot = { key: 'orch-1', title: 'O', messages: 0, running: false, mode: 'orchestrator' }
       const state = buildState([slot], ['orch-1'])
       // Unified: chat badge includes orchestrator slots

@@ -1,9 +1,8 @@
 /**
  * Integration test for src/apps/auto-research/ResearchLabPage.tsx.
  *
- * CI coverage flags this file as "new code" for (0% new-line
- * coverage). We exercise the major rendering paths end-to-end with a mocked
- * api client to satisfy the >=60% new-line-coverage rule. Breadth over depth:
+ * Exercises the major rendering paths end-to-end with a mocked api client.
+ * Breadth over depth:
  *   - Empty state + list (active + history) rendering
  *   - Campaign detail: findings, evidence badges, controls, nudge
  *   - Stagnation banner

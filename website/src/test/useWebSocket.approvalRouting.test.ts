@@ -1,12 +1,11 @@
 /**
  * An approval frame with no `slot` has no owning conversation.
  *
- * The transport used to fall back to `chat.activeSlot`, so an unowned cron /
- * taskrunner command planted a permission card in whatever chat the user
- * happened to be viewing. There the card carried a slot-scoped Trust control
- * that resolved against that innocent slot, and it 404'd as soon as the short
- * background window elapsed ("That approval expired"). Unowned approvals must
- * reach the global surface (the notification feed) ONLY.
+ * Unowned approvals must reach the global surface (the notification feed) ONLY.
+ * Routing one to `chat.activeSlot` would plant a permission card in whatever
+ * chat the user happens to be viewing, where the card's slot-scoped Trust
+ * control resolves against that innocent slot and 404s as soon as the short
+ * background window elapses ("That approval expired").
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
@@ -56,8 +55,8 @@ class MockWebSocket {
   }
 }
 
-/** A store whose viewed slot already holds a turn — the slot the old fallback
- *  would have hijacked. */
+/** A store whose viewed slot already holds a turn — the slot a `chat.activeSlot`
+ *  fallback would hijack. */
 function storeViewingSlot1() {
   return createTestStore({
     chat: {
@@ -80,9 +79,9 @@ describe('useWebSocket unowned approval routing', () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     vi.stubGlobal('WebSocket', MockWebSocket)
     // useWebSocket reads `chat.activeSlot` off the SINGLETON store (not the
-    // Provider store), so the removed fallback is only reachable when the
-    // singleton has a slot selected. Priming it is what makes these tests
-    // discriminate the fix from the bug rather than passing either way.
+    // Provider store), so routing to the viewed slot is only reachable when the
+    // singleton has a slot selected. Priming it is what lets these tests catch
+    // a regression rather than passing either way.
     globalStore.dispatch(setActiveSlot('slot-1'))
   })
 

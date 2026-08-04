@@ -22,7 +22,7 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# The frontend is now in-tree at ``<repo-root>/website``; there is no remote to
+# The frontend is in-tree at ``<repo-root>/website``; there is no remote to
 # clone. ``KIROCREW_WEBSITE_REPO`` is retained only so existing tooling/docs
 # referencing the public mirror keep a stable name to point at.
 _DEFAULT_REPO_URL = "https://github.com/kirodotdev/KiroCrew"
@@ -81,8 +81,7 @@ def ensure_dev_dist_symlink() -> Optional[Path]:
     output is committed/packaged into the wheel). That path does not fire on a
     plain source-tree run (``PYTHONPATH=src python -m kiro_crew gateway``,
     ``dev-backend.sh``, etc.), so without this the gateway has no SPA bundle
-    and serves the "not found" guidance page (the legacy ``dashboard.html``
-    fallback was removed — Talos V2285871874).
+    and serves the "not found" guidance page.
 
     This helper reconciles the gap at gateway start:
 

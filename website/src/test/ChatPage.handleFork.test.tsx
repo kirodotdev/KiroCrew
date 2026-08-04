@@ -1,6 +1,6 @@
 /**
  * Tests for the tail-fork direction-resolution logic used by ChatPage's
- * `handleFork` (zejiangg comment #5 -- this coverage did not exist before).
+ * `handleFork`.
  *
  * IMPORTANT SCOPE NOTE: `handleFork` is a `useCallback` defined inline inside
  * the (very large) `ChatPage` component and is not exported standalone. A full
@@ -28,16 +28,15 @@
  * without exporting handleFork from ChatPage (out of scope: "do not touch
  * non-test source files").
  *
- * Code-review follow-up fix: the original `resolvedCfg` expression read
- * `forkCfg ?? (forkCfgLoading ? await api.dashboardConfig() : forkCfg)`.
- * Once the ['dashboardConfig'] query settled with no data (query errored, or
- * simply resolved to undefined) `forkCfgLoading` was false, so the `:
- * forkCfg` branch was taken and evaluated to `undefined` again -- silently
- * downgrading direction to 'head'. The fix simplifies to `forkCfg ?? await
- * api.dashboardConfig()`: use the cache when warm, otherwise always fetch a
- * fresh value, regardless of the query's loading state. This also drops
- * `forkCfgLoading` entirely (it is no longer read anywhere in handleFork),
- * so the mirror hook below no longer destructures `isLoading` either.
+ * The `resolvedCfg` expression is `forkCfg ?? await api.dashboardConfig()`:
+ * use the cache when warm, otherwise always fetch a fresh value, regardless of
+ * the query's loading state. A guard keyed on loading state
+ * (`forkCfg ?? (forkCfgLoading ? await api.dashboardConfig() : forkCfg)`)
+ * would break once the ['dashboardConfig'] query settled with no data (errored
+ * or resolved to undefined): `forkCfgLoading` is false, so the `: forkCfg`
+ * branch evaluates to `undefined` again and silently downgrades direction to
+ * 'head'. Because loading state is not consulted, the mirror hook below does
+ * not destructure `isLoading` either.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -82,10 +81,9 @@ function useHandleForkUnderTest(store: ReturnType<typeof makeStore>) {
     queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000,
   })
   return async (activeSlot: string, visibleIndex: number) => {
-    // B3 cold-cache fix (D2): forkCfg is undefined until the dashboardConfig
-    // query resolves for the first time. Use the cache when warm; otherwise
-    // fetch a fresh value directly so direction never silently falls back to
-    // an undefined config.
+    // forkCfg is undefined until the dashboardConfig query resolves for the
+    // first time. Use the cache when warm; otherwise fetch a fresh value
+    // directly so direction never silently falls back to an undefined config.
     const resolvedCfg = forkCfg ?? await api.dashboardConfig()
     const direction = resolvedCfg?.tail_fork_enabled ? 'tail' : 'head'
     return store.dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, direction })).unwrap()
@@ -136,11 +134,11 @@ describe('handleFork direction wiring (zejiangg #5)', () => {
 describe('handleFork B3 cold-cache fix (bug-fix regression test, required per ruleset)', () => {
   it('does NOT downgrade to head-fork when the dashboardConfig query has not resolved yet (cold cache, still loading)', async () => {
     // Simulate the cold-cache window: the ['dashboardConfig'] useQuery has not
-    // resolved (forkCfg undefined) when fork is invoked. Pre-fix, the handler
-    // fell through to `forkCfg?.tail_fork_enabled` (=> undefined => 'head'),
-    // silently downgrading an enabled tail-fork. Post-fix, handleFork always
-    // awaits a fresh api.dashboardConfig() call whenever forkCfg is absent,
-    // regardless of the query's loading state.
+    // resolved (forkCfg undefined) when fork is invoked. A handler that fell
+    // through to `forkCfg?.tail_fork_enabled` (=> undefined => 'head') would
+    // silently downgrade an enabled tail-fork. handleFork instead always awaits
+    // a fresh api.dashboardConfig() call whenever forkCfg is absent, regardless
+    // of the query's loading state.
     let resolveConfig!: (v: { tail_fork_enabled: boolean }) => void
     dashboardConfigMock.mockImplementation(() => new Promise(res => { resolveConfig = res }))
 
@@ -161,12 +159,11 @@ describe('handleFork B3 cold-cache fix (bug-fix regression test, required per ru
   })
 
   it('does NOT downgrade to head-fork when forkCfg is absent and the query has already settled (not loading) -- the exact case the original B3 fix missed', async () => {
-    // This is the precise regression code review flagged: pre-fix, the expression
-    // was `forkCfg ?? (forkCfgLoading ? await api.dashboardConfig() : forkCfg)`.
-    // Once the query settles with no data (errored, or simply resolves to
-    // undefined) `forkCfgLoading` becomes false, so the `: forkCfg` branch is
-    // taken and evaluates to `undefined` again -- silently downgrading to
-    // 'head' even though the query is no longer "loading". Post-fix,
+    // The hazard: a guard of `forkCfg ?? (forkCfgLoading ? await
+    // api.dashboardConfig() : forkCfg)` breaks once the query settles with no
+    // data (errored, or resolves to undefined) — `forkCfgLoading` becomes false,
+    // so the `: forkCfg` branch evaluates to `undefined` again and silently
+    // downgrades to 'head' even though the query is no longer "loading".
     // `resolvedCfg = forkCfg ?? await api.dashboardConfig()` always fetches
     // fresh when forkCfg is nullish, independent of loading state.
     //

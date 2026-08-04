@@ -429,7 +429,8 @@ class TestPrListEnrichment(unittest.TestCase):
             1: {"additions": 7, "deletions": 3, "checks_state": "failure"},
             2: {"additions": 0, "deletions": 0, "checks_state": None},
         }
-        with mock.patch.object(gh, "fetch_pr_summaries", return_value=summaries):
+        with mock.patch.object(gh, "fetch_pr_summaries", return_value=summaries), \
+                mock.patch.object(gh, "fetch_pr_readiness", return_value={}):
             out = gh.enrich_pulls("o", "r", pulls, "open")
         self.assertEqual(out[0]["additions"], 7)
         self.assertEqual(out[0]["checks_state"], "failure")
@@ -438,7 +439,10 @@ class TestPrListEnrichment(unittest.TestCase):
     def test_enrich_pulls_degrades_when_graphql_fails(self):
         # The enrichment is decoration; its failure must leave the rows usable.
         pulls = [{"number": 1, "title": "t"}]
-        with mock.patch.object(gh, "fetch_pr_summaries", side_effect=gh.GhCliError("boom")):
+        with mock.patch.object(gh, "fetch_pr_summaries", side_effect=gh.GhCliError("boom")), \
+                mock.patch.object(
+                    gh, "fetch_pr_summaries_by_number", side_effect=gh.GhCliError("boom")), \
+                mock.patch.object(gh, "fetch_pr_readiness", side_effect=gh.GhCliError("boom")):
             out = gh.enrich_pulls("o", "r", pulls, "open")
         self.assertEqual(out[0]["title"], "t")
         # UNKNOWN, not zero: 0 would claim the PR changes nothing, and the route
@@ -484,12 +488,211 @@ class TestPrListEnrichment(unittest.TestCase):
     def test_enrich_pulls_by_number_degrades_when_graphql_fails(self):
         pulls = [{"number": 235, "title": "t"}]
         with mock.patch.object(
-            gh, "fetch_pr_summaries_by_number", side_effect=gh.GhCliError("boom")
-        ):
+                    gh, "fetch_pr_summaries_by_number", side_effect=gh.GhCliError("boom")), \
+                mock.patch.object(
+                    gh, "fetch_pr_readiness_by_number", side_effect=gh.GhCliError("boom")):
             out = gh.enrich_pulls_by_number("o", "r", pulls)
         self.assertEqual(out[0]["title"], "t")
         self.assertIsNone(out[0]["additions"])
         self.assertIsNone(out[0]["checks_state"])
+
+
+class TestPrListMergeReadiness(unittest.TestCase):
+    """Merge READINESS rides on the list row, in REST's vocabulary.
+
+    The list row is what a BULK action sees, and it carried no mergeability at all —
+    so the bulk bar offered "arm auto-merge" for every selected PR and GitHub refused
+    each one that was already mergeable ("Pull request is in clean status") or already
+    merged ("Pull request is already merged"): one failure per row, from one click.
+    The field is free (this GraphQL call already walks the head commit for its check
+    rollup), so the fix is to carry it, normalized into the spelling every reader —
+    ``routes._MERGE_ALLOWED_STATES``, the frontend's ``MERGE_READY_STATES`` — uses.
+    """
+
+    def _proc(self, lines):
+        return mock.Mock(returncode=0, stdout="\n".join(json.dumps(x) for x in lines), stderr="")
+
+    def _no_spawn(self):
+        """Fail loudly if a test reaches a real ``gh`` process.
+
+        AGENTS.md: "Mock external processes — never spawn real processes in tests."
+        ``enrich_pulls`` now makes THREE calls (summaries, by-number top-up, readiness),
+        so mocking only the first leaves the others to shell out — which measurably
+        happened, and which makes the suite depend on network and on a logged-in CLI.
+        """
+        return mock.patch.object(
+            gh, "_gh_run",
+            side_effect=AssertionError("test reached a real `gh` subprocess"),
+        )
+
+    def test_readiness_is_a_SEPARATE_query_from_the_card_enrichment(self):
+        # THE load-bearing structural assertion of this feature.
+        #
+        # `mergeStateStatus` is the one field GitHub has to COMPUTE (a merge commit per
+        # PR). Folded into the card selection — which already walks each head commit and
+        # paginates the whole check rollup — the combined query reliably 502s at
+        # first:100, and the failure is not graceful: both enrichment paths carry that
+        # selection, so every row loses its diff size AND its readiness, leaving the
+        # bulk bar as blind as before while the list visibly regresses.
+        #
+        # So it must stay OUT of `_PR_SUMMARY_SELECTION` and travel in its own lean
+        # call. An earlier revision of this change had it inline and shipped exactly
+        # that outage.
+        self.assertNotIn("mergeStateStatus", gh._PR_SUMMARY_SELECTION)
+        self.assertIn("mergeStateStatus", gh._PR_READINESS_SELECTION)
+        # The lean query carries NOTHING else expensive — no rollup, no commit walk.
+        for expensive in ("statusCheckRollup", "commits(", "changedFiles"):
+            self.assertNotIn(expensive, gh._PR_READINESS_SELECTION)
+        # The cheap lifecycle fields DO ride along on the card query (measured free).
+        for free in ("mergeable", "state", "mergedAt"):
+            self.assertIn(free, gh._PR_SUMMARY_SELECTION)
+
+    def test_the_readiness_query_asks_for_the_field(self):
+        with mock.patch.object(gh, "_gh_run", return_value=self._proc([])) as m:
+            gh.fetch_pr_readiness("o", "r", "open")
+        query = next(a for a in m.call_args.args[0] if a.startswith("query="))
+        self.assertIn("mergeStateStatus", query)
+
+    def test_graphql_enums_are_lowered_into_rest_vocabulary(self):
+        # GraphQL SHOUTS (`CLEAN`), REST does not (`clean`). Both gates compare
+        # lowercase, so an un-lowered value would match neither and read as
+        # "not ready" — silently keeping the broken arm on offer.
+        rows = [
+            {"number": 1, "merge_state_status": "CLEAN"},
+            {"number": 2, "merge_state_status": "BLOCKED"},
+            {"number": 3, "merge_state_status": "DIRTY"},
+        ]
+        with mock.patch.object(gh, "_gh_run", return_value=self._proc(rows)):
+            out = gh.fetch_pr_readiness("o", "r", "open")
+        self.assertEqual(out[1], "clean")
+        self.assertEqual(out[2], "blocked")
+        self.assertEqual(out[3], "dirty")
+
+    def test_mergeable_is_not_readiness(self):
+        # `mergeable` means only "no CONFLICTS" — a PR with unsatisfied required reviews
+        # is mergeable:true with mergeable_state:"blocked", which is exactly why the
+        # readiness gate keys off the latter.
+        rows = [
+            {"number": 1, "mergeable_raw": "MERGEABLE", "pr_state": "OPEN"},
+            {"number": 2, "mergeable_raw": "CONFLICTING", "pr_state": "OPEN"},
+        ]
+        with mock.patch.object(gh, "_gh_run", return_value=self._proc(rows)):
+            out = gh.fetch_pr_summaries("o", "r", "open")
+        self.assertTrue(out[1]["mergeable"])
+        self.assertFalse(out[2]["mergeable"])
+
+    def test_unknown_mergeability_stays_unknown(self):
+        # GitHub computes it asynchronously, so a cold read answers UNKNOWN — measured at
+        # roughly HALF a page on a busy repo, so this is the common case, not the edge.
+        # It must NOT collapse to False: "we cannot tell" and "it conflicts" are
+        # different facts, and a gate that cannot tell must refuse rather than assert.
+        with mock.patch.object(
+            gh, "_gh_run", return_value=self._proc([{"number": 1, "merge_state_status": "UNKNOWN"}])
+        ):
+            self.assertEqual(gh.fetch_pr_readiness("o", "r", "open")[1], "unknown")
+        with mock.patch.object(
+            gh, "_gh_run", return_value=self._proc([{"number": 1, "mergeable_raw": "UNKNOWN"}])
+        ):
+            self.assertIsNone(gh.fetch_pr_summaries("o", "r", "open")[1]["mergeable"])
+
+    def test_a_missing_field_is_none_not_a_value(self):
+        rows = [{"number": 1, "additions": 1, "deletions": 0}]
+        with mock.patch.object(gh, "_gh_run", return_value=self._proc(rows)):
+            out = gh.fetch_pr_summaries("o", "r", "open")
+        self.assertIsNone(out[1]["mergeable_state"])
+        self.assertIsNone(out[1]["mergeable"])
+
+    def test_readiness_survives_a_FAILED_card_enrichment_and_vice_versa(self):
+        # The two calls fail INDEPENDENTLY. A row can legitimately have a known merge
+        # state but no diff size, or the reverse — collapsing them would mean one
+        # transient 502 costs both, which is the outage this split exists to prevent.
+        pulls = [{"number": 1, "title": "t"}]
+        with self._no_spawn(), \
+                mock.patch.object(gh, "fetch_pr_summaries", side_effect=gh.GhCliError("boom")), \
+                mock.patch.object(
+                    gh, "fetch_pr_summaries_by_number", side_effect=gh.GhCliError("boom")), \
+                mock.patch.object(gh, "fetch_pr_readiness", return_value={1: "clean"}):
+            out = gh.enrich_pulls("o", "r", pulls, "open")
+        self.assertEqual(out[0]["mergeable_state"], "clean")   # readiness survived
+        self.assertIsNone(out[0]["additions"])                 # enrichment did not
+
+        pulls = [{"number": 1, "title": "t"}]
+        summaries = {1: {"additions": 7, "deletions": 0, "changed_files": 1,
+                         "checks_state": "success",
+                         "checks_counts": {"failure": 0, "running": 0,
+                                           "success": 1, "other": 0},
+                         "mergeable": True}}
+        with self._no_spawn(), \
+                mock.patch.object(gh, "fetch_pr_summaries", return_value=summaries), \
+                mock.patch.object(gh, "fetch_pr_readiness", side_effect=gh.GhCliError("boom")):
+            out = gh.enrich_pulls("o", "r", pulls, "open")
+        self.assertEqual(out[0]["additions"], 7)               # enrichment survived
+        self.assertIsNone(out[0]["mergeable_state"])           # readiness did not
+
+    def test_readiness_by_number_batches_below_the_page_ceiling(self):
+        # Smaller than the summary batch on purpose: this is the computed field, and the
+        # page-size ceiling is exactly what the split exists to respect.
+        self.assertLess(gh._READINESS_BATCH, gh._SUMMARY_BATCH)
+        with mock.patch.object(gh, "_gh_run", return_value=self._proc([])) as m:
+            gh.fetch_pr_readiness_by_number("o", "r", list(range(1, 101)))
+        # 100 numbers at a batch of 50 -> exactly two calls.
+        self.assertEqual(m.call_count, 2)
+
+    def test_merged_becomes_closed_plus_a_timestamp(self):
+        # GraphQL has a third state (MERGED); REST models the same fact as
+        # `closed` + `merged_at`. The row shape is REST's, and
+        # `PrList.prStateVisual` checks `merged_at` FIRST — so reporting "merged"
+        # here would match no branch and paint a merged PR as green/open.
+        rows = [{"number": 1, "pr_state": "MERGED", "pr_merged_at": "2026-08-03T06:45:33Z"}]
+        with mock.patch.object(gh, "_gh_run", return_value=self._proc(rows)):
+            out = gh.fetch_pr_summaries("o", "r", "open")
+        self.assertEqual(out[1]["pr_state"], "closed")
+        self.assertEqual(out[1]["pr_merged_at"], "2026-08-03T06:45:33Z")
+
+    def test_enrichment_corrects_a_stale_cached_row(self):
+        # The #1265 case: the row was cached while the PR was open, the user armed
+        # auto-merge from it, and GitHub answered "already merged".
+        pulls = [{"number": 1265, "state": "open", "merged_at": None}]
+        summaries = {1265: {"additions": 1, "deletions": 0, "changed_files": 1,
+                            "checks_state": "success",
+                            "checks_counts": {"failure": 0, "running": 0,
+                                              "success": 1, "other": 0},
+                            "mergeable_state": "unknown", "mergeable": None,
+                            "pr_state": "closed",
+                            "pr_merged_at": "2026-08-03T06:45:33Z"}}
+        with self._no_spawn(), \
+                mock.patch.object(gh, "fetch_pr_summaries", return_value=summaries), \
+                mock.patch.object(gh, "fetch_pr_readiness", return_value={}):
+            out = gh.enrich_pulls("o", "r", pulls, "open")
+        self.assertEqual(out[0]["state"], "closed")
+        # Written TOGETHER with the state: a `closed` with no timestamp renders as
+        # the red closed-unmerged icon rather than as merged.
+        self.assertEqual(out[0]["merged_at"], "2026-08-03T06:45:33Z")
+
+    def test_enrichment_failure_states_readiness_as_unknown(self):
+        # Absent-and-falsy would read as "not ready" and put the row straight back
+        # into the auto-merge batch the provider refuses.
+        pulls = [{"number": 1, "title": "t"}]
+        with self._no_spawn(), \
+                mock.patch.object(gh, "fetch_pr_summaries", side_effect=gh.GhCliError("boom")), \
+                mock.patch.object(
+                    gh, "fetch_pr_summaries_by_number", side_effect=gh.GhCliError("boom")), \
+                mock.patch.object(gh, "fetch_pr_readiness", side_effect=gh.GhCliError("boom")):
+            out = gh.enrich_pulls("o", "r", pulls, "open")
+        self.assertIn("mergeable_state", out[0])
+        self.assertIsNone(out[0]["mergeable_state"])
+        self.assertIsNone(out[0]["mergeable"])
+
+    def test_a_live_row_keeps_its_own_merged_at(self):
+        # Only ever fills a GAP — a row that already carries a timestamp keeps it.
+        pulls = [{"number": 1, "state": "closed", "merged_at": "2026-01-01T00:00:00Z"}]
+        summaries = {1: {"mergeable_state": None, "mergeable": None,
+                         "pr_state": "closed", "pr_merged_at": "2026-08-03T06:45:33Z"}}
+        with self._no_spawn(), \
+                mock.patch.object(gh, "fetch_pr_summaries", return_value=summaries), \
+                mock.patch.object(gh, "fetch_pr_readiness", return_value={}):
+            out = gh.enrich_pulls("o", "r", pulls, "open")
+        self.assertEqual(out[0]["merged_at"], "2026-01-01T00:00:00Z")
 
 
 class TestPrAiSummary(unittest.TestCase):
@@ -1000,7 +1203,8 @@ class TestPrTimelineAndChecksRobustness(unittest.TestCase):
             gh, "fetch_pr_summaries",
             return_value={1: {"additions": 5, "deletions": 0, "changed_files": 1,
                               "checks_state": "success", "checks_counts": {}}},
-        ), mock.patch.object(gh, "fetch_pr_summaries_by_number") as by_number:
+        ), mock.patch.object(gh, "fetch_pr_summaries_by_number") as by_number, \
+                mock.patch.object(gh, "fetch_pr_readiness", return_value={}):
             by_number.return_value = {
                 2: {"additions": 7, "deletions": 1, "changed_files": 2,
                     "checks_state": "failure", "checks_counts": {}},

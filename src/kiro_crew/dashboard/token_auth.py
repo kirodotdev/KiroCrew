@@ -896,7 +896,7 @@ def write_app_secret(app_name: str, secret: str) -> None:
         # OSError, which would defeat the cleanup-and-reraise below for this
         # app secret. On POSIX applies chmod 0o600 by path; on
         # Windows an owner-only DACL via icacls (fchmod doesn't exist on
-        # Windows — previously an IS_POSIX no-op that let per-app secrets
+        # Windows, where an IS_POSIX no-op would let per-app secrets
         # land readable by other local users).
         platform_compat.restrict_to_owner(secret_path)
         with os.fdopen(fd, "w") as f:

@@ -139,10 +139,9 @@ async def index(request: web.Request) -> web.Response:
 
     When the built SPA bundle is absent/unreadable, serve the static
     ``_DASHBOARD_HTML_NOT_FOUND`` guidance page (restart/rebuild instructions).
-    The legacy server-rendered ``dashboard.html`` fallback was removed (an
-    XSS follow-up): it shipped an incomplete HTML
-    ``esc()`` and a permissive inline-script surface, and existed only as a
-    build-time fallback. The React SPA (reviewed clean) is now the only shell.
+    The React SPA is the only shell; there is no server-rendered HTML fallback,
+    which would ship an incomplete ``esc()`` and a permissive inline-script
+    surface.
 
     SECURITY CONTRACT — DO NOT inject server/user/session state into this
     response. The auth middleware serves this handler UNAUTHENTICATED on the
@@ -234,7 +233,7 @@ async def api_live(request: web.Request) -> web.Response:
 
 
 async def api_ready(request: web.Request) -> web.Response:
-    """GET /api/ready — Kubernetes-style readiness probe (Recommendation #6).
+    """GET /api/ready — Kubernetes-style readiness probe.
 
     Distinct from liveness: the process may be UP (``/api/live`` 200) yet not
     able to serve application traffic. Readiness reflects the observable
@@ -675,9 +674,8 @@ def _find_suitable_python() -> str | None:
     helper does not: the interpreter must NOT be free-threaded (whisper wheels
     are unavailable) and MUST have pip (this is an install target). Those are
     passed as the ``reject`` predicate so the resolver FALLS THROUGH to the next
-    candidate when one fails them, rather than giving up — preserving the
-    multi-candidate behavior the pre-shim loop had (a free-threaded/pip-less
-    interpreter winning the name race must not mask a usable later one).
+    candidate when one fails them, rather than giving up: a free-threaded/pip-less
+    interpreter winning the name race must not mask a usable later one.
     """
 
     def _unusable(p: str) -> bool:
@@ -1007,7 +1005,7 @@ async def api_security_stats(_request: web.Request) -> web.Response:
     does not carry: the registry lists the built-in RULE TABLE (what ships), while
     this field reports what is currently enforced after opt-outs and policy pins.
 
-    The dashboard no longer calls this — Settings → Security reads
+    The dashboard does not call this — Settings → Security reads
     ``/api/security/posture``, which carries these same counts PLUS the items behind
     them. Kept as a stable, narrow counts-only endpoint for external/API callers.
     Uses ``posture_counts_async`` rather than the full snapshot so serving three
@@ -1218,6 +1216,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.model": {"type": "str", "max_len": 64, "pattern": r"^[A-Za-z0-9._\-\[\]]*$"},
     "agent.reasoning_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.approval_mode": {"type": "enum", "values": ["auto", "interactive"]},
+    # How long an AD-HOC auto-approve grant lasts. Editable from Settings because
+    # every value here still ends: the timed ones are capped at the SafetyOverride
+    # 24h ceiling and "until_shutdown" dies with the process. The never-expiring
+    # DECLARED grant (agent.dangerously_skip_permissions) is deliberately NOT
+    # here — it stays config-file-only so it cannot be switched on from the UI.
+    "agent.yolo_duration": {
+        "type": "enum",
+        "values": ["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
+    },
     "agent.sandbox": {"type": "enum", "values": ["auto", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
     "agent.apps_allow_third_party": {"type": "bool"},

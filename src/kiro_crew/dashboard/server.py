@@ -42,6 +42,7 @@ from kiro_crew.dashboard import (
     ws,
 )
 from kiro_crew.dashboard.crash_dump_store import (
+    claim_dump_notification,
     dump_age_seconds,
     dump_replay_lines,
     newest_dump_with_stacks,
@@ -75,6 +76,7 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_session_docs,
     api_artifact_set_folder,
     api_artifact_set_pinned,
+    api_artifact_settle_blank,
     api_artifact_unpublish,
     api_artifact_update,
     api_artifact_update_sharing,
@@ -170,7 +172,11 @@ from kiro_crew.platform import (
     current_context,
     safe_context_call,
 )
-from kiro_crew.safety_override import safety_override
+from kiro_crew.safety_override import (
+    apply_config_duration,
+    grant_declared_yolo,
+    safety_override,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader, set_pending_staged_hook
@@ -225,6 +231,15 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/browser-event",
         "/api/browser/frame",
         "/api/browser/pump-audit",
+        # Native browser command channel (agent->Electron). MACHINE endpoints,
+        # same trust class as ``/api/browser/frame``: the MCP proxy posts commands
+        # and the Electron main process long-polls/returns results, all loopback +
+        # internal-secret. No browser calls them, so STRICT (not mixed). Each
+        # handler re-asserts loopback because a ``local_only=False`` deployment
+        # reclassifies strict paths as mixed.
+        "/api/browser/command",
+        "/api/browser/command-drain",
+        "/api/browser/command-result",
         # Computer use: the ``kirocrew-computer`` stdio shim's forwarding leg.
         # STRICT (not mixed): no browser calls it, and it is the entry point to
         # accessibility reads and input synthesis into the operator's real
@@ -347,8 +362,8 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # httpOnly, ``KIROCREW_INTERNAL_SECRET`` is stripped from agent env by
         # ``sandbox._AGENT_DENIED_ENV_KEYS``, and ``.local_secret`` is on the
         # ``security.py`` sensitive-path denylist), so the PUT the Investigate
-        # seed prompt asks for used to 403 unconditionally and no investigation
-        # ever recorded its findings. Deliberately the FULL path, not the
+        # seed prompt asks for would 403 unconditionally and no investigation
+        # could record its findings. Deliberately the FULL path, not the
         # ``/api/apps/issue-radar`` prefix: prefix-matching here would also admit
         # the app's GitHub/GitLab WRITE routes (label, close/reopen, comment) to
         # anything holding the internal secret. This route is local-only triage
@@ -854,6 +869,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/browser-auth-retry", handlers.api_browser_auth_retry)
     app.router.add_post("/api/browser/frame", handlers.api_browser_frame)
     app.router.add_post("/api/browser/pump-audit", handlers.api_browser_pump_audit)
+    app.router.add_post("/api/browser/command", handlers.api_browser_command)
+    app.router.add_post("/api/browser/command-drain", handlers.api_browser_command_drain)
+    app.router.add_post("/api/browser/command-result", handlers.api_browser_command_result)
     app.router.add_get("/api/browser/config", handlers.api_browser_config_get)
     app.router.add_put("/api/browser/config", handlers.api_browser_config_save)
     # Computer use: the thin ``kirocrew-computer`` stdio shim's only call. Lives
@@ -942,6 +960,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/artifacts/{slug}", api_artifact_detail)
     app.router.add_patch("/api/artifacts/{slug}", api_artifact_update)
     app.router.add_delete("/api/artifacts/{slug}", api_artifact_delete)
+    app.router.add_post("/api/artifacts/{slug}/settle", api_artifact_settle_blank)
     app.router.add_get("/api/artifacts/{slug}/versions", api_artifact_versions)
     app.router.add_get("/api/artifacts/{slug}/versions/{version}", api_artifact_version_detail)
     app.router.add_get("/api/artifacts/{slug}/events", api_artifact_events)
@@ -1114,7 +1133,7 @@ def _write_secret_file(secret_path: Path, secret: str) -> None:
             # pre-existing file with loose perms would stay loose and the caller
             # never learns. On POSIX this applies chmod 0o600 by path;
             # on Windows an owner-only DACL via icacls (fchmod doesn't exist on
-            # Windows — previously this was a silent no-op).
+            # Windows, where a raw fchmod would be a silent no-op).
             platform_compat.restrict_to_owner(secret_path)
             with os.fdopen(fd, "w") as f:
                 fd = -1  # fdopen took ownership; skip the redundant close below
@@ -1134,14 +1153,33 @@ def _write_secret_file(secret_path: Path, secret: str) -> None:
 
 
 def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
-    """Enable safety override at startup if ``agent.yolo=true`` in config.
+    """Enable the safety override at startup if the operator declared it.
 
-    Activates with 24h TTL (no longer permanent). Re-auth required after expiry.
+    ``agent.dangerouslySkipPermissions`` is a STANDING operator instruction, so the grant it creates
+    does not expire — it used to lapse after 24h and silently drop the user back
+    to prompt-for-everything, which breaks flows driven from Slack/Discord and
+    from cron where nobody is watching the dashboard to re-enable it.
+
+    State is in-memory, so the grant is re-established and re-audited on every
+    startup rather than persisted. An enterprise policy can forbid a
+    never-expiring grant (the ``yolo_duration`` governance scope), in which case
+    it falls back to the ad-hoc duration. Picking another approval mode still
+    clears it immediately.
+
+    Ad-hoc grants are untouched: Slack, the dashboard picker and the API all
+    expire on the single ``agent.yolo_duration`` value (default 6h).
     """
-    if not cfg.agent.yolo:
+    # Seed the ad-hoc TTL even when yolo is off, so a later dashboard/Slack
+    # activation uses the configured duration rather than the built-in default.
+    try:
+        apply_config_duration()
+    except Exception:
+        logger.warning("Could not apply the configured YOLO duration", exc_info=True)
+
+    if not cfg.agent.dangerously_skip_permissions:
         return
     try:
-        result = safety_override().activate("config")
+        result = grant_declared_yolo()
     except Exception:
         logger.error("Failed to activate safety override from config", exc_info=True)
         return
@@ -1149,8 +1187,8 @@ def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
         logger.error("Safety override activation refused (SEL audit failure?)")
         return
     logger.info(
-        "Safety override enabled at startup (agent.yolo=true, expires in %ds)",
-        result.ttl,
+        "Safety override enabled at startup (dangerouslySkipPermissions=true, %s)",
+        "no expiry" if result.ttl == 0 else f"expires in {result.ttl}s per policy",
     )
 
 
@@ -1843,6 +1881,7 @@ async def start_dashboard(
     app.router.add_get("/api/memory/events", handlers.api_memory_events)
     app.router.add_get("/api/memory/embedding-status", handlers.api_memory_embedding_status)
     app.router.add_post("/api/memory/enable-embeddings", handlers.api_memory_enable_embeddings)
+    app.router.add_post("/api/memory/embedding-model", handlers.api_memory_embedding_model)
     app.router.add_post("/api/memory/disable-embeddings", handlers.api_memory_disable_embeddings)
     app.router.add_get("/api/memory/episodic/search", handlers.api_memory_episodic_search)
     app.router.add_get("/api/memory/episodic", handlers.api_memory_episodic_list)
@@ -1988,6 +2027,7 @@ async def start_dashboard(
     app.router.add_post("/api/mcp/toggle-tool", handlers.api_mcp_toggle_tool)
     app.router.add_post("/api/mcp/toggle-all", handlers.api_mcp_toggle_all)
     app.router.add_post("/api/mcp/remove", handlers.api_mcp_remove)
+    app.router.add_post("/api/mcp/oauth/relay", handlers.api_mcp_oauth_relay)
     # REST-style MCP server registration (App Kit)
     app.router.add_put("/api/mcp/servers/{name}", handlers.api_mcp_server_detail)
     app.router.add_delete("/api/mcp/servers/{name}", handlers.api_mcp_server_detail)
@@ -2081,10 +2121,6 @@ async def start_dashboard(
     # Edition capability plugins (agent-client integrations + drift reconcile)
     app.router.add_get("/api/capability/plugins", handlers.api_capability_plugins_list)
     app.router.add_post("/api/capability/plugins/sync", handlers.api_capability_plugins_sync)
-    # Agent metadata (Phase 1)
-    app.router.add_get("/api/agent-metadata/{name}", handlers.api_agent_metadata_get)
-    app.router.add_put("/api/agent-metadata/{name}", handlers.api_agent_metadata_put)
-    app.router.add_delete("/api/agent-metadata/{name}", handlers.api_agent_metadata_delete)
     # Session workspace (Orchestrated Chat)
     app.router.add_get("/api/sessions/{id}/agents", handlers.api_session_agents_list)
     app.router.add_get("/api/sessions/{id}/agents/{agent_id}", handlers.api_session_agent_result)
@@ -2373,6 +2409,29 @@ async def start_dashboard(
     # Runs on the executor: escalation cleanup can traverse/delete legacy app
     # dirs, which must not block the event loop during startup.
     await asyncio.get_running_loop().run_in_executor(subprocess_executor(), register_builtin_apps)
+
+    # Warm the PreToolUse gate's first-party (builtin) app-name set from the
+    # shipped manifests, ONCE, on the executor (the discovery walk touches the
+    # filesystem and must not run on the event loop). The gate's app-own-server
+    # auto-approve then does a pure in-memory membership test with zero I/O; an
+    # empty set (should this fail) simply fails closed (owns-server calls prompt).
+    async def _warm_builtin_app_names() -> None:
+        try:
+            from kiro_crew.apps.execution import builtin_app_mcp_servers, builtin_app_names
+            from kiro_crew.hooks import set_builtin_app_mcp_servers, set_builtin_app_names
+
+            names = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), builtin_app_names
+            )
+            set_builtin_app_names(names)
+            servers = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), builtin_app_mcp_servers
+            )
+            set_builtin_app_mcp_servers(servers)
+        except Exception:  # noqa: BLE001 — a warm failure only costs an extra prompt
+            logger.warning("Failed to warm builtin app-name set for the gate", exc_info=True)
+
+    await _warm_builtin_app_names()
 
     # Reconcile resources (agents / skills / crons / MCP) for every ENABLED app.
     # Registration otherwise happens only in the enable path, so an app that
@@ -2775,7 +2834,17 @@ async def start_dashboard(
     # and startup warnings, rather than buried in interleaved stderr/journal.
     await asyncio.to_thread(rotate_dumps)
     _dump_file = await asyncio.to_thread(open_dump_file)
-    _loop_watchdog = LoopStallWatchdog(dump_file=_dump_file)
+    # exit_after is configurable because the right budget is host-dependent: a
+    # gateway doing heavy subprocess work (long builds, test suites, bursts of
+    # child reaping) can wedge the loop briefly without being genuinely dead,
+    # and a hard-coded 25s turned those into hard exits that lost in-flight
+    # work. The default is unchanged; the loader clamps the range.
+    try:
+        _exit_after = float(KiroCrewConfig.load().dashboard.loop_stall_exit_after_secs)
+    except Exception:
+        logger.debug("loop-stall exit budget config unavailable; using default", exc_info=True)
+        _exit_after = 25.0
+    _loop_watchdog = LoopStallWatchdog(dump_file=_dump_file, exit_after=_exit_after)
 
     async def _loop_heartbeat() -> None:
         # 5s (not 10s) so the watchdog's armed dump-then-exit timer is re-petted
@@ -2843,6 +2912,28 @@ async def start_dashboard(
                 if _truncated:
                     _replay_body += "\n  [truncated — full dump at above path]"
                 logger.warning("Replaying prior crash dump stacks:\n%s", _replay_body)
+            # A log line is not enough. This dump means the previous gateway
+            # exited by hard-exit: no `finally` ran, nothing was flushed, and any
+            # turn in flight lost work that was written but not yet committed.
+            # The user needs to know that happened rather than discovering a
+            # monitoring loop had silently stopped hours earlier. Claimed once
+            # per dump — the dump is re-detected for up to 7 days on every
+            # start, so notifying unconditionally would alert every restart.
+            if await asyncio.to_thread(claim_dump_notification, _prior_dump):
+                try:
+                    state.notify(
+                        "heartbeat",
+                        "⚠️ Gateway restarted after an event-loop stall",
+                        (
+                            f"The previous gateway stopped responding and exited "
+                            f"{_age_h:.1f}h ago, then restarted. Work in flight at "
+                            f"that moment was interrupted and not saved. Thread "
+                            f"stacks: {_prior_dump}"
+                        ),
+                        meta={"url": "/settings", "dump": str(_prior_dump)},
+                    )
+                except Exception:
+                    logger.debug("stall-exit notification failed", exc_info=True)
 
     # Fire background MCP probe at startup (non-blocking)
     asyncio.create_task(handlers._bg_mcp_probe())
@@ -2903,7 +2994,7 @@ async def start_dashboard(
     # its own info line on success, so no caller-side log here.
     # Awaited (not called bare) so the restore yields to the loop between tabs and
     # the stall watchdog keeps getting its heartbeat — a user with many large tabs
-    # used to block here long enough to trip the 25s watchdog and crash-loop the
+    # would otherwise block here long enough to trip the 25s watchdog and crash-loop the
     # gateway before it finished starting.
     #
     # Both restores run inside suspend_slots_push() so the per-slot broadcasts

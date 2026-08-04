@@ -36,7 +36,7 @@ from kiro_crew.telegram.client import (
 @dataclass
 class TelegramInboundMessage(InboundMessage):
     """Inbound message enriched with the raw Telegram ``message_id`` so a
-    mid-turn steer can thread its continuation under the user's message (M1).
+    mid-turn steer can thread its continuation under the user's message.
 
     Telegram-local: the neutral ``InboundMessage`` stays unchanged; consumers
     read the id via ``getattr(msg, "message_id", 0)``.
@@ -205,7 +205,7 @@ class TelegramTransport(MessagingTransport):
         ``TelegramInbound``; this adapter maps that onto the neutral
         ``InboundMessage``, enforces deny-by-default auth, and hands an
         authorized message to the turn dispatcher. Non-text updates
-        (photos/stickers) are dropped, matching prior behavior.
+        (photos/stickers) are dropped.
         """
         if not isinstance(raw_envelope, TelegramInbound):
             return

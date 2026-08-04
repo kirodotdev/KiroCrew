@@ -334,6 +334,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "computer-use.max-tree-nodes",
     "label": "Max tree nodes",
+    "description": "How many controls one window reading returns. A window with more than this gets truncated, and the agent is told so. Raise it for dense apps (a spreadsheet, an IDE); lower it to spend fewer tokens per reading.",
     "tab": "computer-use",
     "type": "input",
     "occurrence": 1
@@ -341,6 +342,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "computer-use.screenshot-width",
     "label": "Screenshot width",
+    "description": "Longest edge of the screenshot, in pixels. Smaller is cheaper and faster to read; larger keeps small text legible if the agent has to fall back to the image.",
     "tab": "computer-use",
     "type": "input",
     "occurrence": 1
@@ -348,6 +350,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "computer-use.show-cursor-motion",
     "label": "Show cursor motion",
+    "description": "Draw a cursor that glides to each target and pulses when it clicks, so you can follow along on screen. Purely visual — it changes nothing about what the agent is allowed to do, and it only appears for clicks that move the real pointer.",
     "tab": "computer-use",
     "type": "toggle",
     "occurrence": 1

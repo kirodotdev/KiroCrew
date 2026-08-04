@@ -1,4 +1,5 @@
 """Tests for /api/apps/registries — federated registry management endpoint."""
+
 from __future__ import annotations
 
 import json
@@ -9,7 +10,11 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.apps.routes import _blob_cache_key, register_app_routes
+from kiro_crew.apps.routes import (
+    _blob_cache_key,
+    _is_safe_repo_identifier,
+    register_app_routes,
+)
 
 
 class TestBlobCacheKey:
@@ -22,10 +27,12 @@ class TestBlobCacheKey:
 
     def test_key_is_stable_and_filesystem_safe(self):
         import re as _re
+
         key = _blob_cache_key("https://github.com/acme/apps.git")
         assert key == _blob_cache_key("https://github.com/acme/apps.git")
         assert "/" not in key and ":" not in key
         assert _re.match(r"^[A-Za-z0-9_.-]+$", key)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,10 +55,12 @@ def _setup_env(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.apps.routes.sel", lambda: mock_sel)
     # Mock bridges/backend to avoid side effects
     import kiro_crew.apps.bridges as bridges_mod
+
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
     import kiro_crew.apps.backend as bmod
+
     bmod._processes.clear()
     bmod._allocated_ports.clear()
     return home, cfg
@@ -81,11 +90,16 @@ class TestGetRegistries:
     @pytest.mark.asyncio
     async def test_returns_configured_registries(self, tmp_path, monkeypatch):
         home, cfg = _setup_env(tmp_path, monkeypatch)
-        cfg.write_text(json.dumps({
-            "registries": [
-                {"name": "myorg", "repo": "MyOrgApps", "branch": "mainline"},
-            ]
-        }), encoding="utf-8")
+        cfg.write_text(
+            json.dumps(
+                {
+                    "registries": [
+                        {"name": "myorg", "repo": "MyOrgApps", "branch": "mainline"},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get("/api/apps/registries")
             assert resp.status == 200
@@ -106,9 +120,11 @@ class TestPutRegistries:
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.put(
                 "/api/apps/registries",
-                json={"registries": [
-                    {"name": "identity", "repo": "IdentityApps", "branch": "mainline"},
-                ]},
+                json={
+                    "registries": [
+                        {"name": "identity", "repo": "IdentityApps", "branch": "mainline"},
+                    ]
+                },
             )
             assert resp.status == 200
             data = await resp.json()
@@ -130,20 +146,24 @@ class TestPutRegistries:
         # host entered the trust set.
         _setup_env(tmp_path, monkeypatch)
         from kiro_crew.apps import routes as routes_mod
+
         mock_sel = routes_mod.sel()
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.put(
                 "/api/apps/registries",
-                json={"registries": [
-                    {"repo": "https://github.com/acme/apps"},
-                ]},
+                json={
+                    "registries": [
+                        {"repo": "https://github.com/acme/apps"},
+                    ]
+                },
             )
             assert resp.status == 200
             data = await resp.json()
             assert data["newlyTrustedHosts"] == ["github.com"]
 
         grants = [
-            c for c in mock_sel.log_api_access.call_args_list
+            c
+            for c in mock_sel.log_api_access.call_args_list
             if c.kwargs.get("operation") == "registries.host_trust_granted"
         ]
         assert len(grants) == 1
@@ -155,27 +175,37 @@ class TestPutRegistries:
         # NOT re-emit a trust-grant event — trust was granted when the host
         # first appeared, so only genuinely new hosts are audited.
         home, cfg = _setup_env(tmp_path, monkeypatch)
-        cfg.write_text(json.dumps({
-            "registries": [{"name": "acme", "repo": "https://github.com/acme/apps",
-                            "branch": "main"}]
-        }), encoding="utf-8")
+        cfg.write_text(
+            json.dumps(
+                {
+                    "registries": [
+                        {"name": "acme", "repo": "https://github.com/acme/apps", "branch": "main"}
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
         from kiro_crew.apps import routes as routes_mod
+
         mock_sel = routes_mod.sel()
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.put(
                 "/api/apps/registries",
-                json={"registries": [
-                    {"repo": "https://github.com/acme/apps", "branch": "main"},
-                    # A second path on the SAME host — still no new host trust.
-                    {"repo": "https://github.com/acme/other"},
-                ]},
+                json={
+                    "registries": [
+                        {"repo": "https://github.com/acme/apps", "branch": "main"},
+                        # A second path on the SAME host — still no new host trust.
+                        {"repo": "https://github.com/acme/other"},
+                    ]
+                },
             )
             assert resp.status == 200
             data = await resp.json()
             assert data["newlyTrustedHosts"] == []
 
         grants = [
-            c for c in mock_sel.log_api_access.call_args_list
+            c
+            for c in mock_sel.log_api_access.call_args_list
             if c.kwargs.get("operation") == "registries.host_trust_granted"
         ]
         assert grants == []
@@ -196,15 +226,18 @@ class TestPutRegistries:
     @pytest.mark.asyncio
     async def test_replace_registries(self, tmp_path, monkeypatch):
         home, cfg = _setup_env(tmp_path, monkeypatch)
-        cfg.write_text(json.dumps({
-            "registries": [{"name": "old", "repo": "OldRepo", "branch": "mainline"}]
-        }), encoding="utf-8")
+        cfg.write_text(
+            json.dumps({"registries": [{"name": "old", "repo": "OldRepo", "branch": "mainline"}]}),
+            encoding="utf-8",
+        )
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.put(
                 "/api/apps/registries",
-                json={"registries": [
-                    {"name": "new", "repo": "NewRepo", "branch": "dev"},
-                ]},
+                json={
+                    "registries": [
+                        {"name": "new", "repo": "NewRepo", "branch": "dev"},
+                    ]
+                },
             )
             assert resp.status == 200
             saved = json.loads(cfg.read_text(encoding="utf-8"))
@@ -214,9 +247,10 @@ class TestPutRegistries:
     @pytest.mark.asyncio
     async def test_empty_list_clears_registries(self, tmp_path, monkeypatch):
         home, cfg = _setup_env(tmp_path, monkeypatch)
-        cfg.write_text(json.dumps({
-            "registries": [{"name": "x", "repo": "X", "branch": "mainline"}]
-        }), encoding="utf-8")
+        cfg.write_text(
+            json.dumps({"registries": [{"name": "x", "repo": "X", "branch": "mainline"}]}),
+            encoding="utf-8",
+        )
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.put(
                 "/api/apps/registries",
@@ -391,9 +425,11 @@ class TestPutRegistriesUrls:
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.put(
                 "/api/apps/registries",
-                json={"registries": [
-                    {"name": "acme", "repo": "https://github.com/acme/apps", "branch": "main"},
-                ]},
+                json={
+                    "registries": [
+                        {"name": "acme", "repo": "https://github.com/acme/apps", "branch": "main"},
+                    ]
+                },
             )
             assert resp.status == 200
             data = await resp.json()
@@ -405,9 +441,11 @@ class TestPutRegistriesUrls:
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.put(
                 "/api/apps/registries",
-                json={"registries": [
-                    {"name": "acme", "repo": "git@github.com:acme/apps.git"},
-                ]},
+                json={
+                    "registries": [
+                        {"name": "acme", "repo": "git@github.com:acme/apps.git"},
+                    ]
+                },
             )
             assert resp.status == 200
 
@@ -417,9 +455,11 @@ class TestPutRegistriesUrls:
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.put(
                 "/api/apps/registries",
-                json={"registries": [
-                    {"name": "acme", "repo": "ssh://git@example.com:2222/org/app.git"},
-                ]},
+                json={
+                    "registries": [
+                        {"name": "acme", "repo": "ssh://git@example.com:2222/org/app.git"},
+                    ]
+                },
             )
             assert resp.status == 200
 
@@ -539,10 +579,12 @@ class TestPutRegistriesUrls:
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.put(
                 "/api/apps/registries",
-                json={"registries": [
-                    {"repo": "https://github.com/acme/apps"},
-                    {"repo": "https://gitlab.com/acme/apps"},
-                ]},
+                json={
+                    "registries": [
+                        {"repo": "https://github.com/acme/apps"},
+                        {"repo": "https://gitlab.com/acme/apps"},
+                    ]
+                },
             )
             assert resp.status == 200
             names = [r["name"] for r in (await resp.json())["registries"]]
@@ -561,6 +603,7 @@ class TestRefreshRegistries:
     async def test_refresh_all_returns_contract_shape(self, tmp_path, monkeypatch):
         _setup_env(tmp_path, monkeypatch)
         from unittest.mock import AsyncMock
+
         monkeypatch.setattr(
             "kiro_crew.apps.registry.list_registry",
             AsyncMock(return_value=[{"name": "a"}, {"name": "b"}]),
@@ -578,6 +621,7 @@ class TestRefreshRegistries:
     async def test_refresh_no_body(self, tmp_path, monkeypatch):
         _setup_env(tmp_path, monkeypatch)
         from unittest.mock import AsyncMock
+
         monkeypatch.setattr(
             "kiro_crew.apps.registry.list_registry",
             AsyncMock(return_value=[]),
@@ -590,13 +634,23 @@ class TestRefreshRegistries:
     @pytest.mark.asyncio
     async def test_refresh_single_repo(self, tmp_path, monkeypatch):
         home, cfg = _setup_env(tmp_path, monkeypatch)
-        cfg.write_text(json.dumps({
-            "registries": [
-                {"name": "acme", "repo": "https://github.com/acme/apps", "branch": "main"},
-                {"name": "other", "repo": "https://github.com/other/apps", "branch": "main"},
-            ]
-        }), encoding="utf-8")
+        cfg.write_text(
+            json.dumps(
+                {
+                    "registries": [
+                        {"name": "acme", "repo": "https://github.com/acme/apps", "branch": "main"},
+                        {
+                            "name": "other",
+                            "repo": "https://github.com/other/apps",
+                            "branch": "main",
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
         from unittest.mock import AsyncMock
+
         monkeypatch.setattr(
             "kiro_crew.apps.registry._fetch_external_registry_index",
             AsyncMock(return_value=[{"name": "x", "repo": "R"}]),
@@ -622,12 +676,13 @@ class TestRefreshRegistries:
         # GPT 5.6 MEDIUM: a valid-but-unconfigured repo matches no registry;
         # the endpoint must return 404, not a misleading ok:true "synced".
         _setup_env(tmp_path, monkeypatch)[1].write_text(
-            json.dumps({
-                "registries": [
-                    {"name": "acme", "repo": "https://github.com/acme/apps",
-                     "branch": "main"},
-                ]
-            }),
+            json.dumps(
+                {
+                    "registries": [
+                        {"name": "acme", "repo": "https://github.com/acme/apps", "branch": "main"},
+                    ]
+                }
+            ),
             encoding="utf-8",
         )
         async with TestClient(TestServer(_make_app())) as client:
@@ -674,3 +729,236 @@ class TestRefreshRegistries:
             )
             assert resp.status == 400
             assert "must be a JSON object" in (await resp.json())["error"]
+
+
+# ---------------------------------------------------------------------------
+# SSH URL forms — userless ssh:// parity (the fix under test)
+# ---------------------------------------------------------------------------
+
+
+class TestSshUrlParity:
+    """Verify both userless and user@ ssh:// URLs are accepted end-to-end."""
+
+    @pytest.mark.asyncio
+    async def test_accepts_userless_ssh_url(self, tmp_path, monkeypatch):
+        # ssh://git.example.com/team/Name — userless form, canonical on SSH-key-only forges.
+        _setup_env(tmp_path, monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.put(
+                "/api/apps/registries",
+                json={
+                    "registries": [
+                        {"repo": "ssh://git.example.com/team/MyApps"},
+                    ]
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["ok"] is True
+            assert data["registries"][0]["repo"] == "ssh://git.example.com/team/MyApps"
+
+    @pytest.mark.asyncio
+    async def test_accepts_user_at_ssh_url(self, tmp_path, monkeypatch):
+        # ssh://dev@git.example.com/team/Name — explicit userinfo form.
+        _setup_env(tmp_path, monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.put(
+                "/api/apps/registries",
+                json={
+                    "registries": [
+                        {"repo": "ssh://dev@git.example.com/team/MyApps"},
+                    ]
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["ok"] is True
+            assert data["registries"][0]["repo"] == "ssh://dev@git.example.com/team/MyApps"
+
+    @pytest.mark.asyncio
+    async def test_accepts_ssh_url_with_port(self, tmp_path, monkeypatch):
+        # ssh://host:22/path — port without user is valid.
+        _setup_env(tmp_path, monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.put(
+                "/api/apps/registries",
+                json={
+                    "registries": [
+                        {"repo": "ssh://git.example.com:2222/org/app"},
+                    ]
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_userless_ssh_emits_trust_grant(self, tmp_path, monkeypatch):
+        # A userless ssh:// URL must still fire the host_trust_granted audit
+        # event because the host enters the loosened-sandbox / SSH-clone trust
+        # set exactly as with a user@ variant.
+        _setup_env(tmp_path, monkeypatch)
+        from kiro_crew.apps import routes as routes_mod
+
+        mock_sel = routes_mod.sel()
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.put(
+                "/api/apps/registries",
+                json={
+                    "registries": [
+                        {"repo": "ssh://git.example.com/team/MyApps"},
+                    ]
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["newlyTrustedHosts"] == ["git.example.com"]
+
+        grants = [
+            c
+            for c in mock_sel.log_api_access.call_args_list
+            if c.kwargs.get("operation") == "registries.host_trust_granted"
+        ]
+        assert len(grants) == 1
+        assert "host=git.example.com" in grants[0].kwargs["resources"]
+
+    @pytest.mark.asyncio
+    async def test_refresh_accepts_userless_ssh_registry(self, tmp_path, monkeypatch):
+        # A registry stored with a userless ssh:// URL must be refreshable via
+        # POST /api/apps/registries/refresh with the same repo value.
+        home, cfg = _setup_env(tmp_path, monkeypatch)
+        cfg.write_text(
+            json.dumps(
+                {
+                    "registries": [
+                        {
+                            "name": "ssh-forge",
+                            "repo": "ssh://git.example.com/team/MyApps",
+                            "branch": "mainline",
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "kiro_crew.apps.registry._fetch_external_registry_index",
+            AsyncMock(return_value=[{"name": "x", "repo": "R"}]),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.apps.registry.list_registry",
+            AsyncMock(return_value=[{"name": "x"}]),
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/apps/registries/refresh",
+                json={"repo": "ssh://git.example.com/team/MyApps"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["ok"] is True
+            assert data["refreshed"] == ["ssh-forge"]
+
+
+# ---------------------------------------------------------------------------
+# Unit matrix for _is_safe_repo_identifier — ssh URL shapes + rejection
+# ---------------------------------------------------------------------------
+
+
+class TestIsSafeRepoIdentifier:
+    """Direct unit tests for the validator function covering ssh URL shapes."""
+
+    # --- accepted forms ---
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "ssh://git.example.com/team/MyApps",  # userless
+            "ssh://dev@git.example.com/team/MyApps",  # user@
+            "ssh://git.example.com:2222/org/app",  # userless + port
+            "ssh://user@git.example.com:22/org/app.git",  # user@ + port + .git
+            "ssh://host/path",  # minimal valid
+        ],
+    )
+    def test_accepts_valid_ssh_urls(self, url):
+        assert _is_safe_repo_identifier(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com/acme/apps",
+            "https://github.com/acme/apps.git",
+            "https://host:8443/org/app",
+        ],
+    )
+    def test_accepts_valid_https_urls(self, url):
+        assert _is_safe_repo_identifier(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "git@github.com:acme/apps.git",
+            "deploy@host:path",
+        ],
+    )
+    def test_accepts_valid_scp_urls(self, url):
+        assert _is_safe_repo_identifier(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "BareName",
+            "My-Org_Apps",
+        ],
+    )
+    def test_accepts_bare_names(self, url):
+        assert _is_safe_repo_identifier(url) is True
+
+    # --- rejected forms ---
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://github.com/acme/apps",  # plaintext MITM vector
+            "http://host/path",
+        ],
+    )
+    def test_rejects_http_plaintext(self, url):
+        assert _is_safe_repo_identifier(url) is False
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "../etc/passwd",
+            "ssh://host/path/../escape",
+            "https://host/org/../admin",
+        ],
+    )
+    def test_rejects_path_traversal(self, url):
+        assert _is_safe_repo_identifier(url) is False
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "ssh://host/path;rm -rf /",
+            "https://host/path|cat /etc/shadow",
+            "ssh://host/$(whoami)/app",
+            "https://host/`id`/app",
+            "ssh://host/path&bg",
+        ],
+    )
+    def test_rejects_shell_metacharacters(self, url):
+        assert _is_safe_repo_identifier(url) is False
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "",  # empty
+            "host:path",  # scp without user — ambiguous
+            "acme/apps",  # owner/repo shorthand
+        ],
+    )
+    def test_rejects_ambiguous_forms(self, url):
+        assert _is_safe_repo_identifier(url) is False

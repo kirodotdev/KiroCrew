@@ -8,9 +8,9 @@ Concurrency safety & the sync/async contract
 ---------------------------------------------
 The public mutation API — ``add_job`` / ``remove_job`` / ``update_job`` /
 ``remove_all`` — is **synchronous**, preserving the contract third-party App
-Kit apps were written against (a prior revision flipped these to ``async def``
-with no shim, which silently turned ``ctx.cron.add_job(...)`` into an un-awaited
-coroutine that never ran — an undisclosed, data-losing break). Each has an
+Kit apps are written against (making them ``async def`` without a shim would
+turn ``ctx.cron.add_job(...)`` into an un-awaited coroutine that never runs).
+Each has an
 ``*_async`` sibling (``add_job_async`` / ``remove_job_async`` /
 ``update_job_async`` / ``remove_all_async``) for callers already on the gateway
 event loop.
@@ -21,14 +21,13 @@ event loop.
   a worker thread). When a loop IS running — an app calling the synchronous
   ``ctx.cron.*`` SDK from an on-loop ``on_startup`` hook or route handler — the
   call is REFUSED with ``CronSyncOnLoopError`` naming the ``*_async`` sibling.
-  Offloading to a worker thread was tried and rejected: the caller still has to
+  Offloading to a worker thread is not viable: the caller still has to
   block on the worker's result, so the loop stays parked for the bounded lock
   window and the whole gateway (chat, timers, heartbeats) stalls with it. Inline
   is not an option either — ``CronService._file_lock``'s structural guard
-  rejects a store-lock acquisition on a thread with a live loop. **BREAKING for
-  on-loop sync callers** (see CHANGELOG): they must migrate to ``*_async``. No
-  in-tree caller is affected; ``bridges.py`` and ``hooks_integration.py``
-  already use the async variants exclusively.
+  rejects a store-lock acquisition on a thread with a live loop. On-loop sync
+  callers must use ``*_async``. No in-tree caller is affected; ``bridges.py``
+  and ``hooks_integration.py`` use the async variants exclusively.
 * ``remove_all`` removes every owned job in ONE atomic
   ``CronService.remove_jobs_by_owner`` transaction (not a per-id loop, and not
   a cache-only id snapshot): the owned set is SELECTED inside the same

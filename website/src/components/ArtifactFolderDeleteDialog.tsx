@@ -7,7 +7,7 @@ import type { ArtifactFolder } from '../types'
 
 import { i18nT } from '../i18n/t'
 /**
- * Delete-folder confirmation dialog (§8). Never silent: the user
+ * Delete-folder confirmation dialog. Never silent: the user
  * explicitly picks between the destructive cascade (folder + every descendant
  * folder AND artifact, permanent) and the safe structural delete (folder only —
  * contents re-parent to the deleted folder's parent, root if none).

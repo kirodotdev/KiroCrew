@@ -124,10 +124,10 @@ class EventStream:
     def agent_finished(
         self, ts: str, *, agent_id: str, result_summary: str, ok: bool, error: str = ""
     ) -> WorkflowEvent:
-        # ``error`` is a bounded, redacted reason the call failed (empty when ok) —
-        # a failed agent used to record ok=False and nothing else, which makes a
-        # post-mortem impossible. Deliberately NOT added to REQUIRED_DATA_KEYS:
-        # event journals written by an older build must still deserialize.
+        # ``error`` is a bounded, redacted reason the call failed (empty when ok):
+        # ok=False alone makes a post-mortem impossible. Deliberately NOT added to
+        # REQUIRED_DATA_KEYS: event journals written by an older build must still
+        # deserialize.
         return self._emit(
             ts,
             "agent_finished",

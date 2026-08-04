@@ -26,11 +26,12 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, PanelLeftClose, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
+import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
 import AgentImportFlow from './components/AgentImportFlow'
+import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_FOCUS_EVENT } from './components/WebPreviewPanel'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -160,7 +161,6 @@ export function calculateTopbarSearchLayout(brandWidth: number, actionsWidth: nu
   return { gutter, visible: viewportWidth - (gutter * 2) >= TOPBAR_SEARCH_MIN_WIDTH }
 }
 
-// Icon mapping for builtin apps (manifest icon name → React element)
 // Apps-nav fetch resilience (see refreshAppNav). The dashboard loads
 // `/api/apps` once on mount; right after a `kirocrew update` the gateway is
 // mid-restart (cold backend, apps-dir scan) and that first request can fail or
@@ -169,19 +169,37 @@ export function calculateTopbarSearchLayout(brandWidth: number, actionsWidth: nu
 const APP_NAV_MAX_RETRIES = 4
 const APP_NAV_RETRY_BASE_MS = 500
 
-const UPDATE_STEPS: Record<string, { icon: ReactNode; label: string }> = {
-  pulling:    { icon: <Download className="lucide-inline" />, label: 'Pulling latest changes' },
-  syncing:    { icon: <RefreshCw className="lucide-inline" />, label: 'Syncing workspace' },
-  building:   { icon: <Hammer className="lucide-inline" />, label: 'Rebuilding package' },
-  installing: { icon: <Package className="lucide-inline" />, label: 'Installing packages' },
-  restarting: { icon: <Rocket className="lucide-inline" />, label: 'Restarting server' },
-  failed:     { icon: <XCircle className="lucide-inline" />, label: 'Update failed' },
+const UPDATE_STEPS: Record<string, { icon: ReactNode }> = {
+  pulling:    { icon: <Download className="lucide-inline" /> },
+  syncing:    { icon: <RefreshCw className="lucide-inline" /> },
+  building:   { icon: <Hammer className="lucide-inline" /> },
+  installing: { icon: <Package className="lucide-inline" /> },
+  restarting: { icon: <Rocket className="lucide-inline" /> },
+  failed:     { icon: <XCircle className="lucide-inline" /> },
+}
+
+/**
+ * Catalog KEY per update step. Separate from UPDATE_STEPS and FLAT on purpose:
+ * this table is evaluated at module load, so an `i18nT()` call here would freeze
+ * the boot language, and `scripts/check-i18n-keys.mjs` only resolves a key that
+ * is indexed in ONE step from a file-scope map — `i18nT(UPDATE_STEPS[s].labelKey)`
+ * would be an unresolvable dynamic site.
+ */
+const UPDATE_STEP_LABEL_KEY: Record<string, string> = {
+  pulling: 'app.pulling_latest_changes',
+  syncing: 'app.syncing_workspace',
+  building: 'app.rebuilding_package',
+  installing: 'app.installing_packages',
+  restarting: 'app.restarting_server',
+  failed: 'app.update_failed_2',
 }
 
 const STEP_ORDER = ['pulling', 'syncing', 'building', 'installing', 'restarting']
 const STUCK_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
 
 const REASONING_EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max']
+// Approval-mode DISCRIMINANTS in escalating order, cycled by keyboard shortcut.
+// Sent to the backend and compared, never rendered — the picker has its own copy.
 const APPROVAL_MODE_LEVELS = ['normal', 'trust_reads', 'trust', 'yolo']
 
 function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
@@ -237,7 +255,7 @@ function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
             return (
               <div key={s} className={`flex items-center gap-2.5 text-[13px] transition-colors ${done ? 'text-ok' : active ? 'text-accent font-medium' : 'text-muted/40'}`}>
                 <span className="w-5 text-center">{done ? <Check className="lucide-inline" /> : active ? si.icon : '○'}</span>
-                <span>{si.label}</span>
+                <span>{i18nT(UPDATE_STEP_LABEL_KEY[s])}</span>
                 {active && <span className="ml-auto text-[11px] text-muted animate-pulse">{elapsedStr}</span>}
               </div>
             )
@@ -417,9 +435,9 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
     <motion.div layout="position"
       ref={rowRef}
       data-onboarding-nav={navId}
-      // The row had only a mouse onClick; role+tabIndex+key handler make it a
-      // real keyboard-operable control (Enter/Space activate, preventing Space
-      // page-scroll). aria-label names it when collapsed (icon-only, no text).
+      // role+tabIndex+key handler make this a real keyboard-operable control
+      // (Enter/Space activate, preventing Space page-scroll). aria-label names
+      // it when collapsed (icon-only, no text).
       role="button"
       tabIndex={0}
       whileHover={collapsed ? undefined : { scale: 1.02 }}
@@ -546,8 +564,8 @@ function OrchestratedRedirect() { const { slug } = useParams(); const { search }
 const NC_CLOSE_MS = 240
 
 /**
- * Topbar Notifications bell. Replaces the former left-rail Notifications item
- * (the surface is now `hiddenFromNav`). Click opens an Activity Feed popover
+ * Topbar Notifications bell. The Notifications surface is `hiddenFromNav`, so
+ * this is its entry point. Click opens an Activity Feed popover
  * (portaled to <body> to escape the topbar's backdrop-filter containing
  * block); clicking an item slides out a detail panel. The full page is
  * preserved at /notifications via the popover's "Open inbox" link.
@@ -820,8 +838,8 @@ export default function App() {
       const r = await fetch('/api/terminal/sessions')
       // Default-on: the terminal is enabled unless the server explicitly says
       // otherwise. A transient/auth-timing failure of this probe must NOT hide
-      // an enabled terminal (previously it fell back to {enabled:false} and,
-      // with staleTime, kept the panel hidden for 60s).
+      // an enabled terminal by falling back to {enabled:false}, which with
+      // staleTime would keep the panel hidden for 60s.
       if (!r.ok) return { enabled: true }
       return r.json()
     },
@@ -854,9 +872,11 @@ export default function App() {
     theme: resolvedMode,
     onboarded,
     importOnboarded,
+    privacyAcked,
     themeBootReady,
     markOnboarded,
     markImportOnboarded,
+    markPrivacyAcked,
   } = useTheme()
   // The E2E Playwright suite depends on this onboarding gate: playwright/auth.setup.ts
   // seeds localStorage['mc-onboarded']='1' so the first-run "Choose your look" modal
@@ -864,19 +884,56 @@ export default function App() {
   // renamed or the modal moves off localStorage, update auth.setup.ts to match.
   const locallyImportOnboarded =
     !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded')
+  // Mirrors `privacyAcked`'s own seed in useTheme. The tour's seed below MUST
+  // consult it: a tree whose import chapter was completed by a build that
+  // predates the Privacy chapter has `mc-import-onboarded` set and no
+  // `mc-privacy-acked`, and seeding the tour open on that alone would put
+  // Customize on screen ahead of Privacy until theme boot resolves — and its
+  // "Done" would end first run from there. Same formula as the derive effect.
+  const locallyPrivacyAcked =
+    !!localStorage.getItem('mc-privacy-acked') || !!localStorage.getItem('mc-onboarded')
   const [showAgentImport, setShowAgentImport] = useState(false)
+  const [showPrivacy, setShowPrivacy] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(
-    () => locallyImportOnboarded && !localStorage.getItem('mc-onboarded'),
+    () => locallyImportOnboarded && locallyPrivacyAcked && !localStorage.getItem('mc-onboarded'),
   )
   const continueTourAfterImport = useRef(false)
+  // Where the mandatory Privacy chapter leads. 'customize' hands off to the
+  // onboarding tour (the normal chapter order); 'finish' ends first run right
+  // there, which is what "Skip all" from Import setup means — the user still has
+  // to pass through Privacy, but nothing follows it.
+  const privacyExit = useRef<'customize' | 'finish'>('customize')
+  // The ONLY way the tour chapter ends first run — deliberately shared by BOTH
+  // its exits ("Done" and every skip: "Skip all", a popover Skip, Escape).
+  // Privacy is mandatory, so no exit may mark onboarding complete while it is
+  // unacknowledged; handing the two props one function is what makes that
+  // symmetric by construction instead of by two closures agreeing. In the normal
+  // chapter order Privacy is already behind the user here and this just ends
+  // first run; the branch is what holds the mandate for a tree whose import
+  // chapter predates the Privacy chapter.
+  const endFirstRun = useCallback(() => {
+    setShowOnboarding(false)
+    if (!privacyAcked) {
+      privacyExit.current = 'finish'
+      setShowPrivacy(true)
+      return
+    }
+    markOnboarded()
+  }, [privacyAcked, markOnboarded])
   // Dismiss onboarding when server reports user is already onboarded
   // (handles the race: boot fetch completes after useState initializer ran).
   useEffect(() => { if (onboarded) setShowOnboarding(false) }, [onboarded])
+  // Seeds — and re-derives — which first-run chapter is open from the three
+  // completion flags. Chapter order is Import setup → Privacy → Customize/tour,
+  // so each chapter opens only once its predecessor is marked done. Runs on
+  // every flag change (not just boot) so the hand-offs below and this effect
+  // can never disagree about what should be on screen.
   useEffect(() => {
     if (!themeBootReady) return
     setShowAgentImport(!importOnboarded)
-    setShowOnboarding(importOnboarded && !onboarded)
-  }, [importOnboarded, themeBootReady])
+    setShowPrivacy(importOnboarded && !privacyAcked)
+    setShowOnboarding(importOnboarded && privacyAcked && !onboarded)
+  }, [importOnboarded, privacyAcked, onboarded, themeBootReady])
   useEffect(() => {
     const replay = (event: Event) => {
       continueTourAfterImport.current =
@@ -1275,10 +1332,9 @@ export default function App() {
     const api = (window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean) => void) => () => void } }).electronAPI
     return api?.onFullScreenChanged?.(setMacFullscreen)
   }, [])
-  // Native traffic lights always sit over the consolidated 42px header now
-  // (option B removed the standalone instance strip), so there is no separate
-  // strip inset to relay to Electron — positionTrafficLights centers on the
-  // header height directly. Remote panes get their own inset via `macInset`.
+  // Native traffic lights sit over the consolidated 42px header, so there is no
+  // separate strip inset to relay to Electron — positionTrafficLights centers on
+  // the header height directly. Remote panes get their own inset via `macInset`.
   const macInset = isMacElectron && !macFullscreen
   const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then(d => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb })), refetchInterval: metricsOpen ? 30_000 : false, enabled: metricsOpen })
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
@@ -1372,8 +1428,8 @@ export default function App() {
 
   // Browser tab title badge — sums every built-in surface's badge (chat,
   // orchestrated, notifications, secretary, ...) plus the orthogonal
-  // `mc:app:badge`-driven dynamic app counts. Secretary used to be added
-  // separately; it now flows through the surface registry.
+  // `mc:app:badge`-driven dynamic app counts. Secretary's badge flows through
+  // the surface registry.
   const totalAttention = builtinAttention + Object.values(appBadges).reduce((a, b) => a + b, 0)
   useEffect(() => {
     document.title = totalAttention > 0 ? `(${totalAttention}) ${botName}` : botName
@@ -1834,35 +1890,61 @@ export default function App() {
           glitch. Both flows portal their content into this single shell; each
           still renders standalone (its own chrome) when used outside a host. */}
       <OnboardingShellHost>
-        {/* First-run import gate. Existing users inherit the old onboarding
-            marker, while new users reach the feature tour only after this flow. */}
+        {/* First-run chapter 1 — import gate. Existing users inherit the old
+            onboarding marker, while new users reach Privacy (and then the
+            feature tour) only after this flow. */}
         <AgentImportFlow
           initialOpen={showAgentImport}
           onComplete={() => {
             markImportOnboarded()
             setShowAgentImport(false)
-            if (!onboarded || continueTourAfterImport.current) {
-              setShowOnboarding(true)
-            }
+            const wantsTour = !onboarded || continueTourAfterImport.current
             continueTourAfterImport.current = false
+            if (!privacyAcked) {
+              privacyExit.current = wantsTour ? 'customize' : 'finish'
+              setShowPrivacy(true)
+              return
+            }
+            if (wantsTour) setShowOnboarding(true)
           }}
           onSkipAll={() => {
-            // Skip the entire first-run flow: mark both import + onboarding tour
-            // done and close both so the user lands in the product (new chat).
+            // Skip the rest of first run — but NOT the Privacy chapter, which is
+            // mandatory: show it, and let its Continue mark onboarding done so
+            // the user lands in the product (new chat) straight after it.
             markImportOnboarded()
-            markOnboarded()
             setShowAgentImport(false)
-            setShowOnboarding(false)
             continueTourAfterImport.current = false
+            if (!privacyAcked) {
+              privacyExit.current = 'finish'
+              setShowPrivacy(true)
+              return
+            }
+            markOnboarded()
+            setShowOnboarding(false)
           }}
         />
 
-        {/* First-run onboarding: 4-step flow (theme → Schedule → Apps → Sessions).
-            Rendered unconditionally so the `/onboarding` slash command can reopen
-            it anytime; internal visibility is seeded by `initialOpen`. */}
+        {/* First-run chapter 2 — Privacy. Mandatory and un-skippable: every path
+            out of chapter 1 (finish, "Skip import", nothing to import, "Skip
+            all") arrives here. */}
+        <PrivacyChapter
+          open={showPrivacy}
+          onContinue={() => {
+            markPrivacyAcked()
+            setShowPrivacy(false)
+            if (privacyExit.current === 'finish') markOnboarded()
+            else setShowOnboarding(true)
+          }}
+        />
+
+        {/* First-run chapter 3 — Customize + feature tour (theme → about you →
+            Schedule → Apps → Sessions). Rendered unconditionally so the
+            `/onboarding` slash command can reopen it anytime; internal
+            visibility is seeded by `initialOpen`. */}
         <OnboardingFlow
           initialOpen={showOnboarding}
-          onComplete={() => { markOnboarded(); setShowOnboarding(false) }}
+          onComplete={endFirstRun}
+          onSkipAll={endFirstRun}
         />
       </OnboardingShellHost>
 
@@ -1899,19 +1981,29 @@ export default function App() {
         <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-2">
           {/* mb-1.5 (6px) + the container's gap-0.5 (2px) = 8px between the
               header and the first nav item, without widening the 2px item gaps. */}
-          <div className={`flex items-center mb-1.5 ${effectiveCollapsed ? 'justify-start' : ''}`}>
+          <div className={`relative flex items-center mb-1.5 ${effectiveCollapsed ? 'justify-start' : ''}`}>
             {/* One persistent click target that toggles the rail. The logo
                 never unmounts, so it stays perfectly still across collapse/
                 expand (no swap, no shift). Only the brand text + collapse arrow
                 animate — fading in on expand and out on collapse via
                 AnimatePresence. No hover tint on the row; on hover only the
                 logo rotates (group-hover). */}
-            {/* No overflow-hidden here: the 40px logo's hover-rotate paints a
-                few px past its box, and clipping it looked cut off. Rotation is
-                a transform so it doesn't affect the header's layout height (row
-                stays 40px, collapse-icon alignment unchanged); horizontal spill
-                on collapse is still clipped by the rail (motion.nav) and the
-                brand text clips itself via `truncate`. */}
+            {/* No overflow-hidden here: the logo's hover-rotate paints a few
+                px past its box, and clipping it looked cut off. Rotation is a
+                transform so it doesn't affect the header's layout height
+                (row height tracks the logo, collapse-icon alignment
+                unchanged); horizontal spill on collapse is still clipped by
+                the rail (motion.nav) and the brand text clips itself via
+                `truncate`.
+                Logo is DUAL-SIZE: w-7 (28px) expanded — 1px card border +
+                pt-2 + 14 puts the header row's center on the 23px shared
+                control baseline — and w-10 (40px) collapsed, where the
+                icons-only rail keeps the full brand mark (a branding
+                logoClass overrides both). The collapse arrow no longer centers
+                in the row — it pins to top-[6px] so its center stays on the
+                23px shared control baseline (chat title row, its sessions
+                toggle, and the activity strip icons) while the two-line
+                brand block makes the row taller. */}
             <button
               type="button"
               className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left"
@@ -1921,7 +2013,7 @@ export default function App() {
               aria-expanded={!effectiveCollapsed}
             >
               <span className="flex items-center gap-2.5 min-w-0">
-                <img src={avatar} alt="" aria-hidden="true" className={`${branding?.logoClass ?? 'w-10 h-10'} rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]`} />
+                <img src={avatar} alt="" aria-hidden="true" className={`${branding?.logoClass ?? (effectiveCollapsed ? 'w-10 h-10' : 'w-7 h-7')} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg]`} />
                 <AnimatePresence initial={false}>
                   {!effectiveCollapsed && (
                     <motion.span
@@ -1930,8 +2022,20 @@ export default function App() {
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: -6, transition: { duration: 0.12, ease: 'easeIn' } }}
                       transition={{ duration: 0.2, ease: 'easeOut' }}
-                      className="text-sm font-bold tracking-[.08em] text-text-strong whitespace-nowrap truncate min-w-0"
-                    >{botName}</motion.span>
+                      className="text-[13px] font-bold tracking-[.14em] uppercase whitespace-nowrap truncate min-w-0"
+                    >
+                      {/* Last word of the bot name carries the accent (KIRO
+                          CREW: muted brand, accent product); single-word names
+                          render all-muted. */}
+                      {botName.includes(' ') ? (
+                        <>
+                          <span className="text-muted">{botName.slice(0, botName.lastIndexOf(' ') + 1)}</span>
+                          <span className="text-accent/90">{botName.slice(botName.lastIndexOf(' ') + 1)}</span>
+                        </>
+                      ) : (
+                        <span className="text-muted">{botName}</span>
+                      )}
+                    </motion.span>
                   )}
                 </AnimatePresence>
               </span>
@@ -1949,14 +2053,19 @@ export default function App() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1, transition: { duration: 0.18, ease: 'easeOut', delay: 0.12 } }}
                     exit={{ opacity: 0, transition: { duration: 0.12, ease: 'easeIn' } }}
-                    className="absolute right-0 inset-y-0 my-auto h-4 flex items-center text-muted pointer-events-none"
+                    className="absolute right-0 top-[6px] h-4 flex items-center text-muted pointer-events-none"
                   >
-                    <PanelLeftClose size={16} />
+                    {/* Arrow-to-edge, not a hide-panel glyph: the rail
+                        collapses to an icon rail rather than hiding. */}
+                    <ArrowLeftToLine size={15} />
                   </motion.span>
                 )}
               </AnimatePresence>
             </button>
           </div>
+          {/* Hairline under the expanded header (collapsed rail has none —
+              the big logo alone separates well). */}
+          {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mt-0.5 mb-[7px]" />}
           {NAV_ITEMS.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
           {/* Apps section header. "Explore" (the App Store) rides the header
               row in accent when expanded; collapsed it becomes a regular
@@ -1965,7 +2074,14 @@ export default function App() {
               and slides up into place. */}
           {!effectiveCollapsed ? (
             <div className="nav-section flex items-center justify-between gap-2 pl-3 pr-1 pt-3 pb-1">
-              <span className="text-[13px] font-medium text-muted whitespace-nowrap overflow-hidden">{i18nT('app.apps')}</span>
+              <span
+                // `overflow-hidden` + `whitespace-nowrap` means this clips
+                // silently once the label grows — which it does in a longer
+                // locale. The `title` keeps the full string reachable instead
+                // of losing the tail with no affordance.
+                title={i18nT('app.apps')}
+                className="text-[13px] font-medium text-muted whitespace-nowrap overflow-hidden"
+              >{i18nT('app.apps')}</span>
               <Clickable
                 data-onboarding-nav="apps"
                 onClick={() => { closeMobileNav?.(); navigate('/apps') }}
@@ -2125,7 +2241,7 @@ export default function App() {
                   not the default. `useZoom` lets them set --font-body to sans
                   (Space Grotesk), mono (JetBrains Mono) or system (-apple-system),
                   and mono is ~20% wider. A 12px row measured only against Space
-                  Grotesk shipped and truncated for every mono user.
+                  Grotesk truncates for every mono user.
 
                   "Star us · Report issue" at 12px, measured:
                     Space Grotesk   114.0px against a 132.8px budget — 18.7 spare
@@ -2166,9 +2282,9 @@ export default function App() {
                   {/* pl-3 puts the mark on the same 12px x-offset as the
                       nav-item icons above. No `gap` on this row ON PURPOSE: a row
                       gap applies between ALL THREE children (mark, links,
-                      Discord), so pairing it with ml-0.5 silently doubled the
-                      mark-to-text distance to 6px and cost 4px the budget below
-                      never accounted for. Spacing is explicit per child instead. */}
+                      Discord), so pairing it with ml-0.5 would silently double
+                      the mark-to-text distance to 6px and cost 4px the budget
+                      below never accounts for. Spacing is explicit per child instead. */}
                   <span className="flex items-center shrink-0 text-muted"><GithubIcon size={15} /></span>
                   <div className="rail-community-links flex items-center gap-[5px] flex-1 min-w-0 ml-1.5 text-[12px]">
                     <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" title={i18nT('app.star_kirocrew_on_github')} aria-label={i18nT('app.star_kirocrew_on_github')} className="shrink-0 rounded text-muted hover:text-text transition-colors">{i18nT('app.star_us')}</a>
@@ -2223,9 +2339,10 @@ export default function App() {
             <Route path="/knowledge" element={<ErrorBoundary><KnowledgePage /></ErrorBoundary>} />
             <Route path="/overview" element={<Navigate to="/settings?tab=overview" replace />} />
             <Route path="/schedule" element={<SchedulePage />} />
-            {/* Agents merged into the Agent Capabilities panel (first tab). */}
+            {/* Agents and Connections live in the Agent Capabilities panel. */}
             <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />
+            <Route path="/connections" element={<Navigate to="/capabilities?tab=mcp" replace />} />
             <Route path="/tasks" element={<TasksRedirect />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/hooks" element={<HooksPage />} />

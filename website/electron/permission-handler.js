@@ -100,6 +100,34 @@ function requestsVideo(details) {
   return Array.isArray(types) && types.includes("video");
 }
 
+/**
+ * Is this denial worth a breadcrumb, or is it a by-design permanent refusal?
+ *
+ * Chromium fires the CHECK handler on every navigation for permissions this app
+ * denies wholesale — `geolocation`, `web-app-installation`, `background-sync`,
+ * and `media` with `mediaType:"video"` (the camera, which is deliberately
+ * absent). Logging each one floods the main-process console with dozens of
+ * lines per session that carry ZERO diagnostic value: they are always denied and
+ * always will be.
+ *
+ * The ONE denial worth seeing is the class this module exists to catch — a
+ * `media` request that should have been GRANTED (audio or unspecified) but was
+ * refused, i.e. the silent-mic regression documented above. In healthy
+ * operation this never fires for the app origin (such a request is granted), so
+ * a line here is a real signal, not noise. Video is by-design and is checked on
+ * every route, so it is not noteworthy either.
+ *
+ * @param {string} permission
+ * @param {{ mediaType?: string, mediaTypes?: Array<string> }} [details]
+ * @param {boolean} [isVideo] - precomputed video verdict (request-handler side)
+ * @returns {boolean}
+ */
+function isNoteworthyDenial(permission, details, isVideo) {
+  if (permission !== "media") return false;
+  const video = isVideo ?? (details?.mediaType === "video" || requestsVideo(details));
+  return !video;
+}
+
 /** One-line breadcrumb so a denial is visible without attaching a debugger. */
 function logDeny(kind, permission, wc, origin, details) {
   // eslint-disable-next-line no-console -- see module header: silent denials
@@ -119,22 +147,113 @@ function logDeny(kind, permission, wc, origin, details) {
  * Denies every other permission type (geolocation, clipboard, notifications,
  * MIDI, …).
  *
+ * ── The macOS (TCC) leg ──────────────────────────────────────────────────────
+ *
+ * Granting at the Electron layer is necessary but NOT sufficient on macOS: the
+ * OS gates the mic separately, and its prompt is ONE-SHOT — once a user is
+ * 'denied', macOS never asks again, so a bare deny is a permanent dead end
+ * ("permission denied" with no prompt and nothing obvious to click). This
+ * handler therefore mirrors display-media.js's screen-capture treatment:
+ *
+ *   - 'granted'         -> grant.
+ *   - 'not-determined'  -> ask macOS NOW (the user just clicked the mic, so the
+ *                          prompt is in-context) and honor the answer.
+ *   - 'denied'/'restricted' -> deny AND surface a recovery route to System
+ *                          Settings; the OS will not re-prompt on its own.
+ *
+ * The TCC leg is OPT-IN via injected deps: with no `getMicAccessStatus` the
+ * handler stays fully synchronous and behaves exactly as before (non-darwin
+ * platforms and unit tests take that path).
+ *
  * @param {object} [deps]
  * @param {(wc: unknown, origin?: string) => boolean} [deps.isAppOrigin] - injectable for tests
  * @param {(...args: unknown[]) => void} [deps.onDeny] - injectable for tests
+ * @param {() => string} [deps.getMicAccessStatus] - systemPreferences.getMediaAccessStatus('microphone')
+ * @param {() => Promise<boolean>} [deps.askForMicAccess] - systemPreferences.askForMediaAccess('microphone')
+ * @param {(reason: string) => void} [deps.onMicBlocked] - surfaced when macOS will not re-prompt
  * @returns {(wc: unknown, permission: string, callback: (granted: boolean) => void, details?: object) => void}
  */
 function createPermissionRequestHandler(deps = {}) {
   const originOk = deps.isAppOrigin || isAppOrigin;
   const onDeny = deps.onDeny || logDeny;
+  const isUntrusted = deps.isUntrusted || (() => false);
+  const getMicAccessStatus = deps.getMicAccessStatus;
+  const askForMicAccess = deps.askForMicAccess;
+  const onMicBlocked = deps.onMicBlocked || (() => {});
+  // Audit sinks are OBSERVERS: they must never be able to change a verdict or
+  // strand a request. Both are real hazards, not hypotheticals — the default
+  // logDeny JSON.stringify()s an Electron-supplied `details`, which throws on a
+  // circular structure or a throwing getter, and onMicBlocked opens a real
+  // dialog. An escaping throw here would leave the renderer's getUserMedia
+  // promise unsettled FOREVER, the exact silent dead end this module exists to
+  // prevent. Wrapping once, at the source, is what keeps every call site safe.
+  const audit = (...args) => {
+    try {
+      onDeny(...args);
+    } catch {
+      /* breadcrumb is best effort — never let logging decide a permission */
+    }
+  };
   return function handlePermissionRequest(wc, permission, callback, details) {
     // The REQUEST handler has no origin string of its own; details may carry a
     // requesting URL on some Electron versions, so offer it as the fallback.
     const origin = details?.securityOrigin || details?.requestingUrl;
+    // Untrusted first, by IDENTITY, before any origin heuristic. The embedded
+    // browser view shares this session, and `isAppOrigin` treats ANY localhost
+    // origin as the app — so browsing to `http://localhost:<anything>` would
+    // otherwise inherit the dashboard's microphone grant. A page never gets a
+    // capability just for being served from loopback.
     const granted =
-      permission === "media" && originOk(wc, origin) && !requestsVideo(details);
-    if (!granted) onDeny("request", permission, wc, origin, details);
-    return callback(granted);
+      !isUntrusted(wc) &&
+      permission === "media" &&
+      originOk(wc, origin) &&
+      !requestsVideo(details);
+    if (!granted) {
+      if (isNoteworthyDenial(permission, details)) {
+        audit("request", permission, wc, origin, details);
+      }
+      return callback(false);
+    }
+    // Electron says yes; on macOS the OS still has to. Absent the TCC deps
+    // (non-darwin, tests) this stays synchronous — the original behavior.
+    if (typeof getMicAccessStatus !== "function") return callback(true);
+
+    let status;
+    try {
+      status = getMicAccessStatus();
+    } catch {
+      // Probing the OS must never be what breaks the mic: fail OPEN and let
+      // getUserMedia surface whatever the OS decides.
+      return callback(true);
+    }
+    if (status === "granted") return callback(true);
+    if (status === "denied" || status === "restricted") {
+      audit("request", `${permission}:tcc-${status}`, wc, origin, details);
+      try {
+        onMicBlocked(status);
+      } catch {
+        /* recovery UI is best effort — see the `audit` note above */
+      }
+      return callback(false);
+    }
+    // 'not-determined' (or anything unrecognized): ask, in context.
+    if (typeof askForMicAccess !== "function") return callback(true);
+    Promise.resolve()
+      .then(askForMicAccess)
+      // Fail open ONLY on a rejection from askForMicAccess itself (older macOS,
+      // missing API). This must be settled BEFORE the sinks below run: with a
+      // single trailing .catch, anything thrown by onDeny or callback would be
+      // caught downstream and answered with a SECOND callback(true) — inverting
+      // a user's explicit refusal into a grant, and double-invoking a callback
+      // Electron only permits once.
+      .then(
+        (ok) => Boolean(ok),
+        () => true,
+      )
+      .then((ok) => {
+        if (!ok) audit("request", `${permission}:tcc-refused`, wc, origin, details);
+        callback(ok);
+      });
   };
 }
 
@@ -155,12 +274,30 @@ function createPermissionRequestHandler(deps = {}) {
 function createPermissionCheckHandler(deps = {}) {
   const originOk = deps.isAppOrigin || isAppOrigin;
   const onDeny = deps.onDeny || logDeny;
+  const isUntrusted = deps.isUntrusted || (() => false);
   return function handlePermissionCheck(wc, permission, origin, details) {
+    // Mirrors the request handler's untrusted-first rule; see the note there.
+    // Note this handler may receive a null `wc`, in which case identity is
+    // unavailable — but a check alone grants no capability, and the REQUEST
+    // handler (which does the actual granting) is always frame-originated and
+    // therefore always has a webContents to match.
     const granted =
+      !isUntrusted(wc) &&
       permission === "media" &&
       originOk(wc, origin) &&
       details?.mediaType !== "video";
-    if (!granted) onDeny("check", permission, wc, origin, details);
+    // Guarded for the same reason as the request handler's `audit`: this is a
+    // synchronous Electron callback, so a throwing breadcrumb would propagate
+    // into Chromium's permission check instead of just failing to log. Only a
+    // noteworthy denial is logged — the by-design refusals Chromium re-checks on
+    // every navigation are silenced (see isNoteworthyDenial).
+    if (!granted && isNoteworthyDenial(permission, details)) {
+      try {
+        onDeny("check", permission, wc, origin, details);
+      } catch {
+        /* breadcrumb is best effort — never let logging decide a permission */
+      }
+    }
     return granted;
   };
 }
@@ -168,6 +305,7 @@ function createPermissionCheckHandler(deps = {}) {
 module.exports = {
   isAppOrigin,
   requestsVideo,
+  isNoteworthyDenial,
   createPermissionRequestHandler,
   createPermissionCheckHandler,
 };

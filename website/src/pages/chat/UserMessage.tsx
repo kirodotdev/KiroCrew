@@ -177,9 +177,9 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
           level, NOT via container `white-space: pre-wrap`. renderUserContentCb
           renders user content through MarkdownRenderer with `softBreaks`, which
           turns lone source newlines (CommonMark soft breaks) into hard breaks
-          (<br>). Container pre-wrap was removed because react-markdown emits
+          (<br>). Container pre-wrap is avoided because react-markdown emits
           literal "\n" text nodes between block elements; under pre-wrap those
-          rendered as visible blank lines and inflated the gaps between list
+          render as visible blank lines and inflate the gaps between list
           items and paragraphs. Assistant markdown keeps standard
           CommonMark soft-break-collapse. */}
       {isSteer ? (

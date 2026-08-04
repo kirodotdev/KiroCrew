@@ -60,7 +60,6 @@ describe('SkillsTab', () => {
     // Row shows the humanized name and the key.
     await waitFor(() => expect(screen.getByText('Foo')).toBeInTheDocument())
     expect(screen.getByText('foo')).toBeInTheDocument()
-    // Pill says "Loaded by 2 agents".
     expect(screen.getByText(/Loaded by 2 agents/)).toBeInTheDocument()
   })
 

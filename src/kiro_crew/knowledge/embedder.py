@@ -163,7 +163,7 @@ def bytes_to_floats(data: bytes) -> list[float]:
     (struct-packed floats). A blob whose length is not a multiple of 4, or
     that is otherwise unparseable, yields ``[]`` rather than a ``struct.error``
     — so one bad row can't abort a whole dedup sweep. Mirrors the guards in
-    ``knowledge/retrieval._bytes_to_floats``. (#429)
+    ``knowledge/retrieval._bytes_to_floats``.
     """
     if not data:
         return []
@@ -173,7 +173,7 @@ def bytes_to_floats(data: bytes) -> list[float]:
     # rejected-but-valid JSON blob whose byte length happens to be a multiple of
     # 4 would be misread as packed floats. Return [] for any malformed JSON
     # (non-list, non-numeric/boolean elements, or values that overflow float())
-    # so one bad row is skipped instead of aborting the dedup sweep. (#429)
+    # so one bad row is skipped instead of aborting the dedup sweep.
     try:
         parsed = json.loads(data)
     except (json.JSONDecodeError, TypeError, ValueError, UnicodeDecodeError):
@@ -211,7 +211,7 @@ def embed_signature(model: str, content_budget: int = _EMBED_CONTENT_BUDGET) -> 
     endpoint, and keeping a distinct token forces a one-time re-embed when
     migrating vectors produced by an external server.
 
-    ponytail: does NOT cover edits to ``embed_for_item``'s assembly logic (field
+    Does NOT cover edits to ``embed_for_item``'s assembly logic (field
     set / join separator) — a value hash can't see code. Ceiling: such a change
     needs a manual ``force`` rebuild. Upgrade path: add an ast-normalized source
     hash here if that logic starts churning.

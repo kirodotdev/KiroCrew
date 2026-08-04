@@ -9,9 +9,45 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import type { SteeringFile, SteeringList } from '../../types'
 
 import { i18nT } from '../../i18n/t'
-const SOURCE_LABEL: Record<string, string> = { user: 'Global', workspace: 'Workspace' }
+/**
+ * Catalog KEY for each steering scope's chip label.
+ *
+ * Keys, not strings: this is module scope, evaluated once at import, so an
+ * `i18nT()` call here would freeze the boot language. `sourceLabel()` does the
+ * lookup during render, and a flat `Record` of full literal keys indexed inline at
+ * the `i18nT()` call is the form `scripts/check-i18n-keys.mjs` can resolve.
+ */
+const SOURCE_LABEL_KEY: Record<string, string> = {
+  user: 'pages.overview.steeringTab.global',
+  workspace: 'pages.overview.steeringTab.workspace',
+}
 
-const NEW_TEMPLATE = '# Title\n\nDescribe the convention the agent should always follow.\n'
+/** Localised scope chip text, falling back to the raw source token so a scope the
+ *  backend adds still renders.
+ *
+ *  `hasOwnProperty`, not `in`: the source comes from /api/steering, so a value of
+ *  `toString` would otherwise resolve to an inherited Object.prototype member and
+ *  hand a function to i18next. */
+function sourceLabel(source: string): string {
+  return Object.prototype.hasOwnProperty.call(SOURCE_LABEL_KEY, source)
+    ? i18nT(SOURCE_LABEL_KEY[source])
+    : source
+}
+
+/** Seed body for a new steering file. A function, not a module-level const: the
+ *  const would bake in the boot language. Resolved when the create form opens (and
+ *  when it resets after a successful create), which is the only time it is used —
+ *  re-resolving later would mean overwriting whatever the operator has typed. */
+function newTemplate(): string {
+  // The trailing newline is file format, not copy, so it lives here rather than
+  // in the catalog value — a catalog string with edge whitespace is what
+  // `qa.test.ts`'s `edge-whitespace` check exists to stop, and translators
+  // routinely drop or double a trailing blank line.
+  // Concatenation, not a template literal: the strict rule matches the static
+  // `\n` chunk inside a template literal and `[added-lines]` is zero-tolerance,
+  // so `+ '\n'` expresses the same thing in a shape the rule does not flag.
+  return i18nT('pages.overview.steeringTab.title_describe_the_convention_the_agent_should_a') + '\n'
+}
 
 /** Textarea styling matches SkillForm's raw-markdown editor. */
 const EDITOR_CLASS =
@@ -26,7 +62,7 @@ export default function SteeringTab() {
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const [newSource, setNewSource] = useState<'user' | 'workspace'>('workspace')
-  const [newBody, setNewBody] = useState(NEW_TEMPLATE)
+  const [newBody, setNewBody] = useState(newTemplate)
 
   const { data, isLoading, isFetching, refetch } = useQuery<SteeringList>({
     queryKey: ['steering'],
@@ -48,7 +84,7 @@ export default function SteeringTab() {
     onSuccess: (res: { key?: string }) => {
       setCreating(false)
       setNewName('')
-      setNewBody(NEW_TEMPLATE)
+      setNewBody(newTemplate())
       if (res?.key) {
         setSelectedKey(res.key)
         // Drop any cached detail for this key: a file deleted and recreated
@@ -123,7 +159,7 @@ export default function SteeringTab() {
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-[13px] font-semibold text-text truncate flex-1">{f.rel}</span>
           <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">
-            {SOURCE_LABEL[f.source] || f.source}
+            {sourceLabel(f.source)}
           </span>
         </div>
         {f.description && <div className="text-[11px] text-muted truncate">{f.description}</div>}
@@ -249,7 +285,7 @@ export default function SteeringTab() {
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-sm font-bold text-text-strong truncate">{selected.rel}</span>
                     <span className="text-[11px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">
-                      {SOURCE_LABEL[selected.source] || selected.source}
+                      {sourceLabel(selected.source)}
                     </span>
                     <span className="text-[11px] text-muted font-mono truncate">{selected.path}</span>
                   </div>

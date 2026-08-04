@@ -4,11 +4,10 @@ import { renderWithProviders } from './helpers'
 import SchedulePage from '../pages/SchedulePage'
 import type { CronJob } from '../types'
 
-// Covers the arm -> confirm -> delete -> revert state machine added in
-//. This logic is on a destructive, irreversible action and
-// had two real bugs (premature button re-enable before await load(),
-// and confirmDeleteId not resetting on a failed delete) caught by code review
-// during review -- these tests lock in both fixes.
+// Covers the arm -> confirm -> delete -> revert state machine. This logic is on
+// a destructive, irreversible action and had two real bugs (premature button
+// re-enable before await load(), and confirmDeleteId not resetting on a failed
+// delete) -- these tests lock in both fixes.
 
 const mkJob = (overrides: Partial<CronJob> = {}): CronJob => ({
   id: 'job-1',
@@ -77,8 +76,8 @@ describe('SchedulePage delete button state machine', () => {
     fireEvent.click(confirmBtn)
 
     await waitFor(() => expect(api.deleteCron).toHaveBeenCalled())
-    // Bug fix under test: even on failure, the button must revert out of
-    // "Confirm" (previously it stayed stuck with no way to re-arm).
+    // Even on failure, the button must revert out of "Confirm" -- otherwise
+    // the row stays stuck with no way to re-arm.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument())
     expect(screen.getByText(/boom/)).toBeInTheDocument()
   })

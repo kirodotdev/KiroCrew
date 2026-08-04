@@ -38,10 +38,12 @@ try:
         raise ImportError("pysqlite3 present but incomplete (no connect)")
 except ImportError:
     import sqlite3
+
 import time
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir
+from kiro_crew.metrics.db_metrics import timed
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # Consolidation caps live in vector_memory_constants (a light module with no
@@ -372,12 +374,19 @@ class VectorMemoryStore:
         # Optional factory that builds an embed_fn on demand. When set, _try_embed()
         # will lazily rebind self.embed_fn if it is None — handles the case where
         # the embedding model was unavailable at gateway boot but landed later, without
-        # requiring a gateway restart. See Mesh-XXXX (embed_fn lazy rebind fix).
+        # requiring a gateway restart.
         self.embed_fn_factory: Callable[[], Callable[[str], list[float] | None] | None] | None = (
             None
         )
         self._embed_fn_rebind_cooldown_secs: float = 30.0
         self._embed_fn_last_rebind_attempt: float = 0.0
+        # Bumped whenever the vector space changes (a live embedding-model swap).
+        # _try_embed compares it across the embed call: a vector produced in the
+        # OLD space must not be committed after the store has moved on, because
+        # reconcile has already swept past that row and backfill only ever
+        # revisits NULLs. A plain dim comparison is NOT enough -- two different
+        # models of the same width are different spaces.
+        self._space_generation = 0
         # Serializes the lazy-rebind block in _try_embed() so the cooldown invariant
         # ("at most one factory call per cooldown window") holds under multi-threaded
         # write load. Without it, two writers can both observe embed_fn is None and
@@ -429,8 +438,7 @@ class VectorMemoryStore:
                 logger.info("Applied memory schema migration v%s", ver)
 
         # Set file permissions (owner-only). chmod_safe already logs+swallows
-        # OSError internally and is a no-op on Windows, so no wrapper needed —
-        # matches the socketsec.py + sel.py chmod_safe call sites in this CR.
+        # OSError internally and is a no-op on Windows, so no wrapper needed.
         platform_compat.chmod_safe(self._db_path, 0o600)
 
         # Load persisted FAISS index (or rebuild from SQLite embeddings)
@@ -545,6 +553,7 @@ class VectorMemoryStore:
         rows = self.db.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
+    @timed("vector", "write")
     def set_semantic(
         self,
         key: str,
@@ -794,6 +803,7 @@ class VectorMemoryStore:
         if seen:
             logger.info("Retired %d stale episodic entries for key %r", len(seen), key)
 
+    @timed("vector", "search")
     def search_semantic(self, prefix: str) -> list[dict]:
         """Search semantic memory by key prefix."""
         rows = self.db.execute(
@@ -1053,7 +1063,7 @@ class VectorMemoryStore:
             )
             return False
 
-        # Prompt-injection screening (XPIA defense-in-depth, Talos 696671aa).
+        # Prompt-injection screening (XPIA defense-in-depth).
         # Episodic text is derived from conversation transcripts, so a poisoned
         # turn could persist steering instructions that get re-injected into
         # future contexts. Mirror the semantic-KV screen (validate_semantic) and
@@ -1093,7 +1103,17 @@ class VectorMemoryStore:
             logger.debug("Episodic text-hash dedup: prefix matches id=%s", existing["id"])
             return False
 
-        # Auto-embed if no embedding provided and embed_fn available
+        # Auto-embed if no embedding provided and embed_fn available.
+        #
+        # `embed_generation` records which vector space the embedding below belongs
+        # to. _try_embed already discards a vector produced ACROSS a space change,
+        # but it returns before this function takes _db_lock, and a model swap can
+        # land in that gap — most plausibly while the INSERT queues behind
+        # reconcile's own lock hold. Committing then would leave a stale-space
+        # vector that reconcile has already swept past and that backfill never
+        # revisits, because backfill only refills NULLs. So carry the generation to
+        # the write and re-check it while holding the lock.
+        embed_generation = self._space_generation
         if embedding is None and not defer_embedding and self.embed_fn is not None:
             embedding = self._try_embed(text)
 
@@ -1120,6 +1140,14 @@ class VectorMemoryStore:
         # a reader that sees index.ntotal == N+1 while len(id_map) == N would
         # IndexError (or the concurrent add/search would corrupt the C++ index).
         with self._db_lock:
+            if embedding_blob is not None and self._space_generation != embed_generation:
+                # A model swap landed between the embed and this lock. Persist NULL
+                # rather than a vector from the previous space — the backfill at the
+                # end of the swap re-embeds this row in the new one. The text is
+                # still written, so nothing is lost.
+                logger.debug("Dropping an episodic embedding produced in a previous space")
+                embedding_blob = None
+                embedding = None
             # Re-check under the write lock. The fast check above avoids an
             # unnecessary embed in the common case, but cannot prevent a native
             # writer from inserting the same text between that check and this
@@ -1288,6 +1316,7 @@ class VectorMemoryStore:
                 is not None
             )
 
+    @timed("vector", "search")
     def search_episodic(
         self,
         query_embedding: list[float] | None = None,
@@ -1678,6 +1707,7 @@ class VectorMemoryStore:
         negative: str | None = None,
         source: str = "user_explicit",
         rule_emb: list[float] | None = None,
+        rule_emb_generation: int | None = None,
     ) -> bool:
         """Write a lesson as a semantic entry with key lesson.<hash>.
 
@@ -1687,21 +1717,48 @@ class VectorMemoryStore:
         - Semantic similarity: if >85% cosine similarity, longer wins
 
         Pass ``rule_emb`` to reuse an embedding already computed by the caller
-        and avoid a second blocking embed of the identical text.
+        and avoid a second blocking embed of the identical text. A caller doing
+        that MUST also read :attr:`space_generation` BEFORE it embeds and pass it
+        as ``rule_emb_generation``, so a model swap landing between that embed and
+        this write is detected and the vector is left NULL for the backfill
+        instead of being committed into the wrong space.
         """
         import hashlib
 
         rule_lower = rule.lower()
         rule_words = self._lesson_keywords(rule_lower)
+        # Same reasoning as write_episodic: carry the space generation to the write
+        # so a swap landing between the embed and the lock cannot commit a vector
+        # from the previous space.
+        #
+        # A caller-supplied ``rule_emb`` was embedded BEFORE this call, so its space
+        # is provenance this method cannot infer — capturing here would compare the
+        # post-swap generation against itself and wave the stale vector through.
+        # Such callers pass the ``space_generation`` they read before embedding.
+        if rule_emb is not None and rule_emb_generation is not None:
+            lesson_embed_generation = rule_emb_generation
+        else:
+            lesson_embed_generation = self._space_generation
         if rule_emb is None:
             rule_emb = self._try_embed(rule) if self.embed_fn else None
         backfills_done = 0
-        pending_backfills: list[tuple[bytes, str]] = []  # (blob, key) pairs
+        # (blob, key, space generation the blob was embedded in). The generation is
+        # recorded per entry, not once for the call: these lazy backfills embed
+        # inside the dedup scan below, so a swap can land between entries.
+        pending_backfills: list[tuple[bytes, str, int]] = []
 
         def _flush_backfills() -> None:
             if pending_backfills:
                 with self._db_lock:
-                    for blob, bk in pending_backfills:
+                    for blob, bk, gen in pending_backfills:
+                        if gen != self._space_generation:
+                            # Swap landed after this blob was embedded. Leave the row
+                            # NULL for the post-activation backfill rather than
+                            # persisting a vector from the previous space.
+                            logger.debug(
+                                "Dropping a lazy lesson backfill from a previous space"
+                            )
+                            continue
                         self.db.execute(
                             "UPDATE semantic_memory SET embedding = ? WHERE key = ?", (blob, bk)
                         )
@@ -1752,10 +1809,17 @@ class VectorMemoryStore:
                         existing_emb = None
                 elif self.embed_fn and backfills_done < _MAX_BACKFILLS_PER_CALL:
                     # Lazy backfill: compute embedding for legacy lessons (count even on failure)
+                    # Sampled BEFORE the embed: _try_embed returns None when a swap
+                    # spanned its own call, so this value is the blob's true space.
+                    # Sampling after it returns would tag an old blob with the new
+                    # generation and the flush check would wave it through.
+                    backfill_generation = self._space_generation
                     existing_emb = self._try_embed(existing_val)
                     if existing_emb:
                         blob = struct.pack(f"{len(existing_emb)}f", *existing_emb)
-                        pending_backfills.append((blob, existing["key"]))
+                        pending_backfills.append(
+                            (blob, existing["key"], backfill_generation)
+                        )
                     backfills_done += 1
                 else:
                     existing_emb = None
@@ -1765,7 +1829,9 @@ class VectorMemoryStore:
                         logger.info("Lesson semantic dedup: %.2f sim with %r", sim, existing["key"])
                         if len(rule) > len(existing_val):
                             pending_backfills[:] = [
-                                (b, k) for b, k in pending_backfills if k != existing["key"]
+                                (b, k, g)
+                                for b, k, g in pending_backfills
+                                if k != existing["key"]
                             ]
                             self.delete_semantic(existing["key"], source)
                         else:
@@ -1782,10 +1848,17 @@ class VectorMemoryStore:
         if err is None and rule_emb:
             emb_blob = struct.pack(f"{len(rule_emb)}f", *rule_emb)
             with self._db_lock:
-                self.db.execute(
-                    "UPDATE semantic_memory SET embedding = ? WHERE key = ?", (emb_blob, key)
-                )
-                self.db.commit()
+                if self._space_generation != lesson_embed_generation:
+                    # Swap landed mid-write: leave the vector NULL for the backfill
+                    # instead of persisting one from the previous space. The lesson
+                    # row itself is already written.
+                    logger.debug("Dropping a lesson embedding produced in a previous space")
+                else:
+                    self.db.execute(
+                        "UPDATE semantic_memory SET embedding = ? WHERE key = ?",
+                        (emb_blob, key),
+                    )
+                    self.db.commit()
         return err is None
 
     @staticmethod
@@ -1994,7 +2067,16 @@ class VectorMemoryStore:
                                 )
         if self.embed_fn is not None:
             try:
+                generation_before = self._space_generation
                 result = self.embed_fn(text)
+                if self._space_generation != generation_before:
+                    # A model swap landed while this text was in flight. The
+                    # vector belongs to the previous space; committing it would
+                    # leave a stale-space row that reconcile already passed over
+                    # and backfill will never revisit. Drop it -- the caller
+                    # stores NULL and the backfill re-embeds it in the new space.
+                    logger.debug("Discarding an embedding produced across a space change")
+                    return None
                 if result:
                     logger.debug("Embedded for migration: dim=%d text=%s…", len(result), text[:50])
                 else:
@@ -2021,6 +2103,54 @@ class VectorMemoryStore:
                 (key, value, _now_iso()),
             )
             self.db.commit()
+
+    def begin_space_change(self) -> None:
+        """Mark the start of a vector-space change (a live model swap).
+
+        Call this the moment the outgoing model stops being authoritative, BEFORE
+        the new one is ready. Everything already inside :meth:`_try_embed` at that
+        instant produced its vector in the old space, and the guard there drops
+        those results rather than letting them commit behind the reconcile.
+
+        Distinct from :meth:`set_embedding_dim`, which only fires when the WIDTH
+        changes: two different models of the same width are different spaces and
+        would otherwise slip through unnoticed.
+        """
+        with self._db_lock:
+            self._space_generation += 1
+
+    @property
+    def space_generation(self) -> int:
+        """The current vector-space generation, for callers that pre-embed.
+
+        Read this BEFORE computing a vector you intend to hand to
+        :meth:`write_lesson`, then pass it back as ``rule_emb_generation``.
+        """
+        return self._space_generation
+
+    def set_embedding_dim(self, dim: int) -> bool:
+        """Retarget the store at a new vector width. Returns True if it changed.
+
+        ``_embedding_dim`` is otherwise fixed at construction, yet it gates BOTH
+        the FAISS index width (:meth:`build_faiss_index`) and the per-row shape
+        check in :meth:`backfill_missing_embeddings`. Swapping to a model of a
+        different dimensionality without updating it means every re-embedded
+        vector fails validation and stays NULL forever, with the index stuck at
+        the old width — so a live model change must call this.
+
+        Callers must reconcile (which NULLs every stored vector) before or right
+        after this: mixing widths in one index is exactly what the signature
+        machinery exists to prevent. The in-memory index is dropped here so it
+        cannot be reused at the old width.
+        """
+        if dim <= 0 or dim == self._embedding_dim:
+            return False
+        with self._db_lock:
+            logger.info("Embedding width changed %d -> %d", self._embedding_dim, dim)
+            self._embedding_dim = dim
+            self._faiss_index = None
+            self._faiss_id_map = []
+        return True
 
     def recorded_embedding_space(self) -> str | None:
         """Signature the stored vectors were produced under, or None if unrecorded.
@@ -2151,7 +2281,9 @@ class VectorMemoryStore:
             logger.info("Recorded embedding vector space %s (no stored vectors)", signature)
         return invalidated
 
-    def backfill_missing_embeddings(self) -> int:
+    def backfill_missing_embeddings(
+        self, progress: "Callable[[int, int], None] | None" = None
+    ) -> int:
         """Compute embeddings for episodic rows that have none, then rebuild FAISS.
 
         Entries written while the embedding model was still downloading (first
@@ -2186,7 +2318,7 @@ class VectorMemoryStore:
         # compared directly, never indexed), and they must be rebuilt even when
         # there is not a single NULL episodic row — which is exactly the state
         # after reconcile_embedding_space() on a memory that holds only lessons.
-        self._backfill_lesson_embeddings()
+        self._backfill_lesson_embeddings(progress)
         if not _HAS_NUMPY:
             return 0
         with self._db_lock:
@@ -2197,9 +2329,16 @@ class VectorMemoryStore:
         if not rows:
             return 0
         embedded = 0
+        total = len(rows)
+        if progress is not None:
+            # Report the denominator up front: without it an indicator can only
+            # spin, and this loop can run for minutes on a large corpus.
+            progress(0, total)
         for row in rows:
             vec = self._try_embed(row["text"])
             if not vec:
+                if progress is not None:
+                    progress(embedded, total)
                 continue
             arr = np.asarray(vec, dtype=np.float32)
             # Validate dimension before storing: a wrong-dim vector is skipped by
@@ -2212,6 +2351,8 @@ class VectorMemoryStore:
                     arr.shape,
                     self._embedding_dim,
                 )
+                if progress is not None:
+                    progress(embedded, total)
                 continue
             # L2-normalize to match write_episodic(): the FAISS IndexFlatIP scores
             # inner product, which only equals cosine similarity on unit vectors.
@@ -2226,6 +2367,8 @@ class VectorMemoryStore:
                 )
                 self.db.commit()
             embedded += 1
+            if progress is not None:
+                progress(embedded, total)
         if embedded:
             if _HAS_FAISS:
                 with self._db_lock:
@@ -2234,7 +2377,9 @@ class VectorMemoryStore:
             logger.info("Backfilled embeddings for %d episodic entries", embedded)
         return embedded
 
-    def _backfill_lesson_embeddings(self) -> int:
+    def _backfill_lesson_embeddings(
+        self, progress: "Callable[[int, int], None] | None" = None
+    ) -> int:
         """Embed lesson rows whose vector is NULL. Returns the count embedded.
 
         Lesson vectors drive semantic dedup and contradiction detection
@@ -2263,6 +2408,9 @@ class VectorMemoryStore:
         if not rows:
             return 0
         embedded = 0
+        total = len(rows)
+        if progress is not None:
+            progress(0, total)
         for row in rows:
             try:
                 text = str(json.loads(row["value_json"]))
@@ -2282,6 +2430,8 @@ class VectorMemoryStore:
                 )
                 self.db.commit()
             embedded += 1
+            if progress is not None:
+                progress(embedded, total)
         if embedded:
             logger.info("Backfilled embeddings for %d lessons", embedded)
         return embedded
@@ -2548,7 +2698,7 @@ class VectorMemoryStore:
         """Return counts of write rejections by reason.
 
         ``injection_blocked`` is counted across BOTH semantic and episodic
-        writes (episodic screening added for Talos 696671aa). The other codes
+        writes. The other codes
         stay semantic-scoped: ``conflict_skip`` is also emitted for episodic
         FAISS dedup, so counting episodic there would conflate benign
         deduplication with policy rejections.

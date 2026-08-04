@@ -1,8 +1,8 @@
 /**
  * folderTree.orderFoldersWithPaths is the shared tree-ordering used by the
- * folder pickers (move-to-folder submenu, new-chat-in-folder). It was extracted
- * from the old FolderPickerSubmenu so the ordering/path/depth logic is unit-
- * testable on its own — independent of the Radix submenu it now feeds.
+ * folder pickers (move-to-folder submenu, new-chat-in-folder). The
+ * ordering/path/depth logic is unit-testable on its own — independent of the
+ * Radix submenu it feeds.
  */
 import { describe, it, expect } from 'vitest'
 import { orderFoldersWithPaths, FOLDER_PATH_SEP } from '../utils/folderTree'

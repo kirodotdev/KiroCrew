@@ -1,7 +1,6 @@
 // Feature: chat-virtualizer — follow controller (stick-to-bottom) logic.
 //
-// These tests pin down the exact behaviours that regressed repeatedly when the
-// follow logic was a tangle of event-ordering-dependent refs:
+// These tests pin down the exact behaviours the follow logic must guarantee:
 //   - slot enter / streaming with a large single growth step still follows
 //   - a user scroll-up is never overridden by a late widget load (race-proof)
 //   - our own programmatic pins are not mistaken for user scrolls
@@ -69,7 +68,7 @@ describe('evaluateAutoPin — the race-proof core', () => {
   it('STREAMING/WIDGET: large single growth while glued at bottom still follows', () => {
     // We last pinned at 600. Content grew by 300 below the fold; scrollTop is
     // unchanged at 600, the new bottom is 900. Distance (300) is far past the
-    // 100px threshold — the old distance gate rejected this and follow died.
+    // 100px threshold — a plain distance gate would reject this and break follow.
     const grown = { scrollTop: 600, scrollHeight: 1300, clientHeight: 400 } // target 900
     const r = evaluateAutoPin({ stick: true, geom: grown, lastWriteTop: 600 })
     expect(r.stick).toBe(true)
@@ -164,12 +163,13 @@ describe('evaluateAutoPin — the race-proof core', () => {
   })
 })
 
-// Feature: chat-virtualizer, T3/#4 — DPR-aware "at bottom" epsilon.
+// Feature: chat-virtualizer — DPR-aware "at bottom" epsilon.
 //
 // A flat 0.5px gate is UNDER one device pixel at fractional device-pixel ratios
-// (0.67 CSS px at 150% zoom), so at the fractional resting scrollTop the pin
-// re-fired on every ResizeObserver tick even though the viewport was visually
-// pinned. atBottomEpsilon() scales to the device pixel (never below 1 CSS px).
+// (0.67 CSS px at 150% zoom), so at the fractional resting scrollTop a flat gate
+// re-fires the pin on every ResizeObserver tick even though the viewport is
+// visually pinned. atBottomEpsilon() scales to the device pixel (never below 1
+// CSS px).
 describe('atBottomEpsilon — fractional-DPR resting gate', () => {
   const desc = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio')
   const setDpr = (v: number | undefined) => {
@@ -195,7 +195,7 @@ describe('atBottomEpsilon — fractional-DPR resting gate', () => {
       const r = evaluateAutoPin({ stick: true, geom, lastWriteTop: 900 })
       expect(r.stick).toBe(true)
       expect(r.pin).toBe(false) // within epsilon — the RO tick does NOT re-fire
-      // The retired flat 0.5 literal WOULD have re-fired here (0.67 > 0.5).
+      // A flat 0.5 literal WOULD re-fire here (0.67 > 0.5).
       expect(0.67).toBeGreaterThan(0.5)
     } finally {
       restore()

@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { api } from '../../../api/client'
+import { i18nT } from '../../../i18n/t'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import type { Result, ResourceProvider } from '../types'
 
@@ -33,7 +34,12 @@ import type { Result, ResourceProvider } from '../types'
  */
 
 const PROVIDER_ID = 'knowledge'
-const PROVIDER_LABEL = 'Knowledge'
+
+/** Catalog KEY for the palette tab label — a key, not a string, because this
+ *  module-scope constant is evaluated once at import, where an `i18nT()` would
+ *  freeze the boot language. It is resolved inside `createKnowledgeProvider()`,
+ *  which `useKnowledgeProvider()` calls from a `useMemo` during render. */
+const PROVIDER_LABEL_KEY = 'components.commandPalette.providers.knowledgeProvider.knowledge'
 
 /** Where Enter ("open entry") navigates — no per-entry deep link exists yet. */
 const KNOWLEDGE_ROUTE = '/knowledge'
@@ -107,7 +113,14 @@ export function createKnowledgeProvider(deps: KnowledgeProviderDeps): ResourcePr
 
   return {
     id: PROVIDER_ID,
-    label: PROVIDER_LABEL,
+    // A GETTER, not a plain call: the provider object is built inside a `useMemo`
+    // whose deps do not include the language, so `label: i18nT(...)` would resolve
+    // once and keep the pre-switch wording forever. `LanguageProvider` forces a
+    // re-RENDER via `cloneElement` (it deliberately does NOT remount — see its own
+    // comment rejecting `key={active}`), and a re-render does not recompute a memo.
+    // An accessor moves the lookup to the consumer's render, where the tab strip
+    // reads it. Satisfies `ResourceProvider.label: string`.
+    get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: knowledgeIcon(),
     async search(query: string): Promise<Result[]> {
       const q = query.trim()
@@ -127,7 +140,7 @@ export function createKnowledgeProvider(deps: KnowledgeProviderDeps): ResourcePr
           icon: knowledgeIcon(),
           score: match ? match.score : 0,
           indices: match ? match.indices : [],
-          // Declarative Enter contract (§2 / task 26). The central
+          // Declarative Enter contract (§2). The central
           // `dispatchEnter` in CommandPalette routes on this: primary Enter
           // opens / navigates to the entry; ⌘Enter attaches it as context to
           // the active chat. The `entryId` is the knowledge entry id from this
@@ -141,7 +154,7 @@ export function createKnowledgeProvider(deps: KnowledgeProviderDeps): ResourcePr
       })
 
       // Title matches first, then deterministic name order. Skip the re-rank on
-      // an empty query so the backend's ordering is preserved (a review finding).
+      // an empty query so the backend's ordering is preserved.
       if (q.length > 0) {
         results.sort(compareResults)
       }

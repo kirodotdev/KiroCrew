@@ -18,6 +18,23 @@ export function getCtrlDigitsEnabled(): boolean {
   return IS_MAC && localStorage.getItem(MAC_CTRL_DIGITS_KEY) !== '0'
 }
 
+/**
+ * Which section of the shortcuts reference an entry belongs to.
+ *
+ * A STABLE, NON-LOCALISED ID — deliberately not the displayed heading. The value is
+ * a discriminant first and a label never: `INSTANCE_SHORTCUTS` below and
+ * `groupShortcuts()` in ShortcutsModal both select entries by comparing it, so a
+ * localised value would make every one of those comparisons miss in every
+ * non-English locale and silently render an empty shortcuts modal. The heading text
+ * lives in `SHORTCUT_GROUP_LABEL_KEY` and resolves per render.
+ */
+export type ShortcutGroup = 'chat-navigation' | 'panel-navigation' | 'actions' | 'remote-crews'
+
+/** Shortcut groups in display order — the canonical id set and ordering. */
+export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
+  'chat-navigation', 'panel-navigation', 'actions', 'remote-crews',
+]
+
 export interface ShortcutDef {
   id: string
   key: string
@@ -29,69 +46,190 @@ export interface ShortcutDef {
   ctrl?: boolean
   meta?: boolean  // Cmd on Mac, Ctrl on Windows/Linux
   shift?: boolean
-  label: string
-  group: 'Chat Navigation' | 'Panel Navigation' | 'Actions' | 'Remote Crews'
+  /**
+   * Already-resolved display label — the EXTENSION SEAM ONLY
+   * (`registerPanelShortcut`), where a downstream edition supplies its own string
+   * and owns its own localisation. Core entries carry no label: their copy lives in
+   * `SHORTCUT_LABEL_KEY` and is resolved per render by `shortcutLabel()`.
+   */
+  label?: string
+  /**
+   * Interpolation count for an indexed label — the N in "Jump to chat {{n}}". Set
+   * only on the entries whose label carries a number, so the nine chat-jump chords
+   * share ONE catalog key instead of nine near-identical ones.
+   */
+  n?: number
+  group: ShortcutGroup
 }
 
 export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
   // Chat navigation — digits use Ctrl on Mac (Option+number produces characters on non-US keyboards)
-  { id: 'chat-1', key: '1', alt: !IS_MAC, ctrl: IS_MAC, label: 'Jump to chat 1', group: 'Chat Navigation' },
-  { id: 'chat-2', key: '2', alt: !IS_MAC, ctrl: IS_MAC, label: 'Jump to chat 2', group: 'Chat Navigation' },
-  { id: 'chat-3', key: '3', alt: !IS_MAC, ctrl: IS_MAC, label: 'Jump to chat 3', group: 'Chat Navigation' },
-  { id: 'chat-4', key: '4', alt: !IS_MAC, ctrl: IS_MAC, label: 'Jump to chat 4', group: 'Chat Navigation' },
-  { id: 'chat-5', key: '5', alt: !IS_MAC, ctrl: IS_MAC, label: 'Jump to chat 5', group: 'Chat Navigation' },
-  { id: 'chat-6', key: '6', alt: !IS_MAC, ctrl: IS_MAC, label: 'Jump to chat 6', group: 'Chat Navigation' },
-  { id: 'chat-7', key: '7', alt: !IS_MAC, ctrl: IS_MAC, label: 'Jump to chat 7', group: 'Chat Navigation' },
-  { id: 'chat-8', key: '8', alt: !IS_MAC, ctrl: IS_MAC, label: 'Jump to chat 8', group: 'Chat Navigation' },
-  { id: 'chat-9', key: '9', alt: !IS_MAC, ctrl: IS_MAC, label: 'Jump to chat 9', group: 'Chat Navigation' },
-  { id: 'chat-prev', key: 'ArrowLeft', alt: true, label: 'Previous chat', group: 'Chat Navigation' },
-  { id: 'chat-next', key: 'ArrowRight', alt: true, label: 'Next chat', group: 'Chat Navigation' },
-  { id: 'chat-prev-bracket', key: '[', meta: true, label: 'Previous chat', group: 'Chat Navigation' },
-  { id: 'chat-next-bracket', key: ']', meta: true, label: 'Next chat', group: 'Chat Navigation' },
-  { id: 'chat-mru', key: '`', alt: true, label: 'Last visited chat (MRU)', group: 'Chat Navigation' },
-  { id: 'chat-mru-back', key: '`', alt: true, shift: true, label: 'Walk back MRU history', group: 'Chat Navigation' },
+  { id: 'chat-1', key: '1', alt: !IS_MAC, ctrl: IS_MAC, n: 1, group: 'chat-navigation' },
+  { id: 'chat-2', key: '2', alt: !IS_MAC, ctrl: IS_MAC, n: 2, group: 'chat-navigation' },
+  { id: 'chat-3', key: '3', alt: !IS_MAC, ctrl: IS_MAC, n: 3, group: 'chat-navigation' },
+  { id: 'chat-4', key: '4', alt: !IS_MAC, ctrl: IS_MAC, n: 4, group: 'chat-navigation' },
+  { id: 'chat-5', key: '5', alt: !IS_MAC, ctrl: IS_MAC, n: 5, group: 'chat-navigation' },
+  { id: 'chat-6', key: '6', alt: !IS_MAC, ctrl: IS_MAC, n: 6, group: 'chat-navigation' },
+  { id: 'chat-7', key: '7', alt: !IS_MAC, ctrl: IS_MAC, n: 7, group: 'chat-navigation' },
+  { id: 'chat-8', key: '8', alt: !IS_MAC, ctrl: IS_MAC, n: 8, group: 'chat-navigation' },
+  { id: 'chat-9', key: '9', alt: !IS_MAC, ctrl: IS_MAC, n: 9, group: 'chat-navigation' },
+  { id: 'chat-prev', key: 'ArrowLeft', alt: true, group: 'chat-navigation' },
+  { id: 'chat-next', key: 'ArrowRight', alt: true, group: 'chat-navigation' },
+  { id: 'chat-prev-bracket', key: '[', meta: true, group: 'chat-navigation' },
+  { id: 'chat-next-bracket', key: ']', meta: true, group: 'chat-navigation' },
+  { id: 'chat-mru', key: '`', alt: true, group: 'chat-navigation' },
+  { id: 'chat-mru-back', key: '`', alt: true, shift: true, group: 'chat-navigation' },
   // Panel navigation
-  { id: 'nav-chat', key: 'c', alt: true, label: 'Chats panel', group: 'Panel Navigation' },
-  { id: 'nav-notifications', key: 'n', alt: true, label: 'Notifications panel', group: 'Panel Navigation' },
-  { id: 'nav-projects', key: 'p', alt: true, label: 'Projects panel', group: 'Panel Navigation' },
-  { id: 'nav-schedule', key: 's', alt: true, label: 'Schedule panel', group: 'Panel Navigation' },
+  { id: 'nav-chat', key: 'c', alt: true, group: 'panel-navigation' },
+  { id: 'nav-notifications', key: 'n', alt: true, group: 'panel-navigation' },
+  { id: 'nav-projects', key: 'p', alt: true, group: 'panel-navigation' },
+  { id: 'nav-schedule', key: 's', alt: true, group: 'panel-navigation' },
   // Actions
-  { id: 'focus-input', key: 'Enter', alt: true, label: 'Focus text input', group: 'Actions' },
-  { id: 'new-chat', key: 'n', alt: true, shift: true, label: 'New chat', group: 'Actions' },
-  { id: 'close-chat', key: 'w', alt: true, shift: true, label: 'Close session', group: 'Actions' },
-  { id: 'shortcuts-modal', key: 'k', alt: true, label: 'Open shortcuts help', group: 'Actions' },
-  { id: 'open-settings', key: ',', alt: !IS_MAC, meta: IS_MAC, label: 'Open settings', group: 'Actions' },
-  { id: 'cycle-agent', key: 'a', alt: true, shift: true, label: 'Cycle agent', group: 'Actions' },
-  { id: 'cycle-prev-agent', key: 'z', alt: true, shift: true, label: 'Previous agent', group: 'Actions' },
-  { id: 'cycle-reasoning', key: 'd', alt: true, shift: true, label: 'Cycle reasoning effort', group: 'Actions' },
-  { id: 'cycle-prev-reasoning', key: 'c', alt: true, shift: true, label: 'Previous reasoning effort', group: 'Actions' },
-  { id: 'cycle-approval', key: 'f', alt: true, shift: true, label: 'Cycle approval mode', group: 'Actions' },
-  { id: 'cycle-prev-approval', key: 'v', alt: true, shift: true, label: 'Previous approval mode', group: 'Actions' },
-  { id: 'cycle-model', key: 's', alt: true, shift: true, label: 'Cycle model', group: 'Actions' },
-  { id: 'cycle-prev-model', key: 'x', alt: true, shift: true, label: 'Previous model', group: 'Actions' },
-  { id: 'optimize-prompt', key: 'Enter', meta: true, shift: true, label: 'Optimize prompt', group: 'Actions' },
+  { id: 'focus-input', key: 'Enter', alt: true, group: 'actions' },
+  { id: 'new-chat', key: 'n', alt: true, shift: true, group: 'actions' },
+  { id: 'close-chat', key: 'w', alt: true, shift: true, group: 'actions' },
+  { id: 'shortcuts-modal', key: 'k', alt: true, group: 'actions' },
+  { id: 'open-settings', key: ',', alt: !IS_MAC, meta: IS_MAC, group: 'actions' },
+  { id: 'cycle-agent', key: 'a', alt: true, shift: true, group: 'actions' },
+  { id: 'cycle-prev-agent', key: 'z', alt: true, shift: true, group: 'actions' },
+  { id: 'cycle-reasoning', key: 'd', alt: true, shift: true, group: 'actions' },
+  { id: 'cycle-prev-reasoning', key: 'c', alt: true, shift: true, group: 'actions' },
+  { id: 'cycle-approval', key: 'f', alt: true, shift: true, group: 'actions' },
+  { id: 'cycle-prev-approval', key: 'v', alt: true, shift: true, group: 'actions' },
+  { id: 'cycle-model', key: 's', alt: true, shift: true, group: 'actions' },
+  { id: 'cycle-prev-model', key: 'x', alt: true, shift: true, group: 'actions' },
+  { id: 'optimize-prompt', key: 'Enter', meta: true, shift: true, group: 'actions' },
   // Literal Ctrl on every platform — see isAgentMonitorChord for why this one
   // does NOT follow the ⌘-on-Mac convention.
-  { id: 'agent-monitor', key: 'g', ctrl: true, label: 'Open agent monitor (subagents)', group: 'Actions' },
+  { id: 'agent-monitor', key: 'g', ctrl: true, group: 'actions' },
   // Instance switcher — Cmd on Mac / Ctrl on Win-Linux. 1 = Local, 2..6 = the
   // 1st..5th remote instance, matching the InstanceTabBar left-to-right order.
   // Handled by useInstanceShortcuts (not the Alt-based handler below); listed
   // here so they appear in the shortcuts modal + Settings → Shortcuts.
-  { id: 'instance-1', key: '1', meta: true, label: 'Switch to Local', group: 'Remote Crews' },
-  { id: 'instance-2', key: '2', meta: true, label: 'Switch to remote crew 1', group: 'Remote Crews' },
-  { id: 'instance-3', key: '3', meta: true, label: 'Switch to remote crew 2', group: 'Remote Crews' },
-  { id: 'instance-4', key: '4', meta: true, label: 'Switch to remote crew 3', group: 'Remote Crews' },
-  { id: 'instance-5', key: '5', meta: true, label: 'Switch to remote crew 4', group: 'Remote Crews' },
-  { id: 'instance-6', key: '6', meta: true, label: 'Switch to remote crew 5', group: 'Remote Crews' },
+  { id: 'instance-1', key: '1', meta: true, group: 'remote-crews' },
+  { id: 'instance-2', key: '2', meta: true, n: 1, group: 'remote-crews' },
+  { id: 'instance-3', key: '3', meta: true, n: 2, group: 'remote-crews' },
+  { id: 'instance-4', key: '4', meta: true, n: 3, group: 'remote-crews' },
+  { id: 'instance-5', key: '5', meta: true, n: 4, group: 'remote-crews' },
+  { id: 'instance-6', key: '6', meta: true, n: 5, group: 'remote-crews' },
 ]
+
+/**
+ * Catalog KEY for each entry's display label, by `ShortcutDef.id`.
+ *
+ * Keys, not strings, and a separate table rather than a field on the entries: this
+ * module is evaluated once at import, so an `i18nT()` call inside `DEFAULT_SHORTCUTS`
+ * would freeze the boot language and never re-resolve on a language switch. The
+ * lookup happens in `shortcutLabel()`, which runs during render.
+ *
+ * Flat `Record` of full literal keys, indexed inline at the `i18nT()` call, because
+ * that is the form `scripts/check-i18n-keys.mjs` resolves statically — it widens
+ * `SHORTCUT_LABEL_KEY[id]` to the whole value set and verifies every member exists.
+ * A `labelKey` field on each entry (the `surfaces/registry.ts` shape) would read
+ * more naturally but forces `i18nT(def.labelKey)` at the call site, which is
+ * unresolvable and would add a second entry to `dynamic-keys-baseline.json` — a
+ * ratchet that only moves down.
+ *
+ * The nine chat-jump ids share ONE key and pass `n`: nine catalog entries differing
+ * only by a digit is nine strings for a translator to keep consistent, ten times
+ * over. Same for the five remote-crew slots. `instance-1` is the Local tab, which is
+ * named rather than numbered, so it keeps its own key.
+ */
+export const SHORTCUT_LABEL_KEY: Record<string, string> = {
+  'chat-1': 'hooks.useKeyboardShortcuts.jump_to_chat',
+  'chat-2': 'hooks.useKeyboardShortcuts.jump_to_chat',
+  'chat-3': 'hooks.useKeyboardShortcuts.jump_to_chat',
+  'chat-4': 'hooks.useKeyboardShortcuts.jump_to_chat',
+  'chat-5': 'hooks.useKeyboardShortcuts.jump_to_chat',
+  'chat-6': 'hooks.useKeyboardShortcuts.jump_to_chat',
+  'chat-7': 'hooks.useKeyboardShortcuts.jump_to_chat',
+  'chat-8': 'hooks.useKeyboardShortcuts.jump_to_chat',
+  'chat-9': 'hooks.useKeyboardShortcuts.jump_to_chat',
+  'chat-prev': 'hooks.useKeyboardShortcuts.previous_chat',
+  'chat-next': 'hooks.useKeyboardShortcuts.next_chat',
+  'chat-prev-bracket': 'hooks.useKeyboardShortcuts.previous_chat',
+  'chat-next-bracket': 'hooks.useKeyboardShortcuts.next_chat',
+  'chat-mru': 'hooks.useKeyboardShortcuts.last_visited_chat_mru',
+  'chat-mru-back': 'hooks.useKeyboardShortcuts.walk_back_mru_history',
+  'nav-chat': 'hooks.useKeyboardShortcuts.chats_panel',
+  'nav-notifications': 'hooks.useKeyboardShortcuts.notifications_panel',
+  'nav-projects': 'hooks.useKeyboardShortcuts.projects_panel',
+  'nav-schedule': 'hooks.useKeyboardShortcuts.schedule_panel',
+  'focus-input': 'hooks.useKeyboardShortcuts.focus_text_input',
+  // Reused: the same command as the chat sidebar's own New chat / Close session
+  // controls, so the reference list and the buttons cannot drift apart.
+  'new-chat': 'pages.chatSidebar.new_chat',
+  'close-chat': 'pages.chatSidebar.close_session',
+  'shortcuts-modal': 'hooks.useKeyboardShortcuts.open_shortcuts_help',
+  'open-settings': 'hooks.useKeyboardShortcuts.open_settings',
+  'cycle-agent': 'hooks.useKeyboardShortcuts.cycle_agent',
+  'cycle-prev-agent': 'hooks.useKeyboardShortcuts.previous_agent',
+  'cycle-reasoning': 'hooks.useKeyboardShortcuts.cycle_reasoning_effort',
+  'cycle-prev-reasoning': 'hooks.useKeyboardShortcuts.previous_reasoning_effort',
+  'cycle-approval': 'hooks.useKeyboardShortcuts.cycle_approval_mode',
+  'cycle-prev-approval': 'hooks.useKeyboardShortcuts.previous_approval_mode',
+  'cycle-model': 'hooks.useKeyboardShortcuts.cycle_model',
+  'cycle-prev-model': 'hooks.useKeyboardShortcuts.previous_model',
+  // Reused: the ChatInput control this chord fires.
+  'optimize-prompt': 'components.chatInput.optimize_prompt',
+  'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',
+  'instance-1': 'hooks.useKeyboardShortcuts.switch_to_local',
+  'instance-2': 'hooks.useKeyboardShortcuts.switch_to_remote_crew',
+  'instance-3': 'hooks.useKeyboardShortcuts.switch_to_remote_crew',
+  'instance-4': 'hooks.useKeyboardShortcuts.switch_to_remote_crew',
+  'instance-5': 'hooks.useKeyboardShortcuts.switch_to_remote_crew',
+  'instance-6': 'hooks.useKeyboardShortcuts.switch_to_remote_crew',
+}
+
+/** Catalog KEY for each group's displayed heading. Never the discriminant — see `ShortcutGroup`. */
+export const SHORTCUT_GROUP_LABEL_KEY: Record<ShortcutGroup, string> = {
+  'chat-navigation': 'hooks.useKeyboardShortcuts.group_chat_navigation',
+  'panel-navigation': 'hooks.useKeyboardShortcuts.group_panel_navigation',
+  'actions': 'hooks.useKeyboardShortcuts.group_actions',
+  'remote-crews': 'hooks.useKeyboardShortcuts.group_remote_crews',
+}
+
+/**
+ * Localised display label for a shortcut, resolved at RENDER time.
+ *
+ * An entry with no catalog key is a downstream registration via
+ * `registerPanelShortcut`, which supplies its own already-resolved `label`; that
+ * string is returned verbatim rather than dressed up, and its id is the last resort
+ * so a mis-registered entry is legible as an identifier instead of blank.
+ *
+ * `hasOwnProperty`, not `in`: ids reach here from the extension seam, so an entry
+ * registered as `toString` or `constructor` would otherwise resolve to an inherited
+ * Object.prototype member and hand a function to i18next.
+ */
+export function shortcutLabel(def: ShortcutDef): string {
+  if (!Object.prototype.hasOwnProperty.call(SHORTCUT_LABEL_KEY, def.id)) return def.label ?? def.id
+  return def.n === undefined
+    ? i18nT(SHORTCUT_LABEL_KEY[def.id])
+    : i18nT(SHORTCUT_LABEL_KEY[def.id], { n: def.n })
+}
+
+/**
+ * Localised heading for a shortcut group, resolved at RENDER time. Takes the
+ * `string` the display surfaces actually hold; an unknown id (a downstream group
+ * this build does not know) is returned verbatim rather than blanking the heading.
+ */
+export function shortcutGroupLabel(group: string): string {
+  return Object.prototype.hasOwnProperty.call(SHORTCUT_GROUP_LABEL_KEY, group)
+    ? i18nT(SHORTCUT_GROUP_LABEL_KEY[group as ShortcutGroup])
+    : group
+}
 
 /**
  * The instance-switch entries, exported as the single source of truth for
  * useInstanceShortcuts: the handler accepts exactly Digit1..Digit<N> where N =
  * INSTANCE_SHORTCUTS.length, so the chords the modal advertises and the chords
  * the handler claims can never drift apart.
+ *
+ * Compares the stable `ShortcutGroup` ID, never the displayed heading: the heading
+ * is localised, so filtering on it would yield an empty list — and a silently
+ * unbound ⌘1..⌘6 — in every language but English.
  */
-export const INSTANCE_SHORTCUTS = DEFAULT_SHORTCUTS.filter(s => s.group === 'Remote Crews')
+export const INSTANCE_SHORTCUTS = DEFAULT_SHORTCUTS.filter(s => s.group === 'remote-crews')
 
 /**
  * The core Alt+<key> panel-navigation chords. Single source of truth for both
@@ -169,8 +307,11 @@ export function registerPanelShortcut(entry: { code: string; path: string; label
     id: `nav-${entry.path.replace(/^\//, '')}`,
     key: _displayKeyForCode(entry.code),
     alt: true,
+    // The downstream edition owns this string and its localisation: there is no
+    // catalog key for a panel the core does not know about, so `shortcutLabel()`
+    // returns it verbatim.
     label: entry.label,
-    group: 'Panel Navigation',
+    group: 'panel-navigation',
   })
 }
 
@@ -401,9 +542,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
 
     // Ctrl+G: open the agent monitor — the Subagents activity tab ("Live agent
     // activity & transcripts"). This is the chord the kiro-cli backend advertises
-    // in its crew-pipeline tool result ("Press ctrl+g to monitor progress"), which
-    // until now was unbound on every non-TUI surface. Handled BEFORE the Alt gate
-    // because the chord carries no Alt.
+    // in its crew-pipeline tool result ("Press ctrl+g to monitor progress").
+    // Handled BEFORE the Alt gate because the chord carries no Alt.
     //
     // Deliberately fires INSIDE text fields: the hint is read while a crew runs
     // and focus is normally in the composer, so an isInput bail-out would make it

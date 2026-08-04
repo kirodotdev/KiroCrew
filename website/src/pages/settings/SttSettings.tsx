@@ -4,7 +4,7 @@ import { AlertTriangle, X, Hourglass, Package } from 'lucide-react'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import { api } from '../../api/client'
-import { listMicrophones, getPreferredMicId, setPreferredMicId, micAudioConstraints } from '../../hooks/mic'
+import { listMicrophones, getPreferredMicId, setPreferredMicId, micAudioConstraints, reportIfMicDenied } from '../../hooks/mic'
 
 import { i18nT } from '../../i18n/t'
 interface SttConfig {
@@ -30,24 +30,58 @@ interface SttConfig {
   prereqs: string[]
 }
 
-const STEP_LABELS: Record<string, string> = {
-  starting: 'Starting…',
-  checking: 'Finding Python…',
-  installing_xcode: 'Installing Xcode CLI Tools…',
-  installing_brew: 'Installing Homebrew…',
-  installing_python: 'Installing Python…',
-  installing_ffmpeg: 'Installing ffmpeg…',
-  installing_whisper: 'Installing whisper (~1.6 GB)…',
-  installing_mlx: 'Installing mlx-whisper…',
-  pulling: 'Pulling Docker image…',
-  done: 'Done!',
-  error: 'Failed',
+/**
+ * Catalog KEY for each install-progress step reported by the backend
+ * (`SttConfig.install_step`).
+ *
+ * Keys, not strings: this table is evaluated at module load, so an `i18nT()` call
+ * here would freeze the boot language and never re-resolve on a language switch.
+ * The lookup happens in `stepLabel()`, which runs during render. Flat `Record` of
+ * full literal keys indexed inline at the `i18nT()` call — the only shape
+ * `scripts/check-i18n-keys.mjs` can resolve statically.
+ */
+const STEP_LABEL_KEY: Record<string, string> = {
+  starting: 'pages.settings.sttSettings.step_starting',
+  checking: 'pages.settings.sttSettings.step_checking',
+  installing_xcode: 'pages.settings.sttSettings.step_installing_xcode',
+  installing_brew: 'pages.settings.sttSettings.step_installing_brew',
+  installing_python: 'pages.settings.sttSettings.step_installing_python',
+  installing_ffmpeg: 'pages.settings.sttSettings.step_installing_ffmpeg',
+  installing_whisper: 'pages.settings.sttSettings.step_installing_whisper',
+  installing_mlx: 'pages.settings.sttSettings.step_installing_mlx',
+  pulling: 'pages.settings.sttSettings.step_pulling',
+  done: 'pages.settings.sttSettings.step_done',
+  error: 'pages.settings.sttSettings.step_error',
 }
 
-const PROVIDER_LABELS: Record<string, string> = {
-  whisper: 'Whisper (local)',
-  mlx: 'Whisper MLX (local — Apple Silicon only)',
-  transcribe: 'Transcribe (AWS)',
+/** Localised progress label for an install step, or '' for an unknown/idle step. */
+function stepLabel(step: string): string {
+  // `hasOwnProperty`, not `in`: `install_step` comes off the wire, so a backend
+  // reporting `toString` would otherwise resolve to an inherited
+  // Object.prototype member and hand a function to i18next.
+  return Object.prototype.hasOwnProperty.call(STEP_LABEL_KEY, step)
+    ? i18nT(STEP_LABEL_KEY[step])
+    : ''
+}
+
+/**
+ * Catalog KEY for each STT provider's dropdown label. Same keys-not-strings
+ * reasoning as `STEP_LABEL_KEY`; resolved by `providerLabel()` during render.
+ * The provider *names* (Whisper, MLX, Transcribe) are DNT — only the
+ * parenthetical qualifier is copy.
+ */
+const PROVIDER_LABEL_KEY: Record<string, string> = {
+  whisper: 'pages.settings.sttSettings.provider_whisper',
+  mlx: 'pages.settings.sttSettings.provider_mlx',
+  transcribe: 'pages.settings.sttSettings.provider_transcribe',
+}
+
+/** Localised dropdown label for a provider id, falling back to the raw id. */
+function providerLabel(provider: string): string {
+  // `hasOwnProperty`, not `in`: the id list comes from `SttConfig.providers`.
+  return Object.prototype.hasOwnProperty.call(PROVIDER_LABEL_KEY, provider)
+    ? i18nT(PROVIDER_LABEL_KEY[provider])
+    : provider
 }
 
 const TERMINAL_STEPS = ['idle', 'done', 'error']
@@ -64,8 +98,8 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
 }
 
 /**
- * Speech-to-Text settings in the standard settings style. Replaces the older
- * raw-card SlackTab so the Voice page reads consistently. Covers enable, status,
+ * Speech-to-Text settings in the standard settings style, so the Voice page
+ * reads consistently. Covers enable, status,
  * provider, model/MLX model, streaming, language, Transcribe AWS creds, runtime,
  * and the local-install flow (Whisper / MLX / Docker image).
  */
@@ -93,8 +127,12 @@ export default function SttSettings() {
       const s = await navigator.mediaDevices.getUserMedia(micAudioConstraints())
       s.getTracks().forEach(t => t.stop())
       refreshMics()
-    } catch {
-      /* permission denied — device names stay hidden */
+    } catch (e) {
+      // Device names stay hidden, and this button is the user's ONLY affordance
+      // for fixing that — so a denial must still reach the shell's recovery
+      // route. Otherwise clicking "Allow microphone access" appears to do
+      // nothing at all, forever (macOS never re-prompts after a denial).
+      reportIfMicDenied(e)
     }
   }
   const changeMic = (id: string) => { setMicId(id); setPreferredMicId(id) }
@@ -156,7 +194,7 @@ export default function SttSettings() {
   const provider = stt.provider || 'whisper'
   const providerOptions = stt.providers?.length ? stt.providers : ['whisper', 'transcribe']
   const languageOptions = stt.language_codes?.length ? stt.language_codes : ['en-US']
-  const stepLabel = STEP_LABELS[stt.install_step] || ''
+  const installStepLabel = stepLabel(stt.install_step)
 
   // Switching to Transcribe turns on streaming by default (one click to undo).
   const handleProvider = (v: string) => set(v === 'transcribe' && !stt.streaming ? { provider: v, streaming: true } : { provider: v })
@@ -196,7 +234,7 @@ export default function SttSettings() {
           </button>
         )}
 
-        <SettingsSelect label={i18nT('pages.settings.sttSettings.provider')} description={i18nT('pages.settings.sttSettings.whisper_and_mlx_run_locally_transcribe_calls_aws')} value={provider} options={providerOptions} optionLabels={providerOptions.map(p => PROVIDER_LABELS[p] || p)} onChange={handleProvider} disabled={saving} />
+        <SettingsSelect label={i18nT('pages.settings.sttSettings.provider')} description={i18nT('pages.settings.sttSettings.whisper_and_mlx_run_locally_transcribe_calls_aws')} value={provider} options={providerOptions} optionLabels={providerOptions.map(providerLabel)} onChange={handleProvider} disabled={saving} />
 
         {provider === 'whisper' && (
           <SettingsSelect label={i18nT('pages.settings.sttSettings.model')} description={i18nT('pages.settings.sttSettings.larger_models_are_more_accurate_but_slower_to_ru')} value={stt.model} options={Object.keys(stt.models)} optionLabels={Object.entries(stt.models).map(([n, s]) => `${n} (${s})`)} onChange={v => set({ model: v })} disabled={saving} />
@@ -244,7 +282,7 @@ export default function SttSettings() {
               <div className="animate-rise">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-[13px] animate-pulse"><Hourglass className="lucide-inline" /></span>
-                  <span className="text-sm text-text font-medium">{stepLabel}</span>
+                  <span className="text-sm text-text font-medium">{installStepLabel}</span>
                 </div>
                 {stt.install_detail && <p className="text-muted text-[13px] font-mono truncate">{stt.install_detail}</p>}
                 <div className="mt-2 h-1.5 bg-border rounded-full overflow-hidden">

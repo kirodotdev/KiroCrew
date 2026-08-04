@@ -88,11 +88,18 @@ class TestParserWiring:
 # ── The in-process sampler ──
 
 
-def _recognisable_workload() -> None:
-    """Burn CPU inside a uniquely named frame so the profile is checkable."""
-    deadline = time.time() + 0.25
+def _recognisable_workload(deadline: float | None = None) -> None:
+    """Burn CPU inside a uniquely named frame so the profile is checkable.
+
+    With *deadline* (an absolute :func:`time.monotonic` value) the burn runs until
+    then, so a caller can keep this frame on the stack until the sampler has actually
+    observed it instead of guessing how long that takes. The default keeps the
+    original fixed 0.25s span for callers that only need the frame to exist.
+    """
+    if deadline is None:
+        deadline = time.monotonic() + 0.25
     total = 0
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         total += sum(i * i for i in range(2000))
 
 
@@ -103,9 +110,29 @@ class TestStackSampler:
             perf_sampler.StackSampler(interval=bad)
 
     def test_collects_samples_and_names_the_frame(self):
+        # Poll for the frame rather than burning a fixed span and hoping a sample
+        # landed. The requested 2ms interval is only a request: Windows rounds
+        # `Event.wait` up to ~15.6ms and a loaded runner starves the daemon thread,
+        # so the old fixed 0.25s burn expected ~125 samples and CI observed one (of
+        # an unrelated frame). Holding the frame until it is seen makes this
+        # independent of the achieved rate, and the deadline still fails loudly.
         sampler = perf_sampler.StackSampler(interval=0.002)
         sampler.start()
-        _recognisable_workload()
+        give_up_at = time.monotonic() + 30.0
+
+        def _seen() -> bool:
+            # Snapshot before scanning: the sampler thread inserts into `_counts` on
+            # every tick, and iterating it live can raise "dictionary changed size
+            # during iteration" -- which would be a NEW flake in the test that exists
+            # to remove one. `list()` on a dict is atomic under the GIL.
+            return any("_recognisable_workload" in stack for stack in list(sampler._counts))
+
+        while not _seen():
+            assert time.monotonic() < give_up_at, (
+                "the sampler never sampled _recognisable_workload in 30s "
+                f"(samples={sampler._samples})"
+            )
+            _recognisable_workload(min(time.monotonic() + 0.05, give_up_at))
         report = sampler.stop()
 
         assert report.samples > 0

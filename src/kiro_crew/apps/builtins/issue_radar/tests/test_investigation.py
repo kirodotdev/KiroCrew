@@ -103,9 +103,9 @@ class TestInvestigationStore(unittest.TestCase):
     def test_partial_findings_patch_does_not_destroy_the_other_fields(self):
         """A later patch carrying ONE finding must not wipe the rest.
 
-        ``findings`` used to be replaced wholesale, so a second write with only a
-        ``verdict`` permanently lost the root cause, summary and labels an earlier
-        write had stored — and the record is the only copy. Reachable from the
+        ``findings`` is merged, not replaced wholesale: a second write with only a
+        ``verdict`` must not lose the root cause, summary and labels an earlier
+        write stored — and the record is the only copy. Reachable from the
         ``issue_radar_record_investigation`` MCP tool, whose contract is that a
         partial update is fine.
         """

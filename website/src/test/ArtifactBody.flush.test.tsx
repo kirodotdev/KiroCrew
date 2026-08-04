@@ -11,11 +11,10 @@ import { ArtifactBodyNative } from '../components/ArtifactBody'
  * Chrome parity between a markdown FILE and a markdown ARTIFACT in the chat side
  * panel.
  *
- * Before `flush`, an artifact in the panel was drawn inside its own
- * `rounded-xl border bg-card` box with `p-5`, nested just inside the panel's own
- * border — so a markdown artifact looked nothing like the markdown file rendered
- * by the tab beside it (MarkdownPanel passes `flush` and lets DetailPanel supply
- * the single layer of reading padding). The full-page route keeps the card,
+ * With `flush`, an artifact in the panel drops its own `rounded-xl border
+ * bg-card` box and `p-5` padding so it matches the markdown file rendered by the
+ * tab beside it (MarkdownPanel passes `flush` and lets DetailPanel supply the
+ * single layer of reading padding). The full-page route keeps the card,
  * because there the document floats on the page background and the border is
  * what bounds it.
  */

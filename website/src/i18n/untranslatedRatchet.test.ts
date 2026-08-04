@@ -9,12 +9,10 @@
  *   - `diffAgainstBaseline` — the ASYMMETRY. Growth fails; improvement does not force an
  *     edit. That is a deliberate loosening, and a loosening with no test is
  *     indistinguishable from a bug.
- *   - `parseAddedLines` + `findingsOnAddedLines` — the STRICT half that replaced the
- *     removed downward guard. A literal on a line the branch wrote fails with no
- *     baseline to raise. Its failure mode is silent: a wrong prefix or a missed hunk
- *     shape reports zero findings forever and reads as "clean". Both were real bugs
- *     during development, caught by injecting a string into a real file rather than by
- *     the suite, so the cases they broke on are pinned here.
+ *   - `parseAddedLines` + `findingsOnAddedLines` — the STRICT half. A literal on a line
+ *     the branch wrote fails with no baseline to raise. Its failure mode is silent: a
+ *     wrong prefix or a missed hunk shape reports zero findings forever and reads as
+ *     "clean", so the cases it breaks on are pinned here.
  *
  * All three functions are pure, so these cases cost nothing.
  */

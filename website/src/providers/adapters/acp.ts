@@ -18,6 +18,25 @@ const MODEL_TOKENS: Record<string, number> = Object.fromEntries(
 )
 const DEFAULT_CONTEXT = 200_000
 
+// Windows learned from GET /api/models, which enriches every row with the
+// backend's centrally-resolved `context_window` (kiro `--list-models` cache >
+// static registry > supplementary map > [1m] heuristic). That resolver knows
+// every model kiro actually serves; the bundled static map above is a 21-entry
+// snapshot that does NOT (claude-opus-5, gpt-5.6-sol, glm-5, kimi-k3, grok-4.3,
+// …). Without this cache, `getContextWindow` fell through to DEFAULT_CONTEXT for
+// those, so the composer's context meter read "0% of 200K" right after a model
+// switch and only became correct once the first turn's live usage_update landed.
+// Keyed by the same model id the picker sends and slot.model stores.
+const LIVE_WINDOWS: Record<string, number> = {}
+
+/** Record an authoritative per-model window so the window lookup no longer
+ *  depends on the bundled snapshot. Non-positive values are ignored: a row that
+ *  reports no window must not overwrite a previously-learned good one, and it
+ *  must not record the caller's own default as if the backend had said it. */
+function learnWindow(name: string, window: number): void {
+  if (name && Number.isFinite(window) && window > 0) LIVE_WINDOWS[name] = window
+}
+
 /** Narrow view of GET /api/config/kirocrew — only the fields the composer needs
  *  to resolve what a new session will actually run on. */
 interface KirocrewAgentConfig {
@@ -67,6 +86,15 @@ function readCachedModels(): ModelInfo[] | null {
   }
 }
 
+/** Seed `LIVE_WINDOWS` from the persisted list at module load so a cold start
+ *  (first paint, before /api/models resolves) already resolves the real window
+ *  for the slot's current model instead of falling back to DEFAULT_CONTEXT. The
+ *  cached rows carry whatever `fetchAvailableModels` stored — the reported window
+ *  when the backend gave one, else its own fallback, which is the value the
+ *  lookup would have produced anyway. Either way the next live response corrects
+ *  it. */
+for (const m of readCachedModels() ?? []) learnWindow(m.name, m.contextWindow ?? 0)
+
 /** Persist a live model list with a timestamp. Best-effort — storage errors
  *  (quota, disabled, SSR) are swallowed so caching never breaks the picker. */
 function writeCachedModels(models: ModelInfo[]): void {
@@ -106,6 +134,22 @@ interface RawPlugin {
 interface RawModel {
   model_name: string
   description?: string
+  /** Backend-resolved context window. Two spellings because the endpoint has two
+   *  branches: the kiro path returns `kiro-cli --list-models` rows verbatim
+   *  (`context_window_tokens`), the claude_code path enriches its merged rows via
+   *  the central resolver (`context_window`). Both are authoritative and cover
+   *  models the bundled static map has never heard of. Optional so a gateway
+   *  predating either field still works (we fall back to the map). */
+  context_window?: number
+  context_window_tokens?: number
+}
+
+/** The window a /api/models row reports, or 0 when it reports none. */
+function rowWindow(m: RawModel): number {
+  for (const v of [m.context_window, m.context_window_tokens]) {
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v
+  }
+  return 0
 }
 
 export class AcpAdapter implements ProviderAdapter {
@@ -155,10 +199,10 @@ export class AcpAdapter implements ProviderAdapter {
     // This deliberately does NOT re-derive the precedence client-side. The
     // chain is four tiers deep (the KiroCrew agent's own model, the bound kiro
     // agent's pin, the global agent.model default, the installed agent file)
-    // and a second copy of it here drifted from the backend's: a fresh slot
-    // displayed the kiro agent file's model while the turn actually ran on the
-    // configured default, and the mismatch only self-corrected once the first
-    // turn backfilled slot.model from the live session.
+    // and a second copy of it here would drift from the backend's: a fresh slot
+    // would display the kiro agent file's model while the turn actually ran on
+    // the configured default, and the mismatch would only self-correct once the
+    // first turn backfilled slot.model from the live session.
     //
     // `agentName` is a KiroCrew agent name (a "crew"), not a kiro agent
     // template — the per-agent default is stored per crew, and several crews can
@@ -261,9 +305,9 @@ export class AcpAdapter implements ProviderAdapter {
 
   async installPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp') {
     // The edition capability manager owns any version/source resolution — no
-    // version_set is sent. Agent packages are now installable too (the seam
-    // gained install_agent/uninstall_agent); on an edition without a capability
-    // manager the backend answers 503 and this surfaces as a normal error.
+    // version_set is sent. Agent packages are installable via install_agent/
+    // uninstall_agent; on an edition without a capability manager the backend
+    // answers 503 and this surfaces as a normal error.
     if (type === 'skill') return api.capabilitySkillsInstall(pkg)
     if (type === 'mcp') return api.capabilityMcpInstall(pkg)
     return api.capabilityAgentsInstall(pkg)
@@ -276,7 +320,7 @@ export class AcpAdapter implements ProviderAdapter {
   }
 
   async updatePlugins(_type: 'agent' | 'skill' | 'mcp') {
-    // Bulk update route was removed.
+    // No bulk-update route exists.
     return { ok: false as const, error: 'plugin update is not supported' }
   }
 
@@ -289,11 +333,20 @@ export class AcpAdapter implements ProviderAdapter {
         markModelsDegraded(this.id, true)
         return readCachedModels() ?? this._defaultModels()
       }
-      const result = models.map((m: RawModel) => ({
-        name: m.model_name,
-        description: m.description || '',
-        contextWindow: MODEL_TOKENS[m.model_name] ?? DEFAULT_CONTEXT,
-      }))
+      const result = models.map((m: RawModel) => {
+        // Prefer the backend's resolved window over the bundled snapshot: the
+        // gateway reads kiro's own --list-models output, so it is right for
+        // models this bundle does not list. Learn only the reported value — never
+        // the fallback, or a row with no window would record 200K as fact and
+        // clobber a window learned from an earlier, better-informed response.
+        const reported = rowWindow(m)
+        learnWindow(m.model_name, reported)
+        return {
+          name: m.model_name,
+          description: m.description || '',
+          contextWindow: reported || MODEL_TOKENS[m.model_name] || DEFAULT_CONTEXT,
+        }
+      })
       writeCachedModels(result) // remember this good live list for next hiccup
       markModelsDegraded(this.id, false) // live success → self-heal can stop polling
       return result
@@ -310,20 +363,24 @@ export class AcpAdapter implements ProviderAdapter {
    *  kiro-cli cold-start timeout / auth race on /api/models). Exposes ONLY the
    *  "auto" sentinel — never the canonical registry keys (opus-4.8-1m,
    *  fable-5-1m, …). Those keys are DISPLAY identifiers the ACP CLI rejects as
-   *  model ids: selecting one during the cold-start window wrote it verbatim
-   *  into slot.model and kiro-cli failed the turn with -32603 "model not
+   *  model ids: selecting one during the cold-start window writes it verbatim
+   *  into slot.model and kiro-cli fails the turn with -32603 "model not
    *  available". "auto" always resolves server-side, so it is the only safe
    *  offering until the real list loads. */
   private _defaultModels(): ModelInfo[] {
     return [{
       name: 'auto',
       description: 'Models chosen by task for optimal usage and consistent quality',
-      contextWindow: MODEL_TOKENS['auto'] ?? DEFAULT_CONTEXT,
+      contextWindow: this.getContextWindow('auto'),
     }]
   }
 
   getContextWindow(model: string): number {
-    return MODEL_TOKENS[model] ?? DEFAULT_CONTEXT
+    // Learned-from-backend first, bundled snapshot second, reference default
+    // last. This is the value the composer's context meter shows between a model
+    // switch and the next turn's live usage_update, so a miss here is what made
+    // a 1M model read as 200K until a message was sent.
+    return LIVE_WINDOWS[model] ?? MODEL_TOKENS[model] ?? DEFAULT_CONTEXT
   }
 
   getDefaultModel(): string {

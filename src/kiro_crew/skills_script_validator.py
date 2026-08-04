@@ -1,4 +1,4 @@
-"""Static safety validation for generated skill scripts (Phase 2).
+"""Static safety validation for generated skill scripts.
 
 Runs on every script-bearing candidate — including the auto-approve path — so a
 dangerous script can never reach the live skill set unscanned (mirrors the way

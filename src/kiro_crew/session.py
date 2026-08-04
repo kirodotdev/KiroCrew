@@ -803,7 +803,6 @@ class SessionManager:
                 self._pool_size = min(_MAX_POOL, max(0, cfg.session.pool_size))
                 self._pool_agent = cfg.session.pool_agent or getattr(cfg.agent, "default_agent", "")
                 self._pool_cwd = default_project_dir()
-                # Drain warm pool
                 while not self._warm_pool.empty():
                     try:
                         provider, _ = self._warm_pool.get_nowait()
@@ -1890,13 +1889,11 @@ class SessionManager:
         reason = f"context at {pct:.0f}%" if pct > 0 else f"blind ({session.prompt_count} prompts)"
         logger.info("Recycling background session — %s", reason)
 
-        # Kill old session
         async with self._lock:
             old = self._sessions.pop(BACKGROUND_KEY, None)
         if old:
             await old.provider.shutdown()
 
-        # Create fresh replacement
         await self._ensure_background()
 
     async def recycle_heartbeat(self) -> None:
@@ -2886,9 +2883,8 @@ class SessionManager:
         open — leaving the native-session lock (``~/.kiro/sessions/cli/<uuid>.json``)
         held. When the new gateway resumes that slot via ``session/load`` kiro-cli
         rejects with "active in another process" and the slot returns EMPTY
-        completions until the stale lock times out. This was the confirmed root
-        cause of the Make-Live empty-response incident (slot chat-1, native
-        session 31f36326, after the 04:26 cutover).
+        completions until the stale lock times out. This is the root cause of
+        the Make-Live empty-response failure this drain prevents.
 
         For each registered session with an active turn, issue a graceful ACP
         ``session/cancel`` and wait (bounded) for the turn-done ack, so the
@@ -3327,6 +3323,24 @@ class SessionManager:
         """True iff a turn is in flight for *key* (its semaphore is held)."""
         session = self._sessions.get(key)
         return bool(session and session.semaphore.locked())
+
+    def touch(self, key: str) -> bool:
+        """Mark *key* as recently used so the idle sweep does not reap it.
+
+        ``last_used`` is otherwise only bumped by ``get_or_create()``, which a
+        dashboard turn calls exactly once — so a session doing continuous work
+        across a long turn ages as if it were idle (see the module docstring's
+        known limitation). The ``wait`` tool's keepalive previously refreshed
+        only the ACP runtime's activity clock, which feeds ``is_responsive()``
+        and nothing else, leaving the idle sweep's clock untouched.
+
+        Returns True if a session existed for *key*.
+        """
+        session = self._sessions.get(self._fold_key(key))
+        if session is None:
+            return False
+        session.last_used = time.monotonic()
+        return True
 
     def enqueue(
         self, key: str, msg_ts: str, text: str, *, force: bool = False, **kwargs: object
@@ -4048,6 +4062,16 @@ class SessionManager:
                 if key.startswith(_CHANNEL_PREFIX):
                     continue
                 total_checked += 1
+                # A turn in flight is never idle, whatever the clock says.
+                # ``last_used`` is only bumped by get_or_create(), which a
+                # dashboard turn calls exactly once, so a turn running longer
+                # than timeout_secs looks idle to the arithmetic below — and the
+                # orphan branch ignores the clock entirely, so a closed tab
+                # would reap a live turn immediately. Mirrors the same guard in
+                # _rss_threshold_check; reset() re-checks atomically under its
+                # own lock via skip_if_busy for the collect→reset race.
+                if sess.semaphore.locked():
+                    continue
                 idle = now - sess.last_used > timeout_secs
                 orphaned = (
                     key.startswith("dashboard:")
@@ -4061,9 +4085,6 @@ class SessionManager:
         elif total_checked:
             logger.debug("Idle sweep: %d checked, 0 expired", total_checked)
         for key, is_orphan in expired:
-            # NOTE: Small TOCTOU window — slot could be re-activated between
-            # orphan check (under lock) and reset() here. Accepted as benign:
-            # worst case is session re-created on next user interaction.
             if is_orphan:
                 logger.warning("Expiring orphaned dashboard session (slot gone): %s", key)
             else:
@@ -4085,4 +4106,12 @@ class SessionManager:
             # Use reset() instead of remove() to preserve session_map entry.
             # The kiro-cli session file persists on disk — next get_or_create
             # can try session/load to restore full conversation history.
-            await self.reset(key)
+            #
+            # skip_if_busy closes the collect→reset window: a turn that starts
+            # after the collection loop released the lock must not be cut
+            # mid-stream. reset() evaluates it atomically with its own pop.
+            if not await self.reset(key, skip_if_busy=True):
+                logger.info(
+                    "Idle sweep: %s became busy before reset — left running",
+                    key,
+                )

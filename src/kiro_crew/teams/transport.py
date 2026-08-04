@@ -1,4 +1,4 @@
-"""Layer 1 -- Microsoft Teams as a concrete ``MessagingTransport``.
+"""Microsoft Teams as a concrete ``MessagingTransport``.
 
 Wraps the low-level :class:`TeamsClient` (Bot Framework webhook inbound + REST
 outbound) in the channel-neutral transport contract, so the Teams channel rides
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 DispatchFn = Callable[[TeamsInbound], Awaitable[None]]
 
-# Teams capabilities: no token streaming, no in-place edit (MVP), no tappable
+# Teams capabilities: no token streaming, no in-place edit, no tappable
 # chips (max_buttons=0 -> renderer drops [OPTIONS:] trailers), proactive send is
 # fine for a conversation we've already seen a service_url for.
 TEAMS_CAPABILITIES = TransportCapabilities(

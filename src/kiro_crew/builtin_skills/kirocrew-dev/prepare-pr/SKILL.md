@@ -150,3 +150,12 @@ Omit a section only when truly not applicable, and say so.
 - **Appeasing false positives** — changing correct code to silence a wrong comment; validate each finding first.
 - **Over-running scope** — entering the poll/fix loop when the user only asked to push or update.
 - **Breaking the single-commit invariant** — adding follow-up commits instead of squash + force-with-lease.
+
+## Which mechanism drives the loop
+This skill's loop is in-session on purpose: `wait` + re-poll (Phase 3 step 4), or `monitor_start` when the work outlives a single turn (see the `babysit` skill). Both keep the tool trust of the owning chat slot, which is what lets a round actually amend and force-push.
+
+Do **not** hand the iterate-on-review-feedback loop to a cron job or a HEARTBEAT.md task. Neither can push a revision, and both report success while doing nothing:
+- A **cron** has no owning slot, so its tool calls hit a deny-by-default approval path and time out after 180s without a global auto-approve grant — and a denied tool inside a completed turn still records `last_status: ok`. A real PR watcher logged 101 runs over 25 hours with 23 approval blocks, zero pushes, and a healthy-looking registry.
+- **Heartbeat** runs under a strict name allowlist (`HEARTBEAT_SAFE_TOOLS`) with no shell and no `git push`, so it cannot amend a commit at all.
+
+Cron *is* correct for post-merge cleanup, as a `script` cron at roughly a 5-minute interval — an hourly one loses the merge-to-teardown race.

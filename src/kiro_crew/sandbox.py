@@ -209,8 +209,8 @@ _CLONE_NEWNS = 0x00020000
 # Errnos that indicate a TRANSIENT resource failure (fork/CDLL under momentary
 # pressure) — the kernel supports user namespaces, we just couldn't verify it
 # right now. These must never be treated as "this host has no sandbox backend"
-# (incident 2026-07-18: one EAGAIN during a cron spawn burst fail-closed every
-# subsequent spawn for an hour because the failed probe result was cached).
+# (one EAGAIN during a cron spawn burst would otherwise fail-close every
+# subsequent spawn because the failed probe result was cached).
 _TRANSIENT_PROBE_ERRNOS = frozenset(
     {errno.EAGAIN, errno.ENOMEM, errno.EMFILE, errno.ENFILE, errno.ENOSPC}
 )
@@ -1111,9 +1111,33 @@ def main():
                 sys.exit("sandbox: BLOCKED — failed to set NO_NEW_PRIVS (prctl returned %d)" % _ret)
 
         # ── Step 6: Install seccomp-BPF filter ──
-        # Deny mount/umount2/unshare/setns/pivot_root/link/linkat to prevent
-        # the sandboxed process from undoing bind-mounts or creating hardlinks
-        # to protected credential inodes.
+        # Deny mount/umount2/unshare/setns/pivot_root to prevent the sandboxed
+        # process from undoing the credential bind-mounts (namespace escape).
+        #
+        # NOTE: link/linkat were previously denied here to block hardlinking a
+        # credential inode out past its bind-mount (pentest finding #9). That
+        # deny has been removed; the vector is covered without a blanket syscall
+        # ban (which broke npm cacache / pnpm / ln for no gain). Masking is
+        # per-level: strict bind-masks its dir/file list PLUS ~/.ssh; cc masks
+        # the same MINUS ~/.ssh; standard masks only _STANDARD_DIRS (.gnupg,
+        # .gpg, .config/gcloud, .azure, .docker, crew-auth-staging). For a file
+        # that IS masked the credential inode has no reachable path, so no link
+        # source exists. For a file left UNMASKED at a given level (~/.ssh under
+        # cc; .aws/.ssh/_CC_FILES under standard) there is no privilege delta:
+        # it is already directly readable, so the command gate
+        # (security.is_sensitive_bash_command) is the control for BOTH reading
+        # and hardlinking it — the gate now resolves an agent-issued ln/link/cp
+        # source through is_sensitive_path(), refusing a link to a credential
+        # source at the same fidelity as a read (closing the "flatten onto a
+        # benign alias" bypass, GPT review PR #1339). npm's own fs.link() is a
+        # syscall and never transits that gate. seccomp cannot path-scope link
+        # (BPF cannot dereference the pathname pointer), so a syscall-layer form
+        # could only be all-or-nothing. NOTE: the Step-7 pre-exec nlink scan is
+        # NOT relied on here — it stats paths AFTER the masks, so it sees mask
+        # inodes, not real credential inodes. For AppSec (pre-existing / out of
+        # scope): that Step-7 gap; a hardlink alias is durable and symlink-
+        # resolution-invisible; and `mv` is not yet gate-covered. AppSec
+        # re-review required — this edits a pentest remediation.
         #
         # Additionally deny kill(-1, sig) — the signal BROADCAST that reaches
         # every same-uid process on the host (gateway, other sessions). This
@@ -1141,16 +1165,16 @@ def main():
             _BPF_K = 0x00
             _BPF_RET = 0x06
             # Syscall numbers (x86_64): mount=165, umount2=166, unshare=272,
-            # setns=308, pivot_root=155, link=86, linkat=265, kill=62
+            # setns=308, pivot_root=155, kill=62
             # aarch64: mount=40, umount2=39, unshare=97, setns=268,
-            # pivot_root=41, link=N/A(use linkat=37), linkat=37, kill=129
+            # pivot_root=41, kill=129
             import platform as _plat
             _machine = _plat.machine()
             if _machine == "x86_64":
-                _DENY_SYSCALLS = (165, 166, 272, 308, 155, 86, 265)
+                _DENY_SYSCALLS = (165, 166, 272, 308, 155)
                 _KILL_NR = 62
             elif _machine == "aarch64":
-                _DENY_SYSCALLS = (40, 39, 97, 268, 41, 37)
+                _DENY_SYSCALLS = (40, 39, 97, 268, 41)
                 _KILL_NR = 129
             else:
                 _DENY_SYSCALLS = ()  # unknown arch — skip seccomp
@@ -1434,9 +1458,8 @@ def _build_seatbelt_profile(
 # kiro-cli >= 2.13 ships its own internal agent sandbox, toggled by the
 # "sandbox" key in this settings file. On macOS its in-process seatbelt init
 # cannot nest inside KiroCrew's sandbox-exec wrap — the kernel returns EPERM
-# even under an (allow default) outer profile (verified 2026-07-20 on
-# macOS 26.5.2 / kiro-cli 2.13.0). Exactly one sandbox layer can be active per
-# spawn, so on macOS the layers are mutually exclusive:
+# even under an (allow default) outer profile. Exactly one sandbox layer can be
+# active per spawn, so on macOS the layers are mutually exclusive:
 # kiro's internal sandbox ON  -> KiroCrew's seatbelt OFF for kiro-cli spawns
 # kiro's internal sandbox OFF -> KiroCrew's seatbelt ON (unchanged default)
 # (``~/.kiro/settings`` is the kiro-cli backend's own directory, distinct from
@@ -1905,7 +1928,7 @@ def _inside_macos_sandbox() -> bool:
 
 def _warn_no_isolation(mode: str) -> None:
     """Loudly surface that the agent subprocess is running WITHOUT OS-level
-    isolation, so the fallback is never silent (CSE SEC-009).
+    isolation, so the fallback is never silent.
 
     When no sandbox backend is available the credential paths (``~/.aws``,
     ``~/.ssh``, ...) are visible to the (untrusted) agent subprocess and only
@@ -1940,8 +1963,8 @@ def _warn_no_isolation(mode: str) -> None:
 def detect_backend(config_mode: str = "auto") -> str:
     """Detect the best available sandbox backend.
 
-    Cache policy (incident 2026-07-18 — one transient fork failure poisoned
-    the cache and fail-closed every spawn for an hour until restart):
+    Cache policy (a single transient fork failure must not poison the cache and
+    fail-close every spawn until restart):
 
     - A positive result (``"namespace"``/``"sandbox-exec"``) is cached for the
       process lifetime — kernel capability does not change while running.

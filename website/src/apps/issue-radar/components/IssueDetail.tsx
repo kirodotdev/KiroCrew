@@ -495,6 +495,7 @@ function Section({
 export default function IssueDetail({ issue }: { issue: Issue }) {
   const {
     active, colorByName, memberRoleByLogin, repoLabels, countByLabel, canWrite, stateFilter,
+    refreshPrefs,
   } = useIssueRadar()
   const { owner, repo } = active
   const scopeKey = repoScopeKey(active)
@@ -551,7 +552,10 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
     },
     // A CLOSED issue backs off by an order of magnitude: only late commentary can
     // still arrive, and each poll costs a fully-paginated timeline read.
-    refetchInterval: detailPollMs((cachedState ?? issue.state) !== 'closed'),
+    refetchInterval: detailPollMs(
+      (cachedState ?? issue.state) !== 'closed', refreshPrefs.detailPollMs,
+    ),
+    refetchIntervalInBackground: refreshPrefs.pollInBackground,
   })
   const refreshDetail = () => { refreshRef.current = true; detailQuery.refetch() }
 
@@ -721,8 +725,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               <StatePill state={state} reason={stateReason} />
               {/* Copy-link + issue number, sitting right after the state pill.
                   The copy button writes the URL to the clipboard; the #number
-                  itself links out to the provider (this pair replaces the old
-                  standalone GitHub button). */}
+                  itself links out to the provider. */}
               <span className="inline-flex items-center gap-1">
                 <button
                   onClick={copyLink}

@@ -3,8 +3,7 @@
 Single source of truth for the request shapes that BOTH ``AcpClient`` (legacy,
 process-per-session) and ``AcpRuntime``/``AcpSessionHandle`` (shared runtime,
 single-reader demux) must send identically. Keeping these here prevents the
-two parallel implementations from drifting — the class of bug that produced
-the dropped-``mcpServers`` clean-exit and the dropped-``meteringUsage`` credits.
+two parallel implementations from drifting.
 
 These are pure, stateless functions: they take primitives and return dicts, so
 each class keeps its own I/O model (``_turn_lock`` reader vs per-session queue)
@@ -99,8 +98,7 @@ def parse_metadata(params: dict[str, Any]) -> tuple[float | None, float]:
     billing as ``meteringUsage`` entries with ``unit=="credit"``; token fields
     are 0 for the acp provider, so credits are the real cost signal. Both
     ``AcpClient`` and ``AcpSessionHandle`` call this so the credit-capture
-    logic (which previously drifted — runtime.py once dropped it entirely)
-    has a single source of truth. The caller applies the values to its own
+    logic has a single source of truth. The caller applies the values to its own
     ``last_prompt_stats`` (credits are accumulated across the turn).
     """
     pct = params.get("contextUsagePercentage")
@@ -179,16 +177,15 @@ def classify_notification(msg: JsonRpcMessage) -> str:
 #
 # Single source of truth for turning one ``session/update`` notification's inner
 # ``update`` dict into ``AcpEvent``s. BOTH ``AcpClient`` and ``AcpRuntime`` route
-# through this so they cannot drift on frame shape again — the class of bug that
-# produced the empty-title regression (kiro-cli 2.10.0 moved chunk text from a
-# flat ``text`` field into nested ``content.text``; only one parser was updated).
+# through this so they cannot drift on frame shape (kiro-cli 2.10.0 nests chunk
+# text under ``content.text`` rather than a flat ``text`` field).
 #
 # The parser is PURE except for the optional caller-owned ``tool_input_cache``
 # dict it may write (the ``toolCallId -> redacted input`` map each class keeps so
 # a later tool result can recover the originating input). All redaction of
-# LLM-influenced fields (titles, inputs, purposes, outputs) happens HERE, closing
-# the security drift where ``runtime.py`` surfaced tool data unredacted. Stats and
-# stale/stall bookkeeping stay per-class: the caller walks the returned events.
+# LLM-influenced fields (titles, inputs, purposes, outputs) happens HERE so tool
+# data is never surfaced unredacted. Stats and stale/stall bookkeeping stay
+# per-class: the caller walks the returned events.
 
 
 def make_unified_diff(old: str, new: str, path: str, max_len: int = 6000) -> str:
@@ -302,14 +299,16 @@ def build_permission_event(
     tool_input_cache: dict[str, str] | None = None,
     shell_cache: dict[str, bool] | None = None,
     raw_params_cache: dict[str, dict] | None = None,
+    mcp_server_name_cache: dict[str, str] | None = None,
+    tool_name_cache: dict[str, str] | None = None,
 ) -> tuple[AcpEvent, dict[str, str] | None]:
     """Build an ``EVENT_PERMISSION_REQUEST`` from a ``session/request_permission``.
 
     Single source of truth shared by ``AcpClient`` and ``AcpSessionHandle`` so
-    the two transports cannot drift on the kiro/claude permission payload shape
-    — the class of bug where the runtime read a flat ``params["title"]`` while
-    kiro nests the tool info under ``params["toolCall"]``, leaving ``title`` /
-    ``is_shell`` empty and tripping the host trust-mode gate.
+    the two transports cannot drift on the kiro/claude permission payload shape:
+    kiro nests the tool info under ``params["toolCall"]`` (not a flat
+    ``params["title"]``), so reading the flat field leaves ``title`` /
+    ``is_shell`` empty and trips the host trust-mode gate.
 
     Returns ``(event, recorded_options)`` where ``recorded_options`` is the
     ``{"once","always","reject"}`` optionId map the caller stores on the request
@@ -451,6 +450,25 @@ def build_permission_event(
         tool_call_id=tool_call_id,
         raw_tool_params=_resolved_raw_params,
         is_shell=is_shell,
+        # Trusted MCP server identity recovered from the preceding tool_call
+        # (the permission payload carries no _meta). .get() (not .pop()) mirrors
+        # the is_shell cache: a later tool_call_update for the same id re-reads
+        # it; the per-turn dispatch .clear() handles cleanup. Empty on a miss
+        # (fail-closed for the app-own-server auto-approve).
+        mcp_server_name=(
+            mcp_server_name_cache.get(tool_call_id, "")
+            if (mcp_server_name_cache is not None and tool_call_id)
+            else ""
+        ),
+        # Trusted tool identity recovered from the preceding tool_call, mirroring
+        # mcp_server_name above. Lets the app-own-server auto-approve govern the
+        # canonical mcp__<server>__<tool> on the permission path (no _meta here).
+        # Empty on a miss (fail-closed: no trusted tool name → no auto-approve).
+        tool_name=(
+            tool_name_cache.get(tool_call_id, "")
+            if (tool_name_cache is not None and tool_call_id)
+            else ""
+        ),
     )
     return event, recorded
 
@@ -460,6 +478,8 @@ def _build_tool_call_event(
     tool_input_cache: dict[str, str] | None,
     shell_cache: dict[str, bool] | None = None,
     raw_params_cache: dict[str, dict] | None = None,
+    mcp_server_name_cache: dict[str, str] | None = None,
+    tool_name_cache: dict[str, str] | None = None,
 ) -> AcpEvent:
     """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction)."""
     title = update.get("title", "unknown")
@@ -478,6 +498,21 @@ def _build_tool_call_event(
     is_shell = is_shell_kind(kind)
     if tool_call_id and shell_cache is not None:
         shell_cache[tool_call_id] = is_shell
+    # Capture the TRUSTED MCP server identity (_meta.kiro.mcpServerName) so the
+    # later permission_request — the dashboard's gate path, which carries no
+    # _meta — can inherit it via mcp_server_name_cache. This is what lets the
+    # app-own-server auto-approve (hooks.on_tool_call) fire on the permission
+    # path: without the cache, the permission event's mcp_server_name is always
+    # "" and the branch never matches.
+    _mcp_server_name = _kiro_mcp_server_name(update)
+    if tool_call_id and mcp_server_name_cache is not None:
+        mcp_server_name_cache[tool_call_id] = _mcp_server_name
+    # Same lifecycle for the trusted tool name (_meta.kiro.toolName) so the
+    # permission event can reconstruct the canonical mcp__<server>__<tool> for
+    # per-tool governance in the app-own-server auto-approve.
+    _tool_name = _kiro_tool_name(update)
+    if tool_call_id and tool_name_cache is not None:
+        tool_name_cache[tool_call_id] = _tool_name
     # Initial tool input string from raw params.
     input_str = ""
     if tool_call_id and raw_input:
@@ -534,8 +569,8 @@ def _build_tool_call_event(
         raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
         is_shell=is_shell,
         # Trusted identity from _meta.kiro (NOT the LLM-authored title).
-        tool_name=_kiro_tool_name(update),
-        mcp_server_name=_kiro_mcp_server_name(update),
+        tool_name=_tool_name,
+        mcp_server_name=_mcp_server_name,
         diff_old_text=_diff_old_text,
         diff_path=_diff_path,
     )
@@ -549,9 +584,9 @@ def _mcp_content_text(payload: dict[str, Any]) -> str | None:
     Serialising it with ``json.dumps`` escapes the payload — quotes become ``\\"``
     and non-ASCII becomes ``\\uXXXX`` — so any structured marker carried INSIDE the
     text is destroyed while still LOOKING intact to a human reading the transcript.
-    That silently broke every session-directive tool (#755): the directive's
-    sentinel survived visually but no longer matched, so the effect was dropped
-    with no error. Extracting the inner text keeps the payload byte-exact.
+    That breaks session-directive tools: the directive's sentinel survives
+    visually but stops matching, so the effect is dropped with no error.
+    Extracting the inner text keeps the payload byte-exact.
 
     Returns None for anything that is not a pure text envelope, so genuinely
     structured payloads still fall back to ``json.dumps``.
@@ -818,6 +853,8 @@ def parse_session_update(
     tool_input_cache: dict[str, str] | None = None,
     shell_cache: dict[str, bool] | None = None,
     raw_params_cache: dict[str, dict] | None = None,
+    mcp_server_name_cache: dict[str, str] | None = None,
+    tool_name_cache: dict[str, str] | None = None,
 ) -> list[AcpEvent]:
     """Parse one ``session/update`` inner ``update`` dict into ``AcpEvent``s.
 
@@ -846,7 +883,14 @@ def parse_session_update(
         return events
     if kind == UPDATE_TOOL_CALL:
         events.append(
-            _build_tool_call_event(update, tool_input_cache, shell_cache, raw_params_cache)
+            _build_tool_call_event(
+                update,
+                tool_input_cache,
+                shell_cache,
+                raw_params_cache,
+                mcp_server_name_cache,
+                tool_name_cache,
+            )
         )
         return events
     if kind == UPDATE_TOOL_CALL_UPDATE:
@@ -890,10 +934,9 @@ def _token_count(value: Any) -> int | float | None:
 def parse_usage_update(update: dict[str, Any]) -> tuple[int | float | None, int | float | None]:
     """Parse a ``usage_update`` into validated ``(used, size)`` token counts.
 
-    kiro-cli's working path (``AcpClient``) reads a FLAT shape (``update.used`` /
-    ``update.size``); ``runtime.py`` had drifted to a nested ``update.usage.*``
-    read. This reconciles to flat-primary with a nested fallback so both classes
-    read identically regardless of which shape kiro emits.
+    kiro-cli emits a FLAT shape (``update.used`` / ``update.size``); this reads
+    flat-primary with a nested ``update.usage.*`` fallback so both classes read
+    identically regardless of which shape kiro emits.
 
     Values are validated via ``_token_count`` so BOTH consumers
     (``AcpClient._track_usage_update`` and ``AcpSessionHandle._handle_update``)

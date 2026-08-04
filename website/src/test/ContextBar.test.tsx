@@ -1,7 +1,7 @@
 /**
  * ContextBar tooltip is percentage-only (absolute token counts live in the
  * click popover, not the hover tooltip). The fill color shifts to warn (>=75%)
- * / danger (>=90%) — same thresholds as the ring it replaced.
+ * / danger (>=90%).
  */
 import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'

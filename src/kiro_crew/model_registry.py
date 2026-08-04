@@ -109,9 +109,9 @@ _KIRO_WINDOWS: dict[str, int] = {}
 
 # Supplementary static windows for models the canonical registry does not carry
 # and kiro-cli does not advertise — chiefly fully-qualified provider model ids
-# and legacy Claude snapshots. These formerly lived in a SEPARATE
-# ``model_tokens.json`` file (a second, drifting source of truth this
-# centralization retires). Folded here so ``model_window`` is the ONE
+# and legacy Claude snapshots. Folded here (rather than a separate
+# ``model_tokens.json``, which would be a second, drifting source of truth) so
+# ``model_window`` is the ONE
 # authority. Consulted AFTER the canonical registry (so a canonical/alias hit
 # wins) but BEFORE the ``[1m]`` heuristic. Keys are matched exactly first, then
 # by longest-substring (these ids embed the dotted model name).
@@ -136,7 +136,7 @@ _SUPPLEMENTARY_WINDOWS: dict[str, int] = {
     # ⇒ the 1M reference and over-assemble context. Keeping the static window as
     # a floor prevents that over-large-prompt regression on first/headless runs.
     # Currently-served sub-1M models. Windows are the kiro-cli
-    # `chat --list-models --format json` context_window_tokens as of 2026-07
+    # `chat --list-models --format json` context_window_tokens
     # (the refresh_kiro_windows cache overrides these when seeded).
     "deepseek-3.2": 164_000,
     "minimax-m2.5": 196_000,
@@ -432,8 +432,8 @@ def model_window(canonical_or_id: str, *, live_tokens: int | None = None) -> int
        including non-Anthropic (GPT 272k, DeepSeek 164k, Qwen 256k) and the
        sonnet/haiku ids the static registry folds onto a 1M canonical.
     3. Static registry — the hand-maintained ``window`` literal (Anthropic ids).
-    4. Supplementary map — Bedrock/legacy ids (:data:`_SUPPLEMENTARY_WINDOWS`,
-       formerly the separate ``model_tokens.json``), exact then longest-substring.
+    4. Supplementary map — Bedrock/legacy ids (:data:`_SUPPLEMENTARY_WINDOWS`),
+       exact then longest-substring.
     5. ``[1m]``/``-1m`` heuristic -> 1M (forward-compat for an unlisted 1M id).
     6. ``None`` — genuinely unknown. Callers treat None as
        :data:`REFERENCE_WINDOW_TOKENS` (never a silent 200k), so an unknown
@@ -487,8 +487,8 @@ def window(canonical_or_id: str) -> int:
     Prefer :func:`model_window` in new code — it returns ``None`` for a genuinely
     unknown model so the caller can decide the fail-safe. This shim exists for
     callers that need a concrete int and are content with the reference default.
-    It no longer returns a silent 200k for unknown ids (the old behaviour that
-    shrank unknown models' budgets).
+    It returns ``REFERENCE_WINDOW_TOKENS`` for unknown ids rather than a silent
+    200k that would shrink unknown models' budgets.
     """
     return model_window(canonical_or_id) or REFERENCE_WINDOW_TOKENS
 

@@ -178,7 +178,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
 
   // Persistent per-session WS: created once and kept alive across tab/chat/
   // panel/route unmounts; torn down only on explicit tab close. Unmounting this
-  // component no longer disconnects — the module-level manager owns the socket.
+  // component does not disconnect — the module-level manager owns the socket.
   useEffect(() => {
     ensureTerminalConnection(sessionId, term, fit, cwd)
   }, [sessionId, term, fit, cwd])

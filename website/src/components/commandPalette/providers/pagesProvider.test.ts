@@ -4,7 +4,7 @@ import type { Result } from '../types'
 
 /**
  * Unit tests for the pure {@link createPagesProvider} factory
- * (Search Everywhere, step 12). The page candidate list is the union of the
+ * (Search Everywhere). The page candidate list is the union of the
  * surface registry (mocked here) and the hardcoded non-rail EXTRA_PAGES, so we
  * stub `getBuiltinSurfaces` and pass a spy `navigate`.
  */
@@ -18,7 +18,14 @@ const { getBuiltinSurfaces } = vi.hoisted(() => ({
   ]),
 }))
 
-vi.mock('../../../surfaces/registry', () => ({ getBuiltinSurfaces }))
+// `surfaceLabel` is mocked alongside `getBuiltinSurfaces` because pagesProvider
+// now resolves the display title through it (the registry's `label` is a frozen
+// English fallback beside a `labelKey`). Mirroring the real resolver's
+// fallback order keeps these fixtures asserting on their own `label` values.
+vi.mock('../../../surfaces/registry', () => ({
+  getBuiltinSurfaces,
+  surfaceLabel: (s: { label: string; labelKey?: string }) => s.label,
+}))
 
 import { createPagesProvider } from './pagesProvider'
 

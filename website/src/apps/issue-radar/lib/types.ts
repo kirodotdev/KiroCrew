@@ -8,7 +8,7 @@ import type { SourceProvider } from '../api'
  * `provider`/`host` are part of the IDENTITY, not decoration: they ride on every
  * request, and a `group/project` path names a different project on gitlab.com
  * than on a self-managed instance. They are optional so a value persisted before
- * GitLab support still loads — absent means public GitHub, which is what it was.
+ * GitLab support still loads — absent means public GitHub.
  *
  * Structurally a `RepoRef` (see `api.ts`), so it can be passed straight to any
  * API call without rebuilding it. */

@@ -14,7 +14,8 @@
  * panel still has the full run history from the backend.
  */
 import { memo } from 'react'
-import { Workflow, Loader2, CheckCircle2, AlertCircle, PanelRight } from 'lucide-react'
+import { Workflow, Loader2, CheckCircle2, AlertCircle } from 'lucide-react'
+import { PanelRightSolid } from '../../components/icons/panels'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
@@ -79,7 +80,7 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
         type="button"
         onClick={open}
         title={i18nT('pages.chat.workflowRunCard.open_in_the_workflows_panel')}
-        className="group w-full text-left rounded-md bg-accent/10 border border-accent/20 hover:bg-accent/15 hover:border-accent/40 transition-colors px-3 py-2 flex items-start gap-2"
+        className="pi-morph group w-full text-left rounded-md bg-accent/10 border border-accent/20 hover:bg-accent/15 hover:border-accent/40 transition-colors px-3 py-2 flex items-start gap-2"
       >
         <span className="shrink-0 mt-0.5">
           {status === 'running' && <Loader2 size={15} className="text-accent animate-spin" />}
@@ -107,7 +108,7 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
             {runId} {i18nT('pages.chat.workflowRunCard.open_workflows_panel')}
           </div>
         </div>
-        <PanelRight
+        <PanelRightSolid
           size={14}
           className="text-muted shrink-0 mt-0.5 opacity-60 group-hover:opacity-100 transition-opacity"
         />

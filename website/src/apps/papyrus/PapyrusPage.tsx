@@ -46,9 +46,28 @@ import DiagnosticsList from './DiagnosticsList'
 import CoAuthorPanel from './CoAuthorPanel'
 
 import { i18nT } from '../../i18n/t'
+import { fmtUnit } from '../../i18n/format'
 
 /** Width of the source column, as a percentage of the workspace. */
 const SOURCE_PANE_PERCENT = 50
+
+const MS_PER_SECOND = 1000
+
+/** Compile time, readable and localized.
+ *
+ * Was a catalog string `"{{ms}} ms"`, which had two defects: a bibliography build
+ * rendered as `48231 ms` (arithmetic the reader should not have to do), and the
+ * number skipped `Intl` entirely, so no locale got its own grouping — de expects
+ * `48.231`, bn expects Bengali digits. `fmtUnit` supplies BOTH the localized
+ * number and the localized unit, which is why the key is deleted rather than
+ * reworded: keeping it would weld a hardcoded `ms` onto an already-localized
+ * number, the exact shape `i18n/unitLiterals.test.ts` exists to catch.
+ */
+function compileDurationLabel(ms: number): string {
+  return ms < MS_PER_SECOND
+    ? fmtUnit(ms, 'millisecond', { maximumFractionDigits: 0 })
+    : fmtUnit(ms / MS_PER_SECOND, 'second', { maximumFractionDigits: 1 })
+}
 
 /** Width of the co-author panel when open. */
 const CHAT_PANEL_WIDTH = 420
@@ -333,9 +352,9 @@ export default function PapyrusPage() {
    * With `false`, a dirty buffer is instead left exactly as it is: the disk keeps the
    * agent's version, the editor keeps the user's typing, and the post-await guard
    * below declines to overwrite. Nothing is lost on either side, and the user's next
-   * save is a deliberate act on a document they can see. That is the conflict the
-   * reviewer asked for, expressed as "refuse to clobber" rather than a modal —
-   * consistent with how `flushBuffer` already reports a mid-save keystroke.
+   * save is a deliberate act on a document they can see. The conflict surfaces as
+   * "refuse to clobber" rather than a modal — consistent with how `flushBuffer`
+   * already reports a mid-save keystroke.
    */
   const reloadOpenFile = useCallback(async (flushWhenDirty = true): Promise<boolean> => {
     if (!project || !currentFile) return false
@@ -416,6 +435,19 @@ export default function PapyrusPage() {
    */
   const resolveConflict = useCallback(async () => {
     const conflicted = conflictFileRef.current
+    // Confirm FIRST, before anything is cleared, and only when there is something
+    // to lose. The button used to say "Reload" — which promises a refresh — while
+    // this handler deletes the user's unsaved buffer with no undo. The label now
+    // says what it does, and this restates the stakes for the one action in the
+    // app that destroys typing the user cannot get back.
+    //
+    // Placed above the clear so the early return leaves every guard exactly as it
+    // was; the ordering the tests pin (clear -> reload) is unchanged.
+    if (dirtyRef.current && !window.confirm(
+      i18nT('apps.papyrus.workspace.co_author_conflict_discard_confirm', {
+        file: conflicted ?? '',
+      }),
+    )) return
     // Cleared BEFORE the reload, and the refs too: `reloadOpenFile` refuses to adopt
     // while the buffer is dirty, and its no-flush branch would otherwise re-record the
     // very conflict being resolved. So the guard has to be down for the reload to run.
@@ -557,17 +589,36 @@ export default function PapyrusPage() {
     onError: (err: Error) => { if (!isFlushAbort(err)) setError(err.message) },
   })
 
+  // Takes the commit message, because this button COMMITS before it pushes:
+  // `gitCommit` runs `git add -A` server-side, so every change in the paper —
+  // including files the user has not looked at — goes out under this message. A
+  // canned message hid that: "Push" read as "publish what I already committed",
+  // and there was no field, no preview and no way to describe the change.
   const pushMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (message: string) => {
       // Same guard as every other transition: committing a snapshot the user has
       // already typed past would push the wrong revision AND lose the newer text.
       if (!(await flushBuffer())) throw new Error(FLUSH_FAILED)
-      await papyrusApi.gitCommit(project as string, i18nT('apps.papyrus.workspace.default_commit_message'))
+      // An empty message is deliberately forwarded as `""` rather than filled in
+      // here: the backend owns the fallback (`gitops.DEFAULT_COMMIT_MESSAGE`), and
+      // a commit message is repository content read by collaborators and CI — not
+      // UI chrome — so it must not come from a translated catalog. It used to, so
+      // a German dashboard wrote German subjects into a shared history.
+      await papyrusApi.gitCommit(project as string, message)
       return papyrusApi.gitPush(project as string)
     },
     onSuccess: () => invalidateGit(),
     onError: (err: Error) => { if (!isFlushAbort(err)) setError(err.message) },
   })
+
+  const onCommitAndPushClick = useCallback(() => {
+    // Same one-field prompt as "new file" — the right weight for one line of
+    // text, and it is what makes the `add -A` scope visible before it happens.
+    const message = window.prompt(i18nT('apps.papyrus.workspace.commit_message_prompt'))
+    // `null` is Cancel and must abort; an empty string is "use the default".
+    if (message === null) return
+    pushMutation.mutate(message.trim())
+  }, [pushMutation])
 
   // ── Co-author session ─────────────────────────────────────────────────────
 
@@ -816,7 +867,7 @@ export default function PapyrusPage() {
             <AlertTriangle className="lucide-inline" />
             {i18nT('apps.papyrus.workspace.co_author_conflict')}
             <Btn onClick={resolveConflict}>
-              {i18nT('apps.papyrus.workspace.co_author_conflict_reload')}
+              {i18nT('apps.papyrus.workspace.co_author_conflict_discard')}
             </Btn>
           </span>
         )}
@@ -850,7 +901,10 @@ export default function PapyrusPage() {
             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border text-[13px] text-muted hover:text-text hover:border-border-strong hover:bg-bg-hover no-underline transition-all focus-ring"
           >
             <FileDown className="lucide-inline" />
-            {i18nT('apps.papyrus.workspace.pdf')}
+            {/* "Download PDF", not "PDF": this is an `<a download>` styled like the
+                `Log` toggle beside it, so a bare noun gave two adjacent controls no
+                way to tell a download from a pane toggle. */}
+            {i18nT('apps.papyrus.workspace.download_pdf')}
           </a>
         )}
 
@@ -869,11 +923,11 @@ export default function PapyrusPage() {
                 {i18nT('apps.papyrus.workspace.pull')}
               </Btn>
             )}
-            <Btn onClick={() => pushMutation.mutate()} disabled={pushMutation.isPending}>
+            <Btn onClick={onCommitAndPushClick} disabled={pushMutation.isPending}>
               {pushMutation.isPending
                 ? <Loader2 className="lucide-inline animate-spin motion-reduce:animate-none" />
                 : <ArrowUpFromLine className="lucide-inline" />}
-              {i18nT('apps.papyrus.workspace.push')}
+              {i18nT('apps.papyrus.workspace.commit_and_push')}
             </Btn>
           </>
         )}
@@ -954,9 +1008,9 @@ export default function PapyrusPage() {
                   // over: `onSuccess` clears the dirty flag and switches `currentFile`, so
                   // a keystroke during the request is attached to a buffer that is about
                   // to be abandoned — and, because the flag is cleared, is dropped without
-                  // even the unsaved-changes prompt. Listing `create` and not `delete` was
-                  // the omission; the condition is now every mutation that ends with a
-                  // `setDirty(false)` plus a `setCurrentFile`.
+                  // even the unsaved-changes prompt. The condition covers every mutation
+                  // that ends with a `setDirty(false)` plus a `setCurrentFile`, delete
+                  // included.
                   || deleteFileMutation.isPending
                 }
                 diagnostics={currentFile === mainFile ? diagnostics : []}
@@ -972,7 +1026,7 @@ export default function PapyrusPage() {
             </span>
             <span>{i18nT('apps.papyrus.workspace.word_count', { count: wordCount })}</span>
             {compileMs !== null && (
-              <span>{i18nT('apps.papyrus.workspace.compile_duration', { ms: compileMs })}</span>
+              <span>{compileDurationLabel(compileMs)}</span>
             )}
             {counts.errors > 0 && (
               <span className="text-danger">

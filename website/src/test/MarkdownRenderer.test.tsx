@@ -668,8 +668,8 @@ describe('Lightbox keyboard navigation', () => {
 
 describe('MarkdownRenderer mcwidget strip is inline-code-aware', () => {
   it('preserves prose when an unclosed widget tag appears inside an inline-code span', () => {
-    // Pre-fix bug: <mcwidget[\s\S]*$ alternative ate from the literal opening
-    // tag (inside backticks) to end-of-block, dropping the rest of the prose.
+    // The `<mcwidget[\s\S]*$` alternative must not eat from the literal opening
+    // tag (inside backticks) to end-of-block, or it drops the rest of the prose.
     const content = 'In a chat: ask the agent to emit any `<mcwidget>` (e.g. "render a CR queue widget"), then click Bookmark.'
     const { container } = render(<MarkdownRenderer content={content} />)
     const text = container.textContent || ''
@@ -686,7 +686,6 @@ describe('MarkdownRenderer mcwidget strip is inline-code-aware', () => {
   })
 
   it('preserves real prose AFTER a backtick-wrapped tag mention earlier in the block', () => {
-    // The smoking-gun scenario from the bug screenshot.
     const content = [
       '- Sidebar shows Artifacts',
       '- In a chat: ask the agent to emit any `<mcwidget>` (e.g. "render a CR queue widget")',
@@ -702,11 +701,11 @@ describe('MarkdownRenderer mcwidget strip is inline-code-aware', () => {
 
 describe('MarkdownRenderer strips leaked <tool_use> protocol markup', () => {
   it('strips a complete <tool_use>...</tool_use> block and renders surrounding markdown', () => {
-    // Repro from chat where the agent leaked the full Anthropic tool_use
-    // wrapper as text. Pre-fix: the unknown <tool_use> element trapped the
-    // JSON body (including escaped \n literals) into a single paragraph,
-    // dropping all the headers and rating callouts. Post-fix: the wrapper
-    // and its body are gone, the surrounding prose renders normally.
+    // When the agent leaks the full Anthropic tool_use wrapper as text, the
+    // unknown <tool_use> element would otherwise trap the JSON body (including
+    // escaped \n literals) into a single paragraph, dropping all the headers and
+    // rating callouts. The strip pass removes the wrapper and its body so the
+    // surrounding prose renders normally.
     const content = [
       "I'll generate the review.",
       '',

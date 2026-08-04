@@ -240,8 +240,8 @@ class TestSearchForContext:
             "source": "src-1",
             "source_type": "local_folder",
             "source_name": "Opportunity Planner",
-            "source_uri": "/home/nrb/projects/op/src/",
-            "file_path": "/home/nrb/projects/op/src/auth.md",
+            "source_uri": "/home/alice/projects/op/src/",
+            "file_path": "/home/alice/projects/op/src/auth.md",
             "section_title": "Token Lifecycle",
             "chunk_range": "10-25",
             "match_type": "keyword+vector",
@@ -249,7 +249,7 @@ class TestSearchForContext:
         card = _build_context_card(result, content="body", tokens=1)
         assert card["source_type"] == "local_folder"
         assert card["source_name"] == "Opportunity Planner"
-        assert card["file_path"] == "/home/nrb/projects/op/src/auth.md"
+        assert card["file_path"] == "/home/alice/projects/op/src/auth.md"
         assert card["section_title"] == "Token Lifecycle"
         assert card["chunk_range"] == "10-25"
 

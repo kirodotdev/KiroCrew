@@ -114,8 +114,8 @@ async def _classify_contradiction(state: DashboardState, prompt: str) -> str:
                     # A tool-free classification should never dispatch a tool,
                     # but an auto-approved tool arrives here WITHOUT a preceding
                     # permission request (nothing to reject). Audit it so no
-                    # invocation escapes the SEL log (backend-security-controls
-                    # rule: every tool invocation emits a SEL event).
+                    # invocation escapes the SEL log (every tool invocation emits
+                    # a SEL event).
                     _sel().log_tool_invocation(
                         session_key="_bg",
                         tool_name=getattr(event, "title", "unknown"),
@@ -124,9 +124,9 @@ async def _classify_contradiction(state: DashboardState, prompt: str) -> str:
                     )
                 elif event.kind == EVENT_PERMISSION_REQUEST:
                     # The classification is tool-free; deny any tool the model
-                    # tries to call. Audit the denial (security-controls rule:
-                    # every permission decision emits a SEL event) before
-                    # rejecting, mirroring the suggestions bg path.
+                    # tries to call. Audit the denial (every permission decision
+                    # emits a SEL event) before rejecting, mirroring the
+                    # suggestions bg path.
                     _sel().log_tool_invocation(
                         session_key="_bg",
                         tool_name=getattr(event, "title", "unknown"),
@@ -180,8 +180,8 @@ async def _resolve_and_supersede(
     """Resolve contradictions and delete superseded lessons (runs in background).
 
     Split out of ``api_lessons_create`` so the slow per-candidate LLM verdict
-    no longer blocks the HTTP response. Deletes are emitted with the same SEL
-    audit event as the former inline path. Exceptions are swallowed (logged) —
+    does not block the HTTP response. Deletes are emitted with the same SEL
+    audit event as the inline path. Exceptions are swallowed (logged) —
     a failed background sweep must never crash the event loop, and the lesson
     itself is already persisted.
     """
@@ -192,8 +192,8 @@ async def _resolve_and_supersede(
         # unhandled raise would surface only as a noisy "Task exception was never
         # retrieved" — and the lesson is already persisted (not data loss). warning,
         # not debug: a persistent sweep failure means contradicted lessons accumulate
-        # uncleaned, and backgrounding hid the signal the former inline path surfaced
-        # via the request timeout — operators need the visibility.
+        # uncleaned, and running in the background means no request timeout surfaces
+        # the failure — operators need the visibility.
         logger.warning("Background contradiction sweep failed", exc_info=True)
         return
     for key in contradicted:
@@ -201,7 +201,7 @@ async def _resolve_and_supersede(
             # Audit the supersede DECISION *before* the destructive delete: a
             # lesson must never be deleted without a SEL record, so if the audit
             # call itself raises (audit-service blip) we skip the delete for this
-            # key rather than deleting unaudited (security-controls rule).
+            # key rather than deleting unaudited.
             _sel().log_api_access(
                 caller=sk, operation="lesson.contradiction_superseded",
                 outcome="allowed", source="dashboard", resources=key,
@@ -230,7 +230,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
     # Type-validate every string field BEFORE calling string methods on it.
-    # A JSON array/dict/int in these fields previously raised AttributeError
+    # A JSON array/dict/int in these fields would otherwise raise AttributeError
     # (.strip() on a non-str) -> HTTP 500. validate_string_field enforces
     # isinstance(str), sanitizes, and bounds length, mirroring the MCP
     # CRON_ADD_SCHEMA so the REST + tool paths validate identically.
@@ -375,10 +375,9 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
         # reload/serialize/save — and offloads that disk work to a worker
         # thread (no-blocking-call-on-event-loop; slow/network storage would
         # otherwise stall chat + heartbeat). Only its _arm_timer() step runs
-        # back on the loop (asyncio.create_task needs it) — splitting these
-        # is what the earlier naive executor-offload of remove_job got wrong
-        # (it moved _arm_timer off-loop too, which raised AFTER the on-disk
-        # delete and left the scheduler timer cancelled).
+        # back on the loop (asyncio.create_task needs it): moving it off-loop
+        # would raise AFTER the on-disk delete and leave the scheduler timer
+        # cancelled.
         deleted, failed = await state.crons.remove_jobs(unique_ids)
     except Exception:
         # The batch itself raised (unexpected) — report everything as failed.
@@ -749,7 +748,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         elif in_slots:
             # Live in-memory slot — the common happy path. Audit so that
             # every ``learn_add`` permission decision on this branch is
-            # traceable (security-controls rule).
+            # traceable.
             _sel().log_api_access(
                 caller=sk, operation="learn_add", outcome="allowed",
                 source="dashboard", resources="live_slot",
@@ -767,8 +766,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     else:
         # Browser UI's static key — implicitly trusted, but the allow
         # decision itself is still an authorization outcome and must be
-        # audited (security-controls rule: every permission decision
-        # emits a SEL event).
+        # audited (every permission decision emits a SEL event).
         _sel().log_api_access(
             caller=sk, operation="learn_add", outcome="allowed",
             source="dashboard", resources="dashboard_ui",
@@ -791,9 +789,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # Validate body fields against the SAME schema the learn_add MCP tool uses
     # (LEARN_ADD_SCHEMA), so REST and tool paths share one source of truth:
     # rule must be a string (bounded to MAX_SHORT_STRING), category/scope are
-    # enum-restricted, workspace is pattern-checked. Previously a non-string
-    # rule (array/dict) raised AttributeError on .strip() -> HTTP 500, and
-    # category/length were unbounded. Only schema-known keys are validated so
+    # enum-restricted, workspace is pattern-checked. A non-string
+    # rule (array/dict) would otherwise raise AttributeError on .strip() -> HTTP 500, and
+    # category/length would be unbounded. Only schema-known keys are validated so
     # unrelated body fields don't trip unknown-field rejection.
     known = {f.name for f in LEARN_ADD_SCHEMA.fields}
     try:
@@ -816,15 +814,27 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # text. find_contradiction_candidates and write_lesson are synchronous
         # (blocking embed + O(N) cosine scan), so run them via to_thread to
         # avoid stalling concurrent dashboard/Slack requests.
+        # Read the space generation BEFORE embedding: write_lesson cannot infer the
+        # space of a vector computed out here, and a model swap landing between this
+        # embed and the write would otherwise commit it into the wrong space.
+        rule_emb_generation = vs.space_generation
         rule_emb = await asyncio.to_thread(vs.embed_lesson, rule)
         # Persist the lesson immediately so the request returns fast. The
-        # contradiction sweep below makes a per-candidate LLM call (observed
-        # ~27s each), which previously ran inline and blew the MCP client's
-        # 30s timeout — yet the write completed server-side anyway, so the
-        # caller saw a "timeout" for a lesson that was actually saved (and
-        # re-saved on every retry). Writing first, then sweeping in the
-        # background, removes the slow LLM call from the request path.
-        await asyncio.to_thread(vs.write_lesson, rule, category, None, "user_explicit", rule_emb)
+        # contradiction sweep below makes a per-candidate LLM call (~27s each);
+        # running it inline would exceed the MCP client's 30s timeout while the
+        # write still completed server-side, so the caller would see a "timeout"
+        # for a lesson that was actually saved (and re-saved on every retry).
+        # Writing first, then sweeping in the background, keeps the slow LLM call
+        # off the request path.
+        await asyncio.to_thread(
+            vs.write_lesson,
+            rule,
+            category,
+            None,
+            "user_explicit",
+            rule_emb,
+            rule_emb_generation,
+        )
         candidates = await asyncio.to_thread(
             vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb
         )

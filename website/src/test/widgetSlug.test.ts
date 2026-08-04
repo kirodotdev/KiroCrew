@@ -45,9 +45,8 @@ describe('deriveWidgetSlug', () => {
   it('has reasonable avalanche behavior — flipping one input bit changes many output bits', () => {
     // Regression guard against using the 64-bit FNV prime with Math.imul,
     // which silently truncates to multiply-by-435 and produces extremely
-    // poor avalanche (code review caught this on rev 1 of). With
-    // the 32-bit prime + different offset bases, near-identical seeds
-    // should diverge across most output bits.
+    // poor avalanche. With the 32-bit prime + different offset bases,
+    // near-identical seeds should diverge across most output bits.
     const a = deriveWidgetSlug('1779995123.456789', 0)
     const b = deriveWidgetSlug('1779995123.456789', 1)
     let diffBits = 0

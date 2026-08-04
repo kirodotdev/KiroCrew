@@ -3,16 +3,16 @@ import reducer, { sseChatMessage } from '../store/chatSlice'
 import './mockApiClient'
 
 /**
- * Background-pane (applyNonActiveFrame) batched-chunk gap detection (round-2 fix).
+ * Background-pane (applyNonActiveFrame) batched-chunk gap detection.
  *
  * The live WS flush buffer (useWebSocket) buffers streaming chunks per slot,
  * owns cross-chunk gap detection itself (inlining the missedChunkMarker into the
  * merged content), and dispatches ONE batched frame per slot carrying only the
- * batch's LAST seq with `batched: true`. The active-slot reducer path guards its
- * own marker branch with `!batched` so it does not double-count. The non-active
- * path did NOT — it compared consecutive batches' last-seqs, whose natural
- * difference is the batch size, and fabricated a false "[N chunk(s) missed]"
- * marker on every multi-chunk background batch.
+ * batch's LAST seq with `batched: true`. Both the active-slot and non-active
+ * reducer paths guard their marker branch with `!batched` so they do not
+ * double-count: comparing consecutive batches' last-seqs (whose natural
+ * difference is the batch size) would otherwise fabricate a false
+ * "[N chunk(s) missed]" marker on every multi-chunk background batch.
  */
 
 const SLOT = 'grid-slot'

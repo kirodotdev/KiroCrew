@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, fireEvent } from '@testing-library/react'
 import MarkdownRenderer, { artifactSlugFromHref } from '../components/MarkdownRenderer'
 
-// CR-B Task 2: the agent emits `[<name>](/artifacts/<slug>)` markdown links;
+// The agent emits `[<name>](/artifacts/<slug>)` markdown links;
 // the renderer must intercept clicks on those anchors and route the slug to
 // onArtifactOpen instead of letting the browser navigate full-page.
 

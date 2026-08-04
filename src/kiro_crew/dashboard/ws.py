@@ -275,9 +275,8 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                             return t
 
                         # Collect every replay frame first; below the scale
-                        # threshold they are sent individually (byte-identical
-                        # to the legacy behavior), above it they collapse into
-                        # ONE subagent_snapshot_batch frame — at 60-100 agents
+                        # threshold they are sent individually, above it they
+                        # collapse into ONE subagent_snapshot_batch frame — at 60-100 agents
                         # a per-agent replay burst saturates the socket the
                         # moment a client reconnects.
                         _replay: list[dict] = []

@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test'
 
 /**
  * /capabilities — Agent Capabilities page.
- * SidePanelLayout with 6 tabs: Crews, Agent Templates, Integrations(MCP),
- * Skills, Hooks, Prompts. Default tab is "crews" (KiroCrewAgentsPage).
+ * SidePanelLayout with 7 tabs: Crews, Agent Templates, Connections,
+ * Skills, Steering, Hooks, Prompts. Default tab is "crews" (KiroCrewAgentsPage).
  *
  * Covers: page load + heading, tab navigation with content change assertion,
  * the crew roster read + a create/delete round-trip mutation through the
@@ -28,10 +28,10 @@ test.describe('Capabilities Page — /capabilities', () => {
     await expect(page.locator('#main-content').getByText('Crews you chat with', { exact: false })).toBeVisible({ timeout: 5000 })
   })
 
-  test('shows all 6 tab buttons in the side nav', async ({ page }) => {
+  test('shows all 7 tab buttons in the side nav', async ({ page }) => {
     // Tab buttons inside the nav panel — look inside #main-content nav
     const nav = page.locator('#main-content nav')
-    const tabs = ['Crews', 'Agent Templates', 'Integrations(MCP)', 'Skills', 'Hooks', 'Prompts']
+    const tabs = ['Crews', 'Agent Templates', 'Connections', 'Skills', 'Steering', 'Hooks', 'Prompts']
     for (const label of tabs) {
       await expect(nav.getByRole('button', { name: label, exact: true })).toBeVisible({ timeout: 5000 })
     }

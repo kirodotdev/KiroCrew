@@ -267,10 +267,10 @@ def _changelog_path() -> Path | None:
 
 
 #: Cached CHANGELOG.md body, keyed on ``(path, st_mtime_ns, st_size)``.
-#: ``GET /api/changelog`` read and decoded the whole file on the event loop on
-#: every request (the About panel re-fetches on each open, and the file grows
-#: with every release). The stat signature keeps a dev-install edit visible
-#: immediately, so the endpoint stays as live as it was.
+#: Caching avoids reading and decoding the whole file on the event loop on
+#: every ``GET /api/changelog`` request (the About panel re-fetches on each
+#: open, and the file grows with every release). The stat signature keeps a
+#: dev-install edit visible immediately, so the endpoint stays live.
 _changelog_cache: tuple[tuple[str, int, int], str] | None = None
 
 
@@ -468,7 +468,6 @@ async def api_update_apply(request: web.Request) -> web.Response:
 
     async def _apply() -> None:
         try:
-            # git pull
             state.push_update_progress("pulling", "Pulling latest changes…")
             pull = await asyncio.create_subprocess_exec(
                 "git",

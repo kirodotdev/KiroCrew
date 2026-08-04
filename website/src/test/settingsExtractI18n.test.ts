@@ -5,13 +5,12 @@ import { extractFromSource } from '../../scripts/settingsExtract'
 /**
  * Guards the i18n awareness of the settings extractor.
  *
- * Why this test exists: the extractor feeds `SETTINGS_REGISTRY`, which powers
- * command-palette settings search. It originally matched only string literals,
- * so converting `label="Language"` to `label={t('...')}` made the setting
- * silently un-searchable — the control still rendered, but no query could find
- * it. That is an invisible regression: no type error, no failing render test.
- * These cases pin the resolution behaviour so a future refactor of the regexes
- * can't quietly reintroduce it.
+ * The extractor feeds `SETTINGS_REGISTRY`, which powers command-palette settings
+ * search. It must resolve `label={t('...')}` calls, not just string literals: a
+ * label matched only as a string literal leaves a t()-wrapped setting silently
+ * un-searchable — the control still renders, but no query can find it, with no
+ * type error and no failing render test. These cases pin the resolution
+ * behaviour so a future refactor of the regexes can't quietly break it.
  *
  * `DisplayPanel.tsx` is used as the filename because the extractor only emits
  * entries for files in its panel→tab map.

@@ -1,7 +1,7 @@
-// REGRESSION GUARD (was a failing repro) — gap #3: DIFF (and code) blocks.
+// REGRESSION GUARD — gap #3: DIFF (and code) blocks.
 //
-// PR #824 added `streamingIndex` so the streaming row's height changes bypass
-// the 120ms HEIGHT_SYNC_DEBOUNCE_MS (see useVirtualChat.scheduleHeightSync).
+// `streamingIndex` lets the streaming row's height changes bypass the 120ms
+// HEIGHT_SYNC_DEBOUNCE_MS (see useVirtualChat.scheduleHeightSync).
 // That bypass is scoped to `isStreaming` being true: ChatPage passes
 // `streamingIndex = isStreaming && len>0 ? len-1 : undefined`, so it goes
 // UNDEFINED the instant the turn closes.
@@ -12,8 +12,8 @@
 // content byte streamed in — and the completion flip (enabled true→false) is a
 // further one-shot height change. If the turn closes (streamingIndex → undefined)
 // while that height-ease tail / completion snap is still resizing the row, those
-// trailing changes fall back to the DEBOUNCED path — re-creating the exact
-// frozen-then-jump spacer lurch #824 removed, just shifted to the moment a diff
+// trailing changes fall back to the DEBOUNCED path — re-creating the
+// frozen-then-jump spacer lurch, just shifted to the moment a diff
 // finishes at end of stream. For a scrolled-up user that is a visible flash.
 //
 // This test drives the hook's REAL outputs through a controllable fake
@@ -127,7 +127,7 @@ describe('useVirtualChat: SmoothResize tail after stream end (diff/code gap #3)'
     const baselineTotal = view.result.current.totalHeight
 
     // --- Phase 1: diff content streams in. streamingIndex is set, so each RO
-    // tick is synced immediately (the #824 behavior we rely on). ---
+    // tick is synced immediately. ---
     let h = 40
     let expected = baselineTotal
     for (let i = 0; i < 6; i++) {
@@ -156,15 +156,15 @@ describe('useVirtualChat: SmoothResize tail after stream end (diff/code gap #3)'
 
     // Regression guard: because the row is still visibly resizing as the turn
     // closed, its height is reflected promptly via the post-stream settle grace
-    // (STREAMING_SETTLE_GRACE_MS) — no frozen-then-jump. Before that grace
-    // existed, clearing streamingIndex sent these Phase-3 ticks down the
-    // debounced path, freezing totalHeight at the Phase-1 value (`expected - 48`).
+    // (STREAMING_SETTLE_GRACE_MS) — no frozen-then-jump. Without that grace,
+    // clearing streamingIndex would send these Phase-3 ticks down the debounced
+    // path, freezing totalHeight at the Phase-1 value (`expected - 48`).
     expect(view.result.current.totalHeight).toBe(expected)
   })
 
   it('CONTROL: the same ease tail is smooth when the turn has NOT yet closed (streamingIndex still set)', () => {
     // Proves the lurch is caused specifically by streamingIndex clearing at the
-    // stream boundary, not by SmoothResize growth per se. Survives the fix.
+    // stream boundary, not by SmoothResize growth per se.
     const { view, streamNode } = mountStreaming(
       'diff-smoothresize-tail-control',
       { scrollTop: 500, scrollHeight: 3000, clientHeight: 400 },

@@ -98,13 +98,12 @@ describe('ChatInput', () => {
       expect(screen.getByRole('button', { name: 'Optimize prompt' })).not.toBeDisabled()
     })
 
-    // Keyboard send must not bypass the offline gate. Hitting Enter while
-    // offline used to call onSend()
-    // directly via handleKeyDown, which then triggered ChatPage.send() →
-    // setInput('') → createSlot network call → fail silently. The user's
-    // typed draft was lost with no recovery path. The fix gates the
-    // sendKey branch on `connected` AND adds defense-in-depth in
-    // ChatPage.send(). These tests pin both legs.
+    // Keyboard send must not bypass the offline gate. Without it, hitting Enter
+    // while offline would call onSend() directly via handleKeyDown, triggering
+    // ChatPage.send() → setInput('') → createSlot network call → fail silently,
+    // losing the user's typed draft with no recovery path. The sendKey branch is
+    // gated on `connected`, with defense-in-depth in ChatPage.send(). These tests
+    // pin both legs.
     it('Enter key when offline does NOT call onSend (default sendOnEnter=enter)', () => {
       const onSend = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} value="hello" onSend={onSend} connected={false} />)
@@ -304,7 +303,6 @@ describe('ChatInput', () => {
       fireEvent.pointerDown(handle, { clientX: 100, clientY: 200 })
       expect(document.body.style.cursor).toBe('row-resize')
       expect(document.body.style.userSelect).toBe('none')
-      // Clean up
       fireEvent.pointerUp(handle)
     })
 
@@ -373,9 +371,8 @@ describe('ChatInput', () => {
       // Pre-measurement scrollTop is stale (e.g. the value-commit just reset it).
       instrument(ta, { initialScrollTop: 71, scrollHeight: 289 })
       fireEvent.input(ta)
-      // Caret-at-end + overflowing ⇒ snap to bottom. Without the fix scrollTop
-      // would be stuck at 71 (the exact symptom seen live) and the caret line
-      // would sit below the fold.
+      // Caret-at-end + overflowing ⇒ snap to bottom. Otherwise scrollTop would
+      // be stuck at 71 and the caret line would sit below the fold.
       expect(ta.scrollTop).toBe(289)
     })
 
@@ -922,7 +919,7 @@ describe('ChatInput', () => {
     })
 
     it('hides the optimizing overlay after switching to another session, and restores it on return', async () => {
-      // Bug 1: the overlay must be scoped to the originating session. It shows
+      // The overlay must be scoped to the originating session. It shows
       // on slot A while optimizing, disappears when the user navigates to slot
       // B (even though the request is still in flight), and reappears if they
       // switch back to A before it settles.

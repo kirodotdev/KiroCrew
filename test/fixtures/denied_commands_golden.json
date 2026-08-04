@@ -43,9 +43,9 @@
   },
   {
     "id": "credential-exfil-kirocrew-token",
-    "pattern": ".*kirocrew.*token",
+    "pattern": "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*[\\w.:/\\\\-]*kiro[-.]?crew\\b[^|;&#>/*]*\\btoken\\b",
     "category": "credential-exfil",
-    "description": "Blocks the `kirocrew ... token` CLI, which mints a signed dashboard access token an attacker could use to authenticate to the gateway."
+    "description": "Blocks the `kirocrew token` CLI, which mints a signed dashboard access token an attacker could use to authenticate to the gateway. Matches the CLI name and the token verb within one command segment -- including nested forms such as `kirocrew pod token` and the hyphenated `kiro-crew` spelling -- so an incidental mention of the word in a later command, a comment, or a file path is not a mint."
   },
   {
     "id": "credential-exfil-env-grep-aws",
@@ -357,7 +357,7 @@
     "id": "iac-teardown-cdk-destroy",
     "pattern": "cdk destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its provisioned cloud resources \u2014 irreversible infrastructure and data loss."
+    "description": "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its provisioned cloud resources — irreversible infrastructure and data loss."
   },
   {
     "id": "local-destructive-chmod-777",
@@ -531,7 +531,7 @@
     "id": "iac-teardown-kubectl-delete-namespace",
     "pattern": "kubectl delete namespace.*",
     "category": "iac-teardown",
-    "description": "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and cascades to every workload, service, and volume inside it \u2014 irreversible cluster-wide teardown."
+    "description": "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and cascades to every workload, service, and volume inside it — irreversible cluster-wide teardown."
   },
   {
     "id": "local-destructive-mkfs",
@@ -555,7 +555,7 @@
     "id": "iac-teardown-pulumi-destroy",
     "pattern": "pulumi destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi stack \u2014 irreversible infrastructure teardown."
+    "description": "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi stack — irreversible infrastructure teardown."
   },
   {
     "id": "local-destructive-rm-rf-root",
@@ -573,7 +573,7 @@
     "id": "iac-teardown-terraform-destroy",
     "pattern": "terraform destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform state \u2014 irreversible infrastructure and data loss."
+    "description": "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform state — irreversible infrastructure and data loss."
   },
   {
     "id": "sql-truncate-table",
@@ -775,9 +775,9 @@
   },
   {
     "id": "self-protection-kill",
-    "pattern": ".*\\b(kill|pkill|killall)\\b.*\\bkiro[-.]?crew\\b.*",
+    "pattern": "(?:(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*[\\w.:/\\\\-]*(?:pkill|killall)\\b[^;&#>]*\\bkiro[-.]?crew\\b|(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*[\\w.:/\\\\-]*kill\\b[^;&#>]*(?:\\$\\(|`)[^;&#>]*\\bkiro[-.]?crew\\b)",
     "category": "self-protection",
-    "description": "Blocks kill/pkill/killall targeting a kirocrew process so the agent cannot terminate its own gateway or supervisor and disable the controls governing it."
+    "description": "Blocks pkill/killall naming a kirocrew process, and a bare kill whose PID comes from a command substitution that resolves the kirocrew name, so the agent cannot terminate its own gateway or supervisor and disable the controls governing it. Scoped to the kill target within one command segment: an incidental mention of the product in a later command or a comment (a file being restored, a log path) is not a kill."
   },
   {
     "id": "legacy-get-secret",
@@ -820,5 +820,17 @@
     "pattern": ".*delete_bucket.*",
     "category": "aws-destructive",
     "description": "Blocks the boto3 underscore form `delete_bucket`, which removes an S3 bucket and can cause irreversible data loss."
+  },
+  {
+    "id": "credential-exfil-kirocrew-token-argv",
+    "pattern": "(?:['\"][\\w.:/\\\\-]*kiro[-.]?crew[\\w.]*['\"][\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"]token['\"]|(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*|kernel\\.system|io\\.popen)\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b[^'\"]*\\btoken\\b)",
+    "category": "credential-exfil",
+    "description": "Blocks an interpreter payload that spawns the `kirocrew token` credential mint through a library call rather than as a shell command -- the CLI name and the token verb as adjacent QUOTED arguments, as in `python -c \"subprocess.run(['kirocrew','token'])\"`. Scoped to the argv-literal shape so a regex literal or prose mentioning both words is not a mint; a single-string spelling is out of reach of command-text matching and is covered by the sensitive-path floor over the signing key instead."
+  },
+  {
+    "id": "self-protection-kill-interpreter",
+    "pattern": "(?:(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*|kernel\\.system|io\\.popen)(?:\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:pkill|killall)\\b[^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b|[\\s\\(\\[]*['\"][\\w.:/\\\\-]*(?:pkill|killall)['\"][\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"][^'\"]*(?:kiro[-.]?crew|irocrew))|(?:os\\.kill(?:pg)?|process\\.kill|\\bkillpg)\\s*\\([^)]*irocrew)",
+    "category": "self-protection",
+    "description": "Blocks an interpreter payload that terminates a kirocrew process through a library call rather than as a shell command -- a pkill/killall command and the product name inside one quoted string passed to an executing sink such as `os.system(...)` or `execSync(...)`. Sink-qualified so prose, a commit message or a regex literal naming both is not a kill."
   }
 ]

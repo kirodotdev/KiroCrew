@@ -40,6 +40,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.hooks import safe_read_file_bytes
 from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
@@ -132,10 +133,10 @@ _KIROCREW_SAFE_SUBDIRS = {
     "crons",
 }
 
-# The KiroCrew data home has moved from the top-level ~/.kirocrew to ~/.kiro/crew
-# (nested under kiro-cli's ~/.kiro). The granular deny-by-default listing policy
-# must recognize the home wherever it lives: the current ~/.kiro/crew, and a
-# pre-move legacy ~/.kirocrew.
+# The KiroCrew data home is ~/.kiro/crew (nested under kiro-cli's ~/.kiro), with
+# a legacy location at ~/.kirocrew. The granular deny-by-default listing policy
+# must recognize the home wherever it lives: the current ~/.kiro/crew, and the
+# legacy ~/.kirocrew.
 # Each marker is the tuple of trailing path segments that identify the home dir;
 # the segment(s) AFTER the marker are matched against _KIROCREW_SAFE_SUBDIRS.
 # Note ~/.kiro alone is NOT a marker — that is kiro-cli's own dir (agents,
@@ -658,6 +659,21 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
     if not _under_crew_home(root):
         cmd += ["--glob", "!**/.kiro/crew/**"]
         cmd += ["--glob", "!**/.kirocrew/**"]
+    # macOS TCC: when the search root is the bare $HOME, exclude the gated
+    # top-level folders so ripgrep never descends into ~/Pictures (the Photos
+    # library) or ~/Music (the media library). Recursing into them makes macOS
+    # pop a per-folder consent dialog -- attributed to the bundled ``rg`` binary
+    # separately from KiroCrew itself, which is why the same folder gets prompted
+    # more than once. The leading-slash glob anchors to the search root, so only
+    # the TOP level of $HOME is pruned: a nested project ``Music/`` is untouched,
+    # and an explicit search rooted AT one of these folders (root != $HOME, so
+    # the set below is empty) is still searched in full. Kept in lockstep with
+    # the ``_search_python`` fallback so both engines return the same results.
+    # (Only the six top-level folders are excluded, not the ~/Library allowlist
+    # that platform_compat applies to os.walk: ripgrep cannot re-include a subdir
+    # of an excluded dir without flipping its whole glob set into allowlist mode.)
+    for name in platform_compat.tcc_protected_dirs_for_walk(root):
+        cmd += ["--glob", f"!/{name}"]
     cmd += ["--", query, str(root)]
     try:
         wrapped_cmd, _ = wrap_argv(cmd)
@@ -725,6 +741,17 @@ def _search_python(root: Path, query: str, include: str, exclude: str) -> list[d
             break
         # In-place prune ignored dirs
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and d not in SENSITIVE_DIRS]
+        # macOS TCC: at the bare $HOME root, drop the gated top-level folders so
+        # the walk never descends into ~/Pictures (Photos library) or ~/Music
+        # (media library) and macOS never pops a per-folder consent dialog. Only
+        # the TOP level of $HOME is gated -- a nested project ``Music/`` and an
+        # explicit search rooted at one of these folders (root != $HOME, so the
+        # set is empty) are unaffected. Kept in lockstep with the ripgrep globs
+        # above so both engines return the same results.
+        if dirpath == str(root):
+            gated = platform_compat.tcc_protected_dirs_for_walk(root)
+            if gated:
+                dirnames[:] = [d for d in dirnames if d not in gated]
         # Crew data-home deny-by-default: match rg behavior.
         # - If search root is OUTSIDE the crew home: skip entirely (rg blocks all).
         # - If search root is INSIDE a safe subdir: allow safe subdirs only.

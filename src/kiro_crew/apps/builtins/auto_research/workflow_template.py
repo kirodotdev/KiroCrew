@@ -1,7 +1,7 @@
 """Dynamic Workflow template for Research Lab v2 'workflow' execution mode.
 
 ``RESEARCH_WORKFLOW_SOURCE`` is a sandboxed dynamic-workflow script (the string
-the gateway hands to ``WorkflowService.start(source=...)`` in Stage 8). It encodes
+the gateway hands to ``WorkflowService.start(source=...)``). It encodes
 the research methodology as a deterministic recursive scaffold — plan → explore
 (investigate top-K → discover follow-ups → synthesis-check) → finalize — with the
 LLM only at the leaf ``ctx.agent()`` calls. Reserve-and-finalize: the final
@@ -12,7 +12,7 @@ This module itself is ordinary (non-sandboxed) Python — only the SOURCE string
 executed inside the workflow sandbox, so it obeys the engine's constraints: no
 imports, no eval/open/getattr/dunder, ``META`` pure-literal + ``async def
 workflow(ctx)``, and only the safe builtins + the ``ctx`` surface. It is validated
-by ``kiro_crew.workflows.validate.validate`` (see the Stage 7 dry-run + tests).
+by ``kiro_crew.workflows.validate.validate``.
 """
 
 from __future__ import annotations
@@ -219,7 +219,7 @@ def build_workflow_args(campaign: dict) -> dict[str, Any]:
     """Map a campaign record (from ``get_campaign``) to the workflow's ``args``.
 
     ``sub_questions`` / ``sources`` are JSON-encoded in the DB row; decode them.
-    ``max_cycles`` is reused as ``max_rounds`` (Stage 3 decision).
+    ``max_cycles`` is reused as ``max_rounds``.
     """
     def _decode(raw: Any) -> list:
         if isinstance(raw, list):

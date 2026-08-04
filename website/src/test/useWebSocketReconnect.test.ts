@@ -33,7 +33,6 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-// Mock WebSocket
 const WS_INSTANCES: MockWebSocket[] = []
 
 class MockWebSocket {
@@ -183,7 +182,7 @@ describe('useWebSocket reconnect unread suppression', () => {
     expect(done?.elapsed).toBe(3)
     expect(done?.task).toBe('Summarize')
     // Native cards cannot lazy-load from disk, so the replayed result must be
-    // preserved inline on the rebuilt terminal card (finding 1).
+    // preserved inline on the rebuilt terminal card.
     expect(done?.result).toBe('done feed')
 
     // Subscription starts before replay, so a live completion can arrive before

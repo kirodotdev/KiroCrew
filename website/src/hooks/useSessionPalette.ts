@@ -16,9 +16,7 @@ export function useSessionPalette() {
 
   const [vars, setVars] = useState(readVars)
 
-  // themeVersion is the re-read trigger. Before useTheme was hoisted, the
-  // provider's applyTheme effect lived inside this component and fired before
-  // the re-read below. Post-hoist, React fires useEffect child-first, so
+  // themeVersion is the re-read trigger. React fires useEffect child-first, so
   // without themeVersion in the deps the first read would land while
   // <html data-theme> is still unset and all CSS vars resolve to ''.
   // themeVersion bumps on every applyTheme / loadCustomThemes, which covers

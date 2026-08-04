@@ -5,8 +5,10 @@ import jsxA11y from 'eslint-plugin-jsx-a11y'
 
 export default [
   {
-    files: ['src/**/*.{ts,tsx}'],
     ignores: ['src/vite-env.d.ts'],
+  },
+  {
+    files: ['src/**/*.{ts,tsx}'],
     languageOptions: {
       parser: tsParser,
       parserOptions: {

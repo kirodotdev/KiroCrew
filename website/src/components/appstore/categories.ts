@@ -9,6 +9,8 @@
  * (``oncall``, ``research``) always beat generic ones (``tasks``).
  */
 
+import { i18nT } from '../../i18n/t'
+
 export const CATEGORY_ORDER = [
   'Developer Tools',
   'Designer Tools',
@@ -20,6 +22,45 @@ export const CATEGORY_ORDER = [
 ] as const
 
 export type Category = (typeof CATEGORY_ORDER)[number]
+
+/**
+ * Display label for each category — catalog KEYS, not strings.
+ *
+ * `CATEGORY_ORDER` above is the ID list, and it stays English and byte-stable: those
+ * values are compared (`categoryFor(a.tags) !== category` in `AppsPage`), sorted with
+ * `localeCompare`, and used as `Map` keys in `categoryCounts`. This table is the copy
+ * half of that split.
+ *
+ * Keys, not strings: the module is evaluated once at import, so an `i18nT()` call in
+ * the initializer would freeze the boot language and never re-resolve on a language
+ * switch. The lookup happens in `categoryLabel()`, which runs during render. Shaped
+ * as a flat `Record` of full literal keys and indexed inline at the `i18nT()` call,
+ * because that is the form `scripts/check-i18n-keys.mjs` can resolve statically.
+ */
+export const CATEGORY_LABEL_KEY: Record<Category, string> = {
+  'Developer Tools': 'components.appstore.categories.developer_tools',
+  'On-call & Ops': 'components.appstore.categories.oncall_ops',
+  'Productivity': 'components.appstore.categories.productivity',
+  'Agents & Automation': 'components.appstore.categories.agents_automation',
+  'Research & Writing': 'components.appstore.categories.research_writing',
+  'Designer Tools': 'components.appstore.categories.designer_tools',
+  'Other': 'components.appstore.categories.other',
+}
+
+/**
+ * Localised display label for a category.
+ *
+ * Takes a plain `string` so a value read back from untrusted manifest data needs no
+ * cast, and an id with no entry is returned VERBATIM rather than dressed up as copy —
+ * same doctrine as `effortLabel()` in `lib/effort.ts`.
+ */
+export function categoryLabel(category: string): string {
+  // `hasOwnProperty`, not `in`: an id of `toString` would otherwise resolve to an
+  // inherited Object.prototype member and hand a function to i18next.
+  return Object.prototype.hasOwnProperty.call(CATEGORY_LABEL_KEY, category)
+    ? i18nT(CATEGORY_LABEL_KEY[category as Category])
+    : category
+}
 
 /** Category → matching tags, in MATCH-priority order (specific → generic). */
 const MATCHERS: [Category, Set<string>][] = [

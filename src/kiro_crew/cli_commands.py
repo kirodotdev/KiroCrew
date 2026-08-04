@@ -1480,8 +1480,6 @@ def _artifact(args: argparse.Namespace) -> None:
             if is_sensitive_path(str(p)):
                 # Defense in depth: refuse to read credential files even
                 # though the artifact API would also redact on serialize.
-                # AUTOSDE security-controls rule requires every file read
-                # path to gate on is_sensitive_path() before Path.read_text().
                 print(
                     f"Error: refusing to read sensitive path: {p}",
                     file=sys.stderr,

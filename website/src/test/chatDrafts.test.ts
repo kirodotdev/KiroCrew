@@ -59,9 +59,9 @@ describe('chatDrafts', () => {
   })
 
   it('byte-aware LRU evicts oldest text drafts until under the store budget, keeping newest', () => {
-    // Text drafts gained a store-byte budget in the slotDraftStore migration
-    // (they previously had only entry cap + TTL). Verify the new behavior for
-    // this store specifically, not just generically in slotDraftStore.test.ts.
+    // Text drafts have a store-byte budget on top of the entry cap + TTL.
+    // Verify it for this store specifically, not just generically in
+    // slotDraftStore.test.ts.
     const drafts: Record<string, string> = {}
     // 3 drafts ~1 MB each = ~3 MB, over the 2 MB budget.
     for (let i = 0; i < 3; i++) setDraft(drafts, `chat-${i}`, 'x'.repeat(1_000_000))

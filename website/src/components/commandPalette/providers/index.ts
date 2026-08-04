@@ -9,8 +9,6 @@ import type { ResourceProvider } from '../types'
  *
  * Mirrors the conventions of `src/surfaces/registry.ts`
  * (`getBuiltinSurfaces` / `_resetBuiltinsForTest`).
- *
- * No provider implementations live here yet — they are added in later steps.
  */
 const registry: ResourceProvider[] = []
 

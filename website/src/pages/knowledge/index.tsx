@@ -21,10 +21,26 @@ type Tab = typeof TABS[number]
 // Backend list_items() hard-caps page size at 100 (dashboard/handlers/knowledge.py).
 // The unfiltered list must request exactly that so totalPages math and Prev/Next stay correct.
 const MAX_PAGE_SIZE = 100
-const TAB_META: Record<Tab, { label: string; icon: React.ReactNode }> = {
-  list: { label: 'List View', icon: <FileText size={14} /> },
-  graph: { label: 'Graph View', icon: <Network size={14} /> },
-  sources: { label: 'Sources', icon: <FolderSync size={14} /> },
+/**
+ * Catalog KEYS for the tab labels, flat and separate from the icons: keys rather
+ * than strings because this is evaluated at module load, where an `i18nT()` call
+ * would freeze the boot language, and flat because a nested
+ * `TAB_META[t].labelKey` is not statically resolvable by
+ * `scripts/check-i18n-keys.mjs`. The lookup happens in the tab bar's `.map()`.
+ */
+const TAB_LABEL_KEY: Record<Tab, string> = {
+  list: 'pages.knowledge.index.list_view',
+  graph: 'pages.knowledge.index.graph_view',
+  // `…index.sources` is NOT reusable here: it already holds the lowercase count
+  // noun in "{n} sources" (below), a different string in a different grammatical
+  // role. Sharing it would lowercase this tab and let either use-site's
+  // translation break the other.
+  sources: 'pages.knowledge.index.sources_tab',
+}
+const TAB_ICON: Record<Tab, React.ReactNode> = {
+  list: <FileText size={14} />,
+  graph: <Network size={14} />,
+  sources: <FolderSync size={14} />,
 }
 
 function EntityAutocomplete({ query, onSelect }: { query: string; onSelect: (name: string) => void }) {
@@ -70,7 +86,7 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
       const prev = queryClient.getQueriesData({ queryKey: ['knowledge-items'] })
-      // The 'knowledge-items' prefix now also covers the source-counts cache,
+      // The 'knowledge-items' prefix also covers the source-counts cache,
       // whose payload has no `items` array. Only rewrite item-shaped entries.
       queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old => {
         if (!old || !Array.isArray(old.items)) return old
@@ -98,7 +114,7 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
       const prev = queryClient.getQueriesData({ queryKey: ['knowledge-items'] })
-      // The 'knowledge-items' prefix now also covers the source-counts cache,
+      // The 'knowledge-items' prefix also covers the source-counts cache,
       // whose payload has no `items` array. Only rewrite item-shaped entries.
       queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, old => {
         if (!old || !Array.isArray(old.items)) return old
@@ -402,14 +418,12 @@ export default function KnowledgePage() {
   }, [])
 
   // "The user has not narrowed anything" — every filter is still at its initial
-  // value. statusFilter starts at DEFAULT_STATUS_FILTER, so the earlier
-  // `!statusFilter` test could never be true and the onboarding block below was
-  // unreachable for every user since it was written.
+  // value. statusFilter starts at DEFAULT_STATUS_FILTER, so it must be compared
+  // against that default rather than tested for falsiness.
   //
-  // namespaceFilter is part of this test because fixing statusFilter exposes it:
-  // selecting a namespace that holds 0 items would otherwise render onboarding,
-  // and that branch replaces the filter bar, leaving no control to clear the
-  // filter with.
+  // namespaceFilter is part of this test because selecting a namespace that
+  // holds 0 items would otherwise render onboarding, and that branch replaces
+  // the filter bar, leaving no control to clear the filter with.
   //
   // Known gap: a library whose every item is archived also reports 0 active
   // items, and both the list query and /namespaces are active-scoped, so it is
@@ -501,7 +515,7 @@ export default function KnowledgePage() {
         {TABS.map(t => (
           <button key={t} onClick={() => { setTab(t); setSelectedId(null); setSelectedItems(new Set()) }}
             className={`flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`}>
-            {TAB_META[t].icon} {TAB_META[t].label}
+            {TAB_ICON[t]} {i18nT(TAB_LABEL_KEY[t])}
           </button>
         ))}
       </div>

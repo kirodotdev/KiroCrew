@@ -23,8 +23,7 @@
  *
  * A regex cannot separate them reliably: an arrow function with an expression body
  * has no brace to count, so a depth counter reports `const f = () => i18nT(…)` as
- * module scope. A first pass at this check did exactly that and produced three false
- * positives in `pages/chat/ActivityViewer.tsx` alone. `typescript` is already a
+ * module scope. `typescript` is already a
  * devDependency and the codemod already walks the AST for the same question, so the
  * correct tool is available.
  */

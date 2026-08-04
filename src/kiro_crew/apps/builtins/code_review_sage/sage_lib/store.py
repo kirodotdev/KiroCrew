@@ -4,9 +4,9 @@
 This module is the deterministic, token-free backbone of the app. It owns the
 on-disk layout under ``<config_dir>/apps/code-review-sage/data/`` (i.e.
 ``~/.kiro/crew/apps/code-review-sage/data/`` by default) and is safe to run on
-every action (idempotent self-heal — pain point #1 in the design doc).
+every action (idempotent self-heal).
 
-Layout (design §5.1):
+Layout:
 
     data/
       learnings/
@@ -54,8 +54,8 @@ def crew_home() -> Path:
     return Path(home) if home else Path.home() / ".kiro" / "crew"
 
 
-# Sensitive-path globs feed the deterministic blast-radius extractor (design §3,
-# component 2). Kept here so the single config is the tunable source of truth.
+# Sensitive-path globs feed the deterministic blast-radius extractor. Kept here
+# so the single config is the tunable source of truth.
 DEFAULT_SENSITIVE_GLOBS: list[str] = [
     "**/auth/**", "**/*auth*", "**/login*", "**/session*", "**/token*",
     "**/*cred*", "**/secret*", "**/*.pem", "**/*.key",
@@ -72,13 +72,13 @@ DEFAULT_RULE_PACKS: dict[str, str] = {}
 DEFAULT_CONFIG: dict[str, object] = {
     "schema": "code-review-sage-config",
     "version": 1,
-    # Triage thresholds — tunable *guidance* the report AI weighs (design §6).
+    # Triage thresholds — tunable *guidance* the report AI weighs.
     "triage": {
         "critical_blast": "LARGE",
         "medium_blast": "MEDIUM",
         "yellow_min_yellow_findings": 2,
     },
-    # Learning-store governance caps (design §5.3 govern).
+    # Learning-store governance caps.
     "caps": {
         "common_max_patterns": 60,
         "repo_max_patterns": 120,
@@ -93,7 +93,7 @@ DEFAULT_CONFIG: dict[str, object] = {
     },
     "sensitive_globs": DEFAULT_SENSITIVE_GLOBS,
     "rule_packs": DEFAULT_RULE_PACKS,
-    # Settled-change filtering defaults (design §4 step 4).
+    # Settled-change filtering defaults.
     "exclude_settled_by_default": True,
 }
 
@@ -136,7 +136,7 @@ def ensure_layout(root: Path | None = None) -> dict[str, str]:
             encoding="utf-8",
         )
 
-    # Reports pointer the UI polls (design §7).
+    # Reports pointer the UI polls.
     index = reports / "index.json"
     if not index.exists():
         index.write_text(

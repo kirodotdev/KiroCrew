@@ -353,8 +353,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
   // can request a protocol mode via ui/request-display-mode, and the host's own
   // header controls set it and notify the app. Everything else is derived from
   // this single value, so the frame's own size and the size the app was told can
-  // never drift (they used to: the header button changed only the local height
-  // and the app was never told).
+  // never drift.
   const [presentation, setPresentation] = useState<Presentation>('inline')
   // Where the overlay returns to when dismissed — promoting from `wide` and
   // collapsing back to `inline` would silently discard the user's prior choice.
@@ -441,7 +440,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
   // the spool record, so the fetch must carry this session's key.
   const sessionKeyRef = useRef<string>(payload.session_key)
   sessionKeyRef.current = payload.session_key
-  // #418 callback capability — delivered over the owner-WS render frame, relayed
+  // Callback capability — delivered over the owner-WS render frame, relayed
   // on every tools/call. The gateway authorizes on THIS, not on the spool id.
   const callbackSecretRef = useRef<string>(payload.callback_secret ?? '')
   callbackSecretRef.current = payload.callback_secret ?? ''
@@ -642,7 +641,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
                 },
                 body: JSON.stringify({
                   spool_id: spoolIdRef.current,
-                  // #418: the capability the gateway actually authorizes on.
+                  // The capability the gateway actually authorizes on.
                   callback_secret: callbackSecretRef.current,
                   tool: name,
                   arguments: params?.arguments ?? {},
@@ -672,9 +671,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
         case M_REQUEST_DISPLAY_MODE: {
           // App-initiated display-mode change (e.g. excalidraw's fullscreen
           // button, which is how it enters its EDITABLE canvas — in `inline` it
-          // renders a static preview). Previously this fell through to the
-          // method-not-found default, so the app's request rejected and it was
-          // stuck in a non-interactive mode forever.
+          // renders a static preview).
           //
           // `fullscreen` is granted as `wide` — a broken-out in-transcript frame
           // — and NEVER as `overlay`: promoting to a viewport sheet is the user's
@@ -713,9 +710,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
         }
 
         case M_OPEN_LINK: {
-          // The app's "Open in Excalidraw" / menu links. Previously fell to the
-          // -32601 default, so the share flow uploaded the diagram and then the
-          // tab never opened — a silent dead end for the user.
+          // The app's "Open in Excalidraw" / menu links.
           if (!isRequest) return
           const url = (msg.params as { url?: unknown } | undefined)?.url
           if (!isOpenableUrl(url)) {
@@ -744,12 +739,12 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
         // context landed. Honest refusal until the backend route exists.
 
         case N_LOG_MESSAGE: {
-          // App-emitted diagnostics. Silently dropping these (the old behavior,
-          // spec-legal for an unknown notification) makes a misbehaving app
-          // impossible to debug from outside: excalidraw routes its entire
-          // display-mode/editor-lifecycle trace through app.sendLog, so the one
-          // signal that explains a stuck app was being discarded. Forward to the
-          // console, tagged with the server/tool so multiple apps stay separable.
+          // App-emitted diagnostics. Dropping these (spec-legal for an unknown
+          // notification) makes a misbehaving app impossible to debug from
+          // outside: excalidraw routes its entire display-mode/editor-lifecycle
+          // trace through app.sendLog, so the one signal that explains a stuck
+          // app would be discarded. Forward to the console, tagged with the
+          // server/tool so multiple apps stay separable.
           //
           // Treated as UNTRUSTED text: passed as a console argument (never
           // interpolated into a format string) and length-capped, so a hostile

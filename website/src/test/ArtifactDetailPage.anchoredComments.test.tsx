@@ -161,9 +161,9 @@ describe('ArtifactDetailPage anchored comments', () => {
   })
 
   it('anchors a comment on a text artifact', async () => {
-    // text bodies render as a highlighted <pre>, which now carries previewRef, so
-    // a selection there has a root to map back to source. Before that ref existed
-    // the tip was shown but the popover never opened — a dead affordance.
+    // text bodies render as a highlighted <pre> that carries previewRef, so a
+    // selection there has a root to map back to source. Without that ref the
+    // tip shows but the popover cannot open — a dead affordance.
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'text' }))
     renderPage()
     await waitFor(() => expect(screen.getByLabelText('Toggle agent chat')).toBeInTheDocument())
@@ -193,7 +193,7 @@ describe('ArtifactDetailPage anchored comments', () => {
     // would produce an instruction the agent can never satisfy.
     renderPage()
     await waitFor(() => expect(screen.getByLabelText('Toggle agent chat')).toBeInTheDocument())
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '1' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '1' } })
     await waitFor(() => expect(screen.getByTitle(/revert to v1/i)).toBeInTheDocument())
     selectInBody('beta')
     expect(screen.queryByLabelText('Add a comment')).toBeNull()

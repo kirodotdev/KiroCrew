@@ -104,13 +104,13 @@ class TestReviewDriver(unittest.TestCase):
         self.assertEqual(out["deep_reviewed"], 1)
 
     def test_block_still_runs_phase2(self):
-        # A design BLOCK no longer skips Phase 2 — the full code review still runs so
+        # A design BLOCK does not skip Phase 2 — the full code review still runs so
         # the author sees design + code issues in one pass. BLOCK only informs the
         # ship decision.
         out = D.run_review(["CR-1", "CR-2"], dispatch=self._fake_dispatch(verdict="BLOCK"),
                            archiver=self._archiver, root=self.root)
         self.assertEqual(out["gate_spawns"], 2)
-        self.assertEqual(out["deep_spawns"], 2)            # BLOCK now proceeds to Phase 2
+        self.assertEqual(out["deep_spawns"], 2)            # BLOCK proceeds to Phase 2
         self.assertEqual(out["phase2_skipped_on_block"], 0)
         self.assertEqual(out["design_blocked"], 2)         # BLOCK verdicts, still deep-reviewed
         self.assertEqual(out["deep_reviewed"], 2)
@@ -295,7 +295,7 @@ class TestReviewDriver(unittest.TestCase):
 
     def test_resolve_concurrency_auto_matches_pool_cap(self):
         # Auto (0/None) defaults to the worker pool's concurrency cap — pool
-        # workers aren't /api/spawn sub-agents, so the gateway cap no longer applies.
+        # workers aren't /api/spawn sub-agents, so the gateway cap does not apply.
         self.assertEqual(D._resolve_concurrency(0), D.review_pool.MAX_CONCURRENT)
         self.assertEqual(D._resolve_concurrency(None), D.review_pool.MAX_CONCURRENT)
         self.assertEqual(D.review_pool.MAX_CONCURRENT, 5)   # max 5 concurrent reviews

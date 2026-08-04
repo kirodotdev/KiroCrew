@@ -1515,6 +1515,11 @@ class TestProbeServerTimeout:
 
         mock_proc = AsyncMock()
         mock_proc.stdin = AsyncMock()
+        # `StreamWriter.write` is synchronous; only `drain()` is awaited. As an
+        # AsyncMock auto-child it returned a coroutine nobody awaits, surfacing later
+        # as an unraisable "never awaited" warning attributed to whichever test
+        # triggered the GC. The sibling test above already pins this.
+        mock_proc.stdin.write = MagicMock()
         mock_proc.stdin.close = MagicMock()
         mock_proc.stdout = AsyncMock()
         mock_proc.stdout.readline = AsyncMock(side_effect=asyncio.TimeoutError)
@@ -2324,6 +2329,12 @@ class TestProbeGroupReap:
         script.chmod(0o755)
 
         monkeypatch.setattr("kiro_crew.mcp_discovery._get_probe_timeout", lambda: 1)
+        # The child deliberately never exits, so `probe_server`'s teardown pays its
+        # graceful-exit budget AND its post-SIGKILL budget in full (2 x 5s) before
+        # reaching the process-group reap this test is about. Shrink both: the reap
+        # is what is asserted, and waiting out the real budget made this the single
+        # slowest test in the suite at 12s.
+        monkeypatch.setattr("kiro_crew.mcp_discovery._PROBE_TEARDOWN_WAIT_SECS", 0.5)
         server = McpServerInfo(name="fake", command=str(script))
         result = await probe_server(server)
         assert result.status == "error"  # timed out, as designed

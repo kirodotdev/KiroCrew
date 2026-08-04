@@ -96,6 +96,7 @@ class TestSafeChild:
             store.safe_child(project, "a" * 2000)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_rejects_a_symlink_escaping_the_project(self, project: Path) -> None:
         """A cloned repo can ship a symlink whose target is outside the project.
 
@@ -108,6 +109,7 @@ class TestSafeChild:
         with pytest.raises(store.PathRejected):
             store.safe_child(project, "evil-link.tex")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_rejects_a_path_through_a_symlinked_directory(self, project: Path) -> None:
         """The escape can also be a mid-path DIRECTORY link, not just a file one."""
@@ -244,6 +246,7 @@ class TestListFiles:
         assert "main.tex" in listed
 
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_skips_symlinks_entirely(self, project: Path) -> None:
         """A tree walk that follows links is how containment leaks."""
         outside = project.parent / "outside.tex"
@@ -340,6 +343,7 @@ class TestFileIO:
         with pytest.raises(ValueError):
             store.delete_file(project, "main.tex")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_delete_refuses_the_main_document_through_a_symlink_alias(
         self, project: Path
     ) -> None:
@@ -423,6 +427,7 @@ class TestPdfPathIsContained:
     `/pdf` route, which renders it inline in the browser.
     """
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_a_symlinked_pdf_is_refused(self, project: Path, tmp_path: Path) -> None:
         secret = tmp_path / "outside-the-project.txt"
         secret.write_text("SUPER SECRET", encoding="utf-8")
@@ -457,6 +462,7 @@ class TestMainFileDiscoveryIsContained:
     had, one function over.
     """
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_a_symlinked_main_document_is_not_accepted(
         self, project: Path, tmp_path: Path
     ) -> None:
@@ -471,6 +477,7 @@ class TestMainFileDiscoveryIsContained:
                 stray.unlink()
         assert store.resolve_main_file(project) is None
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_a_real_sibling_is_still_discovered(
         self, project: Path, tmp_path: Path
     ) -> None:
@@ -484,6 +491,7 @@ class TestMainFileDiscoveryIsContained:
 
         assert store.resolve_main_file(project) == "paper.tex"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_the_glob_fallback_is_contained_too(
         self, project: Path, tmp_path: Path
     ) -> None:
@@ -556,6 +564,7 @@ class TestProjectConfigIsContained:
     filename the code supplies itself still lands in a directory the repo controls.
     """
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_a_symlinked_config_is_not_read(self, project: Path, tmp_path: Path) -> None:
         secret = tmp_path / "docker-config.json"
         secret.write_text(json.dumps({"auths": {"r": {"auth": "SECRET"}}}), encoding="utf-8")
@@ -564,6 +573,7 @@ class TestProjectConfigIsContained:
 
         assert store.read_project_config(project) == {}
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_a_symlinked_config_is_not_written_through(
         self, project: Path, tmp_path: Path
     ) -> None:
@@ -578,6 +588,7 @@ class TestProjectConfigIsContained:
         store.write_project_config(project, {"main_file": "x.tex"})
         assert secret.read_text(encoding="utf-8") == original
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_an_in_project_config_symlink_cannot_overwrite_the_manuscript(
         self, project: Path
     ) -> None:
@@ -604,6 +615,7 @@ class TestProjectConfigIsContained:
         store.write_project_config(project, {"main_file": "paper.tex"})
         assert store.read_project_config(project)["main_file"] == "paper.tex"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_a_symlinked_config_does_not_break_main_file_discovery(
         self, project: Path, tmp_path: Path
     ) -> None:
@@ -615,3 +627,220 @@ class TestProjectConfigIsContained:
         os.symlink(secret, project / store.PROJECT_CONFIG_FILENAME)
 
         assert store.resolve_main_file(project) == store.DEFAULT_MAIN_FILE
+
+
+class TestGitMachineryIsNotDocumentContent:
+    """`.git` is refused by `safe_child`, at any depth and any case.
+
+    Containment cannot cover this: `.git/config`, `.git/info/attributes` and
+    `.git/hooks/*` are all legitimately INSIDE the project, so every other rule in
+    `safe_child` passes them. But they are not document content — they decide what
+    `git` EXECUTES (`filter.<x>.clean`, `core.*Command`, hooks run directly), so a
+    write there converts "edit a file in my paper" into code execution on the next
+    commit or push, on the path that deliberately keeps `~/.ssh` readable.
+
+    Reachable through `PUT`/`POST`/`DELETE /file`, whose only gate is this function.
+    """
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ".git/config",
+            ".git/info/attributes",
+            ".git/hooks/pre-commit",
+            # Case-insensitive: macOS and Windows resolve `.GIT` to the same dir.
+            ".GIT/config",
+            ".Git/hooks/pre-push",
+            # At depth: a submodule's machinery has the same execution surface.
+            "sub/.git/config",
+            "a/b/.git/hooks/post-checkout",
+        ],
+    )
+    def test_git_machinery_is_refused(self, project: Path, path: str) -> None:
+        with pytest.raises(store.PathRejected):
+            store.safe_child(project, path)
+
+    @pytest.mark.parametrize(
+        "path",
+        ["main.tex", "sections/intro.tex", "refs.bib", ".papyrus.json", "figures/f1.pdf"],
+    )
+    def test_real_document_paths_still_resolve(self, project: Path, path: str) -> None:
+        """The refusal must not catch ordinary dotfiles or nested sources."""
+        assert store.safe_child(project, path).name == Path(path).name
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="symlink creation needs privilege on Windows"
+    )
+    @pytest.mark.parametrize(
+        "alias,path",
+        [
+            (".git", "meta/config"),
+            (".git", "meta/hooks/pre-commit"),
+            (".git/info", "innerinfo/attributes"),
+        ],
+    )
+    def test_a_symlink_alias_cannot_reach_git(
+        self, project: Path, alias: str, path: str
+    ) -> None:
+        """The check must run on the RESOLVED path, not the requested segments.
+
+        A cloned repo can ship `meta -> .git`. `meta/config` then contains no
+        `.git` component at all, so a literal-segment screen passes it while it
+        resolves straight into the machinery — the same "screen after decode, not
+        before" mistake, one indirection over.
+        """
+        (project / ".git" / "info").mkdir(parents=True, exist_ok=True)
+        link = project / path.split("/")[0]
+        link.symlink_to(project / alias, target_is_directory=True)
+        with pytest.raises(store.PathRejected):
+            store.safe_child(project, path)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="symlink creation needs privilege on Windows"
+    )
+    def test_a_link_out_of_git_is_refused_too(self, project: Path) -> None:
+        """The reverse direction: the request names `.git`, resolution leaves it.
+
+        `.git/config -> ../repo-config` resolves to a path with no `.git` component,
+        so a resolved-only screen passes it — while git still READS that file as its
+        config through its own path. The rule is not "where do the bytes live", it is
+        "must not write anything git treats as config", so BOTH the requested and the
+        resolved components are checked.
+        """
+        (project / ".git").mkdir(exist_ok=True)
+        (project / "repo-config").write_text("[core]\n", encoding="utf-8")
+        (project / ".git" / "config").symlink_to(project / "repo-config")
+        with pytest.raises(store.PathRejected):
+            store.safe_child(project, ".git/config")
+
+
+class TestASymlinkedProjectEntryIsRefused:
+    """`projects/<name>` must be a real directory under `projects_dir`, never a link.
+
+    The containment check used to accept `resolved == projects_dir` (the `resolved
+    != base_resolved` disjunct), and `projects/pwn -> .` satisfied exactly that.
+    The blast radius was total: every OTHER paper became a "child" of the fake
+    project, so `safe_child` resolved `other-paper/main.tex` as an in-project path
+    (cross-project read AND write), and `DELETE /project?name=pwn` ran `rmtree` on
+    the projects ROOT — destroying every paper the user had.
+    """
+
+    def test_a_self_referential_link_cannot_become_a_project(self, tmp_path: Path) -> None:
+        pdir = store.projects_dir(tmp_path)
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "thesis").mkdir()
+        (pdir / "thesis" / "main.tex").write_text("SECRET", encoding="utf-8")
+        (pdir / "pwn").symlink_to(".", target_is_directory=True)
+
+        with pytest.raises(store.PathRejected):
+            store.safe_project_dir("pwn", tmp_path)
+
+    def test_a_link_pointing_outside_is_refused(self, tmp_path: Path) -> None:
+        pdir = store.projects_dir(tmp_path)
+        pdir.mkdir(parents=True, exist_ok=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (pdir / "escape").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(store.PathRejected):
+            store.safe_project_dir("escape", tmp_path)
+
+    def test_a_link_to_a_sibling_project_is_refused(self, tmp_path: Path) -> None:
+        """Even an in-bounds target: an alias is not the directory it claims to be."""
+        pdir = store.projects_dir(tmp_path)
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "real").mkdir()
+        (pdir / "alias").symlink_to(pdir / "real", target_is_directory=True)
+
+        with pytest.raises(store.PathRejected):
+            store.safe_project_dir("alias", tmp_path)
+
+    def test_a_real_project_directory_still_resolves(self, tmp_path: Path) -> None:
+        pdir = store.projects_dir(tmp_path)
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "thesis").mkdir()
+        assert store.safe_project_dir("thesis", tmp_path).name == "thesis"
+
+
+class TestReparseLinkCoversJunctions:
+    """`is_reparse_link` is the shared answer to "is this name a link?".
+
+    A Windows directory junction is a reparse point `is_symlink()` does NOT report,
+    and it is the link type a Windows user can create without elevation — so every
+    symlink-only guard was bypassable on the platform this PR adds support for.
+    One helper, so the project-entry guard and `gitops`'s attributes guard cannot
+    drift apart on which link types they cover.
+    """
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="symlink creation needs privilege on Windows"
+    )
+    def test_a_symlink_is_a_reparse_link(self, tmp_path: Path) -> None:
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real, target_is_directory=True)
+        assert store.is_reparse_link(link) is True
+
+    def test_a_plain_directory_is_not(self, tmp_path: Path) -> None:
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        assert store.is_reparse_link(plain) is False
+
+    def test_detection_does_not_depend_on_python_312(self, tmp_path: Path) -> None:
+        """`os.path.isjunction` is 3.12+, and this project supports 3.10.
+
+        Keying the guard on that helper's presence left the protection silently
+        ABSENT on two supported interpreters — a no-op guard, which is the worst
+        failure mode for a security check. The fallback reads the same two Windows
+        stat fields CPython's own implementation does.
+        """
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real, target_is_directory=True)
+
+        with mock.patch.object(store, "_ISJUNCTION", None):
+            # A symlink is still caught by the `is_symlink()` leg.
+            assert store.is_reparse_link(link) is True
+            assert store.is_reparse_link(plain) is False
+
+            class _JunctionStat:
+                st_file_attributes = store._FILE_ATTRIBUTE_REPARSE_POINT
+                st_reparse_tag = store._IO_REPARSE_TAG_MOUNT_POINT
+
+            with mock.patch.object(Path, "stat", lambda self, **kw: _JunctionStat()):
+                assert store._is_junction_fallback(plain) is True
+
+    def test_a_reparse_point_that_is_not_a_junction_is_not_flagged(
+        self, tmp_path: Path
+    ) -> None:
+        """Windows uses reparse points for more than junctions (dedup, cloud files).
+
+        Flagging the ATTRIBUTE alone would refuse ordinary directories on such a
+        volume, so the tag has to match too.
+        """
+        plain = tmp_path / "plain"
+        plain.mkdir()
+
+        class _OtherReparseStat:
+            st_file_attributes = store._FILE_ATTRIBUTE_REPARSE_POINT
+            st_reparse_tag = 0xA000001C  # IO_REPARSE_TAG_APPEXECLINK
+
+        with mock.patch.object(Path, "stat", lambda self, **kw: _OtherReparseStat()):
+            assert store._is_junction_fallback(plain) is False
+
+    def test_a_missing_path_is_not_a_link(self, tmp_path: Path) -> None:
+        assert store.is_reparse_link(tmp_path / "does-not-exist") is False
+
+    def test_a_junction_is_refused_at_the_project_entry(self, tmp_path: Path) -> None:
+        """`os.path.isjunction` is 3.12+ and False off Windows, so the behaviour is
+        asserted through the helper rather than by creating a real junction."""
+        pdir = store.projects_dir(tmp_path)
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "looks-real").mkdir()
+        with mock.patch.object(store, "is_reparse_link", return_value=True):
+            with pytest.raises(store.PathRejected, match="symlink"):
+                store.safe_project_dir("looks-real", tmp_path)

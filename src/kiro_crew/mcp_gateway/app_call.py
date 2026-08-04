@@ -269,7 +269,7 @@ async def handle_app_call(pool: Any, frame: dict[str, Any]) -> dict[str, Any]:
     session_key = record.get("session_key") or ""
     pool_digest = record.get("pool_digest")
 
-    # #418 capability split: the model-visible marker carries only ``spool_id``,
+    # Capability split: the model-visible marker carries only ``spool_id``,
     # which authorizes NOTHING. The record's ``callback_secret`` is delivered
     # ONLY over the owner-only WS render frame; the iframe replays it here. A
     # model that harvested the marker from its own context cannot produce this

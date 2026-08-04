@@ -44,7 +44,7 @@ from kiro_crew.validation import (
 # .pptx by default, so mimetypes.guess_type() returns (None, None) for
 # those. Registering at module import time keeps api_file_download's
 # Content-Type header correct for the most common Word/Excel/PowerPoint
-# downloads (the Stores Discovery docx case that motivated this CR).
+# downloads.
 mimetypes.add_type(
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx",
 )
@@ -129,7 +129,7 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
     raw_path = body.get("path", "")
     raw_filename = body.get("filename", "")
     raw_desc = body.get("description", "")
-    # Reject files whose names/paths contain sensitive patterns (per bobvo review)
+    # Reject files whose names/paths contain sensitive patterns
     if redact(raw_filename) != raw_filename or redact(raw_path) != raw_path:
 
         _sel().log_tool_invocation(
@@ -713,8 +713,8 @@ async def api_upload(request: web.Request) -> web.Response:
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home" and
-# issue #874; dashboard/handlers/usage.py is the reference implementation.
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
 _SCREENSHOT_DIR: Path | None = None
 
 _UPLOAD_DIR: Path | None = None

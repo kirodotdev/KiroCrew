@@ -287,7 +287,7 @@ describe('ChatInput approval flow', () => {
 /**
  * Orphaned approval cards: the backend no longer holds a future for the id
  * (turn stopped / timed out / process replaced), so it answers 404. The card
- * used to stay on screen with every button dead — clicks looked ignored.
+ * must clear instead of lingering on screen with every button dead.
  */
 describe('ChatInput orphaned approval (404)', () => {
   const notFound = () => new ApiError(404, 'no pending approval')

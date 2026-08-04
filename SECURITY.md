@@ -5,7 +5,7 @@
 If you discover a potential security issue in this project, please **do not** create a public
 GitHub issue. Instead, report it privately:
 
-- **Email:** [security@kirocrew.dev](mailto:security@kirocrew.dev)
+- **Email:** [kiro-crew-security-support@amazon.com](mailto:kiro-crew-security-support@amazon.com)
 - **Subject prefix:** `[SECURITY]`
 
 Please include:

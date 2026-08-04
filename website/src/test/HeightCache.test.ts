@@ -298,12 +298,11 @@ describe('HeightCache: averageHeight (running mean of measured heights)', () => 
 })
 
 describe('HeightCache: averageHeight outlier ceiling (GPT MEDIUM)', () => {
-  // GPT flagged that the mean is biased by the tall mounted tail at cold open.
-  // The OUTLIER CEILING is the part adopted. A minimum-sample gate (hold the
-  // flat estimate until the sample grows) was implemented and measured in a real
-  // browser and was WORSE — it reintroduced the ~5x under-estimate and pushed
-  // the peak scrollHeight correction from ~51,500px to ~387,000px — so the mean
-  // is trusted from the first measurement and only clipped at the extreme.
+  // The mean is biased by the tall mounted tail at cold open, so the estimate
+  // is clipped at the extreme (the outlier ceiling). The mean is trusted from
+  // the first measurement rather than held behind a minimum-sample gate: gating
+  // reintroduces the ~5x under-estimate and pushes the peak scrollHeight
+  // correction from ~51,500px to ~387,000px.
   it('caps the estimate so one pathological row cannot dominate', () => {
     const c = new HeightCache('avg-guard-cap')
     for (let i = 0; i < 12; i++) c.set(`k${i}`, 40)
@@ -335,10 +334,10 @@ describe('HeightCache: averageHeight outlier ceiling (GPT MEDIUM)', () => {
 })
 
 describe('HeightCache: peek() does not disturb LRU order (GPT MEDIUM)', () => {
-  // Regression: OffsetIndex.sync() reads EVERY row's height. Routing that
-  // through get() rewrote LRU order into transcript-index order on each sync,
-  // so at capacity eviction dropped rows the user had just viewed — defeating
-  // the access-based retention the size-aware cap exists to provide.
+  // OffsetIndex.sync() reads EVERY row's height. Routing that through get()
+  // would rewrite LRU order into transcript-index order on each sync, so at
+  // capacity eviction would drop rows the user had just viewed — defeating the
+  // access-based retention the size-aware cap exists to provide.
   it('peek returns the value without promoting it', () => {
     const c = new HeightCache('peek-order')
     for (let i = 0; i < 2000; i++) c.set(`k${i}`, 10)
@@ -432,12 +431,12 @@ describe('HeightCache: size-aware eviction cap', () => {
     expect(c.averageHeight()).toBeCloseTo(meanExpected, 6)
   })
 
-  // Regression: a slot switch sets sessionId one render before the transcript
-  // loads, so the cache is constructed with rowCount 0. Treating that as a real
-  // count trimmed a long session's persisted heights to the 2000 floor at load
-  // time, and the trim is irreversible — the later setRowCount() raises the cap
-  // but cannot restore evicted measurements, so the revisited session fell back
-  // to estimated offsets. 0 must mean "unknown".
+  // A slot switch sets sessionId one render before the transcript loads, so the
+  // cache is constructed with rowCount 0. Treating that as a real count would
+  // trim a long session's persisted heights to the 2000 floor at load time, and
+  // the trim is irreversible — a later setRowCount() raises the cap but cannot
+  // restore evicted measurements, so the revisited session would fall back to
+  // estimated offsets. 0 must mean "unknown".
   it('does not trim a long persisted blob when constructed before the count is known', () => {
     const sid = 'cap-unknown-load'
     const blob: Record<string, number> = {}
@@ -495,11 +494,12 @@ describe('HeightCache: size-aware eviction cap', () => {
     expect(c.size()).toBe(6000)
   })
 
-  // Regression: evictToCap()'s eviction only changed the in-memory map. The
-  // oversized blob stayed in localStorage, so every subsequent open re-read and
-  // re-trimmed it and the wasted quota was never reclaimed. Driven here through
-  // load()'s HARD_CEILING trim, which is the eviction path that does NOT go via
-  // set() — set() dirties the cache on its own, so it cannot discriminate.
+  // evictToCap()'s eviction changes only the in-memory map. If the oversized
+  // blob stayed in localStorage, every subsequent open would re-read and
+  // re-trim it and the wasted quota would never be reclaimed. Driven here
+  // through load()'s HARD_CEILING trim, which is the eviction path that does
+  // NOT go via set() — set() dirties the cache on its own, so it cannot
+  // discriminate.
   it('persists the trimmed map after a load-time eviction', () => {
     const sid = 'cap-load-trim-persist'
     const blob: Record<string, number> = {}

@@ -1,12 +1,11 @@
 /**
- * TRUE regression test for the focused Change / Issue tab surviving a session
+ * Regression test for the focused Change / Issue tab surviving a session
  * round-trip.
  *
  * The Changes panel renders one tab per pull request the transcript mentions.
- * The focused one used to live in a single component-local `useState('')` in
- * ChatPage, so it was neither per-slot nor persisted: switching sessions (or
- * reloading) reconciled it back to the FIRST link in the transcript, discarding
- * whichever PR the user had actually opened.
+ * The focused tab is per-slot and persisted, so switching sessions or reloading
+ * restores whichever PR the user opened rather than reconciling back to the
+ * FIRST link in the transcript.
  *
  * SidePanel is mocked to echo the selected urls into the DOM, so these tests
  * assert the real selection ChatPage passes down — not just what it persisted.

@@ -41,7 +41,12 @@ from kiro_crew import platform_compat, session_directive
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.artifacts import _infer_kind
 from kiro_crew.autonudge import binding_key_for
-from kiro_crew.config.loader import KiroCrewConfig, config_dir, outbox_dir
+from kiro_crew.config.loader import (
+    KiroCrewConfig,
+    config_dir,
+    outbox_dir,
+    resolve_agent_bindings,
+)
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS, summarize_result
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW
@@ -105,6 +110,7 @@ from kiro_crew.validation import (
     MONITOR_UPDATE_SCHEMA,
     REGISTER_HOOK_SCHEMA,
     SEARCH_CHAT_HISTORY_SCHEMA,
+    SELECT_CREW_SCHEMA,
     SET_PROJECT_SCHEMA,
     SKILL_SEARCH_SCHEMA,
     SPAWN_CONTINUE_SCHEMA,
@@ -617,6 +623,33 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["seconds", "reason"],
+            },
+        },
+        {
+            "name": "select_crew",
+            "description": (
+                "Orchestrator crew routing. Call with NO argument to get the roster of "
+                "selectable crews (name + triggers) so you can decide whether a specialist "
+                "crew fits the task better than handling it yourself. Call with `crew` set "
+                "to a roster name to bind it: returns the crew's resolved {workspace, "
+                "memory_store, kiro_agent, model}, which you then run via "
+                "spawn_run(agent=<crew>). Selection rules: (1) pick a crew ONLY when its "
+                "triggers clearly and specifically match the task with high confidence; "
+                "(2) if no crew is a strong match, do NOT route — fall back to the default "
+                "crew (default_agent); (3) crews without triggers are omitted from the "
+                "roster and are never auto-selected."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "crew": {
+                        "type": "string",
+                        "description": (
+                            "Crew name to bind. Omit or leave empty to list the roster instead."
+                        ),
+                    },
+                },
+                "required": [],
             },
         },
         {
@@ -1836,7 +1869,10 @@ def _list_tools() -> list[dict[str, Any]]:
                 "session scoped to it, and pre-fills the composer with your prompt), "
                 "'Add to this session' (pre-fills this session's composer with your "
                 "prompt), and 'Skip'. Both non-skip buttons PRE-FILL the composer — "
-                "the user still presses send — so nothing runs without their consent."
+                "the user still presses send — so nothing runs without their consent. "
+                "The worktree button requires the session to have a project directory "
+                "and is disabled otherwise (the tool result tells you when that is "
+                "the case); 'Add to this session' always works."
                 "\n\n"
                 "Call this at the END of a turn when you have finished the requested "
                 "work and see concrete next steps worth doing. Do NOT call it to ask a "
@@ -2341,7 +2377,7 @@ def _resolve_session_key_strict() -> str:
     shared backend serving many sessions. This is what keeps
     ``send_notification`` working for warm-pool sessions on platforms
     without the sandbox launcher (macOS/Windows), where neither env
-    source exists in the backend process (GPT 5.6 round 17).
+    source exists in the backend process.
     """
     ctx = current_caller()
     if ctx is not None and ctx.session_key:
@@ -2368,8 +2404,8 @@ def _deny_channel_agent_messaging(caller_session: str, tool_name: str) -> str | 
     ``channel.py`` rejects these tools at the permission-request event, but
     an AUTO-APPROVED call (kirocrew-core is in the default ``allowedTools``)
     never emits that event — so the containment boundary must also hold
-    here at MCP dispatch, keyed on the verified caller identity (GPT 5.6
-    round 17 HIGH). Best-effort SEL audit mirrors channel.py's
+    here at MCP dispatch, keyed on the verified caller identity.
+    Best-effort SEL audit mirrors channel.py's
     ``rejected_blocked_tool`` outcome; audit failure never unblocks the
     deny.
     """
@@ -3026,8 +3062,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
         _call_tool_inner,
         # Real caller identity when resolvable (per-call caller context in
         # pooled backends, env/PID otherwise) — a hardcoded "mcp_core" lost
-        # attribution for every standard tool audit in shared backends
-        # (GPT 5.6 round 20).
+        # attribution for every standard tool audit in shared backends.
         session_key=_resolve_session_key() or "mcp_core",
         downstream_service="kirocrew-core",
     )
@@ -3210,6 +3245,60 @@ def _format_anchor(anchor: dict) -> str:
     return f' [on: "{head}" [TRUNCATED: {omitted} chars omitted' f'{offset_info}] "{tail}"]'
 
 
+def _do_select_crew(crew: str) -> str:
+    """Orchestrator crew routing (the select_crew tool body).
+
+    Empty ``crew`` → JSON roster of *selectable* crews: those with a non-empty
+    ``triggers`` (a crew with no triggers is not a routing candidate at all),
+    excluding the default crew (the caller itself). The response also carries
+    ``default_agent`` and explicit guidance so the model selects only on a
+    high-confidence match and otherwise falls back to the default crew. A named
+    crew → validate it exists, resolve its bindings, and return the bound
+    {workspace, memory_store, kiro_agent, model}. An unknown name returns a JSON
+    ``error`` with the available names.
+    """
+    cfg = KiroCrewConfig.load()
+    default = cfg.default_agent
+    if not crew:
+        roster = [
+            {"name": n, "triggers": c.triggers}
+            for n, c in cfg.agents.items()
+            if n != default and c.triggers.strip()
+        ]
+        return json.dumps(
+            {
+                "default_agent": default,
+                "crews": roster,
+                "guidance": (
+                    "Select a crew ONLY when its triggers clearly and specifically "
+                    "match the task with high confidence. If no crew is a strong "
+                    "match (or the list is empty), do NOT route — use the default "
+                    "crew. Crews without triggers are intentionally omitted."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if crew not in cfg.agents:
+        available = ", ".join(sorted(cfg.agents)) or "(none)"
+        return json.dumps(
+            {"error": f"unknown crew '{crew}'", "available": available},
+            ensure_ascii=False,
+        )
+    b = resolve_agent_bindings(cfg, crew)
+    return json.dumps(
+        {
+            "crew": crew,
+            "bound": {
+                "kiro_agent": b.kiro_agent,
+                "workspace": str(b.workspace_dir),
+                "memory_store": b.memory_store_name,
+                "model": cfg.agents[crew].model,
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     if name == "spawn_run":
         # Re-validate to make schema enforcement visible at the extraction point.
@@ -3289,8 +3378,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     transport_errors.append(error_line)
                     continue
                 errors.append(error_line)
-                # Wave-liveness reconcile (Opus MEDIUM + Design Review
-                # CONCERN 1): every sibling's batch_total counts THIS member,
+                # Wave-liveness reconcile: every sibling's batch_total counts
+                # THIS member,
                 # but an explicit pre-spawn rejection never reached mgr.spawn
                 # unless the response says "counted". Un-reconciled, the
                 # wave's submitted < expected forever — the digest never
@@ -3318,7 +3407,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # Orphan alert: without a parent session key the subagents cannot
             # deliver completion events back to this conversation and will
             # not appear in the Subagents panel for this session. This has
-            # historically failed silently (Mesh ticket 8abcd9fe) — say it
+            # historically failed silently — say it
             # loudly so the agent/user can fall back to spawn_list +
             # result.txt polling instead of waiting forever.
             spawn_lines.append(
@@ -3900,6 +3989,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         )
         return f"Waited {seconds}s. Resuming: {reason_safe}"
 
+    if name == "select_crew":
+        args = validate_tool_args(args, SELECT_CREW_SCHEMA)
+        return _do_select_crew(str(args.get("crew") or ""))
+
     if name == "register_hook":
 
         args = validate_tool_args(args, REGISTER_HOOK_SCHEMA)
@@ -3992,7 +4085,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # "cron → Slack DM by default" routing and report where the message
         # actually landed.
         caller_session = _resolve_session_key()
-        # Channel-agent containment (GPT 5.6 round 17 HIGH): channel agents
+        # Channel-agent containment: channel agents
         # communicate exclusively through channel posts. The channel.py
         # permission-request guard only fires when kiro-cli ASKS — an
         # auto-approved kirocrew-core call (default allowedTools) emits no
@@ -4079,7 +4172,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 "(no gateway-injected session key or HMAC-verified pid). "
                 "Refusing to publish without a trusted governance identity."
             )
-        # Channel-agent containment (GPT 5.6 round 17 HIGH): same boundary
+        # Channel-agent containment: same boundary
         # as send_message — an auto-approved call emits no permission event,
         # so channel.py's guard alone cannot hold it.
         _chan_deny = _deny_channel_agent_messaging(caller_session, "send_notification")
@@ -4103,7 +4196,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # "Error:" prefix (not "Failed:"): call_tool_with_logging
             # classifies only "Error:"-prefixed strings as failures, so a
             # "Failed:" return would be SEL-recorded as completed and hide
-            # the error from the audit trail (GPT 5.6 round 12).
+            # the error from the audit trail.
             return f"Error: {resp}"
         note = resp.get("note") or {}
         return (
@@ -4342,7 +4435,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # mode observed in session logs (agent created
         # ``rules-of-fight-club`` even though ``a07ece9a8c3309aa`` named
         # "The Rules of Fight Club" already existed).
-        # Resolve the kind the same way the store will (CR-1 kind inference):
+        # Resolve the kind the same way the store will (kind inference):
         # an explicit kind wins, else infer from the inline content. The MCP
         # save path never forwards a source_path, so content sniff is the only
         # signal. This keeps the widget-only duplicate probe below from firing
@@ -4422,7 +4515,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         version = d.get("version", 1)
         name = d.get("name", args.get("name", ""))
         kind = d.get("kind", args.get("kind", "widget"))
-        # FU-3: the artifact-deploy skill requires webapp producers to fill
+        # The artifact-deploy skill requires webapp producers to fill
         # projected cost estimates at save time, but nothing enforced it —
         # field-tested agents skipped it and the card's cost area rendered
         # blank until deploy. Attach a soft warning hint (never a hard
@@ -4879,7 +4972,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if args.get("ttl_hours") is not None:
             deploy_body["ttl_hours"] = args["ttl_hours"]
         d = _post("/api/deploy/deploy", deploy_body)
-        # R18 F4: everything textual returned to the LLM goes through the
+        # Everything textual returned to the LLM goes through the
         # canonical credential redaction -- error/scan/message fields can
         # carry file content.
         from kiro_crew.deploy.handlers import _redact_text as _deploy_redact
@@ -4891,10 +4984,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 # Credential-class findings are a HARD block — never pending.
                 return (f"Deploy BLOCKED by scan ({d.get('count', '?')} finding(s)):\n"
                         f"{findings}")
-            # R24: non-credential findings are documented as human-overridable.
+            # Non-credential findings are documented as human-overridable.
             # Persist a pending entry flagged override_scan_required so the
-            # dashboard can present the explicit "deploy anyway" action —
-            # previously these previews silently never reached the pending list.
+            # dashboard can present the explicit "deploy anyway" action for
+            # these previews.
             from kiro_crew.deploy.pending import add_pending
             add_pending({
                 "site_id": args["site_id"],
@@ -4951,7 +5044,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # the parent slot's process tree — a PID-walk would let it silently
         # stop the PARENT session's loop (matches set_project's rule).
         sk = _resolve_session_key_strict()
-        # Stateless (#755): emit a directive; the session-aware consumer
+        # Stateless: emit a directive; the session-aware consumer
         # (chat_runner) resolves the loop by ITS OWN session and stops it. The
         # tool carries no session identity — sk is used only to short-circuit a
         # context where a directive can never be applied (cron/hook/subagent).
@@ -4969,7 +5062,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "ask_question":
         args = validate_tool_args(args, ASK_QUESTION_SCHEMA)
-        # Stateless (#755): return a directive. The session-aware consumer
+        # Stateless: return a directive. The session-aware consumer
         # (chat_runner) broadcasts a NON-BLOCKING question card (no ask_id) to
         # ITS OWN slot and the agent ends its turn; the user's answer arrives as
         # an ordinary next message that resumes the session with full context.
@@ -5005,7 +5098,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # to PID-walk into the parent's identity and mint a loop the parent
         # user never asked for (crosses the session authorization boundary).
         sk = _resolve_session_key_strict()
-        # Stateless (#755): only short-circuit contexts where a directive can
+        # Stateless: only short-circuit contexts where a directive can
         # never be applied (cron/hook/subagent). The session-aware consumer
         # (chat_runner) supplies the binding key and arms the loop.
         if _autonudge_binding_key(sk) is None and sk:
@@ -5052,7 +5145,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # subagent must not PID-walk into the parent's identity and rewrite the
         # parent session's instruction.
         sk = _resolve_session_key_strict()
-        # Stateless (#755): short-circuit only un-appliable contexts; the
+        # Stateless: short-circuit only un-appliable contexts; the
         # consumer resolves the loop by its own session and patches it.
         if _autonudge_binding_key(sk) is None and sk:
             return (
@@ -5589,7 +5682,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "set_project":
         args = validate_tool_args(args, SET_PROJECT_SCHEMA)
-        # Stateless (#755): the session-aware consumer (chat_runner) applies the
+        # Stateless: the session-aware consumer (chat_runner) applies the
         # project change to ITS OWN slot — no session identity resolved here.
         return session_directive.encode(
             "set_project",
@@ -5603,7 +5696,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     if name == "suggest_followup":
         args = validate_tool_args(args, SUGGEST_FOLLOWUP_SCHEMA)
         items = args.get("items") or []
-        # Stateless (#755): the session-aware consumer (chat_runner) broadcasts
+        # Stateless: the session-aware consumer (chat_runner) broadcasts
         # the card to ITS OWN slot; no session identity resolved here. The card
         # is broadcast-only (dropped if no client attached), so the confirmation
         # stays cautious — restate the follow-ups in reply text if they matter.

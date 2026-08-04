@@ -7,9 +7,9 @@ import { cn } from '../../lib/utils'
  * shadcn-style wrapper around Radix Select, themed to match ui/dropdown-menu.tsx.
  *
  * Used by SettingsSelect (components/settings.tsx) — the choke point for every
- * dropdown on the Settings pages. Selected items keep the accent treatment
- * (accent-subtle wash + accent text) carried over from the retired
- * StyledSelect look, with the check indicator on the right to match.
+ * dropdown on the Settings pages. Selected items use the accent treatment
+ * (accent-subtle wash + accent text), with the check indicator on the right to
+ * match.
  */
 
 const Select = SelectPrimitive.Root
@@ -89,7 +89,7 @@ const SelectContent = React.forwardRef<
         'z-[9999] max-h-[240px] overflow-hidden rounded-lg border border-border bg-bg-elevated p-1 text-text shadow-lg',
         'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
         'data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
-        // Popper mode: panel matches the trigger width like the retired StyledSelect
+        // Popper mode: panel matches the trigger width
         position === 'popper' && 'w-[var(--radix-select-trigger-width)] min-w-[180px]',
         className
       )}
@@ -114,8 +114,8 @@ const SelectItem = React.forwardRef<
     className={cn(
       'relative flex cursor-pointer select-none items-center justify-between gap-2 rounded-md px-3 py-1.5 text-[13px] outline-none transition-colors',
       'focus:bg-bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
-      // Themed selected state carried over from StyledSelect (user preference):
-      // accent wash + accent text instead of stock shadcn's check-only look.
+      // Themed selected state (user preference): accent wash + accent text
+      // instead of stock shadcn's check-only look.
       'data-[state=checked]:bg-accent-subtle data-[state=checked]:text-accent data-[state=checked]:font-semibold',
       className
     )}

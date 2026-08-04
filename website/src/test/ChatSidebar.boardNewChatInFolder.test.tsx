@@ -1,8 +1,7 @@
 /**
- * Board view (tag-columns) previously had no way to start a session inside a
- * folder. The list-view folder header has a "New chat in folder" + button,
- * but the compact column folder header only exposed the menu. This adds the
- * same + button to board view.
+ * Board view (tag-columns) exposes a "New chat in folder" + button in every
+ * column's folder header, matching the list-view folder header. (The compact
+ * column folder header would otherwise only expose the menu.)
  *
  * Three load-bearing assertions:
  *   (1) the + button renders inside every column's copy of the folder header;

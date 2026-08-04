@@ -75,9 +75,7 @@ describe('NotificationsPanel', () => {
     render(<NotificationsPanel />)
     const toggle = screen.getByRole('switch', { name: /Play sound on new notifications/i })
     fireEvent.click(toggle)
-    // Toggle aria-checked flips
     expect(toggle.getAttribute('aria-checked')).toBe('false')
-    // Settings persisted
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY)!)
     expect(saved.enabled).toBe(false)
   })

@@ -15,7 +15,9 @@ Gateway session auth (token/cookie) gates the proxy entrance as with all builtin
 
 ## Responsibilities
 
-1. **Worktree discovery** — enumerates git worktrees via `git worktree list --porcelain`
+1. **Worktree discovery** — enumerates git worktrees via `git worktree list --porcelain`,
+   dropping records git flags `prunable` (checkout directory deleted without a
+   `git worktree prune`); the primary checkout is never dropped, since it anchors `is_main`
 2. **Pod integration** — spin up/down/restart isolated pod instances per worktree
 3. **Pull+Build sync** — pull origin/main and rebuild (venv + frontend dist)
 4. **Prune** — safely remove merged/empty worktrees with PR-shipped verification
@@ -193,7 +195,18 @@ after the unit was installed.
   without a restart. Cycles that remove or fail anything are SEL-audited under
   `dev_fleet_auto_prune`. Cancelled on `dev_fleet_cleanup`.
 - **Fleet cache** — 10s TTL. Cold requests block on fresh data; warm requests serve stale
-  and background-refresh.
+  and background-refresh. Concurrent rebuilds (the background revalidate plus any number
+  of `?fresh=1` requests) coalesce onto a single in-flight build, so a rebuild never costs
+  more than one `gh pr` round-trip per branch. A successful `_worktree_remove` evicts that
+  worktree from the cached snapshot and zeroes the timestamp, so the next response stops
+  listing a removed worktree without waiting for a rebuild. An eviction also tombstones the
+  name against an eviction counter: a rebuild that started before the removal still read the
+  worktree from git, so it re-applies any eviction recorded after it began rather than
+  storing a snapshot that would resurrect the row. Tombstones are reaped by the first build
+  that started after them, so a worktree later re-created under the same name is not hidden.
+  The dashboard refreshes with
+  `?fresh=1` after every mutating action (and on the explicit Refresh button) so it never
+  renders the pre-mutation snapshot.
 
 ## Async Runs
 
@@ -492,12 +505,64 @@ All user-visible output passes through `redact_credentials()` and
 
 ## Platform Behavior
 
-- **Linux only** — pod integration requires systemd (systemctl, journalctl)
-- **macOS** — worktree management works; pod operations degrade (import fails gracefully)
+The app declares `platform.os: ["macos", "linux", "windows"]` in `app.json`,
+because that is where it genuinely runs: the fleet view, PR status, commit and
+disk figures, Provision, Sync, Rebase and Prune are git and filesystem work with
+no systemd in them. Only the pod plane and Make Live need Linux, and the app now
+says so in the UI rather than in the manifest — a `highlights` line states the
+requirement, and `GET /api/fleet` carries the reason that renders as a banner.
+
+Declaring one platform per capability is not expressible here: `os` is a single
+list describing the whole app, so any value is a summary. `["linux"]` was the
+wrong summary — it read as "does not run on macOS" for an app whose non-pod half
+runs there fine, which is the same misinformation in the opposite direction from
+the pre-#1254 silence (an absent `platform` block defaults to
+`["macos", "linux"]`, quietly advertising macOS parity).
+
+The declaration is **not** an install gate for this app: `installMode` is the
+default `"server"` and the App Store's platform check at `registry.py` only
+refuses `installMode: "client"` apps, so dev-fleet installs and enables
+everywhere regardless. What the list drives is the App Store detail page, which
+renders it verbatim (`AppDetailPage.tsx` → "Platform: macos, linux, windows").
+
+Two separate capability flags drive the degradation, because they gate different
+things:
+
+| Flag | Meaning | True when |
+|---|---|---|
+| `_POD_IMPORTED` | the `kiro_crew.pod` modules imported, so its platform-neutral helpers are callable | the import succeeded (any platform) |
+| `_POD_AVAILABLE` | pods can actually **run** here | Linux **and** `systemctl` on PATH |
+
+Conflating the two used to report every worktree as "not built" off Linux, since
+the `prov.has_venv` / `prov.has_dist` calls — plain filesystem checks — sat
+behind the pod-runnable gate. Build state is now computed on every platform.
+
+`GET /api/fleet` reports host support so the UI can explain itself rather than
+offering controls that fail:
+
+| Field | Meaning |
+|---|---|
+| `pods_available` | `_POD_AVAILABLE` — whether pods can run on this host |
+| `pods_unavailable_reason` | the human-readable reason, or `null` when pods are available |
+
+Before this existed, the reason string was computed into `_POD_ERROR` and then
+**never read by anything** — a non-Linux user saw pod controls that silently
+failed with no explanation.
+
+Per-platform behavior:
+
+- **Linux + systemd `--user`** — everything works.
+- **macOS / Windows / Linux without `systemctl`** — the Fleet view, per-branch PR
+  status, commit counts, disk usage, Provision, Sync (pull main + rebuild),
+  Rebase and Prune all work. The UI shows a notice carrying
+  `pods_unavailable_reason` and hides the actions that cannot work: Spin up /
+  Restart / Stop pod, Open, QA + video, and Make Live. Provision is **not**
+  hidden — `kirocrew pod provision` does not touch systemd, so building a
+  worktree's venv + dist works anywhere.
 - **Make Live** — Linux + systemd `--user` only; refuses on non-systemd hosts
-  (`no_systemd`) and on SYSTEM-unit installs (`no_user_unit`)
+  (`no_systemd`) and on SYSTEM-unit installs (`no_user_unit`).
 - **git** and **gh** CLI required for full functionality; missing binaries produce
-  graceful degradation via OSError catch in `_run_cmd`
+  graceful degradation via OSError catch in `_run_cmd`.
 
 ## Bundled Skills
 

@@ -1,5 +1,5 @@
 /**
- * EmbeddedHostBridge — the embedded (remote-pane) half of the option-B
+ * EmbeddedHostBridge — the embedded (remote-pane) half of the
  * consolidated-header relay.
  *
  * When this dashboard SPA runs inside an InstancesViewport <iframe> it has no
@@ -8,8 +8,8 @@
  * of the pane. The parent relays all of that down as a single `mc-host-model`
  * postMessage; this bridge stores it in `instances.host` so the embedded header
  * can render the instance switcher inline (EmbeddedInstanceTabBar) and the
- * readout capsule can show the tunnel refresh countdown (item 1) — collapsing
- * the remote pane's previously-stacked two bars into one.
+ * readout capsule can show the tunnel refresh countdown — collapsing
+ * the remote pane's two bars into one.
  *
  * Security: we only trust messages whose `event.source` is our direct parent
  * (`window.parent`). The parent independently validates the loopback ORIGIN of

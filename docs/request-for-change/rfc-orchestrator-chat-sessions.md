@@ -1,6 +1,27 @@
+---
+title: Orchestrator Chat Sessions — an engineered pipeline with a decision-only agent
+status: in-progress
+revision: v5
+author: kirocrew agent session, directed by zezhexu
+created: 2026-08-03
+last-audited: 2026-08-03
+audited-at: 0ab6ed48
+doc-pr: 1280
+implementation-prs: [1295]
+tracking-issues: []
+supersedes: []
+superseded-by: []
+---
 # RFC: Orchestrator Chat Sessions — an engineered pipeline with a decision-only agent
 
-Status: v5 — post-second-council revision; proposed as design of record
+Status: in-progress — v5, post-second-council revision; accepted as design of record (PR #1280).
+Implementation lives entirely in **open PR #1295** (`feat/crew-mode`): `src/kiro_crew/crew_chat.py`
+does not exist on main, nor does `OrchestratorManager`, the `queue.json`/`topics.json` store, the
+`<<<SUMMARY` contract, `SubagentInfo.summary`, or any Crew Mode i18n key. Phase 0's routing-quality
+probe is zero-core by design and left no repo artifact, so it cannot be confirmed either way.
+Disambiguation: main's existing `orchestrator` symbols (`channel.py:121 is_orchestrator`,
+`config/prompt-orchestrator.md`) are a **pre-existing channel-level feature** that predates this RFC,
+and "Crews" (agent templates, #1331/#1335) is not "Crew Mode". Neither counts as implementation.
 Councils: round 1 (v1 draft, 4-member cross-vendor, REVISE — every structural
 BLOCKER traced to simulating engineering in a prompt) → v4 architecture rewrite
 (heavy engineering, light agent) → round 2 (v4, same roster, unanimous REVISE:

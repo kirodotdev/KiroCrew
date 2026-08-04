@@ -288,6 +288,12 @@ jobs:
             7. FAILURE MODES: behavior when wrong — load, partial failure,
                concurrency, malformed input, dependency outage? No failure story
                on a fallible path is a design risk.
+            8. LONG-TERM REVERSIBILITY (this review OWNS this lens — there is no
+               separate long-term arbiter): how hard is each change to walk back
+               once shipped? Weigh irreversibility, blast radius, and future
+               maintenance cost. An unsafe one-way door with no migration/compat
+               or rollback story is the primary BLOCK trigger; a still-reversible
+               but notable long-term risk is CONCERNS.
 
             DESCRIPTION ↔ DIFF FIDELITY (bidirectional, strict):
             - Description → diff: every claimed behavior/fix must have backing

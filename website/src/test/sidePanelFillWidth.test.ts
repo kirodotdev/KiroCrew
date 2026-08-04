@@ -68,10 +68,10 @@ describe('sidePanelFillWidth', () => {
 })
 
 /**
- * Branch ORDER regression. The mobile arm used to be checked before fillWidth,
- * so a mobile frame got `width: '100%'` and the computed fill width was thrown
- * away. That percentage cannot resolve inside the inline render path's
- * shrink-to-fit `width: auto` wrapper, so the panel rendered at its own
+ * Branch ORDER. fillWidth is checked before the mobile arm: if the mobile arm
+ * ran first, a mobile frame would get `width: '100%'` and discard the computed
+ * fill width. That percentage cannot resolve inside the inline render path's
+ * shrink-to-fit `width: auto` wrapper, so the panel would render at its own
  * max-content width instead of filling the screen.
  */
 describe('sidePanelEffectiveWidth', () => {

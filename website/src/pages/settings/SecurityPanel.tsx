@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
 import { SettingsSection, SettingsCard } from '../../components/settings'
@@ -10,44 +10,107 @@ import { api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRu
 import { PostureDisclosureRow, CODE_BASE as POSTURE_CODE_BASE } from './PostureDisclosure'
 
 import { i18nT } from '../../i18n/t'
+import { fmtTimeNumeric } from '../../i18n/format'
 /* ── Security feature registry ──
  *
  * Qualitative layer descriptions ONLY. Every control whose posture is a COUNT
  * (sensitive paths, denied commands, suspicious patterns, tool schemas,
  * redaction paths, credential families, exfil heuristics, audit surfaces, token
  * auth) is rendered from the live `GET /api/security/posture` registry instead —
- * see `PostureDisclosureRow`. Hardcoded counts here had silently gone stale by
- * several-fold — sensitive paths, bash patterns, redaction paths, and tool
- * schemas were ALL understated — so this list must stay count-free: if a description
- * needs a number, the control belongs in the posture registry.
+ * see `PostureDisclosureRow`. This list must stay count-free: a hardcoded count
+ * here silently goes stale, so if a description needs a number, the control
+ * belongs in the posture registry.
  */
 
+/**
+ * Which defense-in-depth layer a feature belongs to, as a STABLE ID rather than the
+ * badge's display string. The badge text is translated, but `layerColor` still has to
+ * compare something language-independent — it used to `startsWith('Layer 0')`, which
+ * silently loses its colour mapping the moment the label is localised.
+ *
+ * `'auth'` is not a numbered layer: it is the request-authentication surface that sits
+ * across all of them, which is why it is a separate id and not `6`.
+ */
+type SecurityLayer = 0 | 1 | 2 | 3 | 4 | 5 | 'auth'
+
+/** Stable id per feature row — also the React key, so it must not be the label. */
+type SecurityFeatureKey =
+  | 'os_sandbox' | 'sensitive_paths' | 'denied_commands' | 'suspicious_patterns'
+  | 'mcp_validation' | 'credential_redaction' | 'url_exfil' | 'sel_audit'
+  | 'token_auth' | 'csrf' | 'enterprise_grid' | 'observe_mode'
+
 interface SecurityFeature {
+  key: SecurityFeatureKey
   icon: React.ReactNode
-  label: string
-  description: string
-  layer: string
+  layer: SecurityLayer
+}
+
+/**
+ * Catalog KEY for each layer row's name and one-line description.
+ *
+ * Keys, not copy: `FEATURES` is evaluated at module load, so an `i18nT()` call there
+ * would freeze the boot language and never re-resolve on a language switch. The lookup
+ * happens in `FeatureRow`, which runs per render.
+ *
+ * Shaped as flat `Record`s of full literal keys, indexed inline at the `i18nT()` call,
+ * because that is the form `scripts/check-i18n-keys.mjs` can resolve statically — a key
+ * it cannot resolve is a key it cannot verify exists. Same shape as `FILTER_LABEL_KEY`
+ * in `pages/ChatSidebar.tsx` and `EFFORT_LABEL_KEY` in `lib/effort.ts`.
+ */
+export const FEATURE_LABEL_KEY: Record<SecurityFeatureKey, string> = {
+  os_sandbox: 'pages.settings.securityPanel.feature_os_sandbox',
+  sensitive_paths: 'pages.settings.securityPanel.feature_sensitive_paths',
+  // Reuses the Denied Commands SECTION title one card down: same control, same name,
+  // same panel. A second key would be a duplicate the translators pay for twice and
+  // could answer differently.
+  denied_commands: 'pages.settings.securityPanel.denied_commands',
+  suspicious_patterns: 'pages.settings.securityPanel.feature_suspicious_patterns',
+  mcp_validation: 'pages.settings.securityPanel.feature_mcp_validation',
+  credential_redaction: 'pages.settings.securityPanel.feature_credential_redaction',
+  url_exfil: 'pages.settings.securityPanel.feature_url_exfil',
+  sel_audit: 'pages.settings.securityPanel.feature_sel_audit',
+  token_auth: 'pages.settings.securityPanel.feature_token_auth',
+  csrf: 'pages.settings.securityPanel.feature_csrf',
+  enterprise_grid: 'pages.settings.securityPanel.feature_enterprise_grid',
+  observe_mode: 'pages.settings.securityPanel.feature_observe_mode',
+}
+export const FEATURE_DESCRIPTION_KEY: Record<SecurityFeatureKey, string> = {
+  os_sandbox: 'pages.settings.securityPanel.feature_os_sandbox_description',
+  sensitive_paths: 'pages.settings.securityPanel.feature_sensitive_paths_description',
+  denied_commands: 'pages.settings.securityPanel.feature_denied_commands_description',
+  suspicious_patterns: 'pages.settings.securityPanel.feature_suspicious_patterns_description',
+  mcp_validation: 'pages.settings.securityPanel.feature_mcp_validation_description',
+  credential_redaction: 'pages.settings.securityPanel.feature_credential_redaction_description',
+  url_exfil: 'pages.settings.securityPanel.feature_url_exfil_description',
+  sel_audit: 'pages.settings.securityPanel.feature_sel_audit_description',
+  token_auth: 'pages.settings.securityPanel.feature_token_auth_description',
+  csrf: 'pages.settings.securityPanel.feature_csrf_description',
+  enterprise_grid: 'pages.settings.securityPanel.feature_enterprise_grid_description',
+  observe_mode: 'pages.settings.securityPanel.feature_observe_mode_description',
 }
 
 const FEATURES: SecurityFeature[] = [
-  { icon: <Lock size={14} />, label: 'OS-Level Sandbox', description: 'User + mount namespace isolation (Linux) / Seatbelt sandbox (macOS) hides credential paths from agent subprocesses', layer: 'Layer 0' },
-  { icon: <FileWarning size={14} />, label: 'Sensitive Path Blocking', description: 'Credential directories and KiroCrew trust roots blocked at the hook layer before tool execution', layer: 'Layer 1' },
-  { icon: <Terminal size={14} />, label: 'Denied Commands', description: 'Built-in regex patterns blocking destructive and credential-exfiltrating CLI operations (configurable below)', layer: 'Layer 2' },
-  { icon: <AlertTriangle size={14} />, label: 'Suspicious Bash Patterns', description: 'Detects deletion, exfiltration, and pipe-execution attack shapes in shell commands', layer: 'Layer 2' },
-  { icon: <ScanLine size={14} />, label: 'MCP Input Validation', description: 'Type-safe schemas, unicode normalization, length limits, and unknown field rejection on every tool handler', layer: 'Layer 3' },
-  { icon: <KeyRound size={14} />, label: 'Credential Redaction', description: 'Scans every output path for plaintext and base64-encoded AWS keys, private keys, and provider tokens', layer: 'Layer 4' },
-  { icon: <Globe size={14} />, label: 'URL Exfiltration Detection', description: 'Domain-agnostic scanning for suspicious query strings, base64 blobs, and credential patterns in URLs', layer: 'Layer 4' },
-  { icon: <Eye size={14} />, label: 'SEL Audit Logging', description: 'Immutable, HMAC-chained security event trail with credential redaction before forwarding', layer: 'Layer 5' },
-  { icon: <Fingerprint size={14} />, label: 'Dashboard Token Auth', description: 'HMAC-SHA256 signed, IP-pinned, single-use tokens with dual expiry on the link and the session', layer: 'Auth' },
-  { icon: <ShieldCheck size={14} />, label: 'CSRF Protection', description: 'Origin/Referer validation on all POST/PUT/DELETE requests and WebSocket connections', layer: 'Auth' },
-  { icon: <Layers size={14} />, label: 'Enterprise Grid Validation', description: 'Two-layer defense against data exfiltration to personal/external Slack workspaces', layer: 'Auth' },
-  { icon: <EyeOff size={14} />, label: 'Observe Mode Isolation', description: 'Only owner/allowlisted messages recorded in shared channels — prevents context poisoning', layer: 'Auth' },
+  { key: 'os_sandbox', icon: <Lock size={14} />, layer: 0 },
+  { key: 'sensitive_paths', icon: <FileWarning size={14} />, layer: 1 },
+  { key: 'denied_commands', icon: <Terminal size={14} />, layer: 2 },
+  { key: 'suspicious_patterns', icon: <AlertTriangle size={14} />, layer: 2 },
+  { key: 'mcp_validation', icon: <ScanLine size={14} />, layer: 3 },
+  { key: 'credential_redaction', icon: <KeyRound size={14} />, layer: 4 },
+  { key: 'url_exfil', icon: <Globe size={14} />, layer: 4 },
+  { key: 'sel_audit', icon: <Eye size={14} />, layer: 5 },
+  { key: 'token_auth', icon: <Fingerprint size={14} />, layer: 'auth' },
+  { key: 'csrf', icon: <ShieldCheck size={14} />, layer: 'auth' },
+  { key: 'enterprise_grid', icon: <Layers size={14} />, layer: 'auth' },
+  { key: 'observe_mode', icon: <EyeOff size={14} />, layer: 'auth' },
 ]
 
 // Shared with PostureDisclosure so the repo URL lives in exactly one place.
 const CODE_BASE = POSTURE_CODE_BASE
 
-const PINNED_TOOLTIP = "Enforced by your organization's security policy"
+/** Tooltip on every control an enterprise policy pins. A catalog KEY, resolved at each
+ *  of its three render sites for the reason above: at module scope `i18nT()` would
+ *  resolve once at boot. */
+const PINNED_TOOLTIP_KEY = 'pages.settings.securityPanel.pinned_by_policy'
 
 /** Icon per posture-control key. A control the server registers that has no entry
  *  here still renders — with a generic shield — so a new backend control is never
@@ -66,10 +129,19 @@ const POSTURE_ICONS: Record<string, React.ReactNode> = {
 }
 
 /* ── Layer color mapping ── */
-function layerColor(layer: string): 'ok' | 'aim' | 'warn' {
-  if (layer.startsWith('Layer 0') || layer.startsWith('Layer 1')) return 'ok'
-  if (layer === 'Auth') return 'aim'
+function layerColor(layer: SecurityLayer): 'ok' | 'aim' | 'warn' {
+  if (layer === 0 || layer === 1) return 'ok'
+  if (layer === 'auth') return 'aim'
   return 'warn'
+}
+
+/** Badge text for a layer. Two keys rather than seven: the numbered layers differ only
+ *  in the number, so `{{n}}` leaves one string per locale to translate and keeps the
+ *  numbering itself out of the catalogs, where it could drift. */
+function layerLabel(layer: SecurityLayer): string {
+  return layer === 'auth'
+    ? i18nT('pages.settings.securityPanel.layer_auth')
+    : i18nT('pages.settings.securityPanel.layer_n', { n: layer })
 }
 
 /* ── Live status row ── */
@@ -105,10 +177,10 @@ function FeatureRow({ feature }: { feature: SecurityFeature }) {
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{feature.label}</span>
-          <Badge variant={layerColor(feature.layer)}>{feature.layer}</Badge>
+          <span className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{i18nT(FEATURE_LABEL_KEY[feature.key])}</span>
+          <Badge variant={layerColor(feature.layer)}>{layerLabel(feature.layer)}</Badge>
         </div>
-        <div className="text-[12px] text-muted mt-0.5 leading-relaxed">{feature.description}</div>
+        <div className="text-[12px] text-muted mt-0.5 leading-relaxed">{i18nT(FEATURE_DESCRIPTION_KEY[feature.key])}</div>
       </div>
       <CheckCircle2 size={14} className="text-ok shrink-0 mt-1" />
     </div>
@@ -145,7 +217,7 @@ function BuiltinDenyRow({ rule, dimmed, onToggle }: { rule: DeniedCommandRule; d
         {rule.pinned ? (
           <span className="flex items-center gap-1.5 shrink-0">
             <Lock size={13} className="text-muted" />
-            <InfoTip text={PINNED_TOOLTIP} />
+            <InfoTip text={i18nT(PINNED_TOOLTIP_KEY)} />
             <Toggle checked disabled onChange={() => { /* pinned — forced on */ }} label={rule.description} />
           </span>
         ) : (
@@ -281,27 +353,48 @@ function AddDenyInput({ onAdd, busy }: { onAdd: (pattern: string) => void; busy:
 
 /* ── Governance Policy viewer (read-only effective ceiling) ── */
 
-/** Human-readable scope name, e.g. "capabilities.cron" → "Cron",
- *  "filesystem.read" → "Filesystem read", "sandbox.min_level" → "Sandbox". */
+/**
+ * Catalog KEY per governed scope name — `filesystem.read` → "Filesystem read",
+ * `capabilities.cron` → "Cron".
+ *
+ * Keys, not copy, and module-level rather than rebuilt per call: the lookup runs in
+ * `scopeLabel()`, which runs per render, so a language switch re-resolves. Every scope
+ * the backend registers today has an entry here, which is the point — the title-case
+ * fallback below fabricates ENGLISH from a raw scope id, so it renders the same word in
+ * all ten locales. It is now reachable only by a scope a future release adds.
+ */
+export const SCOPE_LABEL_KEY: Record<string, string> = {
+  tools: 'pages.settings.securityPanel.gov_scope_tools',
+  mcp: 'pages.settings.securityPanel.gov_scope_mcp',
+  apps: 'pages.settings.securityPanel.gov_scope_apps',
+  commands: 'pages.settings.securityPanel.gov_scope_commands',
+  channels: 'pages.settings.securityPanel.gov_scope_channels',
+  'filesystem.read': 'pages.settings.securityPanel.gov_scope_filesystem_read',
+  'filesystem.write': 'pages.settings.securityPanel.gov_scope_filesystem_write',
+  'network.egress': 'pages.settings.securityPanel.gov_scope_network_egress',
+  'sandbox.min_level': 'pages.settings.securityPanel.gov_scope_sandbox_level',
+  approval_mode: 'pages.settings.securityPanel.gov_scope_approval_mode',
+  'capabilities.cron': 'pages.settings.securityPanel.gov_scope_cron',
+  'capabilities.spawn': 'pages.settings.securityPanel.gov_scope_spawn',
+  'capabilities.messaging': 'pages.settings.securityPanel.gov_scope_messaging',
+  'capabilities.memory_writes': 'pages.settings.securityPanel.gov_scope_memory_writes',
+  'capabilities.script_hooks': 'pages.settings.securityPanel.gov_scope_script_hooks',
+  'capabilities.theme_persona': 'pages.settings.securityPanel.gov_scope_theme_persona',
+  'capabilities.theme_install': 'pages.settings.securityPanel.gov_scope_theme_install',
+  // Named "Anonymous telemetry", not the leaf's bare "Telemetry": this scope
+  // governs ONLY the outbound anonymous heartbeat. The unrelated
+  // `telemetry.enabled` config field is local-only OTEL collection, and a row
+  // reading just "Telemetry" would imply this ceiling governs that too.
+  'capabilities.telemetry': 'pages.settings.securityPanel.gov_scope_telemetry',
+}
+
+/** Localised scope name. An unknown scope falls back to its title-cased leaf. */
 function scopeLabel(scope: string): string {
-  const SPECIAL: Record<string, string> = {
-    mcp: 'MCP servers',
-    'filesystem.read': 'Filesystem read',
-    'filesystem.write': 'Filesystem write',
-    'network.egress': 'Network egress',
-    'sandbox.min_level': 'Sandbox level',
-    approval_mode: 'Tool approval',
-    'capabilities.memory_writes': 'Memory writes',
-    'capabilities.script_hooks': 'Script hooks',
-    'capabilities.theme_persona': 'Theme persona',
-    'capabilities.theme_install': 'Theme install',
-    // Named "Anonymous telemetry", not the leaf's bare "Telemetry": this scope
-    // governs ONLY the outbound anonymous heartbeat. The unrelated
-    // `telemetry.enabled` config field is local-only OTEL collection, and a row
-    // reading just "Telemetry" would imply this ceiling governs that too.
-    'capabilities.telemetry': 'Anonymous telemetry',
-  }
-  if (SPECIAL[scope]) return SPECIAL[scope]
+  // `hasOwnProperty`, not a truthiness test on the lookup: `scope` arrives from
+  // `GET /api/governance-policy`, so a scope named `toString` or `constructor` would
+  // otherwise resolve to an inherited Object.prototype member and hand a FUNCTION to
+  // i18next and then to JSX. Same hazard as `effortLabel` in `lib/effort.ts`.
+  if (Object.prototype.hasOwnProperty.call(SCOPE_LABEL_KEY, scope)) return i18nT(SCOPE_LABEL_KEY[scope])
   const leaf = scope.includes('.') ? scope.slice(scope.indexOf('.') + 1) : scope
   return leaf.charAt(0).toUpperCase() + leaf.slice(1)
 }
@@ -356,24 +449,61 @@ function effectiveLabel(row: GovernanceScope): string {
 }
 
 /** Plane grouping for the viewer — a clean split by governed surface. */
+type GovPlaneKey = 'access' | 'io' | 'channels' | 'modes' | 'capabilities' | 'other'
 interface GovPlane {
-  key: string
-  title: string
+  key: GovPlaneKey
   icon: React.ReactNode
-  scopes: string[]
 }
 const GOV_PLANES: GovPlane[] = [
-  { key: 'access', title: 'Tools & Commands', icon: <Terminal size={13} />, scopes: ['tools', 'mcp', 'apps', 'commands'] },
-  { key: 'io', title: 'Filesystem & Network', icon: <Globe size={13} />, scopes: ['filesystem.read', 'filesystem.write', 'network.egress'] },
-  { key: 'channels', title: 'Messaging Channels', icon: <MessageSquare size={13} />, scopes: ['channels'] },
-  { key: 'modes', title: 'Enforcement Modes', icon: <Gauge size={13} />, scopes: ['approval_mode', 'sandbox.min_level'] },
-  { key: 'capabilities', title: 'Capabilities', icon: <ToggleRight size={13} />, scopes: [] /* catch-all: every capabilities.* */ },
+  { key: 'access', icon: <Terminal size={13} /> },
+  { key: 'io', icon: <Globe size={13} /> },
+  { key: 'channels', icon: <MessageSquare size={13} /> },
+  { key: 'modes', icon: <Gauge size={13} /> },
+  // Catch-all for every capabilities.* leaf — matched by prefix in `planeRows`,
+  // which is why `SCOPE_PLANE` below lists none of them.
+  { key: 'capabilities', icon: <ToggleRight size={13} /> },
   // Catch-all: any scope a future release (or the companion) registers that
   // matches none of the planes above and is not a capabilities.* leaf. Without
   // it, such a scope would be silently omitted, so the "all scopes" claim would
   // be false. Empty (hidden) on today's build.
-  { key: 'other', title: 'Other governed scopes', icon: <ShieldCheck size={13} />, scopes: [] },
+  { key: 'other', icon: <ShieldCheck size={13} /> },
 ]
+
+/** Catalog KEY per plane header — same resolvable shape as `FEATURE_LABEL_KEY`. */
+export const GOV_PLANE_TITLE_KEY: Record<GovPlaneKey, string> = {
+  access: 'pages.settings.securityPanel.gov_plane_access',
+  io: 'pages.settings.securityPanel.gov_plane_io',
+  channels: 'pages.settings.securityPanel.gov_plane_channels',
+  modes: 'pages.settings.securityPanel.gov_plane_modes',
+  capabilities: 'pages.settings.securityPanel.gov_plane_capabilities',
+  other: 'pages.settings.securityPanel.gov_plane_other',
+}
+
+/**
+ * Plane each explicitly-placed scope belongs to, in display order within the plane
+ * (JS preserves string-key insertion order, and `planeRows` reads the keys in order).
+ *
+ * Written scope → plane, rather than a `scopes: string[]` on each plane, so every scope
+ * id sits in property-NAME position. These ids are `GET /api/governance-policy` contract
+ * values, never copy, and as bare array elements the i18n lint reports `'approval_mode'`
+ * as an untranslated string — correctly, by its own shape rules, since it cannot know
+ * the difference. This shape states the intent instead of suppressing the finding.
+ *
+ * `capabilities.*` is absent by design: that plane is matched by prefix below, so an
+ * entry here would place the scope twice.
+ */
+const SCOPE_PLANE: Record<string, GovPlaneKey> = {
+  tools: 'access',
+  mcp: 'access',
+  apps: 'access',
+  commands: 'access',
+  'filesystem.read': 'io',
+  'filesystem.write': 'io',
+  'network.egress': 'io',
+  channels: 'channels',
+  approval_mode: 'modes',
+  'sandbox.min_level': 'modes',
+}
 
 /** Short badge naming WHERE a governed scope's ceiling comes from. Rendered for
  *  every governed row (not just the composed case) so the viewer's source-
@@ -410,7 +540,7 @@ function GovernanceRow({ row }: { row: GovernanceScope }) {
                 narrow (mobile) widths rather than overflowing; the full value
                 stays available via the title tooltip. */}
             <span className="text-[12px] text-text-strong text-right truncate" title={label}>{label}</span>
-            <InfoTip text={PINNED_TOOLTIP} />
+            <InfoTip text={i18nT(PINNED_TOOLTIP_KEY)} />
           </>
         ) : (
           <span className="text-[12px] text-muted italic shrink-0">{i18nT('pages.settings.securityPanel.not_restricted')}</span>
@@ -421,6 +551,103 @@ function GovernanceRow({ row }: { row: GovernanceScope }) {
 }
 
 /** Read-only viewer: the effective governance ceiling across every scope. */
+/* ── Ad-hoc auto-approve duration ── */
+
+interface KirocrewCfgShape { agent?: { yolo_duration?: string } }
+
+const YOLO_DURATION_KEYS = ['30m', '1h', '6h', '12h', '24h', 'until_shutdown'] as const
+type YoloDurationKey = (typeof YOLO_DURATION_KEYS)[number]
+
+/** How long auto-approve lasts when it is turned on AD HOC — from the dashboard
+ *  picker, Slack, or the API. All of those share this one value; the separate
+ *  per-surface timers are gone. `until_shutdown` is disabled + lock-badged when
+ *  an enterprise policy forbids it (status.yolo_until_shutdown_permitted ===
+ *  false), the same ceiling the backend clamps at the source.
+ *
+ *  Deliberately does NOT expose the never-expiring DECLARED grant
+ *  (agent.dangerouslySkipPermissions) — that stays config-file-only. */
+function YoloDurationCard() {
+  const qc = useQueryClient()
+  const status = useAppSelector(s => s.dashboard.status)
+  const untilShutdownPermitted = status?.yolo_until_shutdown_permitted ?? true
+  const { data } = useQuery<KirocrewCfgShape>({ queryKey: ['kirocrewConfig'], queryFn: api.kirocrewConfig })
+  const configured = data?.agent?.yolo_duration
+  const current: YoloDurationKey =
+    YOLO_DURATION_KEYS.find(k => k === configured) ?? '6h'
+  const save = useMutation({
+    mutationFn: (v: string) => api.patchConfig('agent.yolo_duration', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+  })
+
+  // Live "when does this end" line, so a no-expiry grant is never mistaken for
+  // a bounded one.
+  let activeNote: string | null = null
+  if (status?.yolo) {
+    if (status.yolo_until_shutdown) {
+      activeNote = i18nT('pages.settings.securityPanel.yolo_active_until_restart')
+    } else if (status.yolo_expires_at) {
+      activeNote = i18nT('pages.settings.securityPanel.yolo_active_expires_at', {
+        time: fmtTimeNumeric(status.yolo_expires_at),
+      })
+    }
+  }
+
+  function optionLabel(k: YoloDurationKey): string {
+    switch (k) {
+      case '30m': return i18nT('pages.settings.securityPanel.yolo_duration_30m')
+      case '1h': return i18nT('pages.settings.securityPanel.yolo_duration_1h')
+      case '6h': return i18nT('pages.settings.securityPanel.yolo_duration_6h')
+      case '12h': return i18nT('pages.settings.securityPanel.yolo_duration_12h')
+      case '24h': return i18nT('pages.settings.securityPanel.yolo_duration_24h')
+      default: return i18nT('pages.settings.securityPanel.yolo_duration_until_shutdown')
+    }
+  }
+
+  return (
+    <SettingsCard>
+      <div className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.yolo_duration_title')}</div>
+      <div className="text-[12px] text-muted mt-0.5 mb-2 leading-relaxed">{i18nT('pages.settings.securityPanel.yolo_duration_desc')}</div>
+      {activeNote && (
+        <div className="text-[12px] text-accent mb-2 flex items-center gap-1">
+          <Clock size={12} className="shrink-0" />{activeNote}
+        </div>
+      )}
+      <div className="flex flex-col gap-1.5" role="radiogroup" aria-label={i18nT('pages.settings.securityPanel.yolo_duration_title')}>
+        {YOLO_DURATION_KEYS.map(k => {
+          const selected = current === k
+          const disabled = k === 'until_shutdown' && !untilShutdownPermitted
+          return (
+            <button
+              key={k}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={disabled || save.isPending}
+              onClick={() => { if (!disabled && !selected) save.mutate(k) }}
+              className={`flex items-center gap-2.5 text-left rounded-md border px-3 py-2 transition-colors bg-transparent cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${selected ? 'border-accent bg-accent-subtle' : 'border-border hover:bg-bg-hover'}`}
+            >
+              <span className="shrink-0">
+                {selected ? <CheckCircle2 size={14} className="text-accent" /> : <Circle size={14} className="text-muted" />}
+              </span>
+              <span className="text-[12px] text-text flex-1">{optionLabel(k)}</span>
+              {disabled && (
+                <span className="text-[11px] text-muted flex items-center gap-1">
+                  <Lock size={11} className="shrink-0" />
+                  {i18nT('pages.settings.securityPanel.yolo_duration_locked')}
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+      <div className="text-[11px] text-muted mt-2">{i18nT('pages.settings.securityPanel.yolo_duration_next_activation_note')}</div>
+      {save.isError && (
+        <div className="text-[12px] text-danger mt-1.5">{i18nT('pages.settings.securityPanel.failed_to_save_yolo_duration')}</div>
+      )}
+    </SettingsCard>
+  )
+}
+
 function GovernancePolicyViewer() {
   const { data, isLoading, isError } = useQuery<GovernancePolicyData>({
     queryKey: ['governance-policy'],
@@ -451,7 +678,7 @@ function GovernancePolicyViewer() {
   // matched by no explicit plane (e.g. a companion-registered scope) so the
   // "all scopes" claim can never silently drop a row.
   const planeRows = useMemo(() => {
-    const explicit = new Set(GOV_PLANES.flatMap(p => p.scopes))
+    const explicit = new Set(Object.keys(SCOPE_PLANE))
     const all = data?.scopes ?? []
     return GOV_PLANES.map(plane => {
       let rows: GovernanceScope[]
@@ -460,7 +687,10 @@ function GovernancePolicyViewer() {
       } else if (plane.key === 'other') {
         rows = all.filter(s => !explicit.has(s.scope) && !s.scope.startsWith('capabilities.'))
       } else {
-        rows = plane.scopes.map(sc => byScope.get(sc)).filter((s): s is GovernanceScope => !!s)
+        rows = Object.keys(SCOPE_PLANE)
+          .filter(sc => SCOPE_PLANE[sc] === plane.key)
+          .map(sc => byScope.get(sc))
+          .filter((s): s is GovernanceScope => !!s)
       }
       return { plane, rows }
     })
@@ -510,7 +740,7 @@ function GovernancePolicyViewer() {
               <div key={plane.key} className="border-t border-border first:border-t-0 pt-1.5 mt-1.5 first:mt-0 first:pt-0">
                 <div className="flex items-center gap-1.5 py-1">
                   <span className="text-muted">{plane.icon}</span>
-                  <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted">{plane.title}</span>
+                  <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted">{i18nT(GOV_PLANE_TITLE_KEY[plane.key])}</span>
                 </div>
                 <div className="divide-y divide-border">
                   {rows.map(row => <GovernanceRow key={row.scope} row={row} />)}
@@ -709,6 +939,10 @@ export function SecurityPanel() {
       </SettingsSection>
 
       {/* ── Governance Policy (read-only effective ceiling) ── */}
+      <SettingsSection title={i18nT('pages.settings.securityPanel.yolo_auto_approve')}>
+        <YoloDurationCard />
+      </SettingsSection>
+
       <GovernancePolicyViewer />
 
       {/* ── Denied Commands ── */}
@@ -733,7 +967,7 @@ export function SecurityPanel() {
                 opting every OTHER (unpinned) rule out. When locked, show the
                 pinned-policy tooltip alongside the still-functional toggle. */}
             <span className="flex items-center gap-1.5 shrink-0">
-              {governanceLocked && <InfoTip text={PINNED_TOOLTIP} />}
+              {governanceLocked && <InfoTip text={i18nT(PINNED_TOOLTIP_KEY)} />}
               <Toggle checked={disableAll} onChange={onDisableAllToggle} disabled={!dc} label={i18nT('pages.settings.securityPanel.disable_all_built_in_denies')} />
             </span>
           </div>
@@ -816,7 +1050,7 @@ export function SecurityPanel() {
             {i18nT('pages.settings.securityPanel.kirocrew_implements_6_security_layers_each_layer')}
           </div>
           <div className="divide-y divide-border">
-            {FEATURES.map(f => <FeatureRow key={f.label} feature={f} />)}
+            {FEATURES.map(f => <FeatureRow key={f.key} feature={f} />)}
           </div>
         </SettingsCard>
       </SettingsSection>

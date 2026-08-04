@@ -38,7 +38,7 @@ from kiro_crew.sel import sel
 @dataclass
 class DiscordInboundMessage(InboundMessage):
     """Inbound message enriched with the raw Discord message id so a mid-turn
-    steer can ack via reaction on the user's message (mirrors Telegram's M1).
+    steer can ack via reaction on the user's message (mirrors Telegram).
 
     Discord-local: the neutral ``InboundMessage`` stays unchanged; consumers
     read the id via ``getattr(msg, "message_id", "")``.

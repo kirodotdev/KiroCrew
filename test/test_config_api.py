@@ -528,3 +528,38 @@ class TestAgentCrudEdgeCases:
                     assert resp.status == 400
         finally:
             tmp.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_crud_triggers_create_and_update_round_trip() -> None:
+    """`triggers` persists through create + update and appears in the agents list."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(_seed_config(), f)
+        tmp = Path(f.name)
+    try:
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            async with TestClient(TestServer(_make_crud_app())) as client:
+                # Create carrying triggers
+                resp = await client.post(
+                    "/api/agents",
+                    json={
+                        "name": "oncall",
+                        "kiro_agent": "kirocrew",
+                        "triggers": "incident, prod outage, pager escalation",
+                    },
+                )
+                assert resp.status == 200
+
+                resp = await client.get("/api/agents")
+                by_name = {a["name"]: a for a in (await resp.json())["agents"]}
+                assert by_name["oncall"]["triggers"] == "incident, prod outage, pager escalation"
+
+                # Update the triggers only
+                resp = await client.put("/api/agents/oncall", json={"triggers": "sev2, sev1, page"})
+                assert resp.status == 200
+
+                resp = await client.get("/api/agents")
+                by_name = {a["name"]: a for a in (await resp.json())["agents"]}
+                assert by_name["oncall"]["triggers"] == "sev2, sev1, page"
+    finally:
+        tmp.unlink(missing_ok=True)

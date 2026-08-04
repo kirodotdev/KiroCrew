@@ -5,10 +5,9 @@
  *
  * The artifact page renders markdown highlights with the DOM-rect overlay
  * (`InlineCommentOverlay`), which consumes these helpers — one reliable
- * mechanism everywhere. (An earlier revision painted markdown via the CSS
- * Custom Highlight API; that path was retired because it does not paint
- * reliably in the dashboard browser and can't do the overlay's box-shadow /
- * persistent active state.)
+ * mechanism everywhere. A DOM-rect overlay is used rather than the CSS Custom
+ * Highlight API because that API does not paint reliably in the dashboard
+ * browser and can't do the overlay's box-shadow / persistent active state.
  */
 
 export interface AnchoredComment {
@@ -57,8 +56,8 @@ function locate(
  *  when the comment stored a `startOffset` — the occurrence nearest that offset.
  *  The offset pins the exact copy the user selected, which fixes repeats that
  *  prefix/suffix can't tell apart (identical surrounding context, or no
- *  prefix/suffix stored at all). Without an offset, behaviour is unchanged:
- *  prefix/suffix score, ties resolve to the first occurrence. Mirrors the
+ *  prefix/suffix stored at all). Without an offset, prefix/suffix score decides
+ *  and ties resolve to the first occurrence. Mirrors the
  *  in-iframe bridge's `findRange`. Exported for tests. */
 export function rangeForAnchor(
   idx: { text: string; nodes: { node: Text; start: number }[] },
@@ -80,7 +79,7 @@ export function rangeForAnchor(
     if (a.suffix && suf.includes(a.suffix)) score++
     // Distance to the stored selection offset (0 for all occurrences when no
     // offset was recorded, so the prefix/suffix score alone decides and ties
-    // keep the first occurrence — the pre-offset behaviour).
+    // keep the first occurrence).
     const dist = a.startOffset == null ? 0 : Math.abs(i - a.startOffset)
     if (score > bestScore || (score === bestScore && dist < bestDist)) {
       best = i

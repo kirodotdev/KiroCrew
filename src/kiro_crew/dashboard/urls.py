@@ -416,10 +416,9 @@ def build_allowed_origins(
             origins.add(_co.strip())
     # Extra loopback ports the operator explicitly trusts — typically the
     # local end of an SSH tunnel (``-L 8777:localhost:7777`` makes the browser
-    # send Origin ``http://localhost:8777``). This replaces the previous
-    # blanket "trust any loopback port" behaviour (CSE SEC-016): only the bound
-    # port and these opted-in ports are accepted, so a malicious local web page
-    # on an arbitrary port can no longer pass the CSRF origin check.
+    # send Origin ``http://localhost:8777``). Only the bound port and these
+    # opted-in ports are accepted, so a malicious local web page on an
+    # arbitrary port cannot pass the CSRF origin check.
     for _p in os.environ.get("KIROCREW_ALLOWED_LOOPBACK_PORTS", "").split(","):
         _p = _p.strip()
         if _p.isdigit():

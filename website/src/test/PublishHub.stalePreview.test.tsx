@@ -66,7 +66,6 @@ describe('PublishHub stale_preview digest flow (F4 R15)', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     )
 
-    // Click Publish
     const publishBtns = screen.getAllByRole('button')
     const publishBtn = publishBtns.find(b => b.textContent?.includes('Publish') && !b.textContent?.includes('Close'))
     fireEvent.click(publishBtn!)
@@ -78,7 +77,6 @@ describe('PublishHub stale_preview digest flow (F4 R15)', () => {
     // Mock confirm call → 409 stale_preview
     fetchSpy.mockImplementationOnce(async (_url, init) => {
       const body = JSON.parse((init as RequestInit).body as string)
-      // Verify expected_content_digest is sent
       expect(body.expected_content_digest).toBe('abc123deadbeef')
       expect(body.confirm).toBe(true)
       return new Response(JSON.stringify({
@@ -89,7 +87,6 @@ describe('PublishHub stale_preview digest flow (F4 R15)', () => {
 
     fireEvent.click(screen.getByText('Confirm & Publish'))
 
-    // Should show error message about stale content
     await waitFor(() => {
       expect(screen.getByText(/Content changed since preview/)).toBeDefined()
     })

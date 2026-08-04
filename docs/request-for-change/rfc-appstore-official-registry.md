@@ -1,8 +1,21 @@
+---
+title: Official App Registry + Editorial Feed
+status: accepted
+author: KiroCrew contributors
+created: 2026-07-29
+last-audited: 2026-08-03
+audited-at: 0ab6ed48
+doc-pr: 807
+implementation-prs: []
+tracking-issues: [581]
+supersedes: []
+superseded-by: []
+---
 # RFC: Official App Registry + Editorial Feed
 
 **Author:** KiroCrew contributors
 **Date:** 2026-07-29
-**Status:** Draft
+**Status:** accepted — design decisions are locked and rollout step R1 has merged **in the sibling `kirodotdev/KiroCrewApps` repo** (PRs #1, #2). Zero client-side deliverables exist in KiroCrew: the `_registry` → `_tier` refactor (R2), the official fetch + signature gate + tombstones + tagged `source` union (R3), and editorial-driven Discover (R4) are all unstarted, and `pickFeatured()` / `categoryFor` / `detectInstalled` are each still the live path. Scoped strictly to this repo the status is `draft`.
 
 ---
 

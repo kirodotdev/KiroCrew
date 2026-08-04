@@ -9,7 +9,7 @@ const wrapper = ({ children }: { children: ReactNode }) => (
 )
 
 /**
- * Tests for the Search Everywhere palette (step 12):
+ * Tests for the Search Everywhere palette:
  *  - {@link useCommandPalette} global trigger (⌘K / Ctrl+K + double-Shift), and
  *  - the {@link CommandPalette} modal's open render, Tab tab-scoping, Enter
  *    activation, and close paths (Escape wiring + close button + row click).
@@ -80,7 +80,7 @@ const H = vi.hoisted(() => {
   const pagesProvider = { id: 'pages', label: 'Pages', icon: null, search: vi.fn(() => []) }
   const actionsProvider = { id: 'actions', label: 'Actions', icon: null, search: vi.fn(() => []) }
   // P1 providers (Knowledge · Skills · Prompts) — wired into CommandPalette as
-  // direct hooks at steps 17/18. Mock them with stable, empty-search providers
+  // direct hooks. Mock them with stable, empty-search providers
   // so the modal renders without React-Query / Router (matching the P0 mocks).
   const knowledgeProvider = { id: 'knowledge', label: 'Knowledge', icon: null, search: vi.fn(() => []) }
   const skillsProvider = { id: 'skills', label: 'Skills', icon: null, search: vi.fn(() => []) }
@@ -193,6 +193,7 @@ vi.mock('../store', () => ({
 import CommandPalette from './CommandPalette'
 import { useCommandPalette, DOUBLE_SHIFT_WINDOW_MS } from '../hooks/useCommandPalette'
 import { SHORTCUTS_ENABLED_KEY } from '../hooks/useKeyboardShortcuts'
+import { QUICK_SEARCH_SHORTCUT_KEY } from '../lib/quickSearchShortcut'
 import type { Result } from './commandPalette/types'
 
 afterEach(() => {
@@ -330,6 +331,62 @@ describe('useCommandPalette — Enable shortcuts toggle', () => {
       fireEvent.keyDown(window, { key: 'Shift' })
       fireEvent.keyDown(window, { key: 'Shift' })
     })
+    expect(result.current.open).toBe(true)
+  })
+})
+
+describe('useCommandPalette — configurable activation', () => {
+  // jsdom localStorage is shared across the file; clear the preference so a
+  // mode set here can't leak into later suites, and vice versa.
+  afterEach(() => {
+    localStorage.removeItem(QUICK_SEARCH_SHORTCUT_KEY)
+    localStorage.removeItem(SHORTCUTS_ENABLED_KEY)
+  })
+
+  it('default (unconfigured) preserves BOTH double-Shift and the ⌘K alias', () => {
+    // Backward compatibility: with nothing stored, the shipped behavior stands.
+    const a = renderHook(() => useCommandPalette())
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Shift' })
+      fireEvent.keyDown(window, { key: 'Shift' })
+    })
+    expect(a.result.current.open).toBe(true)
+    a.unmount()
+
+    const b = renderHook(() => useCommandPalette())
+    act(() => { fireEvent.keyDown(window, { key: 'k', metaKey: true }) })
+    expect(b.result.current.open).toBe(true)
+  })
+
+  it('mod-k mode: ⌘K/Ctrl+K toggles, but double-Shift no longer opens', () => {
+    localStorage.setItem(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify({ mode: 'mod-k' }))
+    const { result } = renderHook(() => useCommandPalette())
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Shift' })
+      fireEvent.keyDown(window, { key: 'Shift' })
+    })
+    expect(result.current.open).toBe(false)
+    act(() => { fireEvent.keyDown(window, { key: 'k', ctrlKey: true }) })
+    expect(result.current.open).toBe(true)
+  })
+
+  it('custom mode: the recorded chord toggles; double-Shift and the ⌘K alias are off', () => {
+    // Non-mac test env, so the `mod` chord resolves to Ctrl.
+    localStorage.setItem(
+      QUICK_SEARCH_SHORTCUT_KEY,
+      JSON.stringify({ mode: 'custom', custom: { key: 'p', mod: true } }),
+    )
+    const { result } = renderHook(() => useCommandPalette())
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Shift' })
+      fireEvent.keyDown(window, { key: 'Shift' })
+    })
+    expect(result.current.open).toBe(false)
+    // The ⌘K/Ctrl+K alias is suppressed once a custom chord is bound.
+    act(() => { fireEvent.keyDown(window, { key: 'k', ctrlKey: true }) })
+    expect(result.current.open).toBe(false)
+    // The custom chord (Ctrl+P here) toggles the palette.
+    act(() => { fireEvent.keyDown(window, { key: 'p', code: 'KeyP', ctrlKey: true }) })
     expect(result.current.open).toBe(true)
   })
 })
@@ -481,8 +538,7 @@ describe('CommandPalette — keyboard & activation', () => {
 })
 
 /**
- * Per-type Enter matrix — central {@link dispatchEnter} routing (§2,
- * task 28).
+ * Per-type Enter matrix — central {@link dispatchEnter} routing (§2).
  *
  * Drives the palette's active (All) tab to render exactly one fixture result
  * carrying a declarative `EnterAction`, then fires the shared hook's
@@ -568,9 +624,9 @@ describe('CommandPalette — per-type Enter matrix (dispatchEnter routing)', () 
   })
 
   it('Skills: Enter navigates to the skills catalog (palette-as-nav) and closes', async () => {
-    // Skills rows are a NAVIGATION target now — Enter opens /capabilities to
+    // Skills rows are a NAVIGATION target — Enter opens /capabilities to
     // view/edit the skill rather than inserting a $token (there is no
-    // per-skill deep link yet). Supersedes the old insert-token contract.
+    // per-skill deep link yet).
     const { onClose } = await mountWith(
       fixture({
         title: 'Skill Row',

@@ -1,5 +1,5 @@
 /**
- * Settings > Developer tab (DeveloperPanel, renamed from GeneralPanel).
+ * Settings > Developer tab (DeveloperPanel).
  *
  * Contract under test:
  * - Developer Mode toggle persists to localStorage and fires the dev-mode event

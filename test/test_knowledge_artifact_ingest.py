@@ -379,3 +379,86 @@ class TestGroupLabelAndRename:
             "SELECT name FROM artifact_item_state WHERE source_id = ? AND slug = ?",
             (sid, art.slug)).fetchone()
         assert row["name"] == "After"
+
+
+class TestKindChangeReconciliation:
+    """A kind change is what decides Knowledge eligibility, so it has to be
+    reconciled rather than skipped.
+
+    ``ingest_artifact`` early-returns on an ineligible kind. That is right for a
+    backfill sweep, but wrong for a *change*: an artifact ingested as markdown and
+    then switched to svg would keep answering searches from prose that no longer
+    describes it. The dashboard now lets a user change the type directly, so this
+    transition is reachable from the UI rather than only from a widget pull.
+    """
+
+    @pytest.mark.asyncio
+    async def test_becoming_ineligible_removes_the_stale_chunks(
+        self, kstore, pipeline, art_store
+    ) -> None:
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        art = art_store.create(name="Doc", content="hello body", kind="markdown")
+        await sync._handle("upsert", art.slug)
+        sid = kstore.get_source_by_uri(ARTIFACT_SOURCE_URI)["id"]
+        assert any("hello body" in c for c in _contents(kstore, sid))
+
+        # svg is excluded from the eligible kinds (.svg is not a reader format).
+        art_store.update(art.slug, kind="svg")
+        await sync._handle("upsert", art.slug)
+        assert _contents(kstore, sid) == []
+
+    @pytest.mark.asyncio
+    async def test_becoming_eligible_ingests_it(self, kstore, pipeline, art_store) -> None:
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        art = art_store.create(name="Doc", content="hello body", kind="svg")
+        await sync._handle("upsert", art.slug)
+        sid = kstore.get_source_by_uri(ARTIFACT_SOURCE_URI)["id"]
+        assert _contents(kstore, sid) == []
+
+        art_store.update(art.slug, kind="markdown")
+        await sync._handle("upsert", art.slug)
+        assert any("hello body" in c for c in _contents(kstore, sid))
+
+    @pytest.mark.asyncio
+    async def test_a_vanished_artifact_is_not_an_error(
+        self, kstore, pipeline, art_store
+    ) -> None:
+        """The event is processed asynchronously, so the artifact may already be
+        gone by the time it lands."""
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        await sync._handle("upsert", "never-existed")
+
+
+class TestKindChangeFiresAnEvent:
+    """The store has to REPORT a kind change; without the event the listener
+    above never runs and the index silently keeps the old chunks."""
+
+    def test_a_kind_only_update_fires_upsert(self, art_store) -> None:
+        art = art_store.create(name="Doc", content="body", kind="markdown")
+        seen: list[tuple[str, str]] = []
+        art_store.set_change_listener(lambda action, slug: seen.append((action, slug)))
+        art_store.update(art.slug, kind="svg")
+        assert seen == [("upsert", art.slug)]
+
+    def test_a_no_op_kind_update_fires_nothing(self, art_store) -> None:
+        """Re-selecting the kind it already has is not a change to reconcile."""
+        art = art_store.create(name="Doc", content="body", kind="markdown")
+        seen: list[tuple[str, str]] = []
+        art_store.set_change_listener(lambda action, slug: seen.append((action, slug)))
+        art_store.update(art.slug, kind="markdown")
+        assert seen == []
+
+    def test_a_rename_alongside_a_kind_change_still_reingests(self, art_store) -> None:
+        """Upsert has to win over the rename-only path: a rename event refreshes
+        the label without re-chunking, which would leave the stale chunks."""
+        art = art_store.create(name="Doc", content="body", kind="markdown")
+        seen: list[tuple[str, str]] = []
+        art_store.set_change_listener(lambda action, slug: seen.append((action, slug)))
+        art_store.update(art.slug, name="Renamed", kind="svg")
+        assert seen == [("upsert", art.slug)]

@@ -47,7 +47,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 from typing import List as _List
 
-from kiro_crew.config.loader import config_dir
+from kiro_crew import hooks
+from kiro_crew.artifact_source import is_verifiable_root
+from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API compatibility
     WebAppArchitecture,
     WebAppCost,
@@ -82,6 +84,14 @@ MAX_CONTENT_BYTES = 26_214_400  # 25 MiB
 #: Maximum length of human-readable name / description fields.
 MAX_NAME_LEN = 200
 MAX_DESCRIPTION_LEN = 2_000
+
+#: Maximum length of a file-backed artifact's ``source_path`` / ``source_root``.
+#: These are REJECTED past the cap rather than truncated: a truncated path is a
+#: different path — usually a nonexistent one — so silently storing it produced
+#: an artifact whose live pointer could never resolve, which is precisely the
+#: dead-pointer failure ``source_missing`` exists to expose. Comfortably above
+#: PATH_MAX on the platforms we support for any realistic project layout.
+MAX_SOURCE_PATH_LEN = 512
 
 #: Retention cap for auto-registered widget artifacts (see
 #: :mod:`kiro_crew.widget_artifacts`). Every chat-emitted ``<mcwidget>`` becomes
@@ -311,6 +321,16 @@ class Artifact:
     slug: str
     name: str
     kind: str = "widget"
+    #: True when ``kind`` was assigned by the store rather than chosen by the
+    #: caller. Set only for a document created BLANK — no content to sniff and
+    #: no pinned kind — which is the library's "New artifact" action. While it
+    #: stays true, every content write re-runs :func:`detect_editor_kind` so the
+    #: document can settle into ``json`` / ``svg`` once the user has typed
+    #: enough to tell what it is. Passing an explicit ``kind`` to
+    #: :meth:`ArtifactStore.update` pins the kind and clears this flag.
+    #: Tolerant-loaded: every artifact that predates the field defaults to
+    #: ``False`` and is therefore never re-typed.
+    kind_auto: bool = False
     source: str = "chat"
     description: str = ""
     tags: _List[str] = field(default_factory=list)
@@ -326,6 +346,34 @@ class Artifact:
     #: re-saved (re-saving offers to bump the existing
     #: artifact's version rather than creating a parallel one).
     source_path: str = ""
+    #: The validated directory that authorizes reads of ``source_path`` — the
+    #: project root (or git repo root) a promoted file was linked from. Empty
+    #: for chat-backed artifacts and for copied (snapshot) promotions.
+    #:
+    #: Recorded at CREATE time on purpose: :class:`ArtifactStore` re-validates
+    #: root containment on every read, but it has no session handle then and so
+    #: cannot ask "what project is open?". Without a recorded root, a linked
+    #: file outside ``$HOME`` (e.g. ``/workplace/user/repo/doc.md``) is refused
+    #: on read and the artifact silently serves its stale snapshot instead.
+    #: Added to the allowed-roots set by :meth:`allowed_source_roots`; the
+    #: sensitive-path denylist still applies inside it.
+    source_root: str = ""
+    #: True when ``source_path`` is PROVENANCE ONLY -- the artifact owns a COPY
+    #: of the bytes, so reads never touch the file and content writes are never
+    #: mirrored back to it.
+    #:
+    #: Two different questions were being collapsed into one, and that broke one
+    #: of them. Dropping ``source_path`` on a copy (to avoid the dead-pointer
+    #: bug, where a linked file outside the authorized root is refused and the
+    #: stale snapshot is served as though healthy) also dropped the only key
+    #: :meth:`find_by_source_path` dedups on, so promoting the same disposable
+    #: file twice minted a duplicate artifact. Recording the path but gating
+    #: liveness here keeps dedup identity AND real copy semantics.
+    #:
+    #: Defaults to False so every pre-existing ``source_path`` producer
+    #: (``/materialize``, ``/relocate``, a direct ``store.create``) keeps
+    #: today's live-pointer behaviour; only the copy verdict opts in.
+    source_copy_only: bool = False
     #: Nested-folder membership. ``""`` = unfiled (library root).
     #: An opaque folder id (see :class:`ArtifactFolderStore`), never a path —
     #: so renaming a folder never rewrites artifact records. Setting it is a
@@ -378,6 +426,15 @@ class Artifact:
     #: cases where a file-backed artifact's source changed externally
     #: between the last snapshot and now. Not persisted; set by ``get()``.
     live_dirty: bool = False
+    #: Computed at GET time: True when this artifact has a ``source_path`` but
+    #: the live read of it FAILED — the file was deleted or moved, is no longer
+    #: readable, or resolves outside the roots that authorize it. The store
+    #: falls back to the last snapshot in that case so the artifact stays
+    #: viewable, which used to make a dead pointer indistinguishable from a
+    #: healthy one (``live_dirty`` was computed against the fallback and so
+    #: read "in sync"). This field is the signal that the pointer is dead.
+    #: Not persisted; set by ``get()`` — same contract as ``live_dirty``.
+    source_missing: bool = False
     #: Structured metadata for ``kind="webapp"`` artifacts — a deployed application
     #: (deploy target, architecture, lifecycle/TTL, cost estimate, teardown handle).
     #: ``None`` for every other kind. Tolerant-loaded from meta.json.
@@ -387,9 +444,9 @@ class Artifact:
         """Render as a JSON-friendly dict, optionally including the content blob.
 
         ``persist=True`` strips fields that should never be written to
-        meta.json (currently ``live_dirty`` — it's computed at GET time
-        and persisting it would leave stale values lying around when the
-        live state changes via a path the store didn't observe).
+        meta.json (``live_dirty`` and ``source_missing`` — both are computed at
+        GET time and persisting them would leave stale values lying around when
+        the live state changes via a path the store didn't observe).
         """
         d = asdict(self)
         if not include_content:
@@ -400,6 +457,10 @@ class Artifact:
             # bugs (e.g. silent save flips it to True, but we'd write False
             # if the meta is touched again before a snapshot).
             d.pop("live_dirty", None)
+            # source_missing is the same class of field: a stale "True" would
+            # keep flagging a dead pointer after the file came back (and a
+            # stale "False" would hide one that just died).
+            d.pop("source_missing", None)
         return d
 
 
@@ -440,6 +501,16 @@ def _validate_slug(slug: str) -> str:
     return slug
 
 
+#: Kinds a HUMAN may select for an artifact from the dashboard's type control.
+#: A strict subset of :data:`ALLOWED_KINDS`, and deliberately the same set the
+#: frontend's ``isEditableKind`` treats as inline-editable: ``widget`` / ``html``
+#: render in a sandboxed iframe with no editor, so offering them would let the
+#: user strand the document they are typing in, and ``webapp`` carries deploy
+#: metadata that a hand-flip would desynchronise. Agents and importers still
+#: reach the full :data:`ALLOWED_KINDS` set; this bounds the UI surface only.
+USER_SELECTABLE_KINDS = frozenset({"markdown", "text", "json", "svg"})
+
+
 def _validate_kind(kind: str) -> str:
     if kind not in ALLOWED_KINDS:
         raise ArtifactValidationError(
@@ -474,6 +545,54 @@ _HTML_SNIFF_MARKERS = (
 
 #: A leading markdown ATX heading (``#`` .. ``######`` followed by whitespace).
 _MD_HEADING_RE = re.compile(r"^#{1,6}\s")
+
+#: An ``<svg>`` document root, optionally preceded by an XML declaration and/or
+#: an SVG doctype. Anchored so a stray ``<svg>`` in the middle of a markdown
+#: document never re-types it.
+_SVG_ROOT_RE = re.compile(
+    r"^(?:<\?xml[^>]*\?>\s*|<!DOCTYPE\s+svg[^>]*>\s*)*<svg[\s>]",
+    re.IGNORECASE,
+)
+
+
+def detect_editor_kind(content: str) -> str | None:
+    """Detect the structured kind of hand-authored ``content``, or ``None``.
+
+    Used by :meth:`ArtifactStore.update` to re-type a document that was created
+    blank (``kind_auto``) once its content becomes recognizable. It only ever
+    returns an **editable** kind — ``json`` or ``svg`` — and returns ``None``
+    for anything it cannot positively identify.
+
+    Two deliberate exclusions:
+
+    * ``html`` / ``widget`` are never returned. Both render in a sandboxed
+      iframe and are NOT inline-editable (see ``isEditableKind`` on the
+      frontend), so promoting a document the user is *typing in* to either one
+      would rip the editor away mid-sentence. Markdown passes raw HTML through
+      to its renderer anyway, so a hand-written HTML document still renders
+      while staying editable.
+    * a bare JSON scalar (``42``, ``true``, a quoted string) is valid JSON but
+      far more likely to be prose, so only a whole document parsing as an
+      object or an array counts.
+
+    Returning ``None`` rather than ``"markdown"`` for unrecognized content is
+    what makes re-typing stable: a JSON document left mid-edit with a syntax
+    error detects as nothing and keeps the kind it already had, instead of
+    flapping back to markdown on every save.
+    """
+    sniff = (content or "").strip()
+    if not sniff:
+        return None
+    if _SVG_ROOT_RE.match(sniff):
+        return "svg"
+    if sniff[0] in "{[":
+        try:
+            parsed = json.loads(sniff)
+        except ValueError:
+            return None
+        if isinstance(parsed, (dict, list)):
+            return "json"
+    return None
 
 
 #: Text document extensions used by the "session docs" feature (virtual All
@@ -532,7 +651,7 @@ def _markdown_misclassification_reason(content: str, source_path: str) -> str | 
     """Return why a ``widget``-kind artifact actually looks like ``markdown``.
 
     Returns a short human-readable reason string, or ``None`` if the artifact
-    is a genuine widget. Used by the CR-1 corrective migration
+    is a genuine widget. Used by the corrective migration
     (:meth:`ArtifactStore.migrate_kinds`) to find artifacts saved as ``widget``
     before ``kind`` inference existed. Deliberately conservative — it triggers
     only on a ``.md`` / ``.markdown`` ``source_path`` or content with **no HTML
@@ -648,6 +767,28 @@ def _validate_description(description: str | None) -> str:
     return description
 
 
+def _validate_source_path(value: str | None, field_name: str = "source_path") -> str:
+    """Validate a filesystem-pointer field (``source_path`` / ``source_root``).
+
+    REJECTS an over-long value instead of truncating it. Truncation used to be
+    silent (``source_path[:512]``), which turned a too-long-but-valid path into
+    a shorter path that points somewhere else — practically always somewhere
+    that doesn't exist. The artifact then looked file-backed while its live read
+    could never succeed. Failing the save is the honest outcome: the caller
+    learns immediately instead of the user discovering a hollow artifact later.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ArtifactValidationError(f"{field_name} must be str, got {type(value).__name__}")
+    if len(value) > MAX_SOURCE_PATH_LEN:
+        raise ArtifactValidationError(
+            f"{field_name} exceeds {MAX_SOURCE_PATH_LEN} chars "
+            f"({len(value)}); refusing to truncate a filesystem path"
+        )
+    return value
+
+
 def _validate_content(content: str) -> str:
     if not isinstance(content, str):
         raise ArtifactValidationError(f"content must be str, got {type(content).__name__}")
@@ -726,6 +867,8 @@ class ArtifactStore:
         description: str = "",
         tags: list[str] | None = None,
         source_path: str = "",
+        source_root: str = "",
+        source_copy_only: bool = False,
         folder_id: str = "",
         session_key: str = "",
         webapp_metadata: "WebAppMetadata | None" = None,
@@ -743,6 +886,14 @@ class ArtifactStore:
         content lives in ``current.html`` from then on; we never write back
         to ``source_path``.
 
+        ``source_root`` is the directory that AUTHORIZES reads of
+        ``source_path`` — the project (or git repo) root a promoted file was
+        linked from, as decided by
+        :func:`kiro_crew.artifact_source.classify_source`. Required for a link
+        outside ``$HOME`` and the data home; ignored (forced empty) when
+        ``source_path`` is empty, since a root with nothing to authorize is
+        meaningless metadata.
+
         ``auto_registered=True`` marks the record as machine-created from a
         chat-emitted widget, making it sweepable by
         :meth:`prune_auto_widgets` while it remains unpinned. Only
@@ -750,9 +901,22 @@ class ArtifactStore:
         """
         name = _validate_name(name)
         content = _validate_content(content)
+        source_path = _validate_source_path(source_path)
+        source_root = _validate_source_path(source_root, "source_root") if source_path else ""
         # Infer the kind when the caller didn't pin one (explicit kind always
         # wins). Validated content is needed for the inline content sniff, so
         # this runs after _validate_content.
+        #
+        # A document created BLANK is the one case inference cannot help with —
+        # there is nothing to sniff — and it is exactly what the library's "New
+        # artifact" action creates. Default it to markdown (the editable prose
+        # default) and record that the kind was auto-assigned, so the first real
+        # content write can settle it into json / svg (see
+        # :func:`detect_editor_kind`). A caller that pinned a kind, or supplied
+        # real content or a source_path, has a genuine signal and is left alone.
+        kind_auto = kind is None and not source_path and not content.strip()
+        if kind_auto:
+            kind = "markdown"
         kind = _validate_kind(_infer_kind(content, source_path, kind))
         source = _validate_source(source)
         description = _validate_description(description)
@@ -771,6 +935,7 @@ class ArtifactStore:
                 slug=slug,
                 name=name,
                 kind=kind,
+                kind_auto=kind_auto,
                 source=source,
                 description=description,
                 tags=tags_list,
@@ -778,7 +943,9 @@ class ArtifactStore:
                 created_at=now,
                 updated_at=now,
                 content=content,
-                source_path=source_path[:512] if source_path else "",
+                source_path=source_path,
+                source_root=source_root,
+                source_copy_only=source_copy_only,
                 folder_id=folder_id or "",
                 session_key=session_key[:256] if session_key else "",
                 auto_registered=bool(auto_registered),
@@ -846,21 +1013,27 @@ class ArtifactStore:
                 meta.live_dirty = False  # historical view — not "live"
                 return meta
             # Current view: prefer source_path for file-backed artifacts.
-            if meta.source_path:
-                live = self._try_read_source_path(meta.source_path)
+            # A copy never reads from disk: it records source_path purely as
+            # provenance/dedup identity, so reading it would resurrect exactly
+            # the dead-pointer bug source_missing exists to surface.
+            if meta.source_path and not meta.source_copy_only:
+                live = self._try_read_source_path(meta.source_path, meta.source_root)
                 if live is not None:
                     meta.content = live
                 else:
                     # Fall through to the snapshot fallback — file moved /
-                    # deleted / unreadable.
+                    # deleted / unreadable / outside the authorized root. Flag
+                    # it: the fallback keeps the artifact viewable, which
+                    # previously made a dead pointer look completely healthy.
+                    meta.source_missing = True
                     meta.content = self._read_text(self._artifact_dir(slug) / "current.html")
             else:
                 meta.content = self._read_text(self._artifact_dir(slug) / "current.html")
             # Compute live_dirty by comparing the live content to the
             # latest numbered snapshot. Catches both silent saves AND
             # external file edits to source_path that we never saw —
-            # which is the whole point of round 6's "snapshot anytime"
-            # request. If versions/vN.html is missing (legacy artifact
+            # which is the whole point of the "snapshot anytime" behavior.
+            # If versions/vN.html is missing (legacy artifact
             # before snapshots existed), default to not-dirty.
             latest_vfile = self._artifact_dir(slug) / "versions" / f"v{meta.version}.html"
             if latest_vfile.exists():
@@ -868,15 +1041,81 @@ class ArtifactStore:
                 meta.live_dirty = (meta.content or "") != latest_snapshot
             else:
                 meta.live_dirty = False
+            if meta.source_missing:
+                # A dead pointer must never report as in-sync. The comparison
+                # above ran against the SNAPSHOT (the fallback), so it always
+                # says "clean" — the one case where equality proves nothing,
+                # because we never saw the live state at all.
+                meta.live_dirty = True
             return meta
 
-    def _try_read_source_path(self, source_path: str) -> str | None:
+    def allowed_source_roots(self, source_root: str = "") -> list[Path]:
+        """Resolved directory roots a file-backed ``source_path`` may live under.
+
+        SINGLE producer of this set. Three sites consume it — the live read
+        (:meth:`_try_read_source_path`), the live write
+        (:meth:`_try_write_source_path`), and the relocate handler's containment
+        barrier in ``dashboard/handlers/artifacts.py`` — and they had drifted
+        apart: the handler's copy omitted the data-home root, so relocate
+        refused paths the store would happily read.
+
+        The set is:
+
+        * the user's home directory;
+        * the data home (this store's parent — ``~/.kiro/crew`` in production,
+          a tmp dir under test);
+        * every operator-configured ``publish.relocate_roots`` entry;
+        * when supplied, the artifact's own ``source_root`` — the project root
+          that authorized the link at create time. This is what lets a linked
+          project file outside ``$HOME`` (``/workplace/user/repo/doc.md``) be
+          read at all, without widening the default set for every artifact.
+
+        Callers MUST keep the ``p == r or p.is_relative_to(r)`` comparison
+        INLINE at the call site. CodeQL's path-injection taint tracker only
+        recognizes that sanitizer intra-procedurally, so moving the comparison
+        into this method would reopen the alert
+        (``handlers/artifacts.py`` documents the same constraint). This method
+        only assembles the roots; it never decides containment.
+        """
+        allowed = [Path.home().resolve(), self._root.resolve().parent]
+        try:
+
+            for extra in KiroCrewConfig.load().publish.relocate_roots:
+                if isinstance(extra, str) and extra.strip():
+                    allowed.append(Path(extra).expanduser().resolve())
+        except Exception:
+            pass
+        # A persisted source_root is a HINT, not authority: meta.json lives in
+        # the agent-writable data home, so honouring it verbatim would let a
+        # forged record (source_root="/", source_path="/etc/passwd") widen this
+        # boundary to the whole filesystem. Re-verify it against something a
+        # metadata write cannot fake.
+        if source_root and isinstance(source_root, str) and source_root.strip():
+            if is_verifiable_root(source_root):
+                try:
+                    allowed.append(Path(source_root).expanduser().resolve())
+                except (OSError, ValueError):  # pragma: no cover — defensive
+                    logger.warning("unusable source_root %r; ignoring", source_root)
+            else:
+                logger.warning(
+                    "source_root %r no longer verifies as a project root; ignoring",
+                    source_root,
+                )
+        return allowed
+
+    def _try_read_source_path(self, source_path: str, source_root: str = "") -> str | None:
         """Read the source file for a file-backed artifact (live pointer).
 
         Returns None on any failure (missing file, permission denied,
         sensitive path, outside allowed roots, oversize). Caller falls back
         to the artifact's own snapshot in that case so a missing/moved
-        source doesn't break the artifact view.
+        source doesn't break the artifact view — and MUST surface
+        ``source_missing`` so that fallback isn't mistaken for a healthy,
+        in-sync live pointer.
+
+        ``source_root`` is the artifact's recorded authorizing root; pass
+        ``meta.source_root`` so a linked project file outside ``$HOME``
+        resolves. See :meth:`allowed_source_roots`.
         """
         try:
             # Resolve before the security check so traversal segments
@@ -892,25 +1131,28 @@ class ArtifactStore:
             # Root-confinement re-check on every read: a symlink replacement
             # after relocate could escape the allowed roots if we only checked
             # at set time. Re-validate that the RESOLVED path is under the
-            # user's home, the KIROCREW_HOME tree (store root's parent — in
-            # production this is ~/.kiro/crew which is under home, but in tests
-            # may be a tmp dir), or a configured relocate root.
-            allowed = [Path.home().resolve(), self._root.resolve().parent]
-            try:
-                from kiro_crew.config.loader import KiroCrewConfig
-
-                for extra in KiroCrewConfig.load().publish.relocate_roots:
-                    if isinstance(extra, str) and extra.strip():
-                        allowed.append(Path(extra).expanduser().resolve())
-            except Exception:
-                pass
-            within_root = any(p == r or p.is_relative_to(r) for r in allowed)
+            # user's home, the KIROCREW_HOME tree, a configured relocate root,
+            # or the artifact's own recorded source_root.
+            allowed = self.allowed_source_roots(source_root)
+            # Comparison stays INLINE (not in a helper) — CodeQL's taint
+            # tracker needs the is_relative_to sanitizer to guard the SAME
+            # `p` the reads below use.
+            containing = next((r for r in allowed if p == r or p.is_relative_to(r)), None)
+            within_root = containing is not None
             if not within_root:
                 logger.warning(
                     "source_path %r resolved outside allowed roots; refusing read", source_path
                 )
                 return None
             if not p.exists() or not p.is_file():
+                # Dead pointer. Logged at WARNING (not silence) because the
+                # caller falls back to the snapshot, which makes this
+                # invisible in the artifact view unless it's reported.
+                logger.warning(
+                    "source_path %r no longer exists (or is not a regular file); "
+                    "artifact falls back to its last snapshot",
+                    source_path,
+                )
                 return None
             # Bound the read at the FILE level, not after-the-fact: read
             # MAX_CONTENT_BYTES+1 bytes from disk, decode (errors='replace'
@@ -920,12 +1162,26 @@ class ArtifactStore:
             # would exhaust memory before truncation triggered. Bounding
             # the read caps memory at MAX_CONTENT_BYTES+1 regardless of
             # file size.
-            with p.open("rb") as f:
-                raw = f.read(MAX_CONTENT_BYTES + 1)
-            oversize = len(raw) > MAX_CONTENT_BYTES
-            if oversize:
-                logger.warning("source file %s exceeds MAX_CONTENT_BYTES; truncating", p)
-                raw = raw[:MAX_CONTENT_BYTES]
+            # Read through the descriptor-pinned helper rather than by name.
+            # The containment check above is on a RESOLVED path, which still
+            # leaves a check-to-use window: the final component, or an ancestor
+            # directory, can be swapped for a symlink before the open, so the
+            # bytes could come from a file outside `containing`. The helper opens
+            # with O_NOFOLLOW and re-verifies the OPENED inode's real path
+            # against the same root, so the inode validated is the inode read.
+            raw = hooks.safe_read_file_bytes_nolink(
+                str(p),
+                within_root=str(containing),
+                max_bytes=MAX_CONTENT_BYTES,
+                allow_truncate=True,
+            )
+            if raw is None:
+                logger.warning(
+                    "source_path %r refused by the descriptor-pinned read gate", source_path
+                )
+                return None
+            if len(raw) == MAX_CONTENT_BYTES:
+                logger.warning("source file %s hit MAX_CONTENT_BYTES; view is truncated", p)
             # errors='replace' keeps the artifact viewable even when the
             # file contains malformed UTF-8 sequences. The byte-level
             # truncation may chop a multi-byte character at the boundary;
@@ -935,13 +1191,17 @@ class ArtifactStore:
             logger.warning("failed to read source_path %r: %s", source_path, exc)
             return None
 
-    def _try_write_source_path(self, source_path: str, content: str) -> bool:
+    def _try_write_source_path(self, source_path: str, content: str, source_root: str = "") -> bool:
         """Write to the source file for a file-backed artifact.
 
         Returns True on success, False if the path is unwritable. Caller
         proceeds to update the artifact's own storage either way — the
         snapshot remains authoritative even when the source can't be
         kept in sync.
+
+        ``source_root`` mirrors the read side: the same recorded root that
+        authorizes reads authorizes the write-back, so an edit to a linked
+        project file lands in the project rather than being silently dropped.
         """
         try:
             # Same canonicalization as the read side — `.resolve()` prevents
@@ -952,19 +1212,14 @@ class ArtifactStore:
                 return False
             if is_sensitive_path(str(p)):
                 return False
-            # Root-confinement re-check (same as _try_read_source_path): a
-            # symlink swap after relocate must not allow writes outside the
-            # allowed roots.
-            allowed = [Path.home().resolve(), self._root.resolve().parent]
-            try:
-                from kiro_crew.config.loader import KiroCrewConfig
-
-                for extra in KiroCrewConfig.load().publish.relocate_roots:
-                    if isinstance(extra, str) and extra.strip():
-                        allowed.append(Path(extra).expanduser().resolve())
-            except Exception:
-                pass
-            within_root = any(p == r or p.is_relative_to(r) for r in allowed)
+            # Root-confinement re-check (same set as _try_read_source_path, via
+            # the single producer): a symlink swap after relocate must not allow
+            # writes outside the allowed roots.
+            allowed = self.allowed_source_roots(source_root)
+            # Comparison stays INLINE — see allowed_source_roots() on why the
+            # CodeQL sanitizer cannot be factored out.
+            containing = next((r for r in allowed if p == r or p.is_relative_to(r)), None)
+            within_root = containing is not None
             if not within_root:
                 logger.warning(
                     "source_path %r resolved outside allowed roots; refusing write",
@@ -976,7 +1231,21 @@ class ArtifactStore:
             # existing file, so the file should exist.
             if not p.exists():
                 return False
-            p.write_text(content, encoding="utf-8")
+            # Write through the descriptor-pinned helper, not by name. The
+            # containment check above is on a RESOLVED path, so a symlink
+            # swapped into the final component -- or into an ancestor directory
+            # -- between that check and the open would land these bytes on a
+            # file outside `containing`. Writing through a symlink is strictly
+            # worse than reading through one, so the same fd-pinned gate the
+            # read side uses applies here: O_NOFOLLOW open first, then hardlink
+            # / regular-file / real-path / sensitive checks on that descriptor.
+            if not hooks.safe_write_file_nolink(
+                str(p), content, within_root=str(containing)
+            ):
+                logger.warning(
+                    "source_path %r refused by the descriptor-pinned write gate", source_path
+                )
+                return False
             return True
         except (OSError, ValueError) as exc:
             logger.warning("failed to write source_path %r: %s", source_path, exc)
@@ -1004,7 +1273,7 @@ class ArtifactStore:
         captured as a numbered version with a lifecycle event. When False
         (the default), the save is silent — the version dropdown stays the
         same and no event is emitted (explicit-snapshot
-        model, requested by nrb).
+        model).
 
         ``actor`` distinguishes lifecycle event types when a snapshot is
         taken: ``"user"`` (default) emits an ``edited`` event; ``"agent"``
@@ -1021,7 +1290,11 @@ class ArtifactStore:
         with self._lock:
             art = self._load_meta(slug)
             changed_content = False
+            # True when this call READ art.content off source_path (snapshot path),
+            # which makes writing it back unsafe -- see the snapshot branch below.
+            snapshot_derived = False
             name_changed = False
+            kind_changed = False
             if content is not None:
                 content = _validate_content(content)
                 changed_content = True
@@ -1039,7 +1312,12 @@ class ArtifactStore:
                 # are an already-wrapped document → ``html``). A kind change
                 # alone does not bump the version; the per-version kind is
                 # recorded in the snapshot branch below when content changes.
-                art.kind = _validate_kind(kind)
+                new_kind = _validate_kind(kind)
+                kind_changed = new_kind != art.kind
+                art.kind = new_kind
+                # An explicit kind is the caller's decision — stop re-detecting
+                # from content on subsequent saves.
+                art.kind_auto = False
             if webapp_metadata is not None:
                 art.webapp_metadata = webapp_metadata
             art.updated_at = _now_iso()
@@ -1053,15 +1331,26 @@ class ArtifactStore:
             # handles writing current.html, source_path, and the version
             # snapshot uniformly.
             if snapshot and not changed_content:
-                if art.source_path:
-                    live = self._try_read_source_path(art.source_path)
+                # A copy owns its bytes: re-reading the original here would
+                # overwrite the user's edits with the source file's content.
+                if art.source_path and not art.source_copy_only:
+                    live = self._try_read_source_path(art.source_path, art.source_root)
                     if live is not None:
                         art.content = live
                     else:
+                        # Same dead-pointer flag as get(): a snapshot taken off
+                        # the fallback must not look like it captured live state.
+                        art.source_missing = True
                         art.content = self._read_text(self._artifact_dir(slug) / "current.html")
                 else:
                     art.content = self._read_text(self._artifact_dir(slug) / "current.html")
                 changed_content = True  # treat as a change for the snapshot path
+                # This content came FROM disk, so mirroring it back is at best a
+                # no-op -- and at worst DATA LOSS: the live read is bounded at
+                # MAX_CONTENT_BYTES, so a source file larger than that yields a
+                # PREFIX, and writing the prefix back would truncate the user's
+                # file. A snapshot is a read operation; it must never write out.
+                snapshot_derived = True
 
             if changed_content:
                 # Always update the live state — current.html for chat-backed
@@ -1071,10 +1360,55 @@ class ArtifactStore:
                 # snapshot-without-content path sets art.content from disk
                 # without populating ``content``.
                 live_content = art.content or ""
+                # Settle an auto-assigned kind now that there is something to
+                # look at. A document created blank starts as markdown; the
+                # first save that makes it recognizably JSON or SVG re-types it
+                # so it gets the right renderer. Detection only ever returns an
+                # editable kind and returns None for anything unrecognized, so
+                # this can neither strand the user's editor nor flap the kind
+                # back on a mid-edit syntax error. An explicit ``kind`` on this
+                # call already cleared ``kind_auto`` above, so a pinned artifact
+                # is never touched here.
+                if art.kind_auto:
+                    detected = detect_editor_kind(live_content)
+                    if detected and detected != art.kind:
+                        logger.info(
+                            "artifact kind auto-detected: slug=%s %s->%s",
+                            slug,
+                            art.kind,
+                            detected,
+                        )
+                        art.kind = detected
                 prev = self._artifact_dir(slug) / "current.html"
                 self._write_text(prev, live_content)
-                if art.source_path:
-                    self._try_write_source_path(art.source_path, live_content)
+                # Never mirror back for a copy — editing it must not rewrite
+                # the user's original file — and never for content this call
+                # just READ off that same file (see snapshot_derived above).
+                if art.source_path and not art.source_copy_only and not snapshot_derived:
+                    if not self._try_write_source_path(
+                        art.source_path, live_content, art.source_root
+                    ):
+                        # The mirror was REFUSED (read-only file, a concurrent save
+                        # that would have been clobbered, ownership we may not
+                        # reassign, a source too large to roll back, a path no
+                        # longer inside its authorizing root...). The user's edit is
+                        # already in current.html, but while this artifact still
+                        # claims to be a live pointer the next read prefers the
+                        # SOURCE -- which would serve the old text back and report
+                        # itself clean, silently discarding the edit.
+                        #
+                        # So the artifact takes ownership of its own copy. It keeps
+                        # source_path as provenance and stops pretending the file
+                        # tracks it. Persisted below with the rest of the metadata,
+                        # so the demotion survives a restart rather than being
+                        # re-attempted and re-lost on every save.
+                        logger.warning(
+                            "artifact %s could not mirror to %s; keeping the artifact's own "
+                            "copy authoritative (source_copy_only)",
+                            slug,
+                            art.source_path,
+                        )
+                        art.source_copy_only = True
                 # Content changed — re-validate comment anchors so threads
                 # whose quoted text no longer exists get flagged as orphaned
                 # (and restored if the text comes back, e.g. on a revert).
@@ -1135,12 +1469,17 @@ class ArtifactStore:
                 changed_content,
                 snapshot,
             )
-            fire_upsert = changed_content
-            fire_rename = name_changed and not changed_content
+            fire_upsert = changed_content or kind_changed
+            fire_rename = name_changed and not fire_upsert
         # A content change is worth re-ingesting; a metadata-only rename just
         # refreshes the KB group label (no chunk churn). Description/tag-only
         # updates fire nothing. Fire outside the lock so the listener may call
         # get().
+        #
+        # A KIND change fires too, even with identical content: Knowledge
+        # eligibility is keyed on kind, so switching markdown → svg has to be
+        # reconciled or the obsolete chunks stay searchable. The listener owns
+        # that decision (re-ingest or remove); the store only reports the change.
         if fire_upsert:
             self._fire_change("upsert", slug)
         elif fire_rename:
@@ -1315,6 +1654,114 @@ class ArtifactStore:
             deleted += 1
         return deleted
 
+    def settle_blank(
+        self,
+        slug: str,
+        *,
+        untitled_name: str,
+        draft: str = "",
+        allow_delete: bool = True,
+    ) -> str:
+        """Atomically resolve a just-created blank document that is being left.
+
+        The library's "New artifact" action creates a document empty and opens it.
+        When the user navigates away, one of three things should happen — keep it
+        (they invested something), save the draft still sitting in the editor, or
+        delete the empty shell they abandoned. This decides which, and acts, in a
+        SINGLE lock acquisition.
+
+        That atomicity is the whole point. Deciding client-side means reading the
+        artifact, then acting on it, with a window in between — and a save landing
+        in that window from a popout window or an agent gets overwritten or
+        deleted. No amount of re-reading closes it, because the gap is between the
+        read and the write, not inside the read. :meth:`prune_auto_widgets` faces
+        the identical hazard and resolves it the same way: re-check and act without
+        letting go of the lock.
+
+        "Untouched" means untouched on every axis the record can report:
+
+        * still at version 1 — a snapshot is history worth keeping even if the live
+          body was emptied again afterwards;
+        * still carrying the caller's untitled placeholder as its name;
+        * empty content;
+        * no tags, no description;
+        * not filed, not starred, not published, not a fork;
+        * no ``comments.json`` sidecar. Comments are written WITHOUT touching
+          ``meta.json``, so they are invisible to every field above — the same
+          reason :meth:`_is_sweepable_auto_widget` stats that file separately.
+
+        The two questions are answered INDEPENDENTLY, and that matters:
+
+        * *Should the draft be written?* Only that the stored content is still
+          empty. Nothing else. A document can be renamed, tagged or filed and
+          still be holding the user's first paragraph in an editor buffer that was
+          never saved — refusing to write it because the name changed loses their
+          typing.
+        * *Should the shell be deleted?* Only when it is untouched on EVERY axis
+          AND there is no draft AND the caller permits it. ``allow_delete=False``
+          is how a client says "I have issued writes you may not have applied
+          yet": it cannot make deletion safe, but it does not prevent the rescue.
+
+        Returns what it did: ``"saved"`` (``draft`` became the content), ``"kept"``
+        (left exactly as it was), or ``"deleted"``.
+        """
+        slug = _validate_slug(slug)
+        draft = _validate_content(draft)
+        with self._lock:
+            art = self._load_meta(slug)
+            live_empty = self._read_text(self._artifact_dir(slug) / "current.html") == ""
+            if draft.strip() and live_empty:
+                self._write_settled_draft(art, draft)
+                outcome = "saved"
+            else:
+                outcome = ""
+            pristine = outcome == "" and (
+                allow_delete
+                and art.version == 1
+                and art.name == untitled_name
+                and not art.description
+                and not art.tags
+                and not art.folder_id
+                and not art.pinned
+                and art.publication is None
+                and art.fork_metadata is None
+                and not (self._artifact_dir(slug) / "comments.json").exists()
+                and live_empty
+            )
+            if outcome == "":
+                if not pristine:
+                    return "kept"
+                self._rmtree(self._artifact_dir(slug))
+                outcome = "deleted"
+            logger.info("blank artifact settled: slug=%s outcome=%s", slug, outcome)
+        # Fired outside the lock so a listener is free to call back into get().
+        self._fire_change("upsert" if outcome == "saved" else "delete", slug)
+        return outcome
+
+    def _write_settled_draft(self, art: Artifact, draft: str) -> None:
+        """Persist an unsaved editor buffer as the document's first content.
+
+        The caller must hold ``self._lock`` and must have just confirmed that the
+        stored content is empty — that confirmation is what makes this safe, since
+        there is nothing to overwrite and therefore no concurrent save to lose.
+        Metadata is preserved untouched: the user may well have named or tagged the
+        document before typing, and this is a content write, not a reset.
+        """
+        self._write_text(self._artifact_dir(art.slug) / "current.html", draft)
+        art.content = draft
+        # A settled draft is this document's first content, so it gets the same
+        # kind detection an ordinary save would have applied. Without this, typing
+        # JSON into a blank and navigating away stored it as markdown and rendered
+        # it with the wrong viewer. Gated on ``kind_auto`` so a kind the user picked
+        # explicitly still wins.
+        if art.kind_auto:
+            detected = detect_editor_kind(draft)
+            if detected and detected != art.kind:
+                art.kind = detected
+                art.version_kinds[str(art.version)] = detected
+        art.updated_at = _now_iso()
+        self._write_meta(art)
+
     def delete(self, slug: str) -> None:
         """Permanently delete an artifact and all of its versions."""
         slug = _validate_slug(slug)
@@ -1482,7 +1929,7 @@ class ArtifactStore:
 
     def migrate_kinds(self, *, apply: bool = False) -> _List[dict[str, Any]]:
         """Corrective one-time migration: reclassify markdown artifacts that
-        were mis-saved as ``widget`` before ``kind`` inference existed (CR-1).
+        were mis-saved as ``widget`` before ``kind`` inference existed.
 
         A ``widget`` artifact is treated as mis-saved markdown when
         :func:`_markdown_misclassification_reason` returns a reason — its
@@ -1783,12 +2230,28 @@ class ArtifactStore:
             self._write_meta(art)
             return art
 
-    def relocate(self, slug: str, source_path: str) -> Artifact:
-        """Update the source_path (live file pointer) for an artifact."""
+    def relocate(self, slug: str, source_path: str, source_root: str = "") -> Artifact:
+        """Update the source_path (live file pointer) for an artifact.
+
+        ``source_root`` is rewritten in lockstep — it describes the root that
+        authorizes THIS ``source_path``, so carrying the previous pointer's root
+        forward would leave a record claiming an authorization it no longer has.
+        The default (``""``) clears it, which is correct for the relocate
+        handler: it validates against the store's base root set (home / data
+        home / configured relocate roots), none of which need recording.
+        """
         slug = _validate_slug(slug)
+        source_path = _validate_source_path(source_path)
+        source_root = _validate_source_path(source_root, "source_root") if source_path else ""
         with self._lock:
             art = self._load_meta(slug)
             art.source_path = source_path
+            art.source_root = source_root
+            # Relocate is an explicit "this artifact tracks THIS file" act, so
+            # it promotes a copy into a live pointer. Leaving the flag set would
+            # make the relocation silently inert -- reads and edits would keep
+            # ignoring the very file the user just pointed at.
+            art.source_copy_only = False
             self._write_meta(art)
             return art
 
@@ -1969,8 +2432,8 @@ class ArtifactStore:
             #   * the remote retains the deleted ROOT as a tombstone in *every*
             #     fetch, so seed the drop-set from the INCOMING tombstones (the
             #     authoritative, always-present signal), not only the local mirror
-            #     — that mirror is gone after the first cascade, which is exactly
-            #     why the orphans used to come back on the next fetch.
+            #     — that mirror is gone after the first cascade, so relying on it
+            #     would let the orphans come back on the next fetch.
             # Replies share the root's thread_id (provider: thread_id =
             # parentCommentId or commentId), so this drops the subtree on every
             # fetch — self-healing, no persistent local tombstone needed. Local
@@ -2380,6 +2843,7 @@ class ArtifactStore:
             slug=str(slug),
             name=str(raw.get("name", slug)),
             kind=str(raw.get("kind", "widget")),
+            kind_auto=bool(raw.get("kind_auto", False)),
             source=str(raw.get("source", "chat")),
             description=str(raw.get("description", "")),
             tags=list(raw.get("tags", []) or []),
@@ -2389,6 +2853,11 @@ class ArtifactStore:
             events=events,
             events_backfilled=bool(raw.get("events_backfilled", False)),
             source_path=str(raw.get("source_path", "")),
+            # Tolerant: every artifact written before source_root existed
+            # defaults to "" and therefore keeps exactly today's allowed-roots
+            # behavior (home / data home / configured relocate roots).
+            source_root=str(raw.get("source_root", "")),
+            source_copy_only=bool(raw.get("source_copy_only", False)),
             folder_id=str(raw.get("folder_id") or ""),
             pinned=bool(raw.get("pinned", False)),
             session_key=str(raw.get("session_key", "")),

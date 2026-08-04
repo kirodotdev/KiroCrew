@@ -37,9 +37,7 @@ const TYPE_LABELS: Record<string, string> = {
 }
 
 /** Presentational Navigation body — Resources + Outline. Rendered inside the
- *  activity sidebar's Navigation tab (see ActivityViewer). Was formerly a
- *  floating overlay (ChatNavPanel); the overlay shell was dropped when nav
- *  was merged into the activity sidebar. */
+ *  activity sidebar's Navigation tab (see ActivityViewer). */
 export default function ChatNavContent({ links, sections, onScrollToSection, resolving }: ChatNavContentProps) {
   const resourceLinks = dedupResourceLinks(links)
   return (

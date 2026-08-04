@@ -51,7 +51,10 @@
  * Ledger buckets.
  *
  *   text   — never reached a catalog, or was assembled from several keys.
- *   layout — the text does not fit RIGHT NOW, in some shipped locale.
+ *   layout — the text does not fit RIGHT NOW, at the width the pseudolocale renders.
+ *            Since the locale set shrank to `en-XA` + a DNT probe (see `LOCALES`),
+ *            this bucket is no longer graded against a real script, so it
+ *            over-reports: a site flagged here may fit in every locale we ship.
  *   latent — a pattern that is silently broken but not yet visible, which today
  *            means `ellipsis-with-flex-parent`: `text-overflow` cannot apply while
  *            a flex child's `min-width` is `auto`, so the truncation those sites
@@ -86,7 +89,7 @@ export const LATENT_SIGNATURES = new Set(['ellipsis-with-flex-parent'])
 export const BUCKET_MEANING = {
   text: 'catalog work — never reached a catalog, or glued from several keys',
   latent: 'silently broken, not yet visible — one uniform `min-w-0` sweep',
-  layout: 'does not fit RIGHT NOW in a shipped locale — CSS, case by case',
+  layout: 'does not fit RIGHT NOW at pseudolocale width — CSS, case by case',
 }
 
 /**
@@ -101,7 +104,11 @@ export const BUCKET_MEANING = {
  * describing a rule the code stopped following.
  */
 export const LEDGER_COMMENT = 'Phase 5 render-time gate. Findings from rendering the real '
-  + 'DEV build under en-XA (text) and the shipped locales (layout/latent). This is a DEBT '
+  + 'DEV build under en-XA -- all three buckets, including layout/latent, so those are '
+  + 'measured at PSEUDOLOCALE width rather than in any locale we ship. The one real locale '
+  + 'in the set is a DNT probe whose other findings are discarded, so it contributes '
+  + 'nothing here; see LOCALES in scripts/lib/i18n-surfaces.mjs for what that trade cost. '
+  + 'This is a DEBT '
   + 'RECORD, not the gate: [vs-base] renders the base commit and fails on any per-surface '
   + 'increase without reading this file, because a total is written by whichever branch '
   + 'measured it last and so cannot be attributed to any one diff -- see '
@@ -201,12 +208,20 @@ export function decide({
     for (const id of surfaceIds) {
       for (const bucket of BUCKETS) {
         const now = counts[id]?.[bucket] || 0
-        // A surface this branch ADDED has no base measurement. The base bundle has no
-        // route for its URL, so the base sweep resolved that path through the SPA's
-        // router and reported whatever fallback page it landed on — which can be BUSIER
-        // than the new surface, making its real defects read as an improvement and
-        // passing the branch that shipped them. Zero is the honest base for a surface
-        // that did not exist, so every finding it brings is growth.
+        // A surface whose ROUTE this branch added has no base measurement. The base
+        // bundle had no route for its URL, so the base sweep was redirected and
+        // reported whatever fallback page it landed on — which can be BUSIER than
+        // the new surface, making its real defects read as an improvement and
+        // passing the branch that shipped them. Zero is the honest base for a
+        // surface that did not exist, so every finding it brings is growth.
+        //
+        // `newSurfaces` therefore means "the base had no route for this URL",
+        // proven by the redirect, and NOT "this id is absent from the base
+        // registry". Registering a surface whose route already existed must compare
+        // against its real base count: its findings are pre-existing debt the
+        // registration merely revealed, and charging them to the registering branch
+        // is what made widening the gate's aperture impossible. See
+        // `check-i18n-render.mjs` for how the distinction is measured.
         const was = newSurfaces.has(id) ? 0 : (baseCounts[id]?.[bucket] || 0)
         if (now > was) grew.push({ surface: id, bucket, was, now })
         else if (now < was) shrank.push({ surface: id, bucket, was, now })

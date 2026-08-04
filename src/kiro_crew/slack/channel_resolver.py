@@ -6,10 +6,10 @@ and any other surface that lists tracked channels.
 
 Why this exists:
     ``ChannelConfig`` (in ``cfg.slack_channels``) stores ``activation`` and
-    ``agent`` per channel but no ``name`` field. ``api_slack_channels`` used
-    to fall back to ``name = channel_id``, which surfaces raw IDs in the UI.
-    A single ``conversations.list`` API call resolves them all at once and
-    we cache the result so the dropdown opens instantly after the first warm-up.
+    ``agent`` per channel but no ``name`` field, so without resolution
+    ``api_slack_channels`` would surface raw IDs in the UI. A single
+    ``conversations.list`` API call resolves them all at once and we cache the
+    result so the dropdown opens instantly after the first warm-up.
 
 Cache behavior:
     * In-memory dict, refreshed lazily on cache miss or TTL expiry.

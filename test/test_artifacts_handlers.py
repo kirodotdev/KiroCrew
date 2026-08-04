@@ -22,6 +22,7 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_relocate,
     api_artifact_session_docs,
     api_artifact_set_pinned,
+    api_artifact_settle_blank,
     api_artifact_update,
     api_artifact_version_detail,
     api_artifact_versions,
@@ -87,6 +88,42 @@ def patch_restricted(monkeypatch):
         return req.app.get("_restricted_session", False)
 
     monkeypatch.setattr(art_handlers, "_is_restricted_session", _stub)
+
+
+@pytest.fixture
+def linkable_project(tmp_path: Path, monkeypatch):
+    """A project directory whose files earn a LINK verdict on promote.
+
+    ``POST /api/artifacts`` now classifies ``source_path`` (see
+    ``kiro_crew.artifact_source``): a disposable file is snapshotted and NO
+    pointer is stored, so dedup-by-``source_path`` only applies to linked files.
+    Pytest's ``tmp_path`` lives under the system temp dir — itself a disposable
+    root — so the temp-root seam is narrowed to ``tmp_path/tmp`` and the project
+    gets a ``.git`` marker to make it a real repo.
+
+    Returns the project dir. Project-root discovery is stubbed to empty so the
+    test never reads the developer's real ``recent_projects.json``.
+    """
+    from kiro_crew import artifact_source
+
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(artifact_source, "_tempdir", lambda: str(tmp_path / "tmp"))
+    proj = tmp_path / "project"
+    (proj / ".git").mkdir(parents=True)
+    return proj
+
+
+@pytest.fixture
+def disposable_file(tmp_path: Path, monkeypatch):
+    """A file in a disposable root (temp dir), which must be COPIED not linked."""
+    from kiro_crew import artifact_source
+
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    monkeypatch.setattr(artifact_source, "_tempdir", lambda: str(tmp))
+    target = tmp / "scratch.md"
+    target.write_text("# scratch", encoding="utf-8")
+    return target
 
 
 def _json_body(resp) -> dict:
@@ -458,57 +495,187 @@ class TestCreate:
         assert "sensitive path" in _json_body(resp)["error"]
 
     # ── source_path auto-dedup (Phase 6) ──────────────────────
+    # NB: dedup keys on the STORED source_path, and only a LINK verdict stores
+    # one — a disposable file is copied with no pointer at all. These tests
+    # therefore promote from a real project (``linkable_project``); the
+    # copy-verdict behavior is pinned in TestPromoteVerdict below.
     @pytest.mark.asyncio
     async def test_first_save_with_source_path_creates_201(
-        self, isolated_store, patch_restricted
+        self, isolated_store, patch_restricted, linkable_project
     ) -> None:
+        src = linkable_project / "brd.md"
+        src.write_text("# v1", encoding="utf-8")
         body = {
             "name": "brd",
             "content": "# v1",
             "kind": "markdown",
             "source": "manual",
-            "source_path": "/p/brd.md",
+            "source_path": str(src),
         }
         resp = await api_artifacts_create(_request(body=body))
         assert resp.status == 201
         result = _json_body(resp)
         assert result["version"] == 1
+        assert result["source_path"] == str(src)
+        assert result["source_root"] == str(linkable_project)
 
     @pytest.mark.asyncio
     async def test_resave_with_same_source_path_silently_bumps_to_200(
-        self, isolated_store, patch_restricted
+        self, isolated_store, patch_restricted, linkable_project
     ) -> None:
+        src = linkable_project / "brd.md"
+        src.write_text("# v1", encoding="utf-8")
         body = {
             "name": "brd",
             "content": "# v1",
             "kind": "markdown",
             "source": "manual",
-            "source_path": "/p/brd.md",
+            "source_path": str(src),
         }
         first = await api_artifacts_create(_request(body=body))
         assert first.status == 201
         slug = _json_body(first)["slug"]
-        # Same path, different content. Backend should detect the dedup
-        # and bump the existing artifact's version rather than creating a
-        # parallel duplicate.
-        body2 = {**body, "content": "# v2 updated"}
+        # Same path, so the backend bumps the existing artifact's version rather
+        # than creating a parallel duplicate. The bytes come from the FILE, not
+        # from the request: a promotion names a file, and the dashboard's own
+        # preview of that file is redacted and possibly truncated, so anything
+        # the client echoes back cannot be trusted as the artifact's content.
+        # (Editing an artifact's body is api_artifact_update's job, not this
+        # endpoint's.)
+        src.write_text("# v2 from disk", encoding="utf-8")
+        body2 = {**body, "content": "# client-supplied, must be ignored"}
         second = await api_artifacts_create(_request(body=body2))
         assert second.status == 200  # 200 = bumped, 201 = created new
         result = _json_body(second)
         assert result["slug"] == slug
         assert result["version"] == 2
-        assert result["content"] == "# v2 updated"
+        assert result["content"] == "# v2 from disk"
+
+    @pytest.mark.asyncio
+    async def test_promotion_ignores_client_content_and_reads_the_source(
+        self, isolated_store, patch_restricted, linkable_project
+    ) -> None:
+        """The dashboard preview is redacted; the artifact must not inherit that.
+
+        ``/api/file-read`` replaces credential-shaped spans with placeholders, so
+        persisting the client's copy would bake those placeholders in permanently
+        -- and for a COPY there is no live pointer left to recover the real bytes.
+        """
+        src = linkable_project / "notes.md"
+        real = "secret = swordfish-actual"
+        src.write_text(real, encoding="utf-8")
+        body = {
+            "name": "cfg",
+            "content": "secret = [REDACTED]",
+            "kind": "markdown",
+            "source": "manual",
+            "source_path": str(src),
+        }
+        resp = await api_artifacts_create(_request(body=body))
+        assert resp.status == 201
+        assert _json_body(resp)["content"] == real
+
+    @pytest.mark.asyncio
+    async def test_promotion_of_an_oversized_source_is_refused_not_a_500(
+        self, isolated_store, patch_restricted, linkable_project, monkeypatch
+    ) -> None:
+        # FileTooLargeError is not an OSError subclass, so an oversized source
+        # escaped the promotion read as an unhandled exception and surfaced as a
+        # 500. It must come back as a refusal the caller can show.
+        from kiro_crew.dashboard.handlers import artifacts as _handlers
+
+        src = linkable_project / "big.md"
+        src.write_text("plenty of bytes here", encoding="utf-8")
+        # The promotion read passes MAX_CONTENT_BYTES as its max_bytes, so that is
+        # the cap that decides FileTooLargeError here.
+        monkeypatch.setattr(_handlers, "MAX_CONTENT_BYTES", 4, raising=False)
+        body = {
+            "name": "big",
+            "content": "ignored",
+            "kind": "markdown",
+            "source": "manual",
+            "source_path": str(src),
+        }
+        resp = await api_artifacts_create(_request(body=body))
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_copy_outside_allowed_roots_is_refused(
+        self, isolated_store, patch_restricted, linkable_project, tmp_path_factory, monkeypatch
+    ) -> None:
+        """A copy outside the store's roots is refused, not silently downgraded.
+
+        The server-side promotion read is confined to the artifact's authorizing
+        root. A COPY has no project root, so if the path were kept the
+        confinement would degrade to the file's OWN directory -- always a
+        tautology -- and ``POST /api/artifacts {"source_path": "/etc/passwd"}``
+        would read any process-readable file and persist its bytes. Outside the
+        allowed roots the pointer is dropped and no server-side read happens, so
+        what lands is the client's own (redacted, confined) copy.
+        """
+        # The allowed-roots set is NARROWED for this test instead of hunting for a
+        # directory that happens to sit outside it. On Windows the temp dir lives
+        # under the user profile, which IS an allowed root, so "a sibling of
+        # tmp_path" is outside the roots on Linux and inside them on Windows --
+        # the barrier itself is what is under test, not the platform's temp
+        # layout.
+        outside = tmp_path_factory.mktemp("outside") / "elsewhere.md"
+        outside.write_text("BYTES THE SERVER MUST NOT READ", encoding="utf-8")
+        monkeypatch.setattr(
+            type(isolated_store),
+            "allowed_source_roots",
+            lambda self, source_root="": [Path(isolated_store.root)],
+        )
+        body = {
+            "name": "loose",
+            "content": "client copy",
+            "kind": "markdown",
+            "source": "manual",
+            "source_path": str(outside),
+        }
+        # REFUSED outright. Dropping the pointer but keeping the client's body was
+        # not enough: that body came from /api/file-read, which redacts, so the
+        # artifact would have silently stored placeholders as its real content.
+        resp = await api_artifacts_create(_request(body=body))
+        assert resp.status == 400
+        assert "outside the locations" in _json_body(resp).get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_promotion_of_a_vanished_source_keeps_no_pointer(
+        self, isolated_store, patch_restricted, linkable_project
+    ) -> None:
+        # A vanished source degrades to a PLAIN save: the verdict declines to
+        # confirm the path (it must not leak whether a given file exists), so no
+        # server-side read happens and the client's body is kept as ordinary
+        # content. What must NOT happen is the artifact keeping a source pointer
+        # it could later present as a live link to a file it never read.
+        body = {
+            "name": "gone",
+            "content": "# stale client copy",
+            "kind": "markdown",
+            "source": "manual",
+            "source_path": str(linkable_project / "not-there.md"),
+        }
+        resp = await api_artifacts_create(_request(body=body))
+        assert resp.status == 201
+        result = _json_body(resp)
+        assert result["content"] == "# stale client copy"
+        assert not result.get("source_path")
 
     @pytest.mark.asyncio
     async def test_resave_with_different_source_path_creates_new(
-        self, isolated_store, patch_restricted
+        self, isolated_store, patch_restricted, linkable_project
     ) -> None:
+        a = linkable_project / "a.md"
+        b = linkable_project / "b.md"
+        a.write_text("x", encoding="utf-8")
+        b.write_text("y", encoding="utf-8")
         body1 = {
             "name": "a",
             "content": "x",
             "kind": "markdown",
             "source": "manual",
-            "source_path": "/p/a.md",
+            "source_path": str(a),
         }
         await api_artifacts_create(_request(body=body1))
         body2 = {
@@ -516,7 +683,7 @@ class TestCreate:
             "content": "y",
             "kind": "markdown",
             "source": "manual",
-            "source_path": "/p/b.md",
+            "source_path": str(b),
         }
         resp = await api_artifacts_create(_request(body=body2))
         assert resp.status == 201  # different path → new artifact
@@ -530,7 +697,7 @@ class TestCreate:
         # the same widget content must produce two separate artifacts —
         # NOT silently merge into one — because a chat-backed artifact's
         # identity is its slug, not its source. Regression guard for the
-        # bug nrb hit where a markdown file's "Add to artifacts" was
+        # bug alice hit where a markdown file's "Add to artifacts" was
         # matching a previously-saved widget because the lookup degraded
         # to "first artifact in list".
         body = {"name": "widget", "content": "<p>hi</p>", "kind": "widget", "source": "chat"}
@@ -542,18 +709,20 @@ class TestCreate:
 
     @pytest.mark.asyncio
     async def test_mcp_dedup_resave_tags_event_as_agent(
-        self, isolated_store, patch_restricted
+        self, isolated_store, patch_restricted, linkable_project
     ) -> None:
         # review-bot round 12: the dedup path used to hardcode actor='user' so
         # MCP-driven re-saves silently appeared on the activity timeline as
         # 'edited by user' instead of 'iterated by agent'. Now the handler
         # infers actor from X-Internal-Secret like api_artifact_update.
+        src = linkable_project / "brd.md"
+        src.write_text("# v1", encoding="utf-8")
         body = {
             "name": "brd",
             "content": "# v1",
             "kind": "markdown",
             "source": "manual",
-            "source_path": "/p/brd.md",
+            "source_path": str(src),
         }
         first = await api_artifacts_create(_request(body=body))
         assert first.status == 201
@@ -573,7 +742,213 @@ class TestCreate:
         assert latest_event["by"] == "agent"
 
 
-# ── Detail / Update / Delete ────────────────────────────────────────────────
+# ── Promote verdict: copy vs link on POST /api/artifacts ──────────────────────
+
+
+class TestPromoteVerdict:
+    """``POST /api/artifacts`` runs ``source_path`` through the classifier.
+
+    Before this, the raw request string was stored unvalidated — so a project
+    file outside ``$HOME`` became a pointer the store then refused to read, and
+    the artifact silently served a stale snapshot while looking healthy.
+    """
+
+    @pytest.mark.asyncio
+    async def test_project_file_is_linked_with_its_root(
+        self, isolated_store, patch_restricted, linkable_project
+    ) -> None:
+        src = linkable_project / "spec.md"
+        src.write_text("# live", encoding="utf-8")
+        resp = await api_artifacts_create(
+            _request(body={"name": "spec", "content": "# live", "source_path": str(src)})
+        )
+        assert resp.status == 201
+        stored = isolated_store.get(_json_body(resp)["slug"])
+        assert stored.source_path == str(src)
+        assert stored.source_root == str(linkable_project)
+
+    @pytest.mark.asyncio
+    async def test_linked_artifact_reads_live_file(
+        self, isolated_store, patch_restricted, linkable_project
+    ) -> None:
+        # End-to-end proof the recorded root actually authorizes the read: edit
+        # the file behind the artifact's back and the GET must see it.
+        src = linkable_project / "spec.md"
+        src.write_text("# live", encoding="utf-8")
+        created = await api_artifacts_create(
+            _request(body={"name": "spec", "content": "# live", "source_path": str(src)})
+        )
+        slug = _json_body(created)["slug"]
+        src.write_text("# edited externally", encoding="utf-8")
+        resp = await api_artifact_detail(_request(match={"slug": slug}))
+        body = _json_body(resp)
+        assert body["content"] == "# edited externally"
+        assert body["source_missing"] is False
+
+    @pytest.mark.asyncio
+    async def test_disposable_file_keeps_path_as_dedup_identity(
+        self, isolated_store, patch_restricted, disposable_file
+    ) -> None:
+        resp = await api_artifacts_create(
+            _request(
+                body={
+                    "name": "scratch",
+                    "content": "# scratch",
+                    "source_path": str(disposable_file),
+                }
+            )
+        )
+        assert resp.status == 201
+        stored = isolated_store.get(_json_body(resp)["slug"])
+        # A copy keeps the path as PROVENANCE + dedup identity -- it is the only
+        # key find_by_source_path matches on, so dropping it made a second
+        # promotion of the same file mint a duplicate artifact. Liveness is
+        # carried by source_copy_only instead, so no dead pointer is created.
+        assert stored.source_path == str(disposable_file)
+        assert stored.source_root == ""
+        assert stored.source_copy_only is True
+
+    @pytest.mark.asyncio
+    async def test_promoting_a_disposable_file_twice_does_not_duplicate(
+        self, isolated_store, patch_restricted, disposable_file
+    ) -> None:
+        """The copy verdict must keep dedup identity.
+
+        Regression: when a copy stored no ``source_path`` there was nothing for
+        ``find_by_source_path`` to match, so pressing the promote control twice
+        on the same scratch file minted two artifacts.
+        """
+        body = {
+            "name": "scratch",
+            "content": "# scratch",
+            "source_path": str(disposable_file),
+        }
+        first = await api_artifacts_create(_request(body=dict(body)))
+        assert first.status == 201
+        second = await api_artifacts_create(_request(body=dict(body)))
+        # Same artifact, resolved by source_path -- not a second 201.
+        assert second.status == 200
+        assert _json_body(second)["slug"] == _json_body(first)["slug"]
+        assert len(isolated_store.list()) == 1
+
+    @pytest.mark.asyncio
+    async def test_copied_artifact_survives_source_deletion(
+        self, isolated_store, patch_restricted, disposable_file
+    ) -> None:
+        resp = await api_artifacts_create(
+            _request(
+                body={
+                    "name": "scratch",
+                    "content": "# scratch",
+                    "source_path": str(disposable_file),
+                }
+            )
+        )
+        slug = _json_body(resp)["slug"]
+        disposable_file.unlink()
+        detail = _json_body(await api_artifact_detail(_request(match={"slug": slug})))
+        assert detail["content"] == "# scratch"
+        assert detail["source_missing"] is False  # nothing was pointing at it
+
+    @pytest.mark.asyncio
+    async def test_sensitive_path_is_indistinguishable_from_a_missing_one(
+        self, isolated_store, patch_restricted, tmp_path, monkeypatch
+    ) -> None:
+        """A rejected path must not reveal whether it exists.
+
+        A copy verdict RETAINS source_path, so probing existence before the
+        sensitive-path gate would let the response distinguish "this sensitive
+        file is here" from "it is not". Both must look identical.
+        """
+        from kiro_crew.dashboard.handlers import artifacts as art_handlers
+
+        secret = tmp_path / "creds"
+        secret.write_text("SECRET", encoding="utf-8")
+        monkeypatch.setattr(
+            art_handlers.hooks,
+            "validate_file_path",
+            lambda raw: None if "creds" in str(raw) else str(raw),
+        )
+        present = await api_artifacts_create(
+            _request(body={"name": "a", "content": "x", "source_path": str(secret)})
+        )
+        absent = await api_artifacts_create(
+            _request(
+                body={"name": "b", "content": "x", "source_path": str(tmp_path / "creds-gone")}
+            )
+        )
+        assert present.status == absent.status == 201
+        # Neither records the path, so the two responses carry the same signal.
+        assert isolated_store.get(_json_body(present)["slug"]).source_path == ""
+        assert isolated_store.get(_json_body(absent)["slug"]).source_path == ""
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_path_is_not_stored(
+        self, isolated_store, patch_restricted, linkable_project
+    ) -> None:
+        resp = await api_artifacts_create(
+            _request(body={"name": "ghost", "content": "x", "source_path": "/p/nope.md"})
+        )
+        assert resp.status == 201
+        assert isolated_store.get(_json_body(resp)["slug"]).source_path == ""
+
+    @pytest.mark.asyncio
+    async def test_nul_byte_source_path_is_refused_not_a_500(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """A malformed path must be refused, never crash the request.
+
+        ``os.path.realpath`` raises ``ValueError`` on an embedded NUL byte, which
+        would otherwise escape as an HTTP 500.
+        """
+        resp = await api_artifacts_create(
+            _request(body={"name": "x", "content": "c", "source_path": "/tmp/a\x00b.md"})
+        )
+        assert resp.status == 201
+        assert isolated_store.get(_json_body(resp)["slug"]).source_path == ""
+
+    @pytest.mark.asyncio
+    async def test_non_string_source_path_is_ignored(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        resp = await api_artifacts_create(
+            _request(body={"name": "x", "content": "c", "source_path": 42})
+        )
+        assert resp.status == 201
+        assert isolated_store.get(_json_body(resp)["slug"]).source_path == ""
+
+    @pytest.mark.asyncio
+    async def test_request_cannot_nominate_its_own_root(
+        self, isolated_store, patch_restricted, tmp_path, monkeypatch
+    ) -> None:
+        # source_root is never read from the body — only the server-side
+        # classifier can set it. Otherwise a caller could authorize any root.
+        from kiro_crew import artifact_source
+
+        (tmp_path / "tmp").mkdir()
+        monkeypatch.setattr(artifact_source, "_tempdir", lambda: str(tmp_path / "tmp"))
+        loose = tmp_path / "loose" / "doc.md"
+        loose.parent.mkdir()
+        loose.write_text("x", encoding="utf-8")
+        resp = await api_artifacts_create(
+            _request(
+                body={
+                    "name": "x",
+                    "content": "x",
+                    "source_path": str(loose),
+                    "source_root": str(tmp_path),  # attacker-supplied
+                }
+            )
+        )
+        assert resp.status == 201
+        stored = isolated_store.get(_json_body(resp)["slug"])
+        # The path is kept as provenance (it exists), but the ROOT the body
+        # tried to nominate is not: only the classifier sets that, and it grants
+        # a root solely for an observable git repo. This tree is not one, so the
+        # artifact stays a copy no matter what the body claimed.
+        assert stored.source_copy_only is True
+        assert stored.source_root == ""
+        assert stored.source_path == str(loose)
 
 
 class TestDetail:
@@ -1231,7 +1606,7 @@ class TestDenialAudit:
 class TestRelocate:
     """api_artifact_relocate confines source_path to $HOME (+ configured roots),
     so an agent cannot aim an artifact at /etc/passwd or another user's files
-    and exfiltrate them via a later GET (PR #14 nrb + CodeQL py/path-injection)."""
+    and exfiltrate them via a later GET (PR #14 alice + CodeQL py/path-injection)."""
 
     @pytest.mark.asyncio
     async def test_home_file_allowed(self, isolated_store, patch_restricted, tmp_path, monkeypatch):
@@ -1254,16 +1629,49 @@ class TestRelocate:
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+        # The barrier now shares the store's root set, which includes the DATA
+        # HOME (the store root's parent). Re-root the store under the fake home
+        # — mirroring production's ~/.kiro/crew/artifacts — so "outside home"
+        # is genuinely outside every allowed root and the denial still means
+        # something.
+        store = ArtifactStore(root=home / ".kiro" / "crew" / "artifacts")
+        monkeypatch.setattr(art_mod, "_default_store", store)
         # A file OUTSIDE home (sibling tmp dir) must be refused with 403.
         outside = tmp_path / "outside" / "secret.txt"
         outside.parent.mkdir()
         outside.write_text("secret")
-        isolated_store.create(name="Doc", content="x", slug="doc", kind="markdown")
+        store.create(name="Doc", content="x", slug="doc", kind="markdown")
         resp = await api_artifact_relocate(
             _request(match={"slug": "doc"}, body={"source_path": str(outside)})
         )
         assert resp.status == 403
         assert "home" in _json_body(resp)["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_data_home_root_allowed_third_site_pin(
+        self, isolated_store, patch_restricted, tmp_path, monkeypatch
+    ):
+        """The relocate barrier is the THIRD consumer of the allowed-roots set.
+
+        Its private copy omitted the data-home root, so it refused paths the
+        store's own read/write barriers accept. Sharing
+        ``ArtifactStore.allowed_source_roots()`` closes that gap — pinned here
+        because the two sites disagreeing is invisible until a user hits it.
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+        # isolated_store is rooted at tmp_path/artifacts → data home == tmp_path.
+        target = tmp_path / "in-data-home.md"
+        target.write_text("# hi", encoding="utf-8")
+        isolated_store.create(name="Doc", content="x", slug="doc", kind="markdown")
+        resp = await api_artifact_relocate(
+            _request(match={"slug": "doc"}, body={"source_path": str(target)})
+        )
+        assert resp.status == 200, _json_body(resp)
+        # …and the store agrees, which is the whole point of one producer.
+        assert isolated_store._try_read_source_path(str(target)) == "# hi"
+        assert isolated_store._try_write_source_path(str(target), "# edited") is True
 
     @pytest.mark.asyncio
     async def test_configured_extra_root_allowed(
@@ -1463,6 +1871,243 @@ class TestTeardown:
         # Artifact must NOT be tombstoned — teardown did not actually happen.
         art = isolated_store.get("fail-app")
         assert art.webapp_metadata.lifecycle.status != "expired"
+
+
+class TestSettleBlankEndpoint:
+    """``POST /api/artifacts/{slug}/settle`` -- the atomic leave-time resolution."""
+
+    UNTITLED = "Untitled"
+
+    @pytest.mark.asyncio
+    async def test_deletes_an_abandoned_blank(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(body={"untitled_name": self.UNTITLED, "draft": ""}, match={"slug": "u"})
+        )
+        assert resp.status == 200
+        assert _json_body(resp)["outcome"] == "deleted"
+
+    @pytest.mark.asyncio
+    async def test_saves_a_draft(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(
+                body={"untitled_name": self.UNTITLED, "draft": "# notes"}, match={"slug": "u"}
+            )
+        )
+        assert _json_body(resp)["outcome"] == "saved"
+        assert isolated_store.get("u").content == "# notes"
+
+    @pytest.mark.asyncio
+    async def test_keeps_an_invested_document(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name="Release plan", content="# real", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(
+                body={"untitled_name": self.UNTITLED, "draft": "# stale"}, match={"slug": "u"}
+            )
+        )
+        assert _json_body(resp)["outcome"] == "kept"
+        assert isolated_store.get("u").content == "# real"
+
+    @pytest.mark.asyncio
+    async def test_requires_the_untitled_placeholder(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """Without it the store cannot tell an unnamed document from a named one,
+        and guessing would risk deleting a named document."""
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(_request(body={"draft": ""}, match={"slug": "u"}))
+        assert resp.status == 400
+        assert isolated_store.get("u") is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("draft", [[], {}, 7])
+    async def test_refuses_a_non_string_draft(
+        self, isolated_store, patch_restricted, draft
+    ) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(body={"untitled_name": self.UNTITLED, "draft": draft}, match={"slug": "u"})
+        )
+        assert resp.status == 400
+        assert isolated_store.get("u") is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body,reason",
+        [
+            pytest.param({"draft": ""}, "untitled_name is required", id="missing-placeholder"),
+            pytest.param(
+                {"untitled_name": "  ", "draft": ""},
+                "untitled_name is required",
+                id="blank-placeholder",
+            ),
+            pytest.param(
+                {"untitled_name": "Untitled", "draft": []},
+                "draft must be a string",
+                id="non-string-draft",
+            ),
+        ],
+    )
+    async def test_every_rejection_is_audited(
+        self, isolated_store, patch_restricted, monkeypatch, body, reason
+    ) -> None:
+        """This endpoint can DELETE a document, so a refused attempt is as
+        interesting to an auditor as a successful one -- a silent 400 would leave
+        no trace of it."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew.dashboard.handlers import artifacts as art_handlers
+
+        sel_stub = MagicMock()
+        monkeypatch.setattr(art_handlers, "sel", lambda: sel_stub)
+        isolated_store.create(name="Untitled", content="", slug="u")
+        resp = await api_artifact_settle_blank(_request(body=body, match={"slug": "u"}))
+        assert resp.status == 400
+        kwargs = sel_stub.log_tool_invocation.call_args.kwargs
+        assert kwargs["tool_name"] == "artifact_settle_blank"
+        assert kwargs["outcome"] == "denied"
+        assert reason in kwargs["error"]
+
+    @pytest.mark.asyncio
+    async def test_allow_delete_false_rescues_the_draft_without_deleting(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(
+                body={"untitled_name": self.UNTITLED, "draft": "# typed", "allow_delete": False},
+                match={"slug": "u"},
+            )
+        )
+        assert _json_body(resp)["outcome"] == "saved"
+        assert isolated_store.get("u").content == "# typed"
+
+    @pytest.mark.asyncio
+    async def test_allow_delete_false_keeps_an_empty_shell(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(
+                body={"untitled_name": self.UNTITLED, "draft": "", "allow_delete": False},
+                match={"slug": "u"},
+            )
+        )
+        assert _json_body(resp)["outcome"] == "kept"
+        assert isolated_store.get("u") is not None
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_non_boolean_allow_delete(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name=self.UNTITLED, content="", slug="u")
+        resp = await api_artifact_settle_blank(
+            _request(
+                body={"untitled_name": self.UNTITLED, "draft": "", "allow_delete": "no"},
+                match={"slug": "u"},
+            )
+        )
+        assert resp.status == 400
+        assert isolated_store.get("u") is not None
+
+    @pytest.mark.asyncio
+    async def test_an_already_gone_document_is_not_an_error(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """Double navigation, or deleted in another window -- nothing to settle."""
+        resp = await api_artifact_settle_blank(
+            _request(body={"untitled_name": self.UNTITLED, "draft": ""}, match={"slug": "gone"})
+        )
+        assert resp.status == 200
+        assert _json_body(resp)["outcome"] == "kept"
+
+
+class TestUpdateDocumentType:
+    """The artifact page's type control -- ``PATCH {"kind": ...}``.
+
+    The control exists because some types cannot be inferred from content:
+    markdown and plain text accept identical bytes and differ only in whether
+    ``#`` means "heading" or a literal hash. That is intent, so it has to be
+    stated rather than sniffed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_accepts_a_selectable_kind(self, isolated_store, patch_restricted) -> None:
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"kind": "text"}, match={"slug": "x"}))
+        assert resp.status == 200
+        assert _json_body(resp)["kind"] == "text"
+        assert isolated_store.get("x").kind == "text"
+
+    @pytest.mark.asyncio
+    async def test_choosing_a_kind_does_not_bump_the_version(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """Re-typing is a render change, not a content edit."""
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"kind": "text"}, match={"slug": "x"}))
+        assert _json_body(resp)["version"] == 1
+
+    @pytest.mark.asyncio
+    async def test_choosing_a_kind_pins_it_against_auto_detect(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        """The whole point of the control: a stated type must stick.
+
+        A blank document is born auto-typed, so without pinning the next save
+        would re-detect and silently overrule what the user chose.
+        """
+        isolated_store.create(name="x", content="", slug="x")
+        assert isolated_store.get("x").kind_auto is True
+        await api_artifact_update(_request(body={"kind": "text"}, match={"slug": "x"}))
+        assert isolated_store.get("x").kind_auto is False
+        # JSON content would normally re-type an auto-typed document.
+        isolated_store.update("x", content='{"a": 1}')
+        assert isolated_store.get("x").kind == "text"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["widget", "html", "webapp"])
+    async def test_refuses_kinds_with_no_editor(
+        self, isolated_store, patch_restricted, kind: str
+    ) -> None:
+        """``widget`` / ``html`` render in a sandboxed iframe with no editor, and
+        ``webapp`` carries deploy metadata -- selecting one would strand the
+        document the user is typing in."""
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"kind": kind}, match={"slug": "x"}))
+        assert resp.status == 400
+        assert isolated_store.get("x").kind == "markdown"
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_kind_that_is_not_a_kind(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"kind": "../etc"}, match={"slug": "x"}))
+        assert resp.status == 400
+        assert isolated_store.get("x").kind == "markdown"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", [[], {}, 7, True])
+    async def test_refuses_a_non_string_kind_without_crashing(
+        self, isolated_store, patch_restricted, kind
+    ) -> None:
+        """A JSON body can carry any type here. An unhashable one raises
+        TypeError on the set lookup -- a 500 where the caller deserves a 400."""
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"kind": kind}, match={"slug": "x"}))
+        assert resp.status == 400
+        assert isolated_store.get("x").kind == "markdown"
+
+    @pytest.mark.asyncio
+    async def test_omitting_kind_leaves_it_alone(self, isolated_store, patch_restricted) -> None:
+        """A content save must not disturb the type, or every editor keystroke
+        would fight the control."""
+        isolated_store.create(name="x", content="# hi", slug="x", kind="markdown")
+        resp = await api_artifact_update(_request(body={"content": "# bye"}, match={"slug": "x"}))
+        assert resp.status == 200
+        assert _json_body(resp)["kind"] == "markdown"
 
 
 class TestUpdateWebappMetadata:

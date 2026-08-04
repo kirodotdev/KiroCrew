@@ -79,7 +79,7 @@ curl -sf -X POST "http://127.0.0.1:5476/api/autonudge?token=$TOKEN" \
     "message": "Read ~/project/north_star.md, pick next task, execute.",
     "idle_secs": 60,
     "max_cycles": 30,
-    "stop_sentinel_path": "/home/zedmor/project/STOP"
+    "stop_sentinel_path": "/home/user/project/STOP"
   }'
 ```
 

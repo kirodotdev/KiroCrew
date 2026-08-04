@@ -790,7 +790,8 @@ class _ChatSlot:
         "_stop_event_id",
         "_stop_escalated_card_id",
         "_pending_reset_history_key",
-        "_dirty",
+        "_dirty_flag",
+        "_dirty_gen",
         "_orch_tracker",
         "_auto_run",
         "_recovery_chat_triggered",
@@ -845,6 +846,7 @@ class _ChatSlot:
         "_browse_mode",
         "_side",
         "_acp_client",
+        "_steer_segment_cut",
         "_native_subagent_tracker",
         "_native_subagent_output",
         "_pending_steers",
@@ -927,7 +929,10 @@ class _ChatSlot:
         # inline because the endpoint can be reached from inside the kiro-cli
         # process group via the set_project MCP tool.
         self._pending_reset_history_key: str | None = None
-        self._dirty: bool = False  # True when messages changed since last flush
+        self._dirty_flag: bool = False  # True when messages changed since last flush
+        # Bumped by the _dirty setter on every True. Lets the periodic flush tell
+        # "the True I started this save under" from "a NEW True set during it".
+        self._dirty_gen: int = 0
         self._orch_tracker: Any = None  # OrchestrationTracker, set by gateway
         self._auto_run: bool = False  # "Go All" — skip stage gates
         self._recovery_chat_triggered: bool = False  # guard against concurrent failure recovery
@@ -1044,8 +1049,8 @@ class _ChatSlot:
         self._frozen_prefix_cache: tuple[float, int, int, str, list[str]] | None = None
         # Set by rewind/regenerate after they TRUNCATE the window. While set,
         # _save_slot_to_history takes the archive-safe rewrite path so the
-        # dropped tail is archived — even if the inline rewrite save failed
-        # (#3): the next 5s flush then retries the rewrite instead of silently
+        # dropped tail is archived — even if the inline rewrite save failed:
+        # the next 5s flush then retries the rewrite instead of silently
         # overwriting (the default save skips archiving). Cleared on a
         # successful rewrite save.
         self._pending_rewrite: bool = False
@@ -1060,6 +1065,16 @@ class _ChatSlot:
         # dashboard steer handler) reach the running session's client to inject
         # a mid-turn steer. None when idle.
         self._acp_client = None
+        # Sync callable published by _run_chat alongside _acp_client (cleared in
+        # the same finally): flushes the turn's accumulated text as a finalized
+        # assistant segment NOW. The steer handler calls it right BEFORE
+        # persisting the steer user message, so the transcript order is
+        # [assistant(pre-steer), user(steer), assistant(post-steer)] — matching
+        # what the client rendered live — instead of the whole segment landing
+        # BELOW the steer bubble at end-of-turn (and stranding the pre-steer
+        # chunk entries above it, which _flush_segment's trailing-run walk could
+        # then never reclaim). None when idle.
+        self._steer_segment_cut: Callable[[], None] | None = None
         # Native kiro-cli subagents run inside the parent ACP turn. Keep their
         # live and terminal state on the slot so reconnects can hydrate cards.
         self._native_subagent_tracker: dict[str, dict[str, Any]] = {}
@@ -1072,8 +1087,42 @@ class _ChatSlot:
         # and — the point of the mechanism — REQUEUED as ordinary queue cards
         # by _run_chat's finally when the turn dies first (stall-cancel, user
         # STOP, error). Without this, a steer swallowed by a dying turn
-        # vanished with no trace (2026-07-17 incident; see the requeue site).
+        # vanished with no trace (see the requeue site).
         self._pending_steers: list[str] = []
+
+    @property
+    def _dirty(self) -> bool:
+        """True while this slot holds state not yet confirmed on disk.
+
+        Deliberately a property so that ``_dirty_gen`` is bumped centrally by the
+        ~20 existing ``slot._dirty = True`` sites without editing any of them.
+
+        Two independent readers depend on this staying True for the WHOLE
+        duration of a save, not just until the save starts:
+
+        * ``chat_fork`` treats it as "unpersisted in-memory state exists". A False
+          read makes it skip both the in-memory tail append and the durable
+          pre-fork save, so it forks from stale disk and the new session silently
+          omits the newest messages.
+        * ``_save_slot_to_history``'s resumed-slot no-op guard skips when
+          ``_resumed_count > 0 and len(window) <= _resumed_count and not _dirty``;
+          its comment states the assumption directly — "a dirty slot whose length
+          merely equals the resumed count still falls through ... otherwise an
+          in-place edit after resume would never reach disk."
+
+        So the periodic flush must NOT clear this early to protect itself against
+        clobbering a concurrent mark. It compares ``_dirty_gen`` instead.
+        """
+        return self._dirty_flag
+
+    @_dirty.setter
+    def _dirty(self, value: bool) -> None:
+        self._dirty_flag = value
+        if value:
+            # Monotonic: only ever advances, so a wrapped-around compare is
+            # impossible and a missed bump can only cause an extra (harmless)
+            # flush, never a skipped one.
+            self._dirty_gen += 1
 
     @property
     def _plan_stage_count(self) -> int:
@@ -1167,7 +1216,7 @@ class _ChatSlot:
             del self.messages[:excess]
             self._resumed_count = max(0, self._resumed_count - excess)
             # A trimmed leading window message may only join the frozen prefix
-            # once it is actually on disk (#8). Credit _disk_older_count only
+            # once it is actually on disk. Credit _disk_older_count only
             # for the persisted portion; the unpersisted overflow (should not
             # happen between 5s flushes) is logged rather than silently counted
             # as on-disk, which would have stranded those turns.
@@ -2338,11 +2387,29 @@ class DashboardState:
         for slot in list(self._slots.values()):
             if not slot._dirty or not slot.messages:
                 continue
+            # Clear the dirty bit only if NOTHING re-marked the slot while this
+            # save was running. This runs on an executor thread and the event loop
+            # keeps mutating the slot underneath it, so a plain post-save
+            # `_dirty = False` would overwrite a mark set DURING the save (e.g.
+            # _flush_file_changes attaching file_changes) — the stale snapshot
+            # would be the last thing written and every later pass would skip the
+            # slot, so the late mutation would never reach disk.
+            #
+            # The generation compare is used instead of consuming the bit up front
+            # because `_dirty` must stay True for the whole save: `chat_fork` reads
+            # it as "unpersisted state exists" (a False read makes it fork from
+            # stale disk), and `_save_slot_to_history`'s resumed-slot no-op guard
+            # is written assuming a dirty slot still reads dirty during the save.
+            # See the `_dirty` property for both contracts.
+            gen = slot._dirty_gen
             try:
                 _save_slot_to_history(self, slot)
-                slot._dirty = False
             except Exception:
+                # Leave _dirty set so the next 5s pass retries.
                 logger.warning("Flush failed for slot %s", slot.key, exc_info=True)
+            else:
+                if slot._dirty_gen == gen:
+                    slot._dirty = False
         # Snapshot the live tab set so a gateway restart can restore exactly
         # the tabs the user had open, regardless of last-message age. Without
         # this, restore_recent_sessions only brings back sessions whose
@@ -2448,7 +2515,7 @@ class DashboardState:
         # Disk catches up on the next full rewrite (ack/delete/clear paths).
         sweep_expired_notifications(self._notification_log)
         self._notification_log.append(note)
-        # Bound the in-memory list (GPT 5.6 round 17): only the disk load
+        # Bound the in-memory list: only the disk load
         # path capped it before, so sustained live deliveries grew the list
         # without limit — and the per-delivery sweep above scans it, making
         # delivery O(N²) over time. Same cap as the persisted file; oldest
@@ -3840,14 +3907,14 @@ def _note_ts_epoch(note: dict[str, Any]) -> float | None:
         # float() of a numeric STRING beyond float range (e.g. "-1e999")
         # returns inf/-inf without raising — a -inf epoch would make every
         # TTL comparison read "expired" and the sweep would destroy the row,
-        # violating the never-destroy-on-ambiguity rule (GPT 5.6 round 23).
+        # violating the never-destroy-on-ambiguity rule.
         # NaN likewise carries no ordering meaning. Treat both as
         # unparseable (note kept).
         return parsed if math.isfinite(parsed) else None
     except (TypeError, ValueError, OverflowError):
         # OverflowError: float() of a JSON integer beyond float range (e.g.
         # 10**400) raises rather than returning inf — one poison row must
-        # not abort the whole sweep (GPT 5.6 round 18).
+        # not abort the whole sweep.
         pass
     try:
         return datetime.fromisoformat(str(ts)).timestamp()
@@ -3935,7 +4002,7 @@ def _load_notifications() -> list[dict[str, Any]]:
         # Sweeping after truncation loses data: with more than N rows on
         # disk, newer expired-passive rows would displace older LIVE rows
         # during truncation, and the next full rewrite would delete those
-        # live rows permanently (GPT 5.6 round 11). Disk rewrites lazily on
+        # live rows permanently. Disk rewrites lazily on
         # the next mutation; the in-memory view is authoritative for serving.
         sweep_expired_notifications(entries)
         # Keep only the most recent N live rows
@@ -3999,7 +4066,7 @@ def _maybe_trim_notifications(path: Path) -> None:
     """Trim the notifications file if it exceeds 2x the max.
 
     Expired passive rows are discarded BEFORE the recency cap — the same
-    displacement hazard as the load path (GPT 5.6 round 12): trimming the
+    displacement hazard as the load path: trimming the
     raw tail first would retain newer expired-passive rows while deleting
     older LIVE rows, permanently losing history after the next load-time
     sweep. Unparseable lines are kept (never destroy on ambiguity).

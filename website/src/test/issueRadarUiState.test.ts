@@ -13,7 +13,7 @@ describe('issue-radar persisted UI state coercion', () => {
   })
 
   it('falls back to number for retired or malformed sort keys', () => {
-    // 'ranking' was the AI-ordered sort, removed from the app.
+    // 'ranking' is a retired sort key (the AI-ordered sort).
     for (const bad of ['ranking', '', 'Number', undefined, null, 7, {}]) {
       expect(coerceSortKey(bad)).toBe('number')
     }
@@ -24,7 +24,7 @@ describe('issue-radar persisted UI state coercion', () => {
   })
 
   it('falls back to overview for retired or malformed dashboard tabs', () => {
-    // ranking / insights / duplicates were placeholder dashboards, now removed.
+    // ranking / insights / duplicates are retired placeholder dashboard tabs.
     for (const bad of ['ranking', 'insights', 'duplicates', '', undefined, null, 3, []]) {
       expect(coerceDashboardTab(bad)).toBe('overview')
     }

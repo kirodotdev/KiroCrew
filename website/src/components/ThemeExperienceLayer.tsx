@@ -608,8 +608,8 @@ export default function ThemeExperienceLayer() {
         const w = Number(data.width)
         const h = Number(data.height)
         // Clamp against the frame's DECLARED bounds, not one global constant, so
-        // a runtime resize cannot escape the install-time containment ceiling
-        // (arbiter MEDIUM). A declared height ceiling (topbar `data-theme-maxh`)
+        // a runtime resize cannot escape the install-time containment ceiling.
+        // A declared height ceiling (topbar `data-theme-maxh`)
         // clamps height regardless of pointer state — a full-width strip stays a
         // strip even though it is click-through. Pointer-interactive overlays
         // additionally may not grow past their placement box (can't become a

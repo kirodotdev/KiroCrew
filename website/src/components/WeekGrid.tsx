@@ -92,8 +92,7 @@ export function parseCronSlots(job: CronJob, renderTz: string): Slot[] {
   const dows = [...new Set(rawDows.map(d => d === 7 ? 0 : d))]
 
   // Source TZ: each job's stored timezone. Legacy jobs without a TZ are
-  // treated as UTC (the historical default before CronService.timezone
-  // existed) — same assumption the old code made implicitly.
+  // treated as UTC (the default when no timezone is set).
   const srcTz = job.timezone || 'UTC'
 
   const slots: Slot[] = []

@@ -1,16 +1,16 @@
 /**
  * Nav-rail + Settings-tab label translation.
  *
- * These labels are the most visible strings in the app, and they were the ones
- * the codemod could NOT convert: both `builtins.tsx` surfaces and `SettingsPage`
- * TABS are evaluated at MODULE LOAD, so a translated literal there would be
- * frozen in whichever language was active at import time. A screenshot of the
- * live dashboard caught it — everything switched to Chinese except the nav.
+ * These labels are the most visible strings in the app, and they cannot be
+ * inline-translated: both `builtins.tsx` surfaces and `SettingsPage` TABS are
+ * evaluated at MODULE LOAD, so a translated literal there would be frozen in
+ * whichever language was active at import time — everything switches language
+ * except the nav.
  *
- * The fix is `labelKey` + `surfaceLabel()` (resolved per render) and a
- * `buildTabs()` function instead of a `TABS` constant. These tests pin that
- * lazy-resolution property directly, since a "does it render" test on the
- * component would pass even with a frozen label.
+ * So each carries a `labelKey` resolved per render via `surfaceLabel()`, and
+ * tabs come from a `buildTabs()` function instead of a `TABS` constant. These
+ * tests pin that lazy-resolution property directly, since a "does it render"
+ * test on the component would pass even with a frozen label.
  */
 
 import { describe, it, expect, afterEach } from 'vitest'

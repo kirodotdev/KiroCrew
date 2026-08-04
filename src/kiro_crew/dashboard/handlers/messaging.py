@@ -15,16 +15,23 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.browser.auth import ensure as browser_auth_ensure
+from kiro_crew.browser.command_bus import (
+    DEFAULT_COMMAND_TIMEOUT_MS,
+    DEFAULT_DRAIN_WAIT_MS,
+    NoPanelError,
+    QueueFullError,
+    get_command_bus,
+)
 from kiro_crew.browser.screencast import BROWSER_FRAME_EVENT, build_frame_payload
 from kiro_crew.browser.setup import (
     get_extension_token,
     has_playwright_extension,
     register_playwright_proxy,
 )
-from kiro_crew.constants import CHAT_TURN_TIMEOUT
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
 from kiro_crew.dashboard.chat_utils import _remove_queued_by_id
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.origin import is_direct_local_request, is_loopback
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_END,
@@ -837,27 +844,15 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
             error="internal-secret authentication required (cookie callers forbidden)",
         )
         return web.json_response({"error": "internal-secret authentication required"}, status=403)
-    # Bound the body BEFORE decoding, mirroring the app push endpoint:
-    # without this the strict-internal route inherits the server-wide
-    # client_max_size, and a large JSON object would be buffered and decoded
-    # on the event-loop thread (GPT 5.6 round 11). 64 KB is generous --
-    # payload fields have their own caps.
-    _max_body = 64 * 1024
-    if request.content_length and request.content_length > _max_body:
-        return web.json_response({"error": "payload too large"}, status=413)
-    chunks: list[bytes] = []
-    received = 0
-    async for chunk in request.content.iter_chunked(8192):
-        received += len(chunk)
-        if received > _max_body:
-            return web.json_response({"error": "payload too large"}, status=413)
-        chunks.append(chunk)
-    try:
-        body = json.loads(b"".join(chunks))
-    except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "body must be a JSON object"}, status=400)
+    # Bound the body BEFORE decoding, mirroring the app push endpoint: without
+    # this the strict-internal route inherits the server-wide client_max_size,
+    # and a large JSON object would be buffered and decoded on the event-loop
+    # thread. Shared helper so the cap and the 413/400
+    # contract cannot drift from the app push endpoint.
+    body, _cap_err = await read_bounded_json(request)
+    if _cap_err is not None:
+        return _cap_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     # Type-check optional fields BEFORE payload construction: the bus
     # validator assumes str/list shapes, so a non-string url or non-list
     # actions would raise AttributeError/TypeError past the
@@ -1206,17 +1201,11 @@ async def api_send_message(request: web.Request) -> web.Response:
                         # _find_prompt, _list_aim_prompts), so we can't import
                         # it at module top-level without a cycle.
                         from kiro_crew.dashboard.chat_runner import _run_chat
+                        from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 
                         slot.append("inject", wrapped, inject_cls)
-                        task = asyncio.create_task(
-                            asyncio.wait_for(
-                                _run_chat(state, slot, wrapped),
-                                timeout=CHAT_TURN_TIMEOUT,
-                            )
-                        )
+                        task = spawn_guarded_turn(state, slot, _run_chat(state, slot, wrapped))
                         slot.task = task
-                        state._background_tasks.add(task)
-                        task.add_done_callback(state._background_tasks.discard)
                         state.push_slots_update()
                     sent_session = True
         # Fall back to normal delivery if no session target or session is gone
@@ -1844,6 +1833,201 @@ async def api_browser_pump_audit(request: web.Request) -> web.Response:
         downstream_service="browser",
         source="pump",
     )
+    return web.json_response({"ok": True})
+
+
+async def api_browser_command(request: web.Request) -> web.Response:
+    """POST /api/browser/command — run one op against the native browser panel.
+
+    Called by the Playwright MCP proxy. Body:
+    ``{"session_key": str, "op": str, "args": object, "timeout_ms"?: int}``.
+    Enqueues the op on the command bus and awaits the native panel's result.
+
+    Responses:
+    - 200 ``{"id", "ok": true, "result": <any>}`` — op ran and succeeded;
+    - 200 ``{"id", "ok": false, "error": str}`` — op ran but failed;
+    - 503 ``{"error": "no-native-panel", "code": "no_native_panel"}`` — no Electron poller registered for
+      ``session_key`` (returned FAST, no wait, so the proxy falls back to
+      Playwright);
+    - 504 ``{"error": "timeout", "code": "timeout"}`` — the panel did not answer in time.
+
+    Loopback-gated like ``api_browser_frame``, AND requires proven
+    ``X-Internal-Secret`` auth. Membership in the strict-internal path set is NOT
+    sufficient on its own: that middleware still admits a loopback dashboard
+    *cookie* caller, so a browser-credentialed page could otherwise drive,
+    intercept or forge native-browser operations. ``request["internal_auth"]`` is
+    set only on the validated ``X-Internal-Secret`` path — exactly the transport
+    the MCP proxy and the Electron main process use.
+    """
+    if not is_loopback(request.remote or "") or request.get("internal_auth") is not True:
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="browser_command",
+            outcome="denied",
+            downstream_service="browser",
+            resources="non-loopback",
+        )
+        return web.json_response({"error": "loopback only", "code": "loopback_only"}, status=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="browser_command",
+            outcome="invalid_input",
+            downstream_service="browser",
+            resources="invalid-json",
+        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    session_key = body.get("session_key")
+    op = body.get("op")
+    args = body.get("args")
+    timeout_ms = body.get("timeout_ms")
+    if not isinstance(session_key, str) or not session_key or not isinstance(op, str) or not op:
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="browser_command",
+            outcome="invalid_input",
+            downstream_service="browser",
+            resources="missing session_key/op",
+        )
+        return web.json_response({"error": "session_key and op required", "code": "session_key_and_op_required"}, status=400)
+    if args is not None and not isinstance(args, dict):
+        return web.json_response({"error": "args must be an object", "code": "args_must_be_object"}, status=400)
+    if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or timeout_ms <= 0:
+        timeout_ms = DEFAULT_COMMAND_TIMEOUT_MS
+    bus = get_command_bus()
+    try:
+        outcome = await bus.submit(session_key, op, args or {}, timeout_ms=timeout_ms)
+    except NoPanelError:
+        # Fast path: no live native panel. The proxy falls back to Playwright.
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="browser_command",
+            outcome="no_panel",
+            downstream_service="browser",
+            resources=op,
+        )
+        return web.json_response({"error": "no-native-panel", "code": "no_native_panel"}, status=503)
+    except QueueFullError:
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="browser_command",
+            outcome="queue_full",
+            downstream_service="browser",
+            resources=op,
+        )
+        return web.json_response({"error": "queue-full", "code": "queue_full"}, status=429)
+    except asyncio.TimeoutError:
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="browser_command",
+            outcome="timeout",
+            downstream_service="browser",
+            resources=op,
+        )
+        return web.json_response({"error": "timeout", "code": "timeout"}, status=504)
+    _sel().log_tool_invocation(
+        session_key="dashboard",
+        tool_name="browser_command",
+        outcome="completed" if outcome.get("ok") else "failed",
+        downstream_service="browser",
+        resources=op,
+    )
+    response: dict[str, Any] = {"id": outcome.get("id"), "ok": bool(outcome.get("ok"))}
+    if outcome.get("ok"):
+        response["result"] = outcome.get("result")
+    else:
+        response["error"] = outcome.get("error") or "error"
+    return web.json_response(response)
+
+
+async def api_browser_command_drain(request: web.Request) -> web.Response:
+    """POST /api/browser/command-drain — long-poll for a queued browser command.
+
+    Called by the Electron main process. Body:
+    ``{"session_keys": [str, ...], "wait_ms"?: int}``.
+
+    SIDE EFFECT: registers ``session_keys`` as having a live native panel (TTL
+    ~2x ``wait_ms``); this registration is what ``/api/browser/command`` checks
+    to decide whether to 503.
+
+    Responses:
+    - 200 ``{"id", "session_key", "op", "args"}`` — a command is available;
+    - 204 empty — nothing arrived within ``wait_ms``.
+
+    Loopback-gated exactly like ``api_browser_frame``.
+    """
+    if not is_loopback(request.remote or "") or request.get("internal_auth") is not True:
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="browser_command_drain",
+            outcome="denied",
+            downstream_service="browser",
+            resources="non-loopback",
+        )
+        return web.json_response({"error": "loopback only", "code": "loopback_only"}, status=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    session_keys = body.get("session_keys")
+    if not isinstance(session_keys, list) or not all(isinstance(k, str) for k in session_keys):
+        return web.json_response({"error": "session_keys must be a list of strings", "code": "session_keys_invalid"}, status=400)
+    wait_ms = body.get("wait_ms")
+    if not isinstance(wait_ms, int) or isinstance(wait_ms, bool) or wait_ms <= 0:
+        wait_ms = DEFAULT_DRAIN_WAIT_MS
+    bus = get_command_bus()
+    command = await bus.drain(session_keys, wait_ms=wait_ms)
+    if command is None:
+        return web.Response(status=204)
+    return web.json_response(command)
+
+
+async def api_browser_command_result(request: web.Request) -> web.Response:
+    """POST /api/browser/command-result — post a native browser command's result.
+
+    Called by the Electron main process. Body:
+    ``{"id": str, "ok": bool, "result"?: <any>, "error"?: str}``.
+
+    Responses:
+    - 200 ``{"ok": true}`` — the result was matched to a waiting command;
+    - 404 ``{"error": "unknown-command", "code": "unknown_command"}`` — the id already timed out or never
+      existed.
+
+    Loopback-gated exactly like ``api_browser_frame``.
+    """
+    if not is_loopback(request.remote or "") or request.get("internal_auth") is not True:
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="browser_command_result",
+            outcome="denied",
+            downstream_service="browser",
+            resources="non-loopback",
+        )
+        return web.json_response({"error": "loopback only", "code": "loopback_only"}, status=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    command_id = body.get("id")
+    if not isinstance(command_id, str) or not command_id:
+        return web.json_response({"error": "id required", "code": "id_required"}, status=400)
+    ok = bool(body.get("ok"))
+    result = body.get("result")
+    error = body.get("error")
+    if error is not None and not isinstance(error, str):
+        error = str(error)
+    bus = get_command_bus()
+    matched = await bus.complete(command_id, ok, result=result, error=error)
+    if not matched:
+        return web.json_response({"error": "unknown-command", "code": "unknown_command"}, status=404)
     return web.json_response({"ok": True})
 
 

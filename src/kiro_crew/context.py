@@ -250,12 +250,11 @@ _MULTIBYTE_TABLE = str.maketrans(
 # Per-section caps as PERCENTAGES of the budget base. Each section is truncated
 # to its OWN cap independently, and the global ceiling (_MAX_CONTEXT_CHARS,
 # below) is their SUM — so a large skills/steering set can never eat into
-# memory/lessons space. Previously every section shared one fixed 165k pool, so
-# the position-based hard truncation silently dropped tail content (lessons,
-# provenance) once skills+steering pushed the total over. Splitting into
-# independent caps (per the design) is what makes usage-ranked top-K
-# meaningful; the cost is a larger startup context (the sum), NOT a smaller
-# memory budget.
+# memory/lessons space. A single shared pool would let position-based hard
+# truncation silently drop tail content (lessons, provenance) once
+# skills+steering pushed the total over. Independent caps (per the design) are
+# what make usage-ranked top-K meaningful; the cost is a larger startup
+# context (the sum), NOT a smaller memory budget.
 def _budget(fraction: float) -> int:
     """A section char cap as a percentage of the budget base."""
     return int(_CONTEXT_BUDGET_BASE * fraction)
@@ -1735,9 +1734,9 @@ class ContextBuilder:
         lessons_ctx = ""
         if not blocks_reads:
             # One query, not two: get_lessons_context() already returns "" when the
-            # store holds no lessons, so the former get_lessons() existence probe
-            # was a duplicate SELECT * over the same rows (embedding blobs included)
-            # whose only use was an emptiness check.
+            # store holds no lessons, so a separate get_lessons() existence probe
+            # would be a duplicate SELECT * over the same rows (embedding blobs
+            # included) whose only use is an emptiness check.
             lessons_ctx = memory.vector_store.get_lessons_context() if memory.vector_store else ""
             if not lessons_ctx:
                 lessons_ctx = self.lessons.get_context()
@@ -2191,8 +2190,8 @@ class ContextBuilder:
 
         # Lightweight reminder for interactive choices. ALL providers (incl.
         # Claude Code) use the [OPTIONS: ...] text tag — the dashboard/Slack UI
-        # renders clickable option buttons only from that tag. Steering CC to
-        # the AskUserQuestion tool instead left CC options unrendered.
+        # renders clickable option buttons only from that tag. Routing CC to
+        # the AskUserQuestion tool instead would leave CC options unrendered.
         if interactive:
             parts.append(
                 "\n\n(If presenting choices, end with [OPTIONS: choice1 | choice2 | choice3] "

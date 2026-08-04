@@ -80,10 +80,11 @@ describe('ConnectPanel provider rows', () => {
   it('lists exactly the sources that can be connected', async () => {
     const user = userEvent.setup()
     renderHost()
-    // Every listed row must lead somewhere: an unwired source used to render as
-    // a disabled row with a "Soon" badge, which occupied a full row of the card
-    // while offering the user nothing. Those rows are gone, so their absence is
-    // pinned here — re-adding one would need a decision, not a silent revert.
+    // Every listed row must lead somewhere: an unwired source rendered as a
+    // disabled row with a "Soon" badge would occupy a full row of the card while
+    // offering the user nothing. Only connectable sources are listed, and their
+    // absence is pinned here — adding a dead row would need a decision, not a
+    // silent revert.
     for (const name of ['Jira', 'Linear']) {
       expect(screen.queryByRole('button', { name: new RegExp(name) })).toBeNull()
     }

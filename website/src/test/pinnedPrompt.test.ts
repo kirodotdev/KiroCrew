@@ -34,7 +34,7 @@ describe('pinHandoffY', () => {
   it('a one-line prompt hands over exactly as its bubble top reaches the card top', () => {
     // Row = ROW_PAD_Y + bubble + ROW_PAD_Y, and a one-line bubble is cardH tall.
     // Pinning at rowBottom <= handoffY therefore fires at bubbleTop === foldY +
-    // ROW_PAD_Y — the card's own top — i.e. the old top-edge rule, unchanged.
+    // ROW_PAD_Y — the card's own top — i.e. the top-edge rule.
     const foldY = 100, cardH = 46.75
     const handoffY = pinHandoffY(foldY, cardH)
     const rowBottomAtHandoff = handoffY
@@ -51,7 +51,7 @@ describe('findPinnedPromptIdx', () => {
 
   it('pins the previous prompt while the straddling row is itself a prompt', () => {
     // p2 straddles the hand-off line — still readable in the transcript, so the
-    // banner keeps showing p1 (this is the tall-prompt fix).
+    // banner keeps showing p1.
     const items = [user('p1', 0), turn(), user('p2', 2), turn()]
     expect(findPinnedPromptIdx(items, 2)).toBe(0)
   })

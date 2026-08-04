@@ -1,27 +1,45 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { SHORTCUTS_ENABLED_KEY } from './useKeyboardShortcuts'
+import {
+  chordMatchesEvent,
+  hasCustomChord,
+  isModKEvent,
+  loadQuickSearchConfig,
+} from '../lib/quickSearchShortcut'
 
 /**
- * Global trigger + open/close state for the Search Everywhere command palette
- *. Owns two bindings:
+ * Global trigger + open/close state for the Search Everywhere command palette.
+ * The activation gesture is user-configurable (Settings → Shortcuts); this hook
+ * reads the stored {@link QuickSearchConfig} live per keystroke and dispatches
+ * accordingly. The three preset modes are:
  *
- *  - **double-Shift** (primary): two bare `Shift` keydowns within
+ *  - **`double-shift`** (default): two bare `Shift` keydowns within
  *    {@link DOUBLE_SHIFT_WINDOW_MS}. This is the IntelliJ "Search Everywhere"
  *    gesture and is page-safe — a lone Shift has no default browser action, so
  *    nothing needs cancelling and it never collides with a real shortcut.
- *  - **⌘K / Ctrl+K** (alias): toggles the palette. `preventDefault()` keeps a
- *    browser/extension binding (e.g. some "focus search") from stealing it.
- *    ⌘K is intentionally chosen over reserved combos (⌘P print, ⌘W close tab,
- *    ⌘1–9 tab switch, ⌘⌥← / ⌘⌥→) which Chrome will NOT let a page cancel.
+ *  - **`mod-k`**: ⌘K (macOS) / Ctrl+K (Windows/Linux) toggles the palette;
+ *    double-Shift is off.
+ *  - **`custom`**: a user-recorded chord toggles the palette; double-Shift is
+ *    off.
  *
- * Both keyboard bindings honour the global "Enable shortcuts" toggle
+ * **⌘K / Ctrl+K is a built-in alias in every mode EXCEPT `custom` with a
+ * recorded chord.** It toggles the palette, `preventDefault()` keeps a
+ * browser/extension binding (e.g. some "focus search") from stealing it, and it
+ * is intentionally chosen over reserved combos (⌘P print, ⌘W close tab, ⌘1–9
+ * tab switch) which Chrome will NOT let a page cancel. Keeping it live until the
+ * user sets their OWN chord guarantees the palette is always reachable from the
+ * keyboard — so selecting `custom` before recording never strands the user.
+ * This also makes the default (`double-shift` + the ⌘K alias) identical to the
+ * previously shipped hard-coded behavior.
+ *
+ * All bindings honour the global "Enable shortcuts" toggle
  * ({@link SHORTCUTS_ENABLED_KEY}, shared with useKeyboardShortcuts /
  * useInstanceShortcuts and surfaced by the Settings → Shortcuts "Search
- * Everywhere" row). The flag is read live per keystroke — a Settings change
- * takes effect without re-registering the listener — so when shortcuts are
- * off, double-Shift and ⌘K fall through to the browser. The palette stays
- * reachable via its nav button, which calls `openPalette` directly and is
- * unaffected by the gate.
+ * Everywhere" row). Both the flag and the shortcut config are read live per
+ * keystroke — a Settings change takes effect without re-registering the
+ * listener — so when shortcuts are off, every binding falls through to the
+ * browser. The palette stays reachable via its nav button, which calls
+ * `openPalette` directly and is unaffected by the gate.
  *
  * The listener is attached to `window` (not an element) so the gesture works
  * regardless of focus — including while a chat textarea or a nav row is
@@ -70,7 +88,7 @@ export function useCommandPalette(): UseCommandPalette {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // Honour the global "Enable shortcuts" toggle. Read live so a Settings
-      // change applies without re-registering. When off, both bindings fall
+      // change applies without re-registering. When off, every binding falls
       // through to the browser; the palette's nav button (openPalette) is
       // unaffected. Reset any pending first Shift tap so re-enabling can't
       // resume a half-formed double-tap from across the disabled window.
@@ -79,20 +97,43 @@ export function useCommandPalette(): UseCommandPalette {
         return
       }
 
-      // ⌘K / Ctrl+K alias — toggle. Require no other modifiers so it doesn't
-      // swallow richer combos. Cancelable in a real Chrome tab.
-      if ((e.key === 'k' || e.key === 'K') && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      // Read the activation preference live, so a Settings change takes effect
+      // on the very next keystroke without re-registering this listener.
+      const config = loadQuickSearchConfig()
+      const customBound = hasCustomChord(config)
+
+      // ⌘K / Ctrl+K — toggle. Active as the primary gesture in `mod-k`, and as
+      // the built-in alias in `double-shift` and in `custom` BEFORE a chord is
+      // recorded. Suppressed only once the user has bound their own chord, so
+      // it can't shadow a custom binding on the same key. Require no other
+      // modifiers so it doesn't swallow richer combos. Cancelable in a real
+      // Chrome tab.
+      if (!customBound && isModKEvent(e)) {
         e.preventDefault()
         lastShiftRef.current = 0
         setOpen(v => !v)
         return
       }
 
-      // double-Shift (primary) — open. Two bare Shift presses in quick
-      // succession. Modifier-combined Shift (Shift+Enter, Shift+letter for
-      // capitals, Alt+Shift+… app shortcuts) is excluded via the modifier
+      // Custom chord — toggle. Only when the user has recorded a valid chord.
+      if (customBound && config.custom && chordMatchesEvent(e, config.custom)) {
+        e.preventDefault()
+        lastShiftRef.current = 0
+        setOpen(v => !v)
+        return
+      }
+
+      // double-Shift — open. Only in `double-shift` mode. Two bare Shift presses
+      // in quick succession. Modifier-combined Shift (Shift+Enter, Shift+letter
+      // for capitals, Alt+Shift+… app shortcuts) is excluded via the modifier
       // guard, and held-Shift auto-repeat is ignored.
-      if (e.key === 'Shift' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (
+        config.mode === 'double-shift' &&
+        e.key === 'Shift' &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
         if (e.repeat) return
         const now = Date.now()
         if (lastShiftRef.current !== 0 && now - lastShiftRef.current <= DOUBLE_SHIFT_WINDOW_MS) {
@@ -104,8 +145,8 @@ export function useCommandPalette(): UseCommandPalette {
         return
       }
 
-      // Any non-Shift key between the two taps cancels the pending first tap,
-      // so "Shift, type something, Shift" never spuriously opens the palette.
+      // Any other key between the two taps cancels the pending first tap, so
+      // "Shift, type something, Shift" never spuriously opens the palette.
       lastShiftRef.current = 0
     }
 

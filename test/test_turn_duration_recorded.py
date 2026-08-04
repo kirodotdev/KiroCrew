@@ -89,8 +89,10 @@ def test_non_numeric_elapsed_cannot_break_serialization(junk):
 EXPECTED_SITES = {
     "dashboard/chat_runner.py": 1,
     "dashboard/handlers/hooks.py": 1,
-    "slack/gateway.py": 6,          # 2 cron + heartbeat + its timeout
-                                    #          + monitor + its timeout
+    "slack/gateway.py": 3,          # 2 cron + _persist_turn_row helper
+                                    # (the helper is the single call site for
+                                    # heartbeat + its timeout + monitor + its
+                                    # timeout, extracted in issue #1086)
     "task_executor.py": 2,          # task step + self-review
     "subagent.py": 1,
     "workflows/agent_exec.py": 1,

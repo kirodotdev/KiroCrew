@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -607,6 +608,12 @@ _FRAMEWORK_OWNED_AGENT_KEYS = frozenset(
         # _preserve_user_agent_edits for why that distinction decides ownership.
         "managedToolPolicy",  # which managed tools an app agent may NOT reach
         "includeMcpJson",  # whether the global mcp.json bleeds into this agent
+        # `resources` holds `file://` URIs into the app's own provisioned tree, written
+        # with `{ENGINE_ROOT}`-style placeholders the GATEWAY renders (see
+        # `_render_shipped_agent`). It is a generated path list, not a preference: a
+        # user-pinned copy would keep pointing at a previous engine root and silently
+        # stop resolving after a re-provision, exactly like `prompt` above.
+        "resources",
     }
 )
 
@@ -674,6 +681,121 @@ def _preserve_user_agent_edits(
     if kept:
         logger.info("Preserved user edits in %s: %s", name, ", ".join(sorted(kept)))
     return merged
+#: Placeholder syntax an agent template uses for a path only known at runtime.
+#:
+#: A shipped builtin's agent config is read from the immutable package root
+#: (:func:`_registration_source`) so mutable installed metadata cannot borrow a
+#: builtin's name. That is correct and stays. But it means a builtin whose agent
+#: config must name a RUNTIME path — one under the data home, which ``KIROCREW_HOME``
+#: can move, or a dependency resolved from the installed Python package — cannot
+#: express it in the packaged file at all.
+#:
+#: `pptx-maker` is that case: its MCP server lives under the provisioned engine root
+#: and is launched with `uv`, neither of which has a fixed location.
+
+
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{[A-Z][A-Z0-9_]*\}")
+
+#: Where the gateway writes the configs it renders itself. Under the data home,
+#: alongside the agent symlinks, NOT in the app's install dir — see
+#: :func:`_render_shipped_agent`.
+_RENDERED_AGENTS_DIRNAME = "rendered-agents"
+
+
+def _placeholder_values(app_name: str) -> dict[str, str]:
+    """Trusted substitutions for *app_name*'s agent templates, or ``{}``.
+
+    Every value is COMPUTED HERE, in the gateway, from the data home and the installed
+    Python package — the same way the app's own provisioner computes them. Nothing is
+    read back from disk, so there is nothing for an attacker with write access to the
+    engine directory to influence.
+
+    An unknown app gets ``{}``, which leaves its template unrendered and therefore
+    unregistered (see :func:`_render_shipped_agent`) — fail-closed, so adding a
+    placeholder to a new app's config is inert until its values are named here.
+    """
+    if app_name != "pptx-maker":
+        return {}
+    # Imported lazily and defensively: this is a builtin's own module, and a
+    # registration path must not fail because one app's package is unimportable.
+    try:
+        from kiro_crew.apps.builtins.pptx_maker.backend import paths as pptx_paths
+        from kiro_crew.apps.builtins.pptx_maker.backend import provision as pptx_provision
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("App %s: cannot resolve placeholder values", app_name)
+        return {}
+    uv_bin = pptx_provision.resolve_uv()
+    if not uv_bin:
+        return {}
+    return {
+        "{UV_BIN}": uv_bin,
+        "{ENGINE_ROOT}": str(pptx_paths.engine_root()),
+        "{ENGINE_MCP_DIR}": str(pptx_paths.engine_mcp_dir()),
+        "{APP_PROMPTS}": str(app_dir(app_name) / "prompts"),
+    }
+
+
+def _render_shipped_agent(app_name: str, agent_path: Path) -> Path | None:
+    """Render *agent_path*'s placeholders and return the gateway-written copy.
+
+    Returns *agent_path* unchanged when the shipped file holds no placeholder, and
+    ``None`` when it holds one that cannot be resolved (nothing is registered rather
+    than registering a config with a literal ``{ENGINE_ROOT}`` in it).
+
+    **The gateway renders the template itself.** An earlier version of this took the
+    app's own provisioned copy from its install dir and verified it was "the template
+    with only placeholders substituted". A reviewer pointed out why that is unsound and
+    they were right: the check constrained WHERE a substitution could appear but not
+    WHAT it could contain, and `{UV_BIN}` is an executable path — so an agent with
+    write access to the engine dir could substitute its own binary and kiro-cli would
+    run it. Constraining the shape of an injection point is not the same as trusting
+    the value that lands in it.
+    Since every value is computable here (:func:`_placeholder_values`), there is no
+    reason to read any of them back from a directory the agent can write. Nothing on
+    the mutable side is trusted now — the bytes come from the immutable package, the
+    values from the gateway.
+
+    The output goes under the DATA HOME next to the agent symlinks, not into the app's
+    install dir, so the file kiro-cli reads is not one the app can rewrite afterwards.
+    """
+    try:
+        template = agent_path.read_text(encoding="utf-8")
+    except OSError:
+        return agent_path
+    if not _TEMPLATE_PLACEHOLDER_RE.search(template):
+        return agent_path
+
+    values = _placeholder_values(app_name)
+    rendered = template
+    for placeholder, value in values.items():
+        # `json.dumps` minus the surrounding quotes: the placeholders sit INSIDE JSON
+        # string literals, so a Windows path's backslashes have to be escaped or the
+        # result is invalid JSON (or, worse, a path with a mangled separator).
+        rendered = rendered.replace(placeholder, json.dumps(value)[1:-1])
+    leftover = _TEMPLATE_PLACEHOLDER_RE.search(rendered)
+    if leftover:
+        logger.warning(
+            "App %s: agent %s has an unresolved placeholder %s — not registered",
+            app_name,
+            agent_path.name,
+            leftover.group(0),
+        )
+        return None
+    try:
+        json.loads(rendered)
+    except ValueError:
+        logger.warning("App %s: rendered agent %s is not valid JSON", app_name, agent_path.name)
+        return None
+
+    target_dir = _kiro_agents_dir().parent / _RENDERED_AGENTS_DIRNAME / app_name
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / agent_path.name
+        atomic_write(target, rendered)
+    except OSError as exc:
+        logger.warning("App %s: could not write rendered agent: %s", app_name, exc)
+        return None
+    return target
 
 
 def _register_agents(app_name: str, manifest: AppManifest, app_root: Path) -> list[str]:
@@ -705,6 +827,14 @@ def _register_agents(app_name: str, manifest: AppManifest, app_root: Path) -> li
         if not agent_path.is_file():
             logger.warning("App %s: agent file not found: %s", app_name, agent_path)
             continue
+        # A shipped TEMPLATE is rendered BY THE GATEWAY, from values it computes
+        # itself, into a file under the data home. `None` means a placeholder could
+        # not be resolved, so nothing is registered for this agent rather than
+        # registering a config that names a literal `{ENGINE_ROOT}`.
+        resolved = _render_shipped_agent(app_name, agent_path)
+        if resolved is None:
+            continue
+        agent_path = resolved
 
         # Read agent JSON to get the agent name
         try:

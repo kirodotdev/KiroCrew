@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } fro
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Package, Plus, X, Hash, Pen, Columns2, PanelRightClose, Component, PanelBottom, Globe, CircleDot, Folder } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder } from 'lucide-react'
+import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
@@ -29,21 +30,64 @@ import { i18nT } from '../../i18n/t'
 const KIND_ICON: Record<TabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
-  file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Package size={16} />, folder: <Folder size={16} />,
+  file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Component size={16} />, folder: <Folder size={16} />,
 }
 
-/** Views offered by the + menu. */
-const NEW_MENU: { kind: ViewKind | 'terminal'; label: string; icon: ReactNode; desc: string }[] = [
-  { kind: 'changes', label: 'Changes', icon: <GitPullRequest size={15} />, desc: 'Pull requests, checks & reviews' },
-  { kind: 'issues', label: 'Issues', icon: <CircleDot size={15} />, desc: 'Issues mentioned in this session' },
-  { kind: 'files', label: 'Files', icon: <FileText size={15} />, desc: 'Browse & edit files' },
-  { kind: 'artifacts', label: 'Artifacts', icon: <Component size={15} />, desc: 'In-session documents & stars' },
-  { kind: 'subagents', label: 'Subagents', icon: <Bot size={15} />, desc: 'Live agent activity & transcripts' },
-  { kind: 'workflows', label: 'Workflows', icon: <Workflow size={15} />, desc: 'Runs, phases & restartable steps' },
-  { kind: 'logs', label: 'Logs', icon: <ScrollText size={15} />, desc: 'Gateway log stream' },
-  { kind: 'side', label: 'Side', icon: <MessageSquare size={15} />, desc: 'Parallel chat, shared context' },
-  { kind: 'browser', label: 'Browser', icon: <Globe size={15} />, desc: 'View a web page or a local dev server' },
-  { kind: 'terminal', label: 'Terminal', icon: <TerminalSquare size={15} />, desc: 'Shell on the gateway host' },
+/**
+ * Catalog KEYS for the + menu's labels and one-line descriptions.
+ *
+ * Keys, not strings, and in their own tables rather than as `NEW_MENU` fields:
+ * this module evaluates once at import, so an `i18nT()` call here would freeze
+ * the boot language and never re-resolve on a language switch (see
+ * `lib/effort.ts`). The lookups happen at the two render sites below.
+ *
+ * Flat `Record`s of full literal keys, indexed inline at the `i18nT()` call,
+ * because that is the form `scripts/check-i18n-keys.mjs` can resolve statically
+ * — `i18nT(item.labelKey)` over a loop variable cannot be resolved, so a field
+ * on `NEW_MENU` would have made every menu key unverifiable.
+ *
+ * Keyed by `ViewKind | 'terminal'` (not `string`) so adding a view without its
+ * label and description is a type error rather than a missing-key render.
+ */
+export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
+  changes: 'pages.chat.sidePanel.menu_changes',
+  issues: 'pages.chat.sidePanel.menu_issues',
+  files: 'pages.chat.sidePanel.menu_files',
+  artifacts: 'pages.chat.sidePanel.menu_artifacts',
+  subagents: 'pages.chat.sidePanel.menu_subagents',
+  workflows: 'pages.chat.sidePanel.menu_workflows',
+  logs: 'pages.chat.sidePanel.menu_logs',
+  side: 'pages.chat.sidePanel.menu_side',
+  browser: 'pages.chat.sidePanel.menu_browser',
+  terminal: 'pages.chat.sidePanel.menu_terminal',
+}
+
+export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
+  changes: 'pages.chat.sidePanel.menu_changes_desc',
+  issues: 'pages.chat.sidePanel.menu_issues_desc',
+  files: 'pages.chat.sidePanel.menu_files_desc',
+  artifacts: 'pages.chat.sidePanel.menu_artifacts_desc',
+  subagents: 'pages.chat.sidePanel.menu_subagents_desc',
+  workflows: 'pages.chat.sidePanel.menu_workflows_desc',
+  logs: 'pages.chat.sidePanel.menu_logs_desc',
+  side: 'pages.chat.sidePanel.menu_side_desc',
+  browser: 'pages.chat.sidePanel.menu_browser_desc',
+  terminal: 'pages.chat.sidePanel.menu_terminal_desc',
+}
+
+/** Views offered by the + menu. `kind` is the PERSISTED tab id (`usePanelTabs`),
+ *  so it stays a code constant — only its label and description are localised. */
+const NEW_MENU: { kind: ViewKind | 'terminal'; icon: ReactNode }[] = [
+  { kind: 'changes', icon: <GitPullRequest size={15} /> },
+  { kind: 'issues', icon: <CircleDot size={15} /> },
+  { kind: 'files', icon: <FileText size={15} /> },
+  { kind: 'artifacts', icon: <Component size={15} /> },
+  { kind: 'subagents', icon: <Bot size={15} /> },
+  { kind: 'workflows', icon: <Workflow size={15} /> },
+  { kind: 'logs', icon: <ScrollText size={15} /> },
+  { kind: 'side', icon: <MessageSquare size={15} /> },
+  { kind: 'browser', icon: <Globe size={15} /> },
+  { kind: 'terminal', icon: <TerminalSquare size={15} /> },
 ]
 
 const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'side'])
@@ -271,7 +315,7 @@ export default function SidePanel({
   })
 
   // Resizable width (the actbar grid column is auto-sized, so the panel owns
-  // its own width — mirrors the old DetailPanel resize handle).
+  // its own width).
   const WIDTH_KEY = 'mc-side-panel-width'
   const MIN_W = SIDE_PANEL_MIN_W
   const [width, setWidth] = useState(() => {
@@ -340,12 +384,12 @@ export default function SidePanel({
       <div className="side-panel-strip flex items-center gap-1.5 shrink-0 p-2 rounded-tl-xl bg-bg-elevated">
         {/* Collapse the panel (far-left), separated from the tabs by a hairline. */}
         <button
-          className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
+          className="pi-morph flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
           onClick={onClose}
           title={i18nT('pages.chat.sidePanel.close_panel')}
           aria-label={i18nT('pages.chat.sidePanel.close_panel')}
         >
-          <PanelRightClose size={15} />
+          <PanelRightLight size={15} />
         </button>
         <span aria-hidden="true" className="w-px h-5 bg-border shrink-0" />
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
@@ -419,7 +463,7 @@ export default function SidePanel({
                   onClick={() => { openMenuItem(item.kind); closeMenuToTrigger() }}
                 >
                   <span className="text-muted shrink-0">{item.icon}</span>
-                  <span className="flex-1">{item.label}</span>
+                  <span className="flex-1">{i18nT(NEW_MENU_LABEL_KEY[item.kind])}</span>
                 </button>
               ))}
             </div>
@@ -458,12 +502,12 @@ export default function SidePanel({
                   >
                     <div className="flex items-center gap-2.5 w-full text-text">
                       <span className="shrink-0 opacity-80">{item.icon}</span>
-                      <span className="text-[13px] font-medium">{item.label}</span>
+                      <span className="text-[13px] font-medium">{i18nT(NEW_MENU_LABEL_KEY[item.kind])}</span>
                       {badge && (
                         <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium shrink-0">{badge}</span>
                       )}
                     </div>
-                    <div className="text-[11px] text-muted leading-snug">{item.desc}</div>
+                    <div className="text-[11px] text-muted leading-snug">{i18nT(NEW_MENU_DESC_KEY[item.kind])}</div>
                   </button>
                 )
               })}
@@ -690,11 +734,11 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, onTransfer, 
           {onTransfer && (
             <button
               onClick={(e) => { e.stopPropagation(); onTransfer() }}
-              className={`shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
+              className={`pi-morph shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
               title={i18nT('pages.chat.sidePanel.move_to_bottom_panel')}
               aria-label={i18nT('pages.chat.sidePanel.move_to_bottom_panel')}
             >
-              <PanelBottom size={12} />
+              <PanelBottomSolid size={12} />
             </button>
           )}
           {closable && (

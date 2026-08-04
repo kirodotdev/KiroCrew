@@ -43,10 +43,6 @@ describe('es punctuation (style/es.md §1)', () => {
         bad.push(`${key}: ${JSON.stringify(value.slice(0, 60))}`)
       }
     }
-    // The single remaining violation was `themeExperienceLayer.experience` — the
-    // tail half of a split question whose `?` lived in the value while the `¿`
-    // had nowhere to go. Collapsing that sentence (Phase 3 item 1b) removed it,
-    // so this is now exact, like the `¡` check below.
     expect(bad, report(bad)).toEqual([])
   })
 

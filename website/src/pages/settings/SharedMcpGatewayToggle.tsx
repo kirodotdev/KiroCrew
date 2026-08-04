@@ -36,7 +36,7 @@ export function SharedMcpGatewayToggle() {
       const ok = next ? r.ping_ok : !r.running
       if (ok) qc.invalidateQueries({ queryKey: ['mcpGatewayStatus'] })
       // Land on the live gateway metrics — the McpGatewayCard renders on
-      // Developer > System (P5 moved it there), not Settings Overview.
+      // Developer > System, not Settings Overview.
       if (ok && next) { setPhase('idle'); navigate('/developer?tab=system'); return }
       setPhase(ok ? 'done' : 'failed')
     } catch {

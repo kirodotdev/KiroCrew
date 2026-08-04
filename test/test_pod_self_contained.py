@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
 
@@ -38,7 +39,7 @@ def _pod_cfg(tmp_path: Path) -> PodConfig:
 def _provisioned_checkout(tmp_path: Path, name: str = "wt-feature") -> Path:
     """A checkout with a provisioned venv entrypoint, as `pod provision` leaves it."""
     checkout = tmp_path / name
-    binary = checkout / ".venv" / "bin" / "kirocrew"
+    binary = prov.venv_bin(checkout)
     binary.parent.mkdir(parents=True)
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o755)
@@ -55,7 +56,7 @@ def test_pod_env_puts_the_checkout_venv_ahead_of_the_global_shim_dir(tmp_path):
     env = rt.build_pod_env(cfg, tmp_path / "home", 7900, checkout)
 
     entries = env["PATH"].split(os.pathsep)
-    venv_bin = str(checkout / ".venv" / "bin")
+    venv_bin = str(prov.venv_bin_dir(checkout))
     assert entries[0] == venv_bin, "the pod's own venv must lead PATH"
     # The global shim dir is still reachable, just no longer first.
     shim_dir = str(tmp_path / ".local" / "bin")
@@ -104,9 +105,9 @@ def test_pod_context_resolves_the_pods_own_binary_and_env(tmp_path, monkeypatch)
 
     bin_path, env = rt.pod_context(cfg, "wt-feature")
 
-    assert bin_path == checkout / ".venv" / "bin" / "kirocrew"
+    assert bin_path == prov.venv_bin(checkout)
     assert env["KIROCREW_HOME"] == str(cfg.home_dir("wt-feature"))
-    assert env["PATH"].split(os.pathsep)[0] == str(checkout / ".venv" / "bin")
+    assert env["PATH"].split(os.pathsep)[0] == str(prov.venv_bin_dir(checkout))
 
 
 def test_pod_context_errors_when_no_checkout_is_pinned(tmp_path, monkeypatch):
@@ -144,7 +145,7 @@ def test_exec_in_pod_execs_the_pods_binary_with_the_pod_env(tmp_path, monkeypatc
     with pytest.raises(SystemExit):
         rt.exec_in_pod(cfg, "wt-feature", ["cron", "list"])
 
-    expected = str(checkout / ".venv" / "bin" / "kirocrew")
+    expected = str(prov.venv_bin(checkout))
     assert seen["path"] == expected
     assert seen["argv"] == [expected, "cron", "list"]
     assert seen["env"]["KIROCREW_HOME"] == str(cfg.home_dir("wt-feature"))  # type: ignore[index]

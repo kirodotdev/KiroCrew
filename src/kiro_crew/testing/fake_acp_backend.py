@@ -124,8 +124,8 @@ _SESSION_ID = "fake-1"
 _TOOL_CALL_ID = "fake-tool-1"
 # The agent-authored purpose line, carried as a reserved tool argument. kiro-cli
 # echoes it back in ``rawInput`` under EITHER spelling; the fake emits the
-# camelCase one so the harness exercises the shape that used to be dropped (the
-# dashboard's concise tool pill fell back to the literal command line).
+# camelCase one so the harness exercises the shape the dashboard's concise tool
+# pill can otherwise drop (falling back to the literal command line).
 _TOOL_PURPOSE = "Say hello from the fake backend"
 _PERMISSION_REQ_ID = 9001
 
@@ -154,10 +154,10 @@ def _error(req_id: Any, code: int = ERROR_CODE, message: str = ERROR_MESSAGE) ->
 # --------------------------------------------------------------------------- #
 # Mid-turn inbox
 #
-# The original loop was strictly read -> handle, so a session/cancel arriving
-# DURING a session/prompt could not be observed until the turn had already
-# finished. main() now reads on a background thread and pushes into this queue,
-# which lets a handler poll for cancels / permission answers while it streams.
+# main() reads stdin on a background thread and pushes into this queue, so a
+# handler can poll for cancels / permission answers while a session/prompt is
+# still streaming. A strict read -> handle loop cannot observe a session/cancel
+# arriving DURING a session/prompt until the turn has already finished.
 #
 # Direct _handle() callers (the unit tests) leave the queue empty: every wait
 # below then simply times out and the default behaviour is unchanged.

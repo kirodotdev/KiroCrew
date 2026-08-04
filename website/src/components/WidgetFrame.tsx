@@ -43,16 +43,16 @@ if (typeof window !== 'undefined') {
   window.addEventListener('mc-chat-scroll-jump', () => { lastProgrammaticScrollAt = Date.now() })
 }
 const BUILD_STAGGER_MS = 120
-// The stagger slot was previously unbounded, so a batch of N widgets pushed the
-// last one's build out by N * BUILD_STAGGER_MS with no ceiling. That made the
-// worst-case build wait unknowable, and the scroll convergence poll cannot be
-// calibrated against an unbounded number (a target in a late slot stays static
-// past the poll's quiet window, settles early, then resizes and moves
-// off-target). Capping the slot bounds it: beyond this many widgets the tail of
-// the batch shares the last slot, which still spreads the JIT cost across
-// several tasks without making the deadline unbounded.
-// several tasks without making the deadline unbounded. Exported so the cap's
-// effect on the actual delay is testable, not just its value.
+// The stagger slot is capped so the worst-case build wait stays bounded.
+// Without a ceiling a batch of N widgets pushes the last one's build out by
+// N * BUILD_STAGGER_MS, making the worst-case build wait unknowable, and the
+// scroll convergence poll cannot be calibrated against an unbounded number (a
+// target in a late slot stays static past the poll's quiet window, settles
+// early, then resizes and moves off-target). Capping the slot bounds it:
+// beyond this many widgets the tail of the batch shares the last slot, which
+// still spreads the JIT cost across several tasks without making the deadline
+// unbounded. Exported so the cap's effect on the actual delay is testable, not
+// just its value.
 export const MAX_STAGGER_SLOTS = 3
 /**
  * Worst-case delay from a programmatic jump to a widget in that batch having

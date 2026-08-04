@@ -578,6 +578,12 @@ class TestOmissionDetection:
             "_bg": "background",
             "_hb": "heartbeat",
             "cli_chat": "cli",
+            "discord:1": "discord",
+            "telegram:1": "telegram",
+            "wecom:1": "wecom",
+            "weixin:1": "weixin",
+            "webex:1": "webex",
+            "teams:1": "teams",
             "C123:456.789": "slack",
         }
         for key, expected in probes.items():
@@ -677,7 +683,7 @@ class TestRedactionSinkRegistry:
         # helper), redact_and_truncate() (redact-then-slice, so a credential cannot
         # straddle the truncation boundary), and redact_via_context() (routes to
         # CredentialPolicy.redact, whose Default delegates to security.redact).
-        dual_pass = ("StreamRedactor", "redact(", "redact_and_truncate", "redact_via_context")
+        dual_pass = ("StreamRedactor", "redact(", "redact_tree", "redact_and_truncate", "redact_via_context")
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")
             full = any(w in text for w in dual_pass) or (

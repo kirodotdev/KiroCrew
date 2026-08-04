@@ -1,19 +1,13 @@
 /**
  * Tests for the Settings page tab roster.
  *
- * Regression guard ported (PARTIAL) from the upstream project: a stale-branch
- * merge once overwrote SettingsPage.tsx from an older base and
- * dropped the Browser tab whose panel file survived — so no panel test failed;
- * there was simply no test asserting SettingsPage *lists* the tabs. These close
- * that gap for the fork's tab roster. (The upstream Cloud Sync assertion is
- * dropped — the fork has no Cloud-Sync tab; we assert the Browser tab
- * instead. There is no Provider tab: KiroCrew collapsed to its single KiroACP /
- * kiro-cli provider, so there is no provider to select.)
+ * Asserts SettingsPage *lists* its tabs (panel tests only cover the panels).
+ * The Browser tab is present; there is no Provider tab because KiroCrew has a
+ * single KiroACP / kiro-cli provider with nothing to select.
  *
- * Since the nav regroup, the five chat integrations live under ONE Channels
- * tab (rows inside ChannelsPanel), the sidebar carries Preferences/System
- * group headers, and legacy ?tab=slack style deep links remap to
- * ?tab=channels&channel=slack.
+ * The five chat integrations live under ONE Channels tab (rows inside
+ * ChannelsPanel), the sidebar carries Preferences/System group headers, and
+ * legacy ?tab=slack style deep links remap to ?tab=channels&channel=slack.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'

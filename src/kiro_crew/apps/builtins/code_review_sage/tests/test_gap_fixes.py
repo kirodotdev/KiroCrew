@@ -1,4 +1,4 @@
-"""Tests for the gap C/B/E fixes: band override, adapter validation, parse provenance."""
+"""Tests for band override, adapter validation, and parse provenance."""
 import unittest
 
 from sage_lib import adapters as A  # noqa: N812

@@ -1,4 +1,4 @@
-"""Workflows builtin-app backend (M3 backend slice).
+"""Workflows builtin-app backend.
 
 A small stdlib-only HTTP server exposing the dynamic-workflows engine to the
 dashboard "Workflows" tab. KiroCrew proxies ``/apps/workflows/api/*`` to this
@@ -11,16 +11,14 @@ Endpoints:
                                 → {"ok", "result", "error", "events": [<event>...]}
   GET  /examples                → [{"name","description","source"}]  (the shipped DSL examples)
 
-The run path drives ``WorkflowRunner`` (M1/M2, fully gated) with a stub
+The run path drives ``WorkflowRunner`` (fully gated) with a stub
 ``agent_fn`` for now — real agent wiring (subagent-by-default / ``session=`` to
-SubagentManager/SessionManager) is the M3/M4 provider-hookup unit and slots in
+SubagentManager/SessionManager) is the provider-hookup unit and slots in
 behind the same ``agent_fn`` boundary the runner already uses, with NO change to
 the frozen ``ctx`` contract.
 
 The handler logic is factored into pure functions (``handle_validate`` /
-``handle_run``) so it is unit-testable without binding a socket — the live HTTP
-wiring + the dashboard tab + WS progress are covered by the M3 Playwright gates
-(E1–E4) against the dev instance.
+``handle_run``) so it is unit-testable without binding a socket.
 """
 
 from __future__ import annotations
@@ -72,7 +70,7 @@ _DEFAULT_NOW = "1970-01-01T00:00:00Z"
 
 
 async def _stub_agent(prompt: str, opts: dict) -> Any:
-    """Placeholder agent executor until the real provider hookup (M3/M4).
+    """Placeholder agent executor until the real provider hookup.
 
     Echoes a deterministic stand-in so the UI/run path is exercisable end-to-end
     without a live model. Replaced by a SubagentManager/SessionManager-backed

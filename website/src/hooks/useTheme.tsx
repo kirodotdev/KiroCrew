@@ -13,6 +13,8 @@ import { reportSeamCollision } from '../apps/seamCollision'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { safeSetItem } from '../utils/safeStorage'
 
+import { i18nT } from '../i18n/t'
+
 export type ModePreference = 'dark' | 'light' | 'system'
 export type ResolvedMode = 'dark' | 'light'
 export type ColorTheme = string  // built-in slug or 'custom-{slug}'
@@ -56,9 +58,9 @@ export type ThemeOverlayPosition =
 export type ThemeOverlayAnimation = 'continuous' | 'once' | 'none'
 
 /**
- * Manifest-declared overlay placement/behaviour (§3.1). The backend now surfaces
- * `assets.overlays` as objects (was `string[]`); the loader still tolerates the
- * old string shape for a stale descriptor — see `ThemeExperienceLayer`.
+ * Manifest-declared overlay placement/behaviour (§3.1). The backend surfaces
+ * `assets.overlays` as objects; the loader also tolerates a bare `string`
+ * shape for a stale descriptor — see `ThemeExperienceLayer`.
  * `trigger` is `continuous | activate | idle-<N>s`.
  */
 export interface ThemeOverlayDecl {
@@ -79,7 +81,7 @@ export interface ThemeTopbar {
   hideOnMobile?: boolean
 }
 
-/** One audio trigger entry (§3.3). Consumed by the audio engine in Stage 4. */
+/** One audio trigger entry (§3.3). Consumed by the audio engine. */
 export interface ThemeAudioTrigger {
   src: string
   volume: number
@@ -95,7 +97,7 @@ export interface ThemeAudioAmbient {
   fadeIn: number
 }
 
-/** Parsed `audio/manifest.json` map (§3.3). Typed now; wired in Stage 4. */
+/** Parsed `audio/manifest.json` map (§3.3). */
 export interface ThemeAudioManifest {
   triggers: Record<string, ThemeAudioTrigger>
   ambient: ThemeAudioAmbient | null
@@ -105,11 +107,11 @@ export interface ThemeAssets {
   branding?: ThemeBranding
   fonts?: ThemeFontFace[]
   hasOverrides?: boolean
-  // L2 (consumed in the overlays/audio stage): overlays, topbar, audio, persona.
+  // L2 assets: overlays, topbar, audio, persona.
   overlays?: ThemeOverlayDecl[]
   topbar?: ThemeTopbar
   hasAudio?: boolean
-  /** Parsed audio manifest (Stage 4 consumes this; typed here only). */
+  /** Parsed audio manifest. */
   audio?: ThemeAudioManifest
   hasPersona?: boolean
   /**
@@ -142,7 +144,7 @@ function resolveMode(pref: ModePreference): ResolvedMode {
   return pref === 'system' ? getSystemMode() : pref
 }
 
-function applyTheme(colorTheme: ColorTheme, mode: ResolvedMode) {
+function applyTheme(colorTheme: ColorTheme, mode: ResolvedMode, pref: ModePreference) {
   const el = document.documentElement
   if (colorTheme.startsWith('custom-')) {
     el.dataset.theme = `${colorTheme}-${mode}`
@@ -150,6 +152,13 @@ function applyTheme(colorTheme: ColorTheme, mode: ResolvedMode) {
     el.dataset.theme = colorTheme === 'emerald' ? mode : `${colorTheme}-${mode}`
   }
   el.dataset.mode = mode
+  // The PREFERENCE, exposed separately from the resolved mode because the two
+  // mean different things to the Electron shell. `data-mode` is what to paint;
+  // `data-mode-pref` is whether the user asked to follow the OS. main.js maps
+  // this onto `nativeTheme.themeSource`, which must stay `system` under Auto —
+  // pinning it to dark/light also pins `prefers-color-scheme` in every renderer,
+  // which is the media query Auto resolves through. See syncNativeTheme.
+  el.dataset.modePref = pref
 }
 
 // Allowlist of allowed CSS custom property names for themes.
@@ -369,7 +378,7 @@ function _groupAllowed(group: string): boolean {
 const _DECL_DENY_RE =
   /@import|expression\s*\(|javascript:|-moz-binding|url\s*\(\s*['"]?\s*(?:https?:)?\/\//i
 
-// Evasion normalization (arbiter finding-2 family): a browser decodes CSS
+// Evasion normalization: a browser decodes CSS
 // `\`-escapes during tokenization, so `\75 rl(` becomes `url(`. Comments are
 // already stripped globally below. Decode escapes and run the denylist on the
 // decoded text too, so an escaped forbidden token can't hide from the scoper.
@@ -460,7 +469,7 @@ function _scopeOverridesCss(css: string): { css: string; kept: number; dropped: 
           }
           // all other at-rules (@import, @font-face, @supports, …) are dropped
         } else if (_groupAllowed(prelude)) {
-          // Fail-closed on declaration BODIES too, not just selectors (arbiter):
+          // Fail-closed on declaration BODIES too, not just selectors:
           // mirror the backend install denylist at runtime so a declaration that
           // EVADES install-time validation (encoding drift, future CSS features)
           // is still dropped before it reaches the main document. Legit packs are
@@ -589,6 +598,30 @@ function applyThemeBranding(theme: CustomThemeData | undefined) {
   }
 }
 
+/**
+ * Catalog KEY for each built-in theme whose display name is descriptive COPY
+ * rather than a proper noun.
+ *
+ * Nearly every built-in is named after an upstream palette project (Monokai,
+ * Solarized, Dracula, Nord, Rosé Pine, Catppuccin, Tokyo Night, Gruvbox,
+ * Everforest), a product (Kiro, IntelliJ), or the display technology it is tuned
+ * for (AMOLED). Those are proper nouns — translating one would sever the name
+ * from the upstream project a user is looking for — so they stay verbatim as
+ * `label` in `THEMES` below, exactly like the theme names an installed pack or a
+ * `registerTheme()` caller supplies. `High Contrast` is the one that names a
+ * rendering PROPERTY (the accessibility palette) rather than a palette identity,
+ * so it is copy in the same sense as every other settings label.
+ *
+ * Keys, not strings: `THEMES` is evaluated at module load, so an `i18nT()` call
+ * there would freeze whatever language was active at boot. The lookup happens in
+ * `builtinThemes()`, which runs during render. Shaped as a flat `Record` of full
+ * literal keys and indexed inline at the `i18nT()` call, because that is the form
+ * `scripts/check-i18n-keys.mjs` can resolve statically.
+ */
+export const THEME_LABEL_KEY: Record<string, string> = {
+  highcontrast: 'hooks.theme.high_contrast',
+}
+
 export const THEMES: ThemeEntry[] = [
   { value: 'emerald', label: '🌿 Emerald' },
   { value: 'monokai', label: '🎨 Monokai' },
@@ -604,11 +637,36 @@ export const THEMES: ThemeEntry[] = [
   { value: 'amoled', label: '🖤 AMOLED' },
   { value: 'kiro', label: '👻 Kiro' },
   { value: 'intellij', label: '😶‍🌫️ IntelliJ' },
-  { value: 'highcontrast', label: '🔆 High Contrast' },
+  // The only descriptive name here, so the only one with a catalog key: `label`
+  // holds the glyph alone as the pre-resolution fallback and the full display
+  // string lives in `hooks.theme.high_contrast` (emoji included, as
+  // `components.themeEditor.color_picker` already does). Nothing renders this
+  // entry's `label` directly — `allThemes` goes through `builtinThemes()`.
+  { value: 'highcontrast', label: '🔆' },
   { value: 'everforest', label: '🌲 Everforest' },
   { value: 'amoled-midnight', label: '🌌 AMOLED Midnight' },
   { value: 'amoled-grey-calm', label: '🌑 AMOLED Grey Calm' },
 ]
+
+/**
+ * `THEMES` with every descriptive name resolved for the CURRENT language.
+ *
+ * Called from `useThemeState()` on each render (through `allThemes`), which is
+ * what lets the picker follow a language switch — the module-level `THEMES` array
+ * cannot. An entry with no `THEME_LABEL_KEY` entry is passed through untouched:
+ * its name is a proper noun and has no catalog key by design.
+ */
+function builtinThemes(): ThemeEntry[] {
+  return THEMES.map((t) =>
+    // `hasOwnProperty`, not `in`: theme values also arrive from persisted config
+    // and from `registerTheme()`, so a value named `toString` or `constructor`
+    // would otherwise resolve to an inherited Object.prototype member and hand a
+    // function to i18next.
+    Object.prototype.hasOwnProperty.call(THEME_LABEL_KEY, t.value)
+      ? { ...t, label: i18nT(THEME_LABEL_KEY[t.value]) }
+      : t,
+  )
+}
 
 /** Default color theme applied on first run when no preference is persisted. */
 export const DEFAULT_COLOR_THEME: ColorTheme = 'kiro'
@@ -688,9 +746,20 @@ export interface ThemeContextValue {
   themeVersion: number
   onboarded: boolean
   importOnboarded: boolean
+  /**
+   * Has the user seen the mandatory first-run Privacy chapter?
+   *
+   * Browser-local on purpose, unlike `onboarded` / `importOnboarded`: it only
+   * ever gates a screen INSIDE first run, and a finished first run (`onboarded`,
+   * which IS server-backed) implies it — so a second machine never re-shows the
+   * chapter to someone who already completed onboarding, and no config field is
+   * needed to say so.
+   */
+  privacyAcked: boolean
   themeBootReady: boolean
   markOnboarded: () => void
   markImportOnboarded: () => void
+  markPrivacyAcked: () => void
   addCustomTheme: (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => Promise<CustomThemeData>
   deleteCustomTheme: (slug: string) => Promise<void>
   loadCustomThemes: () => Promise<void>
@@ -764,6 +833,12 @@ function useThemeState(): ThemeContextValue {
   const [customThemesLoaded, setCustomThemesLoaded] = useState(false)
   const [importOnboarded, setImportOnboarded] = useState(
     () => !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded'),
+  )
+  // Seeded from `mc-onboarded` as well as its own flag: a user who finished
+  // first run before this chapter existed (or on another machine) has no reason
+  // to be shown it now.
+  const [privacyAcked, setPrivacyAcked] = useState(
+    () => !!localStorage.getItem('mc-privacy-acked') || !!localStorage.getItem('mc-onboarded'),
   )
   const legacyOnboardedRef = useRef(
     !!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-import-onboarded'),
@@ -853,6 +928,8 @@ function useThemeState(): ThemeContextValue {
         legacyMigrationStartedRef.current = true
         setOnboarded(true)
         setImportOnboarded(true)
+        setPrivacyAcked(true)
+        safeSetItem('mc-privacy-acked', '1')
         persistTheme(
           { onboarded: true, import_onboarded: true },
           {
@@ -867,6 +944,10 @@ function useThemeState(): ThemeContextValue {
           setOnboarded(bootData.onboarded)
           if (bootData.onboarded) {
             safeSetItem('mc-onboarded', '1')
+            // A completed first run passed through the Privacy chapter (or
+            // predates it) — the server flag is the durable record of both.
+            safeSetItem('mc-privacy-acked', '1')
+            setPrivacyAcked(true)
           } else {
             localStorage.removeItem('mc-onboarded')
           }
@@ -886,9 +967,21 @@ function useThemeState(): ThemeContextValue {
   }, [bootData, themeBootFetched])
 
   useEffect(() => {
-    applyTheme(colorTheme, resolved)
+    applyTheme(colorTheme, resolved, mode)
     bumpThemeVersion()
-  }, [resolved, colorTheme, bumpThemeVersion])
+  }, [resolved, colorTheme, mode, bumpThemeVersion])
+
+  // Tell the Electron shell which mode PREFERENCE is active, so it can set
+  // `nativeTheme.themeSource` to match ('system' under Auto). Pushed on change
+  // rather than only pulled on window focus so switching Dark → Auto un-pins
+  // `prefers-color-scheme` immediately; Chromium then fires a change event on
+  // the media query below if the effective value moved. No-op in a browser.
+  useEffect(() => {
+    const bridge = (window as unknown as {
+      electronAPI?: { setThemeMode?: (pref: string) => void }
+    }).electronAPI
+    bridge?.setThemeMode?.(mode)
+  }, [mode])
 
   // Report the resolved accent to the Electron shell (if present) so the NEXT
   // launch's boot splash (loading.html) paints in the user's chosen colour.
@@ -1050,8 +1143,10 @@ function useThemeState(): ThemeContextValue {
     broadcastCustomThemesChanged()
   }, [colorTheme, setColorTheme, loadCustomThemes])
 
-  // Combined themes list: built-in + custom
-  const allThemes: ThemeEntry[] = [...THEMES, ...REGISTERED_THEMES, ...customThemes]
+  // Combined themes list: built-in + custom. `builtinThemes()` (not `THEMES`) so
+  // a descriptive built-in name is resolved for the current language on every
+  // render; every consumer reads `allThemes`, so none of them needs a resolver.
+  const allThemes: ThemeEntry[] = [...builtinThemes(), ...REGISTERED_THEMES, ...customThemes]
 
   const markOnboarded = useCallback(() => {
     safeSetItem('mc-onboarded', '1')
@@ -1062,6 +1157,11 @@ function useThemeState(): ThemeContextValue {
   const markImportOnboarded = useCallback(() => {
     safeSetItem('mc-import-onboarded', '1')
     setImportOnboarded(true)
+  }, [])
+
+  const markPrivacyAcked = useCallback(() => {
+    safeSetItem('mc-privacy-acked', '1')
+    setPrivacyAcked(true)
   }, [])
 
   return {
@@ -1079,9 +1179,11 @@ function useThemeState(): ThemeContextValue {
     themeVersion,
     onboarded,
     importOnboarded,
+    privacyAcked,
     themeBootReady,
     markOnboarded,
     markImportOnboarded,
+    markPrivacyAcked,
     addCustomTheme,
     deleteCustomTheme,
     loadCustomThemes,

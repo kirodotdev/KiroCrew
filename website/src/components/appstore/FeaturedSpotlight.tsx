@@ -1,7 +1,7 @@
 /**
  * FeaturedSpotlight — the editorial hero at the top of Discover.
  *
- * Layout per the locked hybrid design: text panel (kicker / name / tagline /
+ * Layout: text panel (kicker / name / tagline /
  * provenance meta / CTA) beside an art panel. Art prefers the app's own
  * theme-appropriate hero image and degrades to a deterministic gradient with
  * the app icon on a glass tile.

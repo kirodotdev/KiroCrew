@@ -7,8 +7,7 @@ import type { DeniedCommandsData } from '../../api/client'
  * SecurityPanel drives all its mutations through the `api` client methods.  We
  * mock those methods so no network I/O happens; each returns the (mutated)
  * snapshot the panel then re-renders from.  `securityPosture` feeds the Live
- * Security Posture card (it superseded the old flat `securityStats`, which the
- * panel no longer queries), and `governancePolicy` feeds the ceiling viewer.
+ * Security Posture card, and `governancePolicy` feeds the ceiling viewer.
  */
 vi.mock('../../api/client', () => ({
   api: {
@@ -245,8 +244,7 @@ describe('SecurityPanel — denied commands', () => {
   it('disable-all stays available and functional when governance-locked', async () => {
     // A policy pin on ONE rule sets governance_locked, but the backend keeps
     // pinned rules enforced under disable_all — so the disable-all control must
-    // remain operable to opt every OTHER (unpinned) rule out. Regression for
-    // the bug where the toggle was removed entirely when locked.
+    // remain operable to opt every OTHER (unpinned) rule out.
     await renderPanel(snapshot({ governance_locked: true }))
 
     const disableAll = screen.getByRole('switch', { name: 'Disable all built-in denies' })
@@ -313,8 +311,9 @@ describe('SecurityPanel — denied commands', () => {
   })
 
   it('status rows reserve the external-link slot so every badge shares one right edge', async () => {
-    // Regression: the hover-only ExternalLink used to render ONLY on rows with
-    // an href, pushing those badges left of the unlinked rows' badges.
+    // The hover-only ExternalLink slot is reserved on every row, linked or not,
+    // so all badges share one right edge; rendering it only on rows with an
+    // href would push those badges left of the unlinked rows' badges.
     await renderPanel()
 
     // 'Standard' (Process Sandbox) is linked; 'Interactive' (Tool Approval) is not.
@@ -495,9 +494,10 @@ describe('SecurityPanel — posture disclosure', () => {
   })
 
   it('does NOT paint "unavailable" on the deny gate while denied-commands is still loading', async () => {
-    // Regression: `dc?.effective_count ?? null` yielded null before the second
-    // query resolved, so a fully-enforced 137-rule gate rendered as an amber
-    // "unavailable" warning — the exact misleading-security-signal failure the
+    // While denied-commands is still loading, the deny gate must NOT paint
+    // "unavailable": `dc?.effective_count ?? null` is null before the second
+    // query resolves, and a fully-enforced 137-rule gate rendering as an amber
+    // "unavailable" warning is the exact misleading-security-signal failure the
     // governance viewer's soft notice exists to prevent. The two queries resolve
     // independently, so posture-first is a normal interleaving.
     ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
@@ -524,9 +524,9 @@ describe('SecurityPanel — posture disclosure', () => {
   })
 
   it('the deny pill counts built-ins only, so a custom rule cannot exceed the total', async () => {
-    // Regression: the row used `dc.effective_count` (builtins + user_added), so a
-    // single custom deny rendered the nonsense ratio "138 of 137 built-in rules"
-    // against a built-in-only denominator.
+    // The row counts built-ins only, not `dc.effective_count` (builtins +
+    // user_added): folding user rules in would render the nonsense ratio
+    // "138 of 137 built-in rules" against a built-in-only denominator.
     ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(
       snapshot({
         // Both builtins in the fixture are enabled; effective_count adds the 1 user rule.
@@ -547,8 +547,8 @@ describe('SecurityPanel — posture disclosure', () => {
   })
 
   it('clearing a filter re-applies the truncation cap', async () => {
-    // Regression: `expanded` survived a filter change, so expanding a FILTERED
-    // subset and then clearing the filter rendered the whole list, defeating the
+    // `expanded` must reset on a filter change: otherwise expanding a FILTERED
+    // subset and then clearing the filter renders the whole list, defeating the
     // INITIAL_VISIBLE DOM cap. Must expand *while filtered* to exercise it.
     renderWithProviders(<SecurityPanel />)
     await screen.findByText('30 credential paths')

@@ -1,13 +1,9 @@
 /**
  * InstalledAppCard — management row for the Library tab.
  *
- * Originally moved verbatim from AppsPage's inline ``AppCard`` during the
- * Discover revamp, which left the Library rendering a flat lucide icon while
- * Discover grew hero art — so the same app looked like two different apps
- * depending on the tab. The leading slot is now the same 16:9 hero capsule
- * AppListRow uses (``useHeroArt`` + gradient/icon fallback); the rest of the
- * row is unchanged: Open / Enable / Disable / Update / Sync / Uninstall
- * actions and a details drawer.
+ * Expandable row: a 16:9 hero capsule leading slot (``useHeroArt`` +
+ * gradient/icon fallback, matching AppListRow), then Open / Enable / Disable /
+ * Update / Sync / Uninstall actions and a details drawer.
  */
 import { useState } from 'react'
 import {

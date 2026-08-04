@@ -66,10 +66,9 @@ def _acp_server_entry(
     prepended: the overlay entry runs the interpreter, so ``args`` opens with
     ``-m kiro_crew.mcp_gateway.stub`` and anything inserted ahead of that would
     be eaten by the interpreter instead of the stub. argparse does not care
-    about order. This is the channel the stub used to recover by walking its
-    ancestors' ``/proc/<pid>/environ`` from a bash launcher, which is why that
-    launcher no longer exists: the value is known here, at the one place that
-    runs per session.
+    about order. The channel value is known here, at the one place that runs
+    per session, so the stub does not need to recover it by walking its
+    ancestors' ``/proc/<pid>/environ`` from a bash launcher.
     """
     command = entry.get("command")
     if not isinstance(command, str) or not command:
@@ -91,6 +90,60 @@ def _acp_server_entry(
         "env": _acp_env(entry.get("env")),
     })
     return shaped
+
+
+def _load_overlay_for_agent(overlay_dir: Path, agent: str) -> dict[str, Any] | None:
+    """Locate the rewritten overlay spec for *agent*, or ``None``.
+
+    Package-installed agents are written to the overlay directory under a
+    package-qualified filename (e.g. ``Pkg-gpu-dev.json``) while the session
+    requests them by bare name (``gpu-dev``). A filename-only lookup therefore
+    silently misses and disables pooling for every packaged agent. Match the
+    bare filename first (fast path for unprefixed agents), then fall back to a
+    filename-qualified overlay (``*<agent>.json``) whose parsed ``name`` equals
+    *agent*. (#925)
+
+    Fail-soft: an unreadable/malformed overlay yields ``None`` (unpooled), never
+    an exception.
+    """
+    direct = overlay_dir / f"{agent}.json"
+    try:
+        return json.loads(direct.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        pass  # not emitted under the bare name — try a name-field match below
+    except (OSError, ValueError):
+        logger.warning("MCP-gateway: cannot read overlay spec %s", direct, exc_info=True)
+        return None
+    # Fallback: a package-installed agent's overlay keeps its package-qualified
+    # source filename (e.g. ``Pkg-gpu-dev.json``) while the session requests it
+    # by bare name. Restrict the scan to filenames that END with the agent name
+    # so at most a handful of plausible candidates are read on the async
+    # session-creation path — never the whole directory — then confirm each
+    # against the authoritative ``name`` field so a coincidental filename suffix
+    # can't mismatch.
+    try:
+        candidates = sorted(overlay_dir.glob(f"*{agent}.json"))
+    except (OSError, ValueError):
+        # ValueError: an agent name carrying glob metacharacters (e.g. ``*`` ->
+        # ``**.json``) is an invalid pattern; fail soft to unpooled rather than
+        # aborting session creation.
+        return None
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("name") == agent:
+            return data
+    if candidates:
+        # Distinguish "packaged agent not found" from "gateway disabled" / "agent
+        # declared nothing poolable" for an operator debugging a low backend count.
+        logger.debug(
+            "MCP-gateway: no overlay with name %r among %d filename-qualified "
+            "candidate(s) in %s; session runs unpooled",
+            agent, len(candidates), overlay_dir,
+        )
+    return None
 
 
 def pooled_session_servers(
@@ -119,16 +172,7 @@ def pooled_session_servers(
     """
     if not overlay_dir or not agent:
         return []
-    src = Path(overlay_dir) / f"{agent}.json"
-    try:
-        spec = json.loads(src.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        # Normal for an agent the rewriter did not emit (e.g. it declared no
-        # poolable servers at all) — not worth a warning.
-        return []
-    except (OSError, ValueError):
-        logger.warning("MCP-gateway: cannot read overlay spec %s", src, exc_info=True)
-        return []
+    spec = _load_overlay_for_agent(Path(overlay_dir), agent)
     if not isinstance(spec, dict):
         return []
     servers = spec.get("mcpServers")

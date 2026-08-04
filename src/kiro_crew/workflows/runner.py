@@ -106,9 +106,9 @@ def clamp_run_timeout(
 def describe_agent_error(exc: BaseException) -> str:
     """Bounded, redacted one-liner explaining why an agent call failed.
 
-    A failed call used to record ``ok=False`` and nothing else, which makes a
-    post-mortem impossible — you cannot tell a throttle from a bad prompt from a
-    crashed backend. Type + message is the smallest thing that answers that.
+    Recording only ``ok=False`` makes a post-mortem impossible — you cannot tell
+    a throttle from a bad prompt from a crashed backend. Type + message is the
+    smallest thing that answers that.
 
     No traceback on purpose: the frames add bulk without saying more than the
     type does, and they are the part most likely to carry local filesystem detail
@@ -238,8 +238,8 @@ AuthorFn = Callable[..., Awaitable[dict]]
 # the authored script mid-run:
 #   on_agent_result(call_index: int, *, result: Any, ok: bool, error: str) -> None
 # Called as soon as EACH agent call settles, so the host can persist that payload
-# before the run reaches a terminal state. Without it, results lived only in
-# process memory until the run finished, and any interruption threw them away.
+# before the run reaches a terminal state. Without it, results would live only in
+# process memory until the run finished, and any interruption would throw them away.
 AgentResultFn = Callable[..., None]
 
 
@@ -339,7 +339,7 @@ class _RunContext:
         # RUN-GLOBAL agent concurrency. ``parallel``/``pipeline`` each build their
         # OWN semaphore, so they bound one fan-out but not the run: nested or
         # sequentially overlapping combinators could exceed the configured cap, and
-        # agent calls made outside any combinator were never bounded at all. This
+        # agent calls made outside any combinator are not bounded by them at all. This
         # semaphore lives on the context, so every ``ctx.agent()`` in the run queues
         # on the same slots. Held only across the model call itself, so no thunk
         # ever holds a slot while waiting for another thunk to release one.
@@ -1013,7 +1013,7 @@ class WorkflowRunner:
             h = registry.get(run_id)
             if h is not None and src:
                 h.source = src
-                # Durably checkpoint the script now (FIX-21) — so an authored-in-run
+                # Durably checkpoint the script now so an authored-in-run
                 # workflow's source survives a restart even before it finishes.
                 persist = getattr(registry, "persist", None)
                 if persist is not None:
@@ -1027,12 +1027,13 @@ class WorkflowRunner:
         ) -> None:
             """Record ONE settled agent call on the run handle the moment it lands.
 
-            This is what makes the wall-clock ceiling survivable: results used to
-            reach the handle only after the whole run finished, so a run killed at
-            the ceiling wrote ``agent_results: {}`` and silently threw away every
-            payload it had already produced. The terminal paths now read them back
-            and the terminal transition flushes them to disk. A hard kill of the
-            gateway mid-run can still lose whatever no write has covered yet.
+            This is what makes the wall-clock ceiling survivable: without it,
+            results reach the handle only after the whole run finishes, so a run
+            killed at the ceiling writes ``agent_results: {}`` and silently
+            discards every payload it had already produced. Recording each call as
+            it lands lets the terminal paths read them back and the terminal
+            transition flush them to disk. A hard kill of the gateway mid-run can
+            still lose whatever no write has covered yet.
             """
             record = getattr(registry, "record_agent_result", None)
             if record is None:  # pragma: no cover - registry always provides it

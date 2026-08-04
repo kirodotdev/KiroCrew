@@ -325,6 +325,168 @@ def _is_sensitive_model_path(path: Path) -> bool:
         return True
 
 
+def validate_custom_model_path(
+    raw: str, origin: str = "embed_model_path"
+) -> tuple[Path, str, str]:
+    """Validate a candidate model path. Returns ``(resolved_path, error, code)``.
+
+    ``error`` is empty when the path is usable; ``code`` is a stable
+    lower_snake identifier for it. The prose is advisory (it carries the concrete
+    path and size), the code is the contract — the dashboard renders a LOCALIZED
+    message keyed on it, so returning prose alone would be untranslatable by
+    construction.
+
+    Split out of :func:`resolve_custom_model` so a request handler can validate a
+    path the user just typed WITHOUT writing it to config first — the dashboard
+    needs to reject a bad path before it is persisted, and the resolver only ever
+    reads what is already on disk.
+    """
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        return path, f"{origin} must be an absolute path (got {raw!r})", "model_path_not_absolute"
+    if _is_sensitive_model_path(path):
+        # Same gate every other file-access surface uses (hooks, artifacts,
+        # dashboard file I/O, knowledge indexing). A GGUF is handed to native
+        # llama.cpp to mmap and parse, so pointing this knob at a credential
+        # store or the governance trust-root would feed those bytes to native
+        # code. Refuse by path rather than relying on the parse to fail.
+        return path, f"{origin} points at a protected location: {path}", "model_path_protected"
+    if not path.exists():
+        return (
+            path,
+            f"{origin} points at a file that does not exist: {path}",
+            "model_path_not_found",
+        )
+    if not path.is_file():
+        return path, f"{origin} is not a regular file: {path}", "model_path_not_a_file"
+    try:
+        size = path.stat().st_size
+        if size <= _GGUF_MIN_BYTES:
+            return (
+                path,
+                f"{origin} is too small to be model weights ({size} bytes): {path}",
+                "model_path_too_small",
+            )
+    except OSError as exc:
+        return path, f"{origin} could not be read: {exc}", "model_path_unreadable"
+    return path, "", ""
+
+
+def bundled_embedding_dim() -> int:
+    """Output width of the bundled model, for reverting to it.
+
+    Exposed so the dashboard does not duplicate the literal: a future change to
+    the bundled model would otherwise leave a stale 1024 in the handler and make
+    every revert-to-bundled write an unloadable config.
+    """
+    return _DEFAULT_DIM
+
+
+def build_gated_candidate(path: Path) -> LlamaCppEmbedder:
+    """A GATED candidate for ``path`` that adopts the model's own width.
+
+    Two properties make a live model change safe, and both are why this is not
+    just ``LlamaCppEmbedder(path)``:
+
+    - **Adopt-dim** (``dim=0``) lets the candidate be loaded exactly ONCE. The
+      alternative — load it to read ``n_embd``, free it, let the factory load it
+      again — peaks at two ~700MB models, and :func:`get_shared_embedder` states
+      outright that "loading it twice is never acceptable".
+    - **Gated** (``serving=False``) means it occupies the singleton slot while it
+      loads but hands out no vectors. That closes both halves of the swap window:
+      an empty slot would let a status poll rebuild the OUTGOING model (two
+      models resident), while an ungated one would let a query be embedded in the
+      new space and compared against vectors the store has not reconciled yet.
+
+    ``model_id`` is derived here, not by the caller, so the vector-space
+    signature matches what :func:`resolve_custom_model` would compute for the
+    same file — otherwise a real model change could look like no change.
+    """
+    return LlamaCppEmbedder(
+        model_path=path, dim=0, model_id=_custom_model_id(path, ""), serving=False
+    )
+
+
+def build_gated_bundled() -> LlamaCppEmbedder:
+    """A GATED candidate for the BUNDLED model, for reverting off a custom one.
+
+    Gated for the same reason the custom candidate is: until the store has been
+    reconciled to the bundled space, a query embedded at the bundled width can
+    reach a FAISS index still built at the custom width. Its width is known, so
+    there is nothing to adopt — but the file can still be ABSENT (the bundled
+    GGUF is a download), which is why the revert must also prove the model loads
+    before its config is persisted.
+    """
+    # Every argument is explicit ON PURPOSE. The constructor defaults
+    # model_path to active_model_path(), which resolves the STILL-CONFIGURED
+    # custom path — so omitting it would load the custom model here and label it
+    # with the bundled model_id, stamping custom vectors as bundled and keeping
+    # them across restarts.
+    return LlamaCppEmbedder(
+        model_path=default_model_path(), dim=_DEFAULT_DIM, model_id=_MODEL_ID, serving=False
+    )
+
+
+def activate_shared_embedder() -> bool:
+    """Open the serving gate on the installed backend. True if it was gated.
+
+    Separated from installation so the caller can order it AFTER the config
+    write and the store reconcile — the point of the gate is that nothing
+    between those two steps can serve a vector from the new space.
+    """
+    with _shared_embedder_lock:
+        current = _shared_embedder
+    activate = getattr(current, "activate", None)
+    if callable(activate):
+        activate()
+        return True
+    return False
+
+
+def _retire_backend(backend: EmbeddingBackend) -> None:
+    """Terminally unload ``backend``. Falls back to close() for other runtimes."""
+    retire = getattr(backend, "retire", None)
+    if callable(retire):
+        retire()
+    else:
+        backend.close()
+
+
+def embedding_backend_serving() -> bool:
+    """Whether the installed backend is serving vectors (not a gated candidate).
+
+    Lets the apply path tell "I failed before activation, roll back" apart from
+    "I failed after activation, the new model is already the live one" — the two
+    need opposite recovery.
+    """
+    with _shared_embedder_lock:
+        current = _shared_embedder
+    if current is None:
+        return False
+    return bool(getattr(current, "_serving", True))
+
+
+def install_shared_embedder(embedder: EmbeddingBackend) -> None:
+    """Swap the singleton to ``embedder``, closing the outgoing one first.
+
+    Closing and installing under one lock is what keeps peak residency at a
+    single model. Installing BEFORE the new model has loaded is deliberate: the
+    dashboard polls the status endpoint every ~2s, and that calls
+    :func:`get_shared_embedder`, so leaving the slot empty would let a poll
+    rebuild the OUTGOING model from config and put two models in memory after
+    all. A poll that arrives mid-load instead sees the incoming embedder
+    reporting not-ready, which is exactly what the UI should show.
+    """
+    global _shared_embedder
+    with _shared_embedder_lock:
+        outgoing = _shared_embedder
+        _shared_embedder = embedder
+    if outgoing is not None and outgoing is not embedder:
+        # Outside the lock: the unload joins the inference thread, and holding
+        # the singleton lock across a join would stall every concurrent reader.
+        _retire_backend(outgoing)
+
+
 def resolve_custom_model() -> "CustomModelSpec | None":
     """Resolve the user-configured local model, or ``None`` to use the bundled one.
 
@@ -348,30 +510,7 @@ def resolve_custom_model() -> "CustomModelSpec | None":
         dim = raw_dim
     configured_id = str(memory_cfg.get("embed_model_id", "") or "").strip()
 
-    path = Path(raw).expanduser()
-    error = ""
-    if not path.is_absolute():
-        error = f"{origin} must be an absolute path (got {raw!r})"
-    elif _is_sensitive_model_path(path):
-        # Same gate every other file-access surface uses (hooks, artifacts,
-        # dashboard file I/O, knowledge indexing). A GGUF is handed to native
-        # llama.cpp to mmap and parse, so pointing this knob at a credential
-        # store or the governance trust-root would feed those bytes to native
-        # code. Refuse by path rather than relying on the parse to fail.
-        error = f"{origin} points at a protected location: {path}"
-    elif not path.exists():
-        error = f"{origin} points at a file that does not exist: {path}"
-    elif not path.is_file():
-        error = f"{origin} is not a regular file: {path}"
-    else:
-        try:
-            if path.stat().st_size <= _GGUF_MIN_BYTES:
-                error = (
-                    f"{origin} is too small to be model weights "
-                    f"({path.stat().st_size} bytes): {path}"
-                )
-        except OSError as exc:
-            error = f"{origin} could not be read: {exc}"
+    path, error, _code = validate_custom_model_path(raw, origin)
     _log_custom_model_error(error)
     return CustomModelSpec(path, _custom_model_id(path, configured_id), dim, error)
 
@@ -476,15 +615,88 @@ def store_embedding_space_is_stale(store: "_ReconcilableStore") -> bool:
     return recorded != active_embedding_space_signature()
 
 
+class ReembedProgress:
+    """Live progress of a background re-embed, for the dashboard indicator.
+
+    An in-memory singleton mirroring :attr:`ModelDownloadManager.status`: a plain
+    dict reassigned per phase and read live by the status endpoint, which the
+    Memory tab already polls. Deliberately NOT a durable job row like the
+    knowledge library's ``ingestion_jobs`` table — a re-embed is a single
+    at-a-time operation tied to process lifetime, with no id to hand out and no
+    history to query, and an interrupted run is resumed by the next boot sweep.
+
+    ``step`` is one of ``idle`` / ``applying`` / ``running`` / ``done`` /
+    ``failed``. The indicator needs the distinction: "applying" (loading the new
+    model, no counts yet) reads very differently from "running 1842/3148".
+    """
+
+    def __init__(self) -> None:
+        self._step = "idle"
+        self._done = 0
+        self._total = 0
+        self._error = ""
+        self._lock = threading.Lock()
+
+    def begin_apply(self) -> None:
+        with self._lock:
+            self._step, self._done, self._total, self._error = "applying", 0, 0, ""
+
+    def begin_run(self, total: int) -> None:
+        with self._lock:
+            self._step, self._done, self._total, self._error = "running", 0, max(0, total), ""
+
+    def advance(self, done: int, total: int) -> None:
+        """Report progress. Cheap enough to call per row (four field writes)."""
+        with self._lock:
+            self._step, self._done, self._total = "running", max(0, done), max(0, total)
+
+    def finish(self, done: int) -> None:
+        with self._lock:
+            self._step = "done"
+            self._done = max(0, done)
+            self._total = max(self._total, self._done)
+            self._error = ""
+
+    def fail(self, error: str) -> None:
+        with self._lock:
+            self._step, self._error = "failed", error
+
+    def snapshot(self) -> dict[str, object]:
+        """The wire shape the status endpoint embeds."""
+        with self._lock:
+            return {
+                "step": self._step,
+                "done": self._done,
+                "total": self._total,
+                "error": self._error,
+            }
+
+    def is_active(self) -> bool:
+        """True while an apply/re-embed is in flight — used to single-flight applies."""
+        with self._lock:
+            return self._step in ("applying", "running")
+
+
+_reembed_progress = ReembedProgress()
+
+
+def reembed_progress() -> ReembedProgress:
+    """Process-wide re-embed progress singleton."""
+    return _reembed_progress
+
+
 def reconcile_store_embedding_space(store: "_ReconcilableStore") -> int:
     """Reconcile *store* against the active embedding space. Returns rows invalidated.
 
-    THE single chokepoint for this. Reconciliation used to live inline in the
-    gateway's boot sweep, which meant every other process that opens a vector
-    store — ``kirocrew run`` (``cli_server``), the onboarding importer — loaded a
-    FAISS index built under the previous model and scored it against new-model
-    query vectors. Routing all of them through one named function is what keeps a
-    future entry point from silently reintroducing that.
+    THE single chokepoint for destructive reconciliation. Startup paths that
+    open a vector store either reconcile through this one function (the gateway
+    boot sweep, the onboarding importer) or, where clearing is unsafe, use the
+    non-mutating ``store_embedding_space_is_stale`` probe instead — ``kirocrew
+    run`` (``cli_server``) takes the latter path, disabling embedding for the
+    run and deferring reconciliation to the gateway. Concentrating the
+    destructive path here keeps a future entry point from loading a FAISS index
+    built under the previous model and scoring it against new-model query
+    vectors.
 
     Refuses to clear when the active backend is not ready and is not the bundled
     model: clearing is destructive, and a backend that cannot load — a rejected
@@ -591,13 +803,13 @@ class LlamaCppEmbedder(EmbeddingBackend):
     thread pool (``n_threads_batch``, which defaults to the CPU count) the
     first time a GIVEN thread runs inference, and that pool lives as long as
     its calling thread does. Embed calls arrive on long-lived executor threads
-    (``mc-embed``, asyncio's default executor, cron, maintenance), so calling
-    inference inline accumulated one CPU-count-sized pool per caller thread —
-    measured at 31 pools / ~1,460 threads in one gateway after an hour, still
-    climbing. Every call is therefore forwarded to ONE owned daemon thread
-    (``kc-embed-infer``), so the process holds exactly one compute pool no
-    matter how many threads embed. ``_lock`` already serialized inference, so
-    the hand-off adds no queueing that was not there before.
+    (``mc-embed``, asyncio's default executor, cron, maintenance), so running
+    inference inline would accumulate one CPU-count-sized pool per caller
+    thread (a busy gateway can reach dozens of pools and well over a thousand
+    threads within an hour). Every call is therefore forwarded to ONE owned
+    daemon thread (``kc-embed-infer``), so the process holds exactly one
+    compute pool no matter how many threads embed. ``_lock`` already serializes
+    inference, so the hand-off adds no extra queueing.
     """
 
     def __init__(
@@ -605,11 +817,21 @@ class LlamaCppEmbedder(EmbeddingBackend):
         model_path: Path | None = None,
         dim: int = _DEFAULT_DIM,
         model_id: str = _MODEL_ID,
+        serving: bool = True,
     ):
         self._model_path = model_path or active_model_path()
         self._dim = dim
         self._model_id = model_id
         self._llm: object | None = None
+        # Gate: a candidate installed by a model change LOADS but serves nobody
+        # until activate(). Returning None from embed* is the ABC's documented
+        # "no embedding available" state, so callers degrade to keyword search
+        # exactly as they do before any model has loaded.
+        self._serving = serving
+        # Permanent. close() is terminal, so a consumer still holding a
+        # swapped-out embedder cannot resurrect its ~700MB model by calling
+        # embed_batch() (which would otherwise kick a fresh background load).
+        self._closed = False
         self._load_failed_at: float = 0.0
         self._lock = threading.Lock()  # serializes inference (Llama is not thread-safe)
         self._load_lock = threading.Lock()  # guards loader-thread spawn state
@@ -631,8 +853,24 @@ class LlamaCppEmbedder(EmbeddingBackend):
         return self._dim
 
     def is_ready(self) -> bool:
-        """True when the model is loaded in memory."""
+        """True when the model is loaded in memory.
+
+        Deliberately reports LOAD state, not serving state: reconciliation must
+        be able to confirm the new model actually loaded before it clears the old
+        vector space, and the status endpoint should show the model as present
+        while the re-embed runs. The serving gate is enforced in ``embed_batch``,
+        which is the path that could actually mix vector spaces.
+        """
         return self._llm is not None
+
+    def activate(self) -> None:
+        """Open the serving gate. Idempotent.
+
+        Called only after the new model's path+dim are persisted and the store's
+        vector space has been reconciled, so the first vector this backend hands
+        out can never be compared against un-reconciled old-model vectors.
+        """
+        self._serving = True
 
     def _kick_background_load(self) -> None:
         """Start loading the model on a daemon thread. Idempotent, returns fast.
@@ -644,6 +882,8 @@ class LlamaCppEmbedder(EmbeddingBackend):
         picks embeddings up on a later call.
         """
         with self._load_lock:
+            if self._closed:
+                return
             if self._llm is not None:
                 return
             if self._load_thread is not None and self._load_thread.is_alive():
@@ -703,7 +943,31 @@ class LlamaCppEmbedder(EmbeddingBackend):
             # silent keyword-only search with nothing explaining why. Fail the
             # load instead, with the number the operator has to fix.
             actual_dim = self._probe_dim(llm)
-            if actual_dim is not None and actual_dim != self._dim:
+            if self._dim <= 0:
+                # ADOPT mode (dim<=0): the caller does not yet know the width and
+                # wants the model to report it — used by the dashboard's model
+                # change, which must learn the width from the model itself
+                # WITHOUT loading it a second time just to ask. Boot still uses a
+                # concrete configured dim, so the loud mismatch refusal below is
+                # unchanged for every non-adopt caller.
+                #
+                # A width we could NOT read is a failed load, never a published
+                # model: dim 0 would be written nowhere (the config writer skips
+                # non-positive), set_embedding_dim(0) is refused, and embed_batch
+                # would then reject every vector it produced against an expected
+                # width of zero — reconciliation having already cleared the old
+                # ones. Fail loudly instead of adopting an unknown width.
+                if actual_dim is None or actual_dim <= 0:
+                    logger.error(
+                        "Embedding model %s did not report an embedding width — "
+                        "refusing to load (it may not be an embedding model).",
+                        self._model_path.name,
+                    )
+                    self._load_failed_at = time.monotonic()
+                    self._llm = None
+                    return
+                self._dim = actual_dim
+            elif actual_dim is not None and actual_dim != self._dim:
                 logger.error(
                     "Embedding model %s produces %d-dim vectors but memory.embedding_dim "
                     "is %d — refusing to load. Set memory.embedding_dim to %d "
@@ -721,6 +985,18 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 self._model_path.name,
                 time.monotonic() - started,
             )
+            if self._closed:
+                # close() ran while this load was in flight (a timed-out or
+                # rolled-back model change). Publishing now would put a ~700MB
+                # model back into an embedder nobody holds a reference to except
+                # a stale consumer. Drop it instead.
+                closer = getattr(llm, "close", None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except Exception:  # noqa: BLE001 - freeing must not propagate
+                        logger.debug("Freeing abandoned model failed", exc_info=True)
+                return
             self._llm = llm  # atomic publish (GIL)
         except Exception:
             logger.warning("Failed to load embedding model %s", self._model_path, exc_info=True)
@@ -809,6 +1085,10 @@ class LlamaCppEmbedder(EmbeddingBackend):
         """
         if not texts or not any(t.strip() for t in texts):
             return None
+        if self._closed or not self._serving:
+            # Closed: terminal, never reload. Not serving: a candidate mid-swap,
+            # whose vectors would be in a space the store has not reconciled to.
+            return None
         llm = self._llm
         if llm is None:
             self._kick_background_load()
@@ -858,6 +1138,21 @@ class LlamaCppEmbedder(EmbeddingBackend):
         if thread is not None:
             thread.join(timeout)
         return self.is_ready()
+
+    def retire(self) -> None:
+        """Terminal unload, for an embedder being swapped out of the singleton.
+
+        Distinct from :meth:`close`, which is a REUSABLE unload (it clears the
+        failure cooldown so a later ``embed*`` can retry the load — see
+        ``test_close_unloads_and_resets_cooldown``). That reusability is a hazard
+        for a swapped-out embedder specifically: a consumer that captured the old
+        backend before the swap could call ``embed_batch()`` and silently bring
+        its ~700MB model back, putting two models in memory and producing vectors
+        in the space the store just moved away from. Retiring marks it dead first,
+        so the load can never restart.
+        """
+        self._closed = True
+        self.close()
 
     def close(self) -> None:
         """Unload the model (frees ~700MB RSS). Safe to call repeatedly.
@@ -956,7 +1251,7 @@ def reset_shared_embedder() -> None:
     global _shared_embedder
     with _shared_embedder_lock:
         if _shared_embedder is not None:
-            _shared_embedder.close()
+            _retire_backend(_shared_embedder)
         _shared_embedder = None
 
 

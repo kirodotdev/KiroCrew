@@ -208,11 +208,11 @@ describe('safeSetItem', () => {
 
   it('terminates even if removeItem silently no-ops (structural tier bound)', () => {
     // Heimdall edge case: a Storage backend whose removeItem returns without
-    // removing and without throwing. Pre-fix, `while (reclaimSpace())` spun
-    // forever because the same key kept matching every pass. The for-loop now
-    // bounds iterations by RECLAIM_TIERS.length, so it terminates regardless
-    // of removeItem semantics. (vitest's per-test timeout is the backstop if
-    // this regresses.) setItem always throws quota → the write never succeeds.
+    // removing and without throwing. The reclaim loop bounds iterations by
+    // RECLAIM_TIERS.length, so it terminates regardless of removeItem
+    // semantics — a naive `while (reclaimSpace())` would spin forever because
+    // the same key keeps matching every pass. setItem always throws quota →
+    // the write never succeeds.
     window.localStorage.setItem('vc_heights_session-A', '{"a":1}')
     window.localStorage.setItem('mc-paste-store-v1', 'x'.repeat(100))
     const setSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {

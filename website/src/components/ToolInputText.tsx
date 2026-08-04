@@ -75,8 +75,8 @@ export function ToolInputText({ text, raw = false }: { text: string; raw?: boole
   }
   // Default: plain text — inherit parent's color so the rendering stays
   // visually consistent with the JSON-highlighted path (whose non-token
-  // spans also inherit). Wrapping in `text-muted` here was the cause of
-  // input/output panels looking dim for tools that didn't trip the JSON
-  // regex (edge whitespace, partial streams, non-JSON shell output).
+  // spans also inherit). Do not wrap in `text-muted`: that dims input/output
+  // panels for tools that don't trip the JSON regex (edge whitespace, partial
+  // streams, non-JSON shell output).
   return <span>{text}</span>
 }

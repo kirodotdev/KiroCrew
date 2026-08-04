@@ -1,13 +1,13 @@
 /**
  * Every catalog key the source asks for must exist — the gate, and the defect it closes.
  *
- * ## The defect, which is historical rather than hypothetical
+ * ## The defect this gate catches
  *
- * Phase 3 item 1a collapsed a shared count-badge fragment into a single
- * `show_all_count` key and updated ONE of that key's two render sites in
- * `ActivityViewer.tsx`. The second site kept referencing the deleted
+ * When a shared count-badge fragment collapses into a single `show_all_count`
+ * key but only ONE of its two render sites in `ActivityViewer.tsx` is updated,
+ * the second site keeps referencing the deleted
  * `pages.chat.activityViewer.show_all`. i18next returns a missing key as its own
- * fallback instead of throwing, so the button rendered the literal string
+ * fallback instead of throwing, so the button renders the literal string
  * `pages.chat.activityViewer.show_all` to the user.
  *
  * That state was reproduced on this tree before the gate landed, and every existing
@@ -170,11 +170,11 @@ afterAll(() => {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true })
 })
 
-// ------------------------------------------------------------------ the historical defect
+// ------------------------------------------------------------------ the defect this gate catches
 
 /**
- * `ActivityViewer.tsx`'s two render sites, reduced to the shape that mattered: both
- * reach for the same key, and item 1a renamed it in the catalog while updating only one.
+ * `ActivityViewer.tsx`'s two render sites, reduced to the shape that matters: both
+ * reach for the same key, and the catalog renames it while updating only one.
  */
 const ACTIVITY_VIEWER = (libraryKey: string) => `import { i18nT } from '../i18n/t'
 
@@ -199,7 +199,7 @@ describe('the Phase 3 item 1a defect', () => {
   let fixed: Run
 
   beforeAll(() => {
-    // Exactly the committed state item 1a left behind: the catalog holds only the new
+    // Exactly the state this reproduces: the catalog holds only the new
     // `show_all_count`, and one render site still asks for the deleted `show_all`.
     broken = run({
       files: withPadding({ 'src/pages/chat/ActivityViewer.tsx': ACTIVITY_VIEWER('show_all') }),

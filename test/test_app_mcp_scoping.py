@@ -1183,7 +1183,9 @@ class TestRebuildDoesNotResurrectDeregisteredApps:
         from kiro_crew import agent
 
         src = inspect.getsource(agent.rebuild_agent_config)
+        # The fail-OPEN wording (and behaviour) must be gone from both fallbacks.
         assert "keep tools" not in src
+        # The body between the two fallback defs must not `return True`.
         after = src.split("def _app_of_key_enabled", 1)[1]
         assert "return True" not in after, "unverifiable app state must fail closed"
 

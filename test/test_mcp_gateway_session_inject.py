@@ -199,7 +199,7 @@ _PROBE_SNIPPET = (
 )
 
 _DRIVER = r"""
-import json, os, subprocess, sys, time
+import json, os, subprocess, sys, threading, time
 w = sys.argv[1]
 p = subprocess.Popen(["kiro-cli", "acp", "--agent", "pooltest"], cwd=w + "/proj",
                      stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -209,12 +209,32 @@ send = lambda o: (p.stdin.write(json.dumps(o) + "\n"), p.stdin.flush())
 send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
       "params": {"protocolVersion": 1, "clientCapabilities":
                  {"fs": {"readTextFile": False, "writeTextFile": False}}}})
-time.sleep(3)
+# Wait for the initialize RESPONSE rather than a fixed span, but on a THREAD with
+# a bound: a bare readline() on a stalled CLI blocks forever, and this driver's
+# own 180s subprocess timeout is longer than the suite's --timeout=120, so the
+# hang would surface as a pytest timeout kill rather than the clean failure
+# below. A cooperative CLI answers in well under a second.
+_line = []
+_t = threading.Thread(target=lambda: _line.append(p.stdout.readline()), daemon=True)
+_t.start()
+_t.join(30)
+if not _line:
+    p.kill()
+    sys.exit("kiro-cli never answered initialize within 30s")
 send({"jsonrpc": "2.0", "id": 2, "method": "session/new",
       "params": {"cwd": w + "/proj", "mcpServers": [
           {"name": "shared", "command": sys.executable,
            "args": ["-c", sys.argv[2], w + "/marks/INJECTED"], "env": []}]}})
-time.sleep(8)
+# Poll for the marker the injected server writes, with a deadline generous
+# enough for a cold CLI. The old 8s sleep was paid in full on every run.
+deadline = time.time() + 20
+injected = os.path.join(w, "marks", "INJECTED")
+while time.time() < deadline and not os.path.exists(injected):
+    time.sleep(0.05)
+# Give a same-named spec server, if injection ever became additive, the same
+# chance to write its own marker -- otherwise this driver could exit before the
+# thing the test asserts is ABSENT would have appeared, making it pass vacuously.
+time.sleep(1)
 p.kill()
 """
 

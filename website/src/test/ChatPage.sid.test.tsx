@@ -252,9 +252,9 @@ describe('ChatPage ?sid= URL parameter', () => {
   })
 
   // Regression: loading on a chat URL (?sid= present) must not freeze switching.
-  // Pre-fix, pendingSidRef was overloaded for both deep-link activation AND POP-in-
-  // flight; the deep-link load tripped the POP bail so the first switch never
-  // updated the URL until a reload. Loading at /chat (no ?sid) hid the bug.
+  // If pendingSidRef were overloaded for both deep-link activation AND a POP in
+  // flight, the deep-link load would trip the POP bail so the first switch never
+  // updated the URL until a reload; loading at /chat (no ?sid) hides that.
   describe('switch after deep-link load (Mesh chat-switch bug)', () => {
     it('updates URL when switching sessions after loading with ?sid= present', async () => {
       const { store } = renderChatPage({ route: '/chat/fix-login-bug?sid=chat-2-200', slots })
@@ -263,7 +263,7 @@ describe('ChatPage ?sid= URL parameter', () => {
 
       await act(async () => { await store.dispatch(switchSlot('chat-1-100')) })
 
-      // URL must follow the switch — pre-fix it stayed on chat-2-200.
+      // URL must follow the switch.
       await waitFor(() => {
         expect(currentUrl).toContain('sid=chat-1-100')
         expect(currentUrl).toContain('/chat/debug-video-playback')
@@ -355,10 +355,10 @@ describe('ChatPage ?sid= URL parameter', () => {
   })
 
   // Regression: browser Back/Forward (history POP) must retrace sessions across
-  // MULTIPLE steps. The bug (pre-fix): on a POP, the activeSlot→?sid sync effect
-  // ran with a STALE activeSlot and pushed a spurious entry, so a second goBack
-  // jumped to the wrong session and goForward stuck. A NavController exposes the
-  // router's navigate(); navigate(-1/+1) is a real POP (useNavigationType()==='POP').
+  // MULTIPLE steps. The hazard: on a POP, an activeSlot→?sid sync effect running
+  // with a STALE activeSlot pushes a spurious entry, so a second goBack jumps to
+  // the wrong session and goForward sticks. A NavController exposes the router's
+  // navigate(); navigate(-1/+1) is a real POP (useNavigationType()==='POP').
   describe('browser Back/Forward (history POP) retrace', () => {
     function renderForPop(initialSlots: ChatSlot[]) {
       const preload: PreloadState = {
@@ -420,20 +420,20 @@ describe('ChatPage ?sid= URL parameter', () => {
       await act(async () => { navBack() })
       await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
 
-      // Back again: B → A. Pre-fix this landed on chat-3-300 (spurious push).
+      // Back again: B → A (must not land on chat-3-300 via a spurious push).
       await act(async () => { navBack() })
       await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
 
-      // Forward: A → B. Pre-fix the forward stack was corrupted and stuck.
+      // Forward: A → B (the forward stack must not be corrupted and stuck).
       await act(async () => { navForward() })
       await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
     })
 
-    // Regression (URL-lock bug): after a Back/Forward POP, useNavigationType()
-    // stays 'POP' until our own navigate() runs. A subsequent sidebar switch
-    // changes activeSlot, re-firing the POP→sid effect while still 'POP'; pre-fix
-    // it read the stale URL sid and reverted the switch, locking the URL to one
-    // chat. location.key gating must let the switch stick.
+    // Regression (URL-lock): after a Back/Forward POP, useNavigationType() stays
+    // 'POP' until our own navigate() runs. A subsequent sidebar switch changes
+    // activeSlot, re-firing the POP→sid effect while still 'POP'; reading the
+    // stale URL sid there would revert the switch and lock the URL to one chat.
+    // location.key gating must let the switch stick.
     it('allows switching to a different session after a Back navigation', async () => {
       const navSlots = [slot('chat-1-100', 'Alpha'), slot('chat-2-200', 'Beta'), slot('chat-3-300', 'Gamma')]
       const { store } = renderForPop(navSlots)
@@ -458,8 +458,8 @@ describe('ChatPage ?sid= URL parameter', () => {
 // already switched to. The deep-link ?sid activation effect runs when the slot
 // list first contains the linked slot; if that arrives AFTER the user clicked a
 // different session in the sidebar (switchSlot.pending sets activeSlot
-// synchronously), the late activation used to snap the UI back to the
-// deep-linked session. (Mesh chat-switch-after-deeplink race.)
+// synchronously), the late activation must not snap the UI back to the
+// deep-linked session.
 describe('late slot-list load does not override a user switch (deep-link race)', () => {
   it('keeps the user-selected session when the deep-linked slot appears after the switch', async () => {
     // Deep-linked to chat-1-100 but the slot list is still loading (empty).

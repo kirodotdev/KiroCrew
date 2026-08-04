@@ -38,7 +38,7 @@ from kiro_crew.validation import (
 
 logger = logging.getLogger(__name__)
 
-# Per-turn compaction-failure backoff (Mesh compaction-spam fix). See
+# Per-turn compaction-failure backoff. See
 # _broadcast_compaction_result for the full rationale. Kept small: this is a
 # UX/spam guard, not a correctness gate — the underlying compaction attempt
 # still runs (or fails) on kiro-cli's own schedule every turn; we only
@@ -281,12 +281,12 @@ def _broadcast_compaction_result(
 ) -> str | None:
     """Broadcast compaction completed/failed to the slot. Returns message text or None.
 
-    Failure backoff (Mesh compaction-spam fix): the per-turn
+    Failure backoff: the per-turn
     EVENT_COMPACTION_STATUS path has no cooldown of its own — kiro-cli can
     re-attempt (and re-fail) auto-compaction every single turn while context
-    stays over threshold, previously appending a near-identical
-    "Compaction failed: unknown error" notice each time with no backoff. We
-    now track a per-slot consecutive-failure streak and a short cooldown:
+    stays over threshold, which would append a near-identical
+    "Compaction failed: unknown error" notice each time with no backoff. A
+    per-slot consecutive-failure streak and a short cooldown avoid that:
     the first couple of failures are shown as-is (so the user sees it's
     happening), then subsequent failures within the cooldown window are
     suppressed from the chat (still logged server-side via
@@ -428,7 +428,7 @@ def _maybe_inject_persona(
     disk *now*. A stale hash (e.g. a reinstall rewrote ``persona.md``) or a
     missing hash fails closed, so a never-consented persona can never be
     injected. The legacy boolean ``theme_consent`` request field does not grant
-    injection on its own -- consent is content-bound (Codex HIGH fix). There is
+    injection on its own -- consent is content-bound. There is
     no built-in / unconditional persona path."""
     if not is_new:
         return message
@@ -439,7 +439,7 @@ def _maybe_inject_persona(
     # gap where a client-asserted boolean would inject a never-consented
     # persona after persona.md changed. The THEME_CONSENT_SHA_RE full-match is
     # also a hard guard that only pure 64-hex ASCII ever reaches
-    # hmac.compare_digest below (which raises TypeError on non-ASCII, GPT HIGH).
+    # hmac.compare_digest below (which raises TypeError on non-ASCII).
     if (
         color_theme.startswith("custom-")
         and isinstance(theme_consent_sha, str)
@@ -503,26 +503,40 @@ def _redact_value(v):  # type: ignore[no-untyped-def]
     if isinstance(v, dict):
         return _redact_meta(v)
     if isinstance(v, list):
-        return [_redact_value(i) for i in v]
+        # Snapshot for the same reason as _redact_meta — the flush thread reads
+        # containers the event loop is still appending to.
+        return [_redact_value(i) for i in list(v)]
     return v
 
 
 def _redact_meta(meta: dict) -> dict:
-    """Recursively redact string values in meta dict."""
-    return {k: _redact_value(v) for k, v in meta.items()}
+    """Recursively redact string values in meta dict.
+
+    Iterates a SNAPSHOT of the dict, never the live object. ``_redact_meta`` is
+    reached from ``_save_slot_to_history``, which runs in the flush executor
+    thread while the event loop is still mutating that same message's meta
+    (streaming tool calls, growing file-change lists). Iterating ``meta.items()``
+    directly therefore raised ``RuntimeError: dictionary changed size during
+    iteration``, which propagated out of ``_save_slot_to_history`` and aborted
+    the whole slot's save — the transcript for that flush was lost.
+
+    A shallow copy per level suffices: the copy's key set is stable, and nested
+    containers get their own snapshot from the recursive call.
+    """
+    return {k: _redact_value(v) for k, v in list(meta.items())}
 
 
 def _redact_meta_for_role(role: str, meta: dict) -> dict:
     """Redact meta, but preserve role-specific user-actionable external URLs (e.g. mcp_oauth).
 
     Lives here (the display-redaction module) rather than in chat_persistence
-    because it is now called on the EMIT path — see _prepare_messages. The
+    because it is called on the EMIT path — see _prepare_messages. The
     dependency runs chat_persistence -> chat_utils, so keeping it here lets both
     the save path and the emit path share one implementation without a cycle.
     """
     if role == "mcp_oauth":
         out: dict = {}
-        for k, v in meta.items():
+        for k, v in list(meta.items()):
             if k == "oauth_url" and isinstance(v, str):
                 # Two gates, and deliberately NOT a third:
                 #   1. http(s)-only — a tampered history line can't smuggle a
@@ -720,10 +734,10 @@ def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
             # Gate is `!= "user"`, NOT `not in ("user", "system")`. This is the
             # display-time redaction boundary for everything the slot detail
             # endpoint returns — including the frozen-prefix lines read straight
-            # off disk — so it must cover every role the LOAD path used to clean.
-            # `system` content is written to disk unredacted (see
-            # _build_message_entry's historical gate), so excluding it here would
-            # emit raw stored bytes now that the load path no longer launders them.
+            # off disk — so it must cover every non-user role. The load path does
+            # not redact on load, and `system` content is written to disk
+            # unredacted (see _build_message_entry's gate), so excluding it here
+            # would emit raw stored bytes.
             # User-authored content stays raw: the user typed it and is the only
             # one who sees it back.
             if role != "user" and text:
@@ -742,9 +756,9 @@ def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
             elif isinstance(msg_out.get("meta"), dict):
                 # Redact the STORED meta too. Without this branch the stored dict
                 # passes through by reference (dict(m) is shallow), so it would
-                # reach the client exactly as loaded. The load path used to redact
-                # meta on the way in; that moved here, so this is now the only
-                # guard on meta for the slot-detail response.
+                # reach the client exactly as loaded. This is the only guard on
+                # meta for the slot-detail response (the load path does not
+                # redact meta).
                 msg_out["meta"] = _redact_meta_for_role(role, msg_out["meta"])
             out.append(msg_out)
     if chunk_text:

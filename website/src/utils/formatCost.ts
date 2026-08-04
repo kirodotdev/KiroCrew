@@ -3,11 +3,10 @@ import { fmtCurrency } from '../i18n/format'
 /**
  * Format a USD cost for display at a precision a user can actually act on.
  *
- * Cost surfaces previously formatted the same concept three different ways
- * (`toFixed(4)` in Usage / daily-chart / deploy, `toFixed(2)` in Agents), so two
- * screens showing one number could look like they disagreed. Four decimals also
- * implies a precision no decision needs — "$0.0231" and "≤ $0.0004" read as
- * noise where "$0.02" and "<$0.01" carry the information.
+ * Every cost surface (Usage, daily-chart, deploy, Agents) formats the same
+ * concept the same way, so two screens showing one number never look like they
+ * disagree. Four decimals imply a precision no decision needs — "$0.0231" and
+ * "≤ $0.0004" read as noise where "$0.02" and "<$0.01" carry the information.
  *
  * Rules: 2dp, a `<$0.01` floor for non-zero dust, and `~$0` for a true zero
  * (an exact-zero cost is a different fact from "too small to show").

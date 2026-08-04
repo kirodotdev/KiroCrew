@@ -41,8 +41,8 @@ describe('highlight.js barrel is not in the eager bundle', () => {
   })
 
   it('leaves the two former callers pointed at the core build', () => {
-    // Named explicitly: these are the files the fix repointed, and a revert
-    // reads as "back to the barrel" rather than as a vague global count change.
+    // Named explicitly so a revert of either file reads as "back to the barrel"
+    // rather than as a vague global count change.
     for (const rel of ['src/components/ArtifactBody.tsx', 'src/components/MarkdownPanel.tsx']) {
       const src = readFileSync(join(WEBSITE_ROOT, rel), 'utf-8')
       expect(src, rel).toMatch(/import hljs from '\.\.\/utils\/hljs'/)

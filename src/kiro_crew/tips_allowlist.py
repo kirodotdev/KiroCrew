@@ -7,8 +7,7 @@ Single source of truth shared by the runtime fallback scanner
 Only USER-FACING feature docs belong here. Internal architecture notes,
 incident write-ups, and design documents must NOT be listed — the exploration
 blend picks uniformly from the catalog, so anything listed can surface as a
-user-facing tip (Codex round-7: internal MCP-gateway/incident docs were being
-offered as feature tips).
+user-facing tip.
 
 Deliberately dependency-free so the maintainer script can import it without
 pulling in the full kiro_crew runtime.

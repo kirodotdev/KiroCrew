@@ -1,6 +1,6 @@
 // Download progress + download-failure rendering in Settings > About.
 //
-// Contract under test (issues #735 / #737):
+// Contract under test:
 // - a `downloading` state with `percent` renders a DETERMINATE progress bar
 // - without `percent` it falls back to the indeterminate label (the field is
 //   optional in the emit and absent on the first downloading transition)
@@ -8,7 +8,7 @@
 //   instead of unmounting it and reporting "Couldn't check for updates"
 // - a CHECK-phase error still renders as the check status line
 // - user-facing copy comes from the failure `code`, not from the raw library
-//   `message` (#736)
+//   `message`
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -110,7 +110,7 @@ describe('AboutPanel download states', () => {
     setState({ state: 'error', phase: 'download', code: 'offline', version: '0.1.3', message: 'net::ERR' })
 
     // The card MUST survive: the user consented to this version, and losing it
-    // on a transient error strands them with no way back (#735).
+    // on a transient error strands them with no way back.
     expect(await screen.findByTestId('update-download-error')).toBeTruthy()
     expect(screen.getByTestId('update-card')).toBeTruthy()
     expect(screen.getByText(/Retry/)).toBeTruthy()
@@ -145,8 +145,8 @@ describe('AboutPanel download states', () => {
   })
 
   it('prefers localized copy over raw library text for an unclassified failure', async () => {
-    // #736's fallback branch: st.message is electron-updater's developer-facing
-    // English. The localized generic must win.
+    // st.message is electron-updater's developer-facing English. The localized
+    // generic must win.
     const { setState } = mountWithStates()
     setState({ state: 'error', phase: 'check', code: 'unknown', message: 'ShipIt could not replace the application bundle.' })
     const row = await screen.findByText(/couldn.t check for updates/i)
@@ -174,8 +174,8 @@ describe('AboutPanel download states', () => {
     expect(screen.queryByRole('button', { name: /restart & update/i })).toBeNull()
   })
 
-  // The field bug (update downloads, never applies) left users with no next
-  // step: the card just re-offers the same update after relaunch. These pin the
+  // When an update downloads but never applies, the card just re-offers the
+  // same update after relaunch, leaving users with no next step. These pin the
   // escape hatch and its reassurance, so neither can be dropped silently.
   it('offers a platform-correct manual download once the update is staged', async () => {
     const { setState } = mountWithStates({ downloadUrl: 'https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew.dmg' })
@@ -219,10 +219,9 @@ describe('AboutPanel download states', () => {
     expect(screen.queryByTestId('update-manual-fallback')).toBeNull()
   })
 
-  // Advisory UX finding on #771: auto-update.js emits phase:'install', but the
-  // panel only branched on download-vs-everything-else -- so an install failure
-  // was labelled "couldn't check for updates", unmounted the card, and hid the
-  // manual-reinstall link at the exact moment it exists for.
+  // auto-update.js emits phase:'install'; the panel must branch on it, or an
+  // install failure is labelled "couldn't check for updates", unmounts the card,
+  // and hides the manual-reinstall link at the exact moment it exists for.
   it('keeps an INSTALL failure in the card, labelled honestly, with the escape hatch', async () => {
     const { setState } = mountWithStates({
       downloadUrl: 'https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew.dmg',

@@ -1,6 +1,6 @@
 """Feature Tips — memory-personalized feature discovery with weighted-random selection.
 
-Design: Joe's cadence-gate + glow + snooze model (2026-07).
+Uses a cadence-gate + glow + snooze model.
 Selection uses weighted-random newer-biased pick (recency_decay ** rank).
 """
 
@@ -164,13 +164,12 @@ class TipsState:
     dismissed: list[str] = field(default_factory=list)  # permanent ack (by tip id)
     # Permanent ack by catalog doc: LLM-generated tips invent their own ids on
     # every regeneration, so id-only matching lets a dismissed feature resurface
-    # under a fresh id (Codex round-15). Doc is the stable feature identity.
+    # under a fresh id. Doc is the stable feature identity.
     dismissed_docs: list[str] = field(default_factory=list)
     snoozed: dict[str, float] = field(default_factory=dict)  # tip_id -> snooze_ts
     # Snooze by stable doc identity: generated ids drift across regenerations,
     # so id-only snooze lets the same feature resurface under a fresh id well
-    # before the 48h window expires -- same drift dismissals fixed in round-15
-    # (Codex round-28).
+    # before the 48h window expires.
     snoozed_docs: dict[str, float] = field(default_factory=dict)  # doc -> snooze_ts
     opted_out: bool = False
     last_generated: float = 0.0
@@ -180,8 +179,8 @@ class TipsState:
     # id -> doc mapping recorded when a tip is shown: 'shown' clears offered
     # and maybe_refresh() may replace st.tips before the user dismisses, so
     # without this a stale generated id could not be resolved back to its
-    # stable doc identity and doc-level dismissal would silently fail
-    # (Codex round-27). Bounded: pruned to the most recent 32 entries.
+    # stable doc identity and doc-level dismissal would silently fail.
+    # Bounded: pruned to the most recent 32 entries.
     shown_docs: dict[str, str] = field(default_factory=dict)
 
 
@@ -199,7 +198,7 @@ def _load_state() -> TipsState:
         return TipsState()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        # Structural validation (Codex round-12): a syntactically valid but
+        # Structural validation: a syntactically valid but
         # non-dict/mistyped state file must degrade to defaults, not raise and
         # 500 every tips endpoint until the file is repaired by hand.
         if not isinstance(data, dict):
@@ -213,9 +212,9 @@ def _load_state() -> TipsState:
         def _finite(v: object, default: float = 0.0) -> float | None:
             """Coerce to a finite float; None if impossible.
 
-            float() on a several-hundred-digit JSON int raises OverflowError
-            (Codex round-16) — a persisted-state file must never be able to
-            crash cache init and 500 every tips endpoint.
+            float() on a several-hundred-digit JSON int raises OverflowError,
+            and a persisted-state file must never be able to crash cache init
+            and 500 every tips endpoint.
             """
             if isinstance(v, bool) or not isinstance(v, (int, float)):
                 return None
@@ -225,7 +224,7 @@ def _load_state() -> TipsState:
                 return None
             return f if math.isfinite(f) else None
 
-        # Per-entry validation (Codex round-15): container-type checks alone
+        # Per-entry validation: container-type checks alone
         # let e.g. {"snoozed": {"x": "bad"}} through, crashing arithmetic in
         # _is_eligible with a 500 on every request until repaired by hand.
         shown_raw = _typed("shown", dict, {})
@@ -341,7 +340,7 @@ def _load_bundled_catalog() -> list[CatalogEntry] | None:
         data = json.loads(_BUNDLED_CATALOG_FILE.read_text(encoding="utf-8"))
         # A syntactically valid but malformed catalog (list root, non-numeric
         # mtime, huge int) must degrade to the live-scan fallback, never crash
-        # cache init (Codex round-19).
+        # cache init.
         if not isinstance(data, dict):
             return None
         entries_raw = data.get("entries", [])
@@ -447,8 +446,8 @@ def _select_tip(
 
     # Build mtime lookups from catalog: key by doc filename (authoritative —
     # LLM-generated tips carry the catalog doc in "doc" but usually invent
-    # their own id, so id-keyed lookup alone degenerates to insertion order,
-    # Codex round-14) and by the catalog-derived id (for catalog fallback
+    # their own id, so id-keyed lookup alone degenerates to insertion order)
+    # and by the catalog-derived id (for catalog fallback
     # tips whose doc field may have been sanitized away).
     mtime_by_doc: dict[str, float] = {entry.doc: entry.mtime for entry in catalog}
     mtime_by_id: dict[str, float] = {
@@ -532,7 +531,7 @@ def _parse_tips(text: str) -> list[dict]:  # type: ignore[type-arg]
                     continue
                 if not _validate_tip_fields(t):
                     continue
-                # Allowlist projection (Codex round-12 HIGH): keep ONLY the
+                # Allowlist projection: keep ONLY the
                 # seven allowed string fields. Unknown/extra fields from the
                 # LLM (including nested dicts) would bypass _redact_tips's
                 # string-only redaction and reach persistence + the dashboard.
@@ -566,7 +565,7 @@ _TIP_REQUIRED_NONEMPTY = ("id", "title", "body")
 
 def _sanitize_persisted_tip(t: object) -> dict | None:  # type: ignore[type-arg]
     """Normalize a tip dict loaded from disk through the SAME validation as
-    generated tips (Codex round-18): required string fields, length caps,
+    generated tips: required string fields, length caps,
     allowlist projection. Returns None for anything invalid — a malformed
     persisted tip like {"id": []} must be discarded, not crash _is_eligible
     with a 500 on every request.
@@ -982,7 +981,7 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
             # Display-time signal: start cadence + release the offered slot, but
             # keep the tip eligible (NOT dismissed) for future re-selection.
             # Record the id -> doc mapping first: offered is cleared here and the
-            # pool may regenerate before dismissal (Codex round-27).
+            # pool may regenerate before dismissal.
             if isinstance(st.offered, dict) and st.offered.get("id") == tip_id:
                 doc_val = st.offered.get("doc", "")
                 if isinstance(doc_val, str) and doc_val:
@@ -996,7 +995,7 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
                 st.dismissed.append(tip_id)
             # Also record the catalog doc (stable feature identity): LLM
             # regeneration invents fresh ids, so id-only dismissal would let
-            # the same feature resurface (Codex round-15).
+            # the same feature resurface.
             if tip_id:
                 doc = ""
                 if isinstance(st.offered, dict) and st.offered.get("id") == tip_id:
@@ -1011,7 +1010,7 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
                 if not doc:
                     # Catalog-fallback tips carry the catalog-derived id
                     # ("X.md" -> "X-tip") but may be gone from offered (cleared
-                    # by "shown") and absent from st.tips (Codex round-17) —
+                    # by "shown") and absent from st.tips —
                     # reverse-map through the catalog itself.
                     for entry in cache.catalog:
                         if entry.doc.replace(".md", "-tip") == tip_id:

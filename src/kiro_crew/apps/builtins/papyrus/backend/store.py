@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -116,25 +117,107 @@ def normalize_project_name(raw: str) -> str:
     return re.sub(r"\s+", "-", (raw or "").strip()).lower()
 
 
+#: ``os.path.isjunction`` exists only on Python 3.12+. Preferred when present; the
+#: fallback below covers 3.10/3.11, which this project still supports.
+_ISJUNCTION = getattr(os.path, "isjunction", None)
+
+#: Windows marks every reparse point (junction, symlink, and others) with this
+#: attribute bit. ``stat`` exports it on every platform and every supported
+#: version, so it is safe to reference unconditionally.
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+#: The reparse tag for a directory junction (a "mount point"). ``stat`` does not
+#: export a constant for it, so the documented value is named here.
+_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
+
+
+def _is_junction_fallback(path: Path) -> bool:
+    """``os.path.isjunction`` for Python 3.10/3.11, which lack it.
+
+    Mirrors what CPython's own implementation does: a junction is a reparse point
+    (``FILE_ATTRIBUTE_REPARSE_POINT``) whose tag is ``IO_REPARSE_TAG_MOUNT_POINT``.
+    Both fields are Windows-only additions to ``os.stat_result``, so their absence
+    off Windows makes this ``False`` — which is correct, since junctions do not
+    exist there.
+
+    ``follow_symlinks=False``: the question is what THIS name is, not what it
+    points at.
+    """
+    try:
+        info = path.stat(follow_symlinks=False)
+    except (OSError, ValueError, TypeError):
+        return False
+    attrs = getattr(info, "st_file_attributes", 0)
+    if not attrs & _FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    return getattr(info, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
+
+
+def is_reparse_link(path: Path) -> bool:
+    """True when *path* is a symlink **or** a Windows directory junction.
+
+    A junction is a reparse point that ``islink()`` / ``is_symlink()`` does NOT
+    report, so a symlink-only guard is bypassable on Windows by the one link type
+    a user can create there without elevation. ``resolve()`` follows a junction
+    like any other indirection, so every place this module refuses a link at a name
+    KiroCrew owns has to refuse a junction too, or the refusal is POSIX-only.
+
+    Detected WITHOUT depending on ``os.path.isjunction``'s availability: that
+    helper only exists on 3.12+, and this project supports 3.10, so keying the
+    guard on it left the protection silently absent on two supported interpreters —
+    the failure mode being a no-op guard, which is worse than a loud one.
+
+    Shared so the project-entry guard and ``gitops``'s attributes guard cannot
+    drift apart on which link types they cover.
+    """
+    if path.is_symlink():
+        return True
+    if _ISJUNCTION is not None:
+        try:
+            return bool(_ISJUNCTION(str(path)))
+        except (OSError, ValueError):
+            return False
+    return _is_junction_fallback(path)
+
+
 def safe_project_dir(name: str, root: Path | None = None) -> Path:
     """Return the directory for project *name*, or raise :class:`PathRejected`.
 
     The name must match :data:`PROJECT_NAME_RE` — ONE slug segment — so it can
     never contribute a path separator, a ``..``, a drive letter, or a leading
     dash that a later ``git``/``pdflatex`` argv could read as an option. The
-    resolved directory is then re-checked for containment under
-    ``projects_dir()``, which catches a symlinked project entry.
+    resolved directory is then re-checked for STRICT containment under
+    ``projects_dir()``, and a symlink or junction at the project entry is refused
+    outright.
     """
     if not PROJECT_NAME_RE.match(name or ""):
         raise PathRejected("invalid project name")
     base = projects_dir(root)
     candidate = base / name
+    # A LINK at the project entry is illegitimate wherever it points — same
+    # reasoning as `_config_path`: this is a directory KiroCrew owns and creates.
+    # Refused before containment is asked about, because a link can satisfy
+    # containment while still not being the directory it claims to be.
+    #
+    # Junctions included: they are the link type a Windows user can create WITHOUT
+    # elevation, and `is_symlink()` does not report them — so a symlink-only check
+    # left the whole guard bypassable on exactly the platform this PR adds.
+    if is_reparse_link(candidate):
+        raise PathRejected("project path is a symlink")
     try:
         resolved = candidate.resolve()
         base_resolved = base.resolve()
     except OSError as exc:
         raise PathRejected("project path could not be resolved") from exc
-    if resolved != base_resolved and base_resolved not in resolved.parents:
+    # STRICT containment: `resolved` must be a CHILD of the projects dir, never the
+    # projects dir itself. The old check allowed `resolved == base_resolved`, and
+    # `projects/<name> -> .` satisfied exactly that — making every other paper a
+    # "child" of the fake project, so `safe_child` then happily resolved
+    # `other-paper/main.tex` as an in-project path (cross-project read AND write),
+    # and `DELETE /project` ran `rmtree` on the projects ROOT, destroying every
+    # paper. `projects_dir` itself is never a project, so nothing legitimate needs
+    # the equality case.
+    if base_resolved not in resolved.parents:
         raise PathRejected("project path escapes the projects directory")
     if is_sensitive_path(str(resolved)):
         raise PathRejected("project path is sensitive")
@@ -157,8 +240,20 @@ def safe_child(project: Path, relative: str) -> Path:
     * a resolved target outside *project* — this is what catches a **symlink
       escape**, where every segment looks innocent but a link points out of the
       tree (a cloned repo can ship one);
+    * anything under ``.git`` — see below;
     * a resolved target the shared sensitive-path gate rejects, so a project that
       somehow sits beside a credential store still cannot read it.
+
+    **``.git`` is refused outright**, because it is not document content: it is the
+    machinery that decides what ``git`` EXECUTES. ``.git/config`` names
+    ``filter.<x>.clean`` and ``core.*Command`` programs, ``.git/info/attributes``
+    is the highest-precedence attributes source, and ``.git/hooks/*`` is run
+    directly — so a write there converts "edit a file in my paper" into code
+    execution on the next commit or push, on the one path that deliberately keeps
+    ``~/.ssh`` readable. Containment does not cover this: those paths are all
+    legitimately INSIDE the project, so every other rule here passes them. The
+    app's own git work goes through :mod:`.gitops`, and ``list_files`` already
+    hides dotfiles, so nothing legitimate is lost.
     """
     if not relative or len(relative) > 1024:
         raise PathRejected("invalid path")
@@ -176,6 +271,32 @@ def safe_child(project: Path, relative: str) -> Path:
         raise PathRejected("path could not be resolved") from exc
     if project_resolved not in resolved.parents:
         raise PathRejected("path escapes the project")
+    # Checked on the REQUESTED segments **and** the RESOLVED ones. Neither alone is
+    # sufficient, because a symlink can move `.git` in either direction:
+    #
+    #   * requested-only misses `meta -> .git` + `meta/config` — no `.git` component
+    #     in the request, resolves straight into the machinery;
+    #   * resolved-only misses `.git/config -> ../repo-config` — the request names
+    #     `.git`, but resolution lands outside it, so the resolved parts are clean
+    #     while git still READS the file through its own path.
+    #
+    # The second is the subtler one: it is not about where the bytes live, it is that
+    # the app must not write anything git will treat as its config, whatever the file
+    # is really called.
+    #
+    # Case-insensitively, because macOS and Windows resolve `.GIT` to the same
+    # directory; at any depth, because a submodule's `.git` has the same execution
+    # surface. The resolved check is against the PROJECT-RELATIVE part only, so a
+    # `.git` component in the absolute path ABOVE the project (a data home that
+    # itself sits inside a checkout) cannot refuse every legitimate file.
+    if any(p.lower() == ".git" for p in parts):
+        raise PathRejected("invalid path")
+    try:
+        rel_parts = resolved.relative_to(project_resolved).parts
+    except ValueError:  # pragma: no cover - containment above already guarantees this
+        raise PathRejected("path escapes the project") from None
+    if any(p.lower() == ".git" for p in rel_parts):
+        raise PathRejected("invalid path")
     if is_sensitive_path(str(resolved)):
         raise PathRejected("path is sensitive")
     return resolved

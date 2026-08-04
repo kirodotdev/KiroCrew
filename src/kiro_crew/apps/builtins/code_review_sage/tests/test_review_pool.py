@@ -259,7 +259,7 @@ class TestConcurrency(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pool._max, MAX_CONCURRENT_CEIL)
 
 
-# ── Tool approval + SEL audit (parity with the old AcpClient worker) ─────────
+# ── Tool approval + SEL audit ────────────────────────────────────────────────
 class TestApprovalAndAudit(unittest.IsolatedAsyncioTestCase):
     async def test_permission_events_are_auto_approved(self):
         script = [
@@ -300,8 +300,8 @@ class TestApprovalAndAudit(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0]["outcome"], "auto_approved")
 
     async def test_permission_decision_emits_sel_audit(self):
-        # Codex Finding 1 (backend-security-controls): the permission DECISION must
-        # emit an SEL event carrying its request id — not only the tool_call.
+        # The permission DECISION must emit an SEL event carrying its request id —
+        # not only the tool_call.
         calls: list = []
 
         class _FakeSel:
@@ -410,7 +410,7 @@ class TestSyncDispatchBridge(unittest.TestCase):
             rp.AcpRuntime = orig  # type: ignore[assignment]
 
 
-# ── Reviewer identity resolution (unchanged helpers) ─────────────────────────
+# ── Reviewer identity resolution ─────────────────────────────────────────────
 class TestReviewAgentResolution(unittest.TestCase):
     def test_fallback_to_kirocrew_when_dedicated_missing(self):
         self.assertEqual(

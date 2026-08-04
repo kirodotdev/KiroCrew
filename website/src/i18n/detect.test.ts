@@ -45,11 +45,7 @@ describe('detectBrowserLanguage', () => {
 
   it('returns null when nothing matches', () => {
     // `ko`/`ja` are deliberately languages we do NOT ship — picking a tag we
-    // later add would silently turn this into a no-op assertion. This was
-    // `de-DE`, which stopped exercising the no-match path once German shipped:
-    // the assertion inverted from "nothing matches" to "de matches", and only
-    // stayed green because `toBeNull()` happened to still hold before the
-    // catalog landed.
+    // later add would silently turn this into a no-op assertion.
     withLanguages(['ko-KR', 'ja'], () => expect(detectBrowserLanguage()).toBeNull())
   })
 
@@ -154,8 +150,7 @@ describe('detectBrowserLanguage — exact vs loose precedence', () => {
 
   it('takes the highest-ranked loose match when several match loosely', () => {
     // The leading tag must be a language we do NOT ship, or it wins outright and
-    // this stops testing loose-match ranking at all. `de-DE` did exactly that
-    // once German shipped — it became an exact-match case asserting 'zh-CN'.
+    // this stops testing loose-match ranking at all.
     withLanguages(['ko-KR', 'zh-TW', 'zh-MO'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
   })
 })

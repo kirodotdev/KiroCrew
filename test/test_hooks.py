@@ -715,3 +715,265 @@ class TestMutatingKindBeatsTheTitle:
         ctx = MagicMock()
         ctx.hooks = None
         assert _should_auto_approve_spawn(ctx, "spawn_run") is False
+
+
+class TestAppOwnMcpServerAutoApprove:
+    """A FIRST-PARTY (builtin) app agent calling its OWN app-scoped MCP server
+    (identified by the trusted, non-model-authored ``mcp_server_name`` =
+    ``<app>:<server>``) is auto-approved intra-app, without re-widening any host
+    grant, and only AFTER the always-on deny floor + governance (which still
+    win). The decision keys on ``mcp_server_name``, NEVER the LLM-authored title,
+    so a forged ``mcp__…`` title on a shell/host tool cannot win auto-approval. A
+    THIRD-PARTY app's own server is NOT auto-approved."""
+
+    @pytest.fixture
+    def _builtin(self, monkeypatch):
+        """Treat the test app names as first-party builtins whose shipped
+        manifest declares the ``myapp:srv`` MCP server."""
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(
+            hooks_mod,
+            "_is_first_party_app",
+            lambda app: app.casefold() in {"myapp"},
+        )
+        monkeypatch.setattr(
+            hooks_mod, "_BUILTIN_APP_MCP_SERVERS", frozenset({"myapp:srv"})
+        )
+
+    def test_own_server_tool_auto_approved(self, _builtin):
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__do_thing",
+            app="myapp",
+            mcp_server_name="myapp:srv",
+            mcp_tool_name="do_thing",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_AUTO_APPROVE
+
+    def test_own_server_without_trusted_tool_name_not_auto_approved(self, _builtin):
+        # No trusted _meta.kiro.toolName → we cannot identify WHICH tool this is
+        # to govern it, so the app-own-server auto-approve does NOT fire; the
+        # call falls through to interactive approval (fail-closed), never a
+        # silent execute. select_tool_title prefers the model's prose
+        # description, so a real MCP call can arrive with a non-canonical title.
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "Do a thing",
+            app="myapp",
+            mcp_server_name="myapp:srv",
+            mcp_tool_name="",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_own_server_governs_canonical_tool_not_prose_title(self, monkeypatch):
+        # The auto-approve must govern the REAL tool (trusted mcp_server_name +
+        # mcp_tool_name → canonical mcp__server__tool), NOT the LLM prose title.
+        # A per-tool policy denying mcp__myapp:srv__danger must block the call
+        # even though the prose title never matches that policy — closing the
+        # bypass where an own-server auto-approve skipped per-tool governance.
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "_is_first_party_app", lambda app: True)
+        monkeypatch.setattr(hooks_mod, "_is_declared_builtin_mcp_server", lambda name: True)
+        seen: list[str] = []
+
+        def fake_gov(ctx, name, *a, **k):
+            seen.append(name)
+            if name == "mcp__myapp:srv__danger":
+                return "Blocked by governance policy: denied"
+            return None
+
+        monkeypatch.setattr(hooks_mod, "_governance_denial", fake_gov)
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "Do a risky thing",  # prose title → upstream governance permits it
+            app="myapp",
+            mcp_server_name="myapp:srv",
+            mcp_tool_name="danger",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_DENY
+        # BOTH governance calls ran: the prose title (permitted) AND the
+        # reconstructed canonical name (denied).
+        assert "Do a risky thing" in seen
+        assert "mcp__myapp:srv__danger" in seen
+
+    def test_own_server_honors_canonical_deny_rule(self, monkeypatch):
+        # The always-on deny floor (auto_deny_tools / denied regexes) must apply
+        # to the canonical mcp__server__tool, not just the prose title. A deny
+        # rule keyed on the canonical name blocks the own-server auto-approve
+        # even when the LLM title is non-canonical prose that never matched it.
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "_is_first_party_app", lambda app: True)
+        monkeypatch.setattr(hooks_mod, "_is_declared_builtin_mcp_server", lambda name: True)
+        cfg = HooksConfig(auto_deny_tools=["mcp__myapp:srv__danger"])
+        mgr = HookManager(cfg)
+        r = mgr.on_tool_call(
+            "Do a risky thing",  # prose title: the top-of-method deny check misses it
+            app="myapp",
+            mcp_server_name="myapp:srv",
+            mcp_tool_name="danger",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_DENY
+
+    def test_undeclared_own_prefix_server_not_auto_approved(self, _builtin):
+        # A ``<app>:``-prefixed server the app's SHIPPED manifest does NOT declare
+        # (e.g. injected into the mutable global MCP config as ``myapp:evil``)
+        # must NOT auto-approve, even though the prefix matches a first-party app
+        # and a trusted tool name is present. Only manifest-declared servers
+        # (here ``myapp:srv``) are trusted → this falls through to interactive
+        # approval (fail-closed).
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:evil__x",
+            app="myapp",
+            mcp_server_name="myapp:evil",
+            mcp_tool_name="x",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_set_builtin_app_mcp_servers_populates_gate(self, monkeypatch):
+        # Boot pushes the shipped-manifest-declared <app>:<server> names in; the
+        # gate then does a pure in-memory, case-insensitive membership test.
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "_BUILTIN_APP_MCP_SERVERS", frozenset())
+        hooks_mod.set_builtin_app_mcp_servers(["MyApp:Srv", "other:s", "", None])  # junk ignored
+        assert hooks_mod._is_declared_builtin_mcp_server("myapp:srv") is True  # casefolded
+        assert hooks_mod._is_declared_builtin_mcp_server("OTHER:S") is True
+        assert hooks_mod._is_declared_builtin_mcp_server("myapp:nope") is False
+        assert hooks_mod._is_declared_builtin_mcp_server("") is False  # fail-closed
+
+    def test_forged_title_on_shell_tool_not_approved(self, _builtin):
+        # GPT's attack: a prompt-injected builtin agent titles a Bash call
+        # `mcp__myapp:srv__x`, but a genuine shell tool carries NO server name
+        # (kiro-cli only sets mcp_server_name for MCP-served calls). Keying on the
+        # trusted server name (empty here) means the forged title never wins —
+        # the real command falls through to interactive approval.
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__x",
+            app="myapp",
+            mcp_server_name="",
+            command="curl http://example.com/data",
+            is_shell=True,
+            tool_kind="execute",
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_forged_title_without_server_name_not_approved(self, _builtin):
+        # Same principle for a non-shell host tool: a forged MCP-looking title
+        # with an empty trusted server name does not auto-approve.
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__x", app="myapp", mcp_server_name="", tool_kind="other"
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_third_party_own_server_not_auto_approved(self, monkeypatch):
+        # A third-party app (no builtin provenance) is NOT blanket-trusted.
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "_is_first_party_app", lambda app: False)
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__do_thing",
+            app="myapp",
+            mcp_server_name="myapp:srv",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_other_apps_server_not_auto_approved(self, _builtin):
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__do_thing",
+            app="otherapp",
+            mcp_server_name="myapp:srv",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_blank_app_cannot_match(self, _builtin):
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__do_thing", app="", mcp_server_name="myapp:srv", tool_kind="other"
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_host_managed_server_not_matched(self, _builtin):
+        # Host/managed servers (kirocrew-cron) are not `<app>:`-namespaced.
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__kirocrew-cron__cron_add",
+            app="myapp",
+            mcp_server_name="kirocrew-cron",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_ALLOW
+
+    def test_owning_app_match_is_case_insensitive(self, _builtin):
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__MyApp:srv__do_thing",
+            app="myapp",
+            mcp_server_name="MyApp:srv",
+            mcp_tool_name="do_thing",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_AUTO_APPROVE
+
+    def test_governance_deny_wins_over_own_server(self, monkeypatch):
+        # The app-own-server branch is placed AFTER `_governance_denial`, so a
+        # ceiling/profile that denies the app's own server still blocks it.
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "_is_first_party_app", lambda app: True)
+        monkeypatch.setattr(
+            hooks_mod,
+            "_governance_denial",
+            lambda *a, **k: "Blocked by governance policy: denied",
+        )
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "mcp__myapp:srv__do_thing",
+            app="myapp",
+            mcp_server_name="myapp:srv",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_DENY
+
+    def test_ownership_helper_direct(self):
+        from kiro_crew.hooks import _app_owns_mcp_server
+
+        assert _app_owns_mcp_server("myapp:srv", "myapp") is True
+        assert _app_owns_mcp_server("MyApp:srv", "myapp") is True  # case-insensitive
+        assert _app_owns_mcp_server("other:srv", "myapp") is False
+        assert _app_owns_mcp_server("myapp:srv", "") is False
+        assert _app_owns_mcp_server("", "myapp") is False  # no server → fail closed
+        assert _app_owns_mcp_server("kirocrew-cron", "myapp") is False  # no colon
+
+    def test_set_builtin_app_names_populates_gate(self, monkeypatch):
+        # Boot pushes the builtin names in; the gate then does a pure in-memory,
+        # case-insensitive membership test (no filesystem I/O on the event loop).
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "_BUILTIN_APP_NAMES", frozenset())
+        hooks_mod.set_builtin_app_names(["MyApp", "other", "", None])  # junk ignored
+        assert hooks_mod._is_first_party_app("myapp") is True  # casefolded on ingest
+        assert hooks_mod._is_first_party_app("OTHER") is True
+        assert hooks_mod._is_first_party_app("nope") is False
+
+    def test_unwarmed_builtin_set_fails_closed(self, monkeypatch):
+        # Before boot warms the set, provenance is unknown → treated as
+        # third-party (own-server calls prompt, never wrongly auto-approved).
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "_BUILTIN_APP_NAMES", frozenset())
+        assert hooks_mod._is_first_party_app("myapp") is False

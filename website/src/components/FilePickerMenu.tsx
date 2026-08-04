@@ -95,9 +95,9 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     return false
   }, [onClose])
 
-  // Enter inserts the @-mention. Cmd/Ctrl+Enter preserves the earlier
-  // binding — open in the viewer — now that the shared useListKeyboardNav hook
-  // threads the modifier state through onChoose's 2nd arg (withModifier).
+  // Enter inserts the @-mention. Cmd/Ctrl+Enter opens in the viewer — the
+  // shared useListKeyboardNav hook threads the modifier state through
+  // onChoose's 2nd arg (withModifier).
   const choose = useCallback((idx: number, withModifier = false) => {
     const r = resultsRef.current
     const eff = idx >= r.length ? 0 : idx

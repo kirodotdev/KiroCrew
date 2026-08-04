@@ -1,4 +1,4 @@
-"""Defense-in-depth helpers for the gatewayd local endpoint (Mesh 81785a39).
+"""Defense-in-depth helpers for the gatewayd local endpoint.
 
 The endpoint carries every tool call and every tool result for every pooled
 session, so two questions have to be answerable at accept time:
@@ -570,9 +570,9 @@ def _resolve_socket(transport_or_sock: Any) -> Any:
     ``asyncio.trsock.TransportSocket`` -- NOT a ``socket.socket`` -- which
     proxies ``family`` and ``getsockopt`` to the underlying socket. We accept
     it (and any object exposing those two members) so ``SO_PEERCRED`` can be
-    read off a live asyncio connection; the previous strict
-    ``isinstance(socket.socket)`` check silently degraded to ``UNVERIFIABLE``
-    on every real gateway connection, defeating the check.
+    read off a live asyncio connection; a strict ``isinstance(socket.socket)``
+    check would silently degrade to ``UNVERIFIABLE`` on every real gateway
+    connection, defeating the check.
     """
     if _has_sock_api(transport_or_sock):
         return transport_or_sock

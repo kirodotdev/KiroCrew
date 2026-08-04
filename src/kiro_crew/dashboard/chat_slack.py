@@ -18,7 +18,7 @@ from kiro_crew.sync_bridge import handoff_to_slack
 
 logger = logging.getLogger(__name__)
 
-# Fresh-anchor title fallback (B-lite): when the slot has no LLM title yet
+# Fresh-anchor title fallback: when the slot has no LLM title yet
 # (titles land seconds after session creation), fall back to a one-line snippet
 # of the first user prompt, then to a neutral default. The raw slot key must
 # never be user-visible.
@@ -98,7 +98,7 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
         # redact_credentials. Fallback chain: LLM title → first-prompt snippet
         # → neutral default. Redaction runs on the full snippet text before
         # truncation so a truncation boundary can never split (and hide) a
-        # credential. Fork adaptation: slots initialize title to their raw key
+        # credential. Slots initialize title to their raw key
         # (state.py), so gate on display_title — a slot still showing
         # NEW_SESSION_TITLE has no real title, while cron/plan/handoff slots
         # (real titles, _titled unset) pass their title through.

@@ -28,7 +28,7 @@ import { store } from '../store'
 import SessionColorSwatches from '../components/SessionColorSwatches'
 
 const SLOT = 'chat-color-1'
-// SessionColorSwatches now writes via useMutation, so it needs a QueryClientProvider.
+// SessionColorSwatches writes via useMutation, so it needs a QueryClientProvider.
 const wrap = (ui: ReactNode) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(<QueryClientProvider client={qc}><Provider store={store}>{ui}</Provider></QueryClientProvider>)

@@ -639,7 +639,7 @@ class AutoNudgeService:
             # under THIS lock hold (serialization vs the post-fire write). Keep
             # the removal INLINE (not a separate task) so _cancel_timer's
             # "never cancel the current task" self-guard still applies when
-            # _timer removes its own loop. (#425)
+            # _timer removes its own loop.
             self.remove_sync(loop_id, persist=False)
             if existed:
                 payload = self._serialize_state()
@@ -654,7 +654,7 @@ class AutoNudgeService:
                     # (add()/update()/_persist_locked) could acquire the lock and
                     # race a second os.replace(), clobbering newer state with this
                     # stale removal snapshot ("lost update after restart"). Then
-                    # propagate the cancellation. (#425)
+                    # propagate the cancellation.
                     await asyncio.shield(fut)
                     raise
 

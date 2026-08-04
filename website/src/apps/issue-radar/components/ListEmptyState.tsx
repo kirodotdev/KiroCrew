@@ -1,10 +1,8 @@
 // Centered empty state for the issue / PR list columns.
 //
-// Replaces a top-left one-line "No matching pull requests.", which read as a
-// glitch — a lone sentence pinned under the search box, with the rest of the
-// column blank. Centering it in the column and pairing it with an icon makes the
-// emptiness look deliberate, and the two icons distinguish the two causes:
-// a search that matched nothing vs. filters that exclude everything.
+// Centered in the column and paired with an icon so the emptiness looks
+// deliberate rather than like a glitch, and the two icons distinguish the two
+// causes: a search that matched nothing vs. filters that exclude everything.
 import { SearchX, FilterX } from 'lucide-react'
 
 import { i18nT } from '../../../i18n/t'

@@ -150,7 +150,7 @@ describe('InstanceTabBar', () => {
   })
 
   it('keeps a sticky tab for a was_connected instance whose tunnel is down', async () => {
-    // Core fix: a tab exists for an instance the user intends to be connected
+    // A tab exists for an instance the user intends to be connected
     // (was_connected) even when its live tunnel is down after a restart.
     const down = conn({
       status: { instance_id: 'cd-1', state: 'error', error: 'ssh unreachable', remote_port: 7777 },

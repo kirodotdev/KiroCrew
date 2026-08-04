@@ -59,7 +59,7 @@ export interface McpAppRenderPayload {
   csp: McpAppCsp | null
   permissions: McpAppPermissions | null
   spool_id: string
-  /** #418 callback capability, delivered ONLY over the owner-WS render frame.
+  /** Callback capability, delivered ONLY over the owner-WS render frame.
    * The iframe relays it on every tools/call; the model-visible spool_id
    * authorizes nothing without it. */
   callback_secret?: string
@@ -167,10 +167,10 @@ export function buildAllowAttribute(permissions: McpAppPermissions | null | unde
  * <meta> followed by the app's full HTML5 document.
  *
  * INJECTION-ORDER GUARANTEE: the CSP meta is emitted BEFORE every untrusted
- * byte of the app document. We never splice into the untrusted HTML (a
- * previous revision injected after `<head>`, which let any markup the author
- * placed ahead of `<head>` — an <img>, <script>, or auto-submitting <form> —
- * parse and fire before the policy existed). The HTML parser hoists a
+ * byte of the app document. We never splice into the untrusted HTML —
+ * injecting after `<head>` would let any markup the author places ahead of
+ * `<head>` (an <img>, <script>, or auto-submitting <form>) parse and fire
+ * before the policy exists. The HTML parser hoists a
  * leading <meta> into the implicit <head>, enforces the CSP from that point
  * on, and then merges the app's own <html>/<head>/<body> structure per the
  * standard tree-construction rules (head-only elements such as <title>,

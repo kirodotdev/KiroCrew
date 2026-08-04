@@ -63,8 +63,7 @@ logger = logging.getLogger(__name__)
 # any real MCP tool response (ReadInternalWebsites can return 1-5 MiB pages).
 # Config-driven via ``mcp_gateway.read_buffer_limit_bytes`` / env var
 # ``KIROCREW_MCP_READ_LIMIT``. Asyncio's stdlib default is 64 KiB which is
-# too small; the previous 1 MiB hard-coded value caused silent drops for
-# legitimate large responses.
+# too small, and even a 1 MiB limit silently drops legitimate large responses.
 _DEFAULT_READ_BUFFER_LIMIT = 64 * 1024 * 1024  # 64 MiB
 
 
@@ -72,11 +71,9 @@ def _resolve_read_buffer_limit() -> int:
     """Resolve the read buffer limit.
 
     Precedence: env var ``KIROCREW_MCP_READ_LIMIT`` (bytes) → config key
-    ``mcp_gateway.read_buffer_limit_bytes`` → hard-coded default. Previously only
-    the env var was consulted, so the documented config key was a silent no-op —
-    a user raising the limit to stop legitimate large responses being fast-failed
-    saw no effect. Config read is function-level to avoid an import
-    cycle and is best-effort (config unavailable at import → default).
+    ``mcp_gateway.read_buffer_limit_bytes`` → hard-coded default. Config read is
+    function-level to avoid an import cycle and is best-effort (config
+    unavailable at import → default).
     """
     raw = os.environ.get("KIROCREW_MCP_READ_LIMIT")
     if raw:
@@ -111,8 +108,8 @@ def _resolve_spill_threshold() -> int:
     """Resolve the spill threshold.
 
     Precedence: env var ``KIROCREW_MCP_SPILL_THRESHOLD`` → config key
-    ``mcp_gateway.response_spill_threshold_bytes`` → hard-coded default. See
-    _resolve_read_buffer_limit — the config key was previously dead.
+    ``mcp_gateway.response_spill_threshold_bytes`` → hard-coded default. Config
+    read mirrors _resolve_read_buffer_limit.
     """
     raw = os.environ.get("KIROCREW_MCP_SPILL_THRESHOLD")
     if raw:
@@ -393,10 +390,8 @@ class _DrainingBackend:
 class BackendPool:
     """Collection of running backends keyed by :meth:`PoolKey.stable_hash`.
 
-    Milestone 1 provides the minimum surface gatewayd needs to compile:
-    add/get/evict/shutdown_all. Idle-timeout sweeping, LRU eviction under
-    capacity pressure, and refcount-aware drain are deferred to
-    Milestone 2.
+    Provides add/get/evict/shutdown_all, idle-timeout sweeping, LRU
+    eviction under capacity pressure, and refcount-aware drain.
 
     All methods assume single-threaded access from the asyncio event loop
     and serialize mutations through ``_lock``. Attempting to share the
@@ -1063,7 +1058,7 @@ class BackendPool:
 
     async def snapshot(self) -> list[tuple[PoolKey, "Backend"]]:
         """Return a point-in-time list of (key, backend) pairs. Intended
-        for diagnostics and idle-sweep logic added in Milestone 2.
+        for diagnostics and idle-sweep logic.
 
         The key is reconstructed via ``backend.pool_key`` — the pool does
         not store the ``PoolKey`` object separately since the digest alone

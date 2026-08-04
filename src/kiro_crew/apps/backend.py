@@ -223,8 +223,9 @@ def _reserve_free_port(app_name: str) -> int:
 def _claim_port(app_name: str, port: int) -> None:
     """Reserve a FIXED manifest port, refusing one another app already holds.
 
-    ``_find_free_port`` skips ports already in ``_allocated_ports``, but a
-    fixed-port app used to record its port only AFTER spawning. During concurrent
+    ``_find_free_port`` skips ports already in ``_allocated_ports``, but
+    without this up-front claim a fixed-port app's port would be recorded only
+    AFTER spawning. During concurrent
     boot an auto-port app selecting inside that window could be handed the same
     number, so one of the two children would die of EADDRINUSE and its backend
     would stay unavailable. Claiming the fixed port up front closes that window.
@@ -1187,9 +1188,9 @@ def _gate_mcp_registration(app_name: str, port: int, *, healthy: bool) -> None:
     """Register the app's MCP servers once its backend is healthy, or scrub them if not.
 
     Called from the health-check loop so the global mcp.json never carries an HTTP MCP url
-    for an app whose backend isn't actually serving (the boot/enable
-    paths previously registered with an optimistic pre-health port — an enabled app whose
-    backend never became healthy left a dead url that broke every kiro-cli session). On
+    for an app whose backend isn't actually serving (registering with an optimistic
+    pre-health port would leave a dead url for an enabled app whose backend never
+    became healthy, breaking every kiro-cli session). On
     health success we (re)register with the confirmed live port; on failure we deregister
     so no dead entry survives. Never raises — registration must not crash the health loop."""
     try:
@@ -1228,8 +1229,8 @@ def _health_check_loop(app_name: str, port: int, health_path: str) -> None:
                     with _lock:
                         # Stopped/disabled between the health poll and here: do NOT
                         # register MCP for a backend that's no longer tracked — that would
-                        # write the exact dead-URL entry this change exists to prevent
-                        # (race-condition finding). Mirror the top-of-loop guard.
+                        # write the exact dead-URL entry this guard prevents.
+                        # Mirror the top-of-loop guard.
                         if app_name not in _processes:
                             return
                         _processes[app_name].healthy = True

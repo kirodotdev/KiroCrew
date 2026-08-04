@@ -1001,13 +1001,26 @@ class TestKiroCliBundledDeniedCommands:
     therefore exercise ``is_denied`` directly (tool-shape agnostic — the same
     gate runs regardless of whether the tool is ``execute_bash`` or ``shell``).
 
-    Regression tests for the ``kill``/``kirocrew`` pattern false positive:
-    the old pattern ``.*kill.*kiro.?crew.*`` matched any command whose
-    argv contained ``~/.kirocrew/skills/...`` (because ``skills`` contains
-    the substring ``kill``) followed by ``kirocrew`` anywhere.  The rule
-    pattern ``.*\\b(kill|pkill|killall)\\b.*\\bkiro[-.]?crew\\b.*`` anchors
-    the kill word on word boundaries so skill-dir paths are no longer
-    caught, while still matching ``kirocrew`` and ``kiro-crew``.
+    Regression tests for the ``kill``/``kirocrew`` pattern false positive,
+    narrowed in two steps.
+
+    Step 1 (word boundaries): the original pattern ``.*kill.*kiro.?crew.*``
+    matched any command whose argv contained ``~/.kirocrew/skills/...``
+    (because ``skills`` contains the substring ``kill``) followed by
+    ``kirocrew`` anywhere.  Anchoring the kill word on word boundaries
+    stopped skill-dir paths from reading as ``kill``.
+
+    Step 2 (command structure): boundaries still left the rule matching mere
+    CO-OCCURRENCE — any command that both called ``kill`` and happened to
+    *mention* the product anywhere, in any role (a file being restored, a log
+    path, a comment).  The rule is now scoped to the kill TARGET:
+    ``pkill``/``killall`` select processes by name, so the product name as an
+    argument in the same command segment is the target; bare ``kill`` takes
+    PIDs, so it only matches when the name is resolved to one inside a
+    command substitution.  ``[^|;&]*`` confines each arm to a single command
+    segment, so an unrelated later command in a ``;``/``&&``/pipe chain is not
+    captured.  Every by-name kill form is still blocked; ``kiro-crew`` is
+    still covered by the ``[-.]?`` separator.
     """
 
     @staticmethod
@@ -1032,18 +1045,29 @@ class TestKiroCliBundledDeniedCommands:
         # bypass with "kiro-crew".
         assert self._is_denied("pkill kiro-crew")
 
+    def test_kill_pidof_substitution_blocked(self) -> None:
+        # `pidof` resolves the name to a PID exactly as `pgrep` does, so a
+        # resolver-name allowlist would have been a bypass.
+        assert self._is_denied("kill $(pidof kirocrew)")
+
+    def test_kill_pidfile_substitution_blocked(self) -> None:
+        assert self._is_denied("kill $(cat /var/run/kirocrew.pid)")
+
+    def test_kill_backtick_substitution_blocked(self) -> None:
+        assert self._is_denied("kill `pgrep kirocrew`")
+
     # --- skill-dir false positives: must be allowed ---
 
     def test_skill_create_sh_kirocrew_domain_allowed(self) -> None:
         """The brazil-workspace skill scaffold must not be blocked."""
-        cmd = "/Users/meyffret/.kirocrew/skills/brazil-workspace/create.sh --domain kirocrew"
+        cmd = "/Users/user/.kirocrew/skills/brazil-workspace/create.sh --domain kirocrew"
         assert not self._is_denied(cmd)
 
     def test_skills_dir_listing_allowed(self) -> None:
         assert not self._is_denied("ls ~/.kirocrew/skills/")
 
     def test_skill_run_with_kirocrew_arg_allowed(self) -> None:
-        cmd = "/Users/meyffret/.kirocrew/skills/coder/run.sh kirocrew --dry-run"
+        cmd = "/Users/user/.kirocrew/skills/coder/run.sh kirocrew --dry-run"
         assert not self._is_denied(cmd)
 
     def test_bash_skill_script_allowed(self) -> None:
@@ -1052,6 +1076,27 @@ class TestKiroCliBundledDeniedCommands:
     def test_cat_kirocrew_config_allowed(self) -> None:
         # "cat" has no "kill" word anywhere — must not match.
         assert not self._is_denied("cat ~/.kirocrew/config.json")
+
+    # --- incidental-mention false positives: must be allowed ---
+    # A bare `kill` takes PIDs, so none of these can aim at a kirocrew process
+    # by name; the product name is a FILE, a LOG PATH, or a COMMENT.
+
+    def test_kill_bare_pid_allowed(self) -> None:
+        assert not self._is_denied("kill 12345")
+
+    def test_kill_pid_then_restore_config_file_allowed(self) -> None:
+        cmd = "kill 12345 && cp /tmp/bk/kirocrew.json ~/.kiro/agents/"
+        assert not self._is_denied(cmd)
+
+    def test_kill_pid_then_diff_config_file_allowed(self) -> None:
+        cmd = "kill $PID; diff /tmp/bk/kirocrew.json ~/.kiro/agents/kirocrew.json"
+        assert not self._is_denied(cmd)
+
+    def test_kill_pid_with_trailing_comment_allowed(self) -> None:
+        assert not self._is_denied("kill $PID  # stop the stray kirocrew instance")
+
+    def test_kill_pid_piped_to_kirocrew_log_allowed(self) -> None:
+        assert not self._is_denied("kill 12345 | tee /tmp/kirocrew.log")
 
 
 class TestBuiltinDenyPatterns:
@@ -2289,6 +2334,30 @@ class TestIsSensitiveBashCommand:
     def test_ln_benign_allowed(self) -> None:
         assert is_sensitive_bash_command("ln -sf ./dist/app ./app") is None
         assert is_sensitive_bash_command("ln -s ../src/main.py main.py") is None
+
+    # ── Hardlink-flatten bypass (GPT review, PR #1339) ──
+
+    def test_hardlink_to_sensitive_source_blocked(self) -> None:
+        # A HARDLINK (ln without -s, or the `link` coreutil) to a credential
+        # source flattens it onto a benign alias, dodging the path-based read
+        # matcher in standard mode (which does not bind-mask). The link verbs
+        # now route their operands through is_sensitive_path() like a read.
+        assert is_sensitive_bash_command("ln ~/.aws/credentials ws/x") is not None
+        assert is_sensitive_bash_command("link ~/.ssh/id_rsa ws/k") is not None
+
+    def test_hardlink_obfuscated_source_blocked(self) -> None:
+        # Quote-obfuscation defeats the literal regex first-pass; the normalizer
+        # (now triggered by `ln`/`link`) strips the empty quotes, expands ~, and
+        # resolves the source through is_sensitive_path(). These forms are
+        # caught ONLY via the normalizer, so they exercise the new code path for
+        # both verbs.
+        assert is_sensitive_bash_command('ln ~/.aw""s/credentials ws/x') is not None
+        assert is_sensitive_bash_command('link ~/.ss""h/id_rsa ws/k') is not None
+
+    def test_hardlink_benign_source_allowed(self) -> None:
+        # npm cacache / workspace-internal hardlinks must stay allowed.
+        assert is_sensitive_bash_command("ln node_modules/.cache/blob pkg/dep") is None
+        assert is_sensitive_bash_command("ln ./dist/a ./b") is None
 
     def test_base64_gnupg(self) -> None:
         result = is_sensitive_bash_command("base64 ~/.gnupg/secring.gpg")

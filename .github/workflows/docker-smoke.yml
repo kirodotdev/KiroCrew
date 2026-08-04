@@ -165,6 +165,25 @@ jobs:
           done
           echo "HEALTHCHECK status: healthy"
 
+      - name: Assert the beacon reports the container distribution
+        run: |
+          set -euo pipefail
+          # This lane builds an UNSTAMPED wheel, so it proves the image's
+          # re-stamp is what produces "docker" -- not a value inherited from the
+          # wheel. Without the re-stamp a container is indistinguishable from a
+          # pip install and the channel breakdown silently merges the two.
+          ACTUAL=$(docker exec smoke python -c 'from kiro_crew import beacon; print(beacon.distribution())')
+          [ "$ACTUAL" = "docker" ] || {
+            echo "::error::beacon.distribution() reported '${ACTUAL}', expected 'docker'"; exit 1; }
+          echo "beacon distribution: ${ACTUAL}"
+          # The env var must NOT be able to override the baked value: a running
+          # install relabelling its own count is the failure the stamp prevents.
+          SPOOFED=$(docker exec -e KIROCREW_DISTRIBUTION=wheel smoke \
+            python -c 'from kiro_crew import beacon; print(beacon.distribution())')
+          [ "$SPOOFED" = "docker" ] || {
+            echo "::error::env var overrode the baked stamp (got '${SPOOFED}')"; exit 1; }
+          echo "env-var override correctly ignored"
+
       - name: Container logs (post-mortem aid)
         if: always()
         run: docker logs smoke 2>&1 | tail -60 || true

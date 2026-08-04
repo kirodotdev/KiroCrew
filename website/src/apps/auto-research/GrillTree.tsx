@@ -15,8 +15,8 @@ interface Props {
 }
 
 // Auto-growing textarea: grows with content so long sub-question text wraps and
-// stays fully readable (replaces the old single-line, truncating <input>). When
-// onSubmit is given, Enter commits and Shift+Enter inserts a newline.
+// stays fully readable. When onSubmit is given, Enter commits and Shift+Enter
+// inserts a newline.
 function AutoGrow({ value, onChange, onSubmit, placeholder, className = '', ariaLabel }: {
   value: string
   onChange: (v: string) => void

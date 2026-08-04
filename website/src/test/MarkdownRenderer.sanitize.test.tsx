@@ -6,7 +6,8 @@ import MessageErrorBoundary from '../components/MessageErrorBoundary'
 describe('rehypeSanitize allowlist (React #290 fix)', () => {
   it('renders unknown bare XML tags as escaped literal text', () => {
     // This is the exact crash scenario: <dynamoDBClient> is not a known HTML
-    // element. Previously it passed through to React which crashed with error #290.
+    // element, so it must render as escaped text rather than pass through to
+    // React (which crashes with error #290).
     const { container } = render(
       <MarkdownRenderer content={'The client is <dynamoDBClient> and it handles requests.'} />
     )
@@ -202,7 +203,6 @@ describe('MessageErrorBoundary (per-message containment)', () => {
         <CrashingChild />
       </MessageErrorBoundary>
     )
-    // Click "view raw" button
     const btn = getByText('view raw')
     expect(btn).not.toBeNull()
     act(() => { fireEvent.click(btn) })

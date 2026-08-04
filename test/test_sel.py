@@ -349,6 +349,18 @@ class TestInferSource:
         ("taskrunner:spec1", "taskrunner"),
         ("_bg", "background"),
         ("cli_chat", "cli"),
+        # Namespaced messaging channels are attributed to their transport (#815),
+        # matching context._runtime_display_name's set (#979) — via ``{ns}:`` …
+        ("discord:123:kirocrew", "discord"),
+        ("telegram:456", "telegram"),
+        ("wecom:c1", "wecom"),
+        ("weixin:c1", "weixin"),
+        ("webex:c1", "webex"),
+        ("teams:c1", "teams"),
+        ("slack:C08:thread", "slack"),
+        # … or the ``{ns}_`` prefix form.
+        ("discord_123", "discord"),
+        # Bare/legacy Slack keys (thread timestamps, no namespace) stay "slack".
         ("C08HZAWV4TP:thread123", "slack"),
         ("random_key", "slack"),
         # An empty key carries no surface signal → "unknown", NOT "slack"

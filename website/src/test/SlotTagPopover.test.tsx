@@ -37,7 +37,7 @@ const dashboardState = {
 } as any
 
 /**
- * Seed the open slot via TagPopoverProvider (the context now owns open-state);
+ * Seed the open slot via TagPopoverProvider (the context owns open-state);
  * the slot's tags still live in the Redux store, so `slots` seeds those.
  */
 function renderPopover({ slotKey, slots = [] }: { slotKey: string | null; slots?: any[] }) {

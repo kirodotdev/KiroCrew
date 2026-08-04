@@ -22,7 +22,7 @@ S3_PREFIX = "kirocrew-deploy-*"
 S3_PREFIX_WEB = f"arn:aws:s3:::{engine.BUCKET_PREFIX}*"
 MANAGED_TAG_KEY = "kirocrew:managed"
 
-# R23 F1: name of the customer-managed permissions-boundary policy that MUST
+# Name of the customer-managed permissions-boundary policy that MUST
 # be attached to every role the fullstack deploy principal creates. Without a
 # boundary, iam:CreateRole + iam:PutRolePolicy + iam:PassRole (to Lambda) +
 # lambda:InvokeFunction composes into account-admin privilege escalation: the
@@ -32,7 +32,7 @@ BOUNDARY_POLICY_NAME = "kirocrew-deploy-app-boundary"
 
 
 def boundary_policy_document() -> dict[str, Any]:
-    """Permissions boundary for app exec/authz roles (R23 F1).
+    """Permissions boundary for app exec/authz roles.
 
     Caps the EFFECTIVE permissions of every role created by the fullstack
     deploy principal to what the app templates legitimately need: CloudWatch
@@ -79,7 +79,7 @@ def boundary_policy_document() -> dict[str, Any]:
                 ],
             },
             {
-                # R27 F2 (Claude): the boundary INTERSECTS with inline policies,
+                # The boundary INTERSECTS with inline policies,
                 # so an unconditioned Resource:"*" here would let a boundaried
                 # role's inline {cloudfront:DeleteDistribution:"*"} delete ANY
                 # distribution in the account — re-opening the exact escalation
@@ -103,9 +103,9 @@ def boundary_policy_document() -> dict[str, Any]:
             {
                 # Read/list CloudFront actions are non-destructive; OAC delete
                 # cannot be tag-conditioned (OACs are an untaggable resource
-                # type — R13/R22) and its blast radius is quota churn, not
+                # type) and its blast radius is quota churn, not
                 # data destruction. The reaper additionally verifies OAC names
-                # against the per-deployment pattern before deleting (R18 F3).
+                # against the per-deployment pattern before deleting.
                 "Sid": "ReaperCloudFrontReadAndOacCap",
                 "Effect": "Allow",
                 "Action": [
@@ -130,7 +130,7 @@ def boundary_policy_document() -> dict[str, Any]:
                 "Resource": "*",
             },
             {
-                # R25 F3: the boundary INTERSECTS with the role policy — it
+                # The boundary INTERSECTS with the role policy — it
                 # must cover everything reaper.yaml's role legitimately does,
                 # or the reaper is silently broken. Cascade cleanup surface:
                 "Sid": "ReaperCascadeCap",
@@ -285,14 +285,14 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
         {
             # OAC resources do NOT support resource tags (CloudFront limitation),
             # so the kirocrew:managed tag condition can never match and no
-            # resource-level narrowing is possible. R39 F1 (revising R32 F2):
-            # account-wide Delete on the DEPLOY profile lets any compromised
-            # deploy session delete every OAC in the account, including ones
-            # belonging to unrelated production distributions — so Delete is
-            # REMOVED here. OAC cleanup belongs to the reaper role (a
-            # separately controlled, boundary-capped identity with R18's
-            # name-fullmatch verification); destroy() reports the deferred
-            # cleanup explicitly instead of claiming complete destruction.
+            # resource-level narrowing is possible. Account-wide Delete on the
+            # DEPLOY profile would let any compromised deploy session delete
+            # every OAC in the account, including ones belonging to unrelated
+            # production distributions — so Delete is NOT granted here. OAC
+            # cleanup belongs to the reaper role (a separately controlled,
+            # boundary-capped identity with name-fullmatch verification);
+            # destroy() reports the deferred cleanup explicitly instead of
+            # claiming complete destruction.
             "Sid": "CloudFrontOACManage",
             "Effect": "Allow",
             "Action": [
@@ -394,7 +394,7 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Resource": "*",
             },
             {
-                # R35 F1 + R39 F1: reads are unconditioned; unconditioned POST
+                # Reads are unconditioned; unconditioned POST
                 # is restricted to the /apis COLLECTION (API creation only).
                 # POST beneath an existing API id (/apis/*) can create routes
                 # and integrations under ANY API, so it moves into the
@@ -415,11 +415,11 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Resource": "arn:aws:apigateway:*::/apis",
             },
             {
-                # R35 F1: mutations gated on the kirocrew:managed tag — the
+                # Mutations gated on the kirocrew:managed tag — the
                 # templates tag every AWS::ApiGatewayV2::Api at creation, so
                 # only KiroCrew-created APIs are mutable/deletable. An
                 # unrelated production API (no tag) is untouchable even with
-                # its ID in hand. R39 F1: POST joins the gated set (route/
+                # its ID in hand. POST is in the gated set (route/
                 # integration creation under an existing API is a mutation).
                 "Sid": "ApiGatewayFullstackMutateManagedOnly",
                 "Effect": "Allow",
@@ -448,16 +448,15 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Resource": "arn:aws:dynamodb:*:*:table/kirocrew-deploy-app-*",
             },
             {
-                # R23 F1: CreateRole is only allowed when the new role carries
+                # CreateRole is only allowed when the new role carries
                 # the kirocrew-deploy-app-boundary permissions boundary — this
                 # caps whatever inline policies are later attached, closing the
                 # CreateRole+PutRolePolicy+PassRole privilege-escalation chain.
-                # R32 F3 (self-inflicted by R29): the deploy-backend.sh /
-                # install-reaper.sh boundary preflight calls iam:GetPolicy, but
-                # the generated policy never granted it — a principal using
-                # exactly the documented policy got AccessDenied, which the
-                # preflight misreported as "boundary absent". Read-only, scoped
-                # to the single boundary policy ARN.
+                # The deploy-backend.sh / install-reaper.sh boundary preflight
+                # calls iam:GetPolicy, so the generated policy must grant it or
+                # a principal using the documented policy gets AccessDenied that
+                # the preflight misreports as "boundary absent". Read-only,
+                # scoped to the single boundary policy ARN.
                 "Sid": "BoundaryPreflightRead",
                 "Effect": "Allow",
                 "Action": ["iam:GetPolicy"],
@@ -491,7 +490,7 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Resource": "arn:aws:iam::*:role/kirocrew-deploy-app-*",
             },
             {
-                # R23 F1: the boundary is only effective if it cannot be
+                # The boundary is only effective if it cannot be
                 # removed or swapped by the same principal.
                 "Sid": "IAMDenyBoundaryTampering",
                 "Effect": "Deny",
@@ -559,7 +558,7 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Resource": "arn:aws:cloudformation:*:*:stack/kirocrew-deploy-reaper/*",
             },
             {
-                # R23 F1: same boundary requirement as app roles — CreateRole
+                # Same boundary requirement as app roles — CreateRole
                 # without a boundary + PutRolePolicy + PassRole is the same
                 # privilege-escalation chain on the reaper prefix.
                 "Sid": "ReaperIAMCreateRoleWithBoundaryOnly",

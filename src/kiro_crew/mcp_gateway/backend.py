@@ -128,8 +128,9 @@ HEARTBEAT_PING_ID = 0x6D63_6862  # 1835100258 ("mchb")
 # backend has not responded to a heartbeat ping within PING_STALE_SECS — a
 # backend that answers pings is slow, not wedged.
 #
-# Previously (pre-2026-07-19), exceeding this threshold alone caused immediate
-# recycle, which killed an 18-refcount kirocrew-core backend with fresh pings.
+# Exceeding this threshold alone must not force an immediate recycle: that
+# would kill a high-refcount kirocrew-core backend that is still answering
+# fresh pings.
 HEARTBEAT_TIMEOUT_SECS = 300.0
 
 # A backend's ping response is considered stale if no ping response has arrived
@@ -1702,9 +1703,9 @@ class Backend:
     async def _cancel_background_tasks(self) -> None:
         """Cancel and await the stdout + stderr pump tasks.
 
-        The stderr pump was previously fire-and-forget,
-        so shutdown left it running and leaked its stderr pipe fd whenever the
-        process outlived SIGKILL — across LRU-eviction churn this exhausts fds.
+        The stderr pump must be awaited on shutdown; left fire-and-forget it
+        keeps running and leaks its stderr pipe fd whenever the
+        process outlives SIGKILL — across LRU-eviction churn this exhausts fds.
         """
         for attr in ("_stdout_task", "_stderr_task"):
             task = getattr(self, attr)
@@ -1784,7 +1785,7 @@ class Backend:
             # _execute_child), so there is no process group there to signal at
             # all — kill_process_tree covers both (killpg / taskkill /T) and
             # already enforces the pid <= 1, pgid <= 1 and own-process-group
-            # refusals this call site used to hand-roll.
+            # refusals this call site would otherwise hand-roll.
             # The _async variant is mandatory from a coroutine: the Windows branch
             # spawns taskkill with a 5s timeout, which would stall the daemon's
             # loop. On POSIX it dispatches inline to the sync helper, so

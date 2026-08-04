@@ -39,8 +39,8 @@ jobs:
     # ("Opus 5 Review", "GPT 5.6 Review") rather than by vendor/harness. Branch
     # protection keys its required status check on this job name, so if the
     # --model below is bumped and this name changes with it, the required-check
-    # list AND the `workflow_run.workflows:` arrays in longterm-arbiter.yml and
-    # pr-readiness.yml must be updated in the same change.
+    # list AND the `workflow_run.workflows:` array in pr-readiness.yml must be
+    # updated in the same change.
     name: Opus 5 Review
     runs-on: ubuntu-latest
     # Same-repo PRs only (not forks). Fork PRs get NO OIDC/secrets access from
@@ -399,8 +399,8 @@ jobs:
       # captured review text. UPSERTs a single marker-keyed comment per PR so
       # re-scans update in place. The model text is posted ONLY when the
       # [OPUS-REVIEWED] marker parsed for THIS head — an errored or partial
-      # transcript posts NOTHING (see the incomplete early-out below), so the
-      # Arbiter's SHA-grep keeps waiting and no raw model/error text can leak.
+      # transcript posts NOTHING (see the incomplete early-out below), so no raw
+      # model/error text can leak.
       - name: Post Opus 5 review summary
         if: always()
         env:
@@ -434,11 +434,9 @@ jobs:
             fi
           fi
           # Incomplete review: post NOTHING (mirrors the old empty-structured-
-          # output early-out). Posting a $HEAD-bearing placeholder here would
-          # satisfy longterm-arbiter.yml's present() SHA-grep and flip the
-          # Arbiter from its fail-closed "waiting" state into arbitrating on a
-          # placeholder instead of Opus's real findings. The gate step below
-          # still fails closed for this commit; humans read the job logs.
+          # output early-out). A $HEAD-bearing placeholder would masquerade as a
+          # real verdict for this commit; the gate step below still fails closed,
+          # and humans read the job logs.
           if [ "$kind" = "incomplete" ]; then
             echo "no completed Opus verdict for $HEAD; nothing to post (gate fails closed)"
             exit 0

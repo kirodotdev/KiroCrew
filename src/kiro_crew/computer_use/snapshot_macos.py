@@ -633,20 +633,22 @@ def _walk(
         different rows. Duplicates are released immediately so the dedup is not a
         leak.
 
-        ``MAX_CHILDREN_PER_NODE`` silently dropped the tail (reviewer finding): a
-        container with more children than the cap left ``saw_secure`` reflecting only
-        the first 512 while ``truncated`` stayed False — so the walk reported itself
-        COMPLETE and non-secure, and ``capture_snapshot_image``'s fail-closed check
-        (which refuses to capture a truncated walk) had nothing to refuse on. A
-        password field as child 513 therefore left the window's pixels capturable.
+        Reaching ``MAX_CHILDREN_PER_NODE`` sets ``truncated`` rather than silently
+        dropping the tail. A container with more children than the cap would
+        otherwise leave ``saw_secure`` reflecting only the first 512 while
+        ``truncated`` stayed False — so the walk would report itself COMPLETE and
+        non-secure, and ``capture_snapshot_image``'s fail-closed check (which
+        refuses to capture a truncated walk) would have nothing to refuse on,
+        leaving a password field as child 513 to keep the window's pixels
+        capturable.
 
         ``truncated`` is exactly the right signal: it already means "there is more of
         this tree than you were shown", which is precisely true here, and the capture
         gate already reads it as "unknown ⇒ present".
 
-        The cap now bounds the MERGED list, so three collections cannot together
-        exceed what one was allowed to — otherwise the memory bound the cap exists
-        for would silently have tripled.
+        The cap bounds the MERGED list, so three collections cannot together exceed
+        what one was allowed to — otherwise the memory bound the cap exists for would
+        be silently tripled.
 
         Detected as ``len(children) >= limit`` rather than by asking for the real
         count: the cap exists so one pathological container cannot materialise 100k CF

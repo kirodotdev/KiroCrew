@@ -9,7 +9,7 @@ import type { Result } from '../types'
 
 /**
  * Unit tests for the pure {@link createPromptsProvider} factory
- * (Search Everywhere, step 19 — the Prompts provider + its §2 Enter matrix).
+ * (Search Everywhere — the Prompts provider + its §2 Enter matrix).
  *
  * The factory is hook-free and takes its side effects as injected callbacks, so
  * we pass plain spies and assert: identity, fuzzy listing/filtering over the

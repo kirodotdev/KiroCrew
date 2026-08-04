@@ -1,8 +1,7 @@
 /**
  * useHeroArt — theme-aware hero image resolution for store surfaces.
  *
- * Restores the resolution order the pre-revamp Browse card had (and which the
- * first cut of the revamp regressed): prefer the current theme's artwork, fall
+ * Resolution order: prefer the current theme's artwork, fall
  * back to the opposite theme, then the first screenshot. Callers pair the
  * returned ``src`` with ``failed``/``onError`` so a 404'd hero degrades to the
  * gradient instead of rendering a blank panel.

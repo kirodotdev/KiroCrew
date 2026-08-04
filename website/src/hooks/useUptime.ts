@@ -6,9 +6,8 @@ function fmt(secs: number): string {
   const h = Math.floor(secs / 3600)
   const m = Math.floor((secs % 3600) / 60)
   const s = secs % 60
-  // Thresholds unchanged: seconds are always shown, hours only above an hour.
-  // Zero parts are rendered by default, so "0m 38s" survives exactly as the
-  // previous template produced it.
+  // Seconds are always shown, hours only above an hour. Zero parts are
+  // rendered by default, so a sub-minute uptime shows as "0m 38s".
   return h > 0
     ? fmtDuration([[h, 'hour'], [m, 'minute'], [s, 'second']])
     : fmtDuration([[m, 'minute'], [s, 'second']])

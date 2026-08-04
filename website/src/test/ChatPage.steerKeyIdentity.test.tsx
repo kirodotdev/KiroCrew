@@ -1,9 +1,9 @@
 // Feature: chat-virtualizer — row identity survives optimistic steer reconciliation.
 //
-// GPT 5.6 rejected the unit-level key tests in ChatPage.dockSearchClose.test.tsx
-// as self-fulfilling: they hand `virtualKeyFor` a `clientTs` resolver the TEST
-// defines, so reverting ChatPage's own `stableMsgKey` left them green while the
-// real virtualizer key changed again on reconciliation.
+// Unit-level key tests in ChatPage.dockSearchClose.test.tsx are self-fulfilling:
+// they hand `virtualKeyFor` a `clientTs` resolver the TEST defines, so reverting
+// ChatPage's own `stableMsgKey` leaves them green while the real virtualizer key
+// changes again on reconciliation.
 //
 // This exercises the production path instead. ChatPage renders each row as
 // `<div key={vi.key} data-display-index=...>`, where `vi.key` comes from the

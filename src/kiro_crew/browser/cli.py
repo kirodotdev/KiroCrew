@@ -1,9 +1,8 @@
 """Browser CLI — Playwright setup (OSS stub).
 
-The browser auth subcommands (`health`, `inject`, `refresh`, `federate`) were
-wired to an enterprise SSO/cookie flow that is not shipped in the open-source
-build. They are preserved as recognized subcommands but report
-"not available in OSS".
+The browser auth subcommands (`health`, `inject`, `refresh`, `federate`) front
+an enterprise SSO/cookie flow that is not shipped in the open-source build, so
+they are recognized subcommands but report "not available in OSS".
 
 Usage:
     kirocrew browse setup              # Generate Playwright MCP config (OSS)

@@ -15,6 +15,7 @@ import json
 import ntpath
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -475,11 +476,20 @@ class Dependencies:
     The wire key is ``capabilities``.  ``aim`` is accepted as a DEPRECATED read
     alias so manifests authored against the pre-rename schema keep loading; it is
     never re-emitted by :meth:`to_dict`, so a round-trip migrates the manifest.
+
+    ``commands`` are REQUIRED host executables — a missing one is reported as a
+    missing dependency.  ``optionalCommands`` are probed and reported but never
+    block: an app that works without them, or that can provision its own copy,
+    declares them here.  Two manifests in-tree already used the key while the
+    dataclass silently dropped it (``papyrus`` round-tripped to ``{}``,
+    ``issue_radar`` lost ``glab``), so the requirement was invisible to every
+    consumer — that is the bug this field closes, not a new feature.
     """
 
     managedBy: str = "gateway"  # noqa: N815
     capabilities: CapabilityDependencies = field(default_factory=CapabilityDependencies)
     commands: list[str] = field(default_factory=list)
+    optionalCommands: list[str] = field(default_factory=list)  # noqa: N815
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -490,6 +500,8 @@ class Dependencies:
             d["capabilities"] = cap_d
         if self.commands:
             d["commands"] = self.commands
+        if self.optionalCommands:
+            d["optionalCommands"] = self.optionalCommands
         return d
 
     @classmethod
@@ -506,7 +518,17 @@ class Dependencies:
         return cls(
             managedBy=str(data.get("managedBy", "gateway")),  # noqa: N815
             capabilities=capabilities,
-            commands=[str(c) for c in data.get("commands", [])],
+            # `or []`, not just a `[]` default: an explicit `"commands": null` in a
+            # manifest satisfies `.get`'s default and then fails to iterate, so the
+            # install endpoint answered an unhandled TypeError as a 500 rather than a
+            # validation error. A hand-written or generated app.json can carry a JSON
+            # null for an absent list, and a manifest parser reads UNTRUSTED input —
+            # it must degrade to "empty", never crash. Both lines, since the
+            # pre-existing `commands` had the identical shape.
+            commands=[str(c) for c in (data.get("commands") or [])],
+            optionalCommands=[  # noqa: N815
+                str(c) for c in (data.get("optionalCommands") or [])
+            ],
         )
 
 
@@ -572,9 +594,19 @@ class PlatformConfig:
     clientInstall: ClientInstallConfig = field(default_factory=ClientInstallConfig)  # noqa: N815
     requiresDesktopApp: bool = False  # noqa: N815
 
-    # Map user-friendly OS names to sys.platform values
-    _OS_TO_PLATFORM = {"macos": "darwin", "linux": "linux"}
-    _PLATFORM_TO_OS = {"darwin": "macos", "linux": "linux"}
+    # Map user-friendly OS names to sys.platform values.
+    #
+    # ``windows`` is in both directions because KiroCrew itself supports Windows
+    # natively (see ``docs/windows-install.md``): without the row, ``"windows"``
+    # was not even EXPRESSIBLE in a manifest — a declaring app silently never
+    # matched — and ``current_os()`` fell through to the raw ``"win32"``, which is
+    # not one of the user-friendly names any manifest or UI compares against.
+    #
+    # The default below stays ``["macos", "linux"]``. Widening it would silently
+    # promise Windows on behalf of every existing app, and an app opts in by
+    # naming ``windows`` itself.
+    _OS_TO_PLATFORM = {"macos": "darwin", "linux": "linux", "windows": "win32"}
+    _PLATFORM_TO_OS = {"darwin": "macos", "linux": "linux", "win32": "windows"}
 
     def supports_platform(self, sys_platform: str) -> bool:
         """Check if this platform config supports the given sys.platform value."""
@@ -583,8 +615,6 @@ class PlatformConfig:
     @staticmethod
     def current_os() -> str:
         """Return the user-friendly OS name for the current platform."""
-        import sys
-
         return PlatformConfig._PLATFORM_TO_OS.get(sys.platform, sys.platform)
 
     def to_dict(self) -> dict[str, Any]:

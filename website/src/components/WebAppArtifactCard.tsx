@@ -118,8 +118,8 @@ function CostPills({ cost, label }: { cost: WebAppMetadata['cost']; label: strin
     <div>
       <div className="flex items-center gap-1.5 mb-1.5">
         <span className="text-[12px] text-muted font-medium">{label}</span>
-        {/* Joe R2: "$45" was read as a monthly bill. Each pill is a
-            what-if traffic scenario over the window — say so loudly. */}
+        {/* Each pill is a what-if traffic scenario over the window — say so
+            loudly, so "$45" isn't read as a monthly bill. */}
         <span className="text-[10px] px-1.5 py-px rounded-full bg-warn-subtle text-warn font-medium uppercase tracking-wide">
           {i18nT('components.webAppArtifactCard.estimate')}
         </span>
@@ -218,20 +218,20 @@ export function useAppPreview(slug: string, enabled: boolean) {
       return (await r.json()) as { available: boolean; base?: string; remote_framable?: boolean }
     },
     staleTime: 5 * 60_000,
-    // Round-5 F4: the backend token expires after 15 minutes and staleTime
-    // alone never refetches a mounted query — long-lived previews would
-    // start 404ing on lazy-loaded assets. Re-mint before expiry; the iframe
-    // is keyed by base so a fresh token reloads it cleanly.
+    // The backend token expires after 15 minutes and staleTime alone never
+    // refetches a mounted query — long-lived previews would start 404ing on
+    // lazy-loaded assets. Re-mint before expiry; the iframe is keyed by base
+    // so a fresh token reloads it cleanly.
     refetchInterval: 10 * 60_000,
     enabled,
   })
   return {
     base: data?.available && data.base ? data.base : null,
-    // Round-7 F2: only trust a remote CloudFront iframe when the gateway
-    // probed the deployed site's headers and confirmed browsers will frame
-    // it — pre-existing base stacks still send X-Frame-Options: SAMEORIGIN,
-    // which renders as a silent blank. Anything short of an explicit "yes"
-    // (probe failure, legacy response, still loading) falls to the hero.
+    // Only trust a remote CloudFront iframe when the gateway probed the
+    // deployed site's headers and confirmed browsers will frame it —
+    // pre-existing base stacks still send X-Frame-Options: SAMEORIGIN, which
+    // renders as a silent blank. Anything short of an explicit "yes" (probe
+    // failure, legacy response, still loading) falls to the hero.
     remoteFramable: data?.remote_framable === true,
   }
 }
@@ -496,7 +496,7 @@ export default function WebAppArtifactCard({
     <div className="space-y-4">
       {/* Browser-framed hero: chrome bar (URL + actions) over the live site
           preview. Expired deployments show a tombstone instead — a dead URL
-          must never render as something that looks alive (FU-6). */}
+          must never render as something that looks alive. */}
       <div className="rounded-xl border border-border overflow-hidden bg-card">
         <div className="flex items-center gap-2.5 px-3 py-2 bg-bg-elevated border-b border-border">
           <ChromeDots />
@@ -599,9 +599,9 @@ export default function WebAppArtifactCard({
           <ArchitectureRows architecture={architecture} />
         </div>
         <div className="rounded-xl border border-border bg-card p-4 space-y-4">
-          {/* FU-7: an expired card renders no countdown at all — legacy
-              tombstones (pre-FU-6) may still carry a stale expires_at, and a
-              ticking clock on a dead deployment reads as alive. */}
+          {/* An expired card renders no countdown at all — legacy tombstones
+              may still carry a stale expires_at, and a ticking clock on a
+              dead deployment reads as alive. */}
           {!isExpired && (
             <div>
               <div className="text-[12px] text-muted font-medium mb-1.5">{i18nT('components.webAppArtifactCard.time_to_live')}</div>

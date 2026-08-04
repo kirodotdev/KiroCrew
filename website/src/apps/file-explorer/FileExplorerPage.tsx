@@ -265,9 +265,8 @@ export default function FileExplorerPage() {
   // ── Chat launcher ──
   // Hand the prompt to ChatPage via Redux pendingInput, then navigate with
   // ?prefill=1 so it lands in the composer (ChatPage clears the param and
-  // shows the prefill hint). The old `?message=` query param was never read
-  // by ChatPage — `?msg=` is a scroll-to-timestamp deep-link, not a prefill —
-  // so the menu item appeared to do nothing.
+  // shows the prefill hint). ChatPage does not read `?message=`, and `?msg=`
+  // is a scroll-to-timestamp deep-link, not a prefill.
   const chatAboutPath = useCallback((path: string, kind = 'file') => {
     const noun = kind === 'dir' ? 'folder' : 'file'
     const message = `I'd like to discuss the ${noun} \`${path}\`. Please read it and help me understand or modify it.`

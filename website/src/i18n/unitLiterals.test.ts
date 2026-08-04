@@ -41,11 +41,9 @@
  *   - string concatenation:         `bytes + ' KB'`
  *   - **JSX text after an expression**: `<span>{pct.toFixed(0)}%</span>`
  *
- * The third is the most idiomatic React spelling and was a false negative in the
- * first cut of this gate — it was caught only because a reviewer flagged a site
- * by hand that the gate had passed. Units are the measurement units this UI
- * actually renders: time (`ms s m h d`), data (`B KB MB GB TB`), rate/ratio
- * (`%`, `x`) and compact suffixes (`K`, `M`).
+ * The third is the most idiomatic React spelling, and the gate matches it too.
+ * Units are the measurement units this UI actually renders: time (`ms s m h d`),
+ * data (`B KB MB GB TB`), rate/ratio (`%`, `x`) and compact suffixes (`K`, `M`).
  *
  * ## What is NOT a finding, and why
  *
@@ -242,10 +240,9 @@ export function unitLiteralHits(file: string, source: string): number[] {
         }
       }
     }
-    // <span>{expr}UNIT</span> — a JSX expression followed by JSX text.
-    // This is the most idiomatic React spelling of the defect and was missed by
-    // the first cut of this gate, which only looked at template literals and
-    // string concatenation.
+    // <span>{expr}UNIT</span> — a JSX expression followed by JSX text. This is
+    // the most idiomatic React spelling of the defect, matched alongside template
+    // literals and string concatenation.
     if (ts.isJsxElement(node) || ts.isJsxFragment(node)) {
       const kids = node.children
       for (let i = 0; i < kids.length - 1; i++) {
@@ -286,8 +283,8 @@ export function unitLiteralHits(file: string, source: string): number[] {
  * `main` alike.
  *
  * When a base ref IS configured but cannot be resolved this THROWS rather than
- * returning `null`: a gate that cannot run must fail, not pass. `ci.yml` records
- * having watched a sibling gate skip itself green on a failed fetch.
+ * returning `null`: a gate that cannot run must fail, not skip itself green on a
+ * failed fetch.
  *
  * The semantics are copied from `diffScope()` in `scripts/check-i18n-strings.mjs`:
  * the merge-base-then-tip fallback (CI checks out at depth 1, so there is no shared
@@ -401,7 +398,7 @@ describe('a number is never glued to a unit literal', () => {
       'const c = `${(n / 1000).toFixed(1)}K`', // fmtK
       'const d = `${ms}ms`',                  // fmtDuration
       "const e = Math.round(pct) + '%'",      // percent label
-      'const f = <span>{pct.toFixed(0)}%</span>', // the JSX shape a reviewer found by hand
+      'const f = <span>{pct.toFixed(0)}%</span>', // the idiomatic JSX shape
     ].join('\n')
     expect(unitLiteralHits('sample.tsx', sample).length).toBeGreaterThanOrEqual(6)
   })

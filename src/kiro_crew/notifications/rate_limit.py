@@ -1,9 +1,9 @@
-"""Per-app rate limiting for notification pushes (RFC Phase 2).
+"""Per-app rate limiting for notification pushes.
 
 Token bucket per app: sustained rate of 30 notifications per 5 minutes with a
 burst of 10. Deliberately coarse — the goal is stopping a buggy loop from
-flooding the notification center, not fine-grained fairness (RFC "Rate
-limiting"). System channels never pass through this limiter.
+flooding the notification center, not fine-grained fairness. System channels
+never pass through this limiter.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-# 30 notifications per 5 minutes sustained, burst of 10 (RFC Phase 2).
+# 30 notifications per 5 minutes sustained, burst of 10.
 RATE_LIMIT_TOKENS_PER_WINDOW = 30
 RATE_LIMIT_WINDOW_SECS = 300.0
 RATE_LIMIT_BURST = 10

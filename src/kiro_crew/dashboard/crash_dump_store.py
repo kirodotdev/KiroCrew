@@ -1,6 +1,6 @@
 """Crash-dump store — dedicated file routing for loop-stall watchdog dumps.
 
-The existing loop_watchdog.py (ca9d9bea, 2026-06-26) captures thread stacks on
+The existing loop_watchdog.py captures thread stacks on
 event-loop wedge via faulthandler.  However, those dumps land in raw stderr
 (interleaved with all other output in journal/terminal) and are effectively
 undiscoverable.
@@ -128,6 +128,32 @@ def newest_dump_with_stacks(dumps_dir: Path | None = None) -> Path | None:
         except OSError:
             continue
     return None
+
+
+def claim_dump_notification(dump_path: Path, dumps_dir: Path | None = None) -> bool:
+    """Claim the right to notify about *dump_path*, once per dump.
+
+    A dump stays on disk for up to a week and is re-detected on every gateway
+    start, so notifying unconditionally would turn one stall into a week of
+    identical alerts on every restart. The dump's own filename is the natural
+    idempotency key. Returns True the first time it is claimed, False after.
+
+    Best-effort: on any I/O failure it returns True (notify rather than go
+    silent about a crash), since a duplicate alert is a much cheaper failure
+    than a suppressed one.
+    """
+    try:
+        marker = (dumps_dir or get_dumps_dir()) / ".notified"
+        already = ""
+        if marker.is_file():
+            already = marker.read_text(encoding="utf-8", errors="replace").strip()
+        if already == dump_path.name:
+            return False
+        marker.write_text(dump_path.name + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        logger.debug("crash-dump notification marker unavailable", exc_info=True)
+        return True
 
 
 def dump_age_seconds(dump_path: Path) -> float:

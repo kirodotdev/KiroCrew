@@ -7,11 +7,10 @@ import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentDone } from '.
 import type { RootState } from '../store'
 import { useTipTrigger } from '../components/TipCard'
 
-// Adjudicates the QA v5 scene-4 FAIL claim: "useAppSelector doesn't re-render
-// when chat.subagents changes". The QA run mutated the store DIRECTLY (no
-// dispatch), which never notifies react-redux subscribers — a test artifact.
-// This test uses the REAL reducer via store.dispatch (what actual WS events
-// do) and asserts the suppression chain works end-to-end.
+// Verifies the suppression chain end-to-end using the REAL reducer via
+// store.dispatch (the path actual WS events take). Mutating the store DIRECTLY
+// (no dispatch) never notifies react-redux subscribers, so the test dispatches
+// actions and asserts the suppression chain works end-to-end.
 
 const mockTip = {
   id: 'test-tip',

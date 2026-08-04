@@ -198,7 +198,7 @@ describe('PendingQuestionCard — round 7 findings', () => {
   beforeEach(() => { vi.restoreAllMocks() })
 
   it('re-enables the controls for the NEXT card after a successful submit', async () => {
-    // The Arbiter's blocking item. ChatPane mounts this component
+    // ChatPane mounts this component
     // unconditionally (it returns null with no card but keeps its state), so a
     // lock left set after a successful submit disabled the pane's every later
     // card — an unanswerable card and a blocked agent, on the ordinary happy
@@ -408,7 +408,7 @@ describe('reconcileQuestions — reconnect race (GPT BLOCKING, round 7)', () => 
   const card = (askId: string) => ({ ask_id: askId, slot: 'chat-1', questions: QUESTIONS })
 
   it('never drops a card that arrived DURING the fetch', () => {
-    // The blocking finding: the response describes the server before the new
+    // The response describes the server before the new
     // card existed. Reconciling against post-fetch state would delete it and
     // leave the agent blocked until its timeout.
     const before = {}

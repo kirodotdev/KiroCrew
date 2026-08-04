@@ -6,8 +6,8 @@ import {
 import type { Result } from '../types'
 
 /**
- * Unit tests for the pure {@link createActionsProvider} factory
- * (Search Everywhere, step 12). The Actions provider is a static list (New
+ * Unit tests for the pure {@link createActionsProvider} factory.
+ * The Actions provider is a static list (New
  * session · Toggle theme · Open Shortcuts) whose side effects are injected, so
  * we pass plain spies and assert filtering + activation wiring.
  */

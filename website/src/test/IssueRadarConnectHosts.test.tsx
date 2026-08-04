@@ -340,12 +340,12 @@ describe('WelcomeCarousel Back during a connect', () => {
 
 describe('host card growth', () => {
   // The card's size classes are the ONLY thing that gives the panel room for its
-  // two-column body. The hosts used to gate the growth on `provider === 'github'`
-  // while the panel switched to two columns for GitLab as well, so picking
-  // GitLab put a two-column layout inside a 480px card — which re-stacked, and
-  // the repo picker appeared BELOW the provider list with the body scrolling.
-  // Both hosts now share `expandsCard`, and both are pinned here because the two
-  // copies are exactly what drifted.
+  // two-column body. Both hosts share `expandsCard` so the card grows for GitLab
+  // as well as GitHub — gating growth on `provider === 'github'` while the panel
+  // switches to two columns for GitLab too would put a two-column layout inside a
+  // 480px card, which re-stacks so the repo picker appears BELOW the provider
+  // list with the body scrolling. Both copies are pinned here because they are
+  // easy to let drift apart.
   const EXPANDED_W = 'w-[860px]'
 
   it('ConnectRepoModal grows for GitLab, not only GitHub', async () => {

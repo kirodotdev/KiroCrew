@@ -1,8 +1,8 @@
 /**
- * Sub-agent progress reducers (Fix A/B): the running-card is driven by
- * chat.subagents. These verify the new progress fields land:
+ * Sub-agent progress reducers: the running-card is driven by
+ * chat.subagents. These verify the progress fields land:
  *  - sseSubagentTool records toolCount (fired on EVENT_TOOL_CALL too, so a
- *    simple/auto-approved task now shows live tool activity) and clears stalled.
+ *    simple/auto-approved task shows live tool activity) and clears stalled.
  *  - sseSubagentStalled toggles the idle/stalled flag surfaced by the reaper.
  */
 import { describe, it, expect } from 'vitest'

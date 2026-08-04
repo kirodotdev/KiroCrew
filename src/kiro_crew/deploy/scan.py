@@ -1,4 +1,4 @@
-"""deploy-web pre-publish content scan (design §4.1 / Q4).
+"""deploy-web pre-publish content scan.
 
 Deploying makes content world-readable, so before upload the rendered output is
 scanned for secrets + internal-data leaks. On any finding the caller

@@ -300,13 +300,13 @@ def _scan_ui_mtimes(ui_dir: Path) -> tuple[int, int]:
     _MAX_SCAN_FILES; errors count as "no change" rather than crashing the loop.
 
     ``digest`` folds every file's (relative path, mtime, size) into a single
-    order-independent accumulator (XOR of per-file hashes). A bare
-    ``(count, max_mtime)`` signature missed real edits: rewriting a file whose
-    new mtime stayed below another file's mtime (``cp -p``/``rsync -a`` of an
-    older bundle, a clock skew, a future-dated pin) left both count and max
-    unchanged, so no reload fired. Incorporating each file's own mtime and size
-    means any edit that changes a file's metadata changes the digest, and XOR
-    keeps it insensitive to rglob's traversal order.
+    order-independent accumulator (XOR of per-file hashes). Incorporating each
+    file's own mtime and size means any edit that changes a file's metadata
+    changes the digest — a bare ``(count, max_mtime)`` signature would miss a
+    rewrite whose new mtime stays below another file's mtime (``cp -p``/
+    ``rsync -a`` of an older bundle, a clock skew, a future-dated pin), leaving
+    both count and max unchanged. XOR keeps the digest insensitive to rglob's
+    traversal order.
     """
     digest = 0
     count = 0

@@ -1,4 +1,4 @@
-"""Scale plumbing for sub-agent dashboard events (PR-4, 60-100 agents).
+"""Scale plumbing for sub-agent dashboard events (60-100 agents).
 
 At small spawn counts every sub-agent event is forwarded to the dashboard as
 an individual WS frame — fine for 3 agents, a socket-saturating flood for

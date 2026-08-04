@@ -9,7 +9,7 @@ REUSES the mcp.json write helpers from ``handlers/mcp.py`` (the file
 lock + ``_set_kirocrew_entry`` / ``_replace_kirocrew_spec``) so there is
 exactly one code path that mutates MCP config on disk.
 
-Consent stance (mirrors discover-install, PR #278): servers land
+Consent stance (mirrors discover-install): servers land
 DISABLED unless the request carries ``enable: true`` — which the UI only
 sends when the user ticks "Enable immediately", making the tick itself
 the consent act.  Editing a spec never changes the enabled state.

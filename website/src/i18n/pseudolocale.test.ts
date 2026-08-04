@@ -12,9 +12,10 @@
  * ones, and the count is asserted, not just the absence.
  *
  * Also guarded here: registering a pseudolocale must not perturb real-language
- * detection. Adding `en-XA` gave primary subtag `en` two candidates, which made
- * `matchConfident()` treat `en-GB` as ambiguous and stop resolving it to `en`. Browser
- * detection therefore reads `DETECTABLE_CODES`, and these tests pin that separation.
+ * detection. A pseudolocale sharing the `en` primary subtag gives `en` two
+ * candidates, which would make `matchConfident()` treat `en-GB` as ambiguous and
+ * stop resolving it to `en`. Browser detection therefore reads `DETECTABLE_CODES`,
+ * and these tests pin that separation.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest'
@@ -86,13 +87,13 @@ describe('pseudolocale registration', () => {
 })
 
 /**
- * The generated catalog is committed, so its integrity is testable directly — and has to
- * be, because the pipeline shipped a corrupt one. `gen-pseudolocale.mjs` masked the
- * preserved regions one pattern at a time, so the URL pattern swallowed the
- * already-masked `<owner>` / `<repo>` tokens inside `https://github.com/<owner>/<repo>`
- * and the single-shot restore left the inner sentinels behind: four keys shipped literal
- * NUL control characters where their markup should be. Placeholder-parity assertions
- * passed on all four, which is why this asserts the artifact rather than the transform.
+ * The generated catalog is committed, so its integrity is testable directly.
+ * `gen-pseudolocale.mjs` masks the preserved regions one pattern at a time, so a
+ * URL pattern can swallow already-masked `<owner>` / `<repo>` tokens inside
+ * `https://github.com/<owner>/<repo>` and a single-shot restore can leave the inner
+ * sentinels behind, shipping literal NUL control characters where markup should be.
+ * Placeholder-parity assertions do not catch this, which is why this asserts the
+ * artifact rather than the transform.
  */
 describe('pseudolocale catalog integrity', () => {
   const flat = flatten(CATALOGS[PSEUDO])
@@ -127,8 +128,8 @@ describe('pseudolocale catalog integrity', () => {
 /**
  * "Resolvable but not selectable" has to hold for PERSISTED state too, not just the
  * picker. A dev who selects `en-XA` writes it to `dashboard.language`; a production build
- * reading that same config used to honour it, rendering an accented padded UI with no
- * picker entry to explain or escape it.
+ * reading that same config must not honour it, or it would render an accented padded UI
+ * with no picker entry to explain or escape it.
  *
  * `import.meta.env.DEV` is true under vitest, so the production branch is stubbed rather
  * than merely asserted around — an `if (DEV) … else …` test would only ever run its dev

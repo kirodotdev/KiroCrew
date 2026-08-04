@@ -1,6 +1,6 @@
 """deploy-web render — turn an artifact into a standalone, web-ready index.html.
 
-Artifacts aren't all web-ready (design §4.1 / Q1):
+Artifacts aren't all web-ready:
   - widget   → the inner ``<mcwidget>`` HTML needs a self-contained shell with
                a FIXED light/default theme inlined (no dashboard to inherit from).
   - markdown → render to HTML with a minimal built-in stylesheet.

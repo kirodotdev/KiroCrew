@@ -125,8 +125,8 @@ describe('chat sidebar — flat view respects the folder filter', () => {
   })
 
   it('ignores the folder tree\'s collapse state', () => {
-    // Collapsing a folder in tree view is a tree affordance only — it must no
-    // longer remove anything from the flat lane (that is now the checkbox's job).
+    // Collapsing a folder in tree view is a tree affordance only — it does not
+    // remove anything from the flat lane (that is the checkbox's job).
     const folders = [{ id: 'cronsF', name: 'crons', collapsed: true, order: 0 }]
     const { getByText } = renderSidebar([cronInFolder, looseChat], folders)
     expect(getByText('nightly report')).toBeTruthy()

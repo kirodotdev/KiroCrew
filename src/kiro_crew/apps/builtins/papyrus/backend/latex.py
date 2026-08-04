@@ -44,7 +44,11 @@ from kiro_crew.apps.builtins.papyrus.backend import procio, store, tectonic
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.config.loader import config_dir
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    SandboxUnavailableError,
+    create_subprocess_limited,
+    sandboxed_spawn_argv,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kirocrew.app.papyrus")
@@ -137,12 +141,21 @@ class Diagnostic:
 
 @dataclass
 class CompileResult:
-    """Outcome of one compile request."""
+    """Outcome of one compile request.
+
+    ``sandbox_error`` separates "this host could not build a sandbox, so the
+    compiler never ran" from "the compiler ran and the document failed". Both
+    are ``ok=False``, but only the first is an environment problem with an
+    operator remedy, and reporting it as a compile failure sends the user
+    hunting for a LaTeX bug in a document that was never read. Empty on every
+    normal path.
+    """
 
     ok: bool
     log: str = ""
     diagnostics: list[Diagnostic] = field(default_factory=list)
     duration_ms: int = 0
+    sandbox_error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -229,14 +242,21 @@ def _search_path_env_sync(project: Path) -> dict[str, str]:
     rather than at the project root, and bibtex then fails with "I couldn't open
     style file". Extending the search path with every directory that holds a
     ``.bst``/``.bib`` reproduces what a hosted LaTeX service does implicitly. The
-    trailing colon means "also search the default TEXMF tree".
+    trailing separator means "also search the default TEXMF tree".
+
+    The separator is :data:`os.pathsep`, not a hardcoded ``":"``. On Windows the
+    separator is ``";"`` AND an absolute path contains a colon after its drive
+    letter, so a ``":"``-joined list both used the wrong delimiter and split
+    ``C:\\proj\\bib`` into two meaningless fragments — bibtex then failed with the
+    very "I couldn't open style file" this function exists to prevent.
 
     Synchronous ``rglob`` over the project — call via :func:`asyncio.to_thread`.
     """
+    sep = os.pathsep
 
     def dirs_for(pattern: str) -> str:
         found = sorted({str(p.parent) for p in project.rglob(pattern) if p.is_file()})
-        return ".:" + ":".join(found) + ":" if found else ".:"
+        return "." + sep + sep.join(found) + sep if found else "." + sep
 
     return {"BSTINPUTS": dirs_for("*.bst"), "BIBINPUTS": dirs_for("*.bib")}
 
@@ -362,16 +382,32 @@ async def _run(
     and defers to a thread), but the fix cannot be platform-conditional. Same form
     and same reason as ``apps/builtins/dev_fleet/server.py``.
     """
-    wrapped, scrubbed, cleanup = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(),
-        functools.partial(
-            sandboxed_spawn_argv,
-            argv,
-            "strict",
-            env=env,
-            extra_hidden_dirs=_sensitive_hidden_dirs(),
-        ),
-    )
+    try:
+        wrapped, scrubbed, cleanup = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            functools.partial(
+                sandboxed_spawn_argv,
+                argv,
+                "strict",
+                env=env,
+                extra_hidden_dirs=_sensitive_hidden_dirs(),
+            ),
+        )
+    except SandboxUnavailableError as exc:
+        # Fail-closed is CORRECT here and is deliberately not bypassed: this
+        # compiler runs an untrusted `.tex` that may have arrived by `git clone`,
+        # and `strict` mode is what keeps `\input{../../.aws/credentials}` from
+        # typesetting the operator's keys into the PDF. What was wrong is that the
+        # refusal escaped as an unhandled 500 — on Windows, which has no sandbox
+        # backend at all, that meant EVERY compile answered "internal error" with
+        # no hint that one config flag is the remedy.
+        #
+        # So the refusal is reported, not bypassed: the caller maps it to a 422
+        # carrying the sandbox layer's own remedy text, which names the
+        # `agent.sandbox_allow_unsandboxed_exec` opt-in that
+        # `docs/WINDOWS_CHANGES.md` documents for exactly this host.
+        _audit(operation, argv[0], "denied", error=f"sandbox unavailable ({exc.kind})")
+        raise
     proc: asyncio.subprocess.Process | None = None
     try:
         # `create_subprocess_limited`, not `create_subprocess_exec` +
@@ -622,9 +658,9 @@ async def compile_project(project: Path, main_file: str) -> CompileResult:
     # path whose target is not — the two guards cover different halves and neither
     # substitutes for the other.
     #
-    # This cannot be solved downstream: `pdf_path`'s containment check (added earlier in
-    # this PR) decides what may be SERVED, and by then the write has happened. The only
-    # place to stop it is before the spawn.
+    # This cannot be solved downstream: `pdf_path`'s containment check decides what may
+    # be SERVED, and by then the write has happened. The only place to stop it is before
+    # the spawn.
     #
     # Removing the links instead of refusing was considered and rejected: deleting files
     # a repository shipped, as a side effect of pressing Compile, is its own surprise.
@@ -660,9 +696,20 @@ async def compile_project(project: Path, main_file: str) -> CompileResult:
         )
 
     start = time.monotonic()
-    code, output = await _run(
-        argv, cwd=project, env=env, timeout=COMPILE_TIMEOUT_SEC, operation="compile"
-    )
+    try:
+        code, output = await _run(
+            argv, cwd=project, env=env, timeout=COMPILE_TIMEOUT_SEC, operation="compile"
+        )
+    except SandboxUnavailableError as exc:
+        # Caught at the FIRST spawn only: every later pass in the cycle (bibtex and
+        # the two re-runs) uses the same host and the same mode, so if the sandbox
+        # refuses it refuses here, and one handler covers the whole cycle.
+        #
+        # Returned as a result rather than propagating, because the route layer's
+        # contract is that `compile_project` answers with a `CompileResult` — the
+        # sandbox layer's remedy prose is carried in `sandbox_error` so the handler
+        # can attach its own machine-readable code without parsing English.
+        return CompileResult(ok=False, sandbox_error=str(exc))
     if code == -1 and not output:
         return CompileResult(ok=False, log=f"Compilation timed out after {COMPILE_TIMEOUT_SEC:.0f}s")
 

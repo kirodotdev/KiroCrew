@@ -135,7 +135,8 @@ import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { BookOpen, EyeOff, Loader, PanelLeftOpen, PanelLeftClose, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, PanelRight, Paperclip } from 'lucide-react'
+import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip } from 'lucide-react'
+import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
 
 import InfoTip from '../components/InfoTip'
 import { FileCard } from '../components/FileCard'
@@ -192,8 +193,8 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
   const [open, setOpen] = useState(false)
-  // MCP server list is fetched lazily when its submenu opens (was a hover gate
-  // before; now driven by the Radix Sub's open state).
+  // MCP server list is fetched lazily when its submenu opens (driven by the
+  // Radix Sub's open state).
   const [mcpOpen, setMcpOpen] = useState(false)
   const { data: servers = [] } = useQuery<{ name: string; enabled?: boolean }[]>({
     queryKey: ['mcp-servers', agent],
@@ -350,7 +351,7 @@ function KnowledgeBubbleChip({ knowledge }: { knowledge: { items: number; tokens
 }
 
 export function renderUserContent(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void) {
-  // Per-message containment (React #290 defense-in-depth): a render crash in a
+  // Per-message containment (defense-in-depth): a render crash in a
   // user/inject bubble must degrade to a per-message fallback, not unwind to
   // the root boundary and blank the whole dashboard.
   //
@@ -383,7 +384,7 @@ function renderUserContentInner(content: string, meta: Record<string, unknown> |
   // lines — to renderFileSegment → MarkdownRenderer parses and lays it out on
   // the main thread and freezes the tab. Re-collapse deterministically from the
   // blocks that travel with the message so the chip is restored regardless of
-  // external state. See recollapsePastes / Mesh big-paste freeze.
+  // external state. See recollapsePastes.
   let text = content
   let ranges = findTokenRanges(text, pastes)
   if (!ranges.length) {
@@ -715,31 +716,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     s.chat.messages.some(m => m.role === 'queued') ||
     // Question card only renders for its OWNING slot (see the render-site
     // slot check below) -- suppression must match, or a question pending in
-    // another running slot suppresses tips here forever (Codex round-31,
-    // same slot-ownership family as the workflowRuns fix in round-16).
+    // another running slot suppresses tips here forever.
     !!pendingQuestionFor(s.chat.pendingQuestions, s.chat.activeSlot) ||
     // The follow-up card occupies the same above-composer band. Cards are
     // slot-keyed, so read only the ACTIVE slot's entry — a card parked in
     // another session must not suppress tips here.
     (!!s.chat.activeSlot && !!s.chat.followups?.[s.chat.activeSlot]) ||
     // Active subagents render the progress bar in the same above-composer
-    // zone the floating tip occupies — the tip always yields (Raymond's
-    // hard constraint: never crowd the queue/subagent surfaces).
+    // zone the floating tip occupies — the tip always yields: never crowd
+    // the queue/subagent surfaces.
     Object.values(s.chat.subagents).some(a => a.status === 'running' || a.status === 'tool' || a.status === 'pending') ||
-    // Workflow runs render WorkflowProgressBar in the same band (Codex
-    // round-15) — but only runs belonging to THIS slot show a bar here, so
-    // filter by ownership or a terminal run parked in another slot would
-    // suppress tips everywhere forever (Codex round-16).
+    // Workflow runs render WorkflowProgressBar in the same band — but only
+    // runs belonging to THIS slot show a bar here, so filter by ownership or
+    // a terminal run parked in another slot would suppress tips everywhere
+    // forever.
     Object.values(s.chat.workflowRuns ?? {}).some(r => runBelongsToSlot(r.sessionKey, s.chat.activeSlot) && (r.status === 'running' || r.status === 'finished' || r.status === 'failed' || r.status === 'cancelled'))
   ) || knowledgeFetch.loading || knowledgeFetch.results.length > 0
   // Split View state is declared up here (not at its usage site) because the
   // tip hook below must know about it: in split mode SessionGridView replaces
   // the composer, TipCard never renders, and an unblocked hook would fetch a
-  // tip + record it as shown, silently burning the 6h cadence (Codex round-25).
+  // tip + record it as shown, silently burning the 6h cadence.
   const [splitMode, setSplitMode] = useState(false)
   const [splitAnchor, setSplitAnchor] = useState<string | null>(null)
   // Temporary sessions ("no memory reads or writes") must never show
-  // memory-personalized tips (Codex round-22).
+  // memory-personalized tips.
   const tipTemporary = useAppSelector(s => s.dashboard.slots.find(sl => sl.key === s.chat.activeSlot)?.memory_mode === 'temporary')
   const tipBlocked = tipTemporary || splitMode || embedMode === 'sessions'
   const { tip: activeTip, dismiss: dismissTip } = useTipTrigger(!!slotRunning, tipSuppressed, activeSlot, tipBlocked)
@@ -826,7 +826,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Browse mode is per-session (keyed by slot), not page-global: enabling it in
   // one session must not bleed into another. ChatPage never remounts on slot
   // switch, so a single boolean would leak across every session. Kept in-memory
-  // only (resets on reload), matching the prior non-persisted behavior.
+  // only (resets on reload).
   const [browseModeBySlot, setBrowseModeBySlot] = useState<Record<string, boolean>>({})
   const browseMode = activeSlot ? (browseModeBySlot[activeSlot] ?? false) : false
   const toggleBrowseMode = () => {
@@ -1917,10 +1917,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Open an artifact as a side-panel tab — the artifact twin of
   // handleFileOpen, and the single entry point every in-chat artifact
   // affordance routes through (the Artifacts tab's rows and `/artifacts/<slug>`
-  // links inside messages). Before this existed those surfaces hard-navigated
-  // to the standalone detail page, which tore down the chat to show a document
-  // the panel can render inline and made artifacts the only panel-capable
-  // content that could not be flipped between like files.
+  // links inside messages). Routing them here renders the document inline in the
+  // panel instead of hard-navigating to the standalone detail page, which would
+  // tear down the chat and make artifacts the only panel-capable content that
+  // could not be flipped between like files.
   const handleArtifactOpen = useCallback(async (slug: string) => {
     if (!slug) return
     const slot = activeSlotRef.current ?? null
@@ -2017,12 +2017,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // slot-switch, so the user's parked draft stays safe in the original
       // session and the fork opens with an empty composer.
       //
-      // B3 cold-cache fix (D2): forkCfg is undefined until the dashboardConfig
-      // query resolves for the first time. Use the cache when warm; otherwise
-      // fetch a fresh value directly so direction never silently falls back
-      // to an undefined config (which previously downgraded an intended
-      // tail-fork to a head-fork whenever the query had errored/settled with
-      // no data, not just while it was loading).
+      // forkCfg is undefined until the dashboardConfig query resolves for the
+      // first time. Use the cache when warm; otherwise fetch a fresh value
+      // directly so direction never silently falls back to an undefined config
+      // — which would downgrade an intended tail-fork to a head-fork whenever
+      // the query has errored or settled with no data, not just while loading.
       const resolvedCfg = forkCfg ?? await api.dashboardConfig()
       const direction = resolvedCfg?.tail_fork_enabled ? 'tail' : 'head'
       const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, direction })).unwrap()
@@ -2178,7 +2177,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     vScrollToBottomRef.current(instant ? 'auto' : 'smooth')
   }, [])
 
-  // Scroll compensation for the in-flow tip (Raymond 2026-07-21): mounting the
+  // Scroll compensation for the in-flow tip: mounting the
   // tip shrinks the scroll viewport but does not itself re-anchor the scroll
   // position, so when the user is parked at the bottom of a streaming turn the
   // last line of text gets clipped under the container edge -- visually
@@ -2229,9 +2228,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // the row and scroll once it mounts, then keep re-scrolling (re-reading the
     // live offset each frame) until the row's measured height SETTLES — a far
     // row must mount + measure, and a widget target keeps growing for ~450ms as
-    // its iframe builds (PROGRAMMATIC_BUILD_DELAY_MS). The OLD frame-count
-    // ceiling (~0.5s) gave up before the widget settled, so the jump silently
-    // no-op'd and only worked on a second click once cached. Condition-based
+    // its iframe builds (PROGRAMMATIC_BUILD_DELAY_MS). A fixed frame-count
+    // ceiling (~0.5s) gives up before the widget settles, so the jump silently
+    // no-ops and only works on a second click once cached. Condition-based
     // instead: retry until the target reports a stable (non-estimated) height,
     // with a ~2s wall-clock backstop so a genuinely unreachable target still
     // terminates instead of spinning. While the row is missing we do NOTHING —
@@ -2244,8 +2243,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // The poll re-scrolls every frame for up to CONVERGE_MAX_MS (~2s). If the
     // user tries to scroll during that window, continuing to step would drag
     // the viewport back to the target and fight their input — so user scroll
-    // ABORTS the convergence, exactly as scrollCurrentMatchIntoView does. (The
-    // retired frame-count ceiling was short enough (~0.5s) to mask this; the
+    // ABORTS the convergence, exactly as scrollCurrentMatchIntoView does. (A
+    // fixed frame-count ceiling short enough (~0.5s) masks this; the
     // longer, condition-based window makes it reachable.) The shared
     // attachUserScrollIntent covers scrollbar drag and keyboard scrolling too,
     // not just wheel/touch.
@@ -2260,7 +2259,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // Only the FIRST step may glide — see glideOnceStep. Re-issuing a smooth
       // scroll cancels and restarts the animation, so stepping every frame
       // through the quiet window would leave a NEAR jump stuttering until the
-      // poll ends (the same restart trap fix #4 removed from the streaming pin).
+      // poll ends (the same restart trap removed from the streaming pin).
       step: glideOnceStep(
         (b) => { scrollToDisplayIndex(idx, { ...opts, behavior: b }) },
         behavior,
@@ -2291,7 +2290,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const pinFoldRef = useRef<HTMLDivElement | null>(null)
   const pinCardRef = useRef<HTMLDivElement | null>(null)
   const pinEnabledRef = useRef(true)
-  const [pinned, setPinned] = useState<{ idx: number; text: string; raw: string; full: string; images: string[]; push: number; bannerH: number } | null>(null)
+  const [pinned, setPinned] = useState<{ idx: number; ts?: string; text: string; raw: string; full: string; images: string[]; push: number; bannerH: number } | null>(null)
   const [pinExpanded, setPinExpanded] = useState(false)
   // Collapsed card height — the hand-off line is derived from it, so it must be
   // known even while nothing is pinned (no card mounted to measure). Seeded with
@@ -2369,9 +2368,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // once per animation frame during a scroll, so a fresh object (or a fresh
     // `images` array) would re-render the banner on every one of them.
     setPinned(prev => (prev && prev.idx === pinIdx && prev.push === push
-      && prev.raw === full && prev.bannerH === bannerH)
+      && prev.raw === full && prev.bannerH === bannerH && prev.ts === pinItem.msg.ts)
       ? prev
-      : { idx: pinIdx, text, raw: full, full: promptBody(full), images: promptImages(full), push, bannerH })
+      : { idx: pinIdx, ts: pinItem.msg.ts, text, raw: full, full: promptBody(full), images: promptImages(full), push, bannerH })
   }, [scrollerRef])
   // rAF-throttle the per-scroll recompute: updatePinnedPrompt does a
   // querySelectorAll + getBoundingClientRect loop (a forced layout read), and a
@@ -2414,12 +2413,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [scrollerRef])
 
   // Sticky-bottom scroll state is owned by the virtualizer (`virt.isAtBottom`,
-  // wired below). No local mirror — a single source of truth avoids the
-  // dual-controller drift that caused the follow/yank regressions.
+  // wired below). No local mirror — a single source of truth avoids
+  // dual-controller drift.
 
   // New content while following is handled inside the virtualizer (RO re-pin
   // for in-place growth + append layout-effect pin for new items), so ChatPage
-  // no longer runs its own message-length scroll effect.
+  // does not run its own message-length scroll effect.
   useEffect(() => { dispatch(fetchHistory(false)) }, [dispatch])
   // Persist active slot to localStorage for refresh recovery (per-mode)
   const slotStorageKey = `mc-active-slot-${mode || 'chat'}`
@@ -2447,7 +2446,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const pendingSidRef = useRef(!!initialSidRef.current)
   // Back/Forward (POP) in flight — set ONLY by the POP effect. Kept separate from
   // pendingSidRef so a deep-link load doesn't trip the POP bail and freeze the
-  // first sidebar switch. (Mesh chat-switch bug.)
+  // first sidebar switch.
   const popInFlightRef = useRef(false)
   // react-router reports the initial render as navigationType 'POP'. That first
   // run is the deep-link load (owned by initialSidRef), not a real Back/Forward —
@@ -2481,7 +2480,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // populate AFTER the user has already clicked a different session in the
     // sidebar (switchSlot.pending sets activeSlot synchronously); without this
     // guard the delayed activation would override that click and snap the UI
-    // back to the deep-linked session (Mesh chat-switch-after-deeplink bug).
+    // back to the deep-linked session.
     if (activeSlot) { initialSidRef.current = null; return }
     if (filteredSlots.some(s => s.key === urlSlot)) {
       initialSidRef.current = null
@@ -2502,8 +2501,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Embed mode: react to ANY ?sid change (the host app drives the URL).
   // Main dashboard: react ONLY to a genuine Back/Forward (navigationType POP).
   // Our own activeSlot→URL writes are PUSH/REPLACE, so they never re-enter here
-  // — that is what avoids the activeSlot↔URL ping-pong the old embed-only gate
-  // guarded against. A session switch pushes a ?sid history entry (sync effect
+  // — that is what avoids the activeSlot↔URL ping-pong. A session switch pushes
+  // a ?sid history entry (sync effect
   // below), so native browser/Electron Back/Forward (and Alt+←/→) retrace the
   // sessions you've visited.
   //
@@ -3095,14 +3094,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   useEffect(() => { if (connected && autoSendRef.current) { const txt = autoSendRef.current; autoSendRef.current = null; send(txt) } }, [send, connected, autoSendTick])  
 
   // Widget interactivity: when a mcwidget iframe fires an action, PRE-FILL the
- // composer instead of auto-submitting. Auto-send was a
+ // composer instead of auto-submitting. Auto-submitting would be a
   // trust-boundary bypass: LLM-emitted <script> inside the sandboxed widget
   // iframe can call parent.postMessage directly, bypassing the in-iframe
   // isTrusted click guard, and the parent cannot distinguish that from a
   // genuine click. So a widget action must never become a user-role turn
   // without an explicit human gesture — the user reviews the pre-filled text
   // and presses Enter. We also record the pre-filled text so the resulting
-  // send is tagged meta.origin='widget' for forensics (item 4).
+  // send is tagged meta.origin='widget' for forensics.
   useEffect(() => {
     const handler = (e: Event) => {
       const text = (e as CustomEvent).detail?.text
@@ -3191,7 +3190,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!activeSlot) return
     // APPEND when the composer already holds unsent text: the pending-input path
     // replaces the draft and persists it, so a plain set would silently destroy
-    // whatever the user was mid-way through typing (GPT review round 13).
+    // whatever the user was mid-way through typing.
     // `inputRef` is the live composer value; a blank line separates the two
     // because a handoff prompt is multi-line prose, not a word to concatenate.
     const draft = inputRef.current ?? ''
@@ -3236,8 +3235,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // window where the composer is live but `chatSlotProject` is still pending,
       // so a turn sent in that window would run in the default directory — agent
       // tools writing to the wrong checkout. It also means a scoping failure can
-      // render its error on the still-mounted card instead of unmounting it
-      // (GPT review, PR #461 round 9).
+      // render its error on the still-mounted card instead of unmounting it.
       const slot = await dispatch(createSlot({ mode, project: path, activate: false })).unwrap()
       slotKey = slot?.key || ''
     } catch {
@@ -3348,7 +3346,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Playwright mirror streams as `kirocrew-browser-frame` events. Open/focus the
   // tab only at the START of a stream (new session_key, or after a >90s gap),
   // NOT on every frame, so it can't steal focus from a tab the user switched to
-  // mid-browse. This replaces the old floating BrowserLiveView window.
+  // mid-browse.
   const browseFrameOpenedRef = useRef<{ key: string | null; ts: number }>({ key: null, ts: 0 })
   useEffect(() => {
     const onFrame = (e: Event) => {
@@ -3558,7 +3556,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const activeIsSplitAnchor = splitAnchorForActive !== null && splitAnchorForActive === activeSlot
   // Auto-enter split when you land on its anchor. Gated on splitMode being off (so we
   // don't fight an in-progress exit) and on a resolved activeSlot + real >=2-member live
-  // layout (so a fresh refresh never seeds an orphan pane — the old localStorage race).
+  // layout (so a fresh refresh never seeds an orphan pane).
   // Members never auto-enter; closing a split to 1 dissolves the layout so there's no loop.
   useEffect(() => {
     if (embedMode || splitMode || !activeIsSplitAnchor) return
@@ -3760,9 +3758,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (activityOpen) tabsCtl.openView(activityTab === ('nav' as string) ? 'files' : activityTab)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activityTab])
-  // Stable row callbacks. These used to be inline lambdas in the row renderer, so
-  // every render handed AssistantMessage a fresh function identity and its memo()
-  // could never bail out — the boundary was broken at the call site, not by the
+  // Stable row callbacks. Inline lambdas in the row renderer would hand
+  // AssistantMessage a fresh function identity every render, so its memo()
+  // could never bail out — the boundary would break at the call site, not in the
   // renderer. Both read live state from a ref / the store rather than closing over
   // it, so neither needs a dependency that churns while a turn streams.
   const handleSpeak = useCallback((content: string) => {
@@ -3797,11 +3795,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
 
   // Keep the ref in sync so handleRangeChanged / updatePinnedPrompt
-  // read the latest displayItems. useEffect rather than render-body
-  // mutation keeps us in line with React's rules of render (no side
-  // effects) — the one-tick lag is irrelevant because callbacks fire
-  // after commit, by which point the ref has caught up.
-  useEffect(() => { displayItemsRef.current = displayItems }, [displayItems])
+  // read the latest displayItems. useLayoutEffect (not useEffect): the DOM's
+  // `data-display-index` attributes are updated at commit, but a scroll rAF can
+  // fire before React flushes a PASSIVE effect — so with useEffect the pin
+  // recompute could read fresh DOM indices against a stale list, mis-deriving
+  // `pinned.idx` by one row (the row-hide is identity-keyed as a second guard,
+  // see below). A layout effect runs in the commit phase, before that rAF, so
+  // the ref is caught up by the time the recompute reads it. Still a passive
+  // side effect, not render-body mutation, so React's rules of render hold.
+  useLayoutEffect(() => { displayItemsRef.current = displayItems }, [displayItems])
 
   // Pinned prompt: keep the enablement ref in sync (updatePinnedPrompt is declared
   // above chatConfig and reads it through a ref), and recompute after the list
@@ -3825,7 +3827,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // for hook-call stability.
   // Per-message identity used to derive BOTH the inner bubble key (renderMessage,
   // ~line 2848) AND the virtualizer/HeightCache key (virtualKey, below). Keeping
-  // them on the SAME identity means the #253 steer-bubble stability fix protects
+  // them on the SAME identity means the steer-bubble stability fix protects
   // the virtualizer + HeightCache layer too, not just the bubble:
   //   1. Prefer meta.clientTs — the steer_push echo overwrites `ts` (client→
   //      server) mid-stream; keying on `ts` alone would flip the key, orphan the
@@ -3838,7 +3840,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   //      is stable across renders under Immer's structural sharing, and survives
   //      truncation of *later* rows, so the key is stable for the message's life.
   //      (A durable id stamped in the reducer at append would also survive a full
-  //      refetch/replace — see .scroll-handoff-c.md.)
+  //      refetch/replace.)
   const msgIdSeq = useRef(0)
   const msgIds = useRef(new WeakMap<ChatMessage, string>())
   const stableMsgKey = useCallback((m: ChatMessage): string => {
@@ -3939,8 +3941,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing for the next one. Mirrors send()'s payload prep so pending
   // files ride along — images become `![image](path)` markdown and other
-  // files `[attached_file N]` tokens (previously steer sent only the raw
-  // text, silently dropping attachments). kiro-cli's `_session/steer` is a
+  // files `[attached_file N]` tokens. kiro-cli's `_session/steer` is a
   // text-only channel, so unlike a queued send the image travels as its
   // absolute path for the agent to open with a tool, not as an inline
   // content block. Paste tokens are expanded for the LLM the same way
@@ -3957,11 +3958,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const { txt } = prepareSendPayload(raw, files)
     const activePastes = pasteBlocksRef.current
     const llmTxt = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
-    // Optimistically show the steered text immediately. Since steer became the
-    // default mid-turn action (split send button), pressing Enter while a turn
-    // is running routes here — which previously had NO optimistic bubble, so
-    // the message only appeared once the backend echoed it via the 'steer_push'
-    // WS event, making it look like nothing happened until the response resumed.
+    // Optimistically show the steered text immediately. Steer is the default
+    // mid-turn action (split send button), so pressing Enter while a turn is
+    // running routes here; without an optimistic bubble the message only appears
+    // once the backend echoes it via the 'steer_push' WS event, making it look
+    // like nothing happened until the response resumes.
     // Tagged meta.optimistic so the echo reconciles this bubble in place
     // (appendSlotMessage) instead of rendering a duplicate.
     dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true } }))
@@ -4112,7 +4113,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [messages, messageToDisplayIdx]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Precomputed O(n) map from message index → visible (user/assistant) index,
-  // used by the fork button. Replaces per-row O(i) filter that made the
+  // used by the fork button. Avoids a per-row O(i) filter that would make the
   // renderer O(n²) overall.
   const visibleIndexMap = useMemo(() => {
     const map = new Map<number, number>()
@@ -4206,8 +4207,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const isStreaming = m.role === 'streaming'
     const isInject = m.role === 'inject'
     // Pass a stable handleFork (useCallback) + primitive index so memo()
-    // on AssistantMessage can short-circuit when only unrelated state changes
-    // (raised in review). visibleIndexMap is O(1) per row.
+    // on AssistantMessage can short-circuit when only unrelated state changes.
+    // visibleIndexMap is O(1) per row.
     const canFork = !isStreaming && !isInject && !slotHasMore
     const forkIndex = canFork ? visibleIndexMap.get(i) : undefined
     const msgTime = m.ts ? fmtDateFields(m.ts, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''
@@ -4278,8 +4279,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   useEffect(() => { if (!isMobile) setMobileSessions(false) }, [isMobile])
   // Swipe from left edge to open sidebar, swipe left on backdrop to close
   const chatContainerRef = useRef<HTMLDivElement>(null)
-  // Measured container height — used to size the sidebar border-box morph
-  // (the panel rect it grows from / shrinks into the expand button).
+  // Measured container height — sizes the sidebar border-box morph (the panel
+  // rect the box shrinks from on collapse and grows back to on expand).
   const [containerH, setContainerH] = useState(0)
   useEffect(() => {
     const el = chatContainerRef.current
@@ -4388,46 +4389,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         )}
       </AnimatePresence>
-      {/* Sidebar collapse/expand control. Two stacked pieces, both in the
-          stable container (not inside the morphing panel):
-          1. Morph border-box: a crisp bordered box (no content, so border &
-             radius stay sharp) that grows from the button's rect to the
-             panel's rect on open and shrinks back on collapse — the panel's
-             border becoming the button's box.
-          2. Icon button: fixed at the button's spot, flips icon + action.
-          Desktop, non-embed, with sessions only. */}
-      {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && (() => {
-        const RADIUS = 12 // same as the panel's rounded-xl — constant through the morph
-        const PANEL = { top: 0, left: 0, width: sidebarWidth, height: Math.max(0, containerH - 8), borderRadius: RADIUS, opacity: 1 }
-        const BTN = { top: 12, left: 8, width: 34, height: 34, borderRadius: RADIUS, opacity: 1 }
-        const MORPH = { duration: 0.32, ease: [0.32, 0.72, 0, 1] as const }
-        return (
-          <>
-            <AnimatePresence initial={false}>
-              {!sidebarOpen && (
-                <motion.div
-                  key="sidebar-morph-box"
-                  aria-hidden="true"
-                  className="absolute z-[60] bg-bg-elevated border border-border shadow-md pointer-events-none"
-                  initial={PANEL}
-                  animate={BTN}
-                  exit={{ ...PANEL, opacity: 0 }}
-                  transition={MORPH}
-                />
-              )}
-            </AnimatePresence>
-            <button
-              type="button"
-              onClick={() => window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))}
-              className="absolute top-[12px] left-2 z-[61] w-[34px] h-[34px] rounded-xl flex items-center justify-center cursor-pointer text-muted hover:text-text transition-colors bg-transparent border-none"
-              title={sidebarOpen ? i18nT('pages.chatPage.hide_sessions') : i18nT('pages.chatPage.show_sessions')}
-              aria-label={sidebarOpen ? i18nT('pages.chatPage.hide_sessions_sidebar') : i18nT('pages.chatPage.show_sessions_sidebar')}
-            >
-              {sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
-            </button>
-          </>
-        )
-      })()}
+      {/* Sidebar toggle — absolute in the stable container in BOTH states
+          (only the icon flips), so collapsing cannot drag it sideways with
+          the reflowing content pane. The collapse/expand motion itself is the
+          panel deforming into/out of this button's rect (OverlayDrawer morph
+          mode, morphTarget below). Desktop, non-embed, with sessions only. */}
+      {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && (
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))}
+          className="pi-morph absolute top-[9px] left-2 z-[61] w-7 h-7 rounded-md flex items-center justify-center cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none"
+          title={sidebarOpen ? i18nT('pages.chatPage.hide_sessions') : i18nT('pages.chatPage.show_sessions')}
+          aria-label={sidebarOpen ? i18nT('pages.chatPage.hide_sessions_sidebar') : i18nT('pages.chatPage.show_sessions_sidebar')}
+        >
+          {sidebarOpen ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />}
+        </button>
+      )}
       {embedMode === 'chat' ? null : embedMode === 'sessions' ? (
         <div className="flex-1 min-w-0 h-full overflow-hidden [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!border-0 [&_.sidebar-inner]:!rounded-none [&_.sidebar-inner]:!shrink [&_.sidebar-inner]:!bg-bg [&_.sidebar-resize-handle]:!hidden">
           <ChatSidebar
@@ -4445,7 +4422,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         </div>
       ) : (
-      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} className={isMobile ? 'mobile-sessions-overlay fixed top-[42px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
+      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} morphTarget={{ x: 8, y: 9, size: 28 }} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-[42px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
         <ChatSidebar
           slots={filteredSlots}
           activeSlot={activeSlot}
@@ -4519,14 +4496,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 in index.css) so the overlay never paints over the scroller's scrollbar
                 track — otherwise the thumb is hidden/un-grabbable when scrolled to top. */}
             <div className="absolute top-0 left-0 right-1.5 z-10 pointer-events-none" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-              <div className={`relative pr-5 pt-1 pb-2 flex items-center gap-2 bg-bg pointer-events-none ${!sidebarOpen && !isMobile ? 'pl-14' : 'pl-5'}`}>
+              {/* The row's left padding GLIDES between its open (20px) and
+                  collapsed (60px, clearing the stationary toggle + divider)
+                  values on the same 320ms curve as the panel — an instant
+                  class flip here reads as the title jumping sideways at the
+                  start of the slide. */}
+              <div className={`relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : 'pl-5'}`}>
+                {/* Divider between toggle and title — ALWAYS mounted and
+                    absolute (zero width, no flex-gap participation) so it can
+                    never change the row's layout; it rides the row (title
+                    side) and only fades. left-[52px] = the collapsed pane's
+                    view of container x 44 (button 8+28 + 8px gap). */}
+                {!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && (
+                  <span aria-hidden="true" className={`absolute left-[52px] top-[13px] w-px h-5 bg-border transition-opacity ${sidebarOpen ? 'opacity-0 duration-100' : 'opacity-100 duration-150 delay-[90ms]'}`} />
+                )}
                 {embedMode !== 'chat' && isMobile && (
                   <button className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto" onClick={() => setMobileSessions(p => !p)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
                     {effectiveMode === 'orchestrator' ? <MessageSquareDot size={16} /> : <MessageSquare size={16} />}
                   </button>
                 )}
                 <div className="group/header flex items-stretch gap-0.5 pointer-events-auto">
-                <div className="rounded-l-md rounded-r-[2px] px-1.5 py-0.5 group-hover/header:bg-bg-hover transition-colors">
+                <div className="flex items-center rounded-l-md rounded-r-[2px] px-1.5 py-0.5 group-hover/header:bg-bg-hover transition-colors">
                 <ChatHeaderMenu
                   activeSlot={activeSlot}
                   agent={currentSlot?.agent}
@@ -4561,7 +4551,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               {/* Trailing controls grouped under a single ml-auto so multiple
                   right-aligned items don't each absorb free space (two ml-auto
                   siblings split the gap, parking the split icon mid-header). */}
-              <div className="ml-auto flex items-center gap-1.5 pr-1.5 pointer-events-none">
+              <div className="ml-auto flex items-center gap-1.5 pointer-events-none">
               {/* Pop-out control, promoted to the title bar (menu items remain for
                   sidebar parity). Mirrors the split-view pattern to its left: a
                   dimmed icon to act, an accent chip when the state is active.
@@ -4588,12 +4578,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   the button does nothing. */}
               {!embedMode && !popout && !activityOpen && (
                 <Clickable
-                  className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+                  className="pi-morph flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
                   onClick={toggleAct}
                   title={i18nT('pages.chatPage.open_activity_panel')}
                   aria-label={i18nT('pages.chatPage.open_activity_panel')}
                 >
-                  <PanelRight size={15} />
+                  <PanelRightSolid size={15} />
                 </Clickable>
               )}
               {!embedMode && splitFeatureEnabled && (splitAnchorForActive && !activeIsSplitAnchor ? (
@@ -4778,7 +4768,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   // appears to simply stop travelling and stick. A row is only ever
                   // hidden once it is entirely behind the band, so a tall prompt
                   // never leaves a visible hole above the response.
-                  visibility: pinned?.idx === displayIdx ? 'hidden' : undefined,
+                  //
+                  // Match by message IDENTITY (ts), not display index. `pinned.idx`
+                  // is computed in a scroll rAF against `displayItemsRef`, which is
+                  // refreshed in a layout effect — but a streaming append or a turn
+                  // regroup can still shift the list between that read and this
+                  // render, leaving `pinned.idx` pointing one row off. When it did,
+                  // the WRONG row was hidden and the real pinned bubble painted
+                  // alongside the banner — the "two stacked boxes" bug. The ts is
+                  // stable across any index shift, so it hides the right row every
+                  // frame; fall back to the index only for a message with no ts.
+                  visibility: (pinned && (pinned.ts != null
+                    ? (item.kind === 'single' && item.msg.ts === pinned.ts)
+                    : pinned.idx === displayIdx)) ? 'hidden' : undefined,
                 }}>{item.kind === 'group' ? (() => {
                 const unresolvedGroupPerms = item.msgs.filter(m => m.role === 'permission' && !m.meta?.resolved)
                 if (item.msgs.every(m => m.role === 'permission')) return null
@@ -4828,8 +4830,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   activity sidebar has no TODO view, so hiding it there would
                   lose the information rather than de-duplicate it. */}
               <TaskProgressBar slot={activeSlot} />
-              {!activityOpen && <SubagentProgressBar slot={activeSlot} />}
-              {!activityOpen && <WorkflowProgressBar slot={activeSlot} />}
+              {/* De-duplicate ONLY against the matching sidebar tab (#728): each
+                  bar is redundant when the activity sidebar is actually SHOWING
+                  its own view (Subagents / Workflows), but on any OTHER tab
+                  (Files, Changes, Logs, Artifacts) hiding it would lose the live
+                  roster entirely. The condition mirrors the SidePanel's own
+                  render guard (`activityOpen && !search.isOpen`) — so opening the
+                  find pane, which UNMOUNTS the panel, re-shows the bar — and
+                  reads the live panel tab (`tabsCtl`), NOT the Redux
+                  `activityTab`, which only tracks programmatic openActivityToTab
+                  calls and goes stale when the user clicks a tab in the panel. */}
+              {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
+              {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
@@ -4889,7 +4901,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     }}
                     onDirectSend={(text) => {
                       // No-ask_id card: the card IS the interaction, so answer
-                      // and send in one click (#755).
+                      // and send in one click.
                       //
                       // Offline, send() bails at its own !connected guard and
                       // the card clears regardless — which would DROP the

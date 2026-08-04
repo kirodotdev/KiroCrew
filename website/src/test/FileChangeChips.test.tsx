@@ -151,8 +151,8 @@ describe('FileChangeChips', () => {
   })
 
   it('handles empty before content as 0 lines (new file shows only +N)', () => {
-    // Pre-fix: new file showed +1/-1 because ''.split('\n') == ['']. Fix
-    // treats empty before as 0 lines so a 1-line new file shows just +1.
+    // Empty before is treated as 0 lines so a 1-line new file shows just +1
+    // (not +1/-1, which ''.split('\n') == [''] would produce).
     render(<FileChangeChips fileChanges={[change('/brand-new.ts', '', 'hello')]} />)
     expect(screen.getByText('+1')).toBeInTheDocument()
     expect(screen.queryByText(/^-\d+$/)).not.toBeInTheDocument()

@@ -6,9 +6,11 @@ BUILTIN_NAMES: list[str] = [
     "issue_radar",
     "meetings",
     "papyrus",
+    "mochi",
+    "pptx_maker",
 ]
 
-# Formerly a builtin, now folded into core deploy module.
+# Deploy-web lives in the core deploy module, not as a separate builtin.
 # Kept as a constant so the startup migration can identify stale installs.
 # Include both forms: hyphenated (legacy installed dir name) and underscored
 # (Python module name) to handle either naming convention.

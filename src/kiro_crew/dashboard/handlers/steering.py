@@ -13,9 +13,8 @@ play, and they are loaded by two different mechanisms:
   kiro-cli loads these because the session subprocess runs with the slot's
   project directory as its cwd.
 
-Until this module existed the files were loaded but never viewable: nothing in
-the dashboard showed which steering documents were in effect.  These endpoints
-back the Steering tab under Agent Capabilities.
+These endpoints back the Steering tab under Agent Capabilities, surfacing which
+steering documents are in effect.
 
 Path handling mirrors the skills browser (``handlers/_shared.py``): traversal,
 absolute paths, ``~`` expansion, non-``.md`` suffixes, symlinked intermediate

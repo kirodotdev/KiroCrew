@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils'
  * `data-state="indeterminate"` and drops aria-valuenow, and the indicator
  * renders a sweeping segment instead of a fill. A filled-from-left bar with no
  * real value reads as actual progress and then visibly jumps when the first
- * measurement arrives (the update card shipped exactly that bug).
+ * measurement arrives.
  */
 const Progress = React.forwardRef<
   React.ElementRef<typeof ProgressPrimitive.Root>,

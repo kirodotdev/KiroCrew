@@ -3,7 +3,7 @@ import { renderHook, act } from '@testing-library/react'
 import { useLogSSE } from './useLogSSE'
 
 /**
- * Regression coverage for the reconnect-timer leak (#423).
+ * Regression coverage for the reconnect-timer leak.
  *
  * On error, useLogSSE schedules setTimeout(start, 3000). If the component
  * unmounts (or stop() runs) during that 3s window, the pending reconnect must

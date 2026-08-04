@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 /**
- * CommandPalette §2 Enter-matrix test (step 19).
+ * CommandPalette §2 Enter-matrix test.
  *
  * Asserts the per-result-type Enter / ⌘Enter / ⌥Enter behavior across the v1
  * corpus (Skills · Prompts · Knowledge) and, critically, the **context-aware

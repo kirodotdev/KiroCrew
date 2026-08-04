@@ -72,8 +72,7 @@ TODO_TASKS_MAX = 200
 # Per-task text cap — keeps one pathological entry from bloating every payload.
 TODO_TEXT_MAX = 500
 
-# Capabilities we advertise during `initialize`. Previously omitted entirely,
-# which made the agent assume the all-false default.
+# Capabilities we advertise during `initialize`.
 #
 # `elicitation` is a deliberate forward-bet: kiro-cli 2.14.0 compiles the
 # `elicitation/create` schema (form + url modes) and gates it on this

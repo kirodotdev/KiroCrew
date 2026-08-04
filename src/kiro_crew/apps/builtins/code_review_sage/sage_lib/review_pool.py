@@ -151,9 +151,9 @@ def _get_review_settings() -> dict:
 def effective_max_concurrent() -> int:
     """Configured max concurrent reviews (config: ``review.max_concurrent``).
 
-    Because all reviews now multiplex onto a single shared ``AcpRuntime`` (one
-    subprocess), concurrency is no longer bounded by process count — it is a plain
-    semaphore width. Defaults to ``MAX_CONCURRENT`` (5) and is clamped to
+    Because all reviews multiplex onto a single shared ``AcpRuntime`` (one
+    subprocess), concurrency is a plain semaphore width rather than a bound on
+    process count. Defaults to ``MAX_CONCURRENT`` (5) and is clamped to
     ``[1, MAX_CONCURRENT_CEIL]`` so a "review all open PRs" batch can fan out (up
     to 30) without an operator editing code, but can never be set unbounded."""
     try:

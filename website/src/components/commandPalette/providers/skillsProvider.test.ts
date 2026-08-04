@@ -8,7 +8,7 @@ import type { Result } from '../types'
 
 /**
  * Unit tests for the pure {@link createSkillsProvider} factory
- * (Search Everywhere, step 17 — the Skills provider + its §2 Enter matrix). Side
+ * (Search Everywhere — the Skills provider + its §2 Enter matrix). Side
  * effects are injected, so we pass plain spies and assert filtering + the
  * context-aware Enter / ⌘Enter / ⌥Enter wiring + the `$<name>` token format.
  */

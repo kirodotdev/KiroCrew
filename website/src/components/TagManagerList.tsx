@@ -25,14 +25,14 @@ export interface TagManagerListProps {
 }
 
 /**
- * The tag-management list extracted verbatim from the board column-filter
- * popover: a scrollable list of tag rows (leading swatch · inline-rename input ·
- * status ⚡ toggle · delete ✕) plus a "New tag… ↵" create input. Self-contained
- * — it queries `['chat-tags']` and owns the create/update/delete mutations, so
- * every surface that renders it (board column popover, header Manage-tags panel)
- * shares one live source and stays in lockstep via the query cache. Row testids
- * (tag-row / tag-name / tag-status / tag-delete-<id>) are preserved so existing
- * board behaviour and selectors are unchanged.
+ * The tag-management list rendered by both the board column-filter popover and
+ * the header Manage-tags panel: a scrollable list of tag rows (leading swatch ·
+ * inline-rename input · status ⚡ toggle · delete ✕) plus a "New tag… ↵" create
+ * input. Self-contained — it queries `['chat-tags']` and owns the
+ * create/update/delete mutations, so every surface that renders it (board column
+ * popover, header Manage-tags panel) shares one live source and stays in lockstep
+ * via the query cache. Row testids (tag-row / tag-name / tag-status /
+ * tag-delete-<id>) match the board's selectors.
  */
 export default function TagManagerList({ mode, selectedIds = [], onToggleTag, createTestId = 'tag-create' }: TagManagerListProps) {
   const queryClient = useQueryClient()

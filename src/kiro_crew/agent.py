@@ -126,7 +126,7 @@ _MAIN_AGENT_NAME = "kirocrew"
 # Stored in the agent_state sidecar, never in the kiro spec (deny_unknown_fields).
 _BACKGROUND_CC_MODEL = "claude-sonnet-4.6"
 _KIRO_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
-# Well-known Claude Code global MCP config. The core no longer reads this at
+# Well-known Claude Code global MCP config. The core does not read this at
 # rebuild/discovery/apply time (OSS is Kiro-only); a companion contributes it as
 # a scope via the extra_mcp_scopes() CPP seam. Retained as the canonical path
 # constant for that companion and for tests.
@@ -2188,7 +2188,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
             mcps = config.setdefault("mcpServers", {})
             if name in mcps and isinstance(mcps[name], dict):
                 # mcps[name] is a private copy (globals were copied in above),
-                # so update() no longer mutates any source dict.
+                # so update() does not mutate any source dict.
                 mcps[name].update(spec)
             else:
                 mcps[name] = dict(spec)
@@ -2213,11 +2213,11 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         PATH the MCP probe uses (mcp_discovery.probe_server →
         env.augmented_path). Sharing augmented_path — instead of a hand-built
         dir list — keeps agent-config-build resolution and probe resolution
-        from diverging: a divergence previously let a server probe healthy on
+        from diverging: a divergence would let a server probe healthy on
         the dashboard while being silently dropped from the generated agent
         config ("command not found: kirocrew"). augmented_path
-        covers ~/.aim/mcp-servers and ~/.toolbox/bin (previously hardcoded
-        here) and appends the running interpreter's console-scripts dir
+        covers ~/.aim/mcp-servers and ~/.toolbox/bin and appends the running
+        interpreter's console-scripts dir
         (venv ``Scripts\\`` on Windows, ``bin/`` on POSIX) as a last-resort
         fallback for pip-generated wrappers like ``kirocrew``.
         """
@@ -2390,8 +2390,8 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         added_refs: list[str] = []
         # Managed servers + edition-contributed servers both get their @ref
         # registered so their tools are callable. Edition servers are injected
-        # into config['mcpServers'] via _extra_mcp_servers() above but were
-        # previously never added to config['tools'], so kiro-cli exposed the
+        # into config['mcpServers'] via _extra_mcp_servers() above; their @ref
+        # must also be added to config['tools'], otherwise kiro-cli exposes the
         # server but not its tools. The public edition contributes none, so this
         # is a no-op there.
         _register_names = list(_MANAGED_MCP_SERVERS) + [

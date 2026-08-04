@@ -1,4 +1,5 @@
 import React, { useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X } from 'lucide-react'
 
@@ -64,7 +65,15 @@ export default function Modal({ open, onClose, title, footer, headerActions, max
         transition: SPRING,
       }
 
-  return (
+  // Portal to document.body: the overlay layers below are position:fixed, and
+  // fixed positioning escapes ancestor OVERFLOW but not ancestor CLIP-PATH,
+  // TRANSFORM, or FILTER -- those are paint/containing-block operations applied
+  // to the whole subtree, fixed descendants included. Modals are mounted deep
+  // inside arbitrary containers (e.g. ChatSidebar, whose OverlayDrawer wrapper
+  // keeps a resting `clip-path: inset(0 0 0 0)` from the collapse morph, which
+  // would confine the "full-screen" modal to the sidebar rect). Rendering at
+  // body level immunizes every modal against any fancy container for good.
+  return createPortal(
     <AnimatePresence>
       {open && (
         <>
@@ -106,6 +115,7 @@ export default function Modal({ open, onClose, title, footer, headerActions, max
           </div>
         </>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   )
 }

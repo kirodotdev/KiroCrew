@@ -14,15 +14,15 @@ const CRED_PATTERNS: RegExp[] = [
   // than truncating and leaving the ciphertext and tag on screen.
   //
   // Byte-identical to the backend alternative, deliberately, and pinned as such
-  // by `test/test_redaction_mirror_parity.py`. An earlier revision
-  // added a left boundary here to stop a two-dot identifier such as
-  // `keyJson.parse.value` being redacted, but that trade was measured and it is
+  // by `test/test_redaction_mirror_parity.py`. No left boundary is used here: a
+  // left boundary would stop a two-dot identifier such as
+  // `keyJson.parse.value` being redacted, but that trade is
   // the wrong one: the boundary MISSES a real token whenever a renderer
   // concatenates a label straight onto it (`compact=jwt<token>`,
   // `/session/jwe<token>`), which the backend redacts. It also does not prevent
   // the commonest false-positive form, a space-preceded identifier in a stack
   // trace (`at eyJsonSerializer.deserialize.value`), which matches either way.
-  // So it bought two avoided false positives and cost two leaks. A miss is a
+  // So it would buy two avoided false positives and cost two leaks. A miss is a
   // leak; a false positive is mangled display text.
   //
   // The residual false positive is therefore shared with the backend rather than

@@ -708,9 +708,9 @@ _NOT_LOGGED_IN_MESSAGE = (
 # Single source of truth for "is this ACP backend error a momentary,
 # retry-worthy hiccup?". The user-facing message formatter AND the
 # retry-eligibility classifier both key off these patterns, so the two can
-# never drift again. That drift is exactly the bug this guards against: the
-# formatter rewrote a generic 5xx into a friendly string that the marker-based retry
-# classifier no longer recognised, so the retry never fired.
+# never drift again: otherwise the formatter could rewrite a generic 5xx into a
+# friendly string the marker-based retry classifier does not recognise, silently
+# preventing the retry from firing.
 #
 # Scopes mirror _format_acp_error's if/elif chain: model-unavailable matches
 # the provider `data` field only (it extracts the model name from a structured
@@ -1141,7 +1141,7 @@ def _capture_child_records(pids: list[int]) -> dict[int, ChildRecord]:
     ``_get_child_pids`` to ``pgrep``), which can block during the subprocess
     spawn (fork/exec). Callers running on the event loop MUST invoke this via
     ``run_in_executor(subprocess_executor(), ...)`` so the spawns happen on a
-    worker thread and never wedge the loop (the macOS wedge captured 2026-06-26).
+    worker thread and never wedge the loop.
     """
     return {p: (_get_start_time(p), _read_basename(p)) for p in pids}
 
@@ -1165,8 +1165,8 @@ def _is_our_child(
             logger.debug("PID %d start time mismatch (recycled)", pid)
             return False
         # Basename check: catches recycling to a different binary with same start slot.
-        # Deny-by-default: if no basename was recorded (legacy record from before
-        # this change), we deny rather than skip the check. Returning False here
+        # Deny-by-default: if no basename was recorded (a legacy record predating
+        # basename recording), we deny rather than skip the check. Returning False here
         # causes the caller (_kill_escaped_children) to SKIP the kill — we won't
         # SIGKILL a process we can't positively confirm is ours. This is the safe
         # direction: avoids killing a recycled PID that belongs to another user.
@@ -1359,6 +1359,16 @@ class AcpClient:
         # the later permission_request event (which carries no kind) can inherit
         # the canonical shell signal. Mirrors _tool_call_inputs lifecycle.
         self._tool_call_is_shell: dict[str, bool] = {}
+        # Map toolCallId → trusted MCP server name (_meta.kiro.mcpServerName),
+        # cached from the tool_call notification so the later permission_request
+        # event (which carries no _meta) can inherit it — the signal the
+        # app-own-server auto-approve keys on. Mirrors _tool_call_is_shell.
+        self._tool_call_mcp_server: dict[str, str] = {}
+        # Map toolCallId → trusted tool name (_meta.kiro.toolName), cached like
+        # _tool_call_mcp_server so the permission_request event can rebuild the
+        # canonical mcp__<server>__<tool> for per-tool governance in the
+        # app-own-server auto-approve.
+        self._tool_call_tool_name: dict[str, str] = {}
         # Structured raw tool params (rawInput dict) keyed by toolCallId, cached
         # from the ToolCall notification so the later request_permission event —
         # which carries only a truncated title — can recover the real path/url
@@ -2114,7 +2124,7 @@ class AcpClient:
             # how pooling takes effect without writing a spec anywhere.
             "mcpServers": [
                 *self._claude_session_mcp_servers(),
-                *self._pooled_mcp_servers(),
+                *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ],
         }
         if self._is_claude:
@@ -2227,7 +2237,7 @@ class AcpClient:
                         # resumed session keeps talking to the broker.
                         "mcpServers": [
                             *self._claude_session_mcp_servers(),
-                            *self._pooled_mcp_servers(),
+                            *(await asyncio.to_thread(self._pooled_mcp_servers)),
                         ],
                     }
                     if self._is_claude:
@@ -3110,6 +3120,8 @@ class AcpClient:
         )
         self._tool_call_inputs.clear()
         self._tool_call_is_shell.clear()
+        self._tool_call_mcp_server.clear()
+        self._tool_call_tool_name.clear()
         self._tool_call_params.clear()
         # Reset the per-turn observed-tool-call bookkeeping (see __init__).
         self._observed_tool_calls.clear()
@@ -3641,9 +3653,7 @@ class AcpClient:
 
     async def _send_prompt(self, message: str) -> int:
         # Shared with AcpSessionHandle.prompt via prompt_blocks so the two paths
-        # cannot drift. This path historically owned the ONLY image encoder,
-        # which is why images silently stopped working once AcpProvider began
-        # replacing AcpClient with AcpSessionProvider.
+        # cannot drift.
         return await self._send_request(
             METHOD_PROMPT,
             {
@@ -4084,6 +4094,12 @@ class AcpClient:
             is_shell = _is_shell_kind(kind)
             if tool_call_id:
                 self._tool_call_is_shell[tool_call_id] = is_shell
+                # Same lifecycle as is_shell: cache the trusted MCP server
+                # identity so the later permission event can inherit it.
+                self._tool_call_mcp_server[tool_call_id] = _kiro_mcp_server_name(update)
+                # Cache the trusted tool name too, so the permission event can
+                # rebuild mcp__<server>__<tool> for per-tool governance.
+                self._tool_call_tool_name[tool_call_id] = _kiro_tool_name(update)
             title = _select_tool_title(title, raw_input) or ""
             if title:
                 title, _ = redact_exfiltration_urls(title)
@@ -4190,7 +4206,7 @@ class AcpClient:
         "grep"), then a follow-up `tool_call_update` once `chunk.input` is
         fully streamed — that update carries the populated `rawInput` and a
         refined `title`/`kind` from the upstream `toolInfoFromToolUse`
-        (e.g. `"ls /local/home/hugocost/.kiro/crew/workspace"`).
+        (e.g. `"ls /local/home/user/.kiro/crew/workspace"`).
 
         We yield an EVENT_TOOL_CALL_UPDATE so the dashboard can patch the
         existing pill / persisted message in place — see the matching
@@ -4345,7 +4361,7 @@ class AcpClient:
         # the agent-influenced permission payload. Missing/empty stays "".
         tool_kind = tool_call.get("kind", "")
         # ACP spec uses optionId/name + kind ("allow_once"|"allow_always"|
-        # "reject_once"|"reject_always"); kiro-cli historically uses id/label
+        # "reject_once"|"reject_always"); kiro-cli uses id/label
         # with id values "allow_once"/"allow_always". Accept both shapes and
         # remember the actual optionIds keyed by kind so approve_tool/
         # reject_tool can echo the exact id the agent advertised.
@@ -4479,6 +4495,18 @@ class AcpClient:
             tool_call_id=tool_call_id,
             raw_tool_params=raw_params,
             is_shell=is_shell,
+            # Trusted MCP server identity recovered from the preceding tool_call
+            # (the permission payload has no _meta). .get() mirrors the is_shell
+            # cache-read; empty on a miss (fail-closed for app-own auto-approve).
+            mcp_server_name=(
+                self._tool_call_mcp_server.get(tool_call_id, "") if tool_call_id else ""
+            ),
+            # Trusted tool name recovered from the preceding tool_call, mirroring
+            # mcp_server_name — lets the app-own-server auto-approve govern the
+            # canonical mcp__<server>__<tool> on this permission path.
+            tool_name=(
+                self._tool_call_tool_name.get(tool_call_id, "") if tool_call_id else ""
+            ),
         )
 
     def _backfill_context_window(self, pct: float) -> None:

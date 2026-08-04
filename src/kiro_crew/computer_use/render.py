@@ -266,25 +266,25 @@ def _render_image_note(snap: Snapshot) -> str:
     there is no reliable way to blank a sub-rectangle of an already-encoded
     JPEG, and a partial redaction that missed would be worse than none.
 
-    A TRUNCATED walk is announced for the same reason and was not: ``capture_macos``
-    refuses on ``truncated``/``depth_truncated`` because a cut-off walk cannot prove
-    the window holds no secure field ("unknown" behaves as "present"), but this
-    function special-cased only ``has_secure`` and returned ``""`` for everything
-    else. Since truncation is the NORMAL state for a Chromium/Electron window at the
-    shipped 1200-node default, ``screenshot: true`` on Chrome or Slack silently
-    produced no image and no reason — the retry loop these notes exist to prevent.
+    A TRUNCATED walk is announced for the same reason: ``capture_macos`` refuses
+    on ``truncated``/``depth_truncated`` because a cut-off walk cannot prove the
+    window holds no secure field ("unknown" behaves as "present"). Truncation is
+    the NORMAL state for a Chromium/Electron window at the shipped 1200-node
+    default, so without this note ``screenshot: true`` on Chrome or Slack would
+    produce no image and no reason — the retry loop these notes exist to prevent.
     Checked before ``image_path`` so the explanation cannot be skipped, and after
     ``has_secure`` so a window that is both keeps the more specific reason.
 
-    **But only when an image was actually REQUESTED**, which is what
-    ``walk_budget.want_image`` answers. Every mutating action's refresh walk forces
-    ``want_image=False`` by design, and truncation is routine — so an unconditional
-    note appended "Screenshot suppressed … Re-run with a higher max_tree_nodes" to
-    every successful click on a browser window, advertising the suppression of an
-    image nobody asked for and naming an argument mutating tools do not even accept.
-    That is the same retry loop pointed the other way. ``None`` (a snapshot a backend
-    built directly, with no budget stamped) keeps the announcement, because there the
-    request is unknown and a spurious note is cheaper than a silent omission.
+    The truncation note fires **only when an image was actually REQUESTED**, which
+    is what ``walk_budget.want_image`` answers. Every mutating action's refresh
+    walk forces ``want_image=False`` by design, and truncation is routine — so an
+    unconditional note would append "Screenshot suppressed … Re-run with a higher
+    max_tree_nodes" to every successful click on a browser window, advertising the
+    suppression of an image nobody asked for and naming an argument mutating tools
+    do not even accept: the same retry loop pointed the other way. ``None`` (a
+    snapshot a backend built directly, with no budget stamped) keeps the
+    announcement, because there the request is unknown and a spurious note is
+    cheaper than a silent omission.
     """
     if snap.has_secure:
         return SECURE_WINDOW_NOTE

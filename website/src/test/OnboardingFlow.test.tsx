@@ -31,7 +31,6 @@ vi.mock('../api/client', async importOriginal => {
 
 const patchConfig = vi.mocked(api.patchConfig)
 const kirocrewConfig = vi.mocked(api.kirocrewConfig)
-const beaconStatus = vi.mocked(api.beaconStatus)
 
 const advanceToStep2 = () => {
   fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
@@ -194,7 +193,7 @@ describe('OnboardingFlow — About You step', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Developer' }))
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     // In-flight: every input frozen — changing a chip now would advance the
-    // flow with a stale value persisted (GPT round-3 race).
+    // flow with a stale value persisted.
     await screen.findByRole('button', { name: 'Saving…' })
     const designerChip = screen.getByRole('button', { name: 'UX Designer' })
     expect(designerChip).toBeDisabled()
@@ -339,8 +338,9 @@ describe('OnboardingFlow — About You step', () => {
 
   it('keeps the caret in the field while typing (focus-trap regression)', () => {
     // The dialog's focus trap re-runs whenever `finish` changes identity, which
-    // now happens on every keystroke in this field. Before initial focus was
-    // keyed to the step, the second character went to "Skip all".
+    // happens on every keystroke in this field. Initial focus is keyed to the
+    // step so the caret stays in the field instead of the second character
+    // going to "Skip all".
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     advanceToStep2()
     fireEvent.click(screen.getByRole('button', { name: 'Other' }))
@@ -384,7 +384,7 @@ describe('OnboardingFlow — About You step', () => {
   })
 })
 
-describe('OnboardingFlow — Privacy step (final)', () => {
+describe('OnboardingFlow — end of the tour', () => {
   beforeEach(() => {
     patchConfig.mockReset()
     patchConfig.mockResolvedValue({})
@@ -392,87 +392,132 @@ describe('OnboardingFlow — Privacy step (final)', () => {
     kirocrewConfig.mockResolvedValue({
       dashboard: { user_role: '', user_technical_level: '' },
     })
-    beaconStatus.mockReset()
-    beaconStatus.mockResolvedValue({
-      enabled: true,
-      would_send: true,
-      reason: 'ready',
-      endpoint_configured: true,
-      env_override: false,
-      env_var: 'KIROCREW_TELEMETRY_DISABLED',
-    })
   })
 
-  // Walk 2 → 3 → 4 → 5 → 6. The tour popovers all advance with "Next" now that
-  // privacy is the last step; only the privacy step offers "Done".
-  const advanceToPrivacy = async () => {
+  // Walk 2 → 3 → 4 → 5. Popovers 3-4 advance with "Next"; popover 5 is the last
+  // step of first run and finishes with "Done". Privacy is NOT part of this flow
+  // — it is its own chapter before Customize (see PrivacyChapter.test.tsx).
+  const advanceToLastPopover = async () => {
     advanceToStep2()
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
-    for (let i = 0; i < 3; i++) {
-      fireEvent.click(screen.getByRole('button', { name: 'Next' }))
-    }
-    expect(await screen.findByRole('heading', { name: 'Privacy' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    expect(await screen.findByText('Start your first session')).toBeInTheDocument()
   }
 
-  it('is reached after the tour and shows the disclosure plus the opt-out', async () => {
+  it('ends the tour with Done and no Skip on the last popover', async () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
-    await advanceToPrivacy()
+    advanceToStep2()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
 
-    expect(screen.getByText('Anonymous daily heartbeat')).toBeInTheDocument()
-    expect(screen.getByText('Never sent')).toBeInTheDocument()
-    expect(screen.getByText('Stays on your device')).toBeInTheDocument()
-    expect(
-      await screen.findByRole('switch', { name: 'Send anonymous usage heartbeat' }),
-    ).toBeInTheDocument()
+    // Popovers 3 and 4 keep Next + Skip.
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+    // Popover 5 is the end of the tour: Done, and Skip is gone.
+    expect(await screen.findByText('Start your first session')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Skip' })).not.toBeInTheDocument()
   })
 
-  it('the last tour popover advances to privacy instead of finishing', async () => {
+  it('Done on the last popover finishes onboarding', async () => {
     const onComplete = vi.fn()
-    renderWithProviders(<OnboardingFlow initialOpen onComplete={onComplete} />)
-    await advanceToPrivacy()
-
-    // Reaching privacy must NOT have completed onboarding — Done does that.
-    expect(onComplete).not.toHaveBeenCalled()
-  })
-
-  it('opting out from onboarding writes the beacon flag', async () => {
-    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
-    await advanceToPrivacy()
-
-    const toggle = await screen.findByRole('switch', {
-      name: 'Send anonymous usage heartbeat',
-    })
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
-    fireEvent.click(toggle)
-
-    await waitFor(() =>
-      expect(patchConfig).toHaveBeenCalledWith('telemetry.beacon_enabled', false))
-  })
-
-  it('Done finishes onboarding (the step never gates completion)', async () => {
-    const onComplete = vi.fn()
-    renderWithProviders(<OnboardingFlow initialOpen onComplete={onComplete} />)
-    await advanceToPrivacy()
+    const onSkipAll = vi.fn()
+    renderWithProviders(
+      <OnboardingFlow initialOpen onComplete={onComplete} onSkipAll={onSkipAll} />,
+    )
+    await advanceToLastPopover()
 
     fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     await waitFor(() => expect(onComplete).toHaveBeenCalled())
+    // Finishing is NOT a skip — Privacy is already behind the user here.
+    expect(onSkipAll).not.toHaveBeenCalled()
   })
 
-  it('Back returns to the last tour step', async () => {
+  // Privacy is mandatory, so every early exit has to be distinguishable from a
+  // completion: the host routes a skip back through the Privacy chapter when the
+  // user has not passed it yet (App.tsx).
+  describe('abandoning the tour reports a SKIP, not a completion', () => {
+    const cases: Array<[string, () => void]> = [
+      ['"Skip all" on the Customize modal', () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Skip all setup and onboarding' }))
+      }],
+      ['Escape on the Customize modal', () => {
+        fireEvent.keyDown(document, { key: 'Escape' })
+      }],
+    ]
+
+    it.each(cases)('%s', async (_label, abandon) => {
+      const onComplete = vi.fn()
+      const onSkipAll = vi.fn()
+      renderWithProviders(
+        <OnboardingFlow initialOpen onComplete={onComplete} onSkipAll={onSkipAll} />,
+      )
+      abandon()
+
+      await waitFor(() => expect(onSkipAll).toHaveBeenCalledTimes(1))
+      expect(onComplete).not.toHaveBeenCalled()
+    })
+
+    it('a tour popover Skip', async () => {
+      const onComplete = vi.fn()
+      const onSkipAll = vi.fn()
+      renderWithProviders(
+        <OnboardingFlow initialOpen onComplete={onComplete} onSkipAll={onSkipAll} />,
+      )
+      advanceToStep2()
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+      expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+
+      await waitFor(() => expect(onSkipAll).toHaveBeenCalledTimes(1))
+      expect(onComplete).not.toHaveBeenCalled()
+    })
+
+    // The popover steps are non-modal and have no focus trap, so Escape needs
+    // its own binding there — the rule is global, not modal-only.
+    it('Escape on a tour popover', async () => {
+      const onComplete = vi.fn()
+      const onSkipAll = vi.fn()
+      renderWithProviders(
+        <OnboardingFlow initialOpen onComplete={onComplete} onSkipAll={onSkipAll} />,
+      )
+      advanceToStep2()
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+      expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
+
+      // Twice: exiting awaits a profile PATCH, and a second Escape mid-flight
+      // must not report the skip again (the host would mark onboarded twice).
+      fireEvent.keyDown(document, { key: 'Escape' })
+      fireEvent.keyDown(document, { key: 'Escape' })
+
+      await waitFor(() => expect(onSkipAll).toHaveBeenCalledTimes(1))
+      expect(onComplete).not.toHaveBeenCalled()
+    })
+
+    it('falls back to onComplete when the host passes no skip handler', async () => {
+      const onComplete = vi.fn()
+      renderWithProviders(<OnboardingFlow initialOpen onComplete={onComplete} />)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Skip all setup and onboarding' }))
+
+      await waitFor(() => expect(onComplete).toHaveBeenCalled())
+    })
+  })
+
+  it('does not render the privacy disclosure — it is its own chapter now', async () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
-    await advanceToPrivacy()
+    await advanceToLastPopover()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
-    expect(await screen.findByText('Start your first session')).toBeInTheDocument()
-  })
-
-  it('Escape dismisses from the privacy step (modal a11y)', async () => {
-    const onComplete = vi.fn()
-    renderWithProviders(<OnboardingFlow initialOpen onComplete={onComplete} />)
-    await advanceToPrivacy()
-
-    fireEvent.keyDown(document, { key: 'Escape' })
-    await waitFor(() => expect(onComplete).toHaveBeenCalled())
+    expect(screen.queryByText('Anonymous daily heartbeat')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('switch', { name: 'Send anonymous usage heartbeat' }),
+    ).not.toBeInTheDocument()
   })
 })

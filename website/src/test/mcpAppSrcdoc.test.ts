@@ -136,8 +136,8 @@ describe('buildMcpAppSrcdoc', () => {
   })
 
   it('injects a trusted bridge-guard that signals navigation on pagehide/unload', () => {
-    // GPT 5.6 finding: without a pre-`load` signal, a navigated-to page's head
-    // script could post tools/call before the host notices the navigation.
+    // Without a pre-`load` signal, a navigated-to page's head script could post
+    // tools/call before the host notices the navigation.
     const out = buildMcpAppSrcdoc(payload())
     // Sits AFTER the CSP meta (so the policy governs it) and BEFORE app markup
     // (so its capture-phase listeners register first).
@@ -160,8 +160,8 @@ describe('buildMcpAppSrcdoc', () => {
   })
 
   it('never lets author markup precede the policy (pre-<head> resource attack)', () => {
-    // The GPT-flagged attack: resource-loading markup placed AHEAD of <head>
-    // used to parse before the spliced-in CSP. Now the meta is byte 0.
+    // Resource-loading markup placed AHEAD of <head> must not parse before the
+    // spliced-in CSP — the meta is byte 0.
     const out = buildMcpAppSrcdoc(payload({
       html: '<img src="https://evil.example/x"><head><title>t</title></head>',
     }))

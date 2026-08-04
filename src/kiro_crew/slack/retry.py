@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Transient-failure classes worth retrying. AsyncWebClient rides on aiohttp,
 # whose DNS/connector failures surface as aiohttp.ClientError subclasses (NOT
 # ConnectionError) -- without them a transient connector blip abandons the
-# DM after one attempt (GPT 5.6 PR #422 round 21).
+# DM after one attempt.
 _RETRYABLE_EXCEPTIONS = (
     SlackApiError,
     ConnectionError,

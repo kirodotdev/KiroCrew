@@ -236,6 +236,47 @@ describe('AgentImportFlow', () => {
     expect(await screen.findByText('Import complete')).toBeInTheDocument()
   })
 
+  it('treats Escape as "Skip all", not "Skip import"', async () => {
+    mockSuccessfulRequests()
+    const onComplete = vi.fn()
+    const onSkipAll = vi.fn()
+    renderWithProviders(
+      <AgentImportFlow initialOpen onComplete={onComplete} onSkipAll={onSkipAll} />,
+    )
+    await screen.findByRole('dialog', { name: 'Import agent setup' })
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    // Skipping the WHOLE flow, so the host is told to skip the remaining
+    // chapters (and route through the mandatory Privacy chapter) rather than
+    // continue into Customize as a plain "Skip import" would.
+    await waitFor(() => expect(onSkipAll).toHaveBeenCalledTimes(1))
+    expect(onComplete).not.toHaveBeenCalled()
+  })
+
+  // Both "Skip all" paths (the header control and Escape) write through
+  // skipAllMutation, whose failure was previously rendered nowhere — the dialog
+  // just stayed open in silence.
+  it('surfaces a rejected "Skip all" write instead of failing silently', async () => {
+    mockSuccessfulRequests()
+    vi.mocked(api.onboardingImportState).mockRejectedValueOnce(
+      new Error('Onboarding state service unavailable'),
+    )
+    const onSkipAll = vi.fn()
+    renderWithProviders(
+      <AgentImportFlow initialOpen onComplete={vi.fn()} onSkipAll={onSkipAll} />,
+    )
+    await screen.findByRole('dialog', { name: 'Import agent setup' })
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent('Onboarding state service unavailable')
+    // The flow stays open and does NOT report a skip it failed to persist.
+    expect(onSkipAll).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'Import agent setup' })).toBeInTheDocument()
+  })
+
   it('wraps Shift+Tab when focus starts on the dialog heading', async () => {
     mockSuccessfulRequests()
     renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)

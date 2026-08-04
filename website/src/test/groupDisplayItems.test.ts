@@ -123,9 +123,9 @@ describe('applyRunningState', () => {
   })
 
   it('reproduces the pre-split behaviour: trailing complete === !slotRunning', () => {
-    // The oracle for the refactor. Before the split, the trailing flush was
-    // `flushTurn(turnItems, !slotRunning)`; grouping now always emits `true` and
-    // this function applies the flag. Both directions must match the old form.
+    // Grouping always emits `complete: true` and this function applies the flag,
+    // so the trailing turn's `complete` must equal `!slotRunning` in both
+    // directions.
     const g = grouped()
     for (const slotRunning of [true, false]) {
       const out = applyRunningState(g, slotRunning)

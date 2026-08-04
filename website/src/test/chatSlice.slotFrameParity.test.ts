@@ -4,14 +4,14 @@ import type { ChatMessage } from '../types'
 import './mockApiClient'
 
 /**
- * Contract test for the two hand-synced chat-frame appliers (zejiangg rev-4
- * review). The active-slot path (`sseChatMessage`) and the non-active grid-pane
- * path (`applyNonActiveFrame`, reached by dispatching `sseChatMessage` for a
- * slot that is NOT the focused slot) must shape a representative frame sequence
- * into IDENTICAL message arrays. This pins the two paths so a future frame-kind
- * change to only one is caught by CI — e.g. the thinking-drop divergence fixed
- * alongside this test, where the non-active path dropped ALL thinking blocks
- * while the active path drops only the empty placeholder.
+ * Contract test for the two hand-synced chat-frame appliers. The active-slot
+ * path (`sseChatMessage`) and the non-active grid-pane path
+ * (`applyNonActiveFrame`, reached by dispatching `sseChatMessage` for a slot
+ * that is NOT the focused slot) must shape a representative frame sequence into
+ * IDENTICAL message arrays. This pins the two paths so a future frame-kind
+ * change to only one is caught by CI — e.g. a thinking-drop divergence where
+ * the non-active path drops ALL thinking blocks while the active path drops
+ * only the empty placeholder.
  */
 
 const SLOT = 'grid-slot'

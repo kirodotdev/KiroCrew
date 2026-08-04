@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 from unittest.mock import MagicMock, patch
@@ -72,6 +73,19 @@ def _make_app(
     return app
 
 
+# conftest's autouse ``_git_identity`` closes the identity + host-``~/.gitconfig``
+# bleeds, but it is FUNCTION-scoped, so the session-scoped template builder below runs
+# before it. Pin the same env here so the template is hermetic at either scope.
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "Test",
+    "GIT_AUTHOR_EMAIL": "test@example.com",
+    "GIT_COMMITTER_NAME": "Test",
+    "GIT_COMMITTER_EMAIL": "test@example.com",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+}
+
+
 def _git(*args: str, cwd) -> None:
     subprocess.run(
         ["git", *args],
@@ -79,6 +93,7 @@ def _git(*args: str, cwd) -> None:
         check=True,
         capture_output=True,
         text=True,
+        env={**os.environ, **_GIT_ENV},
     )
 
 
@@ -124,23 +139,44 @@ def _passthrough_spawn(argv, mode="standard", **kw):
     return list(argv), {}, None
 
 
+@pytest.fixture(scope="session")
+def _repo_template(tmp_path_factory):
+    """Build the one-commit git repo once per session; `repo` copies it per test.
+
+    The five git subprocesses below cost ~1s of setup on each of the 81 tests here,
+    which made this the heaviest file on the slowest CI shard.
+
+    Session scope is safe because the template is never handed to a test, only copied
+    from, so a test that adds a worktree, branch or commit cannot reach another's.
+    """
+    template = tmp_path_factory.mktemp("worktree-seed") / "proj"
+    template.mkdir()
+    _git("init", "-q", "-b", "main", cwd=template)
+    _git("config", "user.email", "test@example.com", cwd=template)
+    _git("config", "user.name", "Test", cwd=template)
+    (template / "README.md").write_text("hi\n")
+    _git("add", "README.md", cwd=template)
+    _git("commit", "-q", "-m", "init", cwd=template)
+    return template
+
+
 @pytest.fixture
-def repo(tmp_path):
+def repo(tmp_path, request):
     """A minimal git repo with one commit on branch `main`.
 
     Requests :func:`sandbox_can_exec` so every git-touching test skips (rather
     than fails) on a host where isolation cannot be established — see that
     fixture for why the backend probe is not sufficient.
+
+    The template is resolved through ``request.getfixturevalue`` AFTER that skip
+    check, not as a parameter: pytest sets a declared fixture up before the body
+    runs, which would build the template on a host that then skips every test using
+    it -- turning a clean skip into five pointless git spawns (or a hard error where
+    git is unusable).
     """
     _require_sandbox_exec()
     root = tmp_path / "proj"
-    root.mkdir()
-    _git("init", "-q", "-b", "main", cwd=root)
-    _git("config", "user.email", "test@example.com", cwd=root)
-    _git("config", "user.name", "Test", cwd=root)
-    (root / "README.md").write_text("hi\n")
-    _git("add", "README.md", cwd=root)
-    _git("commit", "-q", "-m", "init", cwd=root)
+    shutil.copytree(request.getfixturevalue("_repo_template"), root)
     return root
 
 

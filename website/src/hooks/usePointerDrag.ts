@@ -2,8 +2,7 @@ import { useCallback, useRef } from 'react'
 
 /**
  * Apple "Designing Fluid Interfaces" physics helpers + a shared Pointer-Events
- * drag hook. Replaces the ad-hoc `onMouseDown` + `document` mousemove/mouseup
- * resizers scattered across the app with one implementation that:
+ * drag hook — one implementation for resizers across the app that:
  *   - works on touch as well as mouse (Pointer Events + setPointerCapture),
  *   - tracks release velocity (for momentum handoff),
  *   - applies a movement threshold before committing to a drag (hysteresis),

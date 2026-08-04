@@ -1,9 +1,9 @@
 // Shared geometry + bottom-up ordering for the anchored input pickers
 // ($skill → SkillPickerMenu, @file → FilePickerMenu, /command → SlashCommandMenu).
 //
-// These three menus repeatedly drifted (different above/below math, only some
-// populating bottom-up, only some scrolling the selection into view). Centralize
-// the two drift-prone pieces here so they stay in lockstep:
+// Centralizing the two drift-prone pieces here keeps the three menus in
+// lockstep — otherwise they diverge on above/below math, bottom-up population,
+// and scrolling the selection into view:
 //   1. menuGeometry — where the menu opens relative to the anchored input.
 //   2. bottomUpOrder — display order + initial selection when it opens above.
 // Keyboard nav + scroll-into-view live in the shared useListKeyboardNav hook.

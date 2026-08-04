@@ -23,7 +23,7 @@ import botocore.exceptions
 BUCKET = os.environ["BUCKET"]
 DIST_ID = os.environ["DIST_ID"]
 
-# F7a (R9): Validate manifest-sourced resource IDs before destructive calls.
+# Validate manifest-sourced resource IDs before destructive calls.
 _RE_DIST_ID = re.compile(r"^[A-Z0-9]+$")
 _RE_STACK_NAME = re.compile(r"^[a-zA-Z][a-zA-Z0-9-]*$")
 _RE_BUCKET_NAME = re.compile(r"^[a-z0-9.\-]{3,63}$")
@@ -42,7 +42,7 @@ def _valid_bucket_name(v: str) -> bool:
 
 
 def _oac_name_ok(oac_resp, slug_val):
-    """R18 F3: manifest ``oac_id`` is attacker-writable (anyone who can write
+    """Manifest ``oac_id`` is attacker-writable (anyone who can write
     a deploy manifest). Only delete an OAC whose Name matches THIS
     deployment's exact pattern -- otherwise skip and log."""
     name = (oac_resp.get("OriginAccessControl", {})
@@ -120,7 +120,7 @@ def _detach(slug):
 
 
 def _stack_site_tag_ok(name, slug):
-    """R21 F1: a stack may only be deleted when its kirocrew:site tag equals
+    """A stack may only be deleted when its kirocrew:site tag equals
     the slug being reaped (deploy-backend.sh tags stacks at creation). Missing
     or mismatched tag means the stack is not provably this deployment's."""
     try:
@@ -139,7 +139,7 @@ def _stack_site_tag_ok(name, slug):
 
 
 def _quarantine_manifest(slug):
-    """R24: move an identity-mismatched (untrusted) manifest out of the sweep
+    """Move an identity-mismatched (untrusted) manifest out of the sweep
     path so the reaper stops re-processing it every run. The manifest content
     is preserved under _quarantine/ for forensics; the mismatched
     infrastructure itself is left untouched."""
@@ -194,7 +194,7 @@ def _reap_engine_arch(man, slug, now):
 
     Returns: "reaped" if fully cleaned up, "reaping" if distribution still disabling (retry next sweep).
     """
-    # R20 F2: the manifest body is attacker-writable; a manifest whose own
+    # The manifest body is attacker-writable; a manifest whose own
     # "slug" field disagrees with the S3 prefix it lives under is forged —
     # refuse all destructive work and stop retrying.
     man_slug = man.get("slug", "")
@@ -202,12 +202,12 @@ def _reap_engine_arch(man, slug, now):
         print(json.dumps({"engine_reap_slug_mismatch": slug, "manifest_slug": man_slug}))
         _quarantine_manifest(slug)
         return "reaped"
-    # F4: oac_pending — distribution/bucket already gone, only OAC remains.
+    # oac_pending — distribution/bucket already gone, only OAC remains.
     if man.get("oac_pending"):
         oac_id = man.get("oac_id", "")
         if oac_id:
             try:
-                # F3 (R8): IfMatch ETag is REQUIRED by the CloudFront API.
+                # IfMatch ETag is REQUIRED by the CloudFront API.
                 oac_resp = cf.get_origin_access_control(Id=oac_id)
                 if not _oac_name_ok(oac_resp, slug):
                     print(json.dumps({"engine_reap_oac_name_mismatch": slug,
@@ -235,7 +235,7 @@ def _reap_engine_arch(man, slug, now):
     dist_id = man.get("distribution_id", "")
     site_bucket = man.get("bucket", "")
 
-    # F7a (R9): Validate manifest-sourced resource IDs before destructive calls.
+    # Validate manifest-sourced resource IDs before destructive calls.
     if dist_id and not _valid_dist_id(dist_id):
         print(json.dumps({"engine_reap_invalid_dist_id": slug, "dist_id": dist_id}))
         return "reaping"
@@ -244,7 +244,7 @@ def _reap_engine_arch(man, slug, now):
         return "reaping"
 
     if dist_id:
-        # R19 F4: verify kirocrew:site tag matches the slug being reaped BEFORE
+        # Verify kirocrew:site tag matches the slug being reaped BEFORE
         # any destructive operation. The tag VALUE is the site_id (NOT "true" —
         # that's on kirocrew:managed). engine.py sets this at creation via
         # create-distribution-with-tags.
@@ -256,7 +256,7 @@ def _reap_engine_arch(man, slug, now):
             dist_arn = f"arn:aws:cloudfront::{account_id}:distribution/{dist_id}"
             tag_resp = cf.list_tags_for_resource(Resource=dist_arn)
             tags = {t["Key"]: t["Value"] for t in tag_resp.get("Tags", {}).get("Items", [])}
-            # R20 F2: authorize against the S3 prefix slug ONLY — the
+            # Authorize against the S3 prefix slug ONLY — the
             # manifest body is attacker-writable and must not choose
             # which deployment's resources the reaper targets.
             expected_site = slug
@@ -342,12 +342,12 @@ def _reap_engine_arch(man, slug, now):
         if not _owner:
             print(json.dumps({"engine_reap_no_account_id": slug, "bucket": site_bucket}))
             return "reaping"
-        # R19 F4: verify kirocrew:site tag matches the slug being reaped.
+        # Verify kirocrew:site tag matches the slug being reaped.
         # engine.py tags buckets at creation: kirocrew:site=<site_id>.
         try:
             bucket_tag_resp = s3.get_bucket_tagging(Bucket=site_bucket, ExpectedBucketOwner=_owner)
             bucket_tags = {t["Key"]: t["Value"] for t in bucket_tag_resp.get("TagSet", [])}
-            # R20 F2: authorize against the S3 prefix slug ONLY — the
+            # Authorize against the S3 prefix slug ONLY — the
             # manifest body is attacker-writable and must not choose
             # which deployment's resources the reaper targets.
             expected_site = slug
@@ -363,7 +363,7 @@ def _reap_engine_arch(man, slug, now):
             if code == "NoSuchBucket":
                 pass  # Already gone — skip bucket cleanup
             elif code == "NoSuchTagSet":
-                # R27 F1: missing tags = identity verification FAILURE, not a
+                # Missing tags = identity verification FAILURE, not a
                 # legacy pass. A name-prefix check alone lets a forged manifest
                 # point at any untagged kirocrew-web-* bucket (e.g. someone
                 # else's half-created deployment) and have it emptied+deleted.
@@ -395,15 +395,15 @@ def _reap_engine_arch(man, slug, now):
                 print(json.dumps({"engine_reap_bucket_error": slug, "error": str(e)}))
                 return "reaping"
 
-    # F7: Delete the OAC associated with this deployment (prevents quota exhaustion).
+    # Delete the OAC associated with this deployment (prevents quota exhaustion).
     # The OAC id may be stored in the manifest (new deployments); for older manifests
     # without it, fall back to listing OACs and matching the engine naming pattern.
     oac_id = man.get("oac_id", "")
     if not oac_id:
         # Resolve by name prefix (engine.py names OACs: "deploy-web-<site_id>"[:57] + "-" + hex)
-        # R20 F2: prefix slug only — never the manifest-supplied slug.
+        # Prefix slug only — never the manifest-supplied slug.
         site_id_val = slug
-        # R13 F4: EXACT name pattern — a bare prefix match cross-matches
+        # EXACT name pattern — a bare prefix match cross-matches
         # overlapping slugs (site "app" would match "app-v2"'s OAC named
         # deploy-web-app-v2-xxxxxx), deleting the wrong OAC and orphaning the
         # right one. Names are deploy-web-<site>[:57] + "-" + 6 hex (engine.py).
@@ -420,9 +420,9 @@ def _reap_engine_arch(man, slug, now):
 
     if oac_id:
         try:
-            # F3 (R8): IfMatch ETag is REQUIRED by the CloudFront API.
+            # IfMatch ETag is REQUIRED by the CloudFront API.
             oac_resp = cf.get_origin_access_control(Id=oac_id)
-            # R18 F3: manifest oac_id is attacker-writable -- verify name.
+            # Manifest oac_id is attacker-writable -- verify name.
             if not _oac_name_ok(oac_resp, slug):
                 print(json.dumps({"engine_reap_oac_name_mismatch": slug,
                                   "oac_id": oac_id}))
@@ -529,7 +529,7 @@ def handler(event, context):
             elif status == "DELETE_FAILED":
                 # Retry the stack deletion — CloudFormation may succeed on the
                 # next attempt (e.g. after a transient resource dependency clears).
-                # R21 F1: re-verify stack identity before the retry (the
+                # Re-verify stack identity before the retry (the
                 # reaping marker is manifest-writable).
                 if not _stack_site_tag_ok(stack_name, slug):
                     pending.append(slug)
@@ -596,9 +596,9 @@ def handler(event, context):
             continue
 
         if has_stack:
-            # R21 F1: verify the stack's kirocrew:site tag matches the slug
+            # Verify the stack's kirocrew:site tag matches the slug
             # being reaped BEFORE deletion — same identity gate as the
-            # engine-arch path (R19 F4). deploy-backend.sh tags stacks at
+            # engine-arch path. deploy-backend.sh tags stacks at
             # creation (kirocrew:site=<slug>); a stack without a matching tag
             # is not provably this deployment's — skip destructive ops.
             if stack_tags.get("kirocrew:site") != slug:
@@ -607,7 +607,7 @@ def handler(event, context):
                     "stack": stack_name,
                     "actual": stack_tags.get("kirocrew:site", "<missing>"),
                 }))
-                # R24: quarantine the untrusted manifest so the sweep stops
+                # Quarantine the untrusted manifest so the sweep stops
                 # re-processing it; the mismatched stack is left untouched.
                 _quarantine_manifest(slug)
                 continue

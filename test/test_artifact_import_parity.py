@@ -96,16 +96,23 @@ def test_accept_attribute_covers_every_importable_extension() -> None:
 
 
 def test_locale_catalogs_all_carry_the_new_keys() -> None:
-    """Every shipped catalog must define the Add Artifact strings.
+    """Every shipped catalog must define the library's add/create strings.
 
     A missing key renders English inside an otherwise-translated page. The
     frontend's own ``catalogParity`` suite enforces this too; this assertion
     keeps the backend suite from being the only thing a Python-only change
     runs, since the strings and the map ship together.
+
+    ``add_artifact`` is deliberately absent: the toolbar button it labelled was
+    replaced by the ``New Artifact`` split button, leaving the key with no call
+    site. It was removed rather than kept as dead copy, which is why the
+    frontend's dead-key baseline still holds. The file import it fronted lives
+    on under ``import_from_a_file``, asserted below.
     """
     locales = _MODULE.parents[1] / "i18n" / "locales"
     expected = {
-        "add_artifact",
+        "new_artifact",
+        "import_from_a_file",
         "add_a_file_from_your_computer_to_the_library",
         "add_artifact_error_unsupported_type",
         "add_artifact_error_too_large",

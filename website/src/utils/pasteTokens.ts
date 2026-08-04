@@ -164,7 +164,7 @@ export function expandAll(text: string, blocks: PasteBlock[]): string {
  * which are absent on a fresh tab or after the side-table evicts the entry.
  * When that happens a multi-hundred-KB paste is otherwise handed raw to the
  * markdown renderer, which parses + lays out tens of thousands of lines on the
- * main thread and freezes the tab (Mesh: big-paste chat freeze). Because the
+ * main thread and freezes the tab. Because the
  * blocks travel with the message, re-collapse can be derived deterministically
  * from `content` + `meta.pastes` with no external state.
  *

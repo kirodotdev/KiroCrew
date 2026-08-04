@@ -121,6 +121,14 @@ src/kiro_crew/cloud/ssm.py:.*docs\.aws\.amazon\.com
 # anywhere in this file is still caught.
 CODE_OF_CONDUCT.md:.*opensource-codeofconduct@amazon\.com
 
+# Security-issue intake contact. ``kiro-crew-security-support@amazon.com`` is the
+# monitored shared mailbox that receives vulnerability reports; the project-domain
+# address it replaces is not a monitored inbox. Like the code-of-conduct address
+# above it is a published, public-facing intake — SECURITY.md is unusable without
+# naming where reports go — not an employee alias or an internal coupling.
+# Line-anchored so a NEW @amazon.com address anywhere in this file is still caught.
+SECURITY.md:.*kiro-crew-security-support@amazon\.com
+
 # Live public AWS service class-name string the dashboard credit pill calls
 # (CodeWhisperer RTS GetUsageLimits) — a functional API identifier, not a leak.
 src/kiro_crew/dashboard/handlers/kiro_usage_api.py:.*codewhisperer

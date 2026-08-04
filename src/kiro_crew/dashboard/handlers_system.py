@@ -25,11 +25,12 @@ from aiohttp import web
 
 import kiro_crew
 from kiro_crew import platform_compat
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.embeddings import get_shared_embedder, model_file_present
 from kiro_crew.platform import current_context
-from kiro_crew.safety_override import safety_override
+from kiro_crew.safety_override import safety_override, until_shutdown_permitted
 from kiro_crew.stats import Stats
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,27 @@ def _get_telemetry_salt() -> bytes:
         return _IN_MEMORY_SALT
 
 
+def _yolo_duration_fields() -> tuple[str, bool]:
+    """``(configured_duration, until_shutdown_permitted)`` for the Settings card.
+
+    BOTH values touch the filesystem — the config read and the governance profile
+    resolution (``iterdir``/``stat`` over the profiles dir) — so this runs in a
+    worker thread, never on the event loop. ``/api/status`` is polled
+    continuously; doing this inline stalls the whole gateway on a slow home.
+    """
+    try:
+        label = str(KiroCrewConfig.load().agent.yolo_duration)
+    except Exception:
+        logger.debug("could not read agent.yolo_duration for status", exc_info=True)
+        label = "6h"
+    try:
+        permitted = bool(until_shutdown_permitted())
+    except Exception:
+        logger.debug("could not resolve until_shutdown permission", exc_info=True)
+        permitted = True
+    return label, permitted
+
+
 async def api_status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     uptime = time.time() - state.start_time
@@ -153,6 +175,8 @@ async def api_status(request: web.Request) -> web.Response:
         except Exception:
             owner_hash = "unknown"
     so_status = safety_override().status()
+    # Off-loop: both values hit the filesystem (see _yolo_duration_fields).
+    yolo_duration, until_shutdown_ok = await asyncio.to_thread(_yolo_duration_fields)
     data.update(
         {
             "uptime_secs": int(uptime),
@@ -167,6 +191,14 @@ async def api_status(request: web.Request) -> web.Response:
             "yolo_active": so_status.active,
             "yolo_expires_at": so_status.expires_at_iso or "",
             "yolo_remaining_secs": so_status.remaining_secs,
+            # True when the live grant has no timed expiry at all (declared in
+            # config, or ad-hoc under yolo_duration: until_shutdown).
+            # ``yolo_remaining_secs`` is -1 and ``yolo_expires_at`` empty then.
+            "yolo_until_shutdown": so_status.permanent,
+            # The configured ad-hoc duration, and whether policy allows the
+            # no-timed-expiry option — the Settings card lock-badges it when not.
+            "yolo_duration": yolo_duration,
+            "yolo_until_shutdown_permitted": until_shutdown_ok,
             "owner_id_hash": owner_hash,
             "os_type": static_info.get("os", ""),
             "arch": static_info.get("arch", ""),

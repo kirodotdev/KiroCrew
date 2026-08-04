@@ -184,11 +184,12 @@ function inSchedulePositionEn(lower: string, start: number, word: string): boole
  * How many characters of marker sit directly before a day part, so the span can
  * swallow them.
  *
- * Blanking only the day part leaves its introducer stranded in the saved text:
- * "this evening call dad" became "this call dad", and "take pills in the morning"
- * became "take pills in the". The marker is part of the time phrase, so it belongs
- * inside the span. Harmless when it overlaps another span -- `cleanText` blanks
- * ranges, so overlapping with e.g. the "tomorrow" span is idempotent.
+ * Blanking only the day part would leave its introducer stranded in the saved
+ * text: "this evening call dad" would become "this call dad", and "take pills in
+ * the morning" would become "take pills in the". The marker is part of the time
+ * phrase, so it belongs inside the span. Harmless when it overlaps another span --
+ * `cleanText` blanks ranges, so overlapping with e.g. the "tomorrow" span is
+ * idempotent.
  */
 function markerWidthBefore(lower: string, start: number): number {
   const m = lower.slice(0, start).match(EN_DAY_MARKER)
@@ -247,10 +248,10 @@ function findClock(lower: string): ClockHit | null {
     meridiem nor minutes is NOT a clock — otherwise "every 2 hours" would read the
     2 as a time.
 
-    Scan ALL candidates rather than testing only the first. A single match() stopped
-    at the earliest number-shaped thing and gave up, so any reminder that opens with
-    a quantity lost its time entirely: "take 2 pills every day at 3pm" matched the
-    bare `2`, failed the shape test, returned null, and never saw 3pm.
+    Scan ALL candidates rather than testing only the first. Testing only the first
+    stops at the earliest number-shaped thing, so any reminder that opens with a
+    quantity loses its time entirely: "take 2 pills every day at 3pm" matches the
+    bare `2`, fails the shape test, and never sees 3pm.
   */
   const re = /\b(?:(at)\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/g
   for (const m of lower.matchAll(re)) {
@@ -422,9 +423,9 @@ function parseZh(original: string, now: Date, fallbackText: string): ParsedRemin
 
   /*
     Same rule as the English path above: a clock, a delay or an interval is a
-    schedule; anything else is not. `hasSignal` alone was too weak, because a
-    zero-offset day marker (今天) is a signal that carries NO time — it slipped
-    through and fell out of the branch chain below onto an invented default.
+    schedule; anything else is not. `hasSignal` alone is too weak, because a
+    zero-offset day marker (今天) is a signal that carries NO time — it would slip
+    through and fall out of the branch chain below onto an invented default.
 
     needsSchedule's own contract is that the caller asks rather than the parser
     guessing, so both languages must agree on this condition or one of them
@@ -465,9 +466,9 @@ function parseZh(original: string, now: Date, fallbackText: string): ParsedRemin
       每2小时 does not fire the moment you press Enter.
 
       everyMinutes is non-null here by the zhHasSchedule guard above — every other
-      branch of that guard is handled by an earlier arm of this chain. The old
-      `?? 60` was the invented one-hour default that made 今天提醒我买牛奶 schedule
-      itself silently; there is deliberately no fallback now.
+      branch of that guard is handled by an earlier arm of this chain. There is
+      deliberately no fallback default (an invented one-hour default would make
+      今天提醒我买牛奶 schedule itself silently).
     */
     fireAt = new Date(now.getTime() + parts.everyMinutes! * 60_000)
   }

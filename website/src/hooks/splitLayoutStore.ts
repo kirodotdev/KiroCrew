@@ -10,8 +10,8 @@ import { safeSetItem } from '../utils/safeStorage'
  * refresh, and a member slot opened on its own shows a "return to split" hint.
  *
  * Keyed by anchor = the FIRST session leaf's slot of the tree (the session you
- * ⌘D'd from). This is per-slot, NOT one global blob — that global blob was the
- * original bug (entering split replayed an unrelated saved layout). A layout only
+ * ⌘D'd from). This is per-slot, NOT one global blob — a single global blob would
+ * replay an unrelated saved layout when entering a split. A layout only
  * counts as a real split when it holds >= 2 session panes; anything less dissolves.
  */
 

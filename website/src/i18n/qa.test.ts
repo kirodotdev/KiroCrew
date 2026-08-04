@@ -23,22 +23,19 @@
  * suite is a **ratchet**: it fails when a check gets worse and tolerates the frozen
  * debt.
  *
- * This gate shipped as a frozen set of `lang:key` sites in `qa-allowlist.json`,
- * guarded in both directions: a new site failed, and so did an entry that no longer
- * matched a real violation. That is the strictest useful shape and it is the shape
- * to come back to. It is also unworkable while the backfill is in flight, for two
- * reasons that together serialised every open i18n pull request:
+ * The enforced unit is a **count per check**, and only an INCREASE fails; a decrease
+ * needs no edit anywhere. A frozen set of `lang:key` sites (a per-site allowlist) is
+ * the strictest useful shape and the one to return to once the backfill is done, but
+ * it is unworkable while the backfill is in flight, for two reasons:
  *
- * 1. **The staleness guard failed on improvement.** Fixing a string invalidated its
- *    entry, so the change had to regenerate the whole 948-line sorted list. Two
- *    branches that fixed *disjoint* strings still collided textually in that one
- *    file, and each merge invalidated every other open branch.
- * 2. **A key rename read as a brand-new violation.** Phase 3 collapses fragment
- *    keys, so a still-unbalanced string arrives under a new key and trips the
+ * 1. **A staleness guard fails on improvement.** Fixing a string invalidates its
+ *    entry, forcing a regenerate of the whole sorted list, so two changes fixing
+ *    *disjoint* strings collide textually in that one file.
+ * 2. **A key rename reads as a brand-new violation.** Phase 3 collapses fragment
+ *    keys, so a still-unbalanced string arrives under a new key and would trip a
  *    "no NEW violations" assertion even though nothing got worse.
  *
- * So the enforced unit is a **count per check**, and only an INCREASE fails. A
- * decrease needs no edit anywhere — that is what removes the contention.
+ * A count sidesteps both: a decrease is silent, so disjoint fixes never contend.
  *
  * **The ultimate goal is zero for every one of these numbers.** That is what makes the
  * relaxation converge instead of rot: a ceiling of 0 has nothing left to decrease, so
@@ -58,10 +55,10 @@
  *
  *     I18N_QA_REPORT=1 npx vitest run src/i18n/qa.test.ts
  *
- * prints every live violation site per check. The allowlist was also the worklist
- * for the cleanup, so that view has to stay available without a committed file to
- * go stale. The check predicates live in `scripts/lib/qa-checks.mjs` and nowhere
- * else, so this report and the diff-scoped gate cannot drift apart.
+ * prints every live violation site per check — the worklist for the cleanup, kept
+ * available without a committed file that could go stale. The check predicates live
+ * in `scripts/lib/qa-checks.mjs` and nowhere else, so this report and the diff-scoped
+ * gate cannot drift apart.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -81,10 +78,9 @@ import { CHECKS, flatten, site } from '../../scripts/lib/qa-checks.mjs'
 const GENERATED = new Set(SUPPORTED_LANGUAGES.filter(l => l.devOnly).map(l => l.code))
 
 /**
- * Frozen debt per check, measured on `main` at the commit that replaced the per-site
- * allowlist. Lower a number when a backfill lands if you want the tighter gate
- * immediately — but you are never *obliged* to, and that is the whole point: a
- * decrease is silent, so two branches fixing disjoint strings do not collide here.
+ * Frozen debt per check. Lower a number when a backfill lands if you want the tighter
+ * gate immediately — but you are never *obliged* to, and that is the whole point: a
+ * decrease is silent, so two changes fixing disjoint strings do not collide here.
  *
  * Raising a number is the reviewable act. It means new malformed copy shipped.
  */
@@ -167,11 +163,10 @@ describe('catalog QA', () => {
  * The detectors themselves, tested on synthetic values.
  *
  * A per-file ratchet over real catalogs cannot tell "this check is correct" from "this
- * check never fires": both look green. `odd-quote-count` shipped as a parity test over
- * the SUM of both curly directions, which passes on any even total — so `“click “here`,
- * two opening quotes and no closing one, was reported as balanced. That is a false
- * negative a catalog-driven test can never surface, because the catalog does not happen
- * to contain the case.
+ * check never fires": both look green. A parity test over the SUM of both curly
+ * directions passes on any even total — so `“click “here`, two opening quotes and no
+ * closing one, would read as balanced. That is a false negative a catalog-driven test
+ * can never surface, because the catalog does not happen to contain the case.
  */
 describe('catalog QA detectors', () => {
   const check = (id: string) => {

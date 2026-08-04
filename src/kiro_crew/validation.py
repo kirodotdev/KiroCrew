@@ -76,7 +76,7 @@ _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 # lowercase hex chars. This value flows into hmac.compare_digest at the
 # persona-injection site (chat_utils._maybe_inject_persona); compare_digest
 # raises TypeError on any non-ASCII str (e.g. "é"), which would abort the whole
-# chat turn (GPT HIGH). Validating full-match here means anything malformed is
+# chat turn. Validating full-match here means anything malformed is
 # treated as ABSENT (fail closed: no injection, no crash). \Z (not $) anchors
 # the true end of the string so a trailing newline can't sneak through.
 THEME_CONSENT_SHA_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -114,7 +114,7 @@ USER_MAX_LEN = 20
 
 # Slack thread/message timestamp (e.g. "1781215864.487849"): a 10+ digit epoch
 # seconds component, a dot, then 6+ digits of sub-second precision. Slack
-# threads now key their session off the canonical namespaced form
+# threads key their session off the canonical namespaced form
 # ``slack:<thread_ts>`` (see messaging/link.py and slack/handler.py), but the
 # legacy bare thread_ts form persists in older session maps, conversation logs,
 # and callers — distinct from the "slack:<chan>:<ts>" delivery-target form —
@@ -137,9 +137,8 @@ def infer_use_case(session_key: str) -> str:
     matching on the session key; lives here next to ``SLACK_THREAD_TS_RE`` so
     authorization (learn_add) and classification stay in lockstep.
 
-    Phase 1 limitations: ``cli_chat`` and ``_bg`` collapse multiple
-    invocations into one session each. Both can be fixed in a follow-up
-    by appending a ``:<uuid>`` suffix at the entry point.
+    Limitations: ``cli_chat`` and ``_bg`` collapse multiple
+    invocations into one session each.
     """
     if not session_key:
         return "unknown"
@@ -860,7 +859,7 @@ def sanitize_response(text: str, max_len: int = MAX_RESPONSE_LEN) -> str:
     if len(text) > max_len:
         # Truncation drops the TAIL, and tail-anchored payloads live there —
         # a session directive's marker is the last line, so a response over the
-        # cap loses its effect entirely. Never silent (#755).
+        # cap loses its effect entirely. Never silent.
         logging.getLogger(__name__).warning(
             "tool response truncated: %d chars over the %d cap — a "
             "tail-anchored marker (e.g. a session directive) would be lost",
@@ -971,9 +970,7 @@ LEARN_ADD_SCHEMA = ToolSchema(
         FieldSpec("category", str, allowed=ALLOWED_LESSON_CATEGORIES, default="knowledge"),
         FieldSpec("negative", str, max_len=MAX_SHORT_STRING),
         # scope/workspace: the learn_add MCP tool (mcp_core.py) and the
-        # /api/lessons handler already support workspace-scoped lessons; this
-        # schema was created before that feature landed and never listed them,
-        # so unknown-field rejection blocked the params. The "workspace
+        # /api/lessons handler support workspace-scoped lessons. The "workspace
         # required when scope='workspace'" rule is enforced in the handler.
         FieldSpec("scope", str, allowed=ALLOWED_LESSON_SCOPES, default="global"),
         FieldSpec("workspace", str, max_len=MAX_SHORT_STRING, pattern=WORKSPACE_NAME_RE),
@@ -1144,14 +1141,14 @@ FOLLOWUP_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Z
 # it: ``foo..bar``, a component ending in ``.``, a component ending in ``.lock``,
 # and the reserved name ``HEAD``. git rejects all four, but only AFTER the branch
 # has been claimed and the destination derived — the user then sees a misleading
-# "Branch already exists" (GPT review, PR #461 round 9). Rejected up front
+# "Branch already exists". Rejected up front
 # instead, per component so ``feat/x.lock`` is caught as well as ``x.lock``.
 _GIT_RESERVED_REFS = frozenset({"HEAD"})
 
 # Windows reserved device names. A branch is a loose ref FILE
 # (`.git/refs/heads/<component>`), and Windows cannot create a file whose stem is
 # a device name — so `feat/CON` claims fine but the checkout fails, surfacing as
-# a false "Branch already exists" (GPT review, PR #461 round 10). Rejected on every
+# a false "Branch already exists". Rejected on every
 # platform so the grammar does not depend on where the gateway runs.
 _WINDOWS_DEVICE_STEMS = frozenset(
     {"con", "prn", "aux", "nul"}
@@ -1337,7 +1334,7 @@ _WM_LIST_CAP = 50
 def _validate_webapp_metadata_shape(am: dict) -> None:
     """Validate webapp_metadata nested structure — tolerant for absent fields."""
     # app_dir — LLM-controlled filesystem path consumed by the local preview
-    # channel (round-3 F1). Reject control characters (NUL crashes
+    # channel. Reject control characters (NUL crashes
     # Path.resolve with ValueError) and relative paths at WRITE time; the
     # serve path re-validates against the allow-listed roots regardless.
     app_dir = am.get("app_dir")
@@ -1372,7 +1369,7 @@ def _validate_webapp_metadata_shape(am: dict) -> None:
                     "webapp_metadata.deploy_target.public_url",
                     "must be a valid http(s) URL (max 2048 chars)",
                 )
-            # R21 F2: reject Basic-auth userinfo (https://user:pass@host) —
+            # Reject Basic-auth userinfo (https://user:pass@host) —
             # the regex above accepts it, and a credential-bearing URL would
             # be surfaced/linked by the dashboard, transmitting the embedded
             # credentials to the host when opened.
@@ -1416,7 +1413,7 @@ def _validate_webapp_metadata_shape(am: dict) -> None:
         if not isinstance(lc, dict):
             raise ValidationError("webapp_metadata.lifecycle", "must be a dict")
         status = lc.get("status")
-        # R17 F3: require a string BEFORE the enum membership test — an
+        # Require a string BEFORE the enum membership test — an
         # unhashable value (list/dict) raises TypeError inside `in` and
         # turns artifact save/update into a 500.
         if status is not None and not isinstance(status, str):
@@ -1941,6 +1938,23 @@ REGISTER_HOOK_SCHEMA = ToolSchema(
     ],
 )
 
+# select_crew: `crew` is optional — omitted/empty returns the roster. When
+# present it is NOT pattern-validated here: crew creation only strips the name
+# (agents.py), so names may contain spaces/dots; the deny-by-default gate is the
+# `crew not in cfg.agents` membership check in _do_select_crew, not a regex.
+SELECT_CREW_SCHEMA = ToolSchema(
+    tool_name="select_crew",
+    fields=[
+        FieldSpec(
+            "crew",
+            str,
+            required=False,
+            max_len=MAX_SHORT_STRING,
+            default="",
+        ),
+    ],
+)
+
 # ── Tool Schemas (Slack Reactions) ──
 
 # Slack emoji names: alphanumeric, underscores, hyphens, and plus signs
@@ -2052,13 +2066,12 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "artifact_folder_move": ARTIFACT_FOLDER_MOVE_SCHEMA,
     "artifact_folder_delete": ARTIFACT_FOLDER_DELETE_SCHEMA,
     "artifact_move": ARTIFACT_MOVE_SCHEMA,
-    # These tools validate their args internally via validate_tool_args(), but
-    # were absent from this registry — so the outer guard in
-    # call_tool_with_logging passed args through raw and the internal
-    # ValidationError propagated out of the stdio loop, killing the whole
-    # kirocrew-core server (same crash class as the delete_message fix).
-    # Registering them here routes the validation through the guarded outer
-    # step, which returns a clean "Error:" string instead.
+    # These tools validate their args internally via validate_tool_args(); they
+    # MUST be registered here so the outer guard in call_tool_with_logging
+    # routes validation through the guarded step (returning a clean "Error:"
+    # string). A tool absent from this registry has its args passed through raw,
+    # and its internal ValidationError propagates out of the stdio loop, killing
+    # the whole kirocrew-core server for the session.
     "workflow_author": WORKFLOW_AUTHOR_SCHEMA,
     "workflow_run": WORKFLOW_RUN_SCHEMA,
     "workflow_status": WORKFLOW_RUN_ID_SCHEMA,

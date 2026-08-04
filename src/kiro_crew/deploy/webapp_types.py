@@ -62,7 +62,7 @@ class WebAppDeployTarget:
     region: str = ""
     public_url: str = ""
     profile: str = ""
-    distribution_id: str = ""  # R16 F3: strong identity for manifest cross-verify
+    distribution_id: str = ""  # strong identity for manifest cross-verify
 
 
 @dataclass
@@ -159,7 +159,7 @@ def webapp_metadata_from_dict(raw: Any) -> "WebAppMetadata | None":
             region=_capped_str(dt.get("region"), ""),
             public_url=_capped_str(dt.get("public_url"), ""),
             profile=_capped_str(dt.get("profile"), "", 128),
-            # R16 F3: parse the strong-identity field -- without this the
+            # parse the strong-identity field -- without this the
             # teardown cross-verify would always see "" (dead check).
             distribution_id=_capped_str(dt.get("distribution_id"), "", 128),
         ),

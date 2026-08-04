@@ -7,10 +7,9 @@ import { i18nT } from '../../i18n/t'
 import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields } from '../../i18n/format'
 
 /**
- * Shared notification metadata + helpers. Extracted verbatim from the former
- * inline NotificationsPage so the full page and the topbar bell popover render
- * notifications through the exact same code (one source of truth for kinds,
- * filters, formatting, and date grouping).
+ * Shared notification metadata + helpers, so the full page and the topbar bell
+ * popover render notifications through the exact same code (one source of truth
+ * for kinds, filters, formatting, and date grouping).
  */
 
 export type Kind = 'cron' | 'hook' | 'heartbeat' | 'agent' | 'approval' | 'subagent' | 'taskrunner'
@@ -18,15 +17,31 @@ export type Category = 'all' | Kind
 
 export const KIND_KEYS: Kind[] = ['cron', 'hook', 'heartbeat', 'agent', 'approval', 'subagent', 'taskrunner']
 
+/**
+ * Filter chips across the top of the feed.
+ *
+ * `label` is a GETTER, not a string: this table is evaluated once at module load,
+ * so an `i18nT()` call in the initializer would freeze the boot language and never
+ * re-resolve when the language switches. A getter moves the lookup to property-access
+ * time, which happens during `NotificationFeed`'s render.
+ *
+ * `lib/effort.ts` solves the same problem with a key table plus an exported resolver;
+ * a getter is used here because the two consumers that read `.label`
+ * (`NotificationFeed.tsx`, `NotificationDetailPanel.tsx`) stay untouched, so the
+ * property has to keep behaving like a `string`.
+ *
+ * The keys are inline literals at each `i18nT()` call — the only form
+ * `scripts/check-i18n-keys.mjs` can resolve statically.
+ */
 export const CATEGORIES: { key: Category; label: string; icon: ReactNode }[] = [
-  { key: 'all', label: 'All', icon: <ClipboardList className="lucide-inline" /> },
-  { key: 'cron', label: 'Cron', icon: <Clock className="lucide-inline" /> },
-  { key: 'hook', label: 'Hooks', icon: <Anchor className="lucide-inline" /> },
-  { key: 'heartbeat', label: 'Heartbeat', icon: <Heart className="lucide-inline" /> },
-  { key: 'agent', label: 'Agent', icon: <Bot className="lucide-inline" /> },
-  { key: 'approval', label: 'Approval', icon: <Lock className="lucide-inline" /> },
-  { key: 'subagent', label: 'Subagent', icon: <GitBranch className="lucide-inline" /> },
-  { key: 'taskrunner', label: 'Tasks', icon: <ClipboardList className="lucide-inline" /> },
+  { key: 'all', get label() { return i18nT('components.notifications.notifMeta.kind_all') }, icon: <ClipboardList className="lucide-inline" /> },
+  { key: 'cron', get label() { return i18nT('components.notifications.notifMeta.kind_cron') }, icon: <Clock className="lucide-inline" /> },
+  { key: 'hook', get label() { return i18nT('components.notifications.notifMeta.kind_hooks') }, icon: <Anchor className="lucide-inline" /> },
+  { key: 'heartbeat', get label() { return i18nT('components.notifications.notifMeta.kind_heartbeat') }, icon: <Heart className="lucide-inline" /> },
+  { key: 'agent', get label() { return i18nT('components.notifications.notifMeta.kind_agent') }, icon: <Bot className="lucide-inline" /> },
+  { key: 'approval', get label() { return i18nT('components.notifications.notifMeta.kind_approval') }, icon: <Lock className="lucide-inline" /> },
+  { key: 'subagent', get label() { return i18nT('components.notifications.notifMeta.kind_subagent') }, icon: <GitBranch className="lucide-inline" /> },
+  { key: 'taskrunner', get label() { return i18nT('components.notifications.notifMeta.kind_tasks') }, icon: <ClipboardList className="lucide-inline" /> },
 ]
 
 export const KINDS_STORAGE_KEY = 'mc:notif:activeKinds'
@@ -50,12 +65,11 @@ export function parseTs(ts: string | number): Date {
   // seconds, milliseconds, microseconds, or nanoseconds — depending on the
   // producer. Detect the unit by magnitude and normalize to milliseconds.
   //
-  // The previous implementation did `new Date(ts)` then, only on failure,
-  // `new Date(parseFloat(ts) * 1000)`. That broke for a millisecond epoch
-  // passed as a string: `new Date("1784784205932")` is Invalid Date in V8, so
-  // it fell through and multiplied ms by 1000 (treating it as seconds), which
-  // rendered the year as ~58527. Detecting the unit up front fixes both the
-  // ms-as-string and microsecond-as-number cases.
+  // Detecting the unit up front (rather than `new Date(ts)` with a
+  // `new Date(parseFloat(ts) * 1000)` fallback) is required because a
+  // millisecond epoch passed as a string is Invalid Date in V8, so the fallback
+  // would treat it as seconds and render the year as ~58527. It also handles the
+  // microsecond-as-number case.
   const num =
     typeof ts === 'number'
       ? ts
@@ -88,16 +102,23 @@ export function dateGroup(d: Date): string {
   return fmtDateFields(d, { year: 'numeric', month: 'short' })
 }
 
+/** Per-kind badge treatment. `label` is a getter for the same reason as
+ *  `CATEGORIES` above — module-load evaluation would freeze the boot language.
+ *  The badge register is INDEPENDENT of the chip register: three kinds are
+ *  deliberately worded differently here ('Cron Job' vs the 'Cron' chip,
+ *  'Webhook' vs 'Hooks', 'Task Runner' vs 'Tasks'), so those get their own keys;
+ *  the four that read identically share the chip's key rather than shipping a
+ *  duplicate English string to ten locales. */
 export const KIND_META: Record<string, { icon: ReactNode; color: string; label: string; borderColor: string }> = {
-  cron:       { icon: <Clock className="lucide-inline" />, color: 'bg-accent/15 text-accent',  label: 'Cron Job',   borderColor: 'border-l-accent' },
-  hook:       { icon: <Anchor className="lucide-inline" />, color: 'bg-info/15 text-info',      label: 'Webhook',    borderColor: 'border-l-info' },
-  heartbeat:  { icon: <Heart className="lucide-inline" />, color: 'bg-ok/15 text-ok',          label: 'Heartbeat',  borderColor: 'border-l-ok' },
-  agent:      { icon: <Bot className="lucide-inline" />, color: 'bg-info/15 text-info',      label: 'Agent',      borderColor: 'border-l-info' },
-  approval:   { icon: <Lock className="lucide-inline" />, color: 'bg-warn/15 text-warn',      label: 'Approval',   borderColor: 'border-l-warn' },
-  subagent:   { icon: <GitBranch className="lucide-inline" />, color: 'bg-accent/15 text-accent',  label: 'Subagent',   borderColor: 'border-l-accent' },
-  taskrunner: { icon: <ClipboardList className="lucide-inline" />, color: 'bg-accent/15 text-accent',  label: 'Task Runner', borderColor: 'border-l-accent' },
+  cron:       { icon: <Clock className="lucide-inline" />, color: 'bg-accent/15 text-accent',  get label() { return i18nT('components.notifications.notifMeta.kind_cron_job') },     borderColor: 'border-l-accent' },
+  hook:       { icon: <Anchor className="lucide-inline" />, color: 'bg-info/15 text-info',      get label() { return i18nT('components.notifications.notifMeta.kind_webhook') },      borderColor: 'border-l-info' },
+  heartbeat:  { icon: <Heart className="lucide-inline" />, color: 'bg-ok/15 text-ok',          get label() { return i18nT('components.notifications.notifMeta.kind_heartbeat') },    borderColor: 'border-l-ok' },
+  agent:      { icon: <Bot className="lucide-inline" />, color: 'bg-info/15 text-info',      get label() { return i18nT('components.notifications.notifMeta.kind_agent') },        borderColor: 'border-l-info' },
+  approval:   { icon: <Lock className="lucide-inline" />, color: 'bg-warn/15 text-warn',      get label() { return i18nT('components.notifications.notifMeta.kind_approval') },     borderColor: 'border-l-warn' },
+  subagent:   { icon: <GitBranch className="lucide-inline" />, color: 'bg-accent/15 text-accent',  get label() { return i18nT('components.notifications.notifMeta.kind_subagent') },     borderColor: 'border-l-accent' },
+  taskrunner: { icon: <ClipboardList className="lucide-inline" />, color: 'bg-accent/15 text-accent',  get label() { return i18nT('components.notifications.notifMeta.kind_task_runner') }, borderColor: 'border-l-accent' },
 }
-export const DEFAULT_META = { icon: <Bell className="lucide-inline" />, color: 'bg-muted/15 text-muted', label: 'Notification', borderColor: 'border-l-muted' }
+export const DEFAULT_META = { icon: <Bell className="lucide-inline" />, color: 'bg-muted/15 text-muted', get label() { return i18nT('components.notifications.notifMeta.kind_notification') }, borderColor: 'border-l-muted' }
 
 /** RFC Phase 3 priority tiers -- visual treatment per level (mockup 3):
  *  critical pops with a danger edge + marker, passive dims, default is

@@ -28,29 +28,32 @@ import {
   Check, CircleSlash, CircleDot, MessageSquarePlus, GitMerge, X, Loader2, AlertTriangle,
 } from 'lucide-react'
 import { Btn } from '../../../components/ui'
-import { useBulkPrAction, PR_ACTION } from '../lib/prActions'
+import {
+  useBulkPrAction, useSequentialMerge, PR_ACTION,
+  canArmAutoMerge as rowCanArm, canMergeNow as rowCanMergeNow,
+} from '../lib/prActions'
+import {
+  BULK_PR_CLOSE_TOKEN as CLOSE_TOKEN, MERGE_READY_ACTION, SEQUENTIAL_MERGE_TOKEN,
+} from '../lib/wireValues'
 import { useIssueRadar } from '../context'
 import { providerTerms, isGitlab } from '../lib/links'
 import type { BulkPrAction } from '../api'
 
 import { i18nT } from '../../../i18n/t'
 
-/** The literal the user types to arm a bulk close.
- *
- * A CODE CONSTANT, never a catalog value — translating it would make the action
- * impossible to complete for anyone not typing English (see website/AGENTS.md, and
- * destructiveConfirm.test.ts which pins the same rule for SchedulePage's bulk
- * delete).
- *
- * Deliberately NOT the bare word "close": that is also this bar's own button label,
- * so the confirmation could be satisfied by copying the very button the user just
- * pressed — which is not a deliberate second act. `close prs` shares no value with
- * any label in any of the ten catalogs. */
-export const BULK_PR_CLOSE_TOKEN = 'close prs'
+// The confirmation TOKENS and the merge pseudo-action are protocol values, not copy:
+// a translated token makes the action impossible to complete. They live in
+// `lib/wireValues.ts` with every other by-value string on this surface, and are
+// re-exported here because that is where callers (and the i18n guard test) import them.
+export { BULK_PR_CLOSE_TOKEN, SEQUENTIAL_MERGE_TOKEN } from '../lib/wireValues'
+
+
 
 /** Which actions need a body, and which need the typed confirmation. */
 const NEEDS_BODY = new Set<BulkPrAction>(['comment'])
 const NEEDS_CONFIRM = new Set<BulkPrAction>(['close'])
+
+
 
 export default function PrBulkBar() {
   const {
@@ -64,10 +67,28 @@ export default function PrBulkBar() {
   // Chunked on the SERVER's published cap: a selection larger than one request may
   // hold was a flat 400 with nothing applied.
   const bulk = useBulkPrAction(active, prBulkMax)
+  // Merging the ready rows does NOT go through the bulk endpoint — `merge` is
+  // deliberately absent from the server's allowlist — so it has its own driver that
+  // walks the per-PR route one row at a time. See `useSequentialMerge`.
+  const seq = useSequentialMerge(active)
 
   // The action the user picked and is now completing (typing a body, or the
   // confirmation). `null` means the bar is showing its buttons.
-  const [pending, setPending] = useState<BulkPrAction | null>(null)
+  const [pending, setPending] = useState<BulkPrAction | typeof MERGE_READY_ACTION | null>(null)
+  // The exact rows a merge confirmation was ARMED against, frozen when it opened.
+  // An irreversible action must apply to the set the user was shown — see
+  // `runSequentialMerge`.
+  const [armedMerge, setArmedMerge] = useState<Array<{ number: number; headSha: string }>>([])
+  // Held in a ref so the selection-change effect can clear the run report while staying
+  // keyed on the selection ALONE. Depending on `seq.reset` directly would re-key the
+  // effect on an unstable identity and re-fire it on unrelated renders, wiping a typed
+  // confirmation mid-entry.
+  const seqResetRef = useRef(seq.reset)
+  seqResetRef.current = seq.reset
+  // How many rows the LAST run started with, so the "N not attempted" line has a fixed
+  // denominator. `armedMerge` is cleared when the run ends and the live target list
+  // shrinks as rows merge, so neither can measure the run after the fact.
+  const [mergeRunSize, setMergeRunSize] = useState(0)
   const [text, setText] = useState('')
   const [confirmText, setConfirmText] = useState('')
 
@@ -124,6 +145,35 @@ export default function PrBulkBar() {
   // sha would apply an action to fewer PRs than the button's count claims.
   const canBulkApprove = count > 0 && numbers.every((n) => Boolean(headShas[String(n)]))
 
+  // Split the selection by what the provider will actually ACCEPT.
+  //
+  // This is the fix for the defect that motivated all of it: the bar used to offer
+  // auto-merge for every ticked row, and GitHub refused each one that was already
+  // mergeable ("Pull request is in clean status") or already merged ("Pull request is
+  // already merged") — one failure per row, from a single click. The rows carry
+  // `mergeable_state` now, so the two verbs can be offered to the rows they apply to.
+  //
+  // Rows whose readiness is UNKNOWN fall into NEITHER bucket. That is deliberate:
+  // GitHub computes mergeability asynchronously, and a gate that cannot tell must
+  // refuse rather than guess (see `canArmAutoMerge`).
+  const selectedRows = sortedPulls.filter((p) => checkedPulls.has(p.number))
+  const armableRows = selectedRows.filter(rowCanArm)
+  // Ready to merge NOW — and only those with a snapshotted sha, since the merge is
+  // pinned to the commit the row was rendered at exactly as an approval is. Both
+  // buckets go through the SHARED predicates so they cannot diverge on a lifecycle
+  // field (an earlier revision checked `draft` in one and not the other).
+  const readyRows = selectedRows.filter(
+    (p) => rowCanMergeNow(p) && Boolean(seen.get(p.number)),
+  )
+  // Capped at the SERVER's published bulk cap. The sequential merge does not use the
+  // bulk endpoint, so nothing else would bound it — and spec rule 3's reasoning ("50
+  // from one click is a blast radius no confirmation makes reasonable") applies to a
+  // loop just as much as to a batch. Anything beyond the cap needs a second click.
+  const mergeTargets = readyRows.slice(0, prBulkMax).map((p) => ({
+    number: p.number,
+    headSha: seen.get(p.number) as string,
+  }))
+
   // Reset the in-progress action whenever the selection changes.
   //
   // Keyed on the selection's IDENTITY, not its size. Keying on the count let a
@@ -135,6 +185,11 @@ export default function PrBulkBar() {
     setPending(null)
     setText('')
     setConfirmText('')
+    setArmedMerge([])
+    // The previous run's per-row report goes too. It names PR numbers and counts
+    // "remaining" against the set it ran on, so carrying it into a different selection
+    // reports another selection's failures as if they were this one's.
+    seqResetRef.current()
   }, [selectionKey])
 
   // The bar stays mounted while it has an OUTCOME to report, even once the
@@ -142,17 +197,48 @@ export default function PrBulkBar() {
   // run cleared the selection and unmounted the bar before "Applied to N" could
   // paint — the user got no confirmation at all, and the success copy was
   // unreachable in every language.
-  if (!canWrite || (count === 0 && !bulk.outcome && !bulk.error)) return null
+  if (!canWrite || (count === 0 && !bulk.outcome && !bulk.error && !seq.rows.length)) return null
 
   const reset = () => {
     setPending(null)
     setText('')
     setConfirmText('')
+    setArmedMerge([])
     bulk.reset()
+    seq.reset()
+  }
+
+  /** Merge the ARMED set, one at a time, stopping at the first refusal.
+   *
+   * Runs `armedMerge` — the set frozen when the confirmation opened — never the live
+   * `mergeTargets`. The list POLLS, so a readiness change landing between "type the
+   * token" and "press Apply" would otherwise change what gets merged: a warning that
+   * said "1 pull request" could execute six, because a cold read reports `unknown`
+   * (neither bucket) and resolves to `clean` (ready) a moment later. Same reasoning as
+   * `shaAtTick` one screen up — for an irreversible action the user must merge exactly
+   * the set they were shown. */
+  const runSequentialMerge = async () => {
+    if (!armedMerge.length || seq.busy) return
+    setMergeRunSize(armedMerge.length)
+    const done = await seq.mergeAll(armedMerge)
+    // Untick only what actually merged, so a run that stopped early leaves the
+    // outstanding rows selected and a retry covers exactly them.
+    for (const row of done) if (row.status === 'merged') togglePullChecked(row.number)
+    setPending(null)
+    setConfirmText('')
+    setArmedMerge([])
   }
 
   const apply = async (action: BulkPrAction) => {
-    const result = await bulk.apply(numbers, action, {
+    // Arming is sent ONLY for the rows it can apply to. Sending the whole selection is
+    // what produced a wall of "Pull request is in clean status" / "is already merged"
+    // failures from one click: the provider refuses to arm a PR that is already
+    // mergeable or already merged, and every such row came back as its own error.
+    const targets = action === PR_ACTION.autoMerge
+      ? armableRows.map((p) => p.number)
+      : numbers
+    if (!targets.length) return
+    const result = await bulk.apply(targets, action, {
       body: text.trim() || undefined,
       // Only for the pinned verb: sending shas for `close` would be sending data the
       // server has no field for, and the hook slices this map per chunk.
@@ -170,7 +256,15 @@ export default function PrBulkBar() {
     setConfirmText('')
   }
 
-  const start = (action: BulkPrAction) => {
+  const start = (action: BulkPrAction | typeof MERGE_READY_ACTION) => {
+    // Merging always needs the typed confirmation — it is the one action here that
+    // cannot be undone. The target set is FROZEN here, at the moment the warning is
+    // rendered, so the count the user reads is the count that executes.
+    if (action === MERGE_READY_ACTION) {
+      setArmedMerge(mergeTargets)
+      setPending(action)
+      return
+    }
     if (NEEDS_BODY.has(action) || NEEDS_CONFIRM.has(action)) {
       setPending(action)
       return
@@ -178,10 +272,20 @@ export default function PrBulkBar() {
     apply(action)
   }
 
-  const confirmArmed = confirmText.trim().toLowerCase() === BULK_PR_CLOSE_TOKEN
-  const bodyArmed = !pending || !NEEDS_BODY.has(pending) || Boolean(text.trim())
+  const isMergePending = pending === MERGE_READY_ACTION
+  // Each destructive action has its OWN token, so typing one cannot arm the other.
+  const requiredToken = isMergePending ? SEQUENTIAL_MERGE_TOKEN : CLOSE_TOKEN
+  const confirmArmed = confirmText.trim().toLowerCase() === requiredToken
+  const bodyArmed = !pending || isMergePending || !NEEDS_BODY.has(pending) || Boolean(text.trim())
+  const needsConfirm = pending
+    ? isMergePending || NEEDS_CONFIRM.has(pending)
+    : false
+  // A merge confirmation over zero rows is never submittable: `armedMerge` can be
+  // emptied by the run itself, and an enabled "Apply to 0" over "This merges 0 pull
+  // requests" is an armed button on nonsense copy.
+  const hasTargets = !isMergePending || armedMerge.length > 0
   const canSubmit = pending
-    ? bodyArmed && (!NEEDS_CONFIRM.has(pending) || confirmArmed)
+    ? bodyArmed && hasTargets && (!needsConfirm || confirmArmed)
     : false
 
   return (
@@ -243,16 +347,50 @@ export default function PrBulkBar() {
             <MessageSquarePlus className="lucide-inline" />
             {i18nT('apps.issueRadar.components.prBulkBar.comment')}
           </Btn>
+          {/* Merge the rows the provider already reports as mergeable NOW. Absent from
+              the bulk endpoint by design, so this drives the per-PR route once per row
+              (see `useSequentialMerge`) — every merge stays pinned to its reviewed
+              commit. Rendered only when such rows are actually selected: an always-on
+              button would be dead for most selections.
+
+              OUTSIDE the `canArmAutoMerge` gate on purpose. That flag is about GitLab's
+              inability to ARM a deferred merge safely; `/pull/merge` works there, and
+              `MERGE_READY_STATES` carries GitLab's own `mergeable`. Nesting this inside
+              it would withhold the merge path on GitLab for an unrelated reason. */}
+          {mergeTargets.length > 0 && (
+            <Btn
+              onClick={() => start(MERGE_READY_ACTION)}
+              disabled={bulk.busy || seq.busy}
+              title={i18nT('apps.issueRadar.components.prBulkBar.merge_ready_hint')}
+            >
+              {seq.busy
+                ? <Loader2 className="lucide-inline animate-spin" />
+                : <GitMerge className="lucide-inline" />}
+              {i18nT('apps.issueRadar.components.prBulkBar.merge_ready', {
+                count: mergeTargets.length,
+              })}
+            </Btn>
+          )}
           {canArmAutoMerge && (<>
           <Btn
             onClick={() => start(PR_ACTION.autoMerge)}
-            disabled={bulk.busy}
+            // Disabled when NO selected row can be armed — every one is either already
+            // mergeable (the provider refuses: "in clean status"), already merged, or of
+            // unknown readiness. This is the defect that motivated the change: the
+            // button used to fire regardless and collect one refusal per row.
+            disabled={bulk.busy || seq.busy || armableRows.length === 0}
             // Says what it does, because the difference from "merge now" is the
             // entire point: the provider still decides.
-            title={i18nT('apps.issueRadar.components.prBulkBar.auto_merge_hint')}
+            title={armableRows.length > 0
+              ? i18nT('apps.issueRadar.components.prBulkBar.auto_merge_hint')
+              : i18nT('apps.issueRadar.components.prBulkBar.auto_merge_none_pending')}
           >
             <GitMerge className="lucide-inline" />
-            {i18nT('apps.issueRadar.components.prBulkBar.auto_merge')}
+            {armableRows.length > 0 && armableRows.length !== count
+              ? i18nT('apps.issueRadar.components.prBulkBar.auto_merge_n', {
+                count: armableRows.length,
+              })
+              : i18nT('apps.issueRadar.components.prBulkBar.auto_merge')}
           </Btn>
           <Btn
             onClick={() => start(PR_ACTION.cancelAutoMerge)}
@@ -283,7 +421,7 @@ export default function PrBulkBar() {
         </div>
       ) : (
         <div className="mt-2">
-          {NEEDS_BODY.has(pending) && (
+          {!isMergePending && NEEDS_BODY.has(pending) && (
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
@@ -302,10 +440,15 @@ export default function PrBulkBar() {
               className="w-full bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[13px] text-text placeholder:text-muted outline-none resize-y transition-colors focus-ring font-body"
             />
           )}
-          {NEEDS_CONFIRM.has(pending) && (
+          {needsConfirm && (
             <>
               <div className="text-[12px] text-danger mb-1.5">
-                {i18nT('apps.issueRadar.components.prBulkBar.close_warning', { count })}
+                {isMergePending
+                  // The FROZEN count, matching exactly what Apply will merge.
+                  ? i18nT('apps.issueRadar.components.prBulkBar.merge_warning', {
+                    count: armedMerge.length,
+                  })
+                  : i18nT('apps.issueRadar.components.prBulkBar.close_warning', { count })}
               </div>
               <input
                 value={confirmText}
@@ -316,22 +459,42 @@ export default function PrBulkBar() {
                     e.stopPropagation()  // see the comment on the textarea above
                     reset()
                   }
-                  if (e.key === 'Enter' && confirmArmed) { e.preventDefault(); apply(pending) }
+                  // `seq.busy` / `bulk.busy` are checked here as well as on the Apply
+                  // button: this is a SECOND entry point, and without the guard a second
+                  // Enter mid-run started a concurrent loop that merged a row twice and
+                  // defeated stop-on-first-failure.
+                  if (e.key === 'Enter' && confirmArmed && !seq.busy && !bulk.busy) {
+                    e.preventDefault()
+                    if (isMergePending) runSequentialMerge()
+                    else apply(pending)
+                  }
                 }}
-                placeholder={BULK_PR_CLOSE_TOKEN}
+                placeholder={requiredToken}
                 aria-label={i18nT('apps.issueRadar.components.prBulkBar.type_to_confirm')}
                 className="w-full bg-bg-elevated border border-border rounded-md px-2.5 py-1.5 text-[13px] text-text placeholder:text-muted outline-none transition-colors focus-ring font-body"
               />
             </>
           )}
           <div className="mt-1.5 flex items-center gap-1.5">
-            <Btn primary onClick={() => apply(pending)} disabled={!canSubmit || bulk.busy}>
-              {bulk.busy
+            <Btn
+              primary
+              onClick={() => (isMergePending ? runSequentialMerge() : apply(pending))}
+              disabled={!canSubmit || bulk.busy || seq.busy}
+            >
+              {bulk.busy || seq.busy
                 ? <Loader2 className="lucide-inline animate-spin" />
                 : <Check className="lucide-inline" />}
-              {i18nT('apps.issueRadar.components.prBulkBar.apply', { count })}
+              {i18nT('apps.issueRadar.components.prBulkBar.apply', {
+                count: isMergePending ? armedMerge.length : count,
+              })}
             </Btn>
-            <Btn onClick={reset}>{i18nT('apps.issueRadar.components.prBulkBar.cancel')}</Btn>
+            {/* Cancel ABORTS a run in progress, not just the composer. It cannot recall
+                the merge already in flight — that request is with the provider — but it
+                spares every row after it, which on an irreversible mass action is the
+                difference between Cancel meaning something and meaning nothing. */}
+            <Btn onClick={() => { seq.abort(); reset() }}>
+              {i18nT('apps.issueRadar.components.prBulkBar.cancel')}
+            </Btn>
           </div>
         </div>
       )}
@@ -343,6 +506,62 @@ export default function PrBulkBar() {
           <span className="min-w-0 break-words">{bulk.error.message}</span>
         </div>
       )}
+
+      {/* The sequential merge's per-row progress. Named individually and in order,
+          because this run STOPS at the first refusal: the user has to be able to see
+          exactly which PR blocked it and which ones were never attempted. */}
+      <AnimatePresence>
+        {seq.rows.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="mt-2 text-[12px] overflow-hidden"
+            // The rows stream in one at a time during an irreversible run, so a screen
+            // reader has to be told as each lands rather than only on completion.
+            aria-live="polite"
+          >
+            <ul className="space-y-0.5">
+              {seq.rows.map((row) => (
+                <li
+                  key={row.number}
+                  className={row.status === 'merged' ? 'text-ok' : 'text-danger'}
+                >
+                  <span className="break-words">
+                    {terms.sigil}{row.number}
+                    {row.status === 'merged'
+                      ? ` — ${i18nT('apps.issueRadar.components.prBulkBar.merged_ok')}`
+                      : ` — ${row.error ?? ''}`}
+                  </span>
+                </li>
+              ))}
+              {/* The row currently in flight, so the run shows WHERE it is rather than
+                  only a global spinner. */}
+              {seq.running !== null && (
+                <li className="text-muted">
+                  <Loader2 className="lucide-inline animate-spin" />
+                  {' '}{terms.sigil}{seq.running}
+                </li>
+              )}
+            </ul>
+            {/* Says the run stopped, and how many were left untouched — otherwise a
+                halted run is indistinguishable from one that finished.
+                Counted against `mergeRunSize`, the size of the set the run STARTED
+                with. Measuring against the live target list undercounted (or printed
+                nothing at all) on a partial success, because each merged row unticks
+                itself and so leaves that list — the denominator moved as the run
+                progressed, which is exactly when this line matters most. */}
+            {seq.rows.some((r) => r.status === 'failed')
+              && mergeRunSize > seq.rows.length && (
+              <div className="mt-1 text-muted">
+                {i18nT('apps.issueRadar.components.prBulkBar.merge_halted', {
+                  count: mergeRunSize - seq.rows.length,
+                })}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Per-PR outcome. The failures are named individually so the user knows
           exactly which rows to revisit — a bare count would send them to re-check

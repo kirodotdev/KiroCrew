@@ -25,7 +25,7 @@ class TestStripMarkdownPreview:
         )
 
     def test_diff_fence_becomes_placeholder(self):
-        src = "```diff\n--- /Users/kseam/.kirocrew/workspace/H.tsx\n+++ b\n@@ -1 +1 @@\n```"
+        src = "```diff\n--- /Users/user/.kirocrew/workspace/H.tsx\n+++ b\n@@ -1 +1 @@\n```"
         assert strip_markdown_preview(src) == "(diff)"
 
     def test_code_fence_becomes_placeholder(self):
@@ -86,7 +86,7 @@ class TestSlotLastMessageStripsMarkdown:
 
     def test_sidebar_preview_replaces_diff_fence(self):
         s = self._slot_with(
-            ("assistant", "```diff\n--- /Users/kseam/.kirocrew/workspace/H.tsx\n+++ b\n```"),
+            ("assistant", "```diff\n--- /Users/user/.kirocrew/workspace/H.tsx\n+++ b\n```"),
         )
         assert s.to_dict()["last_message"] == "(diff)"
 

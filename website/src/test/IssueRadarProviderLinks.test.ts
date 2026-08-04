@@ -1,9 +1,10 @@
 /** Provider-aware link building.
  *
- * These are the functions that stop the app doing what it used to do everywhere:
- * concatenate a path onto `https://github.com/`. For a GitLab project that
- * produced a link to a DIFFERENT repo — a same-named one on the public site, or
- * a 404 — with no error to notice, so each shape is pinned here.
+ * These functions build every link from the ref's own provider and host instead
+ * of concatenating a path onto `https://github.com/`. For a GitLab project a
+ * github.com-only builder produces a link to a DIFFERENT repo — a same-named one
+ * on the public site, or a 404 — with no error to notice, so each shape is
+ * pinned here.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -31,7 +32,7 @@ const SELF = {
   provider: 'gitlab' as const,
   host: 'gitlab.acme.internal:8443',
 }
-/** A record written before GitLab support: no provider, no host. */
+/** A legacy record with no provider and no host. */
 const LEGACY = { owner: 'acme', repo: 'widget' }
 
 describe('isGitlab', () => {
@@ -111,8 +112,9 @@ describe('providerTerms', () => {
 
 describe('provider CLI commands for agent prompts', () => {
   it('names the CLI that actually owns the credentials', () => {
-    // The prompts used to hard-code `gh`, so a GitLab item sent the agent to look
-    // up a GitLab path on GitHub -- reading a stranger's repo or nothing, silently.
+    // The prompts name the provider's own CLI: hard-coding `gh` would send the
+    // agent to look up a GitLab path on GitHub -- reading a stranger's repo or
+    // nothing, silently.
     expect(issueViewCommand(GH, 42)).toContain('gh issue view 42')
     expect(issueViewCommand(GL, 42)).toContain('glab issue view 42')
   })

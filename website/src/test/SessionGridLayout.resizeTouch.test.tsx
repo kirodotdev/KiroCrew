@@ -1,8 +1,7 @@
 /**
  * SessionGridLayout divider resize via Pointer Events (mouse + touch + pen).
  *
- * The per-split dividers were mouse-only (window mousemove/mouseup + a full-
- * screen overlay). They now use the shared usePointerDrag hook, keyed by
+ * The per-split dividers use the shared usePointerDrag hook, keyed by
  * data-divider-index, so a touch drag resizes a split exactly like a mouse drag.
  *
  * Locks:

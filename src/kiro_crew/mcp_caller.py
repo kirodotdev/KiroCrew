@@ -30,7 +30,7 @@ This module defines a **namespaced, versioned, typed** protocol extension:
                "schemaVersion": 1,
                "sessionKey": "T123ABC:C456DEF:1777...",
                "sessionType": "slack-thread" | "dashboard" | "cron" | ...,
-               "principalId": "mingweic",
+               "principalId": "alice",
                "channelId": "C0AUNEY55NV"
            }
        }
@@ -108,17 +108,15 @@ def _parent_pid(pid: int) -> int:
     ``/proc/<pid>/status`` on Linux, ``libproc.proc_pidinfo`` on macOS and
     ``CreateToolhelp32Snapshot`` on Windows -- none of which spawns a process.
 
-    The previous implementation shelled out to ``ps`` on every non-Linux
-    platform, which cost one fork per ancestor. That is paid on the stub's
-    Register path (bounded at ten levels) and again on every iteration of the
+    Avoiding a ``ps`` fork per ancestor matters here: this walk runs on the
+    stub's Register path (bounded at ten levels) and on every iteration of the
     recaller poll, whose backoff caps at 30s but does not terminate while the
     session key is unresolved -- and an unresolved key is exactly the condition
-    that starts the poll, so the walk could not be served from the
-    non-empty-only cache. It also returned 0 on Windows, where ``ps`` does not
-    exist, which silently disabled session-key resolution there.
+    that starts the poll, so it cannot be served from the non-empty-only cache.
+    ``get_ppid`` also resolves on Windows, where ``ps`` does not exist.
 
     ``get_ppid`` reports failure as ``-1``; normalise it to ``0`` so the walk
-    loops (``while pid > 1``) and the callers' guards behave exactly as before.
+    loops (``while pid > 1``) and the callers' guards behave correctly.
     """
     ppid = platform_compat.get_ppid(pid)
     return ppid if ppid > 0 else 0
@@ -318,8 +316,8 @@ def build_caller_meta(ctx: CallerContext) -> dict[str, Any]:
 # Held in a ``contextvars.ContextVar`` rather than a bare module global: a
 # security identity must not depend on the "dispatch is sequential" invariant
 # alone — if dispatch ever becomes concurrent, each thread/task context reads
-# its own value instead of bleeding another session's identity (design
-# review, PR #422). Set and read happen in the same thread today (the worker
+# its own value instead of bleeding another session's identity. Set and read
+# happen in the same thread today (the worker
 # sets it at its own start), so behavior is unchanged.
 #
 # Trust: in the pooled topology gatewayd strips any stub-supplied

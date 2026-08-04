@@ -21,6 +21,8 @@ import { shallowEqual } from 'react-redux'
 import { motion, AnimatePresence } from 'framer-motion'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
+import { useLanguage } from '../i18n/LanguageProvider'
+import { pickToolLabel } from '../utils/toolLabel'
 import TrustDropdown from './TrustDropdown'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -88,9 +90,32 @@ const INPUT_HEIGHT_LS_KEY = 'mc-input-height'
 // user picks via the split send button's dropdown; choice persists.
 const BUSY_SEND_MODE_LS_KEY = 'mc-busy-send-mode'
 type BusySendMode = 'steer' | 'queue'
-const BUSY_SEND_MODES: Array<{ mode: BusySendMode; label: string; desc: string; icon: React.ReactNode }> = [
-  { mode: 'steer', label: 'Steer', desc: 'Inject into the running turn right away', icon: <Target size={15} /> },
-  { mode: 'queue', label: 'Queue', desc: 'Run after the current turn finishes', icon: <ArrowUpFromLine size={15} /> },
+/**
+ * Catalog KEYS for the two busy-send modes' menu copy.
+ *
+ * Keys, not strings: `BUSY_SEND_MODES` is built at module load, so an `i18nT()`
+ * call in it would freeze whatever language was active at boot and never
+ * re-resolve on a language switch. The lookups happen in the menu's render.
+ *
+ * Held apart from `BUSY_SEND_MODES` and shaped as flat `Record`s of full literal
+ * keys, indexed inline at the `i18nT()` call, because that is the only form
+ * `scripts/check-i18n-keys.mjs` can resolve statically — nested in the array and
+ * read as `i18nT(m.labelKey)` the gate cannot see the key at all.
+ *
+ * `steer` reuses the label the split button's `aria-label` already ships rather
+ * than sending a duplicate English string to ten locales.
+ */
+const BUSY_SEND_MODE_LABEL_KEY: Record<BusySendMode, string> = {
+  steer: 'components.chatInput.steer',
+  queue: 'components.chatInput.queue',
+}
+const BUSY_SEND_MODE_DESC_KEY: Record<BusySendMode, string> = {
+  steer: 'components.chatInput.steer_desc',
+  queue: 'components.chatInput.queue_desc',
+}
+const BUSY_SEND_MODES: Array<{ mode: BusySendMode; icon: React.ReactNode }> = [
+  { mode: 'steer', icon: <Target size={15} /> },
+  { mode: 'queue', icon: <ArrowUpFromLine size={15} /> },
 ]
 
 // Prompt undo/redo tuning. The chat textarea is a controlled component, so any
@@ -129,13 +154,31 @@ function toApiDecision(d: string): 'approve' | 'reject' {
  *  `_BACKGROUND_APPROVAL_SOURCES` minus `autonudge`, which does run in-session. */
 export const UNATTENDED_APPROVAL_SOURCES = new Set(['cron', 'heartbeat', 'taskrunner'])
 
-// Pending-approval selection is now slot-aware — see selectSlotPendingApproval
-// in chatSlice (Path B S3): each grid pane's approval bar reflects ITS slot.
+// Pending-approval selection is slot-aware — see selectSlotPendingApproval
+// in chatSlice: each grid pane's approval bar reflects ITS slot.
 
 /** Usable viewport height. Native window zoom already reports zoomed CSS
  *  pixels through innerHeight, so no compensation var is needed. */
 function effectiveVh(): number {
   return window.innerHeight
+}
+
+/** Remove a trailing run of blank lines from pasted text: strips trailing
+ *  spaces/tabs/newlines, but ONLY when that run contains at least one newline
+ *  (so a paste ending in plain spaces is left untouched); interior content is
+ *  never modified. A single linear backward scan over the trailing whitespace
+ *  run — no regex backtracking, so it stays linear even on adversarial input
+ *  (e.g. a huge run of spaces followed by a non-whitespace character). */
+function stripTrailingBlankLines(s: string): string {
+  let i = s.length - 1
+  let sawNewline = false
+  while (i >= 0) {
+    const c = s.charCodeAt(i)
+    if (c === 10 /* \n */ || c === 13 /* \r */) { sawNewline = true; i--; continue }
+    if (c === 32 /* space */ || c === 9 /* \t */) { i--; continue }
+    break
+  }
+  return sawNewline ? s.slice(0, i + 1) : s
 }
 
 /** Auto-size textarea to fit content (only when not manually sized).
@@ -495,6 +538,7 @@ function ChatInput({
     || ''
   const approvalIsUnattended = UNATTENDED_APPROVAL_SOURCES.has(approvalSource)
   const simplified = useSimplifiedToolNames()
+  const uiLang = useLanguage().resolved
   const approvalLabelRaw = sanitizeLlmOutput(pendingApproval?.content || '').replace(/^🔧\s*/, '')
 
   const approvalToolCallId = (approvalMeta?.tool_call_id as string) || null
@@ -508,7 +552,7 @@ function ChatInput({
   const approvalPurpose = approvalToolEntry?.purpose || ''
   const approvalTs = approvalToolEntry?.ts || 0
 
-  const approvalLabel = (simplified && approvalPurpose) ? approvalPurpose : approvalLabelRaw
+  const approvalLabel = pickToolLabel({ simplified, purpose: approvalPurpose, rawLabel: approvalLabelRaw, uiLang })
 
   // Subscribe to the inline pill's viewport visibility. While the pill is in
   // view, the bar collapses to just the always-visible button row; the moment
@@ -557,8 +601,8 @@ function ChatInput({
       setApprovalSubmitting(false)
       // 404 means the backend no longer holds a future for this id — the turn
       // was stopped, timed out, or the process was replaced. The card is an
-      // orphan: leaving it up makes every button look broken (the original
-      // bug), so clear it and say why instead of only logging to the console.
+      // orphan: leaving it up makes every button look broken, so clear it and
+      // say why instead of only logging to the console.
       if (err instanceof ApiError && err.status === 404) {
         dispatch(resolveByApprovalId({ id: approvalId, decision: 'stale' }))
         // Say WHOSE turn expired. Unattended sources deny-fast on a short
@@ -707,9 +751,9 @@ function ChatInput({
   // TOPMOST dismissible surface, and the composer is not it while a dialog is
   // up. Modal, CommandPalette and SnipOverlay all bind Escape on `window` and
   // all carry role="dialog", so one presence check defers to every one of them
-  // rather than enumerating them. Without it this handler would newly steal
-  // Escape from each — before this feature existed, Escape reached them
-  // normally, so stealing it would be a regression, not a trade.
+  // rather than enumerating them. Without it this handler would steal Escape
+  // from each — those surfaces own Escape, so intercepting it here would be a
+  // regression, not a trade.
   //
   // stopPropagation() only once we have decided the key is OURS. document
   // bubbles on to `window`, and those window handlers do not check
@@ -1646,36 +1690,71 @@ function ChatInput({
       onUploadFiles(files)
       return
     }
-    // Text paste — collapse only when the chunk is big enough and we have a sink.
-    if (!onPasteBlocksChange) return
+    // Text paste. Sources that serialize rendered HTML (web pages, PDFs, chat
+    // bubbles, table cells) routinely tack trailing blank lines onto a copied
+    // "single line", and a <textarea> inserts them verbatim — so the paste shows
+    // the line followed by several empty rows. Strip a trailing run of blank
+    // lines up front (only whitespace runs that include a newline; a paste
+    // ending in plain spaces and interior blank lines are untouched). Raw paste
+    // (Cmd/Ctrl+Shift+V) opts out entirely.
     const pasted = e.clipboardData.getData('text')
-    if (forceRaw || !shouldCollapsePaste(pasted)) return
+    const cleaned = forceRaw ? pasted : stripTrailingBlankLines(pasted)
 
-    e.preventDefault()
-    const block: PasteBlock = { id: makePasteId(), seq: nextSeq(pasteBlocks), lines: countLines(pasted), content: pasted }
-    const token = formatToken(block)
     const ta = e.currentTarget
     const start = ta.selectionStart ?? value.length
     const end = ta.selectionEnd ?? start
     const before = value.slice(0, start)
     const after = value.slice(end)
-    // Surround the token with newlines so the chip lives on its own line —
-    // long-form pasted content rarely flows with typed text around it.
-    // Skip the leading newline when the caret is at the start of a line,
-    // and the trailing one when the caret is at the end of a line.
-    const leadingNewline = before && !before.endsWith('\n') ? '\n' : ''
-    const trailingNewline = after && !after.startsWith('\n') ? '\n' : ''
-    const insert = leadingNewline + token + trailingNewline
-    const nextValue = before + insert + after
-    onChange(nextValue)
-    onPasteBlocksChange([...pasteBlocks, block])
-    // Restore caret right after the inserted token + trailing newline.
-    requestAnimationFrame(() => {
-      if (ta && document.activeElement === ta) {
-        const pos = before.length + insert.length
-        ta.setSelectionRange(pos, pos)
-      }
-    })
+
+    // Big paste → collapse into a `[ Paste #N ]` chip. Uses the cleaned text so
+    // the chip's line count and stored content exclude the stripped blanks.
+    if (onPasteBlocksChange && !forceRaw && shouldCollapsePaste(cleaned)) {
+      e.preventDefault()
+      const block: PasteBlock = { id: makePasteId(), seq: nextSeq(pasteBlocks), lines: countLines(cleaned), content: cleaned }
+      const token = formatToken(block)
+      // Surround the token with newlines so the chip lives on its own line —
+      // long-form pasted content rarely flows with typed text around it.
+      // Skip the leading newline when the caret is at the start of a line,
+      // and the trailing one when the caret is at the end of a line.
+      const leadingNewline = before && !before.endsWith('\n') ? '\n' : ''
+      const trailingNewline = after && !after.startsWith('\n') ? '\n' : ''
+      const insert = leadingNewline + token + trailingNewline
+      valueFromUserRef.current = true // a paste is a real user edit, not a draft restore
+      onChange(before + insert + after)
+      onPasteBlocksChange([...pasteBlocks, block])
+      // Restore caret right after the inserted token + trailing newline.
+      requestAnimationFrame(() => {
+        if (ta && document.activeElement === ta) {
+          const pos = before.length + insert.length
+          ta.setSelectionRange(pos, pos)
+        }
+      })
+      return
+    }
+
+    // Small paste. Only intercept when trailing blanks were actually stripped
+    // AND something remains — an all-blank clipboard (cleaned === '') is left to
+    // the browser so the paste is never a silent no-op.
+    if (cleaned !== pasted && cleaned !== '') {
+      e.preventDefault()
+      // Insert through the native input path so the textarea's own onChange runs:
+      // that fires the /, @, $ picker detection, marks the edit user-driven, and
+      // keeps native undo. Fall back to a controlled-value splice where
+      // execCommand is unavailable (jsdom/tests) or reports failure.
+      let inserted = false
+      try {
+        inserted = typeof document.execCommand === 'function' && document.execCommand('insertText', false, cleaned)
+      } catch { inserted = false }
+      if (inserted) return
+      valueFromUserRef.current = true
+      onChange(before + cleaned + after)
+      requestAnimationFrame(() => {
+        if (ta && document.activeElement === ta) {
+          const pos = before.length + cleaned.length
+          ta.setSelectionRange(pos, pos)
+        }
+      })
+    }
   }, [onUploadFiles, onPasteBlocksChange, pasteBlocks, value, onChange])
 
   /** Two-step click on a collapsed-paste token:
@@ -2102,15 +2181,13 @@ function ChatInput({
           so entering it requires NO animation and it can never be stranded
           invisible. Only the transient collapse toward the approval "ghost" bar
           animates (exit -> {opacity:0,height:0}); any re-entry cancels that exit
-          and snaps straight back to the shown state. This was the bug: the old
-          initial={opacity:0,height:0} enter animated height:auto, and when that
-          animation was interrupted (e.g. an approval resolving while the chat tab
-          was backgrounded, so requestAnimationFrame was throttled and the
-          completion that restores height:auto never ran) the motion.div was
-          stranded at height:0/opacity:0 — the input vanished until a remount,
-          which is why it only "came back after switching tabs". Keeping the
-          unmount-while-ghost behavior also means the collapsed composer is never a
-          persistently focusable invisible element. */}
+          and snaps straight back to the shown state. An enter that animated from
+          {opacity:0,height:0} to height:auto could be interrupted (e.g. an approval
+          resolving while the chat tab is backgrounded, so requestAnimationFrame is
+          throttled and the completion that restores height:auto never runs),
+          stranding the motion.div at height:0/opacity:0 and hiding the input until
+          a remount. Keeping the unmount-while-ghost behavior also means the
+          collapsed composer is never a persistently focusable invisible element. */}
       <AnimatePresence initial={false}>
       {!showGhost && (<motion.div
         key="input-container"
@@ -2161,9 +2238,8 @@ function ChatInput({
             // Anchor @/$ detection to the token being edited AT THE CARET, not the
             // end of the whole input. `before` ends at the caret, so a match means
             // "the token ends where my cursor is" — which makes both pickers fire
-            // mid-sentence and when trailing text/newlines follow the token
-            // (previously they only opened when the token was the last thing in the
-            // message). Matchers live in composerTokens.ts (unit-tested there).
+            // mid-sentence and when trailing text/newlines follow the token.
+            // Matchers live in composerTokens.ts (unit-tested there).
             const before = val.slice(0, e.target.selectionStart ?? val.length)
             const fileQ = onFileSelect ? matchFileToken(before) : null
             if (fileQ !== null) { setFilePickerOpen(true); setFileQuery(fileQ) }
@@ -2398,7 +2474,7 @@ function ChatInput({
                         className="fixed w-[250px] rounded-xl bg-bg-elevated border border-border shadow-xl p-1.5 animate-slide-up z-[60]"
                         style={{ left: Math.max(8, Math.min(busyMenuRect.right - 250, window.innerWidth - 250 - 8)), bottom: window.innerHeight - busyMenuRect.top + 8 }}
                       >
-                        {BUSY_SEND_MODES.map(({ mode, label, desc, icon }) => (
+                        {BUSY_SEND_MODES.map(({ mode, icon }) => (
                           <button
                             key={mode}
                             role="menuitemradio"
@@ -2411,8 +2487,8 @@ function ChatInput({
                           >
                             <span className={`shrink-0 ${mode === 'steer' ? 'text-accent' : 'text-warn'}`}>{icon}</span>
                             <div className="min-w-0 flex-1">
-                              <div className="text-[12px] font-medium text-text">{label}</div>
-                              <div className="text-[11px] text-muted leading-snug">{desc}</div>
+                              <div className="text-[12px] font-medium text-text">{i18nT(BUSY_SEND_MODE_LABEL_KEY[mode])}</div>
+                              <div className="text-[11px] text-muted leading-snug">{i18nT(BUSY_SEND_MODE_DESC_KEY[mode])}</div>
                             </div>
                             {busySendMode === mode && <Check size={14} className="text-accent shrink-0" />}
                           </button>
@@ -2473,9 +2549,9 @@ function ChatInput({
         <div ref={shelfRef} className="pt-1 flex items-center gap-2 min-w-0">
           <div className="flex items-center gap-2 min-w-0 flex-1">
           {onAgentClick && agentName && (
-            /* Chrome type: an agent name is a label, not code. `font-mono` here
-               pinned `var(--mono)`, which Settings → Display → Font Family never
-               writes, so the shelf ignored the user's typeface entirely. */
+            /* Chrome type: an agent name is a label, not code. `font-mono` would
+               pin `var(--mono)`, which Settings → Display → Font Family never
+               writes, so it would make the shelf ignore the user's typeface. */
             <button
               className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
               onClick={e => onAgentClick(e.currentTarget.getBoundingClientRect())}
@@ -2514,8 +2590,8 @@ function ChatInput({
               <span className="opacity-40 shrink-0" aria-hidden="true">·</span>
               {/* Copying stays enabled while a response is running — unlike
                   switching project, reading the branch name is harmless. A git
-                  ref IS code, so it keeps mono now that the pill container no
-                  longer supplies it. */}
+                  ref IS code, so it sets `font-mono` itself (the pill container
+                  does not supply it). */}
               <CopyBranchButton
                 branch={projectBranch}
                 label={projectDetached ? 'commit' : 'branch name'}

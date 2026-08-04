@@ -30,7 +30,7 @@ class TestCommentStore:
             id=str(uuid.uuid4()),
             origin="local",
             scope="private",
-            author="nrb",
+            author="alice",
             body="This looks good",
             thread_id="",
             created_at="2026-06-10T00:00:00Z",
@@ -41,7 +41,7 @@ class TestCommentStore:
         comments = store.list_comments("test-art")
         assert len(comments) == 1
         assert comments[0].body == "This looks good"
-        assert comments[0].author == "nrb"
+        assert comments[0].author == "alice"
 
     def test_update_comment(self, store):
         c = ArtifactComment(
@@ -80,7 +80,7 @@ class TestCommentStore:
             id="root",
             origin="local",
             scope="private",
-            author="nrb",
+            author="alice",
             body="root",
             thread_id="root",
             created_at="",
@@ -90,7 +90,7 @@ class TestCommentStore:
             id="r1",
             origin="local",
             scope="private",
-            author="nrb",
+            author="alice",
             body="reply 1",
             thread_id="root",
             parent_id="root",
@@ -101,7 +101,7 @@ class TestCommentStore:
             id="r2",
             origin="local",
             scope="private",
-            author="nrb",
+            author="alice",
             body="reply 2",
             thread_id="root",
             parent_id="root",
@@ -120,7 +120,7 @@ class TestCommentStore:
             id="root",
             origin="local",
             scope="private",
-            author="nrb",
+            author="alice",
             body="root",
             thread_id="root",
             created_at="",
@@ -130,7 +130,7 @@ class TestCommentStore:
             id="r1",
             origin="local",
             scope="private",
-            author="nrb",
+            author="alice",
             body="reply 1",
             thread_id="root",
             parent_id="root",
@@ -141,7 +141,7 @@ class TestCommentStore:
             id="r2",
             origin="local",
             scope="private",
-            author="nrb",
+            author="alice",
             body="reply 2",
             thread_id="root",
             parent_id="root",

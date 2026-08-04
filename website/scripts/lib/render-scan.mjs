@@ -250,7 +250,18 @@ export function dntViolations(text, terms) {
       // wrong internal capitalisation or spacing: `Github`, `NodeJS`, `Node JS`,
       // `YAml`. A term translated away entirely is invisible to any render check,
       // since the word simply is not there to find.
-      if (m[2] !== term && m[2] !== term.toLowerCase()) out.push({ term, found: m[2] })
+      //
+      // The upper-case twin of that exemption: an ALL-CAPS hit touching `_` is a
+      // SCREAMING_SNAKE identifier, where caps is the correct spelling —
+      // `PLAYWRIGHT_MCP_EXTENSION_TOKEN`, `KIROCREW_OWNER_ID`. Both are env var
+      // names quoted verbatim in settings copy, and every one of the 9 shipped
+      // catalogs carries them, so without this the gate opens with 18 findings it
+      // must not have. Requiring BOTH the all-caps form and an adjacent underscore
+      // keeps a bare `PLAYWRIGHT` in prose reportable.
+      const upperIdent = m[2] === term.toUpperCase() && (m[1] === '_' || m[3] === '_')
+      if (m[2] !== term && m[2] !== term.toLowerCase() && !upperIdent) {
+        out.push({ term, found: m[2] })
+      }
       m = rx.exec(text)
     }
   }

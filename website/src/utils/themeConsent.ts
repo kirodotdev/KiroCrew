@@ -6,18 +6,17 @@
  * per-slug, first-activation opt-in. That grant is stored in localStorage under
  * `mc-theme-consent-<slug>`.
  *
- * This module exists because the consent contract used to live in two places
- * that drifted apart: ThemeExperienceLayer wrote a sha256/`consented-v2` token,
- * while client.ts's sendChat still checked for the legacy `'1'` token — so the
- * wire flag was permanently false and installed personas never activated.
- * Routing every reader/writer through this one module keeps the token format
- * from drifting again.
+ * This module is the single reader/writer for the theme-consent token, so its
+ * format cannot drift across call sites: if the persona side wrote a
+ * sha256/`consented-v2` token while the chat side (client.ts's sendChat)
+ * checked for a legacy `'1'` token, the wire flag would be permanently false
+ * and installed personas would never activate.
  *
- * Wire contract (two-tier consent): the chat wire no longer sends a trust
+ * Wire contract (two-tier consent): the chat wire does not send a trust
  * boolean. client.ts transmits the RAW stored grant (getStoredConsent) as
  * `theme_consent_sha`, and the backend verifies content-binding — it injects
  * the persona only if that token equals sha256 of the persona.md it reads. So a
- * re-installed/changed persona (new sha) no longer matches the stored grant and
+ * re-installed/changed persona (new sha) does not match the stored grant and
  * the never-consented persona is not injected.
  *
  * Read model:
@@ -35,9 +34,9 @@ import { safeGetItem, safeSetItem } from './safeStorage'
 export const CONSENT_PREFIX = 'mc-theme-consent-'
 
 /**
- * Legacy consent token written by pre-upgrade builds. It is intentionally NOT a
- * valid grant anymore: personas are now content-bound (sha256) and audio uses a
- * stable sentinel, neither of which is `'1'`. Any `'1'` grant re-prompts once.
+ * Consent token written by older builds. It is intentionally NOT a valid grant:
+ * personas are content-bound (sha256) and audio uses a stable sentinel, neither
+ * of which is `'1'`. Any `'1'` grant re-prompts once.
  */
 const LEGACY_TOKEN = '1'
 

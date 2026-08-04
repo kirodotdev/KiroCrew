@@ -4,9 +4,9 @@
  * A spawn approval is broadcast as a WS `approval` event with id
  * `spawn:<agent_id>` and lands in the per-slot subagents map as
  * status 'pending' + approval_id. It has no inline chat prompt and no
- * notification, so before this the session row showed "N agents running" —
- * an owed decision rendered as work in progress, and invisible entirely for a
- * background chat the user was not viewing.
+ * notification, so without this label an owed decision renders as work in
+ * progress ("N agents running"), and is invisible entirely for a background
+ * chat the user is not viewing.
  *
  * Covered here: the label and its pluralization, precedence against the
  * running/workflow/Thinking lines, exclusion of blocked agents from the
@@ -139,9 +139,9 @@ describe('chat sidebar — sub-agents awaiting spawn approval', () => {
   })
 
   it('outranks the running-agents line and drops blocked agents from its count', () => {
-    // The reported bug: 4 started + 2 blocked read as "4 agents running" with
-    // no hint that anything was owed. Approval wins, and the count it would
-    // have shown never includes the blocked pair.
+    // 4 started + 2 blocked must not read as "4 agents running" with no hint
+    // that anything is owed. Approval wins, and the count never includes the
+    // blocked pair.
     const slots = [{ key: 'k', title: 'mix', running: false, messages: 2 }]
     const { getByText, queryByText } = renderSidebar(
       slots,

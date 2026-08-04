@@ -1,11 +1,9 @@
-"""Live AWS unit prices for deploy cost estimates (NEW-1, Joe R1 follow-up).
+"""Live AWS unit prices for deploy cost estimates.
 
-The what-if cost buckets shown on artifact cards and the deploy console were
-computed from a hardcoded price table (public us-west-2 rates circa the MVP).
-This module upgrades them to LIVE unit prices from the AWS Pricing API when
-the deploy profile can reach it, while keeping the hardcoded table as a
-fail-open fallback -- an estimate labelled "not a bill" must never block on a
-pricing lookup.
+The what-if cost buckets shown on artifact cards and the deploy console use
+LIVE unit prices from the AWS Pricing API when the deploy profile can reach it,
+falling back to a hardcoded price table -- an estimate labelled "not a bill"
+must never block on a pricing lookup.
 
 Design constraints:
 - The Pricing API is only served from us-east-1/eu-central-1/ap-south-1; we

@@ -294,8 +294,9 @@ class TestMcpCronUserActions:
                 },
             )
         assert "ghi789" in result
-        # Verify agent was set on the job
-        assert job.agent_id == "customer360-code-agent"
+        # #391: the field is now folded into add_job's single locked save, not
+        # mutated onto the job afterward -- assert it was passed INTO add_job.
+        assert svc.add_job.call_args.kwargs["agent_id"] == "customer360-code-agent"
 
     # -- cron_add with approval_mode: "auto-approve tools for this cron" --
 
@@ -324,8 +325,9 @@ class TestMcpCronUserActions:
                 },
             )
         assert "appr001" in result
-        assert job.agent_id == "gaia-cr-review"
-        assert job.approval_mode == "auto"
+        # #391: folded into add_job's single locked save (not post-hoc mutation).
+        assert svc.add_job.call_args.kwargs["agent_id"] == "gaia-cr-review"
+        assert svc.add_job.call_args.kwargs["approval_mode"] == "auto"
 
     def test_add_with_approval_mode_empty(self):
         with patch("kiro_crew.mcp_cron.CronService") as mock_svc:

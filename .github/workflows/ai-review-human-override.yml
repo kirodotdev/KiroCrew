@@ -3,19 +3,19 @@ name: AI Review Human Override
 # Human judgment is authoritative over the three AI review gates. A repository
 # writer can record a SHA-scoped false-positive / not-applicable decision with:
 #
-#   /ai-review override <fable|gpt|arbiter|all> <current-sha>: <reason>
+#   /ai-review override <fable|gpt|all> <current-sha>: <reason>
 #
 # issue_comment workflows execute from the trusted default branch, never from
 # the PR head. The handler validates identity + commit freshness, records a
 # bot-authored decision that reviewer workflows can trust, then re-runs the
-# affected line reviewer or updates the API-owned Arbiter check.
+# affected line reviewer.
 
 on:
   issue_comment:
     types: [created, edited]
 
-# Re-run completed Fable / GPT workflows, update the API-owned Arbiter check,
-# and record the trusted decision. PR-write is required because the trusted
+# Re-run completed Fable / GPT workflows and record the trusted decision.
+# PR-write is required because the trusted
 # record is a pull-request comment. Deliberately no id-token or contents:write.
 permissions:
   actions: write
@@ -55,9 +55,9 @@ jobs:
           }
 
           first_line="${COMMENT_BODY%%$'\n'*}"
-          pattern='^/ai-review override (fable|gpt|arbiter|all) ([0-9a-fA-F]{7,40}):[[:space:]]*(.+)$'
+          pattern='^/ai-review override (fable|gpt|all) ([0-9a-fA-F]{7,40}):[[:space:]]*(.+)$'
           if [[ ! "$first_line" =~ $pattern ]]; then
-            post_notice 'AI-review override not recorded. Use `/ai-review override <fable|gpt|arbiter|all> <current-sha>: <one-sentence reason>`.'
+            post_notice 'AI-review override not recorded. Use `/ai-review override <fable|gpt|all> <current-sha>: <one-sentence reason>`.'
             exit 1
           fi
           target="${BASH_REMATCH[1]}"
@@ -162,69 +162,4 @@ jobs:
           fi
           if [ "$TARGET" = "gpt" ] || [ "$TARGET" = "all" ]; then
             rerun_reviewer "codex-review.yml" "GPT 5.6"
-          fi
-
-      - name: Mark Arbiter green
-        if: >-
-          steps.context.outputs.target == 'arbiter'
-          || steps.context.outputs.target == 'all'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.issue.number }}
-          HEAD: ${{ steps.context.outputs.head }}
-          ACTOR: ${{ steps.context.outputs.actor }}
-          SOURCE: ${{ steps.context.outputs.source }}
-          REASON: ${{ steps.context.outputs.reason }}
-        run: |
-          set -euo pipefail
-          marker="<!-- longterm-arbiter -->"
-          source_url="https://github.com/$REPO/pull/$PR#issuecomment-$SOURCE"
-          printf -v body '%s\n## Arbiter — ✅ human override accepted\n\nHuman judgment by @%s overrides the Arbiter finding for `%s`; [the recorded reason](%s) is authoritative for this commit.\n\n> %s\n\n_A new push requires a new judgment. The `defer-longterm` label remains available for broader accepted-risk deferrals._' \
-            "$marker" "$ACTOR" "$HEAD" "$source_url" "$REASON"
-
-          existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" 2>/dev/null \
-            | head -n1 || true)"
-          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-            jq -n --arg body "$body" '{body: $body}' \
-              | gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
-                  --input - >/dev/null
-          else
-            jq -n --arg body "$body" '{body: $body}' \
-              | gh api --method POST "repos/$REPO/issues/$PR/comments" \
-                  --input - >/dev/null
-          fi
-
-          title="Human override accepted"
-          summary="@$ACTOR overrode the Arbiter finding for $HEAD; the recorded human judgment is authoritative."
-          check_id="$(gh api "repos/$REPO/commits/$HEAD/check-runs?per_page=100" \
-            | jq -r '[.check_runs[] | select(.name == "Arbiter — judge from comments")] | sort_by(.started_at) | last.id // empty')"
-          if [ -n "$check_id" ] && gh api --method PATCH \
-            "repos/$REPO/check-runs/$check_id" \
-            -f status=completed -f conclusion=success \
-            -f "output[title]=$title" -f "output[summary]=$summary" >/dev/null; then
-            echo "Updated Arbiter check-run $check_id to success"
-          else
-            gh api --method POST "repos/$REPO/check-runs" \
-              -f name="Arbiter — judge from comments" -f head_sha="$HEAD" \
-              -f status=completed -f conclusion=success \
-              -f "output[title]=$title" -f "output[summary]=$summary" >/dev/null
-            echo "Created successful Arbiter override check for $HEAD"
-          fi
-
-      - name: Refresh PR Readiness after Arbiter override
-        if: >-
-          steps.context.outputs.target == 'arbiter'
-          || steps.context.outputs.target == 'all'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.issue.number }}
-          HEAD: ${{ steps.context.outputs.head }}
-        run: |
-          default_branch="$(gh api "repos/$REPO" --jq '.default_branch')"
-          if ! gh workflow run pr-readiness.yml --ref "$default_branch" \
-            -f pr="$PR" -f sha="$HEAD"; then
-            echo "::warning::could not dispatch PR Readiness refresh"
           fi

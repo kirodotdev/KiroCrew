@@ -1,10 +1,9 @@
-// Regression: a fresh session displayed the kiro agent FILE's model
-// (~/.kiro/agents/kirocrew.json → e.g. claude-opus-4.8) while the turn actually
-// ran on the configured default (e.g. claude-opus-5). The precedence chain is
-// now four tiers deep (the KiroCrew agent's own model, the bound kiro agent's
-// pin, the global fallback, the installed agent file) and ONE backend resolver
-// owns it — resolveModel must delegate rather than keep a second copy that can
-// drift, which is what produced the original mismatch.
+// The kiro agent FILE's model (~/.kiro/agents/kirocrew.json → e.g.
+// claude-opus-4.8) can differ from the configured default the turn actually
+// runs on (e.g. claude-opus-5). The precedence chain is four tiers deep (the
+// KiroCrew agent's own model, the bound kiro agent's pin, the global fallback,
+// the installed agent file) and ONE backend resolver owns it — resolveModel
+// must delegate rather than keep a second copy that can drift and mismatch.
 
 vi.mock('../api/client', () => ({
   api: {

@@ -16,7 +16,7 @@ import { setPendingInput } from '../store/chatSlice'
 import {
   Server, RefreshCw, Play, Square, ExternalLink, ChevronRight, Trash2,
   LoaderCircle, Check, Video, X,
-  Ellipsis, RotateCw, FileText, GitCommit, Rocket,
+  Ellipsis, RotateCw, FileText, GitCommit, Rocket, Info,
 } from 'lucide-react'
 import * as api from './devFleetApi'
 
@@ -47,8 +47,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 /* ─── Sync phase stepper model (marker protocol) ─── */
 // Rough progress mapping for the 5 backend sync steps (fetch/merge/pip/npm ci/
-// build), weighted by typical duration. Shown as a single coarse percentage --
-// per-step labels were dropped (they implied more precision than we have).
+// build), weighted by typical duration. Shown as a single coarse percentage
+// with no per-step labels, which would imply more precision than we have.
 const SYNC_STEP_CUM = [0, 5, 8, 25, 55, 100] as const
 const SYNC_TOTAL_STEPS = 5
 const STEP_MARKER_RE = /^::step::(\d+)::(.+)$/
@@ -69,14 +69,14 @@ function filterStepMarkers(lines: string[]): string[] {
   return lines.filter((l) => !STEP_MARKER_RE.test(l))
 }
 
-/* ─── Restart identity handshake (issue #639) ─── */
+/* ─── Restart identity handshake ─── */
 // POST /restart-gateway and /make-live return the unit's start identity
 // captured BEFORE the bounce; GET /apps/dev-fleet/api/health reports the CURRENT
 // one. (It must be the /api/ path: the gateway only proxies /apps/dev-fleet/api/*
 // to the backend -- the bare /health is the gateway's own internal liveness
 // poll and never reaches the browser.) The UI holds "Restarting — reconnecting"
 // until it observes a DIFFERENT identity, so a 200 from the OLD process still
-// winding down never counts as recovered (the re-click trap issue #639 describes).
+// winding down never counts as recovered (the re-click trap this prevents).
 const RESTART_TIMEOUT_MS = 60000
 
 // Recovered iff we captured an identity AND the gateway now reports a different
@@ -90,7 +90,7 @@ export function gatewayRecovered(
   return String(currentId) !== String(capturedId)
 }
 
-/* ─── Provision progress model (issue #231) ─── */
+/* ─── Provision progress model ─── */
 // The last non-blank output line — the "current activity" shown inline.
 function lastLine(lines: string[] | undefined): string {
   if (!lines) return ''
@@ -162,14 +162,46 @@ export function pruneVerdictLabel(code?: string): string {
   }
 }
 
-// Per-item prune status -> chip label + visual kind, driving the checklist.
-export const PRUNE_STATUS_META: Record<string, { label: string; kind: 'idle' | 'spin' | 'done' | 'failed' }> = {
-  pending: { label: 'Pending', kind: 'idle' },
-  verifying: { label: 'Verifying', kind: 'spin' },
-  stopping_pod: { label: 'Stopping pod', kind: 'spin' },
-  removing: { label: 'Removing', kind: 'spin' },
-  done: { label: 'Removed', kind: 'done' },
-  failed: { label: 'Failed', kind: 'failed' },
+// Per-item prune status -> visual kind, driving the checklist's icon and badge.
+export const PRUNE_STATUS_META: Record<string, { kind: 'idle' | 'spin' | 'done' | 'failed' }> = {
+  pending: { kind: 'idle' },
+  verifying: { kind: 'spin' },
+  stopping_pod: { kind: 'spin' },
+  removing: { kind: 'spin' },
+  done: { kind: 'done' },
+  failed: { kind: 'failed' },
+}
+
+/**
+ * Catalog KEY for each prune status's chip label — kept in its own flat table,
+ * beside PRUNE_STATUS_META (add a status to both).
+ *
+ * Keys, not strings: this is module scope, evaluated once at import, so an
+ * `i18nT()` call here would freeze the boot language. `pruneStatusLabel()` does
+ * the lookup during render. Flat `Record` of full literal keys indexed inline at
+ * the `i18nT()` call, because that is the form `scripts/check-i18n-keys.mjs` can
+ * resolve statically. `removing` / `failed` reuse the keys this page already
+ * ships for those two words rather than adding duplicates.
+ */
+const PRUNE_STATUS_LABEL_KEY: Record<string, string> = {
+  pending: 'pages.devFleetPage.pending',
+  verifying: 'pages.devFleetPage.verifying',
+  stopping_pod: 'pages.devFleetPage.stopping_pod',
+  removing: 'pages.devFleetPage.removing',
+  done: 'pages.devFleetPage.removed',
+  failed: 'pages.devFleetPage.failed',
+}
+
+/** Localised chip label for a prune status, falling back to the `pending` copy for
+ *  the same reason the caller falls back to its meta — the status arrives from the
+ *  /api/run poll, so an unrecognised value must still render something.
+ *
+ *  `hasOwnProperty`, not `in`: a status of `toString` would otherwise resolve to an
+ *  inherited Object.prototype member and hand a function to i18next. */
+function pruneStatusLabel(status: string): string {
+  return Object.prototype.hasOwnProperty.call(PRUNE_STATUS_LABEL_KEY, status)
+    ? i18nT(PRUNE_STATUS_LABEL_KEY[status])
+    : i18nT(PRUNE_STATUS_LABEL_KEY.pending)
 }
 
 // Auto-scrolling <pre> for the FULL provision log (mirrors the sync log panel's
@@ -215,8 +247,8 @@ function iconLabel(icon: ReactNode, label: string) {
 /* ─── Sub-components ─── */
 interface MenuItemDef { label: string; icon?: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; title?: string }
 // Row-actions dropdown geometry. The menu is portaled to <body> so a row's
-// <Card overflow> can't clip it (issue #146); these drive fixed positioning.
-const MENU_GAP = 6        // gap between trigger and menu (was `calc(100% + 6px)`)
+// <Card overflow> can't clip it; these drive fixed positioning.
+const MENU_GAP = 6        // gap between trigger and menu
 const MENU_MARGIN = 8     // min gap from the viewport edge
 const MENU_ITEM_H = 32    // estimated per-item height for the flip decision
 const MENU_PAD = 8        // container vertical padding (4px top + 4px bottom)
@@ -230,7 +262,7 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
 
   useEffect(() => {
     if (!open) return
-    // The menu is portaled to <body>, so it is no longer a DOM descendant of
+    // The menu is portaled to <body>, so it is not a DOM descendant of
     // the trigger — the outside-click guard must exclude BOTH the trigger and
     // the menu (a plain trigger.contains() check would close on every menu
     // click). Escape closes and returns focus to the trigger.
@@ -344,9 +376,9 @@ interface Worktree {
   own_commits?: number; real_dirty?: boolean; is_live?: boolean; legacy?: boolean
   path?: string
 }
-interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean }
+interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; pods_available?: boolean; pods_unavailable_reason?: string | null }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; phase: number; phaseAt?: number; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
-// Provision run state (issue #231): the FULL output is kept (not just the last
+// Provision run state: the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
 // persists (failed=true) until the user dismisses it rather than vanishing.
 interface ProvRun { status: 'starting' | 'running' | 'done' | 'failed'; lines: string[]; startedAt: number; exit?: number | null; failed?: boolean; done?: boolean }
@@ -485,12 +517,27 @@ export default function DevFleetPage() {
     refetchInterval: 30000,
   })
 
-  const invalidateFleet = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['dev-fleet', 'fleet'] })
+  // Every call below happens right after a user-initiated mutation (or the
+  // explicit Refresh button), so the fleet has to be REBUILT rather than
+  // re-read: a plain refetch hits the backend's stale-while-revalidate cache,
+  // which serves the PRE-mutation snapshot and only rebuilds behind it — so a
+  // pruned worktree would keep rendering until that rebuild lands. `fresh=1`
+  // forces the rebuild and the backend coalesces concurrent ones onto a single
+  // build. Falls back to a plain invalidate if the fresh fetch fails.
+  const refetchFleetFresh = useCallback(async () => {
+    try {
+      const data = await api.get<FleetData>('/fleet?fresh=1')
+      if (data) queryClient.setQueryData(['dev-fleet', 'fleet'], data)
+      else queryClient.invalidateQueries({ queryKey: ['dev-fleet', 'fleet'] })
+    } catch {
+      queryClient.invalidateQueries({ queryKey: ['dev-fleet', 'fleet'] })
+    }
   }, [queryClient])
+  const invalidateFleet = useCallback(() => { void refetchFleetFresh() }, [refetchFleetFresh])
   const invalidateAll = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['dev-fleet'] })
-  }, [queryClient])
+    void refetchFleetFresh()
+    queryClient.invalidateQueries({ queryKey: ['dev-fleet', 'disk'] })
+  }, [refetchFleetFresh, queryClient])
 
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -554,7 +601,7 @@ export default function DevFleetPage() {
   }
   function dismissRebaseResult(name: string) { clearTimeout(rebaseTimersRef.current[name]); setRebaseResult((m) => { const n = { ...m }; delete n[name]; return n }) }
 
-  /* ─── Sync reattach on page load (v0.6.0) ─── */
+  /* ─── Sync reattach on page load ─── */
   useEffect(() => {
     if (!fleet?.sync_run_id || syncAttachedRef.current) return
     syncAttachedRef.current = true
@@ -687,7 +734,7 @@ export default function DevFleetPage() {
         const ok = run.exit_code === 0
         notify(ok ? i18nT('pages.devFleetPage.provisioned') : i18nT('pages.devFleetPage.provision_failed_exit_code', { code: run.exit_code }), { type: ok ? 'success' : 'error' })
         if (ok) {
-          // Flash a brief green "Provisioned", then clear (as before). The
+          // Flash a brief green "Provisioned", then clear. The
           // fleet refetch flips the row to its built state in the meantime.
           setProv((p) => ({ ...p, [name]: { status: 'done', done: true, lines, startedAt, exit: 0 } }))
           invalidateFleet()
@@ -698,7 +745,7 @@ export default function DevFleetPage() {
         } else {
           // FAILURE PERSISTENCE: keep the run, auto-expand the log, hold until
           // the user dismisses it — a multi-minute failed provision must not
-          // vanish into an empty row (issue #231).
+          // vanish into an empty row.
           setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines, startedAt, exit: run.exit_code } }))
           setProvLogOpen((o) => ({ ...o, [name]: true }))
           invalidateFleet()
@@ -733,7 +780,7 @@ export default function DevFleetPage() {
       // a provision for this checkout is already running — that is NOT a
       // failure. Reattach to the existing run instead of rendering a false red
       // "Provision failed" state. Only a response with no run id to attach to
-      // is a genuine failure (issue #231 / PR #320).
+      // is a genuine failure.
       if (!r?.run_id) {
         notify(i18nT('pages.devFleetPage.provision_failed_to_start'), { type: 'error' })
         setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: ['Provision failed to start'], startedAt, exit: null } }))
@@ -908,7 +955,7 @@ export default function DevFleetPage() {
       const r = await api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
       if (!r?.ok) { notify(r?.error || i18nT('pages.devFleetPage.restart_failed'), { type: 'error' }); setRestarting(false); return }
       // Wait for the NEW process (a different start identity), not "a 200 came
-      // back" — see gatewayRecovered / issue #639.
+      // back" — see gatewayRecovered.
       await awaitGatewayBack(r.start_id ?? null)
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }); setRestarting(false) }
   }
@@ -951,6 +998,10 @@ export default function DevFleetPage() {
   const running = wts.filter((w) => w.running).length
   const needsProv = wts.filter((w) => !w.is_main && !w.has_dist).length
   const error = fleetError ? (fleetError as Error).message : fleet?.error || null
+  // Whether pods can run on this host. Default TRUE when the field is absent so
+  // a dashboard talking to an older dev-fleet backend keeps its pod controls.
+  const podsAvailable = fleet?.pods_available !== false
+  const podsReason = fleet?.pods_unavailable_reason || null
   const isDiscoveryError = !fleetError && !!fleet?.error
   const ql = q.trim().toLowerCase()
   const matchesRow = (w: Worktree) => !ql || (w.name + ' ' + (w.branch || '')).toLowerCase().includes(ql)
@@ -989,6 +1040,7 @@ export default function DevFleetPage() {
       title = healthy ? i18nT('pages.devFleetPage.qa_pod_is_running_click_open_to_use_it') : i18nT('pages.devFleetPage.qa_pod_is_running_but_failing_its_health_check')
     }
     else if (!w.has_dist) { variant = 'muted'; label = i18nT('pages.devFleetPage.not_built'); title = i18nT('pages.devFleetPage.no_venv_ui_build_yet_provision_builds_this_workt') }
+    else if (!podsAvailable) { variant = 'muted'; label = i18nT('pages.devFleetPage.built'); title = i18nT('pages.devFleetPage.built_but_pods_cannot_run_on_this_host_preview_i') }
     else { variant = 'muted'; label = 'ready'; title = i18nT('pages.devFleetPage.built_and_ready_spin_up_a_pod_from_the_row_menu') }
     return <Badge variant={variant} className="text-[10.5px] px-1.5 py-0" title={title}>{label}</Badge>
   }
@@ -1036,12 +1088,15 @@ export default function DevFleetPage() {
     const podBusy = busy[w.name + ':up'] || busy[w.name + ':down'] || busy[w.name + ':restart']
     if (podBusy) out.push(<span key="podbusy" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--muted)' } as CSSProperties}><LoaderCircle size={12} className="lucide-inline" /> {i18nT('pages.devFleetPage.pod')}{"\u2026"}</span>)
     out.push(<MenuBtn key="menu" items={[
-      w.has_dist && !w.running ? { label: i18nT('pages.devFleetPage.spin_up_pod'), icon: <Play size={13} className="lucide-inline" />, onClick: () => act(w.name, 'up') } : null,
-      w.running ? { label: i18nT('pages.devFleetPage.restart_pod'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
+      podsAvailable && w.has_dist && !w.running ? { label: i18nT('pages.devFleetPage.spin_up_pod'), icon: <Play size={13} className="lucide-inline" />, onClick: () => act(w.name, 'up') } : null,
+      podsAvailable && w.running ? { label: i18nT('pages.devFleetPage.restart_pod'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
       { label: i18nT('pages.devFleetPage.rebase_onto_main'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => rebaseWorktree(w.name), disabled: !!busy[w.name + ':rebase'] },
-      !w.is_live ? { label: i18nT('pages.devFleetPage.make_live'), icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.repoint_the_live_gateway_at_this_worktree_restar') } : null,
-      { label: i18nT('pages.devFleetPage.qa_video'), icon: <Video size={13} className="lucide-inline" />, onClick: () => launchQa(w.name) },
-      w.running ? { label: i18nT('pages.devFleetPage.stop_pod'), icon: <Square size={13} className="lucide-inline" />, onClick: () => act(w.name, 'down'), danger: true } : null,
+      // Make Live rewrites a systemd --user drop-in, so it needs the same host
+      // support pods do (the backend refuses with code "no_systemd" otherwise).
+      podsAvailable && !w.is_live ? { label: i18nT('pages.devFleetPage.make_live'), icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.repoint_the_live_gateway_at_this_worktree_restar') } : null,
+      // QA + video drives the pod-e2e suite, which brings a pod up.
+      podsAvailable ? { label: i18nT('pages.devFleetPage.qa_video'), icon: <Video size={13} className="lucide-inline" />, onClick: () => launchQa(w.name) } : null,
+      podsAvailable && w.running ? { label: i18nT('pages.devFleetPage.stop_pod'), icon: <Square size={13} className="lucide-inline" />, onClick: () => act(w.name, 'down'), danger: true } : null,
     ]} />)
     const rr = rebaseResult[w.name]
     if (rr) out.push(<Clickable key="rr" aria-label={i18nT('pages.devFleetPage.dismiss')} onClick={() => dismissRebaseResult(w.name)} style={{ fontSize: 11, color: rr.kind === 'ok' ? 'var(--ok)' : 'var(--danger)', cursor: 'pointer', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', background: 'none', border: 'none', padding: 0 } as CSSProperties}>{rr.text}</Clickable>)
@@ -1091,7 +1146,7 @@ export default function DevFleetPage() {
     )
   }
 
-  /* ─── Provision stepper (inline at a worktree row, issue #231) ─── */
+  /* ─── Provision stepper (inline at a worktree row) ─── */
   function renderProvStepper(w: Worktree) {
     const pr = prov[w.name]
     if (!pr) return null
@@ -1273,7 +1328,7 @@ export default function DevFleetPage() {
                   {it.status === 'failed' && it.error && (
                     <span title={it.error} style={{ color: 'var(--danger)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.error}</span>
                   )}
-                  <Badge variant={meta.kind === 'done' ? 'ok' : meta.kind === 'failed' ? 'err' : 'muted'} className="text-[10.5px] px-1.5 py-0">{meta.label}</Badge>
+                  <Badge variant={meta.kind === 'done' ? 'ok' : meta.kind === 'failed' ? 'err' : 'muted'} className="text-[10.5px] px-1.5 py-0">{pruneStatusLabel(it.status)}</Badge>
                 </span>
               </div>
             )
@@ -1308,6 +1363,19 @@ export default function DevFleetPage() {
               <span className="text-text-strong">{i18nT('pages.devFleetPage.rebase')}</span> {i18nT('pages.devFleetPage.moves_a_feature_branch_onto_the_latest_main_and')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.prune')}</span> {i18nT('pages.devFleetPage.safely_removes_worktrees_whose_pr_has_already_me')}
             </p>
+            {!podsAvailable && (
+              <div
+                role="note"
+                className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5 mt-3 max-w-[860px] text-[12.5px] leading-relaxed"
+              >
+                <Info size={14} className="lucide-inline shrink-0 mt-0.5 text-muted" />
+                <div className="min-w-0">
+                  <span className="text-text-strong">{i18nT('pages.devFleetPage.pods_are_unavailable_on_this_host')}</span>{' '}
+                  {podsReason ? <><span className="text-muted">{podsReason}</span>{' '}</> : null}
+                  <span className="text-muted">{i18nT('pages.devFleetPage.pod_and_make_live_actions_are_hidden_everything')}</span>
+                </div>
+              </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, margin: '14px 0' } as CSSProperties}>
               <StatCard label={i18nT('pages.devFleetPage.running_pods')} value={running} accent />
               <StatCard label={i18nT('pages.devFleetPage.worktrees')} value={wts.length} />

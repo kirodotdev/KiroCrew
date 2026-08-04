@@ -76,7 +76,7 @@ export function PublishHub({
   const [busy, setBusy] = useState(false)
   const [ttlHours, setTtlHours] = useState<string>('Persistent (no expiry)')
   const selectedTtlHours = () => (ttlHours === '72 hours (requires reaper)' ? 72 : 0)
-  // R12 F3: a TTL change invalidates an existing preview — the previewed TTL
+  // A TTL change invalidates an existing preview — the previewed TTL
   // must match the confirmed one, so force a fresh preview.
   const onTtlChange = (v: string) => { setTtlHours(v); setPreview(null) }
 
@@ -98,7 +98,7 @@ export function PublishHub({
           region: typeof resp.region === 'string' ? resp.region : '',
         })
       } else if (resp?.blocked && resp?.reason === 'scan') {
-        // R18 F6: the scan-block 409 now carries preview bindings too --
+        // The scan-block 409 carries preview bindings too --
         // store them so an override-confirm is pinned to the scanned
         // content and the resolved identity.
         setContentDigest(typeof resp.content_digest === 'string' ? resp.content_digest : '')
@@ -134,7 +134,7 @@ export function PublishHub({
         ttl_hours: selectedTtlHours(),
       }
       if (contentDigest) payload.expected_content_digest = contentDigest
-      // R17 F4: bind the previewed identity -- backend 409s (stale_preview) if
+      // Bind the previewed identity -- backend 409s (stale_preview) if
       // the resolved profile/region drifted between preview and confirm.
       if (previewIdentity.profile) payload.expected_profile = previewIdentity.profile
       if (previewIdentity.region) payload.expected_region = previewIdentity.region

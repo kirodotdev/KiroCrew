@@ -8,8 +8,8 @@
  * The whole point of routing every link through here is that GitHub and GitLab
  * do NOT share a URL grammar — GitLab nests a project's own pages under `/-/`,
  * and a self-managed instance is not even on the same host. Concatenating onto
- * `https://github.com/…` (which is what the app used to do everywhere) produces
- * a link that silently points at a stranger's repo on the public site.
+ * `https://github.com/…` produces a link that silently points at a stranger's
+ * repo on the public site.
  */
 
 import { type ItemKind, type RepoRef } from '../api'
@@ -82,8 +82,7 @@ export function membersUrlFor(ref: RepoRef): string {
 
 /** A single react-query cache-key fragment identifying one repo.
  *
- * Replaces the bare `owner, repo` pair that every cache key used while GitHub was
- * the only provider. It no longer identifies a repo: `acme/widget` on GitHub and
+ * A bare `owner, repo` pair does not identify a repo: `acme/widget` on GitHub and
  * `acme/widget` on gitlab.com would share one cache entry, so switching between
  * them would render the other one's issues, labels and settings until something
  * invalidated. Including provider + host makes that collision impossible. */
@@ -146,9 +145,9 @@ export function providerTerms(ref?: Pick<RepoRef, 'provider'>): ProviderTerms {
 // ── provider CLI commands for agent prompts ─────────────────────────────────
 //
 // The investigate / review seed prompts tell an agent to read the item with a
-// CLI. Those commands used to be hard-coded to `gh`, which on a GitLab item sent
-// the agent to look up a GitLab path on GitHub -- reading a stranger's repo or
-// nothing at all, with no error to notice.
+// CLI. The command is provider-specific: hard-coding `gh` would, on a GitLab
+// item, send the agent to look up a GitLab path on GitHub -- reading a
+// stranger's repo or nothing at all, with no error to notice.
 //
 // See `repoArg` for why GitLab gets a full URL and GitHub keeps `owner/repo`.
 
@@ -161,9 +160,9 @@ function cliFor(ref: RepoRef): string {
  *
  * GitLab gets the project's full URL, because that is the only form carrying the
  * HOST -- a self-managed project is otherwise unaddressable without ambient
- * `GITLAB_HOST` state the agent's shell may not have. GitHub deliberately keeps
- * the plain `owner/repo` it has always used: that invocation is proven, only ever
- * resolves to github.com, and changing it would alter a working path for no gain.
+ * `GITLAB_HOST` state the agent's shell may not have. GitHub deliberately uses
+ * the plain `owner/repo`: that invocation only ever resolves to github.com, and
+ * any other form would alter a working path for no gain.
  */
 function repoArg(ref: RepoRef): string {
   return isGitlab(ref) ? repoWebUrl(ref) : `${ref.owner}/${ref.repo}`

@@ -2,7 +2,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IssueRadarProvider, useIssueRadar } from '../apps/issue-radar/context'
-import { LIST_POLL_MS } from '../apps/issue-radar/lib/format'
+import {
+  LIST_POLL_MS, LIST_POLL_CHOICES_MS, STALE_TIME_CHOICES_MS, REFRESH_DEFAULTS,
+  coerceInterval, coerceRefreshPrefs,
+} from '../apps/issue-radar/lib/format'
 
 // The list routes are cache-first with NO server-side TTL, so a plain refetch
 // is answered from the cache and would observe nothing new forever. The poll is
@@ -35,19 +38,49 @@ function openOnPrSurface(extra: Record<string, unknown> = {}) {
   localStorage.setItem('kc:issue-radar:ui-state', JSON.stringify({ mainView: 'pulls', ...extra }))
 }
 
-function renderProvider(children?: React.ReactNode) {
+const REPO_A = { owner: 'kirodotdev', repo: 'Kiro' }
+const REPO_B = { owner: 'kirodotdev', repo: 'Other' }
+
+function renderProvider(children?: React.ReactNode, active = REPO_A) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  const tree = (repo: typeof REPO_A) => (
     <QueryClientProvider client={client}>
       <IssueRadarProvider
-        repos={[{ owner: 'kirodotdev', repo: 'Kiro' }]}
-        active={{ owner: 'kirodotdev', repo: 'Kiro' }}
+        repos={[REPO_A, REPO_B]}
+        active={repo}
         onSwitch={() => {}}
         onAddRepo={() => {}}
       >
         {children ?? <div>ready</div>}
       </IssueRadarProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
+  )
+  const utils = render(tree(active))
+  return { ...utils, switchTo: (repo: typeof REPO_A) => utils.rerender(tree(repo)) }
+}
+
+/** Reports the ISSUE query's success/loading state plus its row count — the two things
+ * the auto-select and Overview guards key off. */
+function IssuesState() {
+  const { issuesLoading, issues: rows } = useIssueRadar()
+  return (
+    <div data-testid="issues-state">
+      {issuesLoading ? `loading:${rows.length}` : `success:${rows.length}`}
+    </div>
+  )
+}
+
+/** Renders the pulls state plus a control that flips the PR state filter, so a
+ * same-repo key change can be driven from a test. */
+function PrFilterHarness() {
+  const { pullsLoading, pulls: rows, setPrStateFilter } = useIssueRadar()
+  return (
+    <div>
+      <div data-testid="pulls-state">
+        {pullsLoading ? 'loading' : rows.length ? 'rows' : 'empty'}
+      </div>
+      <button data-testid="to-closed" onClick={() => setPrStateFilter('closed')}>closed</button>
+    </div>
   )
 }
 
@@ -56,6 +89,63 @@ function PullsState() {
   const { pullsLoading, pulls: rows } = useIssueRadar()
   return <div data-testid="pulls-state">{pullsLoading ? 'loading' : rows.length ? 'rows' : 'empty'}</div>
 }
+
+describe('refresh preference validation', () => {
+  // The allowlist is the only thing between a user (or a hand-edited localStorage
+  // value) and a poll interval that exhausts the provider's shared 30/min search
+  // quota. It is enforced on READ and on WRITE, and both halves are pinned here
+  // because a silent widening of the domain has no visible symptom until the quota
+  // runs out — at which point the failure is a stale list, not an error.
+  it('accepts only OFFERED intervals, falling back to the default otherwise', () => {
+    expect(coerceInterval(30_000, LIST_POLL_CHOICES_MS, 60_000)).toBe(30_000)
+    // Not on the list -> default. A range clamp would have admitted 1_000.
+    expect(coerceInterval(1_000, LIST_POLL_CHOICES_MS, 60_000)).toBe(60_000)
+    expect(coerceInterval(45_000, LIST_POLL_CHOICES_MS, 60_000)).toBe(60_000)
+    // Wrong TYPE, from hand-edited JSON.
+    expect(coerceInterval('30000', LIST_POLL_CHOICES_MS, 60_000)).toBe(60_000)
+    expect(coerceInterval(null, LIST_POLL_CHOICES_MS, 60_000)).toBe(60_000)
+    // `Infinity` matters specifically: react-query treats it as "no interval", so it
+    // would DISABLE polling rather than speed it up — a silent feature loss.
+    expect(coerceInterval(Infinity, LIST_POLL_CHOICES_MS, 60_000)).toBe(60_000)
+    expect(coerceInterval(NaN, LIST_POLL_CHOICES_MS, 60_000)).toBe(60_000)
+    expect(coerceInterval(-30_000, LIST_POLL_CHOICES_MS, 60_000)).toBe(60_000)
+  })
+
+  it('keeps 0 as a real choice for the cache lifetime', () => {
+    // `0` is a MODE ("always refetch"), not a missing value. A truthiness check here
+    // instead of `includes` would silently rewrite it to the default, and the one
+    // setting a user picks to get maximum freshness would do the opposite.
+    expect(coerceInterval(0, STALE_TIME_CHOICES_MS, 30_000)).toBe(0)
+  })
+
+  it('falls back to the historical behaviour when nothing is persisted', () => {
+    // An existing user must see ZERO change until they touch a control.
+    expect(coerceRefreshPrefs(undefined)).toEqual(REFRESH_DEFAULTS)
+    expect(REFRESH_DEFAULTS.listPollMs).toBe(LIST_POLL_MS)
+    expect(REFRESH_DEFAULTS.pollInBackground).toBe(false)
+    expect(REFRESH_DEFAULTS.prefetchPulls).toBe(false)
+  })
+
+  it('scrubs an out-of-range persisted value field by field', () => {
+    const coerced = coerceRefreshPrefs({
+      listPollMs: 1_000, detailPollMs: 30_000, staleTimeMs: 999,
+      pollInBackground: 'yes', prefetchPulls: true,
+    })
+    expect(coerced.listPollMs).toBe(REFRESH_DEFAULTS.listPollMs)   // rejected
+    expect(coerced.detailPollMs).toBe(30_000)                      // valid, kept
+    expect(coerced.staleTimeMs).toBe(REFRESH_DEFAULTS.staleTimeMs) // rejected
+    expect(coerced.pollInBackground).toBe(false)                   // non-boolean -> default
+    expect(coerced.prefetchPulls).toBe(true)                       // valid, kept
+  })
+
+  it('keeps the list floor at twice the backend probe-coalescing window', () => {
+    // The floor is 30s ONLY because `routes._PROBE_COALESCE_SEC` is 15s: that is what
+    // makes one shared probe reading cover every open tab. Nothing enforces the
+    // relationship across the language boundary, so it is asserted here — if the
+    // backend constant moves, this test is the thing that says the floor must too.
+    expect(Math.min(...LIST_POLL_CHOICES_MS)).toBe(2 * 15_000)
+  })
+})
 
 describe('issue-radar list polling', () => {
   beforeEach(() => {
@@ -69,6 +159,68 @@ describe('issue-radar list polling', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it('never paints one repo\'s rows under another repo\'s identity', async () => {
+    // `placeholderData: keepPreviousData` would retain the previous query's rows for ANY
+    // key change — including a REPO SWITCH. A PR number means something different in
+    // each repo, so a row acted on while repo A's list was painted under repo B would
+    // target B's PR of the same number. The ticked selection is cleared on `scopeKey`,
+    // but that effect runs AFTER the paint, so it closes the window one render late
+    // rather than never opening it; scoping the placeholder is what has no window.
+    openOnPrSurface()
+    pulls.mockResolvedValue({ pulls: [{ number: 7, title: 'A-only', state: 'open', draft: false, labels: [], assignees: [], requested_reviewers: [] }] })
+    const { switchTo } = renderProvider(<PullsState />)
+    await waitFor(() => expect(screen.getByTestId('pulls-state').textContent).toBe('rows'))
+
+    // Repo B has not resolved yet: its fetch is in flight.
+    let releaseB: (v: unknown) => void = () => {}
+    pulls.mockImplementation(() => new Promise((res) => { releaseB = res }))
+    switchTo(REPO_B)
+
+    // The honest render is LOADING, not repo A's rows.
+    await waitFor(() => expect(screen.getByTestId('pulls-state').textContent).toBe('loading'))
+    releaseB({ pulls: [] })
+    await waitFor(() => expect(screen.getByTestId('pulls-state').textContent).toBe('empty'))
+  })
+
+  it('keeps the previous rows across a FILTER change in the same repo', async () => {
+    // The other half of the same rule: a filter change is a different view of the SAME
+    // repo, so the old rows SHOULD stay on screen while the new ones load. That is the
+    // instant-repaint this exists for, and a fix that blanks here would have traded one
+    // defect for the slowness the change set out to remove.
+    openOnPrSurface()
+    pulls.mockResolvedValue({ pulls: [{ number: 7, title: 'open one', state: 'open', draft: false, labels: [], assignees: [], requested_reviewers: [] }] })
+    renderProvider(<PrFilterHarness />)
+    await waitFor(() => expect(screen.getByTestId('pulls-state').textContent).toBe('rows'))
+
+    let releaseClosed: (v: unknown) => void = () => {}
+    pulls.mockImplementation(() => new Promise((res) => { releaseClosed = res }))
+    screen.getByTestId('to-closed').click()
+
+    // Still 'rows' — the previous repo-A rows are retained across the filter change.
+    await waitFor(() => expect(pulls).toHaveBeenCalledTimes(2))
+    expect(screen.getByTestId('pulls-state').textContent).toBe('rows')
+    releaseClosed({ pulls: [] })
+  })
+
+  it('does not report SUCCESS while another repo\'s rows are on screen', async () => {
+    // Consequence of the scoping above, pinned separately because two other effects key
+    // off `isSuccess`: the just-connected-repo auto-select (which consumes a ONE-SHOT
+    // flag, so a wrong fire is unrecoverable) and the Overview's loading guard. Unscoped
+    // `keepPreviousData` reports `success` while the new repo is still fetching, which
+    // would let the auto-select pick an issue number from the PREVIOUS repo — exactly
+    // the bug the effect's own comment says it was written to prevent.
+    issues.mockResolvedValue({ issues: [{ number: 4242, title: 'A-only', state: 'open', labels: [] }] })
+    const { switchTo } = renderProvider(<IssuesState />)
+    await waitFor(() => expect(screen.getByTestId('issues-state').textContent).toBe('success:1'))
+
+    let releaseB: (v: unknown) => void = () => {}
+    issues.mockImplementation(() => new Promise((res) => { releaseB = res }))
+    switchTo(REPO_B)
+    // Not 'success' — and critically not holding repo A's row count.
+    await waitFor(() => expect(screen.getByTestId('issues-state').textContent).toBe('loading:0'))
+    releaseB({ issues: [] })
   })
 
   it('serves the first issue fetch from cache, then polls with poll=1', async () => {

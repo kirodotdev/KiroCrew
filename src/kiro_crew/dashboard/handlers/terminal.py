@@ -330,9 +330,6 @@ async def _kill_session(sess: _TerminalSession) -> None:
     # Run it on the dedicated subprocess pool, never the event loop — a wedged
     # close then costs at most one pool thread instead of freezing the whole
     # gateway, and shares no workers with the orphan-reaping maintenance sweep.
-    # Captured 2026-06-28 as a 25s loop-stall wedge here (reap_orphaned_terminals
-    # -> _kill_session); same family as the _get_start_time and
-    # _cleanup_orphaned_mcp_servers off-loop offloads.
     if sess.master_fd >= 0:
         fd = sess.master_fd
         # Clear the handle BEFORE the await: if this coroutine is cancelled while
@@ -442,7 +439,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         del registry[session_id]
         existing = None
 
-    # Reserve slot synchronously before any await to prevent race condition (#5)
+    # Reserve slot synchronously before any await to prevent race condition
     if not existing and len(registry) >= max_sessions:
         _sel().log_api_access(
             caller=caller,
@@ -578,13 +575,12 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 env=env,
             )
         except Exception as exc:
-            # Clean up master_fd on failure (#6)
             try:
                 os.close(master_fd)
             except OSError:
                 pass
             registry.pop(session_id, None)  # type: ignore[arg-type]
-            # WS already prepared — send error over WS then close (#3)
+            # WS already prepared — send error over WS then close
             if not ws.closed:
                 await ws.send_str(json.dumps({"type": "error", "message": str(exc)}))
                 await ws.close()

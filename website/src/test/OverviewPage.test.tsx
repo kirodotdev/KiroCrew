@@ -60,7 +60,7 @@ describe('OverviewPage — mission control', () => {
     expect(screen.getByText('All systems running')).toBeInTheDocument()
     expect(screen.getByText('Uptime')).toBeInTheDocument()
     expect(screen.getByText('Sessions')).toBeInTheDocument()
-    // The old sub-tab bar is gone.
+    // The landing view has no sub-tab bar.
     expect(screen.queryByText('KiroCrew Config')).not.toBeInTheDocument()
     expect(screen.queryByText('Agent Config')).not.toBeInTheDocument()
     expect(screen.queryByText('Import/Export')).not.toBeInTheDocument()

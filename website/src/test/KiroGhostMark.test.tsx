@@ -44,8 +44,7 @@ describe('KiroGhostMark', () => {
     // Regression guard: Vite inlines the SVG as a `data:image/svg+xml,…` URI
     // whose attributes are single-quoted. An UNQUOTED css `url(…)` token cannot
     // contain quotes, so the browser drops the declaration and the glyph paints
-    // as a solid `currentColor` square (this shipped once and was caught only
-    // in a real-browser screenshot). React serializes the quotes as `&quot;`.
+    // as a solid `currentColor` square. React serializes the quotes as `&quot;`.
     expect(maskStyle()).toMatch(/mask-image:url\(&quot;/)
   })
 

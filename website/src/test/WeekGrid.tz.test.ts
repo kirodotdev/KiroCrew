@@ -138,8 +138,8 @@ describe('WeekGrid.parseCronSlots — timezone-aware', () => {
   })
 
   it('handles the reported bug case: stored as NY, browser is NY, rendered as NY → no shift', () => {
-    // This is the "expected correct" case after the fix. Before the fix,
-    // the cron `9-16` would appear at 05:00-12:00 in ET (bug).
+    // Correct case — no shift: the cron `9-16` renders at 9-16 in ET,
+    // not at 05:00-12:00.
     const job = baseJob({
       cron_expr: '*/5 9-16 * * 1-5',
       timezone: 'America/New_York',

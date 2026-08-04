@@ -13,10 +13,9 @@
  *
  * `t` is a very common local identifier in this codebase (`.map(t => …)` over
  * tabs/turns/tasks/themes). A bare `t` import gets shadowed by those locals and
- * the call then lands on a domain object — this actually happened, producing ~30
- * `TS2349 This expression is not callable` errors on the first codemod run.
- * `i18nT` is collision-free, and the codemod refuses to convert any file that
- * already binds the name.
+ * the call then lands on a domain object, producing `TS2349 This expression is
+ * not callable` errors. `i18nT` is collision-free, and the codemod refuses to
+ * convert any file that already binds the name.
  *
  * ## The trade-off, stated plainly
  *

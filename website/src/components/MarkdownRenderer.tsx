@@ -566,9 +566,9 @@ const MD_COMPONENTS: Components = {
 }
 
 /** Markdown image with a React-rendered Paperclip fallback when the URL is
- *  broken. Previously the onError handler swapped the <img> for a hand-built
- *  SVG via .replaceWith(), which mutated DOM React still owned and could later
- *  trigger "removeChild on Node" reconciliation crashes. */
+ *  broken. The fallback is React-rendered rather than a hand-built SVG swapped
+ *  in via .replaceWith(), so it never mutates DOM React owns — which could
+ *  otherwise trigger "removeChild on Node" reconciliation crashes. */
 function ImgWithFallback({
   node: _node,
   src,
@@ -1059,9 +1059,9 @@ const REVEAL_MIN_OPACITY = 0.6
  *  tail every frame, and when a newly-revealed char COMPLETES a markdown token
  *  (inline `code`, **bold**, a [link], a heading/list marker, …) the subtree
  *  restructures, so React unmounts/remounts the `.ft-word` spans for text that
- *  was ALREADY on screen. The former approach fired a mount CSS keyframe
- *  (`ft-char-fade`), which re-ran on every such remount → the visible flash,
- *  right at the active edge where the eye is. With position-derived opacity a
+ *  was ALREADY on screen. A mount-triggered CSS keyframe (like `ft-char-fade`)
+ *  would re-run on every such remount → a visible flash, right at the active
+ *  edge where the eye is. With position-derived opacity a
  *  remounted span re-appears at the IDENTICAL opacity, so it cannot re-fade;
  *  only the tip advancing changes a char's opacity, giving a smooth
  *  materialization. Confirmed by src/test/streamingFlashRepro.test.tsx. */
@@ -1236,7 +1236,7 @@ export function fixCodeFences(s: string): string {
   // Split closing fences glued to trailing text: ```358KB → ```\n358KB
   // Preserves valid opening fences (```diff, ```json5, ```c++) via negative lookahead
   s = s.replace(/^(```)(?![a-zA-Z][\w+#-]*\s*$)(.+)$/gm, '$1\n$2')
-  // Split opening fences glued to uppercase text (legacy fix)
+  // Split opening fences glued to uppercase text
   s = s.replace(/```([A-Z])/g, '```\n$1')
   return s
 }
@@ -1314,7 +1314,7 @@ const TABLE_DELIM_RE = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
  * (a `---` row that actually carries a `|`). A run that already has such a
  * delimiter is a real (possibly still growing) table and is left to render.
  *
- * Scoping choices (both close reviewer-flagged edges):
+ * Scoping choices (both close known edge cases):
  *  - Require the first line to START with `|`. A looser "≥2 pipes" test also
  *    matched ordinary prose (e.g. a line with an inline `` `cmd | grep | wc` ``)
  *    and would withhold that whole paragraph for the rest of the stream. Models
@@ -1393,7 +1393,7 @@ import { i18nT } from '../i18n/t'
 /** Try to extract a file path from chat text immediately preceding a diff
  * block. Tools sometimes emit "Created /path/to/file:" or "Modified ..."
  * before a bare diff with no +++/--- headers; this hint lets DiffBlock's
- * Open file button work in those cases (round 9).
+ * Open file button work in those cases.
  */
 function extractPathHintFromText(text: string | undefined): string | undefined {
   if (!text) return undefined
@@ -1491,8 +1491,8 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   // to derive a stable slug when the agent didn't emit an explicit one, so
   // bookmark state survives refreshes and prevents save→refresh duplicates.
   // Memoized so each BlockRenderer gets a stable widgetIndex reference
-  // between renders (consistent with the hook-memoization elsewhere in
-  // this CR — defeats memo() defeats if anyone later wraps BlockRenderer).
+  // between renders, so it doesn't defeat memo() if anyone later wraps
+  // BlockRenderer.
   //
   // Must run before any conditional return — Rules of Hooks. (rawMode flips
   // via a settings toggle which usually re-mounts this component anyway,

@@ -19,7 +19,7 @@ function fmtTs(ts: string): string {
   })
 }
 
-/** Display name for a comment author (feedback #7). */
+/** Display name for a comment author. */
 function authorName(c: ArtifactComment): string {
   if (c.author) return c.author
   return c.is_agent ? i18nT('components.commentsSidebar.agent') : i18nT('components.commentsSidebar.unknown')
@@ -33,15 +33,39 @@ function initials(c: ArtifactComment): string {
   return n.slice(0, 2).toUpperCase()
 }
 
-const SYNC_WARN: Record<string, string> = {
-  push_failed: 'Failed to sync to provider',
-  pending_push: 'Pending sync to provider',
+/**
+ * Catalog KEY for each provider sync state that warrants a warning.
+ *
+ * Keys, not strings: this table is evaluated at module load, so an `i18nT()` call
+ * here would freeze the boot language and never re-resolve on a language switch.
+ * The lookup happens in `syncWarnText()`, which runs during render.
+ */
+const SYNC_WARN_KEY: Record<string, string> = {
+  push_failed: 'components.commentsSidebar.failed_to_sync_to_provider',
+  pending_push: 'components.commentsSidebar.pending_sync_to_provider',
 }
 
-/** Warning shown when the anchored text no longer exists in the content
- *  (backend rescans anchors on every content write — `anchor_orphaned` is a
- *  dedicated field, independent of provider `sync_state`). */
-const ORPHAN_WARN = 'Anchor text no longer found in content'
+/**
+ * Warning for a sync state, or `undefined` when that state needs none.
+ *
+ * `undefined` rather than the state name: the call site joins this with the
+ * orphan warning through `.filter(Boolean)`, so returning the raw state would
+ * render a backend identifier as a user-facing warning for every healthy comment.
+ */
+function syncWarnText(state: string): string | undefined {
+  // `hasOwnProperty`, not `in`: the state comes off an API response, so a backend
+  // reporting `toString` would otherwise resolve to an inherited
+  // Object.prototype member and hand a function to i18next.
+  return Object.prototype.hasOwnProperty.call(SYNC_WARN_KEY, state)
+    ? i18nT(SYNC_WARN_KEY[state])
+    : undefined
+}
+
+/** Catalog KEY for the warning shown when the anchored text no longer exists in
+ *  the content (backend rescans anchors on every content write —
+ *  `anchor_orphaned` is a dedicated field, independent of provider
+ *  `sync_state`). Resolved at the call site, which runs during render. */
+const ORPHAN_WARN_KEY = 'components.commentsSidebar.anchor_text_no_longer_found_in_content'
 
 /** A small inline reply composer used under a root thread. */
 export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => void; onCancel: () => void }) {
@@ -155,8 +179,8 @@ export function CommentRow({
   // letting one clobber the other (they're separate backend fields for the
   // same reason).
   const syncWarn = [
-    SYNC_WARN[comment.sync_state],
-    comment.anchor_orphaned ? ORPHAN_WARN : undefined,
+    syncWarnText(comment.sync_state),
+    comment.anchor_orphaned ? i18nT(ORPHAN_WARN_KEY) : undefined,
   ].filter(Boolean).join(' · ') || undefined
   // Comments mirrored in from an external publishing provider can't be resolved
   // or deleted from KiroCrew — those are human-only actions on the provider.
@@ -191,7 +215,7 @@ export function CommentRow({
             title={quote}
           >{quote.slice(0, 80)}{quote.length > 80 ? '…' : ''}</div>
         )}
-        {/* header: avatar + author + time + lightweight source (feedback #3, #7) */}
+        {/* header: avatar + author + time + lightweight source */}
         <div className="flex items-center gap-1.5 mb-1">
           <span
             className="flex items-center justify-center w-5 h-5 rounded-full bg-bg-elevated text-[10px] font-semibold text-muted shrink-0"
@@ -214,7 +238,7 @@ export function CommentRow({
           <div className="text-[13px] text-text whitespace-pre-wrap break-words">{comment.body}</div>
         )}
       </div>
-      {/* actions — always visible, comfortable touch targets (feedback #6) */}
+      {/* actions — always visible, comfortable touch targets */}
       <div className="flex items-center gap-1 mt-1.5 px-0.5" style={isEditing ? { display: 'none' } : undefined}>
         <button
           type="button"
@@ -273,7 +297,7 @@ export function CommentRow({
 export interface CommentsSidebarProps {
   comments: ArtifactComment[]
   loading?: boolean
-  /** Remote-sync failure surfaced from the GET response (item #5). */
+  /** Remote-sync failure surfaced from the GET response. */
   remoteSyncError?: string | null
   /** Doc-level add (no anchor). Anchored adds happen via the inline popover. */
   onAdd: (text: string) => void
@@ -294,15 +318,15 @@ export interface CommentsSidebarProps {
   /** Hide the Delete action too (provider-sourced comments we can't delete
    *  via the provider). */
   hideDelete?: boolean
-  /** Clicking a comment scrolls its in-iframe anchor highlight into view
-   *  (item #5). No-op for comments without an anchor. */
+  /** Clicking a comment scrolls its in-iframe anchor highlight into view.
+   *  No-op for comments without an anchor. */
   onCommentClick?: (id: string) => void
-  /** Reopen a resolved thread (sets status back to open) — feedback #1. */
+  /** Reopen a resolved thread (sets status back to open). */
   onReopen?: (id: string) => void
   /** Edit a comment's body in place. Local comments always; provider-origin
    *  comments push the edit remotely when the provider supports it. Omit to disable the Edit affordance. */
   onEditComment?: (id: string, text: string) => void
-  /** Persistently-highlighted active comment (feedback #4): the matching row
+  /** Persistently-highlighted active comment: the matching row
    *  gets a selected style and is scrolled into view. Unlike flashCommentId
    *  (a transient pulse), this stays applied until the active comment changes. */
   activeCommentId?: string | null
@@ -312,7 +336,7 @@ export interface CommentsSidebarProps {
   /** Override the root `<aside>` sizing classes. Defaults to the full-page /
    *  fullscreen sizing (`w-[340px] shrink-0 … h-[calc(100vh-240px)] min-h-480`).
    *  The chat side panel passes a stacked, height-capped variant so a narrow
-   *  480px panel stays content-primary (CR-B defect #2). Behavior-preserving:
+   *  480px panel stays content-primary. Behavior-preserving:
    *  callers that omit it (ArtifactDetailPage, the fullscreen overlay) are
    *  byte-for-byte unchanged. */
   containerClassName?: string
@@ -338,7 +362,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
   } = props
   // Which comment (if any) is currently being edited in place.
   const [editingId, setEditingId] = useState<string | null>(null)
-  // Flash + scroll a comment row when its in-iframe highlight is clicked (#5).
+  // Flash + scroll a comment row when its in-iframe highlight is clicked.
   const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   useEffect(() => {
     if (!flashCommentId) return
@@ -351,7 +375,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
     const t = setTimeout(() => { el.style.backgroundColor = prev }, 1100)
     return () => clearTimeout(t)
   }, [flashCommentId])
-  // Persistent active comment (feedback #4): scroll its row into view when the
+  // Persistent active comment: scroll its row into view when the
   // active comment changes. The selected *style* is applied via className on
   // the row (stays lit until the active comment changes), not a timed flash.
   useEffect(() => {
@@ -409,8 +433,8 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
     setAdding(false)
   }, [addText, onAdd])
 
-  // Resolved threads are hidden by default with a toggle to reveal them
-  // (feedback #10). Replying to a resolved comment auto-reopens it (handled by
+  // Resolved threads are hidden by default with a toggle to reveal them.
+  // Replying to a resolved comment auto-reopens it (handled by
   // the parent's reply handler).
   const resolvedCount = roots.filter(r => r.status === 'resolved').length
   const visibleRoots = showResolved ? roots : roots.filter(r => r.status !== 'resolved')
@@ -440,7 +464,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
         </div>
       </div>
 
-      {/* remote sync error (item #5) */}
+      {/* remote sync error */}
       {remoteSyncError && (
         <div className="px-3 py-2 border-b border-warn/30 bg-warn-subtle text-[11px] text-warn flex items-start gap-1.5 shrink-0">
           <AlertTriangle size={12} className="shrink-0 mt-0.5" />

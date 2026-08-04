@@ -13,8 +13,8 @@ interface Props {
    * - `'unavailable'` — STT is ON but the configured provider's binary is not
    *   installed (the backend's `available: false`). Telling this user to
    *   "enable it" is wrong — it IS enabled; they need a different provider or
-   *   an install. Getting this wrong is what made the failure unreadable:
-   *   the mic recorded fine and the upload returned 503, surfacing as
+   *   an install. Getting this wrong makes the failure unreadable: the mic
+   *   records fine but the upload returns 503, surfacing as
    *   "Transcription request failed."
    */
   reason?: 'disabled' | 'unavailable'

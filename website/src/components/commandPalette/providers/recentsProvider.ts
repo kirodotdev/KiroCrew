@@ -2,6 +2,7 @@ import { createElement, useMemo } from 'react'
 import { MessageSquare, Clock } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import i18next from 'i18next'
 
 import { api } from '../../../api/client'
 import { useSimplifiedToolNames } from '../../../hooks/useSimplifiedToolNames'
@@ -15,8 +16,8 @@ import { i18nT } from '../../../i18n/t'
 import { fmtDateFields, fmtRelative, toDate } from '../../../i18n/format'
 
 /**
- * Recents / quick-switcher — the unscoped empty-query default view (blended
- * from our palette). Unlike the Sessions tab (content search, min 2 chars,
+ * Recents / quick-switcher — the unscoped empty-query default view. Unlike
+ * the Sessions tab (content search, min 2 chars,
  * empty-returns-nothing), this assembles three grouped buckets so opening the
  * palette with nothing typed reads like a switcher, and it's obvious whether a
  * row is live vs archived:
@@ -117,14 +118,12 @@ function normalizeKey(key: string): string {
 /** Telegram-style relative time: today → "09:46", "yesterday 21:12", weekday
  * this week, short/full date.
  *
- * ChatSidebar.tsx has a parallel implementation that is NOT yet migrated, so
- * until that batch lands a non-English user sees this localized and the
- * sidebar's host-locale. Tracked by the ratchet in localeFormatting.test.ts.
+ * ChatSidebar.tsx has a parallel implementation that resolves against the host
+ * locale rather than the app language.
  *
- * Every branch previously read the BROWSER's locale (`toLocaleTimeString([])`,
- * `toLocaleDateString([])`), so a Chinese dashboard on an en-US browser showed
- * "3:04 PM" and "Jul 30". They now resolve against the app language, and the
- * "Yesterday" literal comes from CLDR instead of being hardcoded English. */
+ * Every branch resolves against the app language (not the browser locale), so
+ * a Chinese dashboard on an en-US browser renders localized times/dates; the
+ * "Yesterday" literal comes from CLDR. */
 function fmtRelativeTime(ts: string | number | undefined): string | undefined {
   if (ts == null) return undefined
   const d = toDate(ts)
@@ -199,7 +198,7 @@ export function sessionStatus(
       colorVar: '--accent',
       pulse: true,
       label:
-        toolStatusLabel(statusDetail, simplifiedToolNames) ||
+        toolStatusLabel(statusDetail, simplifiedToolNames, i18next.language) ||
         i18nT('components.commandPalette.providers.recentsProvider.thinking'),
     }
   }
@@ -312,8 +311,7 @@ export function useRecentsProvider(): ResourceProvider {
             onActivate: () => {
               // Await the create BEFORE navigating: landing on /chat with no
               // active slot triggers ChatPage's auto-create, which would race
-              // this thunk into a duplicate session (the kiro-todo stray-slot
-              // bug, same mechanism).
+              // this thunk into a duplicate session.
               void dispatch(createSlot(undefined))
                 .unwrap()
                 .catch(() => {})

@@ -1,7 +1,6 @@
 """KiroCrew core deploy module — AWS deploy engine, profiles, and route handlers.
 
-Folded from the former ``deploy_web`` builtin app (team decision 2026-07-15).
-Core now owns the AWS deploy layer directly; the "Artifact Deploy" page lives
+Core owns the AWS deploy layer directly; the "Artifact Deploy" page lives
 at ``/artifacts/deploy`` in the main dashboard.
 """
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Inject a finished workflow run's result back into the originating chat (M6.4).
+"""Inject a finished workflow run's result back into the originating chat.
 
 When a background workflow run reaches a terminal state, the registry fires
 ``on_done`` → this injects a summary + result into the chat session that started

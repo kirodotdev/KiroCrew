@@ -134,7 +134,7 @@ class WorkflowService:
         nudge_authorizer: Optional[Callable[..., Any]] = None,
         timeout_secs: Optional[int] = None,
     ) -> None:
-        # Durable store (FIX-21): runs are mirrored to disk so they survive gateway
+        # Durable store: runs are mirrored to disk so they survive gateway
         # restarts. Pass persist=False (or store=None) to keep a purely in-memory
         # registry — used by tests that don't want filesystem side effects.
         if store is None and persist:

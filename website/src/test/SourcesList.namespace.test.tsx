@@ -36,12 +36,9 @@ describe('SourcesList — namespace in handleAdd', () => {
     // Wait for loading to finish (sources query resolves)
     const addBtn = await screen.findByText('+ Add Source')
     fireEvent.click(addBtn)
-    // Switch to Local Folder tab
     fireEvent.click(screen.getByText('Local Folder'))
-    // Fill the folder path
     const input = screen.getByPlaceholderText(/Folder path/)
     fireEvent.change(input, { target: { value: '/tmp/docs' } })
-    // Submit
     fireEvent.click(screen.getByText('Add Folder'))
 
     await waitFor(() =>

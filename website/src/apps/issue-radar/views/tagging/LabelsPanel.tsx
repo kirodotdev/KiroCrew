@@ -17,9 +17,9 @@ import { i18nT } from '../../../../i18n/t'
  * is "what does this repo actually label with" — the long tail of one-off labels
  * belongs at the bottom. Clicking a tag jumps to the issue list filtered by it.
  *
- * The "Suggest new labels" half proposes labels the repo does NOT have (the feature
- * that used to sit on the repo settings page). Creating one writes to GitHub, so
- * it is gated on write access; everything up to that point is a proposal.
+ * The "Suggest new labels" half proposes labels the repo does NOT have. Creating
+ * one writes to GitHub, so it is gated on write access; everything up to that
+ * point is a proposal.
  *
  * `onCreated` lets the parent fold a freshly-created label into the repo's local
  * triage roles — a `triage` / `first-issue` proposal is only useful once Issue

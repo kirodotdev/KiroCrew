@@ -72,7 +72,7 @@ export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
 }
 
 function SysCard({ title, children }: { title: string; children: React.ReactNode }) {
-  return <div className="card-glow border border-border bg-card rounded-lg p-5 animate-rise shadow-sm transition-all"><h3 className="text-sm font-semibold text-text-strong mb-3.5">{title}</h3>{children}</div>
+  return <div className="card-glow border border-border bg-card rounded-lg p-5 animate-rise shadow-sm transition-all"><h3 className="text-sm font-semibold text-text-strong mb-3.5 [overflow-wrap:anywhere]">{title}</h3>{children}</div>
 }
 
 function Info({ k, v }: { k: string; v?: ReactNode }) {

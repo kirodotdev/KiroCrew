@@ -7,11 +7,15 @@ Supports declarative rules and executable script hooks with timeout/sandboxing.
 from __future__ import annotations
 
 import asyncio
+import errno
 import fnmatch
 import json
 import logging
+import os
+import stat as _stat
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -404,6 +408,8 @@ class HookManager:
         raw_params: dict | None = None,
         command: str | None = None,
         is_shell: bool = False,
+        mcp_server_name: str = "",
+        mcp_tool_name: str = "",
     ) -> ToolHookResult:
         """Check if a tool should be auto-approved, denied, or handled normally.
 
@@ -442,6 +448,27 @@ class HookManager:
         that always pass a resolved command can leave ``is_shell`` at its
         default; those forwarding an event should pass both the command and the
         event's ``is_shell`` flag.
+
+        ``mcp_server_name`` is the NON-model-authored MCP server identity from
+        the ACP event's ``_meta.kiro.mcpServerName`` (``AcpEvent.mcp_server_name``),
+        set by kiro-cli ONLY for MCP-served tool calls and empty for shell /
+        built-in tools. It is the trusted discriminator "this call was genuinely
+        served by MCP server X" — as opposed to the LLM-authored ``tool_name``
+        title, which a prompt-injected agent can forge (e.g. titling a Bash call
+        ``mcp__<app>:srv__x``). The app-own-server auto-approve keys on THIS, never
+        on the title, so a forged title cannot win an auto-approval. Empty (the
+        default, or a backend that omits ``_meta.kiro``) fails closed: no match.
+
+        ``mcp_tool_name`` is the sibling NON-model-authored tool identity from
+        ``_meta.kiro.toolName`` (``AcpEvent.tool_name``), set by kiro-cli
+        alongside ``mcp_server_name`` for MCP-served calls. It is used to
+        reconstruct the canonical ``mcp__<server>__<tool>`` name and govern the
+        REAL tool before the app-own-server auto-approve — because the ``tool_name``
+        title above is LLM-authored prose (``select_tool_title`` prefers the
+        model's ``description``) and may not carry the canonical form a per-tool
+        MCP policy matches on. Empty (no ``_meta.kiro.toolName``) means the tool
+        cannot be identified for governance, so the own-server auto-approve does
+        NOT fire (fall through to interactive approval — fail-closed).
         """
         # Deny-by-default: a shell tool whose command could not be recovered
         # must not be evaluated on the untrusted title alone — that is the very
@@ -508,8 +535,7 @@ class HookManager:
         # file-EDIT tool from modifying config.json / config.local.json so a
         # prompt-injected agent cannot rewrite its own resource ceilings
         # (concurrent subagents, turn budget, warm-pool size) to drive host
-        # resource exhaustion — pentest: config-loader bound bypass,
-        # recommendation to block agent tools from modifying config files. Gated
+        # resource exhaustion. Gated
         # on the ACP ``edit`` kind (the fs_write/code tool) so a plain read of
         # config is unaffected — the dashboard file viewer, ``cat``, and knowledge
         # indexing legitimately read config.json. Bash writes (``tee``/``>``/
@@ -568,6 +594,86 @@ class HookManager:
         )
         if gov_reason:
             return ToolHookResult.deny(gov_reason)
+
+        # App-own MCP server auto-approve — a FIRST-PARTY (builtin) app agent
+        # calling its OWN app-scoped MCP server is intra-app, not a host surface.
+        # A builtin app's declared server is registered under the
+        # ``<app>:<server>`` key (see ``apps/bridges.py``) and IS the gateway's
+        # own shipped code, so it only touches the app's own data — never
+        # fs/network/exec/exfil on the host. Once a shipped app agent stopped
+        # pre-authorizing tools (no template ``allowedTools``, the "no template
+        # pre-authorizes tools" invariant), even those intra-app calls fell
+        # through to an interactive prompt the user could not meaningfully act on
+        # (the app was blocked from talking to itself). Auto-approving them here
+        # restores that UX without re-widening any host grant.
+        #
+        # Keyed on the NON-model-authored ``mcp_server_name`` (the ACP
+        # ``_meta.kiro.mcpServerName``), NEVER on the LLM-authored title: a
+        # prompt-injected agent can title a Bash call ``mcp__<app>:srv__x``, but
+        # kiro-cli only sets ``mcp_server_name`` for a genuine MCP-served call, so
+        # a forged shell/host title carries an empty server name and never
+        # matches (fail-closed). Restricted to builtins on purpose: only a
+        # builtin's server is provably first-party. A THIRD-PARTY app's server is
+        # arbitrary installed code whose internals the gate cannot see, so its
+        # own-server calls are NOT auto-approved here — the OS sandbox it runs
+        # under and the third-party admission gate bound its behavior instead.
+        #
+        # Placed AFTER the always-on deny floor and ``_governance_denial`` so a
+        # ceiling/profile can still deny even a builtin's own server and every
+        # sensitive-path / keystone / exfil deny above still wins; and BEFORE the
+        # interactive fall-through, independent of the Normal/Read/Trust tier
+        # (that tier governs the HOST tools an app agent may reach, not the app
+        # talking to its own server). Generic App Kit contract keyed only on the
+        # ``<app>:<server>`` convention + shipped-manifest provenance — no per-app
+        # special-casing.
+        #
+        # ``_app_owns_mcp_server`` only proves the NAME is ``<app>:``-prefixed;
+        # ``_own_mcp_servers`` (bridges.py) injects app servers into the agent by
+        # reading that prefix from the MUTABLE global MCP config, so a
+        # ``<app>:evil`` entry that landed there (not declared by the app) would
+        # otherwise be trusted. Require the server to be DECLARED in the app's
+        # SHIPPED manifest (``_is_declared_builtin_mcp_server``, an in-memory set
+        # warmed at boot from immutable manifests — same discipline as
+        # ``_BUILTIN_APP_NAMES``) so only a genuinely app-own server auto-approves.
+        if (
+            _app_owns_mcp_server(mcp_server_name, app)
+            and _is_first_party_app(app)
+            and _is_declared_builtin_mcp_server(mcp_server_name)
+        ):
+            # Govern the REAL tool by its TRUSTED _meta.kiro identity before
+            # granting the intra-app auto-approve. ``select_tool_title`` prefers
+            # the model's prose ``description``, so ``tool_name`` (and thus the
+            # ``_governance_denial`` above) may not carry the canonical
+            # ``mcp__server__tool`` a per-tool policy matches on — a ceiling /
+            # profile that denies ONE tool of this server would otherwise be
+            # skipped here and the tool auto-executed. Reconstruct the canonical
+            # title from the NON-model-authored server + tool names (mirroring
+            # the ``mcp__<server>__<tool>`` form ``mcp_title_to_ref`` parses) and
+            # re-check governance. A missing trusted tool name (a backend without
+            # ``_meta.kiro.toolName``, or an uncached permission event) means we
+            # cannot prove WHICH tool this is, so we do NOT auto-approve — fall
+            # through to interactive approval (fail-closed), never silent execute.
+            if mcp_tool_name:
+                canonical_mcp_name = f"mcp__{mcp_server_name}__{mcp_tool_name}"
+                # Re-apply the always-on deny floor to the canonical name too:
+                # the top-of-method ``authority.is_denied`` ran against the prose
+                # title / command, so a configured deny rule (``auto_deny_tools``
+                # or a denied regex) keyed on the canonical ``mcp__server__tool``
+                # would have MISSED — and this auto-approve must never re-admit a
+                # tool the deny floor forbids. Mirrors the governance re-check.
+                deny_reason = authority.is_denied(
+                    canonical_mcp_name,
+                    self._config.auto_deny_tools,
+                    denied_regexes=denied_regexes,
+                )
+                if deny_reason:
+                    return ToolHookResult.deny(deny_reason)
+                gov_reason = _governance_denial(
+                    ctx, canonical_mcp_name, session_key, agent, app, tool_kind, raw_params
+                )
+                if gov_reason:
+                    return ToolHookResult.deny(gov_reason)
+                return ToolHookResult.auto_approve()
 
         # Auto-approve — match against both the original title (preserves
         # "Running: "/"Reading " prefixes) and the normalized name (stripped)
@@ -837,6 +943,116 @@ def _governance_denial(
         return None
 
 
+def _app_owns_mcp_server(mcp_server_name: str, app: str) -> bool:
+    """True when *mcp_server_name* is *app*'s OWN app-scoped MCP server.
+
+    App-declared MCP servers are registered under the ``<app>:<server>`` key
+    (``apps/bridges.py`` ``_own_mcp_servers``), so the owning app is the segment
+    before the first ``:``.  ``mcp_server_name`` is the trusted, NON-model-authored
+    identity from ``_meta.kiro.mcpServerName`` (``AcpEvent.mcp_server_name``) —
+    NOT the LLM-authored display title — so a forged shell/host title cannot spoof
+    a match: kiro-cli leaves ``mcp_server_name`` empty for non-MCP tools, and an
+    empty value fails closed here.  Comparison is case-insensitive to mirror the
+    governance MCP matcher.  Returns ``False`` for a blank ``app`` (an ordinary
+    user/host turn carries no app identity) and for any server name that is not
+    ``<app>:``-prefixed (host/managed servers such as ``kirocrew-cron`` never
+    match).
+    """
+    if not app or not mcp_server_name:
+        return False
+    owning_app, sep, _rest = mcp_server_name.partition(":")
+    return bool(sep) and owning_app.casefold() == app.casefold()
+
+
+# Canonical ``<app>:<server>`` names DECLARED in shipped builtin manifests,
+# populated ONCE at gateway boot via ``set_builtin_app_mcp_servers`` (see the
+# dashboard startup). Parallel to ``_BUILTIN_APP_NAMES`` and kept as a plain
+# module global for the same reason — the PreToolUse gate does ZERO filesystem
+# I/O; the shipped-manifest scan happens once at boot, off the event loop. Names
+# are casefolded on ingest so the gate lookup is a pure set membership test.
+# Empty until warmed → fail-closed: an unrecognised server name never
+# auto-approves. This is what stops an undeclared ``<app>:evil`` entry that
+# landed in the MUTABLE global MCP config from being trusted just because its
+# prefix matches a first-party app.
+_BUILTIN_APP_MCP_SERVERS: frozenset[str] = frozenset()
+
+
+def set_builtin_app_mcp_servers(names: Iterable[str]) -> None:
+    """Install the set of shipped-manifest-declared ``<app>:<server>`` names.
+
+    Called once at gateway boot with the names from
+    ``apps.execution.builtin_app_mcp_servers`` (which enumerates the same
+    immutable manifest sources as ``builtin_app_names``). Dependency-inverted
+    like ``set_builtin_app_names`` so ``hooks`` never imports ``apps`` and the
+    gate never touches the filesystem. Idempotent; a later call replaces the set.
+    """
+    global _BUILTIN_APP_MCP_SERVERS
+    _BUILTIN_APP_MCP_SERVERS = frozenset(
+        n.casefold() for n in names if isinstance(n, str) and n
+    )
+
+
+def _is_declared_builtin_mcp_server(mcp_server_name: str) -> bool:
+    """True when *mcp_server_name* is a server a shipped builtin manifest declares.
+
+    Pure in-memory, case-insensitive membership test against
+    ``_BUILTIN_APP_MCP_SERVERS`` (warmed at boot from immutable manifests). The
+    app-own-server auto-approve requires this in addition to prefix ownership so
+    a ``<app>:``-prefixed entry the app never declared (e.g. one injected into
+    the mutable global MCP config) cannot win an auto-approval. Fail-closed
+    before the set is warmed.
+    """
+    return bool(mcp_server_name) and mcp_server_name.casefold() in _BUILTIN_APP_MCP_SERVERS
+
+
+# Builtin (first-party) app names, populated ONCE at gateway boot via
+# ``set_builtin_app_names`` (see the dashboard startup). Kept as a plain
+# module global — NOT derived on the per-tool-call path — so the PreToolUse gate
+# does ZERO filesystem I/O: scanning the shipped-manifest tree on the event loop
+# (even once, before an lru_cache warmed) would stall every gateway task. Names
+# are casefolded on ingest so the gate lookup is a pure set membership test.
+# Empty until warmed → fail-closed: an app whose provenance is not yet known is
+# treated as third-party and its own-server calls simply prompt (never wrongly
+# auto-approved). Boot runs on the startup thread, well before any tool call.
+_BUILTIN_APP_NAMES: frozenset[str] = frozenset()
+
+
+def set_builtin_app_names(names: Iterable[str]) -> None:
+    """Install the set of first-party (builtin) app names for the gate.
+
+    Called once at gateway boot with the names discovered from the shipped
+    manifests (``apps.execution.builtin_app_names``, which enumerates the same
+    sources as ``shipped_builtin_app_root`` — core + the active edition). The
+    dependency is
+    inverted on purpose — boot code (which already imports ``apps``) pushes the
+    names in, so ``hooks`` never imports ``apps`` and the gate never touches the
+    filesystem. Idempotent; a later call replaces the set.
+    """
+    global _BUILTIN_APP_NAMES
+    _BUILTIN_APP_NAMES = frozenset(n.casefold() for n in names if isinstance(n, str) and n)
+
+
+def _is_first_party_app(app: str) -> bool:
+    """True when *app* is a shipped builtin (first-party gateway code).
+
+    Only a BUILTIN app's MCP server is provably the gateway's own shipped code,
+    so only then does the app-own-server auto-approve's justification — "the
+    server is the app's own declared code and only touches the app's own data,
+    never a host surface" — actually hold.  A THIRD-PARTY installed app's server
+    is arbitrary operator-installed code whose internals the PreToolUse gate
+    cannot see (it reads files with plain OS syscalls in its own process, which
+    the gate never observes), so its own-server calls are NOT blanket
+    auto-approved here — they still surface for interactive approval / governance.
+    What bounds a server's internal behavior is the OS sandbox it runs under plus
+    the third-party install/admission gate, not this UX auto-approve.
+
+    Pure in-memory lookup against ``_BUILTIN_APP_NAMES`` (populated at boot from
+    immutable shipped-manifest provenance) — NO filesystem I/O on the event loop.
+    Fail-closed before the set is warmed.
+    """
+    return bool(app) and app.casefold() in _BUILTIN_APP_NAMES
+
+
 def _cu_read_only_auto_approve(tool_name: str) -> bool:
     """True when *tool_name* is a computer-use OBSERVATION tool and the feature is on.
 
@@ -940,7 +1156,7 @@ def safe_read_file(path: str) -> str:
     target against ``is_sensitive_path`` — so a symlink pointing into ``~/.aws``
     etc. is refused through the link — then opens the canonical path with
     ``O_NOFOLLOW`` as defense-in-depth against a TOCTOU swap of the final
-    component into a symlink after the check (AWS-33 / AWS-62).  Opening the
+    component into a symlink after the check.  Opening the
     already-resolved canonical path never rejects a legitimate file (its final
     component is not a symlink by construction), so this only closes the race.
 
@@ -981,7 +1197,7 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
     symlinks) and rejects sensitive resolved targets, so a workspace symlink
     into ``~/.aws`` etc. is refused before any read.  The final open uses
     ``O_NOFOLLOW`` on the canonical path as defense-in-depth against a TOCTOU
-    swap of the final component into a symlink after the check (AWS-33).
+    swap of the final component into a symlink after the check.
 
     Returns file content as bytes, or None if path is rejected or unreadable.
     """
@@ -1017,7 +1233,7 @@ def safe_read_file_bytes_with_identity(
     returned. Because authorization and read share one descriptor, a symlink- or
     directory-swap slipped in between ``realpath`` and ``open`` cannot substitute
     an unauthorized file — its inode is not in the allowlist. ``validate_file_path``
-    still rejects sensitive resolved targets (``~/.aws`` …) up front (AWS-33), so
+    still rejects sensitive resolved targets (``~/.aws`` …) up front, so
     all filesystem reads stay funnelled through this centralized chokepoint.
 
     Returns bytes on success. Raises :class:`PermissionError` when the opened
@@ -1136,10 +1352,11 @@ def safe_read_file_bytes_nolink(
     within_root: str | None = None,
     *,
     max_bytes: int | None = None,
+    allow_truncate: bool = False,
 ) -> bytes | None:
     """Like :func:`safe_read_file_bytes` but also rejects hardlinked inodes.
 
-    R30 F1: staging must pin its hardlink check to the SAME inode it reads.
+    Staging must pin its hardlink check to the SAME inode it reads.
     A caller that lstat()s the path and then opens it by name leaves a race
     window where the file is swapped for a hardlink to a sensitive file
     (e.g. ``~/.aws/config``) between the check and the open. Here the open
@@ -1147,7 +1364,7 @@ def safe_read_file_bytes_nolink(
     the inode that is validated is exactly the inode that is read:
     ``st_nlink > 1`` or a non-regular file type is rejected.
 
-    R33 F1: when ``within_root`` is given, the OPENED descriptor's real path
+    When ``within_root`` is given, the OPENED descriptor's real path
     (via ``/proc/self/fd`` on Linux, ``fcntl.F_GETPATH`` on macOS) must resolve
     inside that root and must not be sensitive. ``O_NOFOLLOW`` only guards the
     FINAL path component — a nested directory swapped for a symlink between
@@ -1197,6 +1414,12 @@ def safe_read_file_bytes_nolink(
             data = fh.read(read_limit + 1)
         fd = -1  # consumed by fdopen
         if len(data) > read_limit:
+            # ``allow_truncate`` is for callers whose contract is "show as much
+            # as fits" rather than "refuse oversize" -- the artifact store
+            # displays a truncated view of a large linked file. The memory bound
+            # is unaffected: at most ``read_limit + 1`` bytes were ever read.
+            if allow_truncate:
+                return data[:read_limit]
             raise FileTooLargeError(f"File exceeds {read_limit // (1024 * 1024)} MB safety cap")
         return data
     except OSError:
@@ -1205,6 +1428,375 @@ def safe_read_file_bytes_nolink(
         if fd >= 0:
             try:
                 os.close(fd)
+            except OSError:
+                pass
+
+
+# errnos meaning "this filesystem has no extended attributes", as opposed to "the
+# lookup failed". Only the former is safe to treat as "nothing to carry".
+_XATTR_UNSUPPORTED_ERRNOS = frozenset(
+    e for e in (getattr(errno, n, None) for n in ("ENOTSUP", "EOPNOTSUPP", "ENOSYS"))
+    if e is not None
+)
+
+_ACCESS_CONTROL_XATTR_PREFIXES = (
+    "system.posix_acl_",  # POSIX ACLs: the actual permission set
+    "security.",          # SELinux/SMACK/capabilities labels
+)
+
+
+def _is_access_control_xattr(attr: str) -> bool:
+    """True when losing *attr* would leave the file less protected.
+
+    Only these justify refusing a write. `user.*` is application metadata: worth
+    carrying, not worth failing a save over on a filesystem that cannot store it.
+    """
+    return attr.startswith(_ACCESS_CONTROL_XATTR_PREFIXES)
+
+
+def safe_write_file_nolink(
+    raw: str,
+    content: str,
+    within_root: str | None = None,
+) -> bool:
+    """Overwrite an EXISTING regular file, pinned to the descriptor opened.
+
+    The write twin of :func:`safe_read_file_bytes_nolink`, and it exists for the
+    same reason: validating a path by name and then opening it by name leaves a
+    check-to-use window in which the final component -- or an ancestor
+    directory -- can be swapped for a symlink, so the write lands on a file the
+    caller never authorized. Here the open happens FIRST (``O_NOFOLLOW``), then
+    every check runs against that descriptor: ``fstat`` rejects hardlinks and
+    non-regular files, and when ``within_root`` is given the OPENED inode's real
+    path must resolve inside it and must not be sensitive. Failing to determine
+    the fd's real path fails closed.
+
+    The target is opened WITHOUT ``O_CREAT``: a caller mirroring content back to
+    a file it previously read has no business creating one, and refusing turns
+    "the file moved" into a no-op rather than a surprise new file. The bytes then
+    land via an atomic replace (staged sibling + directory-fd-relative rename),
+    so a write that fails partway leaves the original untouched instead of a
+    truncated file.
+
+    Returns True when the bytes were written, False on any rejection.
+    """
+    path = validate_file_path(raw)
+    if path is None:
+        return False
+    encoded = content.encode("utf-8")
+    try:
+        # O_RDWR, not O_WRONLY: the no-dir-fd path below needs to READ the
+        # original bytes before truncating so it can put them back if the write
+        # fails. Same inode checks either way.
+        fd = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return False
+    # The descriptor must survive validation (the no-dir-fd path below writes
+    # THROUGH it), so it cannot be closed in a blanket `finally`. Validation
+    # therefore runs in a nested function: every rejection is a single return
+    # here, and the one caller closes the fd on any of them. Returning False
+    # directly from inside the checks is what leaked descriptors -- one per
+    # rejected update, until the gateway ran out.
+
+    def _validate() -> tuple[int, tuple[int, int]] | None:
+        st = os.fstat(fd)
+        if st.st_nlink > 1 or not _stat.S_ISREG(st.st_mode):
+            return None
+        # Carried to the staged file below: a replace that dropped the original's
+        # permissions would silently turn a 0644 shared doc or an 0755 script
+        # into 0600 and break every other reader (or the execute bit).
+        mode = _stat.S_IMODE(st.st_mode)
+        if within_root is not None:
+            fd_real = _fd_real_path(fd)
+            if fd_real is None:
+                return None  # cannot verify containment -> fail closed
+            root_real = os.path.realpath(within_root)
+            try:
+                contained = os.path.commonpath([fd_real, root_real]) == root_real
+            except ValueError:
+                contained = False
+            if not contained:
+                return None  # opened inode escapes the approved tree
+            if is_sensitive_path(fd_real):
+                return None
+
+        # (st_dev, st_ino): the staged rename re-resolves `base` against a
+        # directory fd, and only this pair proves it lands on the checked file.
+        # st_uid vs geteuid: a rename installs a NEW inode owned by THIS
+        # process's user, so replacing a file owned by someone else (a
+        # group-writable file in a shared project) would silently transfer
+        # ownership away from its owner, and only root could chown it back. The
+        # caller uses this to pick the write mechanism.
+        # getattr, not os.geteuid() directly: it does not exist on Windows, and
+        # AttributeError is NOT an OSError -- it would escape this function's
+        # `except OSError`, escape the caller, and surface as a 500 with the
+        # descriptor leaked and current.html already written. Same reason
+        # O_DIRECTORY and fchmod are guarded below; this is the third
+        # POSIX-only attribute in this one function.
+        return mode, (st.st_dev, st.st_ino)
+
+    try:
+        validated = _validate()
+    except OSError:
+        validated = None
+    if validated is None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return False
+    src_mode, src_ident = validated
+
+    # From here on the descriptor stays OPEN. It is the only handle proven to
+    # point at the validated inode, and the no-dir-fd path below writes through
+    # it rather than re-resolving the name.
+
+    # ATOMIC REPLACE, never truncate-then-write. Truncating first means a write
+    # that fails partway (ENOSPC, EIO, EDQUOT) leaves the user's file empty or
+    # half-written with no way back. Stage the complete payload beside the target
+    # and rename over it: the rename is atomic, so the file is either the old
+    # bytes or all of the new ones.
+    #
+    # The staging + rename are DIRECTORY-FD RELATIVE. Doing them by name would
+    # hand back the check-to-use window the O_NOFOLLOW open just closed -- the
+    # parent could be swapped for a symlink between the checks above and the
+    # rename. The directory fd is opened O_NOFOLLOW and re-verified, and both
+    # halves of the rename resolve against it.
+    parent, base = os.path.split(path)
+    # A UNIQUE staging name, created with O_EXCL. A predictable sibling could
+    # already exist as real user data, and O_CREAT|O_TRUNC would have destroyed
+    # it and then renamed it away. O_EXCL also means we only ever clean up a file
+    # this call created.
+    tmp_name = f".{base}.kirocrew-{os.getpid()}-{uuid.uuid4().hex}.tmp"
+    # Directory-fd pinning is an ENHANCEMENT, not a precondition. Where the POSIX
+    # APIs exist (Linux) the staging and rename resolve against an open handle on
+    # the parent, so an ancestor swapped mid-save cannot redirect the write. Where
+    # they do not (Windows), the same staged payload is renamed BY NAME instead --
+    # which is exactly what every editor's atomic save does, and is what actually
+    # protects the user's data: the file is either the old bytes or all of the new
+    # ones, never a shredded half-write.
+    #
+    # This used to fail closed without the pinned variant. That made the whole
+    # mirror-back feature Linux-only in order to defend against someone renaming
+    # directories inside your project during the milliseconds of a save, on your
+    # own machine, to a file you explicitly asked us to link. Losing the feature
+    # on two platforms was the larger harm.
+    #
+    # Use getattr for O_DIRECTORY: a bare os.O_DIRECTORY raises AttributeError,
+    # which `except OSError` would NOT catch, surfacing as a 500.
+    # NOTE: the capability probe names os.rename, not os.replace. CPython lists
+    # only os.rename in supports_dir_fd even though os.replace accepts the same
+    # arguments -- probing os.replace silently disables pinning on Linux.
+    o_directory = getattr(os, "O_DIRECTORY", 0)
+    use_dir_fd = bool(
+        o_directory
+        and os.open in getattr(os, "supports_dir_fd", set())
+        and os.rename in getattr(os, "supports_dir_fd", set())
+    )
+
+    # Extended attributes are read from the DESCRIPTOR, not the pathname, and read
+    # HERE while it is still open. A by-name `listxattr(path)` re-resolves the
+    # whole path, so an ancestor renamed mid-save makes the lookup fail while the
+    # pinned rename below still succeeds -- installing a replacement stripped of
+    # the owner's ACL. Everything else in this function is descriptor-pinned; this
+    # was the one read that was not.
+    #
+    # A filesystem that does not support xattrs at all is NOT an error: there is
+    # nothing on the source to lose. Any OTHER failure means we cannot know what
+    # we would be dropping, so it refuses.
+    src_xattrs: list[tuple[str, bytes]] = []
+    if all(hasattr(os, a) for a in ("listxattr", "getxattr", "setxattr")):
+        try:
+            for _attr in os.listxattr(fd):
+                src_xattrs.append((_attr, os.getxattr(fd, _attr)))
+        except OSError as exc:
+            if exc.errno not in _XATTR_UNSUPPORTED_ERRNOS:
+                logger.warning(
+                    "refusing source write to %r: could not read its extended attributes "
+                    "(%s), so a replacement could silently drop access controls",
+                    path,
+                    exc,
+                )
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                return False
+            src_xattrs = []
+
+    # POSIX: the descriptor's job is done -- the staged rename below is pinned by
+    # the directory fd instead, and holding a second handle buys nothing.
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+    dfd = -1
+    created = False
+    try:
+        if use_dir_fd:
+            try:
+                dfd = os.open(parent, os.O_RDONLY | o_directory | getattr(os, "O_NOFOLLOW", 0))
+            except OSError:
+                return False
+        if use_dir_fd and within_root is not None:
+            dir_real = _fd_real_path(dfd)
+            if dir_real is None:
+                return False  # cannot verify containment -> fail closed
+            root_real = os.path.realpath(within_root)
+            try:
+                contained = os.path.commonpath([dir_real, root_real]) == root_real
+            except ValueError:
+                contained = False
+            if not contained or is_sensitive_path(dir_real):
+                return False
+        elif within_root is not None:
+            # No directory handle to interrogate, so the parent is verified by
+            # its resolved path. Weaker than the pinned check (a swap between
+            # this and the rename is not detectable) but it still refuses a
+            # parent outside the authorised root or inside a sensitive location.
+            dir_real = os.path.realpath(parent)
+            root_real = os.path.realpath(within_root)
+            try:
+                contained = os.path.commonpath([dir_real, root_real]) == root_real
+            except ValueError:
+                contained = False
+            if not contained or is_sensitive_path(dir_real):
+                return False
+        # O_NOFOLLOW guards only the FINAL component, so opening the parent by
+        # name leaves an INTERMEDIATE ancestor swappable between the file's
+        # validation and this open: /project/a/c/doc with `a` replaced by a
+        # symlink to /project/b yields a directory fd for a different `c`, and
+        # the rename would overwrite /project/b/c/doc instead. Re-resolving
+        # `base` through the pinned fd and requiring the SAME (dev, ino) closes
+        # that: if any ancestor changed, this resolves to a different inode or
+        # not at all.
+        if use_dir_fd:
+            try:
+                dst = os.stat(base, dir_fd=dfd, follow_symlinks=False)
+            except OSError:
+                return False
+            if (dst.st_dev, dst.st_ino) != src_ident:
+                logger.warning(
+                    "refusing source write to %r: the pinned parent no longer resolves to "
+                    "the validated file",
+                    path,
+                )
+                return False
+            tfd = os.open(
+                tmp_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=dfd,
+            )
+        else:
+            tfd = os.open(
+                os.path.join(parent, tmp_name),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+        created = True
+        try:
+            written = 0
+            while written < len(encoded):
+                written += os.write(tfd, encoded[written:])
+            # Restore the target's permissions on the descriptor BEFORE the
+            # rename, so the replacement is never briefly visible as 0600.
+            # Via platform_compat: os.fchmod does not exist on Windows, and a
+            # bare call would raise AttributeError -- which `except OSError`
+            # would NOT catch, surfacing as a 500 mid-update.
+            platform_compat.fchmod_safe(tfd, src_mode)
+            # Carry extended attributes across the replace. The in-place write
+            # this replaced preserved them for free by never changing the inode;
+            # a fresh inode starts with none, which silently drops POSIX ACLs
+            # (stored as system.posix_acl_access) and any user.* metadata.
+            #
+            # Split by what the attribute DOES, rather than one policy for all:
+            #
+            #  * an ACCESS-CONTROL attribute that fails to copy is a security
+            #    regression -- the rename would install an inode the owner has
+            #    protected less than the one it replaced -- so the write is
+            #    REFUSED and the original is left untouched;
+            #  * an informational `user.*` attribute is best effort, because
+            #    failing closed there would make every linked write fail on a
+            #    filesystem that simply does not support xattrs (tmpfs, several
+            #    network mounts), which is worse than losing a tag.
+            #
+            # A source with NO xattrs needs nothing carried, so an unsupported
+            # filesystem is not an error -- there is nothing to lose.
+            #
+            # Values were captured from the validated DESCRIPTOR above, so this
+            # loop cannot be affected by a path that moved since.
+            for attr, value in src_xattrs:
+                try:
+                    os.setxattr(tfd, attr, value)
+                except OSError:
+                    if _is_access_control_xattr(attr):
+                        logger.warning(
+                            "refusing source write to %r: could not carry access-control "
+                            "attribute %r onto the replacement",
+                            path,
+                            attr,
+                        )
+                        return False
+                    continue  # informational attribute -- keep going
+            os.fsync(tfd)
+        finally:
+            os.close(tfd)
+        # LAST-MOMENT re-check, immediately before the rename.
+        #
+        # rename() replaces whatever the name points at RIGHT NOW, and the
+        # earlier identity check ran before the payload was staged -- a write
+        # plus fsync, which on a slow filesystem is a wide window. An editor
+        # doing its own atomic save in that window swaps in a NEW inode, and the
+        # rename would silently overwrite content newer than what the user is
+        # editing here. Re-checking last shrinks the window from "duration of
+        # the staged write" to the few instructions below, and a detected change
+        # REFUSES rather than clobbers.
+        #
+        # This is a narrowing, not a guarantee: a genuine compare-and-swap
+        # rename needs renameat2(RENAME_EXCHANGE), which the stdlib does not
+        # expose (and which is Linux-only). The remaining window cannot be
+        # closed with os.rename, so the caller keeps its own snapshot and the
+        # user's newer file wins -- the safe direction.
+        try:
+            pre = (
+                os.stat(base, dir_fd=dfd, follow_symlinks=False)
+                if use_dir_fd
+                else os.stat(path, follow_symlinks=False)
+            )
+        except OSError:
+            return False
+        if (pre.st_dev, pre.st_ino) != src_ident:
+            logger.warning(
+                "refusing source write to %r: the file changed on disk after validation "
+                "(concurrent save); not overwriting the newer content",
+                path,
+            )
+            return False
+        if use_dir_fd:
+            os.rename(tmp_name, base, src_dir_fd=dfd, dst_dir_fd=dfd)
+        else:
+            # os.replace, not os.rename: on Windows rename REFUSES an existing
+            # destination, while replace overwrites it -- and does so atomically,
+            # which is the property that matters here.
+            os.replace(os.path.join(parent, tmp_name), path)
+        created = False  # renamed away; nothing left to clean up
+        return True
+    except OSError:
+        return False
+    finally:
+        if created:
+            try:
+                if dfd >= 0:
+                    os.unlink(tmp_name, dir_fd=dfd)
+                else:
+                    os.unlink(os.path.join(parent, tmp_name))
+            except OSError:
+                pass
+        if dfd >= 0:
+            try:
+                os.close(dfd)
             except OSError:
                 pass
 

@@ -56,8 +56,7 @@ export const THEME_VAR_NAMES = [
 // CSP for the sandboxed widget iframe. `scriptOrigin` is the dashboard's own
 // origin (window.location.origin); the iframe loads the same-origin Tailwind v4
 // runtime from exactly `scriptOrigin + TAILWIND_RUNTIME_PATH`, replacing public
-// cdn.tailwindcss.com (which locked-down network environments block and which
-// crashed the page on artifact render).
+// cdn.tailwindcss.com, which locked-down network environments block.
 //
 // script-src is least-privilege ("allowlist only
 // necessary sources"): the dashboard origin is pinned to the single vendored
@@ -224,7 +223,7 @@ const COMMENT_HIGHLIGHT_CSS =
   "border-radius:10px 10px 10px 2px;box-shadow:0 1px 3px rgba(0,0,0,.35);cursor:pointer}" +
   ".mc-cmt-bubble.unread{background:var(--warn,#e0a000);color:var(--warn-fg,#1a1a1a)}"
 
-/** In-iframe comment bridge (items #4/#5). Vanilla JS string — no LLM/user
+/** In-iframe comment bridge. Vanilla JS string — no LLM/user
  * interpolation (no `${}`), set via textContent and re-parsed by the iframe.
  * Brings anchored commenting + highlights into the sandboxed HTML render that
  * the parent cannot reach directly:
@@ -499,8 +498,8 @@ interface BuildSrcdocOptions {
    * since they use a fixed iframe height. */
   includeHeightReporter?: boolean
   /** Inject the anchored-comment bridge (selection capture + highlight render
-   * + scroll/flash) so the parent can offer commenting inside the HTML render
-   * (items #4/#5). Off by default. */
+   * + scroll/flash) so the parent can offer commenting inside the HTML render.
+   * Off by default. */
   enableComments?: boolean
 }
 
@@ -598,7 +597,7 @@ export function buildSrcdoc({
   safeCenter.textContent = SAFE_CENTER_GUARD_BODY
   body.appendChild(safeCenter)
 
-  // Anchored-comment bridge (items #4/#5): highlight CSS + selection/highlight
+  // Anchored-comment bridge: highlight CSS + selection/highlight
   // script. textContent assignment only — no LLM/user content interpolated.
   if (enableComments) {
     const hlStyle = doc.createElement('style')

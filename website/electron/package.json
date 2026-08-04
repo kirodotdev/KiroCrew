@@ -5,7 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/*.test.js",
+    "test": "node --test test/*.test.js mochi/test/*.test.js",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
     "dist:linux": "electron-builder --linux"
@@ -21,7 +21,7 @@
     "electron-builder-squirrel-windows": "^26.15.3"
   },
   "overrides": {
-    "fast-uri": "3.1.4",
+    "fast-uri": "3.1.5",
     "js-yaml": "4.3.0"
   },
   "build": {
@@ -41,7 +41,8 @@
       "notarize": false,
       "x64ArchFiles": "{**/backend-dist/**,**/backend-dist/**/.*/**}",
       "extendInfo": {
-        "CFBundleDisplayName": "Kiro Crew"
+        "CFBundleDisplayName": "Kiro Crew",
+        "NSMicrophoneUsageDescription": "Kiro Crew uses the microphone for voice input and dictation in chat. Audio is captured only while you hold or toggle the mic button."
       }
     },
     "afterSign": "scripts/notarize.js",
@@ -59,6 +60,7 @@
       "main.js",
       "app-menu.js",
       "badge.js",
+      "native-theme.js",
       "zoom.js",
       "instance-guard.js",
       "context-menu.js",
@@ -81,10 +83,23 @@
       "token-retry.js",
       "display-media.js",
       "permission-handler.js",
+      "browser-view.js",
+      "browser-control.js",
+      "browser-agent-channel.js",
       "external-scheme.js",
       "validation.js",
       "context-menu.js",
       "preload.js",
+      "mochi/index.js",
+      "mochi/petOverlays.js",
+      "mochi/pet-preload.js",
+      "mochi/panelWindow.js",
+      "mochi/avatarWindow.js",
+      "mochi/settingsWindow.js",
+      "mochi/snipWindow.js",
+      "mochi/shortcuts.js",
+      "mochi/pageUrl.js",
+      "mochi/instanceGate.js",
       "anime.global.js",
       "loading.html",
       "token-prompt.html",

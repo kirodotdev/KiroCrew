@@ -42,8 +42,8 @@ def _node_version_manager_bins(home: str) -> list[str]:
     ``claude-agent-acp`` that were installed via ``npm i -g`` under nvm/fnm.
 
     Cached for the process lifetime (``lru_cache(maxsize=1)``, ``home`` is
-    constant per process): the filesystem glob is the surface a prior GIL-storm
-    wedge got caught in, so it must run exactly once.  Trade-off: a node version
+    constant per process): the filesystem glob must run exactly once — repeating
+    it risks a GIL-contention wedge.  Trade-off: a node version
     installed via nvm/fnm *while the long-lived gateway is running* is not
     visible until the gateway restarts.  Acceptable — installing node mid-session
     is rare, and a restart picks it up.  Call ``cache_clear()`` if that ever

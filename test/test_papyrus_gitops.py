@@ -25,12 +25,15 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import stat
 import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
+from kiro_crew import sandbox
 from kiro_crew.apps.builtins.papyrus.backend import gitops
 
 
@@ -1140,3 +1143,250 @@ class TestGitattributesCannotNameAProgram:
         gitops._pin_attributes_sync(project)
         assert _run("add", "-A") == 0, "the pin broke `git add`"
         assert not marker.exists(), "the clean filter executed despite the pin"
+
+
+class TestSandboxRefusalIsReportedNotSwallowed:
+    """No sandbox backend => a typed, actionable error, not an unhandled 500.
+
+    ``push`` deliberately runs in ``standard`` mode because an SSH push needs the
+    key, so the OS sandbox is doing real work on this path — dropping the wrap to
+    make Windows "work" would hand an agent-writable repo config a shell with
+    ``~/.ssh`` in reach. The refusal is therefore surfaced, never bypassed.
+
+    Reachable on every Windows host: user namespaces are Linux-only and
+    ``sandbox-exec`` is macOS-only, so ``detect_backend()`` there is ``"none"``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_it_raises_the_typed_subclass(self, repo: Path) -> None:
+        boom = mock.Mock(
+            side_effect=sandbox.SandboxUnavailableError(
+                "no backend", "no_backend", "simulated"
+            )
+        )
+        with mock.patch.object(gitops, "sandboxed_spawn_argv", boom):
+            with pytest.raises(gitops.GitSandboxUnavailable) as caught:
+                await gitops.commit(repo, "msg")
+        # A `GitError` subclass, so existing handlers still catch it — but its own
+        # type, so the route layer can answer with a code whose remedy is a config
+        # change rather than something about the repository.
+        assert isinstance(caught.value, gitops.GitError)
+        assert "no backend" in str(caught.value)
+
+
+class TestTheAttributesPinCannotBeNeutralized:
+    """The pin must END UP LAST, and must never be written through a symlink.
+
+    Two ways the original implementation could be defeated, both verified against
+    real git before the fix and pinned here:
+
+    1. **Pre-seed the pin line.** The idempotence check returned early when the pin
+       was already *present*, so an attacker wrote the pin line themselves and put
+       `* filter=x` after it. Git resolves attributes per name with the LAST match
+       winning, so the attacker's rule won while the early return kept the real pin
+       from being re-appended. "Already present" is not the same property as
+       "last", and only the second one is protective.
+    2. **A symlink at the name.** `read_text`/`write_text` both follow one, so
+       `attributes -> /dev/null` made the pin unobservable AND unwritable (silently
+       inert forever), and `attributes -> <any file>` turned a `GET /git` status
+       poll into an arbitrary-file append plus a read of that file's contents.
+
+    Both are reachable by the co-author agent, which can write into the project, on
+    a path that runs in `standard` sandbox mode with `~/.ssh` readable.
+    """
+
+    def _repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "paper"
+        (repo / ".git" / "info").mkdir(parents=True)
+        return repo
+
+    def test_a_pre_seeded_pin_is_moved_back_to_last(self, tmp_path: Path) -> None:
+        repo = self._repo(tmp_path)
+        attrs = repo / ".git" / "info" / "attributes"
+        pin = gitops._ATTRIBUTES_PIN.strip()
+        attrs.write_text(f"{pin}\n* filter=x\n", encoding="utf-8")
+
+        gitops._pin_attributes_sync(repo)
+
+        lines = attrs.read_text(encoding="utf-8").splitlines()
+        # The attacker's rule survives (we do not delete a user's rules), but the
+        # pin is now AFTER it, which is what decides the outcome.
+        assert "* filter=x" in lines
+        assert lines[-1] == pin, f"pin must be last, got {lines!r}"
+
+    def test_the_pin_still_does_not_accumulate(self, tmp_path: Path) -> None:
+        """Idempotence is preserved — repeat calls converge, they do not append."""
+        repo = self._repo(tmp_path)
+        attrs = repo / ".git" / "info" / "attributes"
+        pin = gitops._ATTRIBUTES_PIN.strip()
+
+        gitops._pin_attributes_sync(repo)
+        once = attrs.read_text(encoding="utf-8")
+        gitops._pin_attributes_sync(repo)
+        gitops._pin_attributes_sync(repo)
+        thrice = attrs.read_text(encoding="utf-8")
+
+        assert once == thrice
+        assert thrice.count(pin) == 1
+
+    def test_a_users_own_rules_are_preserved_below_the_pin(self, tmp_path: Path) -> None:
+        """The append-not-overwrite property this file documents must still hold."""
+        repo = self._repo(tmp_path)
+        attrs = repo / ".git" / "info" / "attributes"
+        attrs.write_text("*.tex text eol=lf\n*.pdf binary\n", encoding="utf-8")
+
+        gitops._pin_attributes_sync(repo)
+
+        content = attrs.read_text(encoding="utf-8")
+        assert "*.tex text eol=lf" in content
+        assert "*.pdf binary" in content
+        assert content.splitlines()[-1] == gitops._ATTRIBUTES_PIN.strip()
+
+    def test_a_symlinked_attributes_file_is_refused(self, tmp_path: Path) -> None:
+        repo = self._repo(tmp_path)
+        victim = tmp_path / "victim.txt"
+        victim.write_text("original\n", encoding="utf-8")
+        (repo / ".git" / "info" / "attributes").symlink_to(victim)
+
+        with pytest.raises(gitops.GitError, match="symlink"):
+            gitops._pin_attributes_sync(repo)
+        # The write did NOT follow the link.
+        assert victim.read_text(encoding="utf-8") == "original\n"
+
+    def test_a_symlinked_info_directory_is_refused(self, tmp_path: Path) -> None:
+        """`mkdir(exist_ok=True)` is a no-op on a link, so the dir needs its own check."""
+        repo = tmp_path / "paper"
+        (repo / ".git").mkdir(parents=True)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (repo / ".git" / "info").symlink_to(elsewhere, target_is_directory=True)
+
+        with pytest.raises(gitops.GitError, match="symlink"):
+            gitops._pin_attributes_sync(repo)
+        assert not (elsewhere / "attributes").exists()
+
+    def test_the_rewrite_is_atomic(self, tmp_path: Path) -> None:
+        """Temp file + rename, not truncate-then-write.
+
+        This is a read-modify-write on a file two concurrent requests touch (a
+        toolbar status poll and a push). `write_text` truncates first, so an
+        overlapping reader could observe the empty window, keep nothing, and rename
+        pin-only content over the user's rules — a permanent loss, since the file is
+        checkout-local and git never restores it.
+
+        Asserted on the source rather than by racing threads: the property is "which
+        write primitive is used", and a timing test for it would be inherently flaky.
+        """
+        import inspect
+
+        src = inspect.getsource(gitops._pin_attributes_sync)
+        assert "atomic_write(" in src
+        assert "target.write_text(" not in src
+
+    def test_no_temp_residue_is_left_behind(self, tmp_path: Path) -> None:
+        repo = tmp_path / "paper"
+        (repo / ".git" / "info").mkdir(parents=True)
+        gitops._pin_attributes_sync(repo)
+        gitops._pin_attributes_sync(repo)
+        names = sorted(p.name for p in (repo / ".git" / "info").iterdir())
+        assert names == ["attributes"], f"temp file survived: {names!r}"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits")
+    def test_the_rewrite_preserves_the_existing_mode(self, tmp_path: Path) -> None:
+        """A guard must not silently loosen permissions on the file it protects.
+
+        `atomic_write` renames a fresh temp file into place, so without carrying the
+        mode across, a user who had tightened `.git/info/attributes` to 0600 would
+        find it 0644 after any status poll.
+        """
+        repo = tmp_path / "paper"
+        (repo / ".git" / "info").mkdir(parents=True)
+        attrs = repo / ".git" / "info" / "attributes"
+        attrs.write_text("*.tex text\n", encoding="utf-8")
+        os.chmod(attrs, 0o600)
+
+        gitops._pin_attributes_sync(repo)
+
+        assert stat.S_IMODE(attrs.stat().st_mode) == 0o600
+        assert "*.tex text" in attrs.read_text(encoding="utf-8")
+
+    def test_a_first_write_needs_no_prior_mode(self, tmp_path: Path) -> None:
+        """Nothing to preserve is the normal case on a fresh clone, not an error."""
+        repo = tmp_path / "paper"
+        (repo / ".git" / "info").mkdir(parents=True)
+        gitops._pin_attributes_sync(repo)
+        assert (repo / ".git" / "info" / "attributes").read_text(
+            encoding="utf-8"
+        ) == gitops._ATTRIBUTES_PIN
+
+    def test_junctions_are_refused_like_symlinks(self, tmp_path: Path) -> None:
+        """A Windows junction is a reparse point `is_symlink()` does not report.
+
+        It is also the link type a Windows user can create without elevation, so a
+        symlink-only guard was bypassable on exactly the platform this PR adds.
+        Asserted through the shared helper so the two guards cannot drift on which
+        link types they cover.
+        """
+        repo = tmp_path / "paper"
+        (repo / ".git" / "info").mkdir(parents=True)
+        target = repo / ".git" / "info" / "attributes"
+        target.write_text("", encoding="utf-8")
+        with mock.patch.object(gitops.store, "is_reparse_link", return_value=True):
+            with pytest.raises(gitops.GitError, match="symlink"):
+                gitops._pin_attributes_sync(repo)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="symlink creation needs privilege on Windows"
+    )
+    def test_a_linked_git_dir_is_refused(self, tmp_path: Path) -> None:
+        """`.git` itself is the OUTERMOST name that must not be a link.
+
+        Guarding only `info` and `attributes` left the chain rooted on an unverified
+        link: point `.git` at ANOTHER repository and both inner names are legitimate
+        non-links *inside that repo*, so both checks pass and a `GET /git` status
+        poll rewrites a different repository's attributes — outside this project
+        entirely. The rule has to hold for every segment traversed by name.
+        """
+        project = tmp_path / "paper"
+        project.mkdir()
+        victim = tmp_path / "victim-repo"
+        (victim / "info").mkdir(parents=True)
+        original = "*.tex text eol=lf\n"
+        (victim / "info" / "attributes").write_text(original, encoding="utf-8")
+        (project / ".git").symlink_to(victim, target_is_directory=True)
+
+        with pytest.raises(gitops.GitError, match="symlink"):
+            gitops._pin_attributes_sync(project)
+        # The other repository was not touched.
+        assert (victim / "info" / "attributes").read_text(encoding="utf-8") == original
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="symlink creation needs privilege on Windows"
+    )
+    def test_the_refusal_is_sel_audited(self, tmp_path: Path) -> None:
+        """A security decision that leaves no record is indistinguishable from a
+        no-op afterwards, and AUTOSDE requires a SEL event for every permission
+        decision. Both refusals on this path emit one."""
+        project = tmp_path / "paper"
+        project.mkdir()
+        victim = tmp_path / "victim"
+        (victim / "info").mkdir(parents=True)
+        (project / ".git").symlink_to(victim, target_is_directory=True)
+
+        with mock.patch.object(gitops, "_audit") as audit:
+            with pytest.raises(gitops.GitError):
+                gitops._pin_attributes_sync(project)
+        assert audit.call_count == 1
+        assert audit.call_args.args[2] == "denied"
+
+    def test_the_non_directory_refusal_is_audited_too(self, tmp_path: Path) -> None:
+        """The sibling refusal (a `.git` FILE — worktree/submodule) had the same gap."""
+        project = tmp_path / "paper"
+        project.mkdir()
+        (project / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
+
+        with mock.patch.object(gitops, "_audit") as audit:
+            with pytest.raises(gitops.GitError, match="not a directory"):
+                gitops._pin_attributes_sync(project)
+        assert audit.call_count == 1
+        assert audit.call_args.args[2] == "denied"

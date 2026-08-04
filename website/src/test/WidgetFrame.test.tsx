@@ -482,12 +482,6 @@ describe('WidgetFrame interactive event bridge', () => {
 // guard prevents post-unmount work by checking the unmount completes
 // cleanly and no exception is thrown when we resolve the deferred
 // promise post-unmount.
-//
-// History: this test originally asserted that no [UI] saved-as-artifact
-// chat event fired after unmount (the save handler used to dispatch one).
-// We removed the chat event entirely — bookmark saves are silent — so
-// the test was first ported to a React-warning check (which became
-// vacuous in React 18) and is now ported to direct DOM observation.
 describe('WidgetFrame unmount safety on bookmark actions', () => {
   beforeEach(() => {
     vi.resetModules()

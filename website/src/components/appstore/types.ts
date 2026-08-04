@@ -23,6 +23,9 @@ export type RegistryApp = {
   screenshots?: string[]
   heroImage?: string
   heroImageDark?: string
+  heroImageDetail?: string
+  heroImageDetailDark?: string
+  license?: string
   repo?: string
   branch?: string
   featured?: boolean | number
@@ -75,6 +78,13 @@ export type InstalledApp = {
     screenshots?: string[]
     heroImage?: string
     heroImageDark?: string
+    // The wide detail-page banners. Ten of the twelve builtins ship them, but
+    // they were absent from this shared type, so `AppsPage` could not forward
+    // them to the Discover catalog even though `AppDetailPage` renders them.
+    heroImageDetail?: string
+    heroImageDetailDark?: string
+    highlights?: string[]
+    license?: string
     iconUrl?: string
     openCommand?: string
     hidden?: boolean

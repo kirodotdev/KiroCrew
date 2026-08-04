@@ -424,21 +424,21 @@ class TestHybridRetriever:
     def test_search_attaches_folder_file_path(self, store):
         # A folder/vault result carries source_type/source_name and the specific
         # file path (from folder_file_state), not just the folder-root uri.
-        sid = store.add_source("Opportunity Planner", "local_folder", "/home/nrb/op/src/")
+        sid = store.add_source("Opportunity Planner", "local_folder", "/home/alice/op/src/")
         item_id = store.add_item(
             "Auth Design", "JWT tokens with refresh flow", "design_doc", source_id=sid
         )
         store.db.execute(
             "INSERT INTO folder_file_state (source_id, file_path, item_ids, last_seen, status) "
             "VALUES (?, ?, ?, ?, ?)",
-            (sid, "/home/nrb/op/src/auth.md", json.dumps([item_id]), "now", "done"),
+            (sid, "/home/alice/op/src/auth.md", json.dumps([item_id]), "now", "done"),
         )
         retriever = HybridRetriever(store)
         results = retriever.search("JWT")
         top = next(r for r in results if r["id"] == item_id)
         assert top["source_type"] == "local_folder"
         assert top["source_name"] == "Opportunity Planner"
-        assert top["file_path"] == "/home/nrb/op/src/auth.md"
+        assert top["file_path"] == "/home/alice/op/src/auth.md"
 
     def test_search_attaches_artifact_slug(self, store):
         # An artifact result carries the artifact slug + name (from

@@ -101,8 +101,8 @@ _ALLOWED_FORMATS = frozenset({FRAME_FORMAT})
 # position, so it is linear (measured: 4.4ms on 400k chars vs. quadratic growth).
 #
 # It is also STRICTER, which is a bonus rather than the point: it enforces real
-# base64 quad structure, so ``QUJDRA=`` (one ``=`` where two are required) is now
-# correctly rejected where the old pattern accepted it.
+# base64 quad structure, so ``QUJDRA=`` (one ``=`` where two are required) is
+# correctly rejected.
 _B64_RE = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
 
 # Cap on the encoded frame. A 1280px/q55 window measures ~25KB (~34KB base64);

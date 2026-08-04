@@ -184,10 +184,10 @@ class DiscordSessionResume:
                 # (KiroCrewHistory.search_sessions): it matches message CONTENT
                 # with a title boost and length-normalised ranking, so a phrase
                 # the user remembers from the CONVERSATION finds the session.
-                # A title-only filter here would miss exactly that case -- the
-                # original bug report was a natural-language phrase, not a title
-                # -- and would be a second search implementation free to drift
-                # from the dashboard's ranking. Fetch more than the picker shows
+                # A title-only filter here would miss exactly that case -- a
+                # natural-language phrase rather than a title -- and would be a
+                # second search implementation free to drift from the
+                # dashboard's ranking. Fetch more than the picker shows
                 # so incognito filtering cannot starve the button slots.
                 rows = await asyncio.to_thread(
                     self.conv_log.search_sessions, query, _SEARCH_FETCH_LIMIT

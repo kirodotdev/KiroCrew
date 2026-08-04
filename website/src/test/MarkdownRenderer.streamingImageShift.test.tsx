@@ -3,12 +3,12 @@ import { render } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 
 /**
- * REGRESSION GUARD (was a failing repro) — gap #1: IMAGES.
+ * REGRESSION GUARD — gap #1: IMAGES.
  *
- * PR #824 stopped the streaming ROW's height from debouncing into a spacer
- * "flash" for a scrolled-up user. It did NOT address content that changes
- * height on a one-shot async event rather than gradual text growth. A markdown
- * image (`ImgWithFallback` in MarkdownRenderer) renders:
+ * The streaming row's height is smoothed so it does not debounce into a spacer
+ * "flash" for a scrolled-up user, but that smoothing does not address content
+ * that changes height on a one-shot async event rather than gradual text
+ * growth. A markdown image (`ImgWithFallback` in MarkdownRenderer) renders:
  *
  *     <img src=… loading="lazy"
  *          className="max-w-[min(100%,760px)] max-h-[60vh] object-contain …" />
@@ -18,13 +18,12 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
  * snap shifts every sibling below the image inside the same bubble (classic CLS)
  * — visible as a flash/jump while the message is streaming. Reserving space for
  * the image (explicit width/height, an aspect-ratio box, or a min-height
- * placeholder) is what removes the shift; #824's virtualizer spacer smoothing
+ * placeholder) is what removes the shift; the virtualizer spacer smoothing
  * cannot, because the whole image height arrives in a single RO tick.
  *
- * These tests assert the DESIRED post-fix behavior (the image reserves vertical
- * space before it loads). They are the regression guard for that fix.
+ * These tests assert that the image reserves vertical space before it loads.
  *
- * jsdom has no CSS/layout engine, so we assert on the fix's MECHANISM
+ * jsdom has no CSS/layout engine, so we assert on the MECHANISM
  * (dimension attributes / space-reserving inline style) rather than on measured
  * pixels — the only fix-agnostic signal available pre-load.
  */
@@ -52,7 +51,7 @@ function reservesVerticalSpace(img: HTMLImageElement): boolean {
 
 describe('streaming image layout-shift regression (gap #1)', () => {
   it('PREMISE: a markdown image renders an <img> element', () => {
-    // Survives the fix — a quick check so a rendering regression is distinguishable
+    // A quick check so a rendering regression is distinguishable
     // from the reserved-space assertion below.
     const { container } = render(
       <MarkdownRenderer content={'![diagram](https://example.com/diagram.png)'} {...STREAM} />,

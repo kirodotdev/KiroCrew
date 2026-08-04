@@ -39,9 +39,9 @@ describe('en catalog integrity', () => {
 
   it('has no unresolved HTML entity in any value', () => {
     // JSX decodes entities before render; a JSON catalog does not. An entity
-    // left encoded here renders literally as `&rarr;` / `&amp;` in the UI.
-    // This actually happened on the first codemod run (90 keys affected), which
-    // is why it is asserted rather than trusted.
+    // left encoded here renders literally as `&rarr;` / `&amp;` in the UI. It
+    // is asserted rather than trusted because an encoded entity reads clean in
+    // review and only breaks once a user sees it.
     const offenders = ENTRIES
       .filter(([, v]) => /&(?:[a-zA-Z][a-zA-Z0-9]*|#\d+|#[xX][0-9a-fA-F]+);/.test(v))
       .map(([k, v]) => `${k} = ${JSON.stringify(v)}`)
@@ -166,8 +166,7 @@ describe('literal safety tokens stay untranslated', () => {
    *
    * The token now lives in one exported constant used by BOTH the comparison and
    * the rendered elements, so they cannot drift — and there is no bare literal
-   * left for the i18n codemod to re-convert on a future run (it did exactly that
-   * once, silently undoing the fix).
+   * left for the i18n codemod to re-convert on a future run.
    */
   it('SchedulePage bulk-delete token is a shared constant, never a catalog lookup', async () => {
     const { readFileSync } = await import('node:fs')
@@ -200,7 +199,7 @@ describe('codemod writes sources and catalog atomically', () => {
    * already-converted tree with a few new literals would: rewrite those files to
    * call `i18nT('new.key')`, correctly refuse the tiny catalog, then exit —
    * leaving call sites pointing at keys that do not exist, which render as raw
-   * key text in the UI. Reproduced exactly that way.
+   * key text in the UI.
    *
    * This asserts the ordering structurally: the only `writeFileSync` to a source
    * file lives in `flushSourceWrites`, and every call to it is preceded by the

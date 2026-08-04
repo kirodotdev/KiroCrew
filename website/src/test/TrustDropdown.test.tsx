@@ -152,7 +152,7 @@ describe('TrustDropdown accessibility', () => {
     fireEvent.click(screen.getByText('Trust'))
     const buttons = screen.getAllByRole('menuitem')
     // The 3 tier options render as Radix menuitems (the trigger is a
-    // separate role=button, no longer counted here).
+    // separate role=button, not counted here).
     expect(buttons.length).toBeGreaterThanOrEqual(3)
   })
 

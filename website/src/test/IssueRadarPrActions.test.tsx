@@ -41,7 +41,7 @@ vi.mock('../apps/issue-radar/context', () => ({
 const PrActionsBar = (await import('../apps/issue-radar/components/PrActionsBar')).default
 const PrBulkBar = (await import('../apps/issue-radar/components/PrBulkBar')).default
 const PrRunActions = (await import('../apps/issue-radar/components/PrRunActions')).default
-const { BULK_PR_CLOSE_TOKEN } = await import('../apps/issue-radar/components/PrBulkBar')
+const { BULK_PR_CLOSE_TOKEN, SEQUENTIAL_MERGE_TOKEN } = await import('../apps/issue-radar/components/PrBulkBar')
 
 const REF = { owner: 'o', repo: 'r' }
 
@@ -493,6 +493,357 @@ describe('PrBulkBar', () => {
     expect(BULK_PR_CLOSE_TOKEN).toBe('close prs')
   })
 
+  // ── arming auto-merge is offered only where the provider accepts it ──────────
+  //
+  // The regression these pin, in full: the bar used to offer auto-merge for every
+  // ticked row, because the LIST row carried no mergeability at all. GitHub refuses to
+  // arm a PR that is already mergeable ("Pull request is in clean status") and one that
+  // is already merged ("Pull request is already merged"), so a single click on a
+  // seven-row selection came back as seven separate failures — six of them for PRs
+  // that were simply READY, i.e. the user's actual intent was to merge them.
+  describe('auto-merge is partitioned by what the provider will accept', () => {
+    const BLOCKED = { ...PULL, mergeable_state: 'blocked', mergeable: true }
+    const BLOCKED_8 = { ...PULL_8, mergeable_state: 'blocked', mergeable: true }
+    const CLEAN_8 = { ...PULL_8, mergeable_state: 'clean', mergeable: true }
+
+    it('arms only the rows that are still waiting, never the ready ones', async () => {
+      // #7 is blocked (arming is meaningful), #8 is clean (GitHub would refuse).
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [BLOCKED, CLEAN_8] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /^auto-merge/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() =>
+        // [7] only — NOT [7, 8]. Sending 8 is the defect.
+        expect(api.bulkPrAction).toHaveBeenCalledWith(REF, [7], 'auto_merge', {
+          body: undefined, headShas: undefined,
+        }))
+    })
+
+    it('does not arm at all when every selected row is already mergeable', async () => {
+      const clean7 = { ...PULL, mergeable_state: 'clean', mergeable: true }
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [clean7, CLEAN_8] })
+      wrap(<PrBulkBar />)
+      const arm = screen.getAllByRole('button')
+        .find((b) => /^auto-merge/i.test(b.textContent ?? ''))!
+      expect((arm as HTMLButtonElement).disabled).toBe(true)
+      await userEvent.click(arm)
+      expect(api.bulkPrAction).not.toHaveBeenCalled()
+    })
+
+    it('does not arm a row that has already merged', async () => {
+      // The #1265 case: the row was cached while the PR was still open, and the
+      // provider answered "Pull request is already merged".
+      const merged = { ...PULL, state: 'closed', merged_at: '2026-08-03T06:45:33Z' }
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [merged, BLOCKED_8] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /^auto-merge/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() =>
+        expect(api.bulkPrAction).toHaveBeenCalledWith(REF, [8], 'auto_merge', {
+          body: undefined, headShas: undefined,
+        }))
+    })
+
+    it('treats UNKNOWN mergeability as neither armable nor mergeable', async () => {
+      // GitHub computes mergeability asynchronously, so a cold read says `unknown`.
+      // A gate that cannot tell must refuse rather than guess in either direction.
+      const unknown = { ...PULL, mergeable_state: 'unknown', mergeable: null }
+      const unknown8 = { ...PULL_8, mergeable_state: 'unknown', mergeable: null }
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [unknown, unknown8] })
+      wrap(<PrBulkBar />)
+      const arm = screen.getAllByRole('button')
+        .find((b) => /^auto-merge/i.test(b.textContent ?? ''))!
+      expect((arm as HTMLButtonElement).disabled).toBe(true)
+      // ...and no merge button either, since neither verb applies.
+      expect(screen.queryByRole('button', { name: /merge \d+ ready/i })).toBeNull()
+    })
+
+    it('does not arm a row carrying merged_at even when its state still says open', async () => {
+      // The mutation-proof version of the merged case: the test above sets BOTH
+      // `state: 'closed'` and `merged_at`, so the `state` branch alone satisfies it and
+      // deleting the `merged_at` guard goes unnoticed. A row merged elsewhere can carry
+      // the timestamp while its cached `state` is still open — that IS the #1265 shape.
+      // `mergeable_state: 'blocked'` is essential: without it the row is excluded as
+      // UNKNOWN anyway, and this test would pass even with the `merged_at` guard
+      // deleted — it has to be armable on every OTHER axis so the guard is the only
+      // thing keeping it out.
+      const stale = {
+        ...PULL, state: 'open', merged_at: '2026-08-03T06:45:33Z',
+        mergeable_state: 'blocked', mergeable: true,
+      }
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [stale, BLOCKED_8] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /^auto-merge/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() =>
+        expect(api.bulkPrAction).toHaveBeenCalledWith(REF, [8], 'auto_merge', {
+          body: undefined, headShas: undefined,
+        }))
+    })
+
+    it('does not arm a DRAFT — the provider refuses one', async () => {
+      // The per-PR bar has always checked `draft`; the bulk bar must not be looser on
+      // the same field, or it reproduces the one-refusal-per-row defect for a new state.
+      const draft = { ...PULL, draft: true, mergeable_state: 'blocked', mergeable: true }
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [draft, BLOCKED_8] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /^auto-merge/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() =>
+        expect(api.bulkPrAction).toHaveBeenCalledWith(REF, [8], 'auto_merge', {
+          body: undefined, headShas: undefined,
+        }))
+    })
+
+    it('does not offer a DRAFT the sequential merge either', () => {
+      // A draft reporting `clean` (transiently, or from a stale cache row) would be a
+      // button the provider only refuses.
+      const draftClean = { ...PULL, draft: true, mergeable_state: 'clean', mergeable: true }
+      setCtx({ checkedPulls: new Set([7]), sortedPulls: [draftClean] })
+      wrap(<PrBulkBar />)
+      expect(screen.queryByRole('button', { name: /merge \d+ ready/i })).toBeNull()
+    })
+
+    it('does not arm a CONFLICTING row — no check resolves a conflict', async () => {
+      const dirty = { ...PULL, mergeable_state: 'dirty', mergeable: false }
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [dirty, BLOCKED_8] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /^auto-merge/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() =>
+        expect(api.bulkPrAction).toHaveBeenCalledWith(REF, [8], 'auto_merge', {
+          body: undefined, headShas: undefined,
+        }))
+    })
+
+    it('does not treat `unstable` as ready to merge', async () => {
+      // `unstable` does not distinguish a failing REQUIRED check from an optional
+      // one, so it cannot be read as "protections satisfied" — it belongs on the
+      // ARM side, which is what auto-merge is for.
+      const unstable = { ...PULL, mergeable_state: 'unstable', mergeable: true }
+      setCtx({ checkedPulls: new Set([7]), sortedPulls: [unstable] })
+      wrap(<PrBulkBar />)
+      expect(screen.queryByRole('button', { name: /merge \d+ ready/i })).toBeNull()
+      const arm = screen.getAllByRole('button')
+        .find((b) => /^auto-merge/i.test(b.textContent ?? ''))!
+      expect((arm as HTMLButtonElement).disabled).toBe(false)
+    })
+  })
+
+  // ── the ready rows get a real merge path, one at a time ──────────────────────
+  describe('sequential merge of the ready rows', () => {
+    const CLEAN = { ...PULL, mergeable_state: 'clean', mergeable: true }
+    const CLEAN_8 = { ...PULL_8, mergeable_state: 'clean', mergeable: true }
+
+    it('requires its own typed token, which is NOT the close token', async () => {
+      setCtx({ checkedPulls: new Set([7]), sortedPulls: [CLEAN] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(screen.getByRole('button', { name: /merge \d+ ready/i }))
+      expect(api.mergePr).not.toHaveBeenCalled()
+
+      // Typing the CLOSE token must not arm a merge — the two are irreversible in
+      // different ways and must not be satisfiable by the same typing.
+      const confirm = screen.getByRole('textbox')
+      await userEvent.type(confirm, BULK_PR_CLOSE_TOKEN)
+      const apply = screen.getAllByRole('button')
+        .find((b) => /apply to/i.test(b.textContent ?? ''))
+      expect((apply as HTMLButtonElement).disabled).toBe(true)
+
+      await userEvent.clear(confirm)
+      await userEvent.type(confirm, SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledWith(REF, 7, 'abc1234', 'SQUASH'))
+    })
+
+    it('merges the sha each row carried WHEN TICKED, not the latest polled one', async () => {
+      // The mutation-proof version of the test below: that one never changes a sha, so
+      // it passes even if the code reads the LIVE `p.head_sha`. The list polls, so a
+      // force-push between the tick and Apply must not re-target the merge — and unlike
+      // a review, a merge cannot be undone. The server-side pin cannot save us here:
+      // the request would carry the NEW sha, so there is nothing to refuse.
+      setCtx({ checkedPulls: new Set([7]), sortedPulls: [CLEAN] })
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      const { rerender } = render(
+        <QueryClientProvider client={qc}><PrBulkBar /></QueryClientProvider>,
+      )
+      // A poll lands, force-pushing #7, before the merge is confirmed.
+      setCtx({
+        checkedPulls: new Set([7]),
+        sortedPulls: [{ ...CLEAN, head_sha: 'pushed99' }],
+      })
+      rerender(<QueryClientProvider client={qc}><PrBulkBar /></QueryClientProvider>)
+      await userEvent.click(screen.getByRole('button', { name: /merge \d+ ready/i }))
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      // The sha that was on screen when the row was ticked — NOT 'pushed99'.
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledWith(REF, 7, 'abc1234', 'SQUASH'))
+    })
+
+    it('merges the set the confirmation NAMED, even if readiness changed meanwhile', async () => {
+      // The target set is frozen when the warning renders. Without that, a cold read
+      // (which reports `unknown` for roughly half a page) resolving to `clean` during
+      // the confirmation turned "This merges 1 pull request" into six real merges.
+      const unknown8 = { ...PULL_8, mergeable_state: 'unknown', mergeable: null }
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [CLEAN, unknown8] })
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      const { rerender } = render(
+        <QueryClientProvider client={qc}><PrBulkBar /></QueryClientProvider>,
+      )
+      // Only #7 is ready, so the confirmation is armed over exactly one row.
+      await userEvent.click(screen.getByRole('button', { name: /merge 1 ready/i }))
+      // Now mergeability finishes computing for #8 and a poll delivers it.
+      setCtx({
+        checkedPulls: new Set([7, 8]),
+        sortedPulls: [CLEAN, { ...PULL_8, mergeable_state: 'clean', mergeable: true }],
+      })
+      rerender(<QueryClientProvider client={qc}><PrBulkBar /></QueryClientProvider>)
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(1))
+      expect(api.mergePr).toHaveBeenCalledWith(REF, 7, 'abc1234', 'SQUASH')
+    })
+
+    it('merges each row pinned to the sha it was rendered at, never in bulk', async () => {
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [CLEAN, CLEAN_8] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(screen.getByRole('button', { name: /merge \d+ ready/i }))
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(2))
+      expect(api.mergePr).toHaveBeenNthCalledWith(1, REF, 7, 'abc1234', 'SQUASH')
+      expect(api.mergePr).toHaveBeenNthCalledWith(2, REF, 8, 'def5678', 'SQUASH')
+      // `merge` is absent from the server's bulk allowlist, so it must never be
+      // routed through the bulk endpoint.
+      expect(api.bulkPrAction).not.toHaveBeenCalled()
+    })
+
+    it('STOPS at the first refusal instead of merging onto a diverged base', async () => {
+      // Each merge changes the base branch, so PR #2's mergeability is a function of
+      // #1 having landed. Continuing past a failure keeps merging onto a base whose
+      // state no longer matches what was reviewed.
+      api.mergePr
+        .mockRejectedValueOnce(new Error('required status check is failing'))
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [CLEAN, CLEAN_8] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(screen.getByRole('button', { name: /merge \d+ ready/i }))
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() => expect(screen.getByText(/required status check is failing/)).toBeTruthy())
+      // #8 was never attempted.
+      expect(api.mergePr).toHaveBeenCalledTimes(1)
+      expect(api.mergePr).toHaveBeenCalledWith(REF, 7, 'abc1234', 'SQUASH')
+    })
+
+    it('is not offered when a ready row has no head commit to pin to', () => {
+      // Same rule as bulk approve: an unpinned merge is a merge of whatever got
+      // pushed last.
+      const noSha = { ...CLEAN, head_sha: null }
+      setCtx({ checkedPulls: new Set([7]), sortedPulls: [noSha] })
+      wrap(<PrBulkBar />)
+      expect(screen.queryByRole('button', { name: /merge \d+ ready/i })).toBeNull()
+    })
+
+    it('unticks only the rows that actually merged', async () => {
+      api.mergePr
+        .mockResolvedValueOnce({ ...REF, number: 7, merged: true, sha: 'abc1234', message: '' })
+        .mockRejectedValueOnce(new Error('blocked'))
+      const togglePullChecked = vi.fn()
+      setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [CLEAN, CLEAN_8], togglePullChecked })
+      wrap(<PrBulkBar />)
+      await userEvent.click(screen.getByRole('button', { name: /merge \d+ ready/i }))
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      await waitFor(() => expect(togglePullChecked).toHaveBeenCalledWith(7))
+      // #8 failed, so it stays ticked for a retry.
+      expect(togglePullChecked).not.toHaveBeenCalledWith(8)
+    })
+
+    it('the merge token is a code constant and differs from the close token', () => {
+      expect(SEQUENTIAL_MERGE_TOKEN).toBe('merge prs')
+      expect(SEQUENTIAL_MERGE_TOKEN).not.toBe(BULK_PR_CLOSE_TOKEN)
+    })
+
+    it('Cancel ABORTS the run, sparing every row not yet sent', async () => {
+      // Cancel on an irreversible mass action has to mean something. The merge already
+      // in flight cannot be recalled, but the rest can still be spared.
+      let release: (v: unknown) => void = () => {}
+      api.mergePr.mockImplementationOnce(
+        () => new Promise((res) => { release = res }),
+      )
+      const CLEAN_9 = {
+        ...PULL, number: 9, head_sha: 'ghi9999', mergeable_state: 'clean', mergeable: true,
+      }
+      setCtx({ checkedPulls: new Set([7, 8, 9]), sortedPulls: [CLEAN, CLEAN_8, CLEAN_9] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(screen.getByRole('button', { name: /merge \d+ ready/i }))
+      await userEvent.type(screen.getByRole('textbox'), SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.click(
+        screen.getAllByRole('button').find((b) => /apply to/i.test(b.textContent ?? ''))!,
+      )
+      // #7 is in flight. Cancel now.
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(1))
+      await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }))
+      release({ ...REF, number: 7, merged: true, sha: 'abc1234', message: '' })
+      // #8 and #9 were never sent.
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(1))
+    })
+
+    it('a second Enter mid-run cannot start a concurrent run', async () => {
+      // The Apply button disables on `busy`, but the confirm input's Enter handler is a
+      // second entry point — two loops advancing independently would merge a row twice
+      // and defeat stop-on-first-failure.
+      let release: (v: unknown) => void = () => {}
+      api.mergePr.mockImplementationOnce(
+        () => new Promise((res) => { release = res }),
+      )
+      setCtx({ checkedPulls: new Set([7]), sortedPulls: [CLEAN] })
+      wrap(<PrBulkBar />)
+      await userEvent.click(screen.getByRole('button', { name: /merge \d+ ready/i }))
+      const confirm = screen.getByRole('textbox')
+      await userEvent.type(confirm, SEQUENTIAL_MERGE_TOKEN)
+      await userEvent.type(confirm, '{Enter}')
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(1))
+      // Second Enter while the first row is still in flight.
+      await userEvent.type(confirm, '{Enter}')
+      release({ ...REF, number: 7, merged: true, sha: 'abc1234', message: '' })
+      await waitFor(() => expect(api.mergePr).toHaveBeenCalledTimes(1))
+    })
+
+    it('caps the run at the server-published bulk cap', () => {
+      // The sequential merge does not use the bulk endpoint, so nothing else bounds it —
+      // and rule 3's "50 from one click" reasoning applies to a loop too.
+      const many = Array.from({ length: 5 }, (_, i) => ({
+        ...PULL, number: 100 + i, head_sha: `sha${i}000`,
+        mergeable_state: 'clean', mergeable: true,
+      }))
+      setCtx({
+        checkedPulls: new Set(many.map((p) => p.number)),
+        sortedPulls: many,
+        prBulkMax: 2,
+      })
+      wrap(<PrBulkBar />)
+      // 5 ready rows, cap of 2 -> the button offers 2, not 5.
+      expect(screen.getByRole('button', { name: /merge 2 ready/i })).toBeTruthy()
+    })
+  })
+
   it('requires a body for a bulk comment', async () => {
     setCtx({ checkedPulls: new Set([7]) })
     wrap(<PrBulkBar />)
@@ -526,9 +877,9 @@ describe('PrBulkBar', () => {
   })
 
   it('unticks only the SUCCEEDED rows, so a retry cannot duplicate a write', async () => {
-    // Keeping the whole selection on a partial run made the retry re-apply to the
-    // rows that already worked. For `comment` that posts a second copy — the one
-    // action here whose repeat is visible to everyone on the PR.
+    // Unticking only the succeeded rows stops a retry from re-applying to rows
+    // that already worked. For `comment` a repeat posts a second copy — the one
+    // action here whose duplicate is visible to everyone on the PR.
     api.bulkPrAction.mockResolvedValue({
       ...REF, action: 'comment',
       applied: [{ number: 7 }],
@@ -577,8 +928,9 @@ describe('PrBulkBar', () => {
   })
 
   it('reports the rows that landed when a later chunk throws', async () => {
-    // The accumulator lives outside the try: returning null discarded the chunks that
-    // already succeeded, so every one stayed selected and a retry re-applied to it.
+    // The accumulator lives outside the try so chunks that already succeeded are
+    // still reported when a later chunk throws; otherwise every one would stay
+    // selected and a retry would re-apply to it.
     const many = Array.from({ length: 4 }, (_, i) => ({ ...PULL, number: i + 1 }))
     let call = 0
     api.bulkPrAction.mockImplementation(async (_r: unknown, nums: number[]) => {
@@ -604,9 +956,14 @@ describe('PrBulkBar', () => {
     expect(togglePullChecked).not.toHaveBeenCalledWith(4)
   })
 
-  it('offers no bulk merge', () => {
-    // Irreversible, and 50 from one click is a blast radius no confirmation makes
-    // reasonable. Arming auto-merge is the bulk-safe equivalent, and it IS offered.
+  it('never routes a merge through the BULK endpoint', () => {
+    // `merge` is absent from the server's `_BULK_PR_ACTIONS`, so no unconditional
+    // "Merge" button appears here and nothing sends that verb to `/pulls/bulk`.
+    //
+    // The ready rows DO have a merge path now — a sequential run over the per-PR route,
+    // capped, typed-confirmed, and offered only for rows the provider already reports
+    // mergeable (see the "sequential merge" block above). It is absent here because
+    // this fixture carries no `mergeable_state`, i.e. every row reads as UNKNOWN.
     setCtx({ checkedPulls: new Set([7, 8]) })
     wrap(<PrBulkBar />)
     expect(screen.queryByRole('button', { name: /^merge$/i })).toBeNull()
@@ -615,7 +972,7 @@ describe('PrBulkBar', () => {
 
   it('chunks a large selection on the server-published cap', async () => {
     // The server rejects an over-cap batch outright, so an unchunked "select all" on
-    // a big repo was a flat 400 with nothing applied. The cap comes from the
+    // a big repo would be a flat 400 with nothing applied. The cap comes from the
     // response, never a hardcoded copy.
     const many = Array.from({ length: 7 }, (_, i) => ({ ...PULL, number: i + 1 }))
     api.bulkPrAction.mockImplementation(async (_r: unknown, nums: number[]) => ({
@@ -654,9 +1011,9 @@ describe('PrBulkBar', () => {
   })
 
   it('disarms a typed confirmation when the selection is SWAPPED at the same size', async () => {
-    // The regression that matters most here. With the reset keyed on the selection
-    // COUNT, swapping 7,8 -> 7,9 never fired it: Apply stayed armed and closed a PR
-    // the user had never confirmed. Keyed on identity, the confirmation is dropped.
+    // The confirmation is keyed on selection IDENTITY, not COUNT. Swapping
+    // 7,8 -> 7,9 (same size) must still drop an armed confirmation, so Apply
+    // cannot close a PR the user never confirmed.
     const PULL_9 = { ...PULL, number: 9 }
     setCtx({ checkedPulls: new Set([7, 8]), sortedPulls: [PULL, PULL_8, PULL_9] })
     const { rerender } = wrap(<PrBulkBar />)
@@ -689,9 +1046,10 @@ describe('PrBulkBar', () => {
   })
 
   it('still reports the outcome after a clean run clears the selection', async () => {
-    // A clean run clears the selection, which used to unmount the bar before the
-    // summary could paint — so the user got no confirmation at all and the
-    // translated success copy was unreachable. The bar now survives on an outcome.
+    // A clean run clears the selection; the bar survives on an outcome so the
+    // summary still paints. Otherwise it would unmount before the summary
+    // rendered, leaving no confirmation and the translated success copy
+    // unreachable.
     api.bulkPrAction.mockResolvedValue({ ...REF, action: 'approve', applied: [{ number: 7 }], failed: [] })
     setCtx({ checkedPulls: new Set([7]), clearCheckedPulls: vi.fn() })
     const { rerender } = wrap(<PrBulkBar />)

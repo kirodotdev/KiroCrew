@@ -162,7 +162,7 @@ describe('NotificationsPage multi-select filter', () => {
     renderWithProviders(<NotificationsPage />, { store })
 
     expect(screen.getByText('Cron Result')).toBeInTheDocument()
-    // Unknown kinds were visible under the old "all" state — preserve that
+    // Unknown kinds stay visible while all kinds are active (back-compat)
     expect(screen.getByText('Unknown Kind')).toBeInTheDocument()
   })
 

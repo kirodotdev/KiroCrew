@@ -1,4 +1,4 @@
-"""Gateway HTTP observability — boot-to-ready + bounded per-route latency (rec #1).
+"""Gateway HTTP observability — boot-to-ready + bounded per-route latency.
 
 Two privacy-safe, BOUNDED-CARDINALITY signals for the aiohttp gateway
 (``dashboard/server.py`` — both the full dashboard and the headless ``--slack-only``
@@ -12,7 +12,7 @@ API server):
   * ``kirocrew.gateway.request.duration`` — a histogram (ms) of per-request
     handling latency. Attrs: ``method``, ``route_template``, ``status_class``.
 
-PRIVACY (rec #1 hard rule): these metrics NEVER carry prompts, message content,
+PRIVACY (hard rule): these metrics NEVER carry prompts, message content,
 tokens, real request paths, query strings, user ids, or secrets. The only
 request-derived labels are:
 

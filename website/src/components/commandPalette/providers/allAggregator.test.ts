@@ -4,7 +4,7 @@ import type { ResourceProvider, Result } from '../types'
 
 /**
  * Unit tests for the pure {@link createAllAggregator} factory (Search
- * Everywhere, step 12). The aggregator fans the query out to injected providers
+ * Everywhere). The aggregator fans the query out to injected providers
  * (top-N each, blended by score), and shows injected recents on an empty query.
  */
 

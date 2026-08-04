@@ -407,8 +407,8 @@ def _ensure_builtin_skills(base: Path) -> None:
     # Skills RELOCATED into the kirocrew-dev/ folder (the KiroCrew development
     # suite). Without this, an upgraded install keeps BOTH the old flat copy
     # and the new nested copy — two divergent copies of the same skill matched
-    # nondeterministically by trigger overlap (the exact drift PR #353's
-    # arbiter blocked). The flat copy is NOT deleted (it may carry user edits
+    # nondeterministically by trigger overlap. The flat copy is NOT deleted (it
+    # may carry user edits
     # the mtime-preserving sync deliberately protects): its SKILL.md is renamed
     # to SKILL.md.pre-relocation, which removes it from loader discovery while
     # preserving every byte on disk for the user to reconcile. Only done when
@@ -908,8 +908,8 @@ class SkillsLoader:
         sessions actually working inside the KiroCrew source tree. This is the
         loader-enforced counterpart to a prose "ignore this skill elsewhere"
         scope guard: prose depends on probabilistic LLM obedience, while this
-        check runs before the skill ever reaches the context (PR #353 arbiter:
-        destructive repo-dev instructions must be mechanically contained).
+        check runs before the skill ever reaches the context (destructive
+        repo-dev instructions must be mechanically contained).
 
         Fails CLOSED on any error — a repo-scoped skill is suppressed unless
         its scope is positively confirmed.
@@ -2232,7 +2232,7 @@ class SkillsLoader:
                 continue
             # Repo-scoped skills are mechanically suppressed outside their
             # repo — word-overlap can fire on ordinary user phrasing, and a
-            # prose scope guard alone is probabilistic (PR #353 arbiter).
+            # prose scope guard alone is probabilistic.
             scope = meta.get("repo_scope", "")
             if scope and not self._repo_scope_satisfied(scope):
                 continue

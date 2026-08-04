@@ -254,10 +254,9 @@ describe('linkifyIssueRefs', () => {
 })
 
 describe('GitLab references', () => {
-  // Upstream's reference module was written when GitHub was the only provider, so
-  // every URL it built was a github.com URL. On a GitLab project that is not a
-  // degraded link, it is a link to a DIFFERENT repo that may not even be the
-  // user's — so these are the cases that must not regress.
+  // On a GitLab project a github.com URL is not a degraded link — it is a link to
+  // a DIFFERENT repo that may not even be the user's — so these are the cases that
+  // must not regress.
   const G = gl('platform/team-tools', 'widget-service')
   const SELF = gl('group', 'project', 'gitlab.acme.internal')
 

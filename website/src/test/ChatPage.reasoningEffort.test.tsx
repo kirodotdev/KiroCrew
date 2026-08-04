@@ -191,9 +191,9 @@ describe('ReasoningEffortDropdown', () => {
     await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'high'))
   })
 
-  // Regression: with a Settings default configured, the no-override state was
-  // labelled a bare "Default", which read as "the model decides" and hid the
-  // configured value the turn would actually run at.
+  // With a Settings default configured, the no-override state names the
+  // configured value ("Default · High") rather than a bare "Default", which
+  // would read as "the model decides" and hide the value the turn runs at.
   it('names the inherited value when the slot has no override', async () => {
     renderDropdown({ currentEffort: '', defaultEffort: 'high' })
     await screen.findByRole('slider', { name: 'Reasoning effort' })

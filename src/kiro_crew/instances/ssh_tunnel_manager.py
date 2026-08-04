@@ -663,7 +663,7 @@ class SshTunnelManager:
             except SshValidationError as e:
                 return self._error_status(inst, f"invalid ssh settings: {e}")
 
-            # CSE SEC-016: mirror the local forward port to the remote (configured)
+            # Mirror the local forward port to the remote (configured)
             # port. The embedded dashboard runs in an iframe at
             # http://127.0.0.1:<local_port>, and the remote gateway only trusts
             # CSRF/WebSocket Origins on its own configured port. Forcing
@@ -680,7 +680,7 @@ class SshTunnelManager:
 
             # Hard-fail with a clear message if the mirrored port is still occupied
             # (e.g. another instance on the same remote port, or the local gateway).
-            # No dynamic fallback — a different local port would break the SEC-016
+            # No dynamic fallback — a different local port would break the
             # origin match and leave the embedded dashboard unable to stream/act.
             if not _is_port_free(local_port):
                 return self._error_status(

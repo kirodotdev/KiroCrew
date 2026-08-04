@@ -18,7 +18,7 @@ import { i18nT } from '../../../i18n/t'
  * very bottom. Clicking a section header navigates to that section's default
  * page (not just expand it), so you never stay on the previous view. The rail's
  * width is owned by Workspace, which renders the drag handle on its right edge;
- * the default matches the former fixed `w-72`. Dragging the handle far enough
+ * the default is `w-72`. Dragging the handle far enough
  * past the minimum collapses the rail to `CollapsedRail`. */
 export default function LeftRail({
   width = DEFAULT_RAIL_WIDTH, collapsed = false, onExpand,
@@ -67,8 +67,8 @@ export default function LeftRail({
         icon={LayoutDashboard}
         expanded={expanded === 'dashboards'}
         // Return to the dashboard you were last on, not Overview: `dashboardTab`
-        // is already persisted, so resetting it here threw away the one piece of
-        // state the section was meant to remember.
+        // is already persisted, so resetting it here would throw away the one
+        // piece of state the section is meant to remember.
         onToggle={() => openDashboard(dashboardTab)}
       >
         <DashboardsSection />

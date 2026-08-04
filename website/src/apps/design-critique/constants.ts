@@ -2,6 +2,34 @@ import {
   AlertTriangle, AlertCircle, Wrench, Sparkle,
 } from 'lucide-react'
 import type { SevInfo, SeverityKey, Report, Screen, Blocked } from './types'
+import { i18nT } from '../../i18n/t'
+
+/**
+ * ## Why the UI copy below sits behind GETTERS
+ *
+ * Every table in this module is evaluated ONCE, at import. A bare
+ * `i18nT('…')` in a property position would therefore resolve against whatever
+ * language happened to be active at boot and never re-resolve when the user
+ * switches language — the frozen-at-import bug `lib/effort.ts` documents.
+ *
+ * `effort.ts` solves it by storing catalog KEYS and resolving in an exported
+ * function. That shape is unavailable here: every consumer of these tables reads
+ * the value POSITIONALLY (`list[i].label`, `KIND_WAIT[kind]`,
+ * `sevOf(sev).label`), so moving the lookup into a new resolver would mean
+ * rewriting four other modules. A getter puts the `i18nT()` call on the property
+ * ACCESS instead, which is what already happens per render — same guarantee, no
+ * change to any call site.
+ *
+ * `i18nT('<literal>')` inside the getter keeps `scripts/check-i18n-keys.mjs`
+ * able to resolve the key statically, which is the property that makes a key
+ * verifiable at all.
+ *
+ * One caveat, deliberate: `DesignCritiquePage` SPREADS a `BLOCKED` entry into
+ * React state (`{ ...(BLOCKED[reason] || BLOCKED.other), detail }`). A spread
+ * invokes getters, so that copy is resolved once and then held — an open blocked
+ * screen keeps its boot-language text across a language switch until the run is
+ * retried. See `blockedFor()` below for the one-line fix that closes it.
+ */
 
 // The core agent, not a bundled one. A builtin's declared `agents` are never
 // registered (see the CRITIC note in prompts.ts), so naming `design-critic` here
@@ -27,82 +55,224 @@ export const MAX_SCREENS = 20
 // tick count (see hooks/poll logic).
 export const HARD_CAP_MS = 15 * 60 * 1000
 
+/**
+ * Severity display metadata, keyed by the LOWERCASE discriminant the critic
+ * emits (`'major'`), which is a protocol value and stays as it is. Only `label`
+ * — the NN/g severity name shown on the pill and the tally chip — is copy.
+ */
 export const SEV: Record<SeverityKey, SevInfo> = {
-  catastrophe: { label: 'Catastrophe', rank: 0, color: '#e5484d', icon: AlertTriangle },
-  major:       { label: 'Major',       rank: 1, color: '#f5a623', icon: AlertCircle },
-  minor:       { label: 'Minor',       rank: 2, color: '#e2c541', icon: Wrench },
-  cosmetic:    { label: 'Cosmetic',    rank: 3, color: 'var(--muted, #8a8f98)', icon: Sparkle },
+  catastrophe: { get label() { return i18nT('apps.designCritique.constants.sev_catastrophe') }, rank: 0, color: '#e5484d', icon: AlertTriangle },
+  major:       { get label() { return i18nT('apps.designCritique.constants.sev_major') },       rank: 1, color: '#f5a623', icon: AlertCircle },
+  minor:       { get label() { return i18nT('apps.designCritique.constants.sev_minor') },       rank: 2, color: '#e2c541', icon: Wrench },
+  cosmetic:    { get label() { return i18nT('apps.designCritique.constants.sev_cosmetic') },    rank: 3, color: 'var(--muted, #8a8f98)', icon: Sparkle },
 }
 export const sevOf = (s: string | undefined): SevInfo => SEV[(s as SeverityKey)] || SEV.cosmetic
 
+/**
+ * The target kind, in ENGLISH. **Do not localise this table.**
+ *
+ * `prompts.ts` imports it and splices it into the discovery prompt ("I need to
+ * know what screens are IN this <kind>"), which is English throughout. A
+ * localised value here would put one non-English noun inside an English
+ * instruction — worse than leaving it alone, because the model then has to guess
+ * which language the reply should be in. The repo already treats prompt text as
+ * non-copy: `eslint.i18n.config.js` ignores `src/apps/<app>/prompts.ts` outright, and
+ * the strict config derives its exemptions from that same array.
+ *
+ * The right home for this map is therefore `prompts.ts` itself, next to its only
+ * legitimate consumer — that move is left to whoever owns that file, since the
+ * three UI call sites listed on `kindLabel()` have to move over in the same
+ * change.
+ */
 export const KIND_LABEL: Record<string, string> = {
   figma: 'Figma file', repo: 'repo', local: 'local code', url: 'running app',
+}
+
+/**
+ * The same four kinds as catalog keys, for the places the kind is SHOWN rather
+ * than sent to the model. Split from `KIND_LABEL` rather than replacing it
+ * because the two have genuinely different requirements: one must stay English,
+ * the other must follow the UI language.
+ */
+export const KIND_LABEL_KEY: Record<string, string> = {
+  figma: 'apps.designCritique.constants.kind_figma',
+  repo: 'apps.designCritique.constants.kind_repo',
+  local: 'apps.designCritique.constants.kind_local',
+  url: 'apps.designCritique.constants.kind_url',
+}
+
+/**
+ * Localised name for a target kind. Returns '' for an unknown kind so callers
+ * keep their existing `|| fallback` behaviour.
+ *
+ * `hasOwnProperty`, not `in`: `kind` arrives from `detectKind()` and from a
+ * persisted job record, so a stored `'toString'` would otherwise resolve to an
+ * Object.prototype member and hand a function to i18next.
+ *
+ * NOT yet wired — the three UI call sites still read `KIND_LABEL` directly, and
+ * two of them are string concatenations that this function alone cannot fix:
+ *
+ *   - `Composer.tsx:143`   `{KIND_LABEL[kind] || ''}` — a bare render; swap to
+ *                          `kindLabel(kind)` and it is done.
+ *   - `Composer.tsx:41`    `'Critique ' + (KIND_LABEL[kind] || 'this')`
+ *   - `DesignCritiquePage.tsx:1008`
+ *                          `'A ' + (KIND_LABEL[kind] || 'design') + ' — …'`
+ *
+ * The last two need a WHOLE-SENTENCE key with the kind interpolated
+ * (`i18nT('…critique_kind', { kind: kindLabel(kind) })`). Dropping a localised
+ * noun into those English fragments would produce a half-translated sentence and
+ * hard-code English word order.
+ */
+export function kindLabel(kind: string | undefined): string {
+  if (!kind) return ''
+  return Object.prototype.hasOwnProperty.call(KIND_LABEL_KEY, kind)
+    ? i18nT(KIND_LABEL_KEY[kind])
+    : ''
 }
 
 // The stages a critique actually goes through, in SOP order. The last one is
 // driven by a real signal (the critic has started replying); the rest advance on
 // elapsed time, so they read as "what I'm doing now", not a verified percentage.
+//
+// `at` is a threshold in seconds, not copy. `label` is read inside
+// `WaitingScreen`'s `list.map()` callback, so the getter fires per render.
 export const STAGES: Array<{ at: number; label: string }> = [
-  { at: 0,  label: 'Getting real pixels to look at' },
-  { at: 8,  label: 'Reading the screens' },
-  { at: 22, label: 'Checking hierarchy, contrast, and content' },
-  { at: 45, label: 'Weighing it against the task' },
-  { at: 70, label: 'Double-checking each finding' },
+  { at: 0,  get label() { return i18nT('apps.designCritique.constants.stage_getting_pixels') } },
+  { at: 8,  get label() { return i18nT('apps.designCritique.constants.stage_reading_screens') } },
+  { at: 22, get label() { return i18nT('apps.designCritique.constants.stage_checking_hierarchy') } },
+  { at: 45, get label() { return i18nT('apps.designCritique.constants.stage_weighing_task') } },
+  { at: 70, get label() { return i18nT('apps.designCritique.constants.stage_double_checking') } },
 ]
-export const WRITING_STAGE = { label: 'Writing up the critique' }
+export const WRITING_STAGE = { get label() { return i18nT('apps.designCritique.constants.stage_writing_up') } }
 export const SCAN_STAGES: Array<{ at: number; label: string }> = [
-  { at: 0, label: 'Finding the screens' },
-  { at: 6, label: 'Working out which ones I can render' },
-  { at: 14, label: 'Grouping them into likely flows' },
+  { at: 0,  get label() { return i18nT('apps.designCritique.constants.scan_finding_screens') } },
+  { at: 6,  get label() { return i18nT('apps.designCritique.constants.scan_which_renderable') } },
+  { at: 14, get label() { return i18nT('apps.designCritique.constants.scan_grouping_flows') } },
 ]
 
 // "I couldn't get in" is a different problem from "I got in and found nothing".
 // Each cause has a different fix, so name it and pre-load the way forward.
+//
+// `fix` ('local' | 'retype' | 'shots' | 'retry') is the discriminant the error
+// screen switches on, never rendered — it stays a bare literal. `auth.cmds` is a
+// copy-paste block, so it is MIXED: the shell commands are left verbatim (a
+// translated command does not run) while the prose in it is not.
 export const BLOCKED: Record<string, Blocked> = {
   'no-access': {
-    say: 'I couldn’t open that repo. It’s either private (and I have no credentials for it) or it doesn’t exist — GitHub returns the same error for both.',
-    fix: 'local', hint: 'If you have it checked out, give me the folder path instead.',
+    get say() { return i18nT('apps.designCritique.constants.blocked_no_access_say') },
+    fix: 'local',
+    get hint() { return i18nT('apps.designCritique.constants.blocked_no_access_hint') },
     auth: {
-      lead: 'Git access is set up per machine, not per app — do it once and every private repo works, here and everywhere else. In your terminal:',
+      get lead() { return i18nT('apps.designCritique.constants.blocked_no_access_auth_lead') },
+      // Not a getter, and deliberately byte-identical to the base line: every
+      // entry is a shell command or a shell comment inside a copy-paste block,
+      // so nothing here is translatable and the line needs no lookup.
       cmds: ['gh auth login', '# or, to use the macOS keychain:', 'git config --global credential.helper osxkeychain'],
-      tail: 'Then come back and press Try again. I never ask for or store a token — anything pasted into this app would end up in a saved transcript.',
+      get tail() { return i18nT('apps.designCritique.constants.blocked_no_access_auth_tail') },
     },
   },
   'not-found': {
-    say: 'That repo doesn’t exist at that URL.',
-    fix: 'retype', hint: 'Check the owner and name, or give me a local folder path.',
+    get say() { return i18nT('apps.designCritique.constants.blocked_not_found_say') },
+    fix: 'retype',
+    get hint() { return i18nT('apps.designCritique.constants.blocked_not_found_hint') },
   },
   'figma-app-missing': {
-    say: 'I can’t reach Figma — the desktop app isn’t running, or I don’t have the Figma tools available.',
-    fix: 'shots', hint: 'Open the file in Figma desktop and try again, or export the frames as PNGs and drop them here.',
+    get say() { return i18nT('apps.designCritique.constants.blocked_figma_app_missing_say') },
+    fix: 'shots',
+    get hint() { return i18nT('apps.designCritique.constants.blocked_figma_app_missing_hint') },
   },
   'figma-file-closed': {
-    say: 'Figma is running, but that file isn’t open.',
-    fix: 'retry', hint: 'Open it in Figma desktop, then try again.',
+    get say() { return i18nT('apps.designCritique.constants.blocked_figma_file_closed_say') },
+    fix: 'retry',
+    get hint() { return i18nT('apps.designCritique.constants.blocked_figma_file_closed_hint') },
   },
   'figma-no-permission': {
-    say: 'Your Figma account can’t view that file.',
-    fix: 'shots', hint: 'Ask for access, or export the frames as PNGs and drop them here.',
+    get say() { return i18nT('apps.designCritique.constants.blocked_figma_no_permission_say') },
+    fix: 'shots',
+    get hint() { return i18nT('apps.designCritique.constants.blocked_figma_no_permission_hint') },
     auth: {
-      lead: 'Figma access is per account, and I read whatever the desktop app has open — I have no login of my own. To fix it:',
-      cmds: ['1. Ask the file owner to share it with your Figma account', '2. Open it in Figma desktop', '3. Come back and press Try again'],
-      tail: 'If access isn’t coming, exporting the frames as PNGs works just as well — I critique pixels either way.',
+      get lead() { return i18nT('apps.designCritique.constants.blocked_figma_no_permission_auth_lead') },
+      // Rendered in the same command block as the case above, but these are
+      // numbered INSTRUCTIONS, not commands — all three are copy. The number
+      // stays inside each string so the list cannot renumber itself per locale.
+      get cmds() {
+        return [
+          i18nT('apps.designCritique.constants.blocked_figma_no_permission_auth_step_1'),
+          i18nT('apps.designCritique.constants.blocked_figma_no_permission_auth_step_2'),
+          i18nT('apps.designCritique.constants.blocked_figma_no_permission_auth_step_3'),
+        ]
+      },
+      get tail() { return i18nT('apps.designCritique.constants.blocked_figma_no_permission_auth_tail') },
     },
   },
-  other: { say: 'I couldn’t get into that.', fix: 'shots', hint: 'Screenshots are the quickest way around it.' },
+  other: {
+    get say() { return i18nT('apps.designCritique.constants.blocked_other_say') },
+    fix: 'shots',
+    get hint() { return i18nT('apps.designCritique.constants.blocked_other_hint') },
+  },
 }
 
+/**
+ * The way-forward copy for a blocked reason, RESOLVED.
+ *
+ * `DesignCritiquePage` currently spreads the raw entry
+ * (`{ ...(BLOCKED[reason] || BLOCKED.other), detail }`), and a spread invokes the
+ * getters above — so the copy it stores in state is fixed at the moment the run
+ * failed and will not follow a later language switch. Calling this instead is the
+ * same one line and re-resolves on every render:
+ *
+ *     setBlocked({ ...blockedFor(info.blocked.reason), detail: … })
+ *
+ * (That still resolves at spread time; the fix is to call `blockedFor()` in the
+ * error screen's render rather than to store the resolved copy in state. Both are
+ * strictly better than the frozen literals this replaced.)
+ */
+export function blockedFor(reason: string | undefined): Blocked {
+  const entry = reason && Object.prototype.hasOwnProperty.call(BLOCKED, reason)
+    ? BLOCKED[reason]
+    : BLOCKED.other
+  return { ...entry, ...(entry.auth ? { auth: { ...entry.auth } } : {}) }
+}
+
+// Read as `KIND_WAIT[pendingKind]` in WaitingScreen's render body, so a getter
+// per entry resolves per render and the `Record<string, string>` shape the caller
+// indexes into is unchanged.
 export const KIND_WAIT: Record<string, string> = {
-  figma: 'Opening the Figma file and listing its frames…',
-  repo: 'Cloning the repo and listing its routes…',
-  local: 'Scanning the code for routes…',
-  url: 'Loading the page and following its links…',
+  get figma() { return i18nT('apps.designCritique.constants.wait_figma') },
+  get repo() { return i18nT('apps.designCritique.constants.wait_repo') },
+  get local() { return i18nT('apps.designCritique.constants.wait_local') },
+  get url() { return i18nT('apps.designCritique.constants.wait_url') },
 }
 
 // The built-in example is a real 4-screen checkout flow, captured from a real
 // (small) site, so "See an example" demonstrates flow mode rather than one screen.
 // Every box below is MEASURED from the rendered page, not estimated. Images live
 // under the dashboard's public assets (copied by the build).
+//
+// ## Why nothing from here down is localised
+//
+// These two constants fill MODEL-OUTPUT slots. `showReport(SAMPLE_REPORT, …)` is
+// the same entry point a finished run uses, and `FindingRow` renders `title`,
+// `category`, `location`, `evidence`, `fix` and `rules` verbatim inside localised
+// chrome ("Where", "What I saw", "Based on"). A real critique arrives in English —
+// `prompts.ts` carries no language directive and pins the NN/g severity names — so
+// translating the sample would make it the only localised report in the app and
+// leave History rendering a Chinese example directly above English real ones.
+//
+// The content is also welded to the English PIXELS of the bundled screenshots:
+// the evidence quotes button labels out of them ("Continue (dark) → Next step
+// (blue) → Pay $130 (green)", 'Only Phone is annotated, as "Optional"'), and
+// `SAMPLE_SCREENS[].label` captions frames whose own headings read Cart /
+// Shipping / Payment / Confirmation. A translated caption over an untranslated
+// screenshot breaks the evidence link the example exists to demonstrate.
+//
+// `FindingRow.tsx:63` also branches on `/accessib/i.test(f.category)`, an English
+// regex over a category value — latent for these five categories, but it confirms
+// the field is treated as an English token rather than copy.
+//
+// Localising the example is therefore a product decision (it depends on whether
+// the critic prompt gains a language directive first), not a mechanical i18n fix.
+// Reported to the shard parent rather than converted. See shard-02.json `notes`.
 const SAMPLE = (name: string) => '/app-assets/design-critique/samples/' + name + '.png'
 export const SAMPLE_SCREENS: Screen[] = [
   { step: 1, label: 'Cart', url: SAMPLE('1-cart') },

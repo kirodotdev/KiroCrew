@@ -546,6 +546,23 @@ class IngestionPipeline:
         """
         if not self.embedder:
             return
+        # Capture the signature BEFORE the embed, and stamp the row with THAT
+        # value — the same discipline _write_item_embedding already follows by
+        # taking `sig` as a parameter.
+        #
+        # `self.embedder` is a thin wrapper whose `.model` property resolves the
+        # LIVE shared singleton (InProcessEmbedder.model -> get_shared_embedder()),
+        # so evaluating embedder_signature() down at the UPDATE would read
+        # whichever model is current THEN, not the one that produced `vec`. A
+        # model change landing in that gap would stamp an old-model vector with
+        # the new signature — and because the re-embed sweep is sig-gated
+        # (`embedding_sig != ?`), that row would be skipped forever rather than
+        # self-healing on the next pass.
+        #
+        # Capturing first fails safe in the one direction that matters: if the
+        # swap lands mid-embed, the vector is new but the sig is old, so the
+        # sweep re-embeds it — wasteful, never wrong.
+        sig = embedder_signature(self.embedder)
         loop = asyncio.get_running_loop()
         vec = await loop.run_in_executor(
             None, self.embedder.embed_for_item, title, summary, content
@@ -553,7 +570,7 @@ class IngestionPipeline:
         if vec:
             self.store.db.execute(
                 "UPDATE items SET embedding = ?, embedding_sig = ?, embedded_at = ? WHERE id = ?",
-                (floats_to_bytes(vec), embedder_signature(self.embedder),
+                (floats_to_bytes(vec), sig,
                  datetime.now().isoformat(), item_id))
             self.store.db.commit()
 
@@ -766,7 +783,7 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
     same function powers the dashboard trigger and the watcher self-heal. Returns the
     number of items successfully re-embedded.
 
-    ponytail: serial single-item embed (the in-process embedder is the CPU floor and fans out
+    Serial single-item embed (the in-process embedder is the CPU floor and fans out
     internally); batch size is only the commit/progress cadence, not a throttle.
     """
     loop = asyncio.get_running_loop()

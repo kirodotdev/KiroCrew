@@ -543,7 +543,7 @@ _GITHUB_SEGMENT_KINDS = {"pull": "change", "issues": "issue"}
 def _parse_gitlab_path(path: str) -> tuple[str, int, str]:
     """Split a GitLab MR/issue path into (project, number, kind) or raise ``ValueError``."""
     # String ops instead of a regex: the previous /(.+)/-/merge_requests/
-    # pattern backtracked polynomially on adversarial paths (CodeQL 192). The
+    # pattern backtracked polynomially on adversarial paths. The
     # two markers are scanned independently and the RIGHTMOST valid one wins,
     # preserving the original ``rfind`` semantics (a project path that itself
     # contains the marker text is still split at the last occurrence) without
@@ -946,7 +946,7 @@ def _author(value: Any) -> str:
 #
 # The sidebar chips and the detail panel derive the same {state, ci} chip
 # projection from two different provider reads (a lightweight chip fetch and a
-# full payload). This PR makes the two caches mutually invalidating, so the
+# full payload). The two caches are mutually invalidating, so the
 # invariant "both projections agree" is load-bearing: any vocabulary drift turns
 # a common steady state into a sustained cache ping-pong. To make drift
 # structurally impossible rather than convention-enforced, BOTH paths route
@@ -3420,8 +3420,8 @@ def _record_merge_state(result: dict[str, str], mergeable: str, merge_state: str
 def status_from_full_payload(payload: dict[str, Any]) -> dict[str, str] | None:
     """Derive the lightweight chip status from a FULL pull-request payload.
 
-    The sidebar chips and the detail panel used to read two independent caches
-    with different TTLs, so they could each be "fresh" and still disagree. The
+    The sidebar chips and the detail panel must not read two independent caches
+    with different TTLs, or they could each be "fresh" and still disagree. The
     full fetch is strictly richer than the chip fetch, so it write-throughs into
     the chip cache via this projection — one provider read, one truth, both
     surfaces. Shares the SAME projection helpers as ``_fetch_check_status``:
@@ -3752,7 +3752,7 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
         # Same {state} vocabulary as the full-payload path via `_project_state`:
         # GitLab keeps `draft: true` on an MR closed while still in draft, so the
         # draft mapping is gated on the open state and `locked` folds into
-        # `closed`. A mismatch here would ping-pong under this PR's mutual
+        # `closed`. A mismatch here would ping-pong under the mutual
         # invalidation (chip "draft" ≠ cached "closed", drop, refetch, repeat).
         state = _project_state(
             str(details.get("state") or ""),

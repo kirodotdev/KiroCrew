@@ -51,9 +51,6 @@ const MD_LINK_RE = /\[([^\]]{1,100})\]\((https?:\/\/[^)]+)\)/g
 // Match bare URLs not inside markdown link syntax (strip trailing punctuation)
 const BARE_URL_RE = /https?:\/\/[\w][\w.-]*\.[a-z]{2,}(?:[\w/._?&#=-]*[\w/&#=-])?/g
 
-/** Extract a label from text surrounding a bare URL */
-
-
 export function extractChatLinks(messages: ChatMessage[]): ExtractedLink[] {
   const seen = new Set<string>()
   const links: ExtractedLink[] = []
@@ -105,8 +102,8 @@ export function resourceIdentity(link: ExtractedLink): string {
 }
 
 // Canonical request base for a CR/PR or issue URL — the part that identifies the
-// resource itself, minus any sub-path/query/fragment. Single source of truth
-// (was previously restated at each call site). The issue arm matters for the
+// resource itself, minus any sub-path/query/fragment. Single source of truth.
+// The issue arm matters for the
 // side panel: the Issues tab keys its rich entries on the canonical issue url,
 // so a fragment-bearing mention must collapse to the same key or the link would
 // show up twice — once with a panel, once in Resources.

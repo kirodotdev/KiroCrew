@@ -3,11 +3,11 @@ import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import RunInTerminalBtn from '../components/RunInTerminalBtn'
 
-// "Run in terminal" now dispatches a `mc:run-in-terminal` request on window;
+// "Run in terminal" dispatches a `mc:run-in-terminal` request on window;
 // ChatPage opens a terminal tab in the active chat, runs it, and replies with a
 // `mc:run-in-terminal-result`. Tests capture requests and simulate the reply.
 //
-// A click no longer runs anything on its own — it opens a confirmation dialog
+// A click does not run anything on its own — it opens a confirmation dialog
 // showing the exact command, and only the dialog's Run button dispatches.
 let requests: { code: string; reqId: string }[] = []
 function onReq(e: Event) { requests.push((e as CustomEvent).detail) }

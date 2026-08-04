@@ -1,7 +1,7 @@
 /**
  * AppListRow — dense marketplace row in Discover's "All apps" list.
  *
- * Per the locked hybrid design with hero-thumb rows: a 16:9 hero capsule
+ * The row shows a 16:9 hero capsule
  * (developer-supplied ``heroImage``, theme-aware, gradient + icon fallback),
  * then name with verified mark, publisher / category / source provenance, and
  * a one-line description. The right side carries state — Install (routes to

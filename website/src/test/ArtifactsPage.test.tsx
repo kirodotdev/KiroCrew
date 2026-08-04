@@ -241,3 +241,33 @@ describe('ArtifactsPage', () => {
     expect(btn).toBeInTheDocument()
   })
 })
+
+describe('ArtifactsPage — New Artifact split button', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.removeItem('mc-artifacts-view')
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+  })
+
+  it('creates a blank document and opens it', async () => {
+    // No `kind` is sent: the store defaults a blank document to markdown and
+    // marks the kind auto-assigned so the first real save can re-type it.
+    vi.mocked(api).createArtifact = vi.fn().mockResolvedValue(mkArtifact('untitled', { kind: 'markdown' }))
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText(/No artifacts yet/i)).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: /New Artifact/i }))
+    await waitFor(() => {
+      expect(vi.mocked(api).createArtifact).toHaveBeenCalledWith({ name: 'Untitled', content: '' })
+    })
+  })
+
+  it('keeps file import available under the caret', async () => {
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText(/No artifacts yet/i)).toBeInTheDocument())
+    // The import entry lives in the dropdown, not the toolbar, so it must not
+    // be reachable until the caret is opened.
+    expect(screen.queryByText(/Import from a file/i)).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /More ways to add an artifact/i }))
+    expect(await screen.findByText(/Import from a file/i)).toBeInTheDocument()
+  })
+})

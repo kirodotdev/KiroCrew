@@ -32,6 +32,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
+import { useLanguage } from '../i18n/LanguageProvider'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import { useChatPopouts } from '../hooks/useChatPopouts'
@@ -63,6 +64,7 @@ import {
   isWithinRecentWindow,
 } from './recentWindow'
 import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
+import { focusSiblingSessionRow } from './chat/sessionRowNav'
 
 import { i18nT } from '../i18n/t'
 import { compareText, fmtDateFields } from '../i18n/format'
@@ -81,10 +83,10 @@ const RENAME_MAX_H = 120
  *  A `tool` phase honors the user's `simplifiedToolNames` preference (purpose vs
  *  raw tool title) via toolStatusLabel, so the row agrees with the inline tool
  *  pill in the transcript rather than always showing the purpose. */
-function slotStatusText(detail: { kind?: string; text?: string; toolName?: string } | undefined, simplifiedToolNames: boolean): string {
+function slotStatusText(detail: { kind?: string; text?: string; toolName?: string } | undefined, simplifiedToolNames: boolean, uiLang: string): string {
   if (detail?.kind === 'streaming') return i18nT('pages.chatSidebar.streaming')
   if (detail?.kind === 'thinking' && detail.text === 'Thinking…') return i18nT('pages.chatSidebar.thinking')
-  return toolStatusLabel(detail, simplifiedToolNames) || i18nT('pages.chatSidebar.thinking')
+  return toolStatusLabel(detail, simplifiedToolNames, uiLang) || i18nT('pages.chatSidebar.thinking')
 }
 /** Telegram-style relative time: time today, "Yesterday hh:mm", weekday+time this week,
  *  short date this year, full date otherwise.
@@ -534,10 +536,9 @@ interface ChatSidebarProps {
    *  When provided, this fires AFTER the switchSlot dispatch so consumers
    *  can react to user-driven selection (e.g. to navigate the URL). */
   onSelectSlot?: (key: string) => void
-  /** When true, the sidebar is externally collapsible — a persistent toggle
-   *  button lives in the chat container at the top-left, so the header
-   *  reserves left space for it. Omitted in embed/sessions mode where the
-   *  sidebar is the whole view. */
+  /** When true, ChatPage floats a hide-sidebar button over this header's
+   *  top-left (open state), so the header reserves left space for it.
+   *  Omitted in embed/sessions mode where the sidebar is the whole view. */
   collapsible?: boolean
   /** Split View (session grid) opt-in feature. When `splitEnabled`, a pinned
    *  "Split View" entry renders at the top; clicking it calls `onOpenSplit`.
@@ -805,6 +806,7 @@ function ChatSidebar({
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail, shallowEqual)
   // Purpose-vs-raw-tool-title preference, shared with the inline tool pills.
   const simplifiedToolNames = useSimplifiedToolNames()
+  const uiLang = useLanguage().resolved
   // Presence in this map means "this session is in an active goal loop".
   const goalLoops = useAppSelector(s => s.chat.goalLoops)
   // Live subagent activity per slot, for the sidebar row's "N agents running"
@@ -1968,7 +1970,11 @@ function ChatSidebar({
               const isActive = activeSlot === s.key
               const nextIsActive = i < childSlots.length - 1 && activeSlot === childSlots[i + 1].key
               const showDivider = i < childSlots.length - 1 && !isActive && !nextIsActive
-              return renderSessionRow(s, 1, showDivider, `${columnId}:${folder.id}`)
+              // `scope` stays per-folder so the Framer layoutId and the inline
+              // rename target remain unique, but the arrow rove is scoped to the
+              // COLUMN: a board column's foldered and ungrouped rows are one
+              // visible list, so ArrowDown has to cross the folder boundary.
+              return renderSessionRow(s, 1, showDivider, `${columnId}:${folder.id}`, columnId)
             })}
           </div>
         </FolderBody>
@@ -1979,7 +1985,7 @@ function ChatSidebar({
   // scope namespaces the Framer layoutId per render location. A multi-tag slot
   // can render in several columns at once; same layoutId in one LayoutGroup
   // collides (Framer paints one, hides the rest). Distinct scope = distinct id.
-  const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list') => {
+  const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope) => {
     // Flat view shares the tree's layoutId namespace so Framer Motion treats a
     // row as the SAME element across the view toggle and animates it from its
     // tree position into the flat lane (and back). Safe: the two views are
@@ -2043,7 +2049,7 @@ function ChatSidebar({
       : subagentCount > 0
         ? subagentLabel
         : s.running
-          ? slotStatusText(slotStatusDetail[s.key], simplifiedToolNames)
+          ? slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)
           : (s.last_message || '')
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
     const rowColor = ci != null ? paletteColors[ci] : null
@@ -2083,9 +2089,31 @@ function ChatSidebar({
           {...offlineProps(connected, 'switch sessions')}
           role="button"
           tabIndex={0}
+          data-session-row={s.key}
+          data-session-scope={navScope}
           aria-current={isActive ? 'true' : undefined}
           aria-disabled={!connected}
           onKeyDown={e => {
+            // ArrowUp/ArrowDown rove focus through the rows of THIS list (see
+            // chat/sessionRowNav for why the rove is scope-bounded and clamped).
+            // Focus-only, so walking the list doesn't load every session on the
+            // way — Enter/Space below still switches. Bare arrows only: the
+            // modified forms belong to other gestures (Alt+←/→ cycles sessions,
+            // ⌘/Ctrl+arrow is OS text/scroll movement), and Shift is left free.
+            // Skipped while a drag is in flight so dnd-kit keeps the arrows for
+            // moving the dragged row, and skipped for a keystroke aimed at an
+            // inner control so the rename input keeps its own caret keys.
+            const roveStep = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0
+            if (roveStep !== 0 && !activeDrag && !e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey
+                && (e.target as HTMLElement) === e.currentTarget) {
+              // Only claim the keystroke when focus actually moved; at the list
+              // edge it falls through and still scrolls the list.
+              if (focusSiblingSessionRow(e.currentTarget as HTMLElement, roveStep)) {
+                e.preventDefault()
+                e.stopPropagation()
+              }
+              return
+            }
             // WCAG 2.1.1: session rows must be operable via keyboard.
             // Enter/Space activates the row (same as click). Other keys are
             // forwarded to dnd-kit's listener (this prop appears after the
@@ -2270,7 +2298,7 @@ function ChatSidebar({
                 <span className="truncate">{subagentLabel}</span>
               </div>
             ) : s.running ? (
-              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusText(slotStatusDetail[s.key], simplifiedToolNames)}</div>
+              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)}</div>
             ) : s.last_message ? (
               <div className="text-[12px] text-muted leading-snug truncate mt-0.5">{s.last_message}</div>
             ) : null}
@@ -2679,14 +2707,17 @@ function ChatSidebar({
         <div className="w-[2px] h-full bg-transparent group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-colors duration-200" />
       </div>
 
-      {/* Header — per Figma (node 3108:9725): all elements (collapse icon,
-          "Sessions" title, kebab, New button) centered on one line at ~28px
-          from the panel top (mt-2 ≈ panel 8px pad, then centered in a 40px row),
-          matching the left-menu header baseline. Equal top/right gap so the New
-          button sits equidistant from the panel's top and right edges. */}
-      <div className="flex justify-between items-center pl-2 pr-3.5 mt-2 h-10">
-        <div className={`flex items-center gap-1.5 min-w-0 flex-1 ${collapsible && !isMobile ? 'pl-8' : ''}`}>
-          {!tinyHeader && <span className="sessions-panel-title text-sm font-medium text-muted tracking-[.04em] truncate">{i18nT('pages.chatSidebar.sessions')}</span>}
+      {/* Header — all elements ("Sessions" title, kebab, New button) centered
+          on one line 23px from the panel top (1px card border + mt-0.5, then
+          centered in a 40px row) — the shared control baseline: the nav rail
+          header, chat title row, and activity strip icons center on the same
+          line.
+          px-2 is symmetric so the New button ends 9px from the card's right
+          edge (8 + 1px border) — the same as its 9px gap to the top edge
+          (1px border + mt-0.5 + 6px of the h-10 row around the h-7 button). */}
+      <div className="flex justify-between items-center px-2 mt-0.5 h-10">
+        <div className={`flex items-center gap-1.5 min-w-0 flex-1 ${collapsible && !isMobile ? 'pl-9' : 'pl-1.5'}`}>
+          {!tinyHeader && <span className="sessions-panel-title text-sm font-semibold text-text-strong tracking-[.04em] truncate">{i18nT('pages.chatSidebar.sessions')}</span>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <DropdownMenu>

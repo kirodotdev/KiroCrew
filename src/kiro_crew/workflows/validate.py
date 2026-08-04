@@ -134,7 +134,7 @@ META_NAME = "META"
 # and MUST NOT be awaited. Awaiting them raises ``TypeError: object ... can't be
 # used in 'await' expression`` at run time — a whole class of authoring bug the AST
 # sandbox otherwise waves through (``await ctx.phase(...)`` is structurally legal).
-# These methods now return a stateless context manager, so ``with ctx.phase(...):``
+# These methods return a stateless context manager, so ``with ctx.phase(...):``
 # is purely cosmetic grouping and is explicitly supported.
 SYNC_CTX_METHODS = frozenset({"phase", "log", "nudge"})
 
@@ -379,7 +379,7 @@ def _is_ctx_call(node: ast.AST, methods: frozenset[str]) -> str | None:
 
 class _DslContractVisitor(ast.NodeVisitor):
     """Catches two DSL-contract violations the sandbox otherwise permits — both
-    observed shipping bad LLM-authored scripts:
+    real failure modes in LLM-authored scripts:
 
     * ``await ctx.phase(...)`` / ``await ctx.log(...)`` — awaiting a SYNC ctx method
       (returns None) → ``TypeError: ... can't be used in 'await' expression``.
@@ -437,7 +437,7 @@ class _DslContractVisitor(ast.NodeVisitor):
         # ``await ctx.<nullable>(...)`` directly (the result may be None). Binding
         # to a variable first (``r = await ctx.agent(...); if r: r.get(...)``) is
         # the correct pattern and is intentionally NOT flagged — we only catch the
-        # inline, unguarded deref that repeatedly shipped broken.
+        # inline, unguarded deref that repeatedly breaks.
         if isinstance(inner, ast.Await):
             m = _is_ctx_call(inner.value, NULLABLE_CTX_METHODS)
             if m is not None:
@@ -540,7 +540,7 @@ def validate(source: str, *, max_bytes: int = MAX_SCRIPT_BYTES) -> ValidationRes
     # so authoring catches+regenerates before launch instead of failing mid-run.
     _check_undefined_names(source, errors)
     # DSL-contract half: reject awaiting sync ctx methods and unguarded None-deref
-    # of awaited nullable ctx results — two authoring-bug classes that shipped
+    # of awaited nullable ctx results — two authoring-bug classes that cause
     # runtime crashes (``can't await NoneType``; ``'NoneType' has no attribute``).
     _check_dsl_contract(tree, errors)
 

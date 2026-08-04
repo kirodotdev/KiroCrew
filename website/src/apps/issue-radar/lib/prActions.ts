@@ -13,18 +13,21 @@
 // server-side. `merge` is for a PR that is mergeable now; `setAutoMerge` is for one
 // that should land by itself once its checks pass. `merge` is per-PR only — it is
 // irreversible, so it is absent from the bulk allowlist.
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   issueRadarApi,
   type BulkPrAction, type BulkPrResponse, type RepoRef,
 } from '../api'
 import { repoScopeKey } from './links'
+import {
+  MERGE_READY_STATES as READY_STATES, MERGE_STATE_DIRTY, MERGE_STATE_UNKNOWN,
+} from './wireValues'
 
 /**
  * Fallback chunk size when the server has not published its cap.
  *
- * Only reached by a cached response written before `bulk_max` shipped; deliberately
+ * Only reached by a cached response with no `bulk_max` field; deliberately
  * conservative so the fallback can never itself exceed the real cap.
  */
 export const DEFAULT_BULK_CHUNK = 25
@@ -41,6 +44,81 @@ export const DEFAULT_BULK_CHUNK = 25
  * splitting per provider for a value the UI never sends.
  */
 export type MergeMethod = 'MERGE' | 'SQUASH' | 'REBASE'
+
+// `MERGE_READY_STATES` is a PROTOCOL value set — see `lib/wireValues.ts`, which is
+// where every by-value provider/server string in this surface lives.
+export { MERGE_READY_STATES } from './wireValues'
+
+/**
+ * Whether a row/detail is mergeable RIGHT NOW, from its provider merge state.
+ *
+ * The single readiness predicate for both bars. Returns false for an unknown state,
+ * which is the load-bearing half: GitHub computes mergeability asynchronously and
+ * answers `unknown` on a cold read, and a gate that cannot tell must refuse rather
+ * than guess in either direction.
+ */
+export const isMergeReady = (mergeableState?: string | null): boolean =>
+  READY_STATES.has((mergeableState ?? '').toLowerCase())
+
+/** The shape both bucket predicates read. */
+export interface MergeCandidate {
+  state?: string
+  draft?: boolean
+  merged_at?: string | null
+  mergeable_state?: string | null
+}
+
+/**
+ * Whether a row is still OPEN and therefore a candidate for either merge verb.
+ *
+ * The ONE lifecycle gate, shared by both buckets rather than open-coded in each. The
+ * two predicates below are deciding the same security-relevant question from the same
+ * fields, and the warning on `MERGE_READY_STATES` applies just as much here: two copies
+ * diverge, and the first review of this change caught exactly that — one copy had a
+ * `draft` guard and the other did not.
+ *
+ * `merged_at` is checked BEFORE `state` on purpose: the backend corrects a stale row's
+ * state, but a row can also carry a merge timestamp while its cached `state` still says
+ * open, and a merged PR is finished whichever field reveals it.
+ */
+const isOpenCandidate = (pr: MergeCandidate): boolean =>
+  !pr.merged_at && (pr.state ?? '').toLowerCase() !== 'closed' && !pr.draft
+
+/**
+ * Whether arming the provider's auto-merge is MEANINGFUL for this row.
+ *
+ * The complement of {@link isMergeReady}, and deliberately not its negation. The
+ * provider refuses to arm in four distinct cases, and every one of them was being
+ * discovered one failed row at a time by a bulk bar that had no readiness field:
+ *
+ * - already mergeable — "Pull request is in clean status";
+ * - already merged — "Pull request is already merged";
+ * - a DRAFT — a draft cannot be armed (the per-PR bar has always checked this);
+ * - `dirty` — a PR with merge CONFLICTS cannot be armed either; nothing will resolve
+ *   the conflict on its own, so there is no "once checks pass" to wait for.
+ *
+ * A row whose readiness is UNKNOWN is in neither bucket: GitHub computes mergeability
+ * asynchronously, and on a cold read roughly half a page can report `unknown`. Guessing
+ * there produces exactly the failed batch this predicate exists to prevent.
+ */
+export const canArmAutoMerge = (pr: MergeCandidate): boolean => {
+  if (!isOpenCandidate(pr)) return false
+  const state = (pr.mergeable_state ?? '').toLowerCase()
+  if (!state || state === MERGE_STATE_UNKNOWN) return false
+  // `dirty` is a CONFLICT: arming waits for checks, and no check resolves a conflict.
+  if (state === MERGE_STATE_DIRTY) return false
+  return !READY_STATES.has(state)
+}
+
+/**
+ * Whether this row can be merged RIGHT NOW — the other half of the partition.
+ *
+ * Same lifecycle gate as {@link canArmAutoMerge}, then an affirmative readiness check.
+ * `draft` is excluded here too: a draft reporting `clean` (transiently, or from a stale
+ * cache row) would otherwise be offered a merge the provider only refuses.
+ */
+export const canMergeNow = (pr: MergeCandidate): boolean =>
+  isOpenCandidate(pr) && isMergeReady(pr.mergeable_state)
 
 /** What a completed bulk run produced, for the summary the list bar shows.
  * `failed` is a first-class field, not an error: a batch in which one PR was
@@ -207,6 +285,107 @@ export function usePrActions(ref: RepoRef, number: number) {
           issueRadarApi.pullRunAction(ref, number, runId, 'rerun', failedOnly)),
       [run, ref, number],
     ),
+  }
+}
+
+/** One row's result in a sequential merge run. */
+export interface SequentialMergeRow {
+  number: number
+  status: 'merged' | 'failed'
+  error?: string
+}
+
+/**
+ * Merge several READY pull requests, one at a time, through the per-PR route.
+ *
+ * This deliberately does NOT go through `/pulls/bulk`. `merge` is absent from the
+ * server's `_BULK_PR_ACTIONS` on purpose — it is irreversible, and the spec's rule 3
+ * keeps 50-from-one-click off the bulk endpoint. So each merge here is the ordinary
+ * per-PR `/pull/merge` call, which means every safety property of that route still
+ * holds per row: the sha PIN (a push landing mid-run is refused, not merged), the
+ * server-side `_MERGE_ALLOWED_STATES` re-read, the permission gate, and the SEL audit.
+ *
+ * Understand the trade this makes, because it is real: it reproduces bulk merge's blast
+ * radius without the bulk endpoint's server-side cap. The mitigations are that it is
+ * offered ONLY for rows the provider already reports as mergeable-now, it requires a
+ * typed confirmation naming the count, and it stops at the first failure.
+ *
+ * **Sequential, and stops on the first failure.** Not just for the shared rate limit:
+ * merging changes the base branch, so PR #2's mergeability is a function of #1 having
+ * landed. Firing them together would race, and continuing past a failure would keep
+ * merging onto a base whose state has already diverged from what was reviewed. A
+ * partial run is reported per row so the user knows exactly where it stopped.
+ */
+export function useSequentialMerge(ref: RepoRef) {
+  const invalidate = useInvalidatePr(ref)
+  const [busy, setBusy] = useState(false)
+  const [rows, setRows] = useState<SequentialMergeRow[]>([])
+  const [running, setRunning] = useState<number | null>(null)
+  // Set by `abort()` and checked before EACH row. A merge already in flight cannot be
+  // recalled — the request is with the provider — but every row after it can still be
+  // spared, and on an irreversible mass action that is the difference between Cancel
+  // meaning something and meaning nothing.
+  const aborted = useRef(false)
+  // Guards against a second concurrent run: the Apply button disables on `busy`, but the
+  // confirm input's Enter handler is a second entry point, and two loops advancing
+  // independently would defeat stop-on-first-failure and merge a row twice. A ref, not
+  // state, because the check has to see the write from the same tick.
+  const inFlight = useRef(false)
+
+  const mergeAll = useCallback(
+    async (
+      // Each entry carries the sha its row was RENDERED at — never re-read at submit
+      // time. Same rule as bulk approve: re-reading lets a force-push landing in the
+      // window re-point the action at an unreviewed commit, and the server-side pin
+      // cannot catch that because the request would carry the new sha.
+      targets: Array<{ number: number; headSha: string }>,
+      method: MergeMethod = 'SQUASH',
+    ): Promise<SequentialMergeRow[]> => {
+      // A second concurrent run would merge a row twice and break stop-on-first-failure.
+      if (!targets.length || inFlight.current) return []
+      inFlight.current = true
+      aborted.current = false
+      setBusy(true)
+      setRows([])
+      const done: SequentialMergeRow[] = []
+      try {
+        for (const { number, headSha } of targets) {
+          // Checked per row, so Cancel spares everything not yet sent.
+          if (aborted.current) break
+          setRunning(number)
+          try {
+            await issueRadarApi.mergePr(ref, number, headSha, method)
+            done.push({ number, status: 'merged' })
+            // Per row, so a long run shows progress instead of jumping at the end.
+            invalidate([number], PR_ACTION.merge)
+            setRows([...done])
+          } catch (e) {
+            done.push({ number, status: 'failed', error: (e as Error).message })
+            setRows([...done])
+            // STOP. Every remaining PR would merge onto a base that no longer matches
+            // what the run was planned against.
+            break
+          }
+        }
+        return done
+      } finally {
+        setRunning(null)
+        setBusy(false)
+        inFlight.current = false
+      }
+    },
+    [ref, invalidate],
+  )
+
+  return {
+    mergeAll,
+    busy,
+    /** The PR currently being merged, for a per-row spinner. */
+    running,
+    rows,
+    /** Stop before the next row. The in-flight merge cannot be recalled. */
+    abort: useCallback(() => { aborted.current = true }, []),
+    reset: useCallback(() => { aborted.current = true; setRows([]) }, []),
   }
 }
 

@@ -1,6 +1,6 @@
 // Feature: chat-virtualizer — cross-module timing coupling.
 //
-// Design Review flagged that the settle-poll constants in `searchScroll.ts` are
+// The settle-poll constants in `searchScroll.ts` are
 // hand-tuned against a widget-build delay owned by `WidgetFrame.tsx`: two
 // magic numbers in different modules whose relationship is load-bearing but
 // invisible from either side. Rather than create a runtime dependency from a
@@ -48,10 +48,10 @@ describe('searchScroll <-> WidgetFrame timing coupling', () => {
     expect(CONVERGE_MAX_MS).toBeGreaterThan(MAX_WIDGET_BUILD_WAIT_MS)
   })
 
-  // The assertions above compare CONSTANTS, so they stayed green when the
-  // `Math.min` that actually applies the cap was removed — late-slot widgets
-  // would again build after convergence settled while CI reported no problem.
-  // These exercise the arithmetic itself.
+  // The assertions above compare CONSTANTS, so they would stay green if the
+  // `Math.min` that applies the cap were removed — late-slot widgets would
+  // again build after convergence settled while CI reported no problem. These
+  // exercise the arithmetic itself.
   it('the stagger delay plateaus at the cap instead of growing per widget', () => {
     const base = 100
     // Below the cap the delay grows one stagger step per slot.

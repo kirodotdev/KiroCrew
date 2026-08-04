@@ -20,13 +20,43 @@ import { i18nT } from '../../../../i18n/t'
 const TRIAGE_PATTERN = /(^|[\s:_/-])(triage|untriaged|unconfirmed|pending|needs?[\s_/-]?(triage|info|repro|reproduction|investigation|review|response|details?|decision))/i
 const GFI_PATTERN = /(good[\s_/-]?first[\s_/-]?issue|first[\s_/-]?timers?|help[\s_/-]?wanted|beginner|newcomer|starter|low[\s_/-]?hanging|(^|[\s:_/-])easy([\s:_/-]|$))/i
 
-/** Human labels for a member's repo role (collaborators roster: admin/maintain/
- * write/triage/read) and, for the read-only derived fallback, the
- * author_association vocabulary (OWNER/MEMBER/COLLABORATOR). */
-const ROLE_LABEL: Record<string, string> = {
-  admin: 'Admin', maintain: 'Maintainer', write: 'Write', triage: 'Triage', read: 'Read',
-  OWNER: 'Owner', MEMBER: 'Member', COLLABORATOR: 'Collaborator', member: 'Member',
+/**
+ * Catalog KEY for each of a member's repo roles (collaborators roster: admin/
+ * maintain/write/triage/read) and, for the read-only derived fallback, the
+ * author_association vocabulary (OWNER/MEMBER/COLLABORATOR).
+ *
+ * Keys, not strings: this table is evaluated at module load, so an `i18nT()` call
+ * here would freeze the boot language and never re-resolve on a language switch.
+ * The lookup happens in `roleLabel()`, which runs during render. Flat `Record` of
+ * full literal keys, indexed inline at the `i18nT()` call, because that is the
+ * shape `scripts/check-i18n-keys.mjs` can resolve statically.
+ */
+const ROLE_LABEL_KEY: Record<string, string> = {
+  admin: 'apps.issueRadar.views.settings.repoSettings.role_admin',
+  maintain: 'apps.issueRadar.views.settings.repoSettings.role_maintainer',
+  write: 'apps.issueRadar.views.settings.repoSettings.role_write',
+  triage: 'apps.issueRadar.views.settings.repoSettings.role_triage',
+  read: 'apps.issueRadar.views.settings.repoSettings.role_read',
+  OWNER: 'apps.issueRadar.views.settings.repoSettings.role_owner',
+  MEMBER: 'apps.issueRadar.views.settings.repoSettings.role_member',
+  COLLABORATOR: 'apps.issueRadar.views.settings.repoSettings.role_collaborator',
+  member: 'apps.issueRadar.views.settings.repoSettings.role_member',
 }
+
+/**
+ * Localised label for a repo role. A role the provider reports that has no entry
+ * above has no catalog entry either, so it is returned VERBATIM — it is a
+ * provider identifier, not display copy.
+ */
+function roleLabel(role: string): string {
+  // `hasOwnProperty`, not `in`: the role comes off an API response, so a provider
+  // reporting `toString` would otherwise resolve to an inherited
+  // Object.prototype member and hand a function to i18next.
+  return Object.prototype.hasOwnProperty.call(ROLE_LABEL_KEY, role)
+    ? i18nT(ROLE_LABEL_KEY[role])
+    : role
+}
+
 /** Roles that are collaborators but not maintainers — muted rather than accent. */
 const ROLE_MUTED = new Set(['read'])
 
@@ -92,9 +122,10 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
 
   /** Saves are SERIALIZED and the newest draft always wins.
    *
-   * Every toggle autosaves, so two quick clicks used to send two writes built on
-   * the same revision: the first succeeded, the second 409'd, and clearing the
-   * draft threw away the newer edit — the user's last click silently undone.
+   * Every toggle autosaves, so two quick clicks could otherwise send two writes
+   * built on the same revision: the first succeeds, the second 409s, and clearing
+   * the draft would throw away the newer edit — silently undoing the user's last
+   * click.
    *
    * So: one save at a time through `saveChain`, each one sending the LATEST draft
    * with the LATEST known revision at send time. A 409 can then only come from
@@ -112,8 +143,8 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
   const serverSettings = useRef<RepoSettings | null>(null)
   /** Monotonic edit counter. A save carries the sequence it was queued at, so a
    * response that lands while a NEWER edit is already waiting does not overwrite
-   * it — adopting unconditionally made edit A's success replace the pending draft
-   * B, so B then re-sent A and the user's latest change vanished. */
+   * it — adopting unconditionally would let edit A's success replace pending draft
+   * B, so B would re-send A and the user's latest change would vanish. */
   const editSeq = useRef(0)
 
   const applySaved = ({ res, seq }: { res: { settings: RepoSettings }; seq: number }) => {
@@ -123,10 +154,10 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
     serverSettings.current = res.settings
     qc.setQueryData(['issue-radar', 'settings', scopeKey], res)
     // Retire each dirty key the server now AGREES with, rather than clearing the
-    // whole set on the last edit. Blanket-clearing was wrong in one direction and
-    // never clearing in the other: if save A landed while B was queued, B failed,
-    // another tab then changed A's field and C conflicted, A stayed dirty and the
-    // retry restored this tab's stale value over theirs.
+    // whole set on the last edit. Blanket-clearing loses edits in one direction and
+    // never clearing in the other: if save A lands while B is queued, B fails,
+    // another tab changes A's field and C conflicts, A stays dirty and the retry
+    // would restore this tab's stale value over theirs.
     const current = latestDraft.current ?? res.settings
     for (const k of [...dirtyKeys.current]) {
       if (JSON.stringify(current[k]) === JSON.stringify(res.settings[k])) {
@@ -280,8 +311,8 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
     },
   })
 
-  // ── AI label recommendations moved to the Tagging dashboard ──
-  // The taxonomy proposals ("what labels is this repo missing?") now live next to
+  // ── AI label recommendations live on the Tagging dashboard ──
+  // The taxonomy proposals ("what labels is this repo missing?") sit next to
   // the untagged issues they get applied to; this page keeps only the LOCAL
   // definitions above. See views/tagging/LabelsPanel.tsx.
 
@@ -410,7 +441,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <button
           onClick={() => {
             // Switch first: the settings page can be open for a repo that is NOT
-            // the active one, and navigating without this showed the Tagging
+            // the active one, and navigating without this would show the Tagging
             // dashboard for a different repository than the page you came from.
             // Only when it actually differs, though — switchRepo resets the saved
             // issue and PR filters, which would be a surprising side effect of
@@ -454,7 +485,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
                 href={userUrlFor(repoRef, m.login)}
                 target="_blank"
                 rel="noreferrer"
-                title={`${m.login} — ${ROLE_LABEL[m.role] ?? m.role} · open on ${terms.providerName}`}
+                title={`${m.login} — ${roleLabel(m.role)} · open on ${terms.providerName}`}
                 className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-hover pl-2.5 pr-2 py-1 text-[13px] text-text hover:border-border-strong transition-colors"
               >
                 <span className="truncate max-w-[160px]">{m.login}</span>
@@ -582,7 +613,7 @@ function MemberRoleTag({ role }: { role: string }) {
   const cls = ROLE_MUTED.has(role) ? 'bg-bg-elevated text-muted' : 'bg-accent-subtle text-accent'
   return (
     <span className={`text-[10.5px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>
-      {ROLE_LABEL[role] ?? role}
+      {roleLabel(role)}
     </span>
   )
 }

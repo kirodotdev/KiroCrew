@@ -114,10 +114,10 @@ const COLLAPSED_BODY_PX = 66
  *
  * Takes the markdown STRING (not children) on purpose: the measure effect keys
  * off it, and a string is a stable dependency. Keying off `children` — a fresh
- * JSX object on every render — re-ran the effect on any unrelated re-render (a
- * react-query background refetch, a timestamp toggle) and silently re-collapsed
- * a body the user had just expanded. Expanded state now resets only when the
- * body itself actually changes (i.e. switching to a different PR). */
+ * JSX object on every render — would re-run the effect on any unrelated
+ * re-render (a react-query background refetch, a timestamp toggle) and silently
+ * re-collapse a body the user had just expanded. Expanded state resets only when
+ * the body itself actually changes (i.e. switching to a different PR). */
 function CollapsibleBody({ body }: { body: string }) {
   const [expanded, setExpanded] = useState(false)
   const [overflowing, setOverflowing] = useState(false)
@@ -222,11 +222,29 @@ function Section({
   )
 }
 
-const REVIEW_VISUAL: Record<string, { Icon: LucideIcon; color: string; verb: string }> = {
-  approved: { Icon: CheckCircle2, color: 'text-ok', verb: 'approved these changes' },
-  changes_requested: { Icon: XCircle, color: 'text-danger', verb: 'requested changes' },
-  commented: { Icon: MessageSquare, color: 'text-muted', verb: 'reviewed' },
-  dismissed: { Icon: Eye, color: 'text-muted', verb: 'dismissed a review' },
+/**
+ * Catalog KEYS for the inline sentence a review event reads as ("<who> approved
+ * these changes").
+ *
+ * Split out of `REVIEW_VISUAL` and kept FLAT on purpose: a nested
+ * `REVIEW_VISUAL[state].verbKey` is not statically resolvable by
+ * `scripts/check-i18n-keys.mjs`, so its keys could never be verified to exist.
+ * Keys rather than strings because this table is evaluated at module load, where
+ * an `i18nT()` call would freeze the boot language; the lookup happens in
+ * `eventVisual()`, which runs during render.
+ */
+const REVIEW_VERB_KEY: Record<string, string> = {
+  approved: 'apps.issueRadar.components.prDetail.approved_these_changes',
+  changes_requested: 'apps.issueRadar.components.prDetail.requested_changes',
+  commented: 'apps.issueRadar.components.prDetail.reviewed',
+  dismissed: 'apps.issueRadar.components.prDetail.dismissed_a_review',
+}
+
+const REVIEW_VISUAL: Record<string, { Icon: LucideIcon; color: string }> = {
+  approved: { Icon: CheckCircle2, color: 'text-ok' },
+  changes_requested: { Icon: XCircle, color: 'text-danger' },
+  commented: { Icon: MessageSquare, color: 'text-muted' },
+  dismissed: { Icon: Eye, color: 'text-muted' },
 }
 
 /** One row of the timeline rail: [relative time | dot + connector | content]. */
@@ -268,7 +286,15 @@ function eventVisual(
 
   switch (ev.kind) {
     case 'reviewed': {
-      const rv = REVIEW_VISUAL[ev.review_state ?? 'commented'] ?? REVIEW_VISUAL.commented
+      // `hasOwnProperty`, not a bare index with a `??` fallback: `review_state`
+      // is provider data, so a value like `constructor` would otherwise resolve
+      // to an inherited Object.prototype member — truthy, so the `??` never
+      // fired, leaving `rv.Icon` undefined and crashing the row.
+      const state = ev.review_state
+        && Object.prototype.hasOwnProperty.call(REVIEW_VISUAL, ev.review_state)
+        ? ev.review_state
+        : 'commented'
+      const rv = REVIEW_VISUAL[state]
       const reviewerRole = ev.actor ? roleByLogin?.get(ev.actor) ?? null : null
       return {
         Icon: rv.Icon, color: rv.color,
@@ -277,7 +303,7 @@ function eventVisual(
             <div className="flex items-center gap-1.5 flex-wrap">
               {who}
               <MemberBadge role={reviewerRole} assoc={ev.author_association} />
-              <span>{rv.verb}</span>
+              <span>{i18nT(REVIEW_VERB_KEY[state])}</span>
             </div>
             {/* A review's own text is a comment too — same 3-line clamp. */}
             {ev.body?.trim() && (
@@ -400,8 +426,8 @@ function CheckRow({ check }: { check: PrCheck }) {
  *
  * The name alone is not safe: when two rows share it (the same workflow started
  * twice for one head sha), the colliding keys make React unable to remove the
- * stale rows on the next render — which showed up as a group heading counting 4
- * while 6 rows were painted below it. The check-run URL disambiguates real rows;
+ * stale rows on the next render — which shows up as a group heading counting 4
+ * while 6 rows are painted below it. The check-run URL disambiguates real rows;
  * the index is the last-resort tiebreaker. */
 function checkKey(c: PrCheck, i: number): string {
   return `${c.name ?? ''}|${c.url ?? ''}|${i}`
@@ -489,7 +515,7 @@ function AutoReviewChecks(
 }
 
 export default function PrDetail({ pull }: { pull: PullRequest }) {
-  const { active, colorByName, memberRoleByLogin, canWrite } = useIssueRadar()
+  const { active, colorByName, memberRoleByLogin, canWrite, refreshPrefs } = useIssueRadar()
   const scopeKey = repoScopeKey(active)
   // GitLab calls these merge requests; the whole pane's copy follows the ref.
   const terms = providerTerms(active)
@@ -525,7 +551,10 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
     // Derived from the LATEST detail when it has arrived, falling back to the list
     // row: a PR merged elsewhere while the pane is open must start backing off
     // rather than keep polling every 30s against a frozen PR.
-    refetchInterval: detailPollMs(!lifecycleMergedAt && lifecycleState !== 'closed'),
+    refetchInterval: detailPollMs(
+      !lifecycleMergedAt && lifecycleState !== 'closed', refreshPrefs.detailPollMs,
+    ),
+    refetchIntervalInBackground: refreshPrefs.pollInBackground,
   })
   const refreshDetail = () => { refreshRef.current = true; detailQuery.refetch() }
 

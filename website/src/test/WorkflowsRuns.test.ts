@@ -1,5 +1,5 @@
 /**
- * Unit tests for the Workflows "Runs" view-model helpers (M6.5).
+ * Unit tests for the Workflows "Runs" view-model helpers.
  *
  * These cover the pure functions that turn the gateway run registry
  * (`GET /api/workflows/runs`) into render-ready rows: status-badge mapping,

@@ -5,9 +5,9 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 
 // Migration is automatic + background at gateway boot, so the Vector Memory
-// card no longer exposes any manual "Migrate" / "Migrate from Markdown" button
-// or a proactive "Start Embedding Engine" button. Only a Retry affordance
-// survives, and only in the genuine download-error state.
+// card exposes no manual "Migrate" / "Migrate from Markdown" button and no
+// proactive "Start Embedding Engine" button. Only a Retry affordance remains,
+// and only in the genuine download-error state.
 
 vi.mock('../api/client', () => ({
   api: {
@@ -27,7 +27,7 @@ describe('VectorMemoryCard — automatic migration (no manual buttons)', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('has legacy memory but is NOT migrated → shows no Migrate button', async () => {
-    // The exact state that used to render "Migrate from Markdown".
+    // The exact state a manual "Migrate from Markdown" button keyed off.
     vi.mocked(api.vectorStats).mockResolvedValue({
       semantic_active: 0, episodic_active: 0, embedded_count: 0,
       migrated: false, has_legacy_memory: true,
@@ -42,7 +42,7 @@ describe('VectorMemoryCard — automatic migration (no manual buttons)', () => {
     )
     expect(screen.queryByText(/Migrate from Markdown/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Migrate$/i })).not.toBeInTheDocument()
-    // Proactive start button is gone too.
+    // No proactive start button either.
     expect(screen.queryByText(/Start Embedding Engine/i)).not.toBeInTheDocument()
   })
 

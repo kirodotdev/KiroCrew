@@ -1,6 +1,6 @@
 """Telemetry handlers — read the local OTEL metric shards for the dashboard.
 
-Stage-1 wired an OpenTelemetry recorder whose default sink is per-process JSONL
+An OpenTelemetry recorder's default sink is per-process JSONL
 under ``~/.kiro/crew/metrics/metrics-YYYY-MM-DD-<pid>.jsonl`` (see
 ``kiro_crew.metrics.local_exporter``). Each line is one export cycle serialized
 via ``MetricsData.to_json()`` — resource_metrics -> scope_metrics -> metrics ->
@@ -294,13 +294,11 @@ class _Hist:
         """Reported-generation stats, WITH the mixed-window disclosure.
 
         ``other_generations`` / ``total_count`` are part of this payload on
-        purpose rather than something each caller adds by hand: they were added
-        by the ``turn`` and ``startup`` blocks but forgotten by the generic
-        ``other`` surface, so every histogram there published a
-        one-generation subset as if it were the whole population (measured:
-        58-93% of samples dropped on three metrics, and a card contradicting the
-        counter for the same event). Emitting them here makes that omission
-        impossible for any future surface.
+        purpose rather than something each caller adds by hand: emitting them
+        here guarantees every histogram surface discloses a mixed window instead
+        of publishing a one-generation subset as if it were the whole
+        population (a subset can drop the large majority of samples, and makes a
+        histogram card contradict the counter for the same event).
         """
         g = self._dominant()
         if g is None:
@@ -376,12 +374,12 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
                                         # kiro path) PLUS one point per internal
                                         # phase. Only the end-to-end point is a
                                         # startup: counting the phase points too
-                                        # multiplied the startup count by ~4 and
-                                        # summed four unrelated latency
+                                        # would multiply the startup count by ~4
+                                        # and sum four unrelated latency
                                         # distributions into one set of buckets,
-                                        # producing a bimodal "distribution" that
-                                        # was really set_model + session_new +
-                                        # spawn_init + total stacked together.
+                                        # a bimodal "distribution" that is really
+                                        # set_model + session_new + spawn_init +
+                                        # total stacked together.
                                         phase = str(attrs.get("phase", _PHASE_TOTAL))
                                         if phase != _PHASE_TOTAL:
                                             phases.setdefault(phase, _Hist()).add(dp)

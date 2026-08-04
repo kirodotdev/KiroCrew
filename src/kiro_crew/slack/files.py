@@ -11,18 +11,16 @@ growing a second copy.
 Audio is skipped here: Slack transcribes it on a separate upstream path
 (``transcribe.py``) before file processing runs.
 
-Behaviour preserved from the original implementation:
-- the same ``(image_paths, text_blocks)`` return contract, so ``events.py`` and
-  the busy-message queue are unchanged
+Behaviour:
+- returns an ``(image_paths, text_blocks)`` contract that ``events.py`` and the
+  busy-message queue consume directly
 - images land in temp files the caller must delete
-- text and documents are redacted, then truncated, then wrapped in the same
+- text and documents are redacted, then truncated, then wrapped in
   ``[File: …]`` / ``[Document: …]`` markers
-
-Tightened relative to the original:
 - size is re-checked AFTER download, so an absent or dishonest Slack ``size``
-  (which defaults to 0) can no longer bypass the cap
+  (which defaults to 0) cannot bypass the cap
 - image bytes must match the declared mimetype's signature
-- a per-message attachment cap now exists
+- a per-message attachment cap is enforced
 """
 
 from __future__ import annotations
@@ -50,9 +48,8 @@ _LIMITS = IngestLimits(
     max_text_inject=50 * 1024,
 )
 
-# Retained names. `test_slack_files.py` asserts against these directly, and
-# keeping them re-exported means that suite stays a real regression check on the
-# migration rather than being rewritten alongside it.
+# Re-exported names. `test_slack_files.py` asserts against these directly, so
+# keeping them exported keeps that suite a real regression check.
 _MAX_IMAGE_BYTES = _LIMITS.max_image_bytes
 _MAX_TEXT_BYTES = _LIMITS.max_text_bytes
 _MAX_DOC_BYTES = _LIMITS.max_document_bytes
@@ -63,8 +60,8 @@ _MAX_TEXT_INJECT = _LIMITS.max_text_inject
 #: transcription path in ``slack/events.py`` has always relied on that. Defined
 #: HERE (not in events.py) because this module sits below it in the import
 #: graph, so both the transcriber and the ingestion adapter can share ONE
-#: definition. Two copies is how a transcribed voice memo ended up also being
-#: rejected as unsupported video.
+#: definition. A single definition keeps them in sync, so a transcribed voice
+#: memo is not also rejected as unsupported video.
 SLACK_AUDIO_MIMETYPES: tuple[str, ...] = ("audio/", "video/webm")
 _safe_suffix = safe_suffix
 

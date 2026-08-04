@@ -45,6 +45,8 @@ describe('useTheme', () => {
   beforeEach(() => {
     localStorage.clear()
     delete document.documentElement.dataset.theme
+    delete document.documentElement.dataset.mode
+    delete document.documentElement.dataset.modePref
   })
 
   it('defaults to system preference (dark OS)', () => {
@@ -118,8 +120,42 @@ describe('useTheme', () => {
     expect(document.documentElement.dataset.theme).toBe('dark')
   })
 
-  it('treats previously onboarded users as import-onboarded', () => {
+  it('exposes the mode PREFERENCE separately from the resolved mode', () => {
+    // The Electron shell maps data-mode-pref onto nativeTheme.themeSource.
+    // It must see 'system' under Auto: themeSource='dark'/'light' also pins
+    // prefers-color-scheme, which is what Auto resolves through, so feeding the
+    // resolved mode back froze Auto at whatever it read on first load.
     mockMatchMedia(true)
+    const { result } = renderThemeHook()
+    expect(document.documentElement.dataset.mode).toBe('dark')
+    expect(document.documentElement.dataset.modePref).toBe('system')
+
+    act(() => result.current.setTheme('light'))
+    expect(document.documentElement.dataset.mode).toBe('light')
+    expect(document.documentElement.dataset.modePref).toBe('light')
+  })
+
+  it('pushes the mode preference to the Electron shell on change', () => {
+    mockMatchMedia(true)
+    const setThemeMode = vi.fn()
+    ;(window as unknown as { electronAPI: unknown }).electronAPI = { setThemeMode }
+    try {
+      const { result } = renderThemeHook()
+      expect(setThemeMode).toHaveBeenCalledWith('system')
+
+      act(() => result.current.setTheme('dark'))
+      expect(setThemeMode).toHaveBeenLastCalledWith('dark')
+
+      // Back to Auto must push too — otherwise themeSource stays pinned and the
+      // media query keeps lying until the next window focus.
+      act(() => result.current.setTheme('system'))
+      expect(setThemeMode).toHaveBeenLastCalledWith('system')
+    } finally {
+      delete (window as unknown as { electronAPI?: unknown }).electronAPI
+    }
+  })
+
+  it('treats previously onboarded users as import-onboarded', () => {    mockMatchMedia(true)
     localStorage.setItem('mc-onboarded', '1')
     const { result } = renderThemeHook()
     expect(result.current.importOnboarded).toBe(true)

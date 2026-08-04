@@ -596,9 +596,9 @@ class AcpRuntime:
                 init_resp.get("agentCapabilities", {}).get("loadSession", False)
             )
             # Retain promptCapabilities so the prompt path can gate non-text
-            # blocks. Previously only loadSession was kept, so an image block was
-            # sent regardless of whether the agent accepted one -- and a refusal
-            # surfaced as a generic error with no fallback.
+            # blocks -- without them an image block would be sent regardless of
+            # whether the agent accepts one, and a refusal would surface as a
+            # generic error with no fallback.
             _prompt_caps = init_resp.get("agentCapabilities", {}).get("promptCapabilities", {})
             self._prompt_capabilities = _prompt_caps if isinstance(_prompt_caps, dict) else {}
             self._initialized = True
@@ -1112,8 +1112,10 @@ class AcpRuntime:
         # in the agent spec, so this is what actually pools the servers — no file
         # is written anywhere. Empty when the gateway is disabled.
         if mcp_servers is None:
-            mcp_servers = pooled_session_servers(
-                self._mcp_gateway_overlay, agent or self._agent
+            # Resolve the overlay off the event loop: the lookup stats/reads
+            # files, and blocking the loop stalls every other session's I/O.
+            mcp_servers = await asyncio.to_thread(
+                pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
             )
         params = build_session_new_params(
             cwd if cwd else self._work_dir,

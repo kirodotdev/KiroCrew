@@ -741,12 +741,12 @@ def _sky_click(
         window_width=width,
         window_height=height,
         click_count=req.count,
-        # Passed rather than assumed. The previous call omitted it and the recipe
-        # built left-button codes unconditionally, so a right-click request through
-        # this method silently activated the control instead of opening the context
-        # menu — on a background window the operator cannot see. It is refused (not
-        # downgraded) inside ``macos_skylight``, and again upstream at the chokepoint
-        # by ``policy.check_method_button`` so the model gets the legible message.
+        # Passed rather than assumed: a right-click through this method must open
+        # the context menu, not activate the control. A left-button-only path
+        # would silently activate it on a background window the operator cannot
+        # see. It is refused (not downgraded) inside ``macos_skylight``, and again
+        # upstream at the chokepoint by ``policy.check_method_button`` so the model
+        # gets the legible message.
         button=req.button,
     )
     return DriverResult(ok=True, text=_click_text(req, app), app=app)

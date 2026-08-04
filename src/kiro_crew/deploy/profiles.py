@@ -6,7 +6,7 @@ and which one is the default. Profile *names* are the only credential-adjacent
 data stored — never keys, never tokens.
 
 Security boundary (mirrors ``kiro_crew.metrics.profile_install``, the
-review-defended precedent for explicit named-profile installs):
+precedent for explicit named-profile installs):
 
 * Reads: profile *names* come from ``aws configure list-profiles`` (CLI output,
   names only). We never open ``~/.aws/config`` or ``~/.aws/credentials``.
@@ -18,7 +18,7 @@ review-defended precedent for explicit named-profile installs):
 * Deletes: registry-only. We never remove blocks from ``~/.aws/config``.
 
 TODO(sanctioned-writer): once the ``is_sanctioned_credential_writer`` registry
-(CR for kiro_crew.metrics) merges, register this module there too.
+merges, register this module there too.
 """
 from __future__ import annotations
 
@@ -302,7 +302,7 @@ def create_aws_profile(name: str, region: str, *, account: str = "",
     credentials come from however the user otherwise configures it).
     Returns an error string, or None on success.
     """
-    # R13 F5: reject Windows BEFORE any AWS call — engine.run_aws uses
+    # Reject Windows BEFORE any AWS call — engine.run_aws uses
     # subprocess preexec_fn (unsupported on nt); reaching it mid-way could
     # leave a partially-written profile (region set, credentials not).
     if os.name == "nt":
@@ -317,7 +317,7 @@ def create_aws_profile(name: str, region: str, *, account: str = "",
     except ValidationError as e:
         return f"invalid profile input: {e}"
 
-    # R40 F1 (defense in depth): validate_field passes "" through (spec is not
+    # Defense in depth: validate_field passes "" through (spec is not
     # required + pattern check is skipped on empty), and engine._aws() omits
     # --profile for an empty name — an empty name here would rewrite the
     # user's DEFAULT AWS profile via ``aws configure set``. Never allow it.

@@ -1,8 +1,7 @@
 """Builtin Auto-Discovery — scan builtins/ directory for app manifests.
 
-Replaces the hardcoded ``_BUILTIN_APPS`` list in ``manager.py`` with
-filesystem-based discovery. Each subdirectory of ``builtins/`` that contains
-a valid ``app.json`` is registered as a builtin app.
+Discovers builtins by scanning the filesystem: each subdirectory of
+``builtins/`` that contains a valid ``app.json`` is registered as a builtin app.
 """
 
 from __future__ import annotations
@@ -23,10 +22,7 @@ def _get_builtins_dir() -> Path:
 
 
 def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
-    """Convert an AppManifest to the dict format expected by register_builtin_apps().
-
-    This produces the same structure as the old hardcoded _BUILTIN_APPS entries.
-    """
+    """Convert an AppManifest to the dict format expected by register_builtin_apps()."""
     d: dict[str, Any] = {
         "name": manifest.name,
         "version": manifest.version,
@@ -42,12 +38,10 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     for key, value in manifest.extra.items():
         d[key] = value
 
-    # Permissions
     perms_d = manifest.permissions.to_dict()
     if perms_d:
         d["permissions"] = perms_d
 
-    # UI
     ui_d = manifest.ui.to_dict()
     if ui_d:
         d["ui"] = ui_d
@@ -57,30 +51,26 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     if backend_d:
         d["backend"] = backend_d
 
-    # Agents and skills. These are typed fields rather than ``extra``, so they
-    # have to be copied explicitly — omitting them silently stripped both from
-    # the persisted ``app.json``, and ``bridges.register_app`` re-reads that
-    # stripped file, so a builtin's declared agents were never symlinked into
-    # ``~/.kiro/agents`` and its skills were never registered.
+    # Agents and skills are typed fields rather than ``extra``, so they must be
+    # copied explicitly — otherwise they are stripped from the persisted
+    # ``app.json`` that ``bridges.register_app`` re-reads, so a builtin's
+    # declared agents are never symlinked into ``~/.kiro/agents`` and its skills
+    # never registered.
     if manifest.agents:
         d["agents"] = list(manifest.agents)
     if manifest.skills:
         d["skills"] = list(manifest.skills)
 
-    # MCP servers
     if manifest.mcpServers:
         d["mcpServers"] = manifest.mcpServers
 
-    # Crons
     if manifest.crons:
         d["crons"] = [c.to_dict() for c in manifest.crons]
 
-    # Dependencies
     deps_d = manifest.dependencies.to_dict()
     if deps_d:
         d["dependencies"] = deps_d
 
-    # Setup
     setup_d = manifest.setup.to_dict()
     if setup_d:
         d["setup"] = setup_d

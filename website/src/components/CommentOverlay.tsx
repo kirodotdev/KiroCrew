@@ -278,10 +278,10 @@ export interface ArtifactCommentForChat {
 /** Format durable artifact comments into a structured USER message for the
  *  originating chat session. Mirrors the local-file `formatCommentsMessage`,
  *  including the hardened `esc()` (escapes `\`, `"`, `\n`, `\r`) so a comment
- *  body cannot inject a fake prompt block (NFR-1); keys each comment by its
+ *  body cannot inject a fake prompt block; keys each comment by its
  *  anchor quote rather than file line/col.
  *
- *  Agent-authored comments are filtered out structurally (FR-5) — the caller
+ *  Agent-authored comments are filtered out structurally — the caller
  *  also gates the affordance, so this is defense in depth. */
 export function formatArtifactCommentsMessage(
   slug: string,
@@ -292,7 +292,7 @@ export function formatArtifactCommentsMessage(
   const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')
   // Human-only: never submit agent comments to chat.
   const human = comments.filter(c => !c.is_agent)
-  // esc() the header too (NFR-1): name/slug are interpolated into the
+  // esc() the header too: name/slug are interpolated into the
   // submitted message, so an unescaped `"`/newline here could inject a fake
   // prompt block just like a comment body could.
   const label = name ? `${esc(name)} (${esc(slug)})` : esc(slug)

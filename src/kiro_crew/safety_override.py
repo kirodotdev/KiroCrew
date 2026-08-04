@@ -1,15 +1,23 @@
 """Time-limited safety override — replaces permanent YOLO mode.
 
-Provides a ``SafetyOverride`` class that can be activated for a bounded TTL
-(default per-source) and automatically expires.  A 5-minute grace window
-after expiry allows renew() to reactivate without a full re-activation flow.
+Provides a ``SafetyOverride`` class with two kinds of grant:
 
-Sources and default TTLs:
-- slack     → 30 min
-- dashboard → 6 h
-- config    → 24 h  (startup only)
+- **Ad-hoc** — YOLO toggled mid-session from Slack, the dashboard picker or the
+  API. Bounded by ONE duration shared by every surface (``agent.yolo_duration``,
+  default 6 h, hard ceiling 24 h) and automatically expires. A 5-minute grace
+  window after expiry allows renew() to reactivate without a full
+  re-activation flow.
+- **Declared** — ``agent.dangerously_skip_permissions: true`` in operator-owned
+  config (the camelCase and legacy ``yolo`` spellings are also read). A standing
+  instruction, so it does NOT expire: it is re-established and re-audited on
+  every startup (state is in-memory), cleared the moment the operator picks
+  another approval mode, and deniable by the enterprise governance ceiling via
+  the ``yolo_duration`` scope's ``permanent`` member — which downgrades it to the
+  ad-hoc duration.
 
-Hard ceiling: 24 h regardless of requested TTL.
+Per-surface TTLs (30 min Slack / 6 h dashboard / 24 h config) were removed: the
+same operator re-enabling the same grant got a different lifetime depending on
+where they clicked, which was unpredictable without buying any security.
 
 All state changes are logged to the Security Event Log (SEL).
 """
@@ -72,6 +80,9 @@ class OverrideStatus:
     expires_at_iso: Optional[str]  # None when inactive
     last_renewed_at_iso: Optional[str]  # None if never renewed
     last_renewed_by: str
+    # True when the live grant was DECLARED in config and has no expiry at all.
+    # ``remaining_secs`` is -1 and ``expires_at_iso`` is None in that case.
+    permanent: bool = False
 
 
 # ─── Core class ──────────────────────────────────────────────────────────────
@@ -85,17 +96,20 @@ class SafetyOverride:
 
     # ── Constants ────────────────────────────────────────────────────────────
 
-    _MAX_TTL: int = 86400  # 24 h hard ceiling
-    _SLACK_TTL: int = 1800  # 30 min
-    _DASHBOARD_TTL: int = 21600  # 6 h
-    _CONFIG_TTL: int = 86400  # 24 h (config-triggered startup)
+    _MAX_TTL: int = 86400  # 24 h hard ceiling for an AD-HOC grant
+    # ONE duration for every ad-hoc surface. Enabling YOLO from Slack and from
+    # the dashboard picker is the same decision made from different places, so
+    # they expire the same way. Per-surface TTLs (30 min Slack / 6 h dashboard)
+    # made the behavior unpredictable without buying security: the same operator
+    # re-enabled the same grant either way. Overridable via
+    # ``agent.yolo_duration``, clamped to ``_MAX_TTL``.
+    _ADHOC_TTL_DEFAULT: int = 21600  # 6 h
     _RENEW_GRACE_SECS: int = 300  # 5-min grace window after expiry
 
-    _SOURCE_TTLS: dict[str, int] = {
-        "slack": _SLACK_TTL,
-        "dashboard": _DASHBOARD_TTL,
-        "config": _CONFIG_TTL,
-    }
+    # The one source carrying STANDING authority: a grant the operator DECLARED
+    # in config (``dangerouslySkipPermissions``), as opposed to one toggled ad hoc
+    # mid-session. A declared grant does not expire — see ``activate_declared``.
+    _DECLARED_SOURCE: str = "config"
 
     # Class-level default lock for instances created via object.__new__() (e.g. tests).
     # Each real instance gets its own lock in __init__; this is just a safe fallback.
@@ -112,6 +126,25 @@ class SafetyOverride:
         self._last_renewed_by: str = ""
         self._on_expired: Optional[Callable[[str], None]] = None
         self._on_activated: Optional[Callable[[str, int], None]] = None
+        # True when the live grant has NO expiry: either DECLARED in config, or
+        # an ad-hoc grant under ``yolo_duration: until_shutdown``. Policy
+        # permits a standing grant. A permanent grant has no deadline at all, so
+        # ``_expires_at`` is not consulted while it is set — but it is still kept
+        # finite so the 0.0 "never activated / deactivated" sentinel and the
+        # renew grace window keep their meaning for every other path.
+        self._permanent: bool = False
+        # Ad-hoc TTL in force, seeded from ``agent.yolo_duration`` at startup.
+        self._adhoc_ttl: int = self._ADHOC_TTL_DEFAULT
+        # True when ``agent.yolo_duration`` is ``until_shutdown``: an ad-hoc grant
+        # then has no timed expiry and lasts until the process stops. Still
+        # in-memory, so it cannot survive a restart the way a DECLARED grant does.
+        self._adhoc_until_shutdown: bool = False
+        # Resolves the ad-hoc duration from LIVE config at activation time.
+        # Installed in production by ``install_duration_resolver``; ``None`` in
+        # tests, which set ``adhoc_ttl`` / ``adhoc_until_shutdown`` directly.
+        # Reading it live is what makes a duration saved from Settings apply to
+        # the next activation instead of only after a restart.
+        self._duration_resolver: Optional[Callable[[], tuple[int, bool]]] = None
         # Task-scoped auto-approve grants: scope key -> (activated_at, expires_at)
         # monotonic. Independent of the global override; each grant is TTL-bounded,
         # audited on activation, and slide-renewable up to a 24h ceiling from first
@@ -130,6 +163,21 @@ class SafetyOverride:
             scoped: dict[str, tuple[float, float]] = {}
             object.__setattr__(self, "_scoped", scoped)
             return scoped
+        # Same reason as _lock/_scoped: test fixtures build instances via
+        # object.__new__() and set fields by hand, so the expiry path must still
+        # be able to read these.
+        if name == "_permanent":
+            object.__setattr__(self, "_permanent", False)
+            return False
+        if name == "_adhoc_ttl":
+            object.__setattr__(self, "_adhoc_ttl", self._ADHOC_TTL_DEFAULT)
+            return self._ADHOC_TTL_DEFAULT
+        if name == "_adhoc_until_shutdown":
+            object.__setattr__(self, "_adhoc_until_shutdown", False)
+            return False
+        if name == "_duration_resolver":
+            object.__setattr__(self, "_duration_resolver", None)
+            return None
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     # ── Callback properties ──────────────────────────────────────────────────
@@ -150,32 +198,115 @@ class SafetyOverride:
     def on_activated(self, cb: Optional[Callable[[str, int], None]]) -> None:
         self._on_activated = cb
 
+    @property
+    def adhoc_ttl(self) -> int:
+        """Seconds an ad-hoc grant lasts (Slack, dashboard, API — all the same)."""
+        return self._adhoc_ttl
+
+    @adhoc_ttl.setter
+    def adhoc_ttl(self, secs: int) -> None:
+        self._adhoc_ttl = max(1, min(int(secs), self._MAX_TTL))
+
+    @property
+    def adhoc_until_shutdown(self) -> bool:
+        """True when an ad-hoc grant should last until the process stops."""
+        return bool(self._adhoc_until_shutdown)
+
+    @adhoc_until_shutdown.setter
+    def adhoc_until_shutdown(self, value: bool) -> None:
+        self._adhoc_until_shutdown = bool(value)
+
+    @property
+    def duration_resolver(self) -> Optional[Callable[[], tuple[int, bool]]]:
+        return self._duration_resolver
+
+    @duration_resolver.setter
+    def duration_resolver(self, fn: Optional[Callable[[], tuple[int, bool]]]) -> None:
+        self._duration_resolver = fn
+
+    def current_adhoc_duration(self) -> tuple[int, bool]:
+        """``(ttl_secs, until_shutdown)`` for a NEW ad-hoc grant, resolved live.
+
+        Consults the installed resolver (live config + governance clamp) so a
+        duration saved from Settings applies to the next activation without a
+        restart. Falls back to the last known values if the resolver fails, so a
+        transient config read error cannot wedge activation.
+        """
+        resolver = self._duration_resolver
+        if resolver is not None:
+            try:
+                ttl, until_shutdown = resolver()
+                return max(1, min(int(ttl), self._MAX_TTL)), bool(until_shutdown)
+            except Exception:
+                logger.warning(
+                    "ad-hoc duration resolver failed; using the last known value",
+                    exc_info=True,
+                )
+        return self._adhoc_ttl, bool(self._adhoc_until_shutdown)
+
+    @property
+    def is_permanent(self) -> bool:
+        """True when the live grant has no expiry at all."""
+        return bool(self._permanent) and bool(self._active)
+
     # ── Public API ───────────────────────────────────────────────────────────
 
     def activate(self, source: str, ttl: Optional[int] = None) -> ActivationResult:
-        """Activate the override for the given source.
+        """Activate a TTL-bounded (ad-hoc) override for the given source.
+
+        Every ad-hoc surface gets the SAME duration — see ``_ADHOC_TTL_DEFAULT``.
+        When ``agent.yolo_duration`` is ``until_shutdown`` an ad-hoc grant has no
+        timed expiry and lasts until the process stops (still in-memory, so a
+        restart clears it). For the operator's declared
+        ``dangerouslySkipPermissions`` grant, which is re-established on every
+        startup, use :meth:`activate_declared` instead.
 
         Args:
             source: Trigger source (``slack``, ``dashboard``, ``config``, …).
-            ttl: Override TTL in seconds.  Defaults to the source's default TTL.
-                 Capped at ``_MAX_TTL``.
+            ttl: Explicit TTL in seconds. Defaults to the in-force ad-hoc
+                 duration. Capped at ``_MAX_TTL``. Passing an explicit ttl always
+                 produces a timed grant, even under ``until_shutdown``.
 
         Returns:
             ActivationResult with effective TTL and wall-clock activation time.
         """
         if ttl is None:
-            ttl = self._SOURCE_TTLS.get(source, self._SLACK_TTL)
+            ttl, until_shutdown = self.current_adhoc_duration()
+            if until_shutdown:
+                return self._commit_activation(source, ttl=0, permanent=True)
         ttl = min(ttl, self._MAX_TTL)
+        return self._commit_activation(source, ttl=ttl, permanent=False)
 
+    def activate_declared(self, source: str = _DECLARED_SOURCE) -> ActivationResult:
+        """Activate a NON-EXPIRING override for an operator-declared grant.
+
+        ``dangerouslySkipPermissions`` is a standing instruction, not a session-scoped
+        one: honouring it for 24h and then silently reverting to
+        prompt-for-everything is the defect this replaces. The grant is still
+        re-established and re-audited on every startup (state is in-memory), is
+        cleared the moment the operator picks another approval mode, and is
+        deniable by the enterprise governance ceiling — callers must consult
+        :func:`declared_grant_permitted` first and fall back to ``activate`` when
+        policy forbids a standing grant.
+        """
+        return self._commit_activation(source, ttl=0, permanent=True)
+
+    def _commit_activation(self, source: str, *, ttl: int, permanent: bool) -> ActivationResult:
+        """Shared activation commit: audit fail-closed, then install the grant."""
         now_mono = time.monotonic()
         now_wall = datetime.now(tz=timezone.utc)
         activated_at_iso = now_wall.isoformat()
+        ttl_desc = "permanent" if permanent else f"{ttl}s"
 
         # Snapshot state under lock for reactivation check
         with self._lock:
             was_active = self._active
             prev_source = self._source
-            prev_remaining = max(0, int(self._expires_at - now_mono)) if self._active else 0
+            prev_remaining = (
+                -1
+                if (self._active and self._permanent)
+                else (max(0, int(self._expires_at - now_mono)) if self._active else 0)
+            )
 
         # Audit BEFORE committing — fail-closed with no race window
         try:
@@ -183,7 +314,7 @@ class SafetyOverride:
                 caller="safety_override",
                 operation="safety_override:activate",
                 outcome="enabled",
-                resources=f"source:{source}, ttl:{ttl}s",
+                resources=f"source:{source}, ttl:{ttl_desc}",
                 critical=True,
             )
         except Exception:
@@ -196,15 +327,18 @@ class SafetyOverride:
                 caller="safety_override",
                 operation="safety_override:reactivate",
                 outcome="enabled",
-                resources=f"prev_source:{prev_source}, prev_remaining:{prev_remaining}s, new_source:{source}, new_ttl:{ttl}s",
+                resources=f"prev_source:{prev_source}, prev_remaining:{prev_remaining}s, new_source:{source}, new_ttl:{ttl_desc}",
             )
 
         # Only commit after audit succeeds
         with self._lock:
             self._active = True
             self._source = source
+            self._permanent = permanent
             self._activated_at = now_mono
-            self._expires_at = now_mono + ttl
+            # Kept finite even when permanent so the 0.0 inactive sentinel and
+            # the renew grace window keep working; it is simply not consulted.
+            self._expires_at = now_mono + (ttl if ttl > 0 else self._MAX_TTL)
             self._activation_count += 1
             self._last_renewed_at = 0.0
             self._last_renewed_by = ""
@@ -234,9 +368,17 @@ class SafetyOverride:
         """
         now_mono = time.monotonic()
         ttl = 0
+        # Resolved BEFORE taking the lock: the resolver reads config from disk,
+        # and holding the state lock across that I/O would stall every concurrent
+        # is_active() check.
+        renew_ttl = min(self.current_adhoc_duration()[0], self._MAX_TTL)
 
         denied = False
         with self._lock:
+            # A permanent grant has nothing to extend and must never be
+            # downgraded to a finite deadline by a renew.
+            if self._active and self._permanent:
+                return RenewResult(renewed=True, ttl=-1, source=source)
             currently_active = self._active and self._expires_at > now_mono
             in_grace = (
                 not currently_active
@@ -244,8 +386,7 @@ class SafetyOverride:
                 and (now_mono - self._expires_at) <= self._RENEW_GRACE_SECS
             )
             if currently_active or in_grace:
-                ttl = self._SOURCE_TTLS.get(source, self._SLACK_TTL)
-                ttl = min(ttl, self._MAX_TTL)
+                ttl = renew_ttl
                 self._active = True
                 self._expires_at = now_mono + ttl
                 self._last_renewed_at = now_mono
@@ -276,6 +417,7 @@ class SafetyOverride:
             if not self._active:
                 return
             self._active = False
+            self._permanent = False
             self._expires_at = 0.0
 
         self._log_sel(
@@ -300,7 +442,7 @@ class SafetyOverride:
         24h hard ceiling.
         """
         if ttl is None:
-            ttl = self._SOURCE_TTLS.get(source, self._SLACK_TTL)
+            ttl = self._adhoc_ttl
         ttl = min(ttl, self._MAX_TTL)
         now_mono = time.monotonic()
         activated_at_iso = datetime.now(tz=timezone.utc).isoformat()
@@ -341,7 +483,7 @@ class SafetyOverride:
         audited ceiling, and per-tool-call logging would flood the SEL.
         """
         if ttl is None:
-            ttl = self._SOURCE_TTLS.get(source, self._SLACK_TTL)
+            ttl = self._adhoc_ttl
         ttl = min(ttl, self._MAX_TTL)
         now_mono = time.monotonic()
         with self._lock:
@@ -409,12 +551,18 @@ class SafetyOverride:
         """Return True if the override is currently active.
 
         Triggers expiry bookkeeping (callback + SEL log) when the TTL lapses.
+        A DECLARED grant has no deadline, so it never reaches that path.
         """
         now_mono = time.monotonic()
 
         with self._lock:
             if not self._active:
                 return False
+
+            # Declared grants do not expire — the operator's config IS the
+            # authority, and it is re-read on every startup.
+            if self._permanent:
+                return True
 
             if now_mono < self._expires_at:
                 return True
@@ -441,12 +589,14 @@ class SafetyOverride:
         return False
 
     def remaining_secs(self) -> int:
-        """Return seconds remaining, 0 if inactive or expired."""
+        """Return seconds remaining; 0 if inactive, -1 if it never expires."""
         self.is_active()
         now_mono = time.monotonic()
         with self._lock:
             if not self._active:
                 return 0
+            if self._permanent:
+                return -1
             remaining = self._expires_at - now_mono
             return max(0, int(remaining))
 
@@ -462,7 +612,11 @@ class SafetyOverride:
         now_wall = datetime.now(tz=timezone.utc).timestamp()
 
         with self._lock:
-            active = self._active and self._expires_at > now_mono
+            permanent = bool(self._permanent)
+            # A permanent grant is active regardless of the (unconsulted)
+            # deadline — deriving ``active`` from ``_expires_at`` alone would
+            # report it inactive once that finite placeholder passed.
+            active = self._active and (permanent or self._expires_at > now_mono)
             source = self._source
             count = self._activation_count
             activated_at = self._activated_at
@@ -478,7 +632,7 @@ class SafetyOverride:
 
         remaining = 0
         if active:
-            remaining = max(0, int(expires_at - now_mono))
+            remaining = -1 if permanent else max(0, int(expires_at - now_mono))
 
         return OverrideStatus(
             active=active,
@@ -486,9 +640,10 @@ class SafetyOverride:
             remaining_secs=remaining,
             activation_count=count,
             activated_at_iso=_mono_to_iso(activated_at) if active else None,
-            expires_at_iso=_mono_to_iso(expires_at) if active else None,
+            expires_at_iso=None if permanent else (_mono_to_iso(expires_at) if active else None),
             last_renewed_at_iso=_mono_to_iso(last_renewed_at),
             last_renewed_by=last_renewed_by,
+            permanent=permanent and active,
         )
 
     # ── Internal helpers ─────────────────────────────────────────────────────
@@ -544,3 +699,127 @@ def reset_singleton() -> None:
     global _singleton
     with _singleton_lock:
         _singleton = None
+
+
+_PERMANENT_MEMBER = "permanent"
+_UNTIL_SHUTDOWN_MEMBER = "until_shutdown"
+_GOVERNANCE_SCOPE = "yolo_duration"
+
+
+def _duration_member_permitted(member: str) -> bool:
+    """Ask the enterprise ceiling whether a duration member may be selected.
+
+    Evaluated against the HOST profile (these are gateway-level decisions, not
+    per-session ones) with ``fail_closed=True``, so a governance-evaluation error
+    DENIES the riskier duration rather than silently granting it. With no policy
+    configured — the standalone default — an ungoverned scope permits, so a solo
+    operator's config is honoured.
+    """
+    # Deferred import: keeps this module free of a governance/config dependency
+    # at import time (it is imported very early by the security/hook layers), so
+    # no import cycle is possible regardless of which entrypoint loads first.
+    try:
+        from kiro_crew.platform.governance_profiles import (
+            HOST_SESSION_KEY,
+            governance_permits,
+        )
+    except Exception:
+        logger.debug("governance layer unavailable; permitting %s", member, exc_info=True)
+        return True
+    decision = governance_permits(
+        _GOVERNANCE_SCOPE,
+        member,
+        session_key=HOST_SESSION_KEY,
+        fail_closed=True,
+    )
+    return bool(getattr(decision, "permitted", False))
+
+
+def declared_grant_permitted() -> bool:
+    """True when policy allows a DECLARED grant to persist without expiry.
+
+    ``dangerouslySkipPermissions: true`` is the operator's standing instruction,
+    but on a managed fleet an admin must be able to forbid a never-expiring
+    grant. Denying the ``permanent`` member of the ``yolo_duration`` scope forces
+    a declared grant back onto the ordinary ad-hoc duration.
+    """
+    return _duration_member_permitted(_PERMANENT_MEMBER)
+
+
+def until_shutdown_permitted() -> bool:
+    """True when policy allows the ad-hoc ``until_shutdown`` duration."""
+    return _duration_member_permitted(_UNTIL_SHUTDOWN_MEMBER)
+
+
+def resolve_configured_duration() -> tuple[int, bool]:
+    """``(ttl_secs, until_shutdown)`` from live config, with the policy clamp.
+
+    Read at every ad-hoc activation, so a duration saved from Settings takes
+    effect on the next activation rather than only after a restart.
+    ``until_shutdown`` is clamped back to the default TTL when policy forbids it.
+    """
+    from kiro_crew.config.loader import (
+        YOLO_UNTIL_SHUTDOWN,
+        KiroCrewConfig,
+        yolo_duration_to_secs,
+    )
+
+    label = KiroCrewConfig.load().agent.yolo_duration
+    if label == YOLO_UNTIL_SHUTDOWN:
+        if until_shutdown_permitted():
+            return SafetyOverride._ADHOC_TTL_DEFAULT, True
+        logger.info(
+            "Enterprise policy forbids the until_shutdown auto-approve duration; "
+            "using the default timed duration"
+        )
+        return SafetyOverride._ADHOC_TTL_DEFAULT, False
+    return yolo_duration_to_secs(label), False
+
+
+def install_duration_resolver() -> None:
+    """Make ad-hoc activations read their duration from live config.
+
+    Called from every entrypoint that can hand out an ad-hoc grant, so Slack, the
+    dashboard and the API all agree — and so a duration change applies without a
+    restart. Idempotent.
+    """
+    safety_override().duration_resolver = resolve_configured_duration
+
+
+def apply_config_duration() -> int:
+    """Seed the ad-hoc duration once and return the TTL (0 for until_shutdown).
+
+    Kept for the startup log and for callers that want the value up front; the
+    resolver installed by :func:`install_duration_resolver` is what keeps it
+    current afterwards.
+    """
+    so = safety_override()
+    install_duration_resolver()
+    try:
+        ttl, until_shutdown = resolve_configured_duration()
+    except Exception:
+        logger.warning("could not read agent.yolo_duration; using the default", exc_info=True)
+        so.adhoc_until_shutdown = False
+        so.adhoc_ttl = SafetyOverride._ADHOC_TTL_DEFAULT
+        return so.adhoc_ttl
+    so.adhoc_until_shutdown = until_shutdown
+    so.adhoc_ttl = ttl
+    return 0 if until_shutdown else ttl
+
+
+def grant_declared_yolo() -> ActivationResult:
+    """Install the operator's declared ``dangerouslySkipPermissions`` grant.
+
+    Permanent when policy permits, otherwise clamped to the ad-hoc duration so
+    the admin ceiling wins. Shared by the dashboard and Slack startup paths so a
+    headless ``--slack-only`` gateway behaves identically to a full one.
+    """
+    apply_config_duration()
+    so = safety_override()
+    if declared_grant_permitted():
+        return so.activate_declared()
+    logger.info(
+        "Enterprise policy forbids a never-expiring auto-approve grant; "
+        "the declared grant falls back to the ad-hoc duration"
+    )
+    return so.activate(SafetyOverride._DECLARED_SOURCE)

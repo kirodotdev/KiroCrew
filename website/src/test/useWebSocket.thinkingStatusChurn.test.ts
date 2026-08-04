@@ -1,14 +1,12 @@
 /**
  * `chat_thinking` must not re-dispatch its status detail on every thought frame.
  *
- * The guard tested `slotStatusDetail[slot]?.kind !== 'streaming'` and then wrote
- * `kind: 'thinking'` — which is itself `!== 'streaming'`. So it never
- * self-limited: every reasoning frame dispatched `setSlotStatusDetail` again
- * with a fresh `ts`. That reducer replaces `slotStatusDetail[slot]` wholesale,
- * so the map identity changed per frame and every whole-map subscriber
- * (ChatSidebar, CommandPalette) re-rendered for the entire duration of the
- * model's reasoning — a ~2,600-line sidebar, per frame, to redraw the same
- * "Thinking…" string.
+ * `setSlotStatusDetail` replaces `slotStatusDetail[slot]` wholesale, so a
+ * dispatch per reasoning frame changes the map identity every frame and every
+ * whole-map subscriber (ChatSidebar, CommandPalette) re-renders for the entire
+ * duration of the model's reasoning — a ~2,600-line sidebar, per frame, to
+ * redraw the same "Thinking…" string. The guard must therefore stay idempotent
+ * while `kind` remains 'thinking'.
  *
  * The sibling `chat_chunk` guard writes `kind: 'streaming'` and is therefore
  * naturally idempotent. These tests pin that same property onto the thinking
@@ -120,8 +118,8 @@ describe('useWebSocket chat_thinking status-detail churn', () => {
     })
 
     // The SAME object — no re-dispatch, so no new map identity, so no
-    // whole-map subscriber re-render. This is the assertion that fails on the
-    // pre-fix code (each frame replaced the detail with a fresh `ts`).
+    // whole-map subscriber re-render. A non-idempotent guard would replace the
+    // detail with a fresh `ts` on each frame.
     expect(store.getState().chat.slotStatusDetail['slot-1']).toBe(afterFirst)
   })
 
@@ -172,8 +170,8 @@ describe('useWebSocket chat_thinking status-detail churn', () => {
     expect(store.getState().chat.slotStatusDetail['slot-1'].kind).toBe('tool')
     const afterTool = store.getState().chat.slotStatusDetail['slot-1']
 
-    // ...and the next thought frame must restore it. The idempotence fix must
-    // not degrade into "only ever dispatch once".
+    // ...and the next thought frame must restore it. Idempotence must not
+    // degrade into "only ever dispatch once".
     act(() => { ws.simulateMessage(thinking('back to thinking')) })
     const restored = store.getState().chat.slotStatusDetail['slot-1']
     expect(restored.kind).toBe('thinking')
@@ -190,8 +188,7 @@ describe('useWebSocket chat_thinking status-detail churn', () => {
 
     act(() => { ws.simulateMessage(thinking('late thought')) })
 
-    // Pre-existing behaviour, pinned so the fix cannot regress it: visible
-    // output outranks reasoning in the status line.
+    // Visible output outranks reasoning in the status line.
     expect(store.getState().chat.slotStatusDetail['slot-1']).toBe(streamingDetail)
   })
 })

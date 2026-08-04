@@ -1,8 +1,8 @@
 /**
  * SourcesPopover — the gear affordance on the Apps page header.
  *
- * Houses the store's supply-side controls, out of the shopper flow per the
- * locked hybrid mock: external registry management (add/remove/sync) and the
+ * Houses the store's supply-side controls, out of the shopper flow: external
+ * registry management (add/remove/sync) and the
  * developer Install-from-Path escape hatch. Controlled open state so the
  * rail's "Add source" button can open it programmatically.
  */

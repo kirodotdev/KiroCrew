@@ -39,7 +39,7 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET/PUT | `/settings` | Per-repo triage settings. The PUT replaces the whole document, so it carries the `revision` it read and is refused with **409** if the stored revision has moved — otherwise a stale tab would erase a label appended meanwhile |
 | POST | `/settings/role` | APPEND one label to a triage-label role, under the config lock. Exists because the PUT replaces the whole document, so a client read-modify-write only serializes itself — two dashboard tabs would each read the same settings and the later full replacement would drop the other's label |
 | GET | `/issue-ai` | AI summary + suggested labels (kirocrew-lite) |
-| GET | `/pulls` | List open/closed PRs (cached, `poll=1` probe-gated as for `/issues`; rows enriched with diff size + check tally via ONE GraphQL call, topped up by number for rows outside its window). Rows whose enrichment failed carry `null` (unknown, not zero) and are deliberately NOT written to the cache, so the next read retries |
+| GET | `/pulls` | List open/closed PRs (cached, `poll=1` probe-gated as for `/issues`; rows enriched with diff size + check tally + merge readiness via ONE GraphQL call, topped up by number for rows outside its window). Rows whose enrichment failed carry `null` (unknown, not zero) and are deliberately NOT written to the cache, so the next read retries |
 | GET | `/pulls/search` | PRs matching a per-person filter, resolved server-side by GitHub search (escapes the list's page cap). Paginates only as far as its own cap and reports `truncated` so the UI says "newest N" rather than implying completeness |
 | GET | `/pull` | Full PR detail + conversation (issue timeline merged with inline review comments) + automated checks on the head commit. Cache-first with a short server-side TTL (`PR_DETAIL_CACHE_TTL_SEC`), so a plain GET self-refreshes and no caller has to pass `refresh=1` to stay current |
 | GET | `/pull-ai` | AI summary of a PR (description + whole conversation + check state), cached against a fingerprint that hashes the conversation's CONTENT — so an edited comment invalidates it, not just a new one |
@@ -55,7 +55,7 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | POST | `/pull/review` | Submit a review (`approve` / `request_changes` / `comment`). Requires `head_sha` — a review is a verdict on a REVISION, so it rides as GitHub's `commit_id` / GitLab's `sha` and a force-push between render and click is refused rather than recorded. A body is required for the latter two (the provider rejects them bodyless). GitLab has no "request changes" verb and the client REFUSES rather than degrading it to a comment |
 | POST | `/pull/comment` | Post a conversation comment on a PR |
 | POST | `/pull/merge` | Merge a PR now. Per-PR only — never bulk. Requires `head_sha`, sent as the provider's `sha` precondition so the merge is pinned to the reviewed commit. Cannot bypass a gate: the provider enforces branch protection on its own endpoint, and a 405 refusal is mapped to a readable message |
-| POST | `/pull/auto-merge` | Arm or disarm the PROVIDER's own auto-merge, for a PR that is not mergeable yet. **GitHub only** — REFUSED on GitLab, where `merge_when_pipeline_succeeds` is a deferral modifier on the merge endpoint rather than an arm verb (see "GitLab auto-merge is REFUSED outright" below); the UI hides both controls there |
+| POST | `/pull/auto-merge` | Arm or disarm the PROVIDER's own auto-merge, for a PR that is not mergeable yet. **GitHub only** — REFUSED on GitLab, where `merge_when_pipeline_succeeds` is a deferral modifier on the merge endpoint rather than an arm verb (see "GitLab auto-merge is REFUSED outright" below); the UI hides both controls there. Callers must send only rows that are not landable yet — the provider refuses an already-clean or already-merged PR, and the list row carries `mergeable_state` so the bulk bar can tell (see "Merge readiness is on the LIST row") |
 | GET | `/pull/runs` | The CI runs on a PR's head commit, each with its id plus server-computed `cancellable`/`rerunnable`, so the UI never offers an action the provider will refuse |
 | POST | `/pull/run` | Cancel or re-run one CI run (`failed_only` re-runs just the failed jobs) |
 | POST | `/pulls/bulk` | Apply ONE action to many PRs (`_BULK_PR_ACTIONS`: close, reopen, approve, comment, auto_merge, cancel_auto_merge; max `_BULK_PR_MAX` = 50). `approve` additionally requires a `head_shas` map keyed by PR number, covering EVERY number in the request (see rule 2). Sequential, because the PRs share one provider rate limit. Partial failure is reported per PR rather than failing the batch |
@@ -342,6 +342,167 @@ On GitHub, where `enablePullRequestAutoMerge` is a real, separate mutation, armi
 offered normally — and `auto_merge` is derived from the returned `autoMergeRequest`
 rather than asserted, because a hardcoded `True` is a claim rather than an observation.
 
+**Merge readiness is on the LIST row, because a BULK action is what needs it.**
+`enablePullRequestAutoMerge` is only valid for a PR that is *not landable yet*: GitHub
+refuses one that is already mergeable (`Pull request is in clean status`) and one that
+has already merged (`Pull request is already merged`). The bulk bar had no way to know
+either — `_PR_JQ` carries no mergeability at all, only `_PR_DETAIL_JQ` did — so it
+offered "arm auto-merge" for every ticked row and collected one provider refusal per
+row from a single click. Six of seven failures in the observed case were PRs that were
+simply READY, i.e. the operator's actual intent was to merge them.
+
+So `_PR_SUMMARY_SELECTION` also requests `mergeable`, `state` and `mergedAt` — free,
+because that selection already walks the head commit for its check rollup, the same
+trick that gave SEARCH rows a `head_sha`.
+
+**`mergeStateStatus` is NOT free, and travels in its own query.** It is the one field
+here GitHub has to COMPUTE (a merge commit per PR) rather than read. Folded into the card
+selection — which already walks each head commit and paginates the whole check rollup —
+the combined query reliably **502s at `first:100`**. Measured, same page size, same repo:
+the selection without it succeeds; with `mergeable`/`state`/`mergedAt` added it succeeds;
+with `mergeStateStatus` added it fails every time. Alone, with no rollup and no commit
+walk, the same field is comfortable at `first:100`.
+
+The failure would not have been graceful. Both enrichment paths carry that selection, so
+a 502 leaves every row with a null diff size *and* null check tally,
+`enrichment_complete` returns `False` so the route declines to cache, the list refetches
+on every load — and `mergeable_state` ends up `None` for all of them, leaving the bulk
+bar exactly as blind as before. That trades a seven-refusal annoyance for a total
+enrichment outage on the large repos most likely to use bulk actions. So readiness is a
+second, LEAN call (`fetch_pr_readiness` / `fetch_pr_readiness_by_number`,
+`_PR_READINESS_SELECTION`): one extra request per list fetch, independently failable, and
+a failure costs only the readiness field. Its by-number batch is **50**, not the
+summaries' 100, because the by-number form asks for N computed fields in one query.
+`test_readiness_is_a_SEPARATE_query_from_the_card_enrichment` pins the field out of the
+card selection, and `test_readiness_survives_a_FAILED_card_enrichment_and_vice_versa`
+pins the independence.
+
+Three further properties are load-bearing:
+
+- **Normalized into REST's vocabulary at the parse boundary.** GraphQL SHOUTS its enums
+  (`CLEAN`, `MERGEABLE`, `OPEN`) where REST is lowercase, so `_parse_summary_rows`
+  lowers them; `routes._MERGE_ALLOWED_STATES` and the frontend's `MERGE_READY_STATES`
+  both compare lowercase, and an un-lowered `CLEAN` would match neither and read as
+  "not ready" — silently keeping the broken arm on offer.
+- **`UNKNOWN` stays unknown, and it is the COMMON case.** GitHub computes mergeability
+  asynchronously, and on a cold read roughly **half a page** can come back `UNKNOWN`
+  (measured). `_graphql_mergeable` maps it to `None`, never `False`, and a failed
+  enrichment writes `mergeable_state: None` rather than omitting the key — an absent
+  value is falsy, so it would read as "not ready" and put the row straight back into the
+  batch the provider refuses. A row of unknown readiness is offered NEITHER verb: a gate
+  that cannot tell must refuse. (The detail path retries after 1.5s for exactly this
+  reason; the list path does not, so a first visit legitimately shows fewer actionable
+  rows than a second.)
+- **Four distinct refusals, not one.** The provider declines to arm a PR that is already
+  mergeable, already merged, a **draft**, or `dirty` (a conflict — no check resolves it,
+  so there is no "once checks pass" to wait for). `canArmAutoMerge` excludes all four;
+  `canMergeNow` shares the same lifecycle gate via one `isOpenCandidate` helper rather
+  than open-coding it, because two copies of a security-relevant predicate diverge — the
+  first review of this change caught exactly that, one copy checking `draft` and the
+  other not.
+- **`MERGED` collapses to `closed` + a timestamp.** GraphQL has a third lifecycle state;
+  REST models the same fact as `state: "closed"` with `merged_at` set, and the row shape
+  is REST's. `_rest_pr_state` therefore returns `closed`, and `_apply_summaries` writes
+  `merged_at` in the SAME step — `PrList.prStateVisual` checks `merged_at` first, so a
+  `closed` with no timestamp renders as the red closed-unmerged icon, and a literal
+  `"merged"` would match no branch at all and paint a merged PR as open. `merged_at` is
+  only ever gap-filled, never overwritten.
+
+**The ready rows get a merge path, and it is NOT the bulk endpoint.** Rule 3 keeps
+`merge` out of `_BULK_PR_ACTIONS` — irreversible, and 50 from one click is a blast
+radius no confirmation makes reasonable. But refusing to arm a ready PR while offering
+it no way to land was the gap that made the original click fail, so the bulk bar offers
+a **sequential** merge (`useSequentialMerge`) over exactly the rows the provider already
+reports mergeable. It drives the ordinary per-PR `/pull/merge` route once per row, so
+every property of that route still holds per row: the `head_sha` pin (snapshotted at
+TICK time, never re-read at submit — the list polls), the server-side
+`_MERGE_ALLOWED_STATES` re-read, the permission gate and the SEL audit. It is gated on
+its own typed token, distinct from the bulk-close token so typing one cannot arm the
+other, and it is **capped at the server's published `bulk_max`** — the loop does not use
+the bulk endpoint, so nothing else would bound it, and rule 3's "50 from one click"
+reasoning applies to a loop exactly as much as to a batch.
+
+Four properties make it safe to offer, each one a defect a review found and closed:
+
+- **The target set is FROZEN when the confirmation opens.** The list polls, so a
+  readiness change landing between "type the token" and "press Apply" would otherwise
+  change what gets merged — and since a cold read reports `unknown` (neither bucket) and
+  resolves to `clean` (ready) moments later, a warning that said "1 pull request" could
+  execute six. `armedMerge` holds the frozen set; the warning text and the Apply count
+  both read it, so the number shown is the number that runs.
+- **It stops at the first refusal.** Each merge changes the base branch, so a later PR's
+  mergeability is a function of the earlier one having landed; continuing past a failure
+  would merge onto a base that no longer matches what was reviewed.
+- **Cancel ABORTS a run in progress**, not just the composer. The in-flight merge cannot
+  be recalled — that request is with the provider — but every row after it is spared,
+  which on an irreversible mass action is the difference between Cancel meaning something
+  and meaning nothing. A second entry point (the confirm input's Enter) is guarded on
+  `busy` too, or two loops advance independently and defeat stop-on-first-failure.
+- **The per-row report is `aria-live`** and names the row in flight, because the rows
+  stream in one at a time and "which PR did it stop on" is the only question that
+  matters afterwards. The "N not attempted" line counts against the size the run
+  STARTED with, since merged rows untick themselves and so leave the live target list.
+
+This deliberately accepts bulk-merge's blast radius; the mitigations are the readiness
+precondition, the cap, the frozen typed confirmation, and stop-on-first-failure.
+
+## Refresh preferences
+
+How fresh the app feels and how much of the provider's hourly request budget it spends
+are the same dial, so the intervals are user-settable (Settings → General → Refresh)
+rather than hardcoded. They persist in the app's `localStorage` UI state alongside the
+filters — they are per-browser view preferences, not repo configuration.
+
+| Setting | Default | Effect |
+|---|---|---|
+| List refresh | 60s | `refetchInterval` on the issue + PR lists |
+| Detail refresh | 30s | `refetchInterval` on an OPEN item; a closed one keeps `CLOSED_DETAIL_POLL_MS` regardless |
+| Use cached data for | 30s | react-query `staleTime` — how long a fetch counts as current on mount/focus |
+| Keep refreshing in background tabs | off | `refetchIntervalInBackground`; off means a hidden tab stops and is stale on return |
+| Load pull requests on open | off | lifts the `prSurfaceActive` gate so the first visit to the PR pane is instant |
+
+Two safeguards, both deliberate:
+
+- **The values are an allowlist, not a range.** `coerceInterval` accepts only an offered
+  choice and falls back to the default otherwise, on WRITE as well as on read, so a
+  hand-edited `localStorage` value cannot install one. `Infinity` matters specifically:
+  react-query reads it as "no interval", so it would silently DISABLE polling rather than
+  speed it up. `0` is a real choice for the cache lifetime (it means "always refetch"),
+  which is why the check is `includes`, not truthiness.
+- **The 30s list floor is twice the backend's probe-coalescing window, and that is the
+  whole reason it is 30s.** The binding constraint is NOT the 5,000/hr core budget — a
+  poll is probe-gated, so its steady-state cost is one search call, not a paginated
+  refetch — it is GitHub's **30/min search quota**, which the probe spends and the user's
+  own `gh search` shares. `_PROBE_COALESCE_SEC` (15s) shares one reading per (repo, kind)
+  across every open tab, so a 30s interval costs at most 2 probes/min/kind however many
+  tabs are open. Halve the floor and that stops holding. Nothing enforces the
+  relationship across the language boundary, so `issueRadarPolling.test.ts` asserts
+  `min(choices) == 2 × 15s`: if the backend constant moves, that test is what says this
+  floor must move with it.
+- **`/pulls/search` opts out of BOTH new knobs.** Prefetch does not reach it, and
+  `refetchIntervalInBackground` is deliberately not applied to it either — it is the one
+  query in the app that ignores that setting. Every other poll is probe-gated, so
+  background polling costs one shared probe; this route has no probe path at all, so each
+  poll is a real provider search (up to 3 pages) against the same quota with nothing to
+  absorb it. Honouring the toggle would let a person filter someone left on months ago
+  spend that quota indefinitely — exactly what its surface gate exists to prevent.
+
+The lists additionally keep their previous rows on screen while a new key loads, so
+changing a filter repaints instantly instead of blanking to a spinner. That costs no
+extra requests — it only changes what is shown during a fetch that was already happening.
+
+**Scoped to the repo, not plain `keepPreviousData`.** That helper retains the previous
+query's rows for ANY key change, which conflates two different transitions: a filter
+change is a different view of the SAME repo (retain — that is the point), but a REPO
+SWITCH is not. A PR number means something different in each repo, so repo A's rows
+painted under repo B's identity make a row actionable against B's PR of the same number.
+`keepWithinRepo` compares the previous query key's `scopeKey` (provider + host + slug, so
+a same-slug repo on another host is correctly a different repo) and returns `undefined`
+across a switch, which renders the honest loading state. The ticked selection is already
+cleared on `scopeKey`, but that effect runs *after* the paint — it closes the window one
+render late rather than never opening it, which is why the placeholder itself is scoped.
+`issueRadarPolling.test.ts` pins both halves.
+
 `add_pr_comment` is a separate function from `add_issue_comment` even though the two
 coincide on GitHub (one number sequence per repo): GitLab numbers issues and merge
 requests INDEPENDENTLY, so a single shared entry point would be a silent way to
@@ -354,7 +515,10 @@ such key, and defaulting it to absent would show "enable" on an already-armed PR
 `PULLS_CACHE_SCHEMA` moved to **v6** for the same reason: the list row now carries
 `head_sha`, and a v5 row served as-is would silently disable bulk approve for every
 already-cached repo until its TTL expired — a broken-looking button rather than a
-visibly stale list.
+visibly stale list. It moved again to **v7** when the row gained `mergeable_state` /
+`mergeable` (see "Merge readiness is on the LIST row" below): a v6 row has neither
+field, and an absent value is indistinguishable from "not ready", so serving one would
+keep offering exactly the arm that fails.
 CI runs are fetched separately from `/pull`'s `checks`, because a check is a per-job
 RESULT (and may come from a service with no runs at all) while cancel/re-run acts on
 the parent RUN and needs its id.

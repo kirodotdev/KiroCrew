@@ -167,13 +167,13 @@ def _exit_code(status: int) -> int:
 def main() -> None:
     argv = sys.argv[1:]
     # Bias the OOM killer FIRST and unconditionally. It is an independent control
-    # from the rlimits -- ``preexec_fn`` applied it on every spawn -- so gating it
-    # on the presence of ``--rlimits=`` would silently drop it for an operator who
-    # disables every limit. Inherited by the exec'd child and its descendants.
+    # from the rlimits, so gating it on the presence of ``--rlimits=`` would
+    # silently drop it for an operator who disables every limit. Inherited by the
+    # exec'd child and its descendants.
     _bias_oom_score()
     # Optional leading --rlimits=NAME:value,... from the spawning gateway. Applied
     # before the fork below so the exec'd child and every descendant inherit the
-    # ceiling, matching what preexec_fn used to cover.
+    # ceiling.
     if argv and argv[0].startswith(_RLIMIT_FLAG):
         _apply_rlimits(argv[0][len(_RLIMIT_FLAG):])
         argv = argv[1:]

@@ -96,8 +96,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
         </div>
       </div>
 
-      {/* Card list — a bottom gradient fades the last cards out (replaces the
-          old hard divider line above the footer). */}
+      {/* Card list — a bottom gradient fades the last cards out. */}
       <div className="relative flex-1 min-h-0">
         <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
           {issuesLoading && <ListSkeleton />}
@@ -146,8 +145,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
         <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-bg to-transparent" />
       </div>
 
-      {/* Footer — count on the left, last-refresh time + refresh on the right.
-          The gradient fade above (see card list) replaces the old top border. */}
+      {/* Footer — count on the left, last-refresh time + refresh on the right. */}
       <div className="flex-shrink-0 flex items-center gap-2 px-3 pt-2 pb-4 text-[12px] text-muted">
         <span title={stateFilter === 'closed' && issues.length >= 100 ? i18nT('apps.issueRadar.components.issueList.closed_issues_are_capped_at_the_100_most_recentl') : undefined}>
           {i18nT('apps.issueRadar.components.issueList.issue', { count: filteredIssues.length })}

@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import { usePaletteActions } from '../paletteActions'
+import { i18nT } from '../../../i18n/t'
 import type { Result, ResourceProvider } from '../types'
 
 /**
@@ -22,8 +23,8 @@ import type { Result, ResourceProvider } from '../types'
  *  - `onAltActivate` (⌥Enter) — **preview** the prompt (defaults to opening the
  *    skills/prompts catalog; host-overridable).
  *
- * Matching is a client-side {@link fuzzyMatch} over the prompt **name** (per
- * the task spec). The server returns the full prompt list, cached under the
+ * Matching is a client-side {@link fuzzyMatch} over the prompt **name**. The
+ * server returns the full prompt list, cached under the
  * React-Query key `['prompts']` (shared with `PromptsTab` and the inline
  * `@`-picker) so reopening the palette is free. Highlight `indices` index into
  * the rendered `title` and are emitted as React `<mark>` nodes by the palette,
@@ -31,7 +32,19 @@ import type { Result, ResourceProvider } from '../types'
  */
 
 const PROVIDER_ID = 'prompts'
-const PROVIDER_LABEL = 'Prompts'
+
+/**
+ * Catalog KEY for the palette tab label, not the label itself.
+ *
+ * The provider object is built inside a `useMemo` whose deps do not include the
+ * language, so `label: i18nT(…)` would resolve once and keep the pre-switch
+ * wording. It is exposed as a GETTER below instead, which re-resolves on every
+ * read — `CommandPalette` reads `provider.label` during render (scope hint, Tab
+ * completion), so the getter runs per render without the memo having to know
+ * about i18n. `PROVIDER_ID` stays a code constant: it is the provider's
+ * identity, matched against persisted palette scope.
+ */
+const PROVIDER_LABEL_KEY = 'components.commandPalette.providers.promptsProvider.prompts'
 
 /** Cache the prompt list briefly; reuses the `['prompts']` React-Query entry. */
 const PROMPTS_STALE_MS = 30_000
@@ -70,7 +83,7 @@ export interface PromptsProviderDeps {
   insertPrompt: (ref: PromptRef) => void
   /** Start a new session seeded with the prompt (⌘Enter). Optional. */
   newSessionWithPrompt?: (ref: PromptRef) => void
-  /** Preview the prompt (⌥Enter). Optional; placeholder until the matrix step. */
+  /** Preview the prompt (⌥Enter). Optional. */
   previewPrompt?: (ref: PromptRef) => void
 }
 
@@ -96,7 +109,7 @@ export function createPromptsProvider(deps: PromptsProviderDeps): ResourceProvid
 
   return {
     id: PROVIDER_ID,
-    label: PROVIDER_LABEL,
+    get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: promptIcon(),
     async search(query: string): Promise<Result[]> {
       const prompts = (await fetchPrompts()) ?? []
@@ -104,7 +117,7 @@ export function createPromptsProvider(deps: PromptsProviderDeps): ResourceProvid
       const results: Result[] = []
       for (const p of prompts) {
         const title = p.name
-        // Fuzzy-match over the prompt name (task spec); indices align with title.
+        // Fuzzy-match over the prompt name; indices align with title.
         const match = fuzzyMatch(query, title)
         if (!match) continue
         const ref: PromptRef = { name: p.name, fullName: p.fullName, path: p.path }

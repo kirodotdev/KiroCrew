@@ -73,13 +73,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 from functools import wraps
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.papyrus.backend import gitops, latex, store, tectonic
 from kiro_crew.apps.manager import is_app_enabled
 
@@ -161,7 +161,7 @@ def _clean(text: str) -> str:
     ``POST /projects/clone`` and can emit anything through ``\\message{}`` or an
     error path, and a failed push makes ``git`` echo the remote URL, which is
     where a personal access token embedded in a remote lives. ``redact()`` runs
-    both required passes (``backend-security-controls``).
+    both required passes.
 
     Fails CLOSED: if the security module cannot be imported, the text is dropped
     rather than forwarded unscanned.
@@ -400,6 +400,12 @@ async def _handle_clone_project(request: web.Request) -> web.StreamResponse:
 
     try:
         await gitops.clone(url, project)
+    except gitops.GitSandboxUnavailable as exc:
+        # Narrower subclass first — see `_handle_git_commit`.
+        return web.json_response(
+            {"error": _clean(str(exc)), "code": "git_sandbox_unavailable"},
+            status=422,
+        )
     except gitops.GitError as exc:
         return web.json_response(
             {"error": _clean(str(exc)), "output": _clean(exc.output), "code": "git_failed"},
@@ -410,7 +416,9 @@ async def _handle_clone_project(request: web.Request) -> web.StreamResponse:
     if main_file is None:
         # A repo with no .tex is not a paper. Remove the clone so the name is
         # free again and the user is not left with an unopenable project.
-        await asyncio.to_thread(shutil.rmtree, project, True)
+        # `rmtree_force` because this tree is a git checkout by construction — see
+        # `_handle_delete_project` for why `ignore_errors` is not enough on Windows.
+        await asyncio.to_thread(platform_compat.rmtree_force, project)
         return web.json_response({"error": "no .tex file found in repository", "code": "no_tex_in_repository"}, status=422)
     logger.info("papyrus: cloned project %s", name)
     return web.json_response({"name": name, "main_file": main_file}, status=201)
@@ -443,13 +451,27 @@ async def _handle_get_project(request: web.Request) -> web.StreamResponse:
 async def _handle_delete_project(request: web.Request) -> web.StreamResponse:
     name = request.query.get("name", "").strip()
 
-    def _delete() -> Path:
+    def _delete() -> tuple[Path, bool]:
         """BLOCKING — authorize the name, then remove the tree, in ONE hop."""
         project = _project(name)
-        shutil.rmtree(project, True)
-        return project
+        # `rmtree_force`, not `rmtree(..., ignore_errors=True)`: a cloned paper
+        # carries a git checkout, and git writes loose objects read-only. On
+        # Windows the read-only ATTRIBUTE blocks the unlink itself (POSIX consults
+        # the parent directory instead), so `ignore_errors` silently left
+        # `.git/objects` on disk and this handler still answered `ok: true` — the
+        # name stayed taken and the next create answered 409 with no explanation.
+        return project, platform_compat.rmtree_force(project)
 
-    project = await asyncio.to_thread(_delete)
+    project, removed = await asyncio.to_thread(_delete)
+    if not removed:
+        logger.warning("papyrus: could not fully delete project %s", project.name)
+        return web.json_response(
+            {
+                "error": "the paper could not be fully deleted",
+                "code": "project_delete_incomplete",
+            },
+            status=500,
+        )
     logger.info("papyrus: deleted project %s", project.name)
     return web.json_response({"ok": True})
 
@@ -591,19 +613,59 @@ async def _handle_compile(request: web.Request) -> web.StreamResponse:
     if main_file is None:
         raise web.HTTPNotFound(reason="no .tex file found in project")
     result = await latex.compile_project(project, main_file)
+    if result.sandbox_error:
+        # The compiler never ran: this host could not build an OS-level sandbox and
+        # `strict` mode is not optional for a spawn that reads an untrusted `.tex`.
+        # Distinct from `compile_failed` because the remedy is an operator config
+        # change, not a document edit — a Windows host has no sandbox backend at
+        # all, so without this the app's every compile read as "internal error".
+        # The sandbox layer's own message carries the remedy (which opt-in to set,
+        # or that an EPERM is a nesting artifact), so it is passed through
+        # redacted rather than restated here.
+        # The remedy rides `log`, NOT only `error`. The client's contract is "if the
+        # body has `ok`, it IS a CompileResult" (`api.ts:172`), and it renders
+        # `log` — so a body carrying `ok` plus a sibling `error` short-circuits that
+        # branch and the remedy is discarded, leaving the diagnostics pane empty on
+        # the one failure the user cannot diagnose themselves. `error` is kept
+        # alongside for non-UI callers, and `code` is what the frontend keys on.
+        return web.json_response(
+            {
+                "ok": False,
+                "log": _clean(result.sandbox_error),
+                "errors": [],
+                "duration_ms": 0,
+                "error": _clean(result.sandbox_error),
+                "code": "compiler_sandbox_unavailable",
+            },
+            status=422,
+        )
     payload = result.to_dict()
-    # The log is the compiler's raw stdout+stderr tail and each diagnostic message
-    # is a line lifted out of it, so both are redacted before they reach the UI.
-    payload["log"] = _clean(str(payload.get("log") or ""))
-    for diag in payload.get("errors") or []:
-        diag["message"] = _clean(str(diag.get("message") or ""))
-        # `file` too. It is parsed out of the SAME compiler line as `message` — a
-        # `\input{...}` names any path the document chose, and TeX echoes it back —
-        # so redacting one field and not its sibling left the identical leak one key
-        # over. `None` is preserved rather than becoming `""`: the frontend renders
-        # the file only when it is present.
-        if diag.get("file"):
-            diag["file"] = _clean(str(diag["file"]))
+
+    def _redact_payload() -> None:
+        """BLOCKING (regex over up to 20KB + 2 passes per diagnostic) — off the loop.
+
+        The log is the compiler's raw stdout+stderr tail and each diagnostic message
+        is a line lifted out of it, so both are redacted before they reach the UI.
+
+        Offloaded because the COST IS DOCUMENT-CONTROLLED. A realistic log measures
+        ~1ms, but `redact_credentials` is superlinear on a long unbroken token and a
+        `.tex` can emit one on purpose (`\\message{AAAA…}`): 20KB of unbroken
+        base64-ish text measured **~39ms**, which is 39ms of frozen gateway — every
+        chat session, cron tick and the liveness heartbeat — on a request the
+        document author triggers.
+        """
+        payload["log"] = _clean(str(payload.get("log") or ""))
+        for diag in payload.get("errors") or []:
+            diag["message"] = _clean(str(diag.get("message") or ""))
+            # `file` too. It is parsed out of the SAME compiler line as `message` — a
+            # `\input{...}` names any path the document chose, and TeX echoes it back
+            # — so redacting one field and not its sibling left the identical leak one
+            # key over. `None` is preserved rather than becoming `""`: the frontend
+            # renders the file only when it is present.
+            if diag.get("file"):
+                diag["file"] = _clean(str(diag["file"]))
+
+    await asyncio.to_thread(_redact_payload)
     if result.ok:
         return web.json_response(payload, status=200)
     # The failure body is spelled out as a dict LITERAL against a LITERAL status.
@@ -715,6 +777,15 @@ async def _handle_git_commit(request: web.Request) -> web.StreamResponse:
     message = _str_field(body, "message") or gitops.DEFAULT_COMMIT_MESSAGE
     try:
         output = await gitops.commit(project, message)
+    except gitops.GitSandboxUnavailable as exc:
+        # Before the `GitError` clause because it is a subclass — the narrower
+        # except must come first or this would be reported as `git_failed`, which
+        # sends the user looking at their repository instead of at the one config
+        # flag that is actually the remedy.
+        return web.json_response(
+            {"error": _clean(str(exc)), "code": "git_sandbox_unavailable"},
+            status=422,
+        )
     except gitops.GitError as exc:
         return web.json_response(
             {"error": _clean(str(exc)), "output": _clean(exc.output), "code": "git_failed"},
@@ -728,6 +799,12 @@ async def _handle_git_push(request: web.Request) -> web.StreamResponse:
     project = await asyncio.to_thread(_project, _str_field(body, "name"))
     try:
         output = await gitops.push(project)
+    except gitops.GitSandboxUnavailable as exc:
+        # Narrower subclass first — see `_handle_git_commit`.
+        return web.json_response(
+            {"error": _clean(str(exc)), "code": "git_sandbox_unavailable"},
+            status=422,
+        )
     except gitops.GitError as exc:
         # Two literal-status returns rather than `status=401 if ... else 422`: the
         # error-code scanner reads a computed status as `dynamic_status` and cannot
@@ -753,6 +830,12 @@ async def _handle_git_pull(request: web.Request) -> web.StreamResponse:
     project = await asyncio.to_thread(_project, _str_field(body, "name"))
     try:
         output, stashed = await gitops.pull(project)
+    except gitops.GitSandboxUnavailable as exc:
+        # Narrower subclass first — see `_handle_git_commit`.
+        return web.json_response(
+            {"error": _clean(str(exc)), "code": "git_sandbox_unavailable"},
+            status=422,
+        )
     except gitops.GitConflict as exc:
         return web.json_response(
             {"error": _clean(str(exc)), "output": _clean(exc.output), "code": "git_conflict"},

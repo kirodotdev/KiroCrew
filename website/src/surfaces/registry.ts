@@ -2,20 +2,14 @@
  * Surface registry — single source of truth for top-level navigation
  * destinations in the dashboard.
  *
- * Background: the left rail contains a mix of static built-in nav items
- * (Chat, Autopilot, Notifications, Settings, ...) and dynamic app nav items
- * (loaded from installed apps). Before this module each kind had its own
- * wiring path: built-ins were a hardcoded `NAV_ITEMS` array with per-id badge
- * branches in `App.tsx`; apps came from `api.listApps()` and counted unreads
- * via a separate `mc:app:badge` window event. Adding a new built-in
- * destination meant editing ~5 files and regression-testing two pipelines.
- *
- * This registry collapses both into one shape: a `Surface` describes a nav
- * destination plus how its badge count is derived. `App.tsx` iterates the
- * registry exactly once to render nav items and their badges; `ChatPage`
- * resolves the slot filter via `surface.slotMode` instead of a hardcoded
- * comparison; new surfaces (built-in or third-party) register one entry and
- * everything else (route, badge, slot routing) just works.
+ * The left rail contains a mix of static built-in nav items (Chat, Autopilot,
+ * Notifications, Settings, ...) and dynamic app nav items (loaded from
+ * installed apps). Both kinds register here through one shape: a `Surface`
+ * describes a nav destination plus how its badge count is derived. `App.tsx`
+ * iterates the registry exactly once to render nav items and their badges;
+ * `ChatPage` resolves the slot filter via `surface.slotMode` instead of a
+ * hardcoded comparison; new surfaces (built-in or third-party) register one
+ * entry and everything else (route, badge, slot routing) just works.
  *
  * Slot-bearing vs non-slot surfaces:
  * - **Slot-bearing** surfaces (`slotMode` set) — Chat (`''`), Autopilot

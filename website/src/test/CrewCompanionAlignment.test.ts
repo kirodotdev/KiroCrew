@@ -3,17 +3,12 @@
  *
  * Both parsers measure schedule spans with `RegExp.index` (UTF-16 code units) and apply
  * them to the original typed text. Any derived string that spans are measured against
- * must therefore agree with the original about what index N means.
+ * must therefore agree with the original about what index N means. Measuring against a
+ * code-point split (`[...s]`) or a length-changing `toLowerCase()` (e.g. `İ` → two code
+ * units) shifts every later span.
  *
- * This has now broken four separate times, each time in a different place:
- *   1. `cleanText` used `[...original]` (code points) — an emoji shifted every span.
- *   2. `masked = [...lower]` in the English path — same bug, sibling variable.
- *   3. `masked = [...s]` in the Chinese path — same bug again.
- *   4. `lower = original.toLowerCase()` — `İ` lowercases to TWO code units.
- *
- * So the tests below assert the *invariant* over a battery of hostile inputs, not the
- * one string a reviewer happened to report. Every case is a reminder someone could
- * plausibly type.
+ * The tests below assert the *invariant* over a battery of hostile inputs. Every case is
+ * a reminder someone could plausibly type.
  */
 import { describe, it, expect } from 'vitest'
 import { parseReminder } from '../apps/crew-companion/reminderParse'
@@ -60,7 +55,7 @@ describe('toUnits counts code units, not code points', () => {
 describe('the saved text is never corrupted by a span shift', () => {
   // Each input pairs a real schedule with text that used to shift the spans.
   const CASES: Array<[string, string]> = [
-    ['İlaç at 3pm', 'İlaç'],                       // the reported case: was "İlaç a"
+    ['İlaç at 3pm', 'İlaç'],                       // İ length-changer: a span shift would save "İlaç a"
     ['İÇMEK SU at 8am', 'İÇMEK SU'],               // two length-changers
     ['💊 take pill at 9am', '💊 take pill'],        // astral, English path
     ['drink 💧 water every 2 hours', 'drink 💧 water'],
@@ -80,19 +75,18 @@ describe('the saved text is never corrupted by a span shift', () => {
   }
 
   it('keeps Chinese text intact when an emoji precedes the schedule', () => {
-    // The zh path had the same `[...s]` defect; Han is BMP so only an astral
-    // character exposes it.
+    // The zh path uses the same code-unit masking; Han is BMP, so only an astral
+    // character exposes a span shift.
     const parsed = parseReminder('💊 喝水 每2小时', NOW, '提醒')
     expect(parsed.text).toBe('💊 喝水')
     expect(parsed.recurrence?.everyMinutes).toBe(120)
   })
 
   it('strips a daily clock in the zh path when an emoji shifts the mask', () => {
-    // The one input found to make the `masked = [...s]` defect observable, by
-    // differential testing across ~18 candidates. With code-point masking the
-    // interval span blanks the wrong characters, so `9点` survives into the saved
-    // text AND is re-read as the clock, moving the fire time.
-    // 每天9点 ("every day at 9") is ordinary phrasing, so this is a real user path.
+    // With code-point masking the interval span blanks the wrong characters, so
+    // `9点` survives into the saved text AND is re-read as the clock, moving the
+    // fire time. 每天9点 ("every day at 9") is ordinary phrasing, so this is a
+    // real user path.
     const parsed = parseReminder('💊 每天9点', NOW, '提醒')
     expect(parsed.text).toBe('💊')
     expect(parsed.recurrence?.everyMinutes).toBe(1440)

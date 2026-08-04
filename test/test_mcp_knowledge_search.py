@@ -149,10 +149,10 @@ class TestKnowledgeSearchResults:
                 "source": "src-1",
                 "source_type": "local_folder",
                 "source_name": "Opportunity Planner",
-                "source_uri": "/home/nrb/projects/op/src/",
+                "source_uri": "/home/alice/projects/op/src/",
                 "section_title": "Token Lifecycle",
                 "chunk_range": "10-25",
-                "file_path": "/home/nrb/projects/op/src/auth.md",
+                "file_path": "/home/alice/projects/op/src/auth.md",
             }
         ]
 
@@ -163,7 +163,7 @@ class TestKnowledgeSearchResults:
         assert "[local_folder] Opportunity Planner" in result
         assert "Token Lifecycle" in result
         assert "lines 10-25" in result
-        assert "**File:** /home/nrb/projects/op/src/auth.md" in result
+        assert "**File:** /home/alice/projects/op/src/auth.md" in result
         # A specific file path supersedes the folder-root uri Link.
         assert "**Link:**" not in result
 

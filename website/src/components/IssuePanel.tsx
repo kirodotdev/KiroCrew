@@ -67,18 +67,35 @@ export function labelChipStyle(color: string): { background: string; color: stri
   return { background: `#${color}`, color: luma > 0.6 ? '#1c1c1c' : '#ffffff' }
 }
 
+/**
+ * Catalog keys for the reaction glyphs, flat and indexed inline off `entry.key`
+ * at the `i18nT()` call. Reading the key through the row object instead is a
+ * shape `scripts/check-i18n-keys.mjs` cannot resolve statically, and an
+ * unresolvable key is one the catalog checks silently skip.
+ */
+const REACTION_LABEL_KEY: Record<string, string> = {
+  plus1: 'components.issuePanel.reaction_plus1',
+  minus1: 'components.issuePanel.reaction_minus1',
+  laugh: 'components.issuePanel.reaction_laugh',
+  hooray: 'components.issuePanel.reaction_hooray',
+  confused: 'components.issuePanel.reaction_confused',
+  heart: 'components.issuePanel.reaction_heart',
+  rocket: 'components.issuePanel.reaction_rocket',
+  eyes: 'components.issuePanel.reaction_eyes',
+}
+
 /** Reaction tallies worth showing, in a stable order. Zero counts are dropped —
  *  an issue with no thumbs-up should not render a "0" next to every reaction
- *  name. */
-const REACTION_KEYS: ReadonlyArray<{ key: keyof NonNullable<IssueSource['reactions']>; label: string }> = [
-  { key: 'plus1', label: 'Thumbs up' },
-  { key: 'minus1', label: 'Thumbs down' },
-  { key: 'laugh', label: 'Laugh' },
-  { key: 'hooray', label: 'Hooray' },
-  { key: 'confused', label: 'Confused' },
-  { key: 'heart', label: 'Heart' },
-  { key: 'rocket', label: 'Rocket' },
-  { key: 'eyes', label: 'Eyes' },
+ *  name. Copy lives in `REACTION_LABEL_KEY` above. */
+const REACTION_KEYS: ReadonlyArray<{ key: keyof NonNullable<IssueSource['reactions']> }> = [
+  { key: 'plus1' },
+  { key: 'minus1' },
+  { key: 'laugh' },
+  { key: 'hooray' },
+  { key: 'confused' },
+  { key: 'heart' },
+  { key: 'rocket' },
+  { key: 'eyes' },
 ]
 
 /** State badge tone + wording. `stateReason` distinguishes the two ways an issue
@@ -479,9 +496,15 @@ export default function IssuePanel({
               )}
               {reactionRows.length > 0 && (
                 <span className="inline-flex items-center gap-2">
-                  {reactionRows.map(entry => (
-                    <span key={entry.key} title={entry.label}>{entry.label} {entry.count}</span>
-                  ))}
+                  {reactionRows.map(entry => {
+                    // Resolved here, not in the `reactionRows` memo above: that
+                    // memo's deps name only `source.reactions`, so a label
+                    // resolved inside it would not re-resolve on a language
+                    // switch under any finer-grained strategy than the current
+                    // language-keyed remount of <App>.
+                    const label = i18nT(REACTION_LABEL_KEY[entry.key])
+                    return <span key={entry.key} title={label}>{label} {entry.count}</span>
+                  })}
                 </span>
               )}
             </div>

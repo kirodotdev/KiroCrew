@@ -1,4 +1,4 @@
-"""Session-directive protocol — stateless session-bound MCP tools (issue #755).
+"""Session-directive protocol — stateless session-bound MCP tools.
 
 Some KiroCrew MCP tools act on *the session that called them* — arm a monitor
 loop, set a chat slot's project, render a follow-up card. In the unpooled
@@ -40,7 +40,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-# The stateless, session-bound tools converted in #755. ``ask_question`` joins
+# The stateless, session-bound tools. ``ask_question`` joins
 # them as a NON-BLOCKING card: the consumer broadcasts a question card (with no
 # ``ask_id``) to its own slot and the agent ends its turn; the user's answer
 # arrives as an ordinary next message that resumes the session (the full

@@ -368,15 +368,14 @@ def _read_info_plist(path: str) -> dict:
     try:
         from kiro_crew.hooks import safe_read_prefix
 
-        # Through ``safe_read_prefix``, not a bare ``open`` — GPT 5.6 BLOCKING, and
-        # correct. The hand-rolled version checked ``is_sensitive_path`` and then
-        # opened the path separately, which is check-then-open: the agent chooses
-        # which process to target, so it can also arrange the bundle, and a
-        # final-component symlink swapped between the check and the open would have
-        # read a protected file's bytes on a path that never touched the hardened
-        # gate. The helper canonicalizes with ``realpath``, re-checks the RESOLVED
-        # target, and opens with ``O_NOFOLLOW`` — which is the TOCTOU defence this
-        # code was missing, and the repo's stated requirement for any read of an
+        # Through ``safe_read_prefix``, not a bare ``open``. A bare
+        # check-then-open (``is_sensitive_path`` then a separate open) is a
+        # TOCTOU hole: the agent chooses which process to target, so it can also
+        # arrange the bundle, and a final-component symlink swapped between the
+        # check and the open would read a protected file's bytes on a path that
+        # never touched the hardened gate. The helper canonicalizes with
+        # ``realpath``, re-checks the RESOLVED target, and opens with
+        # ``O_NOFOLLOW`` — the TOCTOU defence required for any read of an
         # agent-influenced path.
         #
         # Reading ``MAX_INFO_PLIST_BYTES + 1`` rather than the cap: the extra byte is

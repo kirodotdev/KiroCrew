@@ -4,20 +4,18 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Check, Monitor, Sun, Moon } from 'lucide-react'
 import { useTheme, type ModePreference, type ColorTheme } from '../hooks/useTheme'
-import { GhostVar2 } from '../assets/onboarding/GhostIcons'
+import { GhostWithArm } from '../assets/onboarding/GhostIcons'
 import { Btn, SendBtn } from './ui'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
-import {
-  PrivacyCommandList,
-  PrivacyDisclosureSections,
-  TelemetryToggle,
-} from './PrivacyDisclosure'
 import { api } from '../api/client'
 import { capRoleOther, clampRoleOther } from '../lib/userProfile'
+import { ROLE_SLUGS, TECH_SLUGS } from '../lib/profileOptions'
 
 import { i18nT } from '../i18n/t'
 /**
- * First-run onboarding flow (6 steps):
+ * First-run onboarding flow (5 steps) — the Customize chapter plus the feature
+ * tour. It is the LAST of the three first-run chapters: Import setup runs first,
+ * then the mandatory Privacy chapter (`PrivacyChapter`), then this.
  *   1. Pick your look   — centered modal, reuses the real theme picker.
  *   2. About you        — centered modal: role + technical comfort. Persisted
  *                         to dashboard.user_role / dashboard.user_technical_level
@@ -26,11 +24,8 @@ import { i18nT } from '../i18n/t'
  *                         background. Also editable in Settings > General.
  *   3. Schedule intro   — popover anchored to the Schedule nav item.
  *   4. Apps intro       — popover anchored to the App Store nav item.
- *   5. Sessions intro   — popover anchored to the Chat nav item.
- *   6. Privacy          — centered modal: the same telemetry disclosure and
- *                         opt-out toggle as Settings > Privacy, rendered in the
- *                         onboarding shell. Passive: it discloses and offers the
- *                         control, and never blocks finishing onboarding.
+ *   5. Sessions intro   — popover anchored to the Chat nav item, and the end of
+ *                         first-run: its primary reads "Done" and finishes.
  *
  * Triggers:
  *   - First launch: App passes `initialOpen` (from the un-onboarded state).
@@ -41,64 +36,83 @@ import { i18nT } from '../i18n/t'
  * real `setColorTheme` / `setTheme`, which re-skins the whole app (including
  * these popovers) live via CSS custom properties.
  *
- * Every step has a Skip that dismisses the flow and marks the user onboarded.
- * Skipping still persists any profile answers already selected — the user
- * gave the information; losing it on Skip would be surprising.
+ * Every step except the last tour popover has a Skip that dismisses the flow and
+ * marks the user onboarded. Skipping still persists any profile answers already
+ * selected — the user gave the information; losing it on Skip would be
+ * surprising.
  */
 
 interface PopStep {
   navId: string
   route: string
-  title: string
-  body: string
 }
 
 // Steps 3-5 anchor to real left-rail nav items (see `data-onboarding-nav`
 // on <NavItem> in App.tsx). The client's Sessions surface is the Chat rail
 // item (navId 'chat').
 const POPS: Record<number, PopStep> = {
-  3: {
-    navId: 'schedule',
-    route: '/schedule',
-    title: 'Work that runs on time',
-    body: 'Set tasks to run automatically so things happen without you lifting a finger.',
-  },
-  4: {
-    navId: 'apps',
-    route: '/apps',
-    title: 'Extend what you can do with KiroCrew',
-    body: 'Install purpose-built tools that unlock new capabilities and workflows.',
-  },
-  5: {
-    navId: 'chat',
-    route: '/chat',
-    title: 'Start your first session',
-    body: 'Ask a question, assign a task, or just say hi — your agent is ready.',
-  },
+  3: { navId: 'schedule', route: '/schedule' },
+  4: { navId: 'apps', route: '/apps' },
+  5: { navId: 'chat', route: '/chat' },
 }
 
-// Step 6 (privacy) is the last step and uses the chapter-shell layout, so the
-// tour popovers (3-5) all show "Next" and only the privacy step shows "Done".
-const LAST_STEP = 6
-const LAST_POP_STEP = 5
+/**
+ * Catalog KEYS for the step 3-5 popover copy, keyed by step number.
+ *
+ * Held apart from `POPS` and as flat `Record`s of full literal keys, indexed
+ * inline at the `i18nT()` call, because that is the only shape
+ * `scripts/check-i18n-keys.mjs` can resolve statically — nested inside `POPS` and
+ * read as `i18nT(pop.titleKey)` the gate cannot see the key at all, and a key it
+ * cannot resolve is a key it cannot verify exists. Keys rather than strings
+ * because these tables are built at module load, where an `i18nT()` call would
+ * freeze the boot language; the lookup runs during render.
+ *
+ * Keyed by `navId` rather than by step number: the gate refuses an object whose
+ * property names are numeric literals (`resolveObjectLiteral` accepts only
+ * identifier / string names), and the surface a popover describes is the stable
+ * thing about it — inserting a step should not renumber its copy.
+ */
+const POP_TITLE_KEY: Record<string, string> = {
+  schedule: 'components.onboardingFlow.pop_schedule_title',
+  apps: 'components.onboardingFlow.pop_apps_title',
+  chat: 'components.onboardingFlow.pop_chat_title',
+}
+const POP_BODY_KEY: Record<string, string> = {
+  schedule: 'components.onboardingFlow.pop_schedule_body',
+  apps: 'components.onboardingFlow.pop_apps_body',
+  chat: 'components.onboardingFlow.pop_chat_body',
+}
+
+// Steps 1-2 are the centered Customize modals; 3-5 are the anchored tour
+// popovers. Popovers 3-4 show "Next"; popover 5 is the last step of first-run,
+// so it shows "Done", drops its Skip, and finishes the flow.
+const LAST_STEP = 5
 
 // Step-2 profile options. Values are the slugs accepted by the
 // dashboard.user_role / dashboard.user_technical_level enums in the config
 // PATCH allowlist (handlers/core.py) and mapped to prompt descriptions in
 // context.py — keep all three in sync.
-const ROLE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: 'developer', label: 'Developer' },
-  { value: 'designer', label: 'UX Designer' },
-  { value: 'product-manager', label: 'Product Manager' },
-  { value: 'data-ml', label: 'Data / ML' },
-  { value: 'it-ops', label: 'IT / Ops' },
-  { value: 'other', label: 'Other' },
-]
-const TECH_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: 'codes', label: 'I write code' },
-  { value: 'somewhat-technical', label: 'Somewhat' },
-  { value: 'non-technical', label: 'Not technical' },
-]
+const ROLE_OPTIONS: ReadonlyArray<{ value: string }> = ROLE_SLUGS.map(value => ({ value }))
+const TECH_OPTIONS: ReadonlyArray<{ value: string }> = TECH_SLUGS.map(value => ({ value }))
+
+/**
+ * Catalog KEY for each chip's visible text, keyed by the enum slug above. Flat
+ * and indexed inline at the `i18nT()` call for the same static-resolution reason
+ * as `POP_TITLE_KEY`; the slug in `value` is persisted config and stays verbatim.
+ */
+const ROLE_LABEL_KEY: Record<string, string> = {
+  developer: 'components.onboardingFlow.role_developer',
+  designer: 'components.onboardingFlow.role_designer',
+  'product-manager': 'components.onboardingFlow.role_product_manager',
+  'data-ml': 'components.onboardingFlow.role_data_ml',
+  'it-ops': 'components.onboardingFlow.role_it_ops',
+  other: 'components.onboardingFlow.role_other',
+}
+const TECH_LABEL_KEY: Record<string, string> = {
+  codes: 'components.onboardingFlow.tech_codes',
+  'somewhat-technical': 'components.onboardingFlow.tech_somewhat',
+  'non-technical': 'components.onboardingFlow.tech_non_technical',
+}
 
 type ProfileConfig = {
   dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string }
@@ -112,9 +126,16 @@ const ACCENT_20 = 'color-mix(in srgb, var(--accent) 20%, transparent)'
 export default function OnboardingFlow({
   initialOpen,
   onComplete,
+  onSkipAll,
 }: {
   initialOpen: boolean
   onComplete: () => void
+  // Abandoning the tour early — "Skip all", a popover's "Skip", or Escape. Kept
+  // SEPARATE from onComplete because a skip must still pass through the mandatory
+  // Privacy chapter if that has not happened yet, while finishing the tour with
+  // "Done" cannot possibly need to (Privacy precedes this chapter). Falls back to
+  // onComplete when the host does not distinguish the two.
+  onSkipAll?: () => void
 }) {
   const navigate = useNavigate()
   const {
@@ -273,7 +294,10 @@ export default function OnboardingFlow({
   // error explaining the choice; a SECOND Skip/Escape discards explicitly —
   // informed dismissal, never a trap. Succeeding or no-op saves close in one
   // press (the await is a local loopback call, imperceptible).
-  const finish = useCallback(async () => {
+  //
+  // `skipped` routes the exit: an abandoned tour goes to onSkipAll (which may
+  // still owe the user the Privacy chapter), a finished one to onComplete.
+  const finish = useCallback(async (skipped: boolean) => {
     if (!skipDiscardArmed.current) {
       // Freeze inputs for this await too (same race as Next's save): the
       // PATCH payload is snapshotted, so edits during the flight would be
@@ -288,8 +312,15 @@ export default function OnboardingFlow({
       }
     }
     setOpen(false)
-    onComplete()
-  }, [persistProfile, onComplete])
+    if (skipped && onSkipAll) onSkipAll()
+    else onComplete()
+  }, [persistProfile, onComplete, onSkipAll])
+
+  // Bound wrappers so a DOM handler (`onClick={skipAll}`) can't pass its event
+  // object in as `skipped` — a MouseEvent is truthy, which would silently turn
+  // every completion into a skip.
+  const skipAll = useCallback(() => { void finish(true) }, [finish])
+  const completeFlow = useCallback(() => { void finish(false) }, [finish])
 
   const positionFor = useCallback((navId: string) => {
     // Popover is w-[288px]; keep it fully on-screen with a small margin so the
@@ -350,11 +381,29 @@ export default function OnboardingFlow({
     return () => window.removeEventListener('resize', onResize)
   }, [open, step, positionFor])
 
-  // Modal-step a11y (website/AGENTS.md): move focus into the dialog, trap Tab,
-  // and dismiss on Escape. Applies to the centered modals (steps 1-2 and the
-  // privacy step 6); the anchored popovers (steps 3-5) are non-modal and exempt.
+  // Escape on the ANCHORED popover steps (3-5). Those steps are non-modal, so
+  // they are exempt from the Tab trap below — but Escape still has to mean
+  // "skip all", because the rule is global: one keystroke abandons the rest of
+  // first run from any point. Split out rather than folded into the trap effect
+  // so the popovers gain the key binding without gaining a focus trap.
   useEffect(() => {
-    if (!open || (step > 2 && step !== LAST_STEP)) return
+    if (!open || step <= 2) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      // Same freeze as the modal steps: `finish` awaits a profile PATCH, so a
+      // second Escape mid-flight would re-enter it and report the skip twice.
+      if (!savingProfile) skipAll()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open, step, skipAll, savingProfile])
+
+  // Modal-step a11y (website/AGENTS.md): move focus into the dialog, trap Tab,
+  // and dismiss on Escape. Applies to the centered Customize modals (steps 1-2);
+  // the anchored popovers (steps 3-5) are non-modal and exempt.
+  useEffect(() => {
+    if (!open || step > 2) return
     const node = dialogRef.current
     if (!node) return
     const getFocusable = () =>
@@ -385,7 +434,7 @@ export default function OnboardingFlow({
         e.preventDefault()
         // Dismissal is frozen while a save is in flight (same reason the
         // Skip button is disabled): the PATCH payload is already snapshotted.
-        if (!savingProfile) finish()
+        if (!savingProfile) skipAll()
         return
       }
       if (e.key !== 'Tab') return
@@ -405,7 +454,7 @@ export default function OnboardingFlow({
     return () => document.removeEventListener('keydown', onKeyDown)
     // shellHost?.sectionSlot: in host mode the dialog mounts a pass after the
     // flow opens, so re-run once it exists to install the trap + initial focus.
-  }, [open, step, finish, savingProfile, dialogRef, shellHost?.sectionSlot])
+  }, [open, step, skipAll, savingProfile, dialogRef, shellHost?.sectionSlot])
 
   if (!open) return null
 
@@ -425,7 +474,7 @@ export default function OnboardingFlow({
       skipDiscardArmed.current = false
     }
     if (step < LAST_STEP) setStep(step + 1)
-    else finish()
+    else completeFlow()
   }
 
   // ── Step 1: Pick your look (Customize chapter — import-setup layout) ──────
@@ -447,7 +496,7 @@ export default function OnboardingFlow({
             </p>
           </div>
         }
-        onSkipAll={finish}
+        onSkipAll={skipAll}
         dialogRef={dialogRef}
         footer={<SendBtn type="button" onClick={next}>{i18nT('components.onboardingFlow.continue')}</SendBtn>}
       >
@@ -523,7 +572,7 @@ export default function OnboardingFlow({
             </p>
           </div>
         }
-        onSkipAll={finish}
+        onSkipAll={skipAll}
         skipDisabled={savingProfile}
         dialogRef={dialogRef}
         footer={
@@ -558,7 +607,7 @@ export default function OnboardingFlow({
               style={role === o.value ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
             >
               {role === o.value && <Check size={13} aria-hidden />}
-              {o.label}
+              {i18nT(ROLE_LABEL_KEY[o.value])}
             </button>
           ))}
         </div>
@@ -619,7 +668,7 @@ export default function OnboardingFlow({
               style={techLevel === o.value ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
             >
               {techLevel === o.value && <Check size={13} aria-hidden />}
-              {o.label}
+              {i18nT(TECH_LABEL_KEY[o.value])}
             </button>
           ))}
         </div>
@@ -633,63 +682,11 @@ export default function OnboardingFlow({
     )
   }
 
-  // ── Step 6: Privacy (final step — chapter-shell layout) ──────────────────
-  // Renders the SAME disclosure + opt-out toggle as Settings → Privacy, so the
-  // first-run explanation and the durable panel can never drift. Passive by
-  // design: no consent gate, no required choice — "Done" always finishes.
-  if (step === LAST_STEP) {
-    return (
-      <OnboardingChapterShell
-        eyebrow={i18nT('components.onboardingFlow.privacy_eyebrow')}
-        ariaLabel={i18nT('privacyDisclosure.settingsLabel')}
-        panelHeadline={i18nT('components.onboardingFlow.privacy_panel_headline')}
-        panelBody={i18nT('components.onboardingFlow.privacy_panel_body')}
-        panelFootnote={i18nT('components.onboardingFlow.change_anything_later_in_settings')}
-        header={
-          <div className="mt-6">
-            <h1 tabIndex={-1} className="text-2xl font-semibold text-text-strong outline-none">
-              {i18nT('components.onboardingFlow.privacy_title')}
-            </h1>
-            <p className="mt-2 text-sm leading-relaxed text-muted">
-              {i18nT('components.onboardingFlow.privacy_subtitle')}
-            </p>
-          </div>
-        }
-        onSkipAll={finish}
-        dialogRef={dialogRef}
-        footer={
-          <>
-            <Btn type="button" className="h-9 rounded-lg px-4" onClick={() => setStep(LAST_POP_STEP)}>
-              {i18nT('components.onboardingFlow.back')}
-            </Btn>
-            <SendBtn type="button" onClick={next}>
-              {i18nT('components.onboardingFlow.done')}
-            </SendBtn>
-          </>
-        }
-      >
-        {/* Control FIRST, detail below. In the onboarding shell the body
-            scrolls, and burying the opt-out under three paragraphs of
-            disclosure puts the only actionable thing on the step below the
-            fold — a control the user must scroll to find is a worse offer than
-            one they can see. Settings → Privacy keeps the reverse order, where
-            the durable explanation is what the reader came for. */}
-        <TelemetryToggle />
-        <div className="mt-6 border-t border-border pt-5">
-          <PrivacyDisclosureSections />
-          <p className="mt-5 mb-3 text-sm leading-relaxed text-muted">
-            {i18nT('privacyDisclosure.controlsBody')}
-          </p>
-          <PrivacyCommandList />
-        </div>
-      </OnboardingChapterShell>
-    )
-  }
-
   // ── Steps 3-5: anchored feature popovers ─────────────────────────────────
   const pop = POPS[step]
   if (!pop || !coords) return null
   const dotIdx = step - 3
+  const isLastPop = step === LAST_STEP
 
   return createPortal(
     <div className="fixed z-[120] w-[288px] animate-rise" style={{ left: coords.left, top: coords.top }}>
@@ -698,10 +695,10 @@ export default function OnboardingFlow({
         style={{ boxShadow: RING_SHADOW, borderRadius: '0px 24px 24px 24px' }}
       >
         <div className="absolute" style={{ bottom: 'calc(100% + 6px)', left: -4 }}>
-          <GhostVar2 width={44} />
+          <GhostWithArm />
         </div>
-        <h3 className="text-[18px] font-semibold text-text-strong leading-tight">{pop.title}</h3>
-        <p className="text-[13px] text-muted mt-2.5 leading-relaxed">{pop.body}</p>
+        <h3 className="text-[18px] font-semibold text-text-strong leading-tight">{i18nT(POP_TITLE_KEY[pop.navId])}</h3>
+        <p className="text-[13px] text-muted mt-2.5 leading-relaxed">{i18nT(POP_BODY_KEY[pop.navId])}</p>
         <div className="flex items-center mt-[18px]">
           <div className="flex items-center gap-1.5">
             {[0, 1, 2].map(i => (
@@ -713,19 +710,31 @@ export default function OnboardingFlow({
             ))}
           </div>
           <div className="ml-auto flex items-center gap-4">
-            <button
-              onClick={finish}
-              className="text-[13px] text-muted hover:text-text-strong cursor-pointer bg-transparent border-none"
-            >
-              {i18nT('components.onboardingFlow.skip')}
-            </button>
+            {/* Skip is hidden on the last popover: it finishes the flow itself,
+                so a "Skip" beside "Done" would be a second way to do what the
+                primary already does. Escape is not wired for the popovers (they
+                are non-modal), which is why the earlier ones keep a Skip. */}
+            {!isLastPop && (
+              <button
+                onClick={skipAll}
+                className="text-[13px] text-muted hover:text-text-strong cursor-pointer bg-transparent border-none"
+              >
+                {i18nT('components.onboardingFlow.skip')}
+              </button>
+            )}
             <button
               onClick={next}
-              aria-label={i18nT('components.onboardingFlow.next')}
+              aria-label={isLastPop
+                ? i18nT('components.onboardingFlow.done')
+                : i18nT('components.onboardingFlow.next')}
               className="flex items-center gap-1.5 rounded-[10px] bg-accent text-accent-fg text-[13px] font-semibold px-3 py-2 cursor-pointer border-none hover:opacity-90 transition-opacity"
             >
-              {i18nT('components.onboardingFlow.next')}
-              <ArrowRight size={15} />
+              {isLastPop
+                ? i18nT('components.onboardingFlow.done')
+                : i18nT('components.onboardingFlow.next')}
+              {/* No arrow on the last popover — a forward arrow next to "Done"
+                  advertises more tour than there is. */}
+              {!isLastPop && <ArrowRight size={15} />}
             </button>
           </div>
         </div>

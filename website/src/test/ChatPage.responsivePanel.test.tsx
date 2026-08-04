@@ -3,7 +3,7 @@
  * - auto-collapse when the window shrinks below the panel's space threshold
  * - auto-reopen (with hysteresis) when space returns — only if it was the
  *   auto-collapse that closed it
- * - a manual toggle cancels any pending auto-reopen (review round 12 fix)
+ * - a manual toggle cancels any pending auto-reopen
  * - portal slot self-healing: if the actbar slot div isn't in the DOM when
  *   ChatPage looks for it, a MutationObserver latches it when it appears
  *   (fixes the mobile->desktop race that stranded the panel inline).
@@ -170,7 +170,7 @@ describe('ChatPage — activity panel open state is resize-independent', () => {
     act(() => { store.dispatch(toggleActivity()) })
     expect(store.getState().chat.activityOpen).toBe(true)
 
-    resizeTo(850) // used to auto-collapse here
+    resizeTo(850) // below the 880 space threshold
     expect(store.getState().chat.activityOpen).toBe(true)
     resizeTo(700) // and again below the mobile breakpoint
     expect(store.getState().chat.activityOpen).toBe(true)
@@ -313,10 +313,9 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
 })
 
 /**
- * Mobile regression: the toggle used to be gated on `!isMobile`, so a phone had
- * NO way to open the activity panel even though SidePanel already renders
- * full-width there and ChatPage keeps an inline (non-portal) render path
- * specifically for mobile.
+ * Mobile: the toggle must NOT be gated on `!isMobile` — a phone still needs a
+ * way to open the activity panel, since SidePanel renders full-width there and
+ * ChatPage keeps an inline (non-portal) render path specifically for mobile.
  */
 describe('ChatPage — activity toggle on mobile', () => {
   beforeEach(() => { mockIsMobile = true; setWindowWidth(390); localStorage.clear() })

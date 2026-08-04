@@ -61,23 +61,61 @@ function EvidenceBadge({ s }: { s: string }) {
 // Maps every campaign status to a single, consistent state pill so the root
 // list communicates working / failed / done at a glance. Unknown statuses fall
 // back to a neutral pill showing the raw status text.
-const STATE_META: Record<string, { label: string; color: string; Icon: typeof CheckCircle; spin?: boolean }> = {
-  running: { label: 'Working', color: 'text-accent', Icon: Loader2, spin: true },
-  needs_input: { label: 'Needs input', color: 'text-warn', Icon: HelpCircle },
-  paused: { label: 'Paused', color: 'text-muted', Icon: Pause },
-  stagnant: { label: 'Stalled', color: 'text-warn', Icon: AlertTriangle },
-  ready: { label: 'Ready', color: 'text-muted', Icon: Play },
-  complete: { label: 'Done', color: 'text-ok', Icon: CheckCircle },
-  failed: { label: 'Failed', color: 'text-danger', Icon: XCircle },
-  stopped: { label: 'Stopped', color: 'text-muted', Icon: Square },
+//
+// The label lives in its own flat table of catalog KEYS, separate from the
+// presentation fields: this module evaluates once at import, so an `i18nT()`
+// call in the table would freeze the boot language and never re-resolve on a
+// language switch (see `lib/effort.ts`). Flat, and indexed inline at the
+// `i18nT()` call, because that is the shape `scripts/check-i18n-keys.mjs` can
+// resolve statically. The status STRINGS stay code constants — they are the
+// backend's enum, not copy.
+export const STATE_LABEL_KEY: Record<string, string> = {
+  running: 'apps.autoResearch.researchLabPage.state_working',
+  needs_input: 'apps.autoResearch.researchLabPage.state_needs_input',
+  paused: 'apps.autoResearch.researchLabPage.state_paused',
+  stagnant: 'apps.autoResearch.researchLabPage.state_stalled',
+  ready: 'apps.autoResearch.researchLabPage.state_ready',
+  complete: 'apps.autoResearch.researchLabPage.state_done',
+  failed: 'apps.autoResearch.researchLabPage.state_failed',
+  stopped: 'apps.autoResearch.researchLabPage.state_stopped',
+}
+
+const STATE_META: Record<string, { color: string; Icon: typeof CheckCircle; spin?: boolean }> = {
+  running: { color: 'text-accent', Icon: Loader2, spin: true },
+  needs_input: { color: 'text-warn', Icon: HelpCircle },
+  paused: { color: 'text-muted', Icon: Pause },
+  stagnant: { color: 'text-warn', Icon: AlertTriangle },
+  ready: { color: 'text-muted', Icon: Play },
+  complete: { color: 'text-ok', Icon: CheckCircle },
+  failed: { color: 'text-danger', Icon: XCircle },
+  stopped: { color: 'text-muted', Icon: Square },
+}
+
+/**
+ * Localised label for a campaign status. A status the backend reports that has
+ * no entry above has no catalog entry either, so it is de-snaked and shown
+ * verbatim rather than dressed up as English copy in every locale.
+ *
+ * `hasOwnProperty`, not `in` or a bare index: `status` is backend-supplied, so a
+ * campaign reporting `toString` or `constructor` would otherwise resolve to an
+ * inherited `Object.prototype` member and hand a function to i18next.
+ */
+function stateLabel(status: string): string {
+  return Object.prototype.hasOwnProperty.call(STATE_LABEL_KEY, status)
+    ? i18nT(STATE_LABEL_KEY[status])
+    : status.replace(/_/g, ' ')
 }
 
 function StateBadge({ status }: { status: string }) {
-  const m = STATE_META[status] ?? { label: status.replace(/_/g, ' '), color: 'text-muted', Icon: HelpCircle }
-  const { label, color, Icon, spin } = m
+  // Same prototype-chain guard as `stateLabel`: `STATE_META['toString']` is a
+  // function, which `??` would not replace, and destructuring it yields an
+  // undefined `Icon` that crashes the render.
+  const { color, Icon, spin } = Object.prototype.hasOwnProperty.call(STATE_META, status)
+    ? STATE_META[status]
+    : { color: 'text-muted', Icon: HelpCircle, spin: undefined }
   return (
     <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded bg-bg-elevated inline-flex items-center gap-1 shrink-0 ${color}`} title={`Status: ${status}`}>
-      <Icon size={10} className={spin ? 'animate-spin motion-reduce:animate-none' : undefined} /> {label}
+      <Icon size={10} className={spin ? 'animate-spin motion-reduce:animate-none' : undefined} /> {stateLabel(status)}
     </span>
   )
 }

@@ -29,6 +29,8 @@ Orchestrated Chat (Autopilot) consolidates Chat mode and Task Runner into a sing
 
 Autopilot is **not** a separate app or page — it is a per-slot mode of the unified Chat surface, enabled when `_ChatSlot.mode == "orchestrator"` and toggled via `PATCH /api/chat/slots/{slot}/mode` (`chat_folders.py`; `_VALID_MODES = ("", "orchestrator")`, registered in `server.py`). Switching mode returns `409` while the slot is running. The standalone `orchestrated` builtin app was removed — it is deleted on startup via `manager.py`'s `_escalated` list — and there is no `/orchestrated` page or backend route.
 
+> **Terminology.** "Autopilot" is the user-facing name (badge, WelcomeView, nav). The slot `mode` value, the config section, and the system-prompt file (`prompt-orchestrator.md`) keep the internal name `orchestrator` for back-compat — renaming those would break persisted sessions and configs. The Autopilot system prompt recognizes user references to *autopilot* / *autopilot plan* / *autopilot this* as this mode.
+
 - **Simple tasks** (majority): behaves like chat — direct response, no planning overhead.
 - **Complex tasks**: structured plan, stage-by-stage execution, specialist agents — with user interaction between stages.
 - **Over time**: learns from user guidance and past plans, needs less human support for longer autonomous runs.

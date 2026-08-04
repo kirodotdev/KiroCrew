@@ -3890,6 +3890,92 @@ def test_build_permission_event_raw_params_none_without_cache():
     assert event.raw_tool_params is None
 
 
+def test_build_permission_event_recovers_mcp_server_name_from_cache():
+    """Regression: build_permission_event must carry mcp_server_name recovered
+    from the preceding tool_call (the permission payload has no _meta), so
+    hooks.on_tool_call's app-own-server auto-approve can fire on the dashboard
+    permission path. Without this the event's mcp_server_name is always "" and
+    the feature is inert."""
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
+
+    mcp_cache = {"tc-1": "mochi:mochi"}
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 7,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {
+                "toolCall": {"toolCallId": "tc-1", "title": "perform_pet_action"},
+                "options": [],
+            },
+        }
+    )
+    event, _ = build_permission_event(msg, mcp_server_name_cache=mcp_cache)
+    assert event.mcp_server_name == "mochi:mochi"
+    # .get() (not .pop()): a later tool_call_update for the same id re-reads it.
+    assert mcp_cache.get("tc-1") == "mochi:mochi"
+
+
+def test_build_permission_event_mcp_server_name_empty_without_cache():
+    """No cache / no entry → mcp_server_name stays "" (fail-closed: the app-own
+    auto-approve never matches on a forged title with no trusted server name)."""
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
+
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 8,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {"toolCall": {"toolCallId": "tc-y", "title": "x"}, "options": []},
+        }
+    )
+    event, _ = build_permission_event(msg, mcp_server_name_cache={})
+    assert event.mcp_server_name == ""
+
+
+def test_build_permission_event_recovers_tool_name_from_cache():
+    """Mirror of the mcp_server_name recovery: the permission payload carries no
+    _meta, so build_permission_event recovers the trusted tool name from the
+    preceding tool_call via tool_name_cache. This is what lets the
+    app-own-server auto-approve rebuild the canonical mcp__<server>__<tool> and
+    govern the real tool on the permission path."""
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
+
+    name_cache = {"tc-1": "perform_pet_action"}
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 9,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {
+                "toolCall": {"toolCallId": "tc-1", "title": "perform_pet_action"},
+                "options": [],
+            },
+        }
+    )
+    event, _ = build_permission_event(msg, tool_name_cache=name_cache)
+    assert event.tool_name == "perform_pet_action"
+    # .get() (not .pop()): a later tool_call_update for the same id re-reads it.
+    assert name_cache.get("tc-1") == "perform_pet_action"
+
+
+def test_build_permission_event_tool_name_empty_without_cache():
+    """No cache / no entry → tool_name stays "" (fail-closed: the app-own-server
+    auto-approve cannot identify the tool to govern it, so it never fires)."""
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
+
+    msg = JsonRpcMessage.from_dict(
+        {
+            "id": 10,
+            "method": METHOD_REQUEST_PERMISSION,
+            "params": {"toolCall": {"toolCallId": "tc-z", "title": "x"}, "options": []},
+        }
+    )
+    event, _ = build_permission_event(msg, tool_name_cache={})
+    assert event.tool_name == ""
+
+
 def test_build_permission_event_non_string_option_entries_skipped():
     """The shared parser feeds AcpSessionHandle's prompt event generator; a
     truthy non-string id (e.g. {"id": 42}) crashed opt_id.lower() in the

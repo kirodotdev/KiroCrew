@@ -44,7 +44,9 @@ FETCH_TIMEOUT_SECONDS = 5.0
 #: as well as the fetch cost.
 MAX_REDIRECTS = 3
 #: Hard cap on an HTML body. Applied as a read cap, never by trusting
-#: ``Content-Length`` — see ``link_meta._read_capped``.
+#: ``Content-Length``. A page above this is TRUNCATED to the cap, not dropped:
+#: ``<head>`` — the only part a preview reads — is at the top, so the prefix is
+#: everything. See ``link_meta._read_capped``.
 MAX_BODY_BYTES = 256 * 1024
 #: Hard cap on a favicon. An icon above this is DROPPED, not truncated: a
 #: truncated image is a broken image, and the card reads fine without one.
@@ -135,6 +137,16 @@ class ExtractedMeta:
     site_name: str
     icon_candidates: Tuple[str, ...]
     """Absolute icon URLs, best first, ``/favicon.ico`` last."""
+    title_complete: bool = False
+    """Whether :attr:`title` is a whole, non-empty title rather than a fragment.
+
+    True when a non-empty title exists AND either an ``og:title`` supplied it (a
+    meta attribute parses atomically or not at all) or the ``<title>`` element
+    that produced it closed. False for no title, an empty one, and a title whose
+    element was left open — "nothing" and "half a word" are both incomplete. Only
+    a caller holding a TRUNCATED document needs this; for a document read in full
+    a short title is simply what the page served.
+    """
 
 
 def _reject_if_internal_ip(candidate: str) -> None:
@@ -357,6 +369,12 @@ class _HeadParser(HTMLParser):
         self.og: Dict[str, str] = {}
         self.meta_name: Dict[str, str] = {}
         self.title = ""
+        #: Whether a ``</title>`` was seen, i.e. whether :attr:`title` is the WHOLE
+        #: element text rather than however much of it the document supplied. It
+        #: matters only for a truncated document: a cut inside ``<title>`` leaves a
+        #: word-fragment here that reads like a real title, and only the parser can
+        #: tell the two apart.
+        self.title_closed = False
         self.icons: List[str] = []
         self._apple_icons: List[str] = []
         self._in_title = False
@@ -372,6 +390,10 @@ class _HeadParser(HTMLParser):
         attr = {k.lower(): (v or "") for k, v in attrs}
         if tag == "title":
             self._in_title = True
+            # A NEW title element is not yet complete, whatever an earlier one did.
+            # `<title>First</title><title>Frag` must not inherit the first
+            # element's closure, or a cut inside the second reads as whole.
+            self.title_closed = False
         elif tag == "meta":
             prop = attr.get("property", "").strip().lower()
             content = attr.get("content", "")
@@ -397,6 +419,11 @@ class _HeadParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "title":
+            # Only a close that matches an OPEN we saw proves the collected text is
+            # whole. A stray `</title>` — before any `<title>`, or left over from
+            # sloppy markup — must not mark a later, truncated title as complete.
+            if self._in_title:
+                self.title_closed = True
             self._in_title = False
         elif tag == "head":
             self.done = True
@@ -456,6 +483,13 @@ def extract_meta(html: str, *, base_url: str) -> ExtractedMeta:
         description=description,
         site_name=site_name,
         icon_candidates=tuple(candidates),
+        # "Complete" requires a title to exist AND to be whole. An `og:title` is
+        # whole by construction (an attribute parses atomically or not at all);
+        # otherwise the `<title>` element must have closed. The `bool(title)` term
+        # is what keeps an empty-but-closed `<title></title>` from reading as a
+        # complete title on a truncated document.
+        title_complete=bool(title)
+        and (bool(parser.og.get("og:title", "").strip()) or parser.title_closed),
     )
 
 

@@ -166,7 +166,8 @@ are reported as unresolved and the app still installs — degrade gracefully:
       "skills": ["SomeSkillPackage"],
       "agents": ["SomeAgentPackage"]
     },
-    "commands": ["node", "python3"]
+    "commands": ["node", "python3"],
+    "optionalCommands": ["git"]
   }
 }
 ```
@@ -177,7 +178,8 @@ are reported as unresolved and the app still installs — degrade gracefully:
 | `capabilities.mcp` | MCP servers to install. |
 | `capabilities.skills` | Skill packages to install. |
 | `capabilities.agents` | Declarable, but never gateway-installed — always reported unresolved. |
-| `commands` | System commands to check (not installed, just verified). Missing commands produce a warning. |
+| `commands` | REQUIRED system commands to check (not installed, just verified). Missing commands produce a warning and are reported in `missing`. |
+| `optionalCommands` | Same check, but absence is not a problem — reported in `missingOptional`. Use it for a tool the app can work without, or can provision itself (Papyrus lists `tectonic` here because it installs a pinned copy when the host has no TeX). |
 
 Per-dependency override: use object format to override `managedBy` for individual entries:
 
@@ -333,6 +335,35 @@ Teams can host their own app registries without requiring KiroCrew team review f
 - Input validation: repo/branch names validated against strict regex patterns to reject path traversal
 
 **Trust model:** user explicitly opts in by adding the registry to their config. The repo must be accessible via git.
+
+**Credential posture and the same-repo carve-out:**
+
+By default, apps listed in an external registry index are cloned **credential-free** (anonymous env + strict sandbox hiding `~/.ssh`) — a confused-deputy defense preventing an untrusted index from reading private sibling repos on the owner's trusted forge. This means private-forge registries whose apps live in *separate* repos require each app repo to be independently accessible (typically only works with public forges).
+
+The **same-repo carve-out** relaxes this for the common **monorepo layout**: when an index entry's effective clone URL is **byte-identical** to the owner-configured registry repo URL (the URL the owner typed when adding the registry), the confused-deputy argument does not apply — the owner explicitly designated that exact URL. Such entries use owner credentials (`minimal_env` + context sandbox mode) for both manifest fetches and installs. The comparison is exact string equality with no URL normalization; sibling repos on the same host remain anonymous+strict.
+
+**Private-forge recipe (SSH-key-only forges):**
+
+For credential-only forges (SSH-key auth, no anonymous access), use the monorepo `apps/*` layout so all apps are inside the registry repo:
+
+1. Create a single registry package/repo containing:
+   ```
+   app-registry.json          # or just use apps/*/ auto-discovery
+   apps/
+     my-tool/app.json
+     my-tool/src/...
+     other-app/app.json
+     other-app/src/...
+   ```
+
+2. Add the registry with the SSH URL:
+   ```json
+   {"name": "my-team", "repo": "ssh://git.example.com/team/MyTeamApps", "branch": "main"}
+   ```
+
+3. Because every app's clone URL matches the registry repo URL (the monorepo layout ensures this), the same-repo carve-out applies and all manifest fetches + installs succeed with the owner's SSH credentials.
+
+**Important:** apps in *separate* repos on the same private forge will NOT benefit from the carve-out (their URLs differ from the registry URL) and will fail to clone. Keep apps inside the registry repo for private forges.
 
 **Management API** (`/api/apps/registries`):
 

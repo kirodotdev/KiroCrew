@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -1897,6 +1898,11 @@ class TestUserAgentEditsSurviveRefresh:
             "prompt",
             "managedToolPolicy",
             "includeMcpJson",
+            # A generated `file://` path list into the app's provisioned tree, rendered
+            # from `{ENGINE_ROOT}` placeholders by the gateway — CONTAINMENT-shaped like
+            # `prompt`: a user-pinned copy would keep pointing at a previous engine root
+            # and silently stop resolving after a re-provision.
+            "resources",
         }
 
     def test_every_template_key_is_a_decided_key(self) -> None:
@@ -1913,7 +1919,12 @@ class TestUserAgentEditsSurviveRefresh:
         from kiro_crew.apps.bridges import _FRAMEWORK_OWNED_AGENT_KEYS
 
         # Keys a user is MEANT to be able to pin by hand.
-        preferences = {"description", "model", "toolsSettings", "$schema"}
+        # Keys a user is MEANT to be able to pin by hand. `welcomeMessage` is
+        # user-facing copy with no containment role, so a reworded greeting must
+        # survive a template refresh — the same reasoning as `description`.
+        preferences = {
+            "description", "model", "toolsSettings", "$schema", "welcomeMessage",
+        }
         root = Path("src/kiro_crew/apps/builtins")
         templates = sorted(root.glob("*/agents/*.json"))
         if not templates:
@@ -2504,3 +2515,116 @@ class TestMalformedConfigIsNotClobbered:
 
         # The malformed-but-present config is UNTOUCHED (not clobbered with {}).
         assert mcp_path.read_text(encoding="utf-8") == original
+
+
+class TestShippedAgentTemplatesAreRenderedByTheGateway:
+    """A shipped template is rendered BY THE GATEWAY, from values it computes itself.
+
+    An earlier version of this took the app's own provisioned copy from its install dir
+    and verified it was "the template with only placeholders substituted". A reviewer
+    pointed out why that is unsound and they were right: the check constrained WHERE a
+    substitution could appear but not WHAT it could contain — and `{UV_BIN}` is an
+    executable path, so an agent with write access to the engine directory could
+    substitute its own binary and kiro-cli would run it.
+
+    Every value is computable in the gateway, so nothing is read back from the mutable
+    side at all: the bytes come from the immutable package, the values from here.
+    """
+
+    def test_placeholders_resolve_to_gateway_computed_values(self, tmp_path, app_env):
+        from kiro_crew.apps.bridges import _placeholder_values
+
+        values = _placeholder_values("pptx-maker")
+        assert set(values) == {"{UV_BIN}", "{ENGINE_ROOT}", "{ENGINE_MCP_DIR}", "{APP_PROMPTS}"}
+        # Under the data home this fixture set, i.e. derived here rather than read.
+        assert str(app_env["home"]) in values["{ENGINE_ROOT}"]
+
+    def test_an_unknown_app_resolves_nothing(self, tmp_path, app_env):
+        """Fail-closed: adding a placeholder to a new app's config is inert until its
+        values are named, rather than silently registering an unrendered config."""
+        from kiro_crew.apps.bridges import _placeholder_values
+
+        assert _placeholder_values("some-other-app") == {}
+
+    def test_a_template_is_rendered_into_the_data_home(self, tmp_path, app_env):
+        from kiro_crew.apps.bridges import _render_shipped_agent
+
+        shipped = tmp_path / "package" / "pptx-maker" / "agents"
+        shipped.mkdir(parents=True)
+        template = shipped / "a.json"
+        template.write_text(json.dumps({"name": "a", "command": "{UV_BIN}"}))
+
+        out = _render_shipped_agent("pptx-maker", template)
+        assert out is not None
+        # NOT the app's install dir: the file kiro-cli reads must not be one the app
+        # can rewrite after registration.
+        assert (app_env["home"] / "apps" / "pptx-maker") not in out.parents
+        rendered = json.loads(out.read_text(encoding="utf-8"))
+        assert "{UV_BIN}" not in rendered["command"]
+        # `Path(...).stem`, not `endswith("uv")`: on Windows `resolve_uv()` returns
+        # `uv.exe`, so a suffix check on the bare name passed on POSIX and failed the
+        # Windows shard — green on two platforms and red on the third is worse than
+        # failing everywhere.
+        assert Path(rendered["command"]).stem == "uv"
+
+    def test_the_install_dir_copy_is_never_read(self, tmp_path, app_env):
+        """The whole point of the redesign: an attacker-written copy in the install dir
+        has no influence, because it is not consulted."""
+        from kiro_crew.apps.bridges import _render_shipped_agent
+
+        shipped = tmp_path / "package" / "pptx-maker" / "agents"
+        shipped.mkdir(parents=True)
+        template = shipped / "a.json"
+        template.write_text(json.dumps({"name": "a", "command": "{UV_BIN}"}))
+
+        install = app_env["home"] / "apps" / "pptx-maker" / "agents"
+        install.mkdir(parents=True)
+        (install / "a.json").write_text(
+            json.dumps({"name": "a", "command": "/tmp/attacker-binary"})
+        )
+
+        out = _render_shipped_agent("pptx-maker", template)
+        assert out is not None
+        rendered = json.loads(out.read_text(encoding="utf-8"))
+        assert rendered["command"] != "/tmp/attacker-binary"
+
+    def test_a_config_with_no_placeholder_is_returned_untouched(self, tmp_path, app_env):
+        from kiro_crew.apps.bridges import _render_shipped_agent
+
+        shipped = tmp_path / "package" / "pptx-maker" / "agents"
+        shipped.mkdir(parents=True)
+        concrete = shipped / "a.json"
+        concrete.write_text(json.dumps({"name": "a", "command": "/real/uv"}))
+
+        assert _render_shipped_agent("pptx-maker", concrete) == concrete
+
+    def test_an_unresolvable_placeholder_registers_nothing(self, tmp_path, app_env):
+        """Better to register no agent than one naming a literal `{ENGINE_ROOT}`."""
+        from kiro_crew.apps.bridges import _render_shipped_agent
+
+        shipped = tmp_path / "package" / "unknown-app" / "agents"
+        shipped.mkdir(parents=True)
+        template = shipped / "a.json"
+        template.write_text(json.dumps({"name": "a", "dir": "{ENGINE_ROOT}"}))
+
+        assert _render_shipped_agent("unknown-app", template) is None
+
+    def test_a_windows_path_survives_json_escaping(self, tmp_path, app_env):
+        """The placeholders sit INSIDE JSON string literals, so a path's backslashes
+        must be escaped or the render is invalid JSON (or a mangled separator)."""
+        from unittest import mock
+
+        from kiro_crew.apps import bridges
+
+        shipped = tmp_path / "package" / "pptx-maker" / "agents"
+        shipped.mkdir(parents=True)
+        template = shipped / "a.json"
+        template.write_text(json.dumps({"name": "a", "command": "{UV_BIN}"}))
+
+        with mock.patch.object(
+            bridges, "_placeholder_values", return_value={"{UV_BIN}": r"C:\Users\me\uv.exe"}
+        ):
+            out = bridges._render_shipped_agent("pptx-maker", template)
+        assert out is not None
+        # Parses, and the separator round-trips.
+        assert json.loads(out.read_text(encoding="utf-8"))["command"] == r"C:\Users\me\uv.exe"

@@ -1,4 +1,4 @@
-"""Durable on-disk store for dynamic-workflow runs (FIX-21).
+"""Durable on-disk store for dynamic-workflow runs.
 
 The ``RunRegistry`` is in-memory and loop-affine; without this, every run (its
 authored script, event stream, result, and resume cache) is lost on a gateway

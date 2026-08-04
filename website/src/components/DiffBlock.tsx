@@ -111,7 +111,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
   const lines = useMemo(() => parseDiffLines(code), [code])
   // Resolve the file path: prefer headers inside the diff, fall back to the
   // pathHint extracted from the surrounding chat text by MarkdownRenderer
-  // (round 9: helps when a tool emits "Created /path/to/file:" before a
+  // (helps when a tool emits "Created /path/to/file:" before a
   // bare diff with no +++/--- headers).
   const filePath = useMemo(() => extractFilePath(lines) ?? pathHint ?? null, [lines, pathHint])
   const [fileExists, setFileExists] = useState(false)
@@ -182,9 +182,8 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
         <span className="text-muted text-[13px] font-mono">{i18nT('components.diffBlock.diff')}{filePath && <span className="ml-1.5 text-muted/70">— {filePath.split('/').pop()}</span>}</span>
         <div className="flex items-center gap-1 opacity-0 group-hover/diff:opacity-100 group-focus-within/diff:opacity-100 transition-opacity">
           {/* Open: hover-gated alongside the other diff actions for visual
-              consistency (round 10: revert the always-visible variant —
-              users found the asymmetry janky). Plain "Open" label, no
-              icon, since the diff header already prefixes the file name. */}
+              consistency. Plain "Open" label, no icon, since the diff header
+              already prefixes the file name. */}
           {filePath && onFileOpen && fileExists && (
             <button
               className="px-1.5 py-0.5 rounded text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"

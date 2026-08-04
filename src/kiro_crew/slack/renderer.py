@@ -1,10 +1,9 @@
-"""Slack ``Renderer`` for the channel-neutral ``TurnDriver`` (v1b-3).
+"""Slack ``Renderer`` for the channel-neutral ``TurnDriver``.
 
 Maps the abstract ``OutputEvent`` stream emitted by
 ``kiro_crew.messaging.TurnDriver`` onto Slack's streaming + Block Kit surface
-via ``SlackClientOps``. This is the Slack-specific half of the v1b extraction;
-the ``handle_message`` native loop is rewired onto it in a follow-up step
-(gated by the golden-transcript harness).
+via ``SlackClientOps``. This is the Slack-specific half of the neutral
+messaging layer.
 
 Import direction: ``slack`` -> ``messaging`` (never the reverse), so this lives
 in the ``slack`` package and consumes the neutral ``messaging`` contracts.
@@ -12,7 +11,7 @@ in the ``slack`` package and consumes the neutral ``messaging`` contracts.
 ``prompt_choice`` (the first-class approval event) renders as Block Kit
 approve/deny buttons. The interactive decision is awaited via
 :class:`SlackApprovalDecider`, whose future is resolved by the Slack
-interaction handler when the user clicks a button (wired in the rewire step).
+interaction handler when the user clicks a button.
 """
 
 from __future__ import annotations

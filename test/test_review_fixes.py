@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import patch
 
 import pytest
@@ -82,9 +83,9 @@ class TestYoloExpiry:
         with patch("time.monotonic", return_value=future):
             assert not is_yolo_mode(), "Slack YOLO should have auto-expired"
 
-    def test_config_yolo_expires_after_24h(self) -> None:
-        """set_yolo_mode from config sets a 24h TTL (SafetyOverride._CONFIG_TTL)."""
-        from kiro_crew.safety_override import safety_override
+    def test_config_yolo_does_not_expire(self) -> None:
+        """A declared grant is a standing instruction — it must not lapse."""
+        from kiro_crew.safety_override import SafetyOverride, safety_override
         from kiro_crew.slack.handler import is_yolo_mode, set_yolo_mode
 
         set_yolo_mode(True)
@@ -92,24 +93,21 @@ class TestYoloExpiry:
         assert is_yolo_mode()
         so = safety_override()
         assert so._source == "config"
-        assert so._expires_at > 0  # has a TTL (24h)
+        assert so.is_permanent is True
 
-        # Still active just before expiry
-        just_before = so._expires_at - 1
-        with patch("time.monotonic", return_value=just_before):
-            assert is_yolo_mode(), "Config YOLO should still be active before expiry"
-
-        # Expired just after 24h
-        just_after = so._expires_at + 1
-        with patch("time.monotonic", return_value=just_after):
-            assert not is_yolo_mode(), "Config YOLO should expire after 24h"
+        base = time.monotonic()
+        with patch(
+            "kiro_crew.safety_override.time.monotonic",
+            return_value=base + SafetyOverride._MAX_TTL + 60,
+        ):
+            assert is_yolo_mode(), "Config-declared YOLO must not expire"
 
     def test_dashboard_yolo_expires_6h(self) -> None:
-        """Dashboard YOLO uses SafetyOverride._DASHBOARD_TTL (6h)."""
+        """Every ad-hoc surface uses SafetyOverride._ADHOC_TTL_DEFAULT (6h)."""
         from kiro_crew.safety_override import SafetyOverride, safety_override
         from kiro_crew.slack.handler import enable_yolo_with_ttl, is_yolo_mode
 
-        enable_yolo_with_ttl(SafetyOverride._DASHBOARD_TTL)
+        enable_yolo_with_ttl(SafetyOverride._ADHOC_TTL_DEFAULT)
 
         assert is_yolo_mode()
         so = safety_override()
@@ -390,7 +388,8 @@ class TestYoloFromConfigGuard:
         set_yolo_mode(True)
         so = safety_override()
         assert so._source == "config"
-        assert so._expires_at > 0  # 24h TTL, not permanent
+        # A declared grant carries no deadline at all.
+        assert so.is_permanent is True
 
     def test_enable_with_ttl_overwrites_config_source(self) -> None:
         """enable_yolo_with_ttl now always activates (no config-permanent guard)."""
@@ -406,16 +405,19 @@ class TestYoloFromConfigGuard:
         # Activating with a shorter TTL resets the expiry
         assert safety_override()._expires_at < config_expires
 
-    def test_config_yolo_expires_after_24h(self) -> None:
-        from kiro_crew.safety_override import safety_override
+    def test_config_yolo_does_not_expire(self) -> None:
+        from kiro_crew.safety_override import SafetyOverride, safety_override
         from kiro_crew.slack.handler import is_yolo_mode, set_yolo_mode
 
         set_yolo_mode(True)
         so = safety_override()
-        assert so._expires_at > 0
-        # Expires after TTL lapses
-        with patch("time.monotonic", return_value=so._expires_at + 1):
-            assert not is_yolo_mode(), "Config YOLO must expire after 24h"
+        assert so.is_permanent is True
+        base = time.monotonic()
+        with patch(
+            "kiro_crew.safety_override.time.monotonic",
+            return_value=base + SafetyOverride._MAX_TTL + 60,
+        ):
+            assert is_yolo_mode(), "Config-declared YOLO must not expire"
 
     def test_disable_clears_active_state(self) -> None:
         from kiro_crew.safety_override import safety_override

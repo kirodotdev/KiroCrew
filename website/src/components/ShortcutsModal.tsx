@@ -1,13 +1,25 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useEffect, useState } from 'react'
 import { X, Keyboard } from 'lucide-react'
-import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY } from '../hooks/useKeyboardShortcuts'
+import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUT_GROUPS, shortcutGroupLabel, shortcutLabel, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY } from '../hooks/useKeyboardShortcuts'
+import { useQuickSearchShortcut } from '../hooks/useQuickSearchShortcut'
+import { formatQuickSearchKeys } from '../lib/quickSearchShortcut'
 import { isElectron } from '../lib/electron'
 import { Toggle } from './ui'
 
 import { i18nT } from '../i18n/t'
-/** Shortcut group headings, in display order. Shared with Settings → Shortcuts. */
-export const SHORTCUT_GROUPS = ['Chat Navigation', 'Panel Navigation', 'Actions', 'Remote Crews'] as const
+/**
+ * Shortcut group ids + heading resolver, re-exported from the hook that owns
+ * them.
+ *
+ * `useKeyboardShortcuts` is the single source of truth: `SHORTCUT_GROUPS` is the
+ * canonical id set and display order, and the ids are the discriminant matched
+ * against `ShortcutDef.group` in `groupShortcuts()` below — never display copy.
+ * The heading is resolved by `shortcutGroupLabel()` at render. They are re-exported
+ * here because `Settings → Shortcuts` (`pages/settings/ShortcutsPanel.tsx`) imports
+ * the group list from this module.
+ */
+export { SHORTCUT_GROUPS, shortcutGroupLabel }
 
 export function Kbd({ children }: { children: string }) {
   return <kbd className="inline-flex items-center justify-center min-w-[24px] h-6 px-1.5 rounded-md bg-bg border border-border text-[12px] font-mono font-medium text-text-strong shadow-sm">{children}</kbd>
@@ -44,7 +56,7 @@ export function groupShortcuts(group: string, macCtrl: boolean) {
   // plain browser those chords are reserved for browser tab switching and the
   // handler never binds (see useInstanceShortcuts). Don't advertise a binding
   // the host environment will steal.
-  if (group === 'Remote Crews' && !isElectron) return []
+  if (group === 'remote-crews' && !isElectron) return []
   return DEFAULT_SHORTCUTS.filter(s => s.group === group).map(s => {
     // When Mac user toggles back to Alt+digit, adjust the display
     if (IS_MAC && !macCtrl && s.id.startsWith('chat-') && s.ctrl) {
@@ -65,22 +77,57 @@ export function ShortcutRow({ label, keys }: { label: string; keys: string[] }) 
 }
 
 /**
+ * Render a sequence of key caps. `plus` inserts a "+" between caps (a chord like
+ * ⌘ + K); without it the caps sit adjacent (the double-⇧ gesture). The cap
+ * strings come from {@link formatQuickSearchKeys} / {@link formatChordKeys} —
+ * dynamic values, never JSX string literals, so they carry no translatable copy.
+ */
+export function KeyCapSequence({ caps, plus }: { caps: string[]; plus?: boolean }) {
+  return (
+    <>
+      {caps.map((cap, i) => (
+        <span key={i} className="flex items-center gap-1">
+          {i > 0 && plus && <span className="text-muted text-[11px]">+</span>}
+          <Kbd>{cap}</Kbd>
+        </span>
+      ))}
+    </>
+  )
+}
+
+/**
  * Search Everywhere reference row. Its bindings live outside DEFAULT_SHORTCUTS:
- * the double-Shift sequence + ⌘K/Ctrl+K global trigger is wired in
- * useCommandPalette (not the Alt-based useKeyboardShortcuts handler), so it is
- * documented with this dedicated row.
+ * the activation gesture is wired in useCommandPalette (not the Alt-based
+ * useKeyboardShortcuts handler), so it is documented with this dedicated row.
+ *
+ * The caps reflect the user's configured preset live (edited in
+ * Settings → Shortcuts): the primary gesture, plus the ⌘K / Ctrl+K alias in
+ * `double-shift` mode where that alias stays active. A `custom` mode awaiting a
+ * recorded chord shows the record prompt.
  */
 export function SearchEverywhereRow() {
+  const { config } = useQuickSearchShortcut()
+  const caps = formatQuickSearchKeys(config)
+  // ⌘K / Ctrl+K stays live as an alias in double-shift mode (see
+  // useCommandPalette), so advertise it alongside the primary gesture.
+  const showAlias = config.mode === 'double-shift'
   return (
     <div className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors">
       <span className="text-[13px] text-text">{i18nT('components.shortcutsModal.search_everywhere')}</span>
       <span className="flex items-center gap-1">
-        <Kbd>{IS_MAC ? '⇧' : 'Shift'}</Kbd>
-        <Kbd>{IS_MAC ? '⇧' : 'Shift'}</Kbd>
-        <span className="text-muted text-[11px] mx-1">{i18nT('components.shortcutsModal.or')}</span>
-        <Kbd>{IS_MAC ? '⌘' : 'Ctrl'}</Kbd>
-        <span className="text-muted text-[11px]">+</span>
-        <Kbd>{i18nT('components.shortcutsModal.k')}</Kbd>
+        {caps.length > 0 ? (
+          <KeyCapSequence caps={caps} plus={config.mode !== 'double-shift'} />
+        ) : (
+          <span className="text-muted text-[11px]">{i18nT('pages.settings.shortcutsPanel.record_prompt')}</span>
+        )}
+        {showAlias && (
+          <>
+            <span className="text-muted text-[11px] mx-1">{i18nT('components.shortcutsModal.or')}</span>
+            <Kbd>{IS_MAC ? '⌘' : 'Ctrl'}</Kbd>
+            <span className="text-muted text-[11px]">+</span>
+            <Kbd>{i18nT('components.shortcutsModal.k')}</Kbd>
+          </>
+        )}
       </span>
     </div>
   )
@@ -114,10 +161,10 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
           if (entries.length === 0) return null
           return (
             <div key={group} className="mb-5 last:mb-0">
-              <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{group}</div>
+              <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{shortcutGroupLabel(group)}</div>
               <div className="grid gap-1">
                 {entries.map(s => (
-                  <ShortcutRow key={s.id} label={s.label} keys={formatShortcut(s).split(' + ')} />
+                  <ShortcutRow key={s.id} label={shortcutLabel(s)} keys={formatShortcut(s).split(' + ')} />
                 ))}
               </div>
             </div>

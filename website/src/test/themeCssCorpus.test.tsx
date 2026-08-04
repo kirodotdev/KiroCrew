@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-// Shared-corpus guard for the two theme-CSS parsers (PR #107 arbiter item):
+// Shared-corpus guard for the two theme-CSS parsers:
 // this file asserts the `runtimeKeeps` column of the SAME fixture the backend
 // asserts `installAccepts` against (test/test_theme_install.py
 // ::TestCssParserCorpus), so any future parser drift fails a test, not a user.

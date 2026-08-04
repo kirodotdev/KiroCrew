@@ -49,8 +49,8 @@ _GLOBAL_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
 
 # Max per-request changes accepted by /api/mcp/apply. The capability-manager
 # uninstalls run OFF the MCP file lock (deferred, bounded-concurrent, under one
-# phase deadline), so the cap no longer guards lock-hold time — it bounds
-# request latency and memory (result list size) for a single apply call. The
+# phase deadline), so the cap bounds request latency and memory (result list
+# size) for a single apply call rather than lock-hold time. The
 # dashboard applies at most one change per visible server, so this is generous.
 _MCP_APPLY_MAX_CHANGES = 200
 
@@ -518,7 +518,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # consent-disabled servers on purpose (probing spawns the process), so a
     # disabled row can never enter _mcp_probe_cache — while list_servers()
     # deliberately returns it so the UI can render the row. Comparing the
-    # unfiltered list against the cache therefore treated every disabled
+    # unfiltered list against the cache would treat every disabled
     # server as "new" on EVERY request, bypassing the cache TTL and leaving a
     # full spawn fan-out permanently in flight for anyone with one disabled
     # server. Applying probe_all's own filter here keeps the freshness check
@@ -1072,8 +1072,8 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home" and
-# issue #874; dashboard/handlers/usage.py is the reference implementation.
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
 _KIROCREW_MCP_JSON: Path | None = None
 
 
@@ -1506,7 +1506,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
     #      removal is the LAST step, under the lock below). If a concurrent apply
     #      re-adds the same server, it can't leave persisted MCP config pointing
     #      at an already-removed package — the config write is serialized under
-    #      the lock and is last-writer-wins (TOCTOU fix, GPT 5.6 HIGH).
+    #      the lock and is last-writer-wins (TOCTOU fix).
     # Package-first flips the partial-failure DIRECTION toward the harmful one
     # (package gone, config persists → the server fails at every subsequent
     # session start), so BOTH phases run inside one outer try/finally: on ANY

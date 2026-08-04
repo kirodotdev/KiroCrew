@@ -148,12 +148,34 @@ _CI_ENV_VARS = (
     "TEAMCITY_VERSION",
 )
 
-# Distribution channel, stamped at build time by the packaging scripts. An
-# un-stamped build reports "source" (the git-clone path). Clamped to this fixed
-# set so the field can never carry a free-form value from the environment.
+# Distribution channel: which install path a running copy came from. Clamped to
+# this fixed set so the field can never carry a free-form value.
+#
+# Resolution order is BAKED MODULE first, then env var, then "source".
+#
+# The baked module (``_build_info.py``, written into the package tree by each
+# packaging path) is authoritative because it is the only source a running
+# install cannot change. ``KIROCREW_DISTRIBUTION`` is inherited by every child
+# process and settable by anyone with a shell, so a stray export in a user's
+# profile would silently relabel that host's daily count. The env var is kept
+# BELOW the baked value as a build/test override for packaging paths that have
+# no staging step of their own.
+#
+# "source" is the git-clone path and the correct answer for an unstamped tree,
+# so it is the default rather than an "unknown" bucket.
 DIST_ENV = "KIROCREW_DISTRIBUTION"
 KNOWN_DISTRIBUTIONS = frozenset({"dmg", "appimage", "wheel", "source", "docker"})
 DEFAULT_DISTRIBUTION = "source"
+
+# Optional dependency: ``_build_info`` exists only in a packaged artifact, so
+# ImportError is the normal case in a checkout, not an error. Resolved once at
+# import and held in a module-level binding, which is also the seam tests patch;
+# writing a real file into the installed package would be shared mutable state
+# across xdist workers.
+try:
+    from ._build_info import DISTRIBUTION as _BAKED_DISTRIBUTION  # type: ignore[import-not-found]
+except ImportError:
+    _BAKED_DISTRIBUTION = ""
 
 # Fallback when a version string carries no parseable release number.
 UNKNOWN_VERSION = "unknown"
@@ -214,8 +236,27 @@ def is_default_home() -> bool:
         return False
 
 
+def baked_distribution() -> str:
+    """Return the distribution stamped into the package tree, or "".
+
+    Reads the module-level :data:`_BAKED_DISTRIBUTION`, so tests set that
+    binding rather than writing a real file into the installed package. A value
+    outside :data:`KNOWN_DISTRIBUTIONS` yields "" so the caller falls through
+    instead of putting an unclamped value on the wire.
+    """
+    raw = str(_BAKED_DISTRIBUTION or "").strip().lower()
+    return raw if raw in KNOWN_DISTRIBUTIONS else ""
+
+
 def distribution() -> str:
-    """Return the build's distribution channel, clamped to the known set."""
+    """Return the build's distribution channel, clamped to the known set.
+
+    Baked module wins over the environment: see :data:`DIST_ENV` for why a
+    running install must not be able to relabel its own count.
+    """
+    baked = baked_distribution()
+    if baked:
+        return baked
     raw = (os.environ.get(DIST_ENV, "") or "").strip().lower()
     return raw if raw in KNOWN_DISTRIBUTIONS else DEFAULT_DISTRIBUTION
 

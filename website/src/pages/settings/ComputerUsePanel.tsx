@@ -20,14 +20,32 @@ const GRANTED = 'granted'
 const MISSING = 'missing'
 const DARWIN = 'macos'
 
-/** Human labels for the backend's permission tokens. The raw values are wire
- *  vocabulary (`missing`, `unsupported`, `unknown`) and read as jargon in a badge;
- *  an unmapped value falls back to itself so a new backend state still renders. */
-const PERM_LABELS: Record<string, string> = {
-  granted: 'Granted',
-  missing: 'Not detected',
-  unsupported: 'Not applicable',
-  unknown: 'Could not check',
+/** Catalog KEY for each of the backend's permission tokens. The raw values are wire
+ *  vocabulary (`missing`, `unsupported`, `unknown`) and read as jargon in a badge.
+ *
+ *  Keys, not strings: this table is evaluated at module load, so an `i18nT()` call
+ *  here would freeze the boot language. The lookup happens in `permLabel()`, which
+ *  runs during render. Shaped as a flat `Record` of full literal keys, indexed
+ *  inline at the `i18nT()` call, because that is the form
+ *  `scripts/check-i18n-keys.mjs` can resolve statically. */
+const PERM_LABEL_KEY: Record<string, string> = {
+  granted: 'pages.settings.computerUsePanel.granted',
+  missing: 'pages.settings.computerUsePanel.not_detected',
+  unsupported: 'pages.settings.computerUsePanel.not_applicable',
+  unknown: 'pages.settings.computerUsePanel.could_not_check',
+}
+
+/** Localised badge text for a permission token. An unmapped value falls back to
+ *  ITSELF, so a state a newer backend invents still renders (as the raw token)
+ *  instead of blanking the badge.
+ *
+ *  `hasOwnProperty`, not `in`: the token comes off the wire, so a backend
+ *  reporting `toString` would otherwise resolve to an inherited Object.prototype
+ *  member and hand a function to i18next. */
+function permLabel(state: string): string {
+  return Object.prototype.hasOwnProperty.call(PERM_LABEL_KEY, state)
+    ? i18nT(PERM_LABEL_KEY[state])
+    : state
 }
 
 /** Permission states the backend calls TERMINAL: re-probing cannot change them.
@@ -62,8 +80,8 @@ export function permissionPollInterval(
 /** Resolve a numeric draft to the value to PUT, or `null` for "discard the edit".
  *
  *  Exported and pure so the discard rules are asserted directly rather than
- *  through a blur + async-mutation race, which is what let the empty-field bug
- *  hide: an EMPTY (or whitespace-only) field is a no-op, not a value —
+ *  through a blur + async-mutation race: an EMPTY (or whitespace-only) field is
+ *  a no-op, not a value —
  *  `Number('')` is 0, and clamping 0 to the published range yields the FLOOR, so
  *  select-all-and-retype would transiently save 1 node / 320px.
  */
@@ -82,17 +100,10 @@ export function commitNumericDraft(
   return bounded === current ? null : bounded
 }
 
-const ADVISORY = 'Not detected does not always mean unavailable — macOS attributes a permission grant to the process that launched KiroCrew, not to KiroCrew itself.'
-const LIMITS_INTRO = 'How much of a window the agent reads at once. These are cost and speed dials, not security settings — every value stays within a built-in ceiling. Leave them alone unless a window is too large to read in one pass, or screenshots feel slow.'
-const NODES_DESC = 'How many controls one window reading returns. A window with more than this gets truncated, and the agent is told so. Raise it for dense apps (a spreadsheet, an IDE); lower it to spend fewer tokens per reading.'
-const WIDTH_DESC = 'Longest edge of the screenshot, in pixels. Smaller is cheaper and faster to read; larger keeps small text legible if the agent has to fall back to the image.'
-const UNBOUNDED = 'Computer use lets the agent read any app window and send clicks and keystrokes into it. Most clicks are delivered straight to the app and leave your pointer alone, but the agent can ask to move the real pointer when a target needs it. Password fields are never read; nothing else limits which apps it may drive.'
-const CURSOR_MOTION_DESC = 'Draw a cursor that glides to each target and pulses when it clicks, so you can follow along on screen. Purely visual — it changes nothing about what the agent is allowed to do, and it only appears for clicks that move the real pointer.'
-const RESTARTED = 'Your chat sessions were restarted so this takes effect right away — Kiro reads its tool list once per session, so an open chat would not have picked it up otherwise. Your messages are still there; the agent re-reads its context on your next message.'
-/** Shown when the keystone file's app lists could not be parsed. Names the file so
- *  the fix is actionable, and says what the agent does meanwhile — an unexplained
- *  warning here would leave the operator unsure whether the feature is safe to use. */
-const POLICY_UNREADABLE = 'The app lists in computer_use.json could not be read, so they are shown empty here. The agent still refuses every action that depends on them until the file is valid JSON.'
+/* The panel's long-form copy is NOT held in module-level constants: those are
+ * evaluated once at import, which would freeze the boot language. Each string is
+ * resolved with `i18nT()` at its single JSX use site, inside the component body,
+ * so a language switch re-reads the catalog. */
 
 /** Hand a System Settings deep link to the OS.
  *
@@ -109,7 +120,7 @@ const POLICY_UNREADABLE = 'The app lists in computer_use.json could not be read,
  *
  *  Exported so the delivery mechanism is asserted directly — a regression back
  *  to `location.href` would otherwise only show up as a dead button in a
- *  packaged build, which is exactly how this shipped broken.
+ *  packaged build.
  */
 export function openSystemSettings(pane: string): void {
   // `noopener` keeps the opened context from retaining a handle on the
@@ -127,7 +138,7 @@ function PermRow({ label, state, pane }: { label: string; state: string; pane: s
     <div className="flex items-center justify-between py-1.5">
       <span className="text-[13px] text-text">{label}</span>
       <span className="flex items-center gap-2">
-        <Badge variant={variant}>{PERM_LABELS[state] ?? state}</Badge>
+        <Badge variant={variant}>{permLabel(state)}</Badge>
         {state !== GRANTED && (
           <Btn onClick={() => openSystemSettings(pane)} aria-label={`Open System Settings for ${label}`}>
             {i18nT('pages.settings.computerUsePanel.open_system_settings')} <ExternalLink className="lucide-inline" />
@@ -222,9 +233,17 @@ export function ComputerUsePanel() {
     if (bounded !== null) save({ [key]: bounded })
   }
 
+  // Platform tag on the section header, shown in EVERY state (loading, error,
+  // supported, unsupported). Computer use has a macOS-only driver — the Windows
+  // and Linux backends are typed refusals — so the panel says so up front rather
+  // than only after the reason text on an unsupported host. On macOS it still
+  // reads correctly: it tells the operator this capability does not follow them
+  // to another OS.
+  const macOnlyBadge = <Badge variant="muted">{i18nT('pages.settings.computerUsePanel.macos_only')}</Badge>
+
   if (cfgQ.isError) {
     return (
-      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={macOnlyBadge}>
         <SettingsCard>
           <div className="text-[13px] text-danger">
             {i18nT('pages.settings.computerUsePanel.could_not_load_computer_use_settings')}{' '}
@@ -237,7 +256,7 @@ export function ComputerUsePanel() {
 
   if (!cfg) {
     return (
-      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={macOnlyBadge}>
         <SettingsCard><FormSkeleton rows={['toggle', 'field', 'field']} /></SettingsCard>
       </SettingsSection>
     )
@@ -245,7 +264,7 @@ export function ComputerUsePanel() {
 
   if (!cfg.supported) {
     return (
-      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={macOnlyBadge}>
         <SettingsCard>
           <div className="text-[13px] text-muted">
             {cfg.reason || `Computer use is not available on ${cfg.platform}.`}
@@ -270,11 +289,11 @@ export function ComputerUsePanel() {
           configured", which is the opposite of what the operator wrote. */}
       {cfg.policy_error && (
         <div className="mb-4 rounded-lg border border-warn/20 bg-warn/10 p-3 animate-rise">
-          <span className="text-[13px] text-text">{POLICY_UNREADABLE}</span>
+          <span className="text-[13px] text-text">{i18nT('pages.settings.computerUsePanel.the_app_lists_in_computer_use_json_could_not_be')}</span>
         </div>
       )}
 
-      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')}>
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={macOnlyBadge}>
         <SettingsCard>
           <SettingsToggle
             label={i18nT('pages.settings.computerUsePanel.enable_computer_use')}
@@ -295,17 +314,17 @@ export function ComputerUsePanel() {
           {cfg.enabled && cfg.cursor_motion_supported && (
             <SettingsToggle
               label={i18nT('pages.settings.computerUsePanel.show_cursor_motion')}
-              description={CURSOR_MOTION_DESC}
+              description={i18nT('pages.settings.computerUsePanel.draw_a_cursor_that_glides_to_each_target_and_pul')}
               checked={cfg.cursor_motion}
               onChange={v => save({ cursor_motion: v })}
               disabled={busy}
             />
           )}
           {restarted && (
-            <div className="pt-1 text-[13px] text-muted animate-rise">{RESTARTED}</div>
+            <div className="pt-1 text-[13px] text-muted animate-rise">{i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted_so_this_takes')}</div>
           )}
           {cfg.enabled && (
-            <div className="pt-1 text-[13px] text-muted">{UNBOUNDED}</div>
+            <div className="pt-1 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.computer_use_lets_the_agent_read_any_app_window')}</div>
           )}
         </SettingsCard>
       </SettingsSection>
@@ -315,7 +334,7 @@ export function ComputerUsePanel() {
           <SettingsCard>
             <div className="flex items-center gap-1.5 pb-1 text-[13px] text-muted">
               <span>{i18nT('pages.settings.computerUsePanel.advisory_only')}</span>
-              <InfoTip text={ADVISORY} />
+              <InfoTip text={i18nT('pages.settings.computerUsePanel.not_detected_does_not_always_mean_unavailable_ma')} />
             </div>
             <PermRow label={i18nT('pages.settings.computerUsePanel.accessibility')} state={cfg.permissions.accessibility} pane={PANE_ACCESSIBILITY} />
             <PermRow label={i18nT('pages.settings.computerUsePanel.screen_recording')} state={cfg.permissions.screen_recording} pane={PANE_SCREEN_RECORDING} />
@@ -328,11 +347,11 @@ export function ComputerUsePanel() {
 
       <SettingsSection title={i18nT('pages.settings.computerUsePanel.limits')}>
         <SettingsCard>
-          <div className="pb-2 text-[13px] text-muted">{LIMITS_INTRO}</div>
+          <div className="pb-2 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.how_much_of_a_window_the_agent_reads_at_once_the')}</div>
           <SettingsInput
             label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
             aria-label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
-            description={NODES_DESC}
+            description={i18nT('pages.settings.computerUsePanel.how_many_controls_one_window_reading_returns_a_w')}
             type="number"
             value={draftNodes ?? String(cfg.max_tree_nodes)}
             onChange={setDraftNodes}
@@ -342,7 +361,7 @@ export function ComputerUsePanel() {
           <SettingsInput
             label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
             aria-label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
-            description={WIDTH_DESC}
+            description={i18nT('pages.settings.computerUsePanel.longest_edge_of_the_screenshot_in_pixels_smaller')}
             type="number"
             value={draftWidth ?? String(cfg.screenshot_max_px)}
             onChange={setDraftWidth}

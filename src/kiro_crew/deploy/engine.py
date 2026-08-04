@@ -43,7 +43,7 @@ DEFAULT_REGION = "us-west-2"
 _BUCKET_RAND_BYTES = 6  # -> 12 hex chars
 
 # AccessDenied → the exact IAM statement Sid the user must add (design §12 / Q3).
-# Maps an aws action prefix to a human hint pointing at the cycle-006 policy Sid.
+# Maps an aws action prefix to a human hint pointing at the policy Sid.
 _ACTION_STATEMENT_HINTS: dict[str, str] = {
     "s3:CreateBucket": "S3BucketLevel",
     "s3:PutBucketPublicAccessBlock": "S3BucketLevel",
@@ -153,7 +153,7 @@ def _checked(args: list[str], profile: str, *, action: str, timeout: int = 30) -
 def find_site_by_tag(site_id: str, profile: str, region: str = DEFAULT_REGION) -> Optional[dict[str, str]]:
     """Resolve an existing site's bucket + distribution by the kirocrew:site tag.
 
-    R38: discovery is a TRUST decision — deploy syncs with --delete, recall
+    Discovery is a TRUST decision — deploy syncs with --delete, recall
     empties, destroy deletes whatever this returns. Three hardenings:
     (1) require BOTH kirocrew:site=<id> AND kirocrew:managed=true (filters
     are ANDed by get-resources), so an unrelated bucket that merely carries
@@ -331,7 +331,7 @@ def put_oac_bucket_policy(bucket: str, distribution_arn: str, profile: str) -> N
                 "Resource": f"arn:aws:s3:::{bucket}/*",
                 "Condition": {"StringEquals": {"AWS:SourceArn": distribution_arn}},
             },
-            # R40 F2: the control manifest lives beside the published site
+            # The control manifest lives beside the published site
             # content, so without this Deny it is world-readable through the
             # distribution (leaks local username + bucket/distribution/OAC
             # ids). Explicitly deny CloudFront the manifest and quarantine
@@ -519,9 +519,9 @@ def _delete_distribution(dist_id: str, profile: str) -> None:
 def _delete_oac_for_site(site_id: str, profile: str) -> bool:
     """Best-effort: delete the site's OAC (named deploy-web-<site_id>-*).
 
-    R39 F1: the DEPLOY policy no longer grants account-wide
+    The DEPLOY policy does not grant account-wide
     cloudfront:DeleteOriginAccessControl (a compromised deploy session could
-    delete every OAC in the account). Cleanup is now owned by the reaper role;
+    delete every OAC in the account). Cleanup is owned by the reaper role;
     when this best-effort attempt is denied, we return False so destroy()
     reports the deferred cleanup honestly instead of claiming completeness.
     Returns True when no OAC remains for the site, False when cleanup was
@@ -531,7 +531,7 @@ def _delete_oac_for_site(site_id: str, profile: str) -> bool:
         out = _checked(["cloudfront", "list-origin-access-controls", "--output", "json"],
                        profile, action="cloudfront:ListOriginAccessControls")
         items = (json.loads(out).get("OriginAccessControlList", {}) or {}).get("Items", [])
-        # R13 F4: exact-suffix match — bare prefix cross-matches overlapping
+        # Exact-suffix match — a bare prefix cross-matches overlapping
         # site ids (see reaper_lambda). Names: <prefix>-<6 hex>.
         oac_re = re.compile(re.escape(_oac_name_prefix(site_id)) + r"-[0-9a-f]{6}$")
         for item in items:

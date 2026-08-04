@@ -1,11 +1,11 @@
 // Feature: chat-virtualizer — a FAR jump whose target mounts slowly still lands
 // on the first navigation, driven through ChatPage.
 //
-// GPT 5.6 HIGH (round 13): `pollRowSettled` has thorough unit tests, but the
-// CALL SITE in ChatPage was untested — reverting it to the retired ~30-frame
-// rAF ceiling left every helper test green while restoring the original bug: the
-// first click on a far target silently no-op'd (the row had not committed to the
-// DOM yet) and only a second click worked, because the row was cached by then.
+// This pins the CALL SITE in ChatPage, not just `pollRowSettled`'s own unit
+// tests: capping the poll at a ~30-frame rAF ceiling leaves every helper test
+// green while the first click on a far target silently no-ops (the row has not
+// committed to the DOM yet) and only a second click works, because the row is
+// cached by then.
 //
 // This drives the real production path: a `?msg=` deep link on cold load calls
 // ChatPage's own `navToDisplayIndex`, whose poll must survive the target row
@@ -254,7 +254,7 @@ describe('ChatPage — a far jump whose row mounts late still lands on the first
     expect(container.querySelector(`[data-display-index="${TARGET_DISPLAY_INDEX}"]`)).toBeNull()
 
     recorded.length = 0
-    // Far longer than the retired ~30-frame ceiling.
+    // Far longer than the ~30-frame ceiling.
     flushFrames(45)
     // Nothing may have been scrolled while the row was missing — in particular
     // no teleport to top:0 (the "far jump jumps to the top" bug).

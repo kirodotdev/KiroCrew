@@ -206,8 +206,7 @@ def _set_access_cookie(
 
     No-op when the session is already expired (max_age <= 0) — we never
     want to silently extend a stale session by falling back to the full
-    TTL via the ``or`` operator (which fires because 0 is falsy). Per
-    a security review finding.
+    TTL via the ``or`` operator (which fires because 0 is falsy).
     """
     port = request.app.get("port", 7777)
     cookie_name = f"mc_token_{_cookie_port_from_host(request, port)}"
@@ -317,7 +316,6 @@ def _audit(
         )
     except Exception as exc:  # pragma: no cover
         # SEL must never block auth flows, but log the failure so it's observable.
-        # Per a security review finding.
         logger.debug("refresh_tokens: SEL audit failed: %s", exc)
 
 
@@ -451,7 +449,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         # revocation outlives any token in this chain.
         # Wrap in to_thread: revoke_chain does sync file I/O (mode=0o600
         # atomic-rename writes to refresh_chains.json) — must not block
-        # the event loop. Per kirocrew-cr-reviewer rule 4d5.
+        # the event loop.
         await asyncio.to_thread(
             state.revoke_chain, chain_id, now + MAX_REFRESH_TTL_SECS
         )
@@ -490,7 +488,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
 
     # Wrap mark_consumed in to_thread: it does sync file I/O
     # (atomic-rename write to ~/.kiro/crew/refresh_chains.json) — must
-    # not block the event loop. Per kirocrew-cr-reviewer rule 4d5.
+    # not block the event loop.
     await asyncio.to_thread(
         state.mark_consumed,
         jti,
@@ -506,12 +504,6 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     _expire_foreign_port_cookies(resp, request)
     _audit(user_id, "refresh_token_use", "ok")
     return resp
-
-
-# Note: the initial-mint refresh-cookie attach helper used to live here as
-# `attach_refresh_cookie_to_response`. It was inlined into
-# token_auth.py's middleware so token_auth.py no longer needs an in-method
-# import of this module — top-level imports only, no circular dependency.
 
 
 async def api_auth_logout(request: web.Request) -> web.Response:

@@ -19,11 +19,11 @@ describe('UserMessage', () => {
   })
 
   // the bubble must NOT force white-space: pre-wrap. User-typed
-  // line breaks (Shift+Enter) are now preserved at the markdown level —
+  // line breaks (Shift+Enter) are preserved at the markdown level —
   // renderUserContentCb renders through MarkdownRenderer with `softBreaks`,
-  // turning soft breaks into <br>. Container pre-wrap was removed because it
-  // made react-markdown's inter-block newline text nodes render as literal
-  // blank lines and inflated the gaps between list items and paragraphs.
+  // turning soft breaks into <br>. Container pre-wrap is omitted because it
+  // makes react-markdown's inter-block newline text nodes render as literal
+  // blank lines and inflates the gaps between list items and paragraphs.
   it('does not force white-space: pre-wrap on the bubble', () => {
     const { container } = render(<UserMessage content={'line one\nline two'} renderContent={renderContent} />)
     const bubble = container.querySelector('.msg-content') as HTMLElement
@@ -175,7 +175,7 @@ describe('UserMessage', () => {
 
   // Steer UX: a message injected mid-turn (meta.steer, set by the steer_push WS
   // echo) must be visually distinct from a normal message so the user can see the
-  // steer landed. Regression guard: before this, UserMessage ignored meta.steer.
+  // steer landed.
   it('renders a "Steered into the running turn" badge for a steered message', () => {
     render(<UserMessage content="the job id is 50ec7087" meta={{ steer: true }} messageTs="steer-ts-1" renderContent={renderContent} />)
     expect(screen.getByText('Steered into the running turn')).toBeInTheDocument()

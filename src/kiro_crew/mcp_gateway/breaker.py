@@ -1,4 +1,4 @@
-"""Circuit breaker for fast-dying MCP backends (Mesh f95bfb2f).
+"""Circuit breaker for fast-dying MCP backends.
 
 When a backend repeatedly crashes within seconds of spawning, the spawn
 loop becomes a livelock: every register triggers a respawn that triggers

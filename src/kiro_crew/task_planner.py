@@ -261,7 +261,7 @@ async def decompose(
             if event.kind == EVENT_TEXT_CHUNK:
                 text += event.text
             elif event.kind == EVENT_PERMISSION_REQUEST:
-                # CSE SEC-006: gate decomposition-phase tool calls through the
+                # Gate decomposition-phase tool calls through the
                 # same deny-list/hook check used during execution, instead of
                 # unconditionally approving. A prompt-injection embedded in the
                 # spec content could otherwise trigger dangerous tools (fs/exec)

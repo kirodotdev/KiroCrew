@@ -24,6 +24,37 @@ const mockApi = vi.hoisted(() => ({
   createChatSlot: vi.fn(),
 }))
 
+/* SimpleSelect is stubbed for the same reason as in CrewEditorSelect.test.tsx:
+   reaching this modal means driving a Radix Select from inside a Radix Dialog,
+   and Radix commits discrete events with `ReactDOM.flushSync(...)`, which React
+   refuses inside Testing Library's `act()` ("Should not already be working").
+   The select is only the DOOR to the modal here — the modal's own lifecycle is
+   what these tests are about. The real Radix path is driven end-to-end by
+   scripts/verify-crews-dialog-select.mjs. */
+vi.mock('../components/SimpleSelect', () => ({
+  default: ({
+    options, value, onChange, action, clearLabel, 'aria-label': ariaLabel,
+  }: {
+    options: string[]
+    value: string
+    onChange: (v: string) => void
+    action?: { label: string; onSelect: () => void }
+    clearLabel?: string
+    'aria-label'?: string
+  }) => (
+    <div>
+      <button type="button" role="combobox" aria-label={ariaLabel} aria-expanded={false}>{value || clearLabel}</button>
+      {clearLabel && (
+        <button type="button" role="option" aria-selected={value === ''} onClick={() => onChange('')}>{clearLabel}</button>
+      )}
+      {options.map(o => (
+        <button key={o} type="button" role="option" aria-selected={o === value} onClick={() => onChange(o)}>{o}</button>
+      ))}
+      {action && <button type="button" onClick={action.onSelect}>{action.label}</button>}
+    </div>
+  ),
+}))
+
 vi.mock('../api/client', () => ({ api: mockApi }))
 
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
@@ -104,19 +135,21 @@ describe('WorkspaceModal — StyledSelect trigger and modal lifecycle', () => {
     await waitFor(() => expect(mockApi.workspaces).toHaveBeenCalled())
     await openModalViaWorkspaceDropdown()
     expect(screen.getByText('Create Workspace')).toBeInTheDocument()
-    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByText('Create Workspace')).not.toBeInTheDocument())
   })
 
-  it('closes modal on backdrop click', async () => {
+  it('closes modal from its close button', async () => {
     renderPage()
     await waitFor(() => expect(mockApi.workspaces).toHaveBeenCalled())
     await openModalViaWorkspaceDropdown()
     expect(screen.getByText('Create Workspace')).toBeInTheDocument()
-    // The dismiss backdrop is an accessible role="button" labelled "Close dialog"
-    // (a Clickable behind the dialog), not the outer positioning wrapper.
-    const backdrop = screen.getByRole('button', { name: 'Close dialog' })
-    fireEvent.click(backdrop)
+    // Radix supplies the overlay and dismisses on an outside POINTERDOWN, so the
+    // old hand-rolled `Clickable` backdrop (a role="button" named "Close dialog")
+    // no longer exists. The explicit close is asserted here; outside-click
+    // dismissal is a Radix behaviour, exercised in the browser script.
+    const modal = screen.getByRole('dialog', { name: 'Create Workspace' })
+    fireEvent.click(within(modal).getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(screen.queryByText('Create Workspace')).not.toBeInTheDocument())
   })
 })

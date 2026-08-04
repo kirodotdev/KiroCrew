@@ -6,10 +6,9 @@ import { safeSetSessionItem } from './safeStorage'
  *
  * `PREFILL_STORAGE_KEY` is the sessionStorage channel ChatPage's slot-restore
  * effect honors: `{ slotKey, prompt, ts }` seeds the composer when the slot
- * becomes active (30s TTL). It historically lived in ChatPage; it's exported
- * from here so non-page modules (the popout nav-intent applier below) can
- * write it without importing a page component. ChatPage re-exports it for its
- * existing importers.
+ * becomes active (30s TTL). It's exported from here so non-page modules (the
+ * popout nav-intent applier below) can write it without importing a page
+ * component. ChatPage re-exports it for its existing importers.
  */
 export const PREFILL_STORAGE_KEY = 'kirocrew_prefill'
 

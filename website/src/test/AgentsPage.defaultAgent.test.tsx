@@ -1,10 +1,9 @@
 /**
  * The Agent Templates page's set-default control.
  *
- * This existed before as an unlabeled star glyph at the head of each row, and was
- * reported as a missing feature — a user could not tell the control was a control. The
- * assertions below are about the LABEL as much as the wiring: they fail if the button
- * loses its text, which is the regression that produced the original report.
+ * The assertions below are about the LABEL as much as the wiring: they fail if
+ * the button loses its text, keeping the control recognisable as a control
+ * rather than a bare glyph.
  */
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -17,7 +16,6 @@ const mockApi = vi.hoisted(() => ({
   mcpProbeCache: vi.fn(),
   defaultAgent: vi.fn(),
   agentDetail: vi.fn(),
-  agentMetadata: vi.fn(),
   skills: vi.fn(),
   agentPatch: vi.fn(),
   spawnClear: vi.fn(),
@@ -63,7 +61,6 @@ beforeEach(() => {
   mockApi.sessionsUsage.mockResolvedValue({ usage: null })
   mockApi.agentsInstalled.mockResolvedValue([mkAgent('kirocrew'), mkAgent('fable')])
   mockApi.mcpProbeCache.mockResolvedValue([])
-  mockApi.agentMetadata.mockResolvedValue({ content: '' })
   mockApi.skills.mockResolvedValue([])
   mockApi.agentDetail.mockResolvedValue({ ...mkAgent('kirocrew'), unmanaged_skills: [] })
   mockApi.setDefaultAgent.mockResolvedValue({ ok: true, default_agent: '' })

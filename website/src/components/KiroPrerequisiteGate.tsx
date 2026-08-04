@@ -367,9 +367,9 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // signed-out CLI surfaces as an actionable `kiro-cli login` error card in the
   // transcript, which is the ONLY sign-out signal the dashboard shows.
   //
-  // This also removes the first-run flash at its root: this window used to
-  // render the setup-branded shell, so every launch showed first-run setup for
-  // as long as the gateway's two kiro-cli subprocesses took to answer.
+  // This also removes the first-run flash at its root: rendering the
+  // setup-branded shell here would show first-run setup on every launch for as
+  // long as the gateway's two kiro-cli subprocesses take to answer.
   if (statusQuery.isPending) {
     return <>{children}</>
   }

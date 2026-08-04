@@ -92,9 +92,7 @@ _STEER_MARKER_RE = re.compile(r"\[STEERING\b[^\]]*\]", re.IGNORECASE)
 # The dashboard renders this summary as its "Steered — …" chip; we prefer it
 # for the Telegram chip too (the user's own words are already on screen as
 # their message — the summary is the only NEW information).
-_STEER_SUMMARY_RE = re.compile(
-    r"\[STEERING\s+steer-[0-9a-f]+\s*:\s*([^\]]*)\]", re.IGNORECASE
-)
+_STEER_SUMMARY_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f]+\s*:\s*([^\]]*)\]", re.IGNORECASE)
 
 
 def _strip_steering(text: str) -> str:
@@ -165,7 +163,14 @@ def build_inline_keyboard(options: list[str]) -> dict | None:
 
 
 def _split_text(text: str, limit: int) -> list[str]:
-    """Split text into <=``limit`` chunks, preferring paragraph boundaries."""
+    """Split text into <=``limit`` chunks, preferring paragraph boundaries.
+
+    The continuation strips only NEWLINES at the boundary, never horizontal
+    whitespace: a bare ``lstrip()`` ate the leading indentation of the first line
+    of every continuation chunk, silently re-indenting split code blocks. Render-
+    aware splitting makes chunking fire on more shapes, so that pre-existing
+    corruption became much easier to hit.
+    """
     if limit <= 0 or len(text) <= limit:
         return [text] if text else []
     chunks: list[str] = []
@@ -179,7 +184,7 @@ def _split_text(text: str, limit: int) -> list[str]:
         if split_at < limit // 4:
             split_at = limit
         chunks.append(text[:split_at].rstrip())
-        text = text[split_at:].lstrip()
+        text = text[split_at:].lstrip("\n")
     return chunks
 
 
@@ -238,9 +243,7 @@ def _md_to_telegram_html(text: str) -> str:
     text = _FENCE_RE.sub(
         lambda m: _keep(f"<pre>{html.escape(m.group(1).rstrip(chr(10)))}</pre>"), text
     )
-    text = _INLINE_CODE_RE.sub(
-        lambda m: _keep(f"<code>{html.escape(m.group(1))}</code>"), text
-    )
+    text = _INLINE_CODE_RE.sub(lambda m: _keep(f"<code>{html.escape(m.group(1))}</code>"), text)
     text = html.escape(text)
     text = _HEADING_RE.sub(lambda m: f"<b>{m.group(1).strip()}</b>", text)
     text = _BOLD_STAR_RE.sub(lambda m: f"<b>{m.group(1)}</b>", text)
@@ -262,6 +265,81 @@ def _md_to_telegram_html(text: str) -> str:
     )
     text = re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], text)
     return text
+
+
+#: Minimum source-chunk budget when shrinking to fit the rendered cap. Below
+#: this, shrinking stops making progress; the caller's tag-safe truncation and
+#: plaintext fallback are the backstop for genuinely indivisible content.
+_MIN_SPLIT_LIMIT = 400
+
+
+def _rendered_len(source: str) -> int:
+    """Length of ``source`` once converted to Telegram HTML."""
+    return len(_md_to_telegram_html(source))
+
+
+#: Markup that makes ``_md_to_telegram_html`` EMIT TAGS, and therefore grow the
+#: text by an amount no per-character arithmetic can bound: a line-leading ``>``
+#: (blockquote) or ``#`` (heading), or any ``*``/``_``/backtick/``[`` (bold,
+#: italic, code span, link). Cheap single-pass scan; used only as a gate.
+_MARKUP_HINT_RE = re.compile(r"(?m)^[ \t]{0,3}[>#]|[*_`\[]")
+
+
+def _may_exceed_rendered(source: str, cap: int) -> bool:
+    """Conservative "could this render past ``cap``?" gate.
+
+    A ``False`` MUST mean "provably fits" -- it is the only case the caller skips
+    the authoritative ``_rendered_len`` check for, so under-estimating ships
+    oversize HTML. Over-returning ``True`` is always safe: it costs one real
+    render on a buffer that is nowhere near the cap.
+
+    Per-construct growth constants were tried and rejected as whack-a-mole --
+    blockquote, heading, bold/italic and code spans each need their own term,
+    the measured inflation reaches 3.75x (``"`x` " * 700``: 2800 source chars ->
+    10500 rendered), and any new converter rule silently reintroduces
+    unsoundness. Instead trust the cheap arithmetic ONLY for prose containing no
+    tag-producing markup at all, and measure everything else for real.
+    """
+    if len(source) >= cap:
+        return True
+    if _MARKUP_HINT_RE.search(source):
+        return True  # tags will be emitted -- refuse to guess, measure instead
+    # Tag-free prose: the only growth left is ``html.escape``, which adds at most
+    # 5 chars per escape-worthy character (``'`` -> ``&#x27;``).
+    escapes = sum(source.count(c) for c in ("&", "<", ">", '"', "'"))
+    return len(source) + 5 * escapes >= cap
+
+
+def _split_markdown_bounded(text: str, rendered_limit: int) -> list[str]:
+    """Split markdown so every chunk's RENDERED HTML fits ``rendered_limit``.
+
+    ``_split_markdown`` budgets the *source*, but ``_md_to_telegram_html``
+    inflates it: ``html.escape`` turns ``&`` into ``&amp;`` (+4) and ``<`` into
+    ``&lt;`` (+3), plus the tags we add. A code-heavy chunk (a diff, JSON,
+    ``Map<String,Object>``, shell redirects) therefore renders well past a source
+    budget that looked safe -- and Telegram rejects the whole message. Measure
+    the rendered form and shrink the source budget until it actually fits.
+
+    Shrinks all the way down to ``_MIN_SPLIT_LIMIT`` instead of stopping after a
+    fixed pass count: giving up early returns chunks that are still oversize, and
+    the client backstop then truncates them, silently dropping content. Only at
+    the floor -- where the content is genuinely indivisible -- may oversize chunks
+    be returned.
+    """
+    src_limit = max(_MIN_SPLIT_LIMIT, rendered_limit)
+    chunks = _split_markdown(text, src_limit)
+    while True:
+        worst = max((_rendered_len(c) for c in chunks), default=0)
+        if worst <= rendered_limit or src_limit <= _MIN_SPLIT_LIMIT:
+            return chunks
+        # Shrink proportionally to the observed inflation, capped so a
+        # barely-over chunk still makes real progress.
+        scaled = int(src_limit * (rendered_limit / worst) * 0.95)
+        new_limit = max(_MIN_SPLIT_LIMIT, min(scaled, src_limit - 128))
+        if new_limit >= src_limit:
+            new_limit = _MIN_SPLIT_LIMIT  # guarantee progress to the floor
+        src_limit = new_limit
+        chunks = _split_markdown(text, src_limit)
 
 
 def _strip_md(text: str) -> str:
@@ -383,9 +461,7 @@ class TelegramRenderer(Renderer):
         try:
             while not self._closed:
                 try:
-                    await self._client.send_typing(
-                        self._chat_id, message_thread_id=self._thread_id
-                    )
+                    await self._client.send_typing(self._chat_id, message_thread_id=self._thread_id)
                 except Exception:
                     logger.debug("Telegram: typing refresh failed", exc_info=True)
                 await asyncio.sleep(_TYPING_REFRESH_S)
@@ -468,13 +544,33 @@ class TelegramRenderer(Renderer):
         ``[STEERING …`` / ``[OPTIONS …`` fragment — is detached first and
         reattached to the surviving tail, so length splitting can never cut a
         directive in half (which would leak protocol fragments and lose the
-        steer rotation / options keyboard)."""
+        steer rotation / options keyboard).
+
+        Rotation triggers on the SOURCE budget or on the RENDERED HTML cap,
+        whichever binds first: a segment can sit under the source budget and
+        still render past Telegram's hard limit once ``html.escape`` inflates
+        it."""
         limit = self._limit()
+        rendered_cap = self._rendered_limit()
         raw = "".join(self._buf)
         if len(raw) <= limit:
-            return
+            # Provably-small buffers skip the real render (this runs per chunk).
+            if not _may_exceed_rendered(raw, rendered_cap):
+                return
+            if _rendered_len(raw) <= rendered_cap:
+                return
         raw, protocol_suffix = split_trailing_protocol_suffix(raw)
-        chunks = _split_markdown(raw, limit)
+        chunks = _split_markdown_bounded(raw, rendered_cap)
+        # Mid-stream the source fence is often still OPEN (the model has not
+        # emitted its closing ``` yet). _split_markdown balances each chunk by
+        # appending a synthetic closer, which is right for the chunks we seal but
+        # wrong for the tail we keep streaming into: every later token would land
+        # after that closer, rendering outside <pre>, and the model's real closing
+        # fence would then show up literally. Drop it from the retained tail.
+        if chunks and raw.count("```") % 2 == 1:
+            tail = chunks[-1].rstrip()
+            if tail.endswith("```"):
+                chunks[-1] = tail[:-3].rstrip("\n")
         for ch in chunks[:-1]:
             self._buf = [ch]
             await self._seal_current()
@@ -538,12 +634,18 @@ class TelegramRenderer(Renderer):
         html_text = _md_to_telegram_html(text)
         if self._stream_mid is not None:
             ok = await self._client.edit_message(
-                self._chat_id, self._stream_mid, html_text,
-                parse_mode="HTML", reply_markup=keyboard, retry_plain=False,
+                self._chat_id,
+                self._stream_mid,
+                html_text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+                retry_plain=False,
             )
             if not ok:  # malformed HTML -> clean plaintext, never raw tags
                 ok = await self._client.edit_message(
-                    self._chat_id, self._stream_mid, _strip_md(text),
+                    self._chat_id,
+                    self._stream_mid,
+                    _strip_md(text),
                     reply_markup=keyboard,
                 )
             if ok:
@@ -553,13 +655,18 @@ class TelegramRenderer(Renderer):
             # the completed answer (and its keyboard) is never silently lost.
             self._stream_mid = None
         mid = await self._client.send_message(
-            self._chat_id, html_text, parse_mode="HTML",
-            reply_markup=keyboard, retry_plain=False,
+            self._chat_id,
+            html_text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+            retry_plain=False,
             message_thread_id=self._thread_id,
         )
         if mid is None:
             await self._client.send_message(
-                self._chat_id, _strip_md(text), reply_markup=keyboard,
+                self._chat_id,
+                _strip_md(text),
+                reply_markup=keyboard,
                 message_thread_id=self._thread_id,
             )
 
@@ -581,9 +688,7 @@ class TelegramRenderer(Renderer):
         self._tool = self._last_tool
         await self._stream_live(force=True)
 
-    async def on_prompt_choice(
-        self, options: list[dict[str, Any]], request_id: str | int
-    ) -> None:
+    async def on_prompt_choice(self, options: list[dict[str, Any]], request_id: str | int) -> None:
         # Approve/Deny as a SEPARATE message so ongoing streaming edits to the
         # answer bubble don't clobber the buttons. callback_data stays well
         # under Telegram's 64-byte cap (a:<request_id>:<1|0>); the callback
@@ -599,14 +704,17 @@ class TelegramRenderer(Renderer):
         }
         tool = self._last_tool or "this tool"
         await self._client.send_message(
-            self._chat_id, f"🔐 Approve `{tool}`?", reply_markup=keyboard,
+            self._chat_id,
+            f"🔐 Approve `{tool}`?",
+            reply_markup=keyboard,
             message_thread_id=self._thread_id,
         )
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         try:
             await self._client.send_message(
-                self._chat_id, "🗜️ Compacting context…",
+                self._chat_id,
+                "🗜️ Compacting context…",
                 message_thread_id=self._thread_id,
             )
         except Exception:
@@ -659,23 +767,40 @@ class TelegramRenderer(Renderer):
             placeholder = "…" if ok else "⚠️ Error — please try again"
             if self._stream_mid is not None:
                 await self._client.edit_message(
-                    self._chat_id, self._stream_mid, placeholder,
+                    self._chat_id,
+                    self._stream_mid,
+                    placeholder,
                     reply_markup=keyboard,
                 )
             else:
                 await self._client.send_message(
-                    self._chat_id, placeholder, reply_markup=keyboard,
+                    self._chat_id,
+                    placeholder,
+                    reply_markup=keyboard,
                     message_thread_id=self._thread_id,
                 )
             return
         await self._seal_current(keyboard=keyboard)
 
     def _limit(self) -> int:
-        # Leave headroom below the char cap for the HTML tags we add, so a
-        # formatted chunk can't overflow Telegram's 4096 limit and get cut
-        # mid-tag.
+        """Budget for PLAINTEXT frames (live typewriter edits), in source chars.
+
+        This is NOT a safe budget for HTML: ``html.escape`` inflation is
+        unbounded relative to a fixed subtraction, so the rendered form is
+        capped separately by ``_rendered_limit`` and enforced by measuring the
+        real render (see ``_split_markdown_bounded``).
+        """
         cap = self.capabilities.max_message_chars or 4000
         return max(500, cap - 256)
+
+    def _rendered_limit(self) -> int:
+        """Hard cap for the RENDERED Telegram HTML of one message.
+
+        Telegram's limit is 4096; ``max_message_chars`` (4000) already leaves
+        headroom under it, so use it directly as the rendered ceiling rather
+        than subtracting a second, guessed tag allowance.
+        """
+        return max(500, self.capabilities.max_message_chars or 4000)
 
     def _chip_for_seal(self, i: int) -> str | None:
         """The steer chip (a "> quote" blockquote of the USER's own words) that

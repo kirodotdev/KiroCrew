@@ -12,10 +12,10 @@ Design (why this shape):
   ``/api/browser/frame`` ingress, which rebroadcasts it over the existing WS as a
   ``browser_frame`` event. The ``BrowserLiveView`` panel renders the latest frame.
 - This rides Playwright's existing (authenticated, pipe-based) control channel —
-  it does **not** add a ``--remote-debugging-port``. An earlier revision attached
-  to a CDP debug port for smoother frames; that port was an unauthenticated,
-  full-control endpoint on an auth-cookie-bearing browser (a net-new
-  local-process-takeover surface), so it was dropped in favour of this design.
+  it does **not** add a ``--remote-debugging-port``. A CDP debug port would give
+  smoother frames, but it is an unauthenticated, full-control endpoint on an
+  auth-cookie-bearing browser (a net-new local-process-takeover surface), so it
+  is deliberately not used.
 - Cadence is sparse — frames arrive only when the agent itself screenshots. A
   follow-up (an active pump) can inject idle-gated screenshots for a
   steady ~1-2 fps if needed; the WS contract here is unchanged by that.

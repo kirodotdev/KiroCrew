@@ -10,6 +10,7 @@ import type {
   SessionDoc,
 } from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
+import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { installApiTransport } from './apiTransport'
 import { queryClient } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
@@ -18,11 +19,11 @@ import { i18nT } from '../i18n/t'
 /**
  * Resolve the theme-consent token to transmit for an installed pack's chat.
  *
- * Two-tier consent, wire side: the client no longer computes a trust boolean —
+ * Two-tier consent, wire side: the client does not compute a trust boolean —
  * it just transmits the RAW stored grant (the sha256 the user granted for the
  * persona content they saw). The backend does the content-binding check: it
  * injects the persona only if this token equals sha256 of the persona.md it
- * reads, so a re-install that swaps persona.md (new sha) no longer matches the
+ * reads, so a re-install that swaps persona.md (new sha) does not match the
  * stale grant and the never-consented persona is never injected.
  *
  * Installed/custom packs are keyed `custom-<slug>` in colorTheme (useTheme), so
@@ -652,15 +653,59 @@ const jNullable = async (r: Response) => {
 // Without it, browser requests would skip the `if sk:` check — a fail-open
 // path that an MCP subprocess could exploit by omitting its own header.
 const _sk = { 'X-Session-Key': 'dashboard:ui' }
+
+/**
+ * Count a mutating request against the artifact it targets, so the leave-time
+ * cleanup can tell an unacknowledged write from a document nobody touched.
+ *
+ * Hooked HERE, at the transport, rather than in each caller: the previous design
+ * asked every write path to announce itself and repeatedly shipped one that did
+ * not, letting a document be deleted with its own PATCH still in the air. A
+ * request cannot be issued without passing through these five helpers, so this
+ * cannot be forgotten by a new call site. `settle` itself is excluded — it is the
+ * cleanup, not a user write, and counting it would have it guard against itself.
+ */
+const ARTIFACT_WRITE_RE = /\/api\/artifacts\/([^/?#]+)/
+function trackArtifactWrite(url: string, res: Promise<Response>): Promise<Response> {
+  const m = ARTIFACT_WRITE_RE.exec(url)
+  if (!m || url.includes('/settle')) return res
+  let slug: string
+  try {
+    slug = decodeURIComponent(m[1])
+  } catch {
+    slug = m[1]
+  }
+  beginArtifactWrite(slug)
+  // `finally` on both paths: a FAILED write clears too, which is correct — the
+  // server never applied it, so the record it re-reads is authoritative anyway.
+  return res.finally(() => endArtifactWrite(slug))
+}
+
 const get = (url: string) => fetch(url, { headers: { ..._sk } })
-const post = (url: string, body?: object) =>
-  fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: body ? JSON.stringify(body) : undefined })
+const post = (url: string, body?: object, sessionKey?: string) =>
+  trackArtifactWrite(url, fetch(url, {
+    method: 'POST',
+    // sessionKey overrides the shared `dashboard:ui` placeholder with the REAL
+    // slot. The placeholder satisfies the server's `if sk:` gate but names no
+    // actual session, so a restricted (incognito) slot was never recognised as
+    // restricted and its writes were allowed through. Callers acting on behalf
+    // of a specific chat slot must pass it.
+    headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) },
+    body: body ? JSON.stringify(body) : undefined,
+  }))
 const put = (url: string, body: object) =>
-  fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
+  trackArtifactWrite(url, fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) }))
 const del = (url: string, body?: object) =>
-  fetch(url, { method: 'DELETE', headers: body ? { 'Content-Type': 'application/json', ..._sk } : _sk, body: body ? JSON.stringify(body) : undefined })
-const patch = (url: string, body: object) =>
-  fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
+  trackArtifactWrite(url, fetch(url, { method: 'DELETE', headers: body ? { 'Content-Type': 'application/json', ..._sk } : _sk, body: body ? JSON.stringify(body) : undefined }))
+const patch = (url: string, body: object, sessionKey?: string) =>
+  trackArtifactWrite(url, fetch(url, {
+    method: 'PATCH',
+    // Same override as post(): replace the shared `dashboard:ui` placeholder with
+    // the REAL slot when the write belongs to a chat session, so the server's
+    // restricted-session gate applies to it.
+    headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) },
+    body: JSON.stringify(body),
+  }))
 
 // Publish the blessed transport so a downstream edition can build its OWN typed
 // API module on the SAME session-key-authenticated helpers as core methods
@@ -909,6 +954,10 @@ export const api = {
   vectorEvents: (limit = 50, offset = 0) => fetch('/api/memory/events?limit=' + limit + '&offset=' + offset).then(j),
   vectorEmbeddingStatus: () => fetch('/api/memory/embedding-status').then(j),
   vectorEnableEmbeddings: () => post('/api/memory/enable-embeddings').then(j),
+  vectorValidateEmbedModel: (path: string) =>
+    post('/api/memory/embedding-model', { path, validate_only: true }).then(j),
+  vectorApplyEmbedModel: (path: string) =>
+    post('/api/memory/embedding-model', { path }).then(j),
   vectorDisableEmbeddings: () => post('/api/memory/disable-embeddings').then(j),
   vectorImport: (data: object) => post('/api/memory/import', data).then(j),
   vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
@@ -924,8 +973,6 @@ export const api = {
   agentDetail: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name)).then(j),
   agentPatch: (name: string, body: object) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   agentDelete: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'DELETE' }).then(j),
-  agentMetadata: (name: string) => fetch('/api/agent-metadata/' + encodeURIComponent(name)).then(j),
-  agentMetadataSave: (name: string, content: string) => fetch('/api/agent-metadata/' + encodeURIComponent(name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }).then(j),
   // KiroCrew agents
   kirocrewAgents: () => fetch('/api/agents').then(j),
   /** The model a new session on this KiroCrew agent would run on. Empty
@@ -1089,6 +1136,8 @@ export const api = {
   mcpToggleTool: (server: string, tool: string, enabled: boolean) => post('/api/mcp/toggle-tool', { server, tool, enabled }).then(j),
   mcpToggleAll: (enabled: boolean) => post('/api/mcp/toggle-all', { enabled }).then(j),
   mcpRemove: (name: string) => post('/api/mcp/remove', { name }).then(j),
+  mcpOAuthRelay: (server: string, redirectUrl: string) =>
+    post('/api/mcp/oauth/relay', { server, redirect_url: redirectUrl }).then(j) as Promise<{ ok: boolean }>,
   // MCP Gateway (shared pool)
   mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; running: boolean; ping_ok: boolean; supported: boolean }>,
   mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean }>,
@@ -1229,7 +1278,7 @@ export const api = {
     // content-binding, injecting the persona only when this token equals sha256
     // of the persona.md it reads. Omitted for a built-in theme, no grant, or a
     // legacy '1'/'' token (must re-prompt). The legacy `theme_consent` boolean
-    // is intentionally NOT sent anymore: gating is content-bound server-side.
+    // is intentionally NOT sent: gating is content-bound server-side.
     const themeConsent = themeConsentSha(colorTheme)
     return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(browse ? { browse: true } : {}) }), signal })
   },
@@ -1550,9 +1599,36 @@ export const api = {
       headers: { 'Content-Type': 'application/json', 'X-Session-Key': `dashboard:${slot}` },
       body: JSON.stringify({ type: 'referenced', ...(metadata ? { metadata } : {}) }),
     }).then(j),
-  createArtifact: (body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string; origin_session_key?: string; folder?: string }) =>
-    post('/api/artifacts', body).then(j),
-  updateArtifact: (slug: string, body: { content?: string; name?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean }) =>
+  createArtifact: (
+    body: { name: string; content: string; kind?: string; source?: string; description?: string; tags?: string[]; slug?: string; source_path?: string; origin_session_key?: string; folder?: string },
+    // Pass the owning slot (as `dashboard:<slot>`) when the save is made on
+    // behalf of a chat session, so the server's restricted-session gate sees the
+    // real session instead of the shared placeholder.
+    sessionKey?: string,
+  ) =>
+    // DEFAULTED from origin_session_key rather than left to each caller. Every
+    // save that belongs to a chat session already names it in the body for
+    // attribution, so deriving the header from that makes the gate apply by
+    // construction -- an opt-in argument meant a caller that only set
+    // origin_session_key (WidgetFrame's save-as-artifact) still sent the shared
+    // `dashboard:ui` placeholder and an incognito session's write was allowed
+    // through. An explicit sessionKey still wins for callers that need to differ.
+    post(
+      '/api/artifacts',
+      body,
+      sessionKey
+        ?? (body.origin_session_key ? `dashboard:${body.origin_session_key}` : undefined),
+    ).then(j),
+  /** Atomically resolve a just-created blank document being left: keep it, save
+   *  the draft still in the editor, or delete the abandoned shell. The store
+   *  decides under its own lock -- deciding here would race a concurrent save. */
+  settleBlankArtifact: (
+    slug: string,
+    body: { untitled_name: string; draft: string; allow_delete: boolean },
+  ) =>
+    post(`/api/artifacts/${encodeURIComponent(slug)}/settle`, body).then(j) as
+      Promise<{ outcome: 'kept' | 'saved' | 'deleted' }>,
+  updateArtifact: (slug: string, body: { content?: string; name?: string; kind?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}`, body).then(j),
   deleteArtifact: (slug: string) => del(`/api/artifacts/${encodeURIComponent(slug)}`).then(j),
   // Artifact library folders
@@ -1567,8 +1643,12 @@ export const api = {
   setArtifactFolder: (slug: string, folderId: string) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}/folder`, { folder_id: folderId }).then(j),
   /** Pin/unpin (favorite) an artifact. Metadata-only — no version bump. */
-  setArtifactPinned: (slug: string, pinned: boolean) =>
-    patch(`/api/artifacts/${encodeURIComponent(slug)}/pin`, { pinned }).then(j),
+  // sessionKey: pass `dashboard:<slot>` when the pin is made on behalf of a chat
+  // session, so the server's restricted-session gate sees the real session rather
+  // than the transport's shared `dashboard:ui` placeholder (which satisfies the
+  // `if sk:` check but names no session, so a restricted slot was never gated).
+  setArtifactPinned: (slug: string, pinned: boolean, sessionKey?: string) =>
+    patch(`/api/artifacts/${encodeURIComponent(slug)}/pin`, { pinned }, sessionKey).then(j),
   /** Virtual list of non-code documents from chat sessions. Pass `session`
    * (a slot key) to scope to a single session. */
   artifactSessionDocs: (session?: string) =>
@@ -1708,7 +1788,7 @@ export const api = {
     // Route to the provider's declared endpoint with the payload shape
     // that _do_deploy expects (site_id + artifact_slug). ttl_hours is sent on
     // BOTH preview and confirm so the previewed TTL matches what is deployed
-    // (R12 F3 — omitting it here made preview use the backend 72h default).
+    // (omitting it here makes preview use the backend 72h default).
     const endpoint = provider?.endpoint || '/api/deploy/deploy'
     const payload: Record<string, unknown> = { site_id: slug, artifact_slug: slug, provider_id: providerId }
     if (ttlHours !== undefined) payload.ttl_hours = ttlHours

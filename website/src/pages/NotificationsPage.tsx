@@ -14,7 +14,7 @@ import { i18nT } from '../i18n/t'
  * Full Notifications page (route /notifications). Page chrome + master/detail
  * layout only; the feed (filter/list) and detail view are the same shared
  * components rendered by the topbar bell popover, so behavior stays identical
- * in both surfaces. This page now owns just the selection state and stat cards.
+ * in both surfaces. This page owns the selection state and stat cards.
  */
 export default function NotificationsPage() {
   const dispatch = useAppDispatch()

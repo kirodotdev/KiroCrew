@@ -85,7 +85,6 @@ describe('useSettingHighlight', () => {
       expect(el1.style.borderRadius).toBe('')
     }
 
-    // Cleanup
     document.body.removeChild(el1)
     document.body.removeChild(el2)
     vi.useRealTimers()

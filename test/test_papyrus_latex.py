@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 from typing import Iterator
 from unittest import mock
@@ -659,13 +660,31 @@ class TestSearchPathEnv:
         env = latex._search_path_env_sync(project)
         assert str(project / "templates" / "acl") in env["BSTINPUTS"]
         assert str(project) in env["BIBINPUTS"]
-        # Trailing colon = "also search the default TEXMF tree".
-        assert env["BSTINPUTS"].endswith(":")
+        # Trailing separator = "also search the default TEXMF tree".
+        assert env["BSTINPUTS"].endswith(os.pathsep)
 
     def test_degrades_to_the_default_tree_when_nothing_is_found(self, project: Path) -> None:
         env = latex._search_path_env_sync(project)
-        assert env["BSTINPUTS"] == ".:"
-        assert env["BIBINPUTS"] == ".:"
+        assert env["BSTINPUTS"] == "." + os.pathsep
+        assert env["BIBINPUTS"] == "." + os.pathsep
+
+    def test_the_separator_is_the_platforms_own(self, project: Path) -> None:
+        """`;` on Windows, `:` elsewhere — and a drive letter must not split a path.
+
+        A hardcoded `":"` was both the wrong delimiter on Windows and a splitter of
+        `C:\\proj\\bib` into two useless fragments, which is exactly the
+        "I couldn't open style file" failure this env var exists to prevent.
+        """
+        nested = project / "templates" / "acl"
+        nested.mkdir(parents=True)
+        (nested / "acl_natbib.bst").write_text("", encoding="utf-8")
+        (project / "second.bst").write_text("", encoding="utf-8")
+
+        entries = latex._search_path_env_sync(project)["BSTINPUTS"].split(os.pathsep)
+        # Both holding directories survive the round trip INTACT — the assertion
+        # that a `:`-join on Windows could not satisfy.
+        assert str(nested) in entries
+        assert str(project) in entries
 
 
 class TestBaseEnv:
@@ -686,6 +705,43 @@ class TestBaseEnv:
     def test_extra_values_win(self) -> None:
         env = latex._base_env({"BSTINPUTS": ".:/x:"})
         assert env["BSTINPUTS"] == ".:/x:"
+
+    def test_windows_location_hints_survive_the_allowlist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Windows child needs these to start at all — and they are not secrets.
+
+        ``minimal_env``'s allowlist was POSIX-only, which fails early and opaquely
+        rather than loudly: a Windows process without ``SystemRoot`` typically dies
+        before ``main()`` (DLL/crypto init resolves through it), and without
+        ``USERPROFILE`` TeX cannot resolve ``TEXMFHOME``. Asserted here because the
+        compiler spawn is the caller that made it user-visible.
+        """
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        monkeypatch.setenv("USERPROFILE", r"C:\Users\me")
+        monkeypatch.setenv("TEMP", r"C:\Temp")
+        env = latex._base_env({})
+        # Looked up case-insensitively, because the CASE is platform-dependent and
+        # is not what this test is about: on Windows `os.environ` upper-cases every
+        # key, so `monkeypatch.setenv("SystemRoot", ...)` is readable back only as
+        # `SYSTEMROOT` — asserting the mixed-case spelling failed on the one platform
+        # these entries exist for. (That upper-casing is exactly the bug the
+        # allowlist fold fixes; see `TestMinimalEnvHonorsWindowsCaseInsensitivity`.)
+        folded = {k.upper(): v for k, v in env.items()}
+        assert folded["SYSTEMROOT"] == r"C:\Windows"
+        assert folded["USERPROFILE"] == r"C:\Users\me"
+        assert folded["TEMP"] == r"C:\Temp"
+
+    def test_widening_the_allowlist_did_not_admit_secrets(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Windows keys are location hints; the scrub property must be unchanged."""
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_should_not_reach_the_compiler")
+        monkeypatch.setenv("AWS_SESSION_TOKEN", "nope")
+        env = latex._base_env({})
+        assert "GITHUB_TOKEN" not in env
+        assert "AWS_SESSION_TOKEN" not in env
 
 
 class TestNeedsBibtex:
@@ -941,6 +997,7 @@ class TestCompileRefusesSymlinkedArtifacts:
     then the write has happened. The only place to stop it is before the spawn.
     """
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     async def test_a_pdf_symlinked_to_the_source_refuses_to_compile(
         self, project: Path
     ) -> None:
@@ -959,6 +1016,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert not run.called, "the compiler ran despite a symlinked output"
         assert (project / "main.tex").read_text(encoding="utf-8") == source_before
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     async def test_a_link_at_a_name_no_suffix_list_predicts_is_refused(
         self, project: Path
     ) -> None:
@@ -979,6 +1037,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert "chapter1.tex" in result.log
         assert not run.called, "the compiler ran despite an in-project symlink"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     async def test_a_link_in_a_subdirectory_is_refused(self, project: Path) -> None:
         """The walk descends: `\\openout` takes a relative path, so `sections/x.tex` is a
         write the compiler can aim just as well as one at the project root."""
@@ -992,6 +1051,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert "sections/linked.tex" in result.log
         assert not run.called
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     async def test_a_symlink_cycle_does_not_hang_the_walk(self, project: Path) -> None:
         """`a -> ..` is a link, so it is reported rather than descended into. A walk that
         followed it would recurse forever and wedge the request."""
@@ -1015,6 +1075,7 @@ class TestCompileRefusesSymlinkedArtifacts:
             assert links == []
             assert complete is False
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     async def test_an_exhausted_budget_reports_an_incomplete_scan(
         self, project: Path
     ) -> None:
@@ -1032,6 +1093,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert complete is True
         assert "zzz.pdf" in links
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     async def test_compile_refuses_when_the_scan_could_not_finish(
         self, project: Path
     ) -> None:
@@ -1051,6 +1113,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert not run.called, "the compiler ran despite an unfinished symlink scan"
         assert (project / "main.tex").read_text(encoding="utf-8") == r"\documentclass{article}"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     async def test_a_git_checkout_does_not_trip_the_guard(self, project: Path) -> None:
         """`.git` is skipped. A real checkout can hold links in there, and refusing to
         compile every cloned project would make the guard unusable."""
@@ -1062,6 +1125,7 @@ class TestCompileRefusesSymlinkedArtifacts:
             await latex.compile_project(project, "main.tex")
         assert run.called, "a link inside .git blocked the compile"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     @pytest.mark.parametrize(
         "suffix", [".aux", ".log", ".bbl", ".synctex.gz", ".nav", ".lof", ".fls"]
     )
@@ -1078,6 +1142,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert result.ok is False
         assert not run.called
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     async def test_a_dangling_symlink_is_also_refused(self, project: Path) -> None:
         """`is_symlink()` does not follow the link, which is correct here: the compiler
         would CREATE the target wherever it points."""
@@ -1169,3 +1234,54 @@ class TestOpenoutIsConfinedToTheProject:
         assert env["openout_any"] == "p"
         # The refusal is reachable and refuses — `openout_any` did not replace it.
         assert callable(latex._symlinked_artifacts)
+
+
+class TestSandboxRefusalIsReportedNotSwallowed:
+    """A host with no sandbox backend must say so, not answer "internal error".
+
+    ``wrap_argv`` fails closed when it cannot build an OS-level sandbox, and that
+    is CORRECT for this spawn: the compiler reads an untrusted ``.tex`` that may
+    have arrived by ``git clone``, and ``strict`` mode is what stops
+    ``\\input{../../.aws/credentials}`` from typesetting the operator's keys into
+    the PDF. So these tests pin that the refusal is *translated*, never bypassed.
+
+    Windows is the host that makes this reachable on every compile: it has no
+    sandbox backend at all (user namespaces are Linux, ``sandbox-exec`` is macOS),
+    so before this the app's every compile raised an unhandled 500 that named no
+    remedy — even though ``docs/WINDOWS_CHANGES.md`` documents the one config flag
+    that fixes it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_compile_reports_the_refusal_as_a_result(self, project: Path) -> None:
+        boom = sandbox.SandboxUnavailableError(
+            "no backend here", "no_backend", "simulated: no sandbox backend"
+        )
+        with mock.patch.object(
+            latex, "find_compiler", mock.AsyncMock(return_value="/usr/bin/pdflatex")
+        ), mock.patch.object(latex, "sandboxed_spawn_argv", side_effect=boom):
+            result = await latex.compile_project(project, "main.tex")
+        assert result.ok is False
+        # Carried in its OWN field, so the route layer can answer with a distinct
+        # code instead of reporting an environment problem as a document problem.
+        assert "no backend here" in result.sandbox_error
+        # And NOT reported as a compile failure — `log` is what the UI renders as
+        # compiler output, and there was no compiler output because none ran.
+        assert result.log == ""
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_is_not_bypassed(self, project: Path) -> None:
+        """The strict-mode wrap is still requested — no silent downgrade on refusal."""
+        wrap = mock.Mock(
+            side_effect=sandbox.SandboxUnavailableError(
+                "denied", "no_backend", "simulated: no sandbox backend"
+            )
+        )
+        with mock.patch.object(
+            latex, "find_compiler", mock.AsyncMock(return_value="/usr/bin/pdflatex")
+        ), mock.patch.object(latex, "sandboxed_spawn_argv", wrap):
+            result = await latex.compile_project(project, "main.tex")
+        assert result.ok is False
+        assert wrap.call_count == 1
+        # `strict`, not a weaker tier chosen to make the spawn succeed.
+        assert _spawn_mode(wrap) == "strict"

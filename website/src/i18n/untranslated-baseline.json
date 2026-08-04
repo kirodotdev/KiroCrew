@@ -3,68 +3,46 @@
   "_total": 1833,
   "files": {
     "api/client.ts": {
-      "total": 35,
+      "total": 23,
       "expression": 2,
-      "object-prop": 3,
-      "prose": 14,
-      "template": 16
+      "prose": 10,
+      "template": 11
     },
     "api/helpers.ts": {
       "total": 7,
       "prose": 5,
       "template": 2
     },
-    "app-sdk/useChatSession.ts": {
-      "total": 1,
-      "prose": 1
-    },
     "App.tsx": {
-      "total": 19,
-      "expression": 3,
+      "total": 6,
       "object-prop": 1,
-      "prose": 8,
-      "template": 7
+      "prose": 1,
+      "template": 4
     },
     "apps/auto-research/ResearchLabPage.tsx": {
       "total": 7,
       "array": 3,
       "template": 4
     },
-    "apps/builtinIcons.tsx": {
-      "total": 1,
-      "template": 1
-    },
-    "apps/builtinRegistry.ts": {
-      "total": 4,
-      "template": 4
-    },
-    "apps/capsuleSegments.tsx": {
-      "total": 1,
-      "template": 1
-    },
     "apps/code-review-sage/CodeReviewSagePage.tsx": {
-      "total": 8,
-      "template": 8
-    },
-    "apps/design-critique/api.ts": {
-      "total": 1,
-      "prose": 1
+      "total": 6,
+      "template": 6
     },
     "apps/design-critique/AskLayer.tsx": {
       "total": 2,
       "expression": 2
     },
     "apps/design-critique/Composer.tsx": {
-      "total": 18,
+      "total": 17,
       "expression": 13,
-      "prose": 5
+      "prose": 4
     },
     "apps/design-critique/DesignCritiquePage.tsx": {
-      "total": 56,
+      "total": 55,
       "array": 3,
       "expression": 22,
       "object-prop": 1,
-      "prose": 30
+      "prose": 29
     },
     "apps/design-critique/FindingRow.tsx": {
       "total": 4,
@@ -72,13 +50,13 @@
       "prose": 2
     },
     "apps/design-critique/ScopingPicker.tsx": {
-      "total": 11,
-      "expression": 5,
-      "prose": 6
+      "total": 9,
+      "expression": 4,
+      "prose": 5
     },
     "apps/design-critique/utils.ts": {
-      "total": 11,
-      "prose": 11
+      "total": 7,
+      "prose": 7
     },
     "apps/design-critique/WaitingScreen.tsx": {
       "total": 10,
@@ -86,30 +64,20 @@
       "prose": 4
     },
     "apps/file-explorer/api.ts": {
-      "total": 7,
-      "prose": 1,
-      "template": 6
+      "total": 1,
+      "template": 1
     },
     "apps/file-explorer/FileExplorerPage.tsx": {
       "total": 1,
       "template": 1
     },
     "apps/file-explorer/FileViewer.tsx": {
-      "total": 2,
-      "template": 2
+      "total": 1,
+      "template": 1
     },
     "apps/file-explorer/SearchPanel.tsx": {
       "total": 2,
       "template": 2
-    },
-    "apps/issue-radar/api.ts": {
-      "total": 2,
-      "prose": 2
-    },
-    "apps/issue-radar/components/AiSummaryCard.tsx": {
-      "total": 4,
-      "expression": 1,
-      "template": 3
     },
     "apps/issue-radar/components/IssueDetail.tsx": {
       "total": 3,
@@ -124,16 +92,16 @@
       "template": 2
     },
     "apps/issue-radar/components/PrDetail.tsx": {
-      "total": 7,
-      "template": 7
+      "total": 6,
+      "template": 6
     },
     "apps/issue-radar/components/PrFiltersSection.tsx": {
       "total": 1,
       "template": 1
     },
     "apps/issue-radar/components/PrList.tsx": {
-      "total": 12,
-      "object-prop": 7,
+      "total": 9,
+      "object-prop": 4,
       "template": 5
     },
     "apps/issue-radar/components/ProviderBadge.tsx": {
@@ -144,10 +112,6 @@
       "total": 1,
       "prose": 1
     },
-    "apps/issue-radar/components/RefSheet.tsx": {
-      "total": 1,
-      "expression": 1
-    },
     "apps/issue-radar/components/ReviewButton.tsx": {
       "total": 3,
       "template": 3
@@ -157,8 +121,8 @@
       "object-prop": 2
     },
     "apps/issue-radar/ConnectPanel.tsx": {
-      "total": 2,
-      "template": 2
+      "total": 1,
+      "template": 1
     },
     "apps/issue-radar/ConnectRepoModal.tsx": {
       "total": 3,
@@ -168,14 +132,10 @@
       "total": 1,
       "template": 1
     },
-    "apps/issue-radar/lib/investigate.ts": {
-      "total": 3,
-      "template": 3
-    },
     "apps/issue-radar/lib/links.ts": {
-      "total": 15,
-      "prose": 10,
-      "template": 5
+      "total": 12,
+      "prose": 8,
+      "template": 4
     },
     "apps/issue-radar/lib/review.ts": {
       "total": 4,
@@ -187,14 +147,12 @@
       "template": 1
     },
     "apps/issue-radar/views/settings/RepoSettings.tsx": {
-      "total": 7,
-      "prose": 4,
+      "total": 3,
       "template": 3
     },
     "apps/issue-radar/views/tagging/LabelsPanel.tsx": {
-      "total": 5,
-      "prose": 2,
-      "template": 3
+      "total": 2,
+      "template": 2
     },
     "apps/issue-radar/views/tagging/UntaggedIssueCard.tsx": {
       "total": 3,
@@ -205,17 +163,8 @@
       "template": 8
     },
     "apps/issue-radar/WelcomeCarousel.tsx": {
-      "total": 4,
-      "template": 4
-    },
-    "apps/topBarWidgets.tsx": {
-      "total": 1,
-      "template": 1
-    },
-    "apps/workflows/WorkflowRunTree.tsx": {
-      "total": 2,
-      "prose": 1,
-      "template": 1
+      "total": 3,
+      "template": 3
     },
     "apps/workflows/WorkflowSourcePanel.tsx": {
       "total": 2,
@@ -227,18 +176,11 @@
       "template": 1
     },
     "apps/workflows/WorkflowsRuns.tsx": {
-      "total": 6,
-      "expression": 1,
-      "object-prop": 4,
-      "template": 1
-    },
-    "assets/onboarding/GhostIcons.tsx": {
-      "total": 1,
-      "prose": 1
+      "total": 4,
+      "object-prop": 4
     },
     "components/AgentSkillsEditor.tsx": {
-      "total": 4,
-      "prose": 1,
+      "total": 3,
       "template": 3
     },
     "components/AppHost.tsx": {
@@ -246,13 +188,11 @@
       "template": 1
     },
     "components/AppIcon.tsx": {
-      "total": 2,
-      "prose": 1,
+      "total": 1,
       "template": 1
     },
     "components/ApprovalCard.tsx": {
-      "total": 2,
-      "expression": 1,
+      "total": 1,
       "prose": 1
     },
     "components/appstore/AppListRow.tsx": {
@@ -283,10 +223,6 @@
       "total": 2,
       "template": 2
     },
-    "components/appstore/SourcesPopover.tsx": {
-      "total": 1,
-      "prose": 1
-    },
     "components/ArtifactBody.tsx": {
       "total": 1,
       "template": 1
@@ -313,52 +249,48 @@
       "template": 1
     },
     "components/ChatInput.tsx": {
-      "total": 23,
-      "array": 3,
+      "total": 18,
       "expression": 1,
-      "prose": 6,
-      "template": 13
+      "prose": 5,
+      "template": 12
     },
     "components/ChatPane.tsx": {
-      "total": 4,
-      "expression": 1,
+      "total": 2,
       "object-prop": 1,
-      "template": 2
+      "template": 1
     },
     "components/Clickable.tsx": {
       "total": 1,
       "prose": 1
     },
     "components/CliPanel.tsx": {
-      "total": 5,
+      "total": 4,
       "prose": 1,
-      "template": 4
+      "template": 3
     },
     "components/CommandPalette.tsx": {
       "total": 6,
       "template": 6
     },
     "components/commandPalette/providers/actionsProvider.ts": {
-      "total": 10,
-      "expression": 4,
-      "object-prop": 3,
-      "prose": 3
+      "total": 3,
+      "object-prop": 3
     },
     "components/commandPalette/providers/pagesProvider.ts": {
       "total": 1,
       "object-prop": 1
     },
     "components/commandPalette/providers/recentsProvider.ts": {
-      "total": 5,
-      "prose": 5
+      "total": 2,
+      "prose": 2
     },
     "components/commandPalette/providers/settingsProvider.ts": {
       "total": 1,
       "template": 1
     },
     "components/CommentOverlay.tsx": {
-      "total": 12,
-      "prose": 4,
+      "total": 10,
+      "prose": 2,
       "template": 8
     },
     "components/CommentThreadPopover.tsx": {
@@ -385,21 +317,9 @@
       "total": 3,
       "template": 3
     },
-    "components/ErrorBoundary.tsx": {
-      "total": 1,
-      "expression": 1
-    },
     "components/FileCard.tsx": {
       "total": 2,
       "template": 2
-    },
-    "components/FilePickerMenu.tsx": {
-      "total": 3,
-      "prose": 3
-    },
-    "components/FileRenderers.tsx": {
-      "total": 1,
-      "prose": 1
     },
     "components/FollowUpBar.tsx": {
       "total": 1,
@@ -410,23 +330,17 @@
       "template": 1
     },
     "components/InlineCommentOverlay.tsx": {
-      "total": 2,
-      "expression": 1,
-      "template": 1
-    },
-    "components/InstancesViewport.tsx": {
       "total": 1,
       "template": 1
     },
     "components/InstanceTabBar.tsx": {
-      "total": 4,
-      "prose": 1,
+      "total": 3,
       "template": 3
     },
     "components/IssuePanel.tsx": {
-      "total": 23,
+      "total": 17,
       "expression": 6,
-      "prose": 8,
+      "prose": 2,
       "template": 9
     },
     "components/KiroPrerequisiteGate.tsx": {
@@ -438,24 +352,18 @@
       "object-prop": 1
     },
     "components/MarkdownPanel.tsx": {
-      "total": 11,
+      "total": 8,
       "object-prop": 3,
-      "prose": 4,
+      "prose": 1,
       "template": 4
     },
     "components/MarkdownRenderer.tsx": {
-      "total": 9,
-      "prose": 7,
-      "template": 2
+      "total": 2,
+      "prose": 2
     },
     "components/MarkdownToc.tsx": {
       "total": 4,
       "template": 4
-    },
-    "components/McpAppFrame.tsx": {
-      "total": 7,
-      "object-prop": 4,
-      "prose": 3
     },
     "components/McpBrowserModal.tsx": {
       "total": 3,
@@ -463,8 +371,8 @@
       "prose": 1
     },
     "components/McpCustomServerModal.tsx": {
-      "total": 4,
-      "template": 4
+      "total": 2,
+      "template": 2
     },
     "components/notifications/NotificationFeed.tsx": {
       "total": 8,
@@ -487,11 +395,10 @@
       "prose": 1
     },
     "components/PullRequestPanel.tsx": {
-      "total": 50,
-      "expression": 12,
-      "object-prop": 4,
-      "prose": 12,
-      "template": 22
+      "total": 30,
+      "expression": 2,
+      "prose": 8,
+      "template": 20
     },
     "components/QueueStack.tsx": {
       "total": 2,
@@ -502,8 +409,7 @@
       "template": 2
     },
     "components/RegistryManager.tsx": {
-      "total": 8,
-      "prose": 3,
+      "total": 5,
       "template": 5
     },
     "components/RemoteArtifactCard.tsx": {
@@ -512,8 +418,7 @@
       "template": 1
     },
     "components/SearchBar.tsx": {
-      "total": 4,
-      "prose": 2,
+      "total": 2,
       "template": 2
     },
     "components/SelectionToolbar.tsx": {
@@ -523,10 +428,6 @@
     "components/SessionGridView.tsx": {
       "total": 2,
       "template": 2
-    },
-    "components/ShortcutsModal.tsx": {
-      "total": 4,
-      "expression": 4
     },
     "components/SkillBrowserModal.tsx": {
       "total": 1,
@@ -540,9 +441,8 @@
       "template": 1
     },
     "components/SkillForm.tsx": {
-      "total": 2,
-      "prose": 1,
-      "template": 1
+      "total": 1,
+      "prose": 1
     },
     "components/TagManagerList.tsx": {
       "total": 6,
@@ -557,15 +457,10 @@
       "template": 1
     },
     "components/ThemeExperienceLayer.tsx": {
-      "total": 2,
-      "prose": 1,
+      "total": 1,
       "template": 1
     },
     "components/TipCard.tsx": {
-      "total": 2,
-      "prose": 2
-    },
-    "components/TrustDropdown.tsx": {
       "total": 2,
       "prose": 2
     },
@@ -580,8 +475,8 @@
       "template": 2
     },
     "components/WebAppArtifactCard.tsx": {
-      "total": 9,
-      "template": 9
+      "total": 8,
+      "template": 8
     },
     "components/WebPreviewPanel.tsx": {
       "total": 1,
@@ -592,63 +487,31 @@
       "prose": 1
     },
     "components/WidgetFrame.tsx": {
-      "total": 7,
+      "total": 6,
       "expression": 1,
-      "prose": 1,
       "template": 5
-    },
-    "hooks/sceneText.ts": {
-      "total": 1,
-      "prose": 1
     },
     "hooks/useBlockAssembler.ts": {
       "total": 1,
       "prose": 1
     },
-    "hooks/useBranding.tsx": {
-      "total": 1,
-      "prose": 1
-    },
-    "hooks/useBrowserFrame.ts": {
-      "total": 1,
-      "template": 1
-    },
-    "hooks/useComputerUseFrame.ts": {
-      "total": 1,
-      "template": 1
-    },
-    "hooks/useFileWatch.ts": {
-      "total": 1,
-      "prose": 1
-    },
     "hooks/useKeyboardShortcuts.ts": {
-      "total": 9,
-      "expression": 5,
+      "total": 3,
       "object-prop": 1,
-      "prose": 2,
-      "template": 1
+      "prose": 2
     },
     "hooks/useNativeNotification.ts": {
-      "total": 2,
-      "template": 2
+      "total": 1,
+      "template": 1
     },
     "hooks/usePanelTabs.ts": {
-      "total": 4,
+      "total": 3,
       "expression": 2,
-      "prose": 1,
       "template": 1
     },
     "hooks/usePopoutSync.ts": {
       "total": 1,
       "template": 1
-    },
-    "hooks/useReadingWidth.ts": {
-      "total": 1,
-      "prose": 1
-    },
-    "hooks/useRumPageView.ts": {
-      "total": 1,
-      "prose": 1
     },
     "hooks/useSceneInteraction.tsx": {
       "total": 4,
@@ -659,9 +522,9 @@
       "prose": 1
     },
     "hooks/useTheme.tsx": {
-      "total": 19,
-      "prose": 9,
-      "template": 10
+      "total": 17,
+      "prose": 8,
+      "template": 9
     },
     "hooks/useVoiceInput.ts": {
       "total": 2,
@@ -669,17 +532,12 @@
       "template": 1
     },
     "hooks/useWebSocket.ts": {
-      "total": 18,
-      "prose": 14,
+      "total": 15,
+      "prose": 11,
       "template": 4
     },
-    "hooks/virtualizer/HeightCache.ts": {
-      "total": 1,
-      "prose": 1
-    },
     "lib/disintegrate.ts": {
-      "total": 10,
-      "array": 3,
+      "total": 7,
       "expression": 2,
       "prose": 2,
       "template": 3
@@ -690,10 +548,6 @@
       "expression": 2,
       "prose": 11,
       "template": 1
-    },
-    "lib/mcpLoadedTools.ts": {
-      "total": 1,
-      "prose": 1
     },
     "lib/widgetSrcdoc.ts": {
       "total": 21,
@@ -708,37 +562,29 @@
       "prose": 3,
       "template": 5
     },
-    "pages/aidlc/DagView.tsx": {
-      "total": 2,
-      "expression": 2
-    },
     "pages/aidlc/TaskDetailPanel.tsx": {
-      "total": 5,
-      "expression": 2,
-      "prose": 1,
+      "total": 2,
       "template": 2
     },
     "pages/AppDetailPage.tsx": {
-      "total": 13,
-      "prose": 3,
+      "total": 11,
+      "prose": 1,
       "template": 10
     },
     "pages/AppsPage.tsx": {
-      "total": 14,
-      "expression": 2,
-      "prose": 3,
-      "template": 9
+      "total": 8,
+      "prose": 1,
+      "template": 7
     },
     "pages/ArtifactDeployPage.tsx": {
-      "total": 50,
+      "total": 38,
       "array": 15,
-      "expression": 6,
-      "prose": 9,
-      "template": 20
+      "prose": 5,
+      "template": 18
     },
     "pages/ArtifactDetailPage.tsx": {
-      "total": 23,
-      "expression": 2,
+      "total": 22,
+      "expression": 1,
       "prose": 1,
       "template": 20
     },
@@ -755,25 +601,15 @@
       "prose": 2
     },
     "pages/chat/ActivityViewer.tsx": {
-      "total": 8,
-      "expression": 2,
-      "prose": 3,
-      "template": 3
-    },
-    "pages/chat/AssistantMessage.tsx": {
-      "total": 3,
+      "total": 5,
+      "prose": 2,
       "template": 3
     },
     "pages/chat/ChatSettings.tsx": {
-      "total": 26,
+      "total": 23,
       "array": 18,
-      "expression": 3,
       "prose": 4,
       "template": 1
-    },
-    "pages/chat/CollapsibleToolGroup.tsx": {
-      "total": 2,
-      "expression": 2
     },
     "pages/chat/McpInfoButton.tsx": {
       "total": 2,
@@ -795,15 +631,9 @@
       "total": 4,
       "template": 4
     },
-    "pages/chat/TaskProgressBar.tsx": {
-      "total": 3,
-      "expression": 2,
-      "template": 1
-    },
     "pages/chat/ToolCallLine.tsx": {
-      "total": 6,
-      "expression": 2,
-      "template": 4
+      "total": 3,
+      "template": 3
     },
     "pages/chat/ToolDetails.tsx": {
       "total": 5,
@@ -815,27 +645,24 @@
       "template": 4
     },
     "pages/chat/useKnowledgeFetch.ts": {
-      "total": 3,
-      "template": 3
+      "total": 2,
+      "template": 2
     },
     "pages/ChatPage.tsx": {
-      "total": 23,
-      "expression": 3,
+      "total": 18,
+      "expression": 2,
       "object-prop": 1,
-      "prose": 2,
-      "template": 17
+      "prose": 1,
+      "template": 14
     },
     "pages/ChatSidebar.tsx": {
-      "total": 47,
-      "expression": 12,
+      "total": 28,
       "object-prop": 1,
-      "prose": 3,
-      "template": 31
+      "template": 27
     },
     "pages/DevFleetPage.tsx": {
-      "total": 56,
-      "expression": 1,
-      "prose": 44,
+      "total": 32,
+      "prose": 21,
       "template": 11
     },
     "pages/HooksPage.tsx": {
@@ -844,51 +671,16 @@
       "template": 7
     },
     "pages/KiroCrewAgentsPage.tsx": {
-      "total": 6,
-      "array": 5,
+      "total": 1,
       "template": 1
     },
-    "pages/knowledge/DetailView.tsx": {
-      "total": 3,
-      "expression": 2,
-      "prose": 1
-    },
-    "pages/knowledge/EmbeddingStatus.tsx": {
-      "total": 2,
-      "expression": 2
-    },
     "pages/knowledge/helpers.ts": {
-      "total": 5,
-      "array": 2,
+      "total": 3,
       "template": 3
     },
     "pages/knowledge/index.tsx": {
-      "total": 8,
-      "expression": 2,
-      "template": 6
-    },
-    "pages/knowledge/ItemCard.tsx": {
-      "total": 6,
-      "expression": 3,
-      "prose": 2,
-      "template": 1
-    },
-    "pages/knowledge/KnowledgeGraph.tsx": {
-      "total": 1,
-      "prose": 1
-    },
-    "pages/knowledge/SourceGroup.tsx": {
-      "total": 5,
-      "expression": 2,
-      "prose": 2,
-      "template": 1
-    },
-    "pages/knowledge/SourcesList.tsx": {
-      "total": 21,
-      "array": 2,
-      "expression": 14,
-      "prose": 3,
-      "template": 2
+      "total": 3,
+      "template": 3
     },
     "pages/LocalStorageDebug.tsx": {
       "total": 2,
@@ -899,86 +691,50 @@
       "total": 1,
       "template": 1
     },
-    "pages/overview/AgentCfgTab.tsx": {
-      "total": 1,
-      "expression": 1
-    },
     "pages/overview/CronTab.tsx": {
-      "total": 17,
-      "expression": 12,
-      "prose": 2,
-      "status-call": 2,
+      "total": 1,
       "template": 1
     },
-    "pages/overview/DisplayTab.tsx": {
-      "total": 10,
-      "expression": 5,
-      "prose": 3,
-      "template": 2
-    },
     "pages/overview/KiroCrewCfgTab.tsx": {
-      "total": 22,
-      "expression": 4,
-      "prose": 15,
+      "total": 3,
       "template": 3
     },
     "pages/overview/McpTab.tsx": {
-      "total": 14,
-      "expression": 9,
+      "total": 7,
+      "expression": 2,
       "template": 5
     },
-    "pages/overview/MemoryGraphTab.tsx": {
-      "total": 2,
-      "prose": 2
-    },
-    "pages/overview/MemoryTab.tsx": {
-      "total": 7,
-      "expression": 4,
-      "prose": 3
-    },
     "pages/overview/PortabilityTab.tsx": {
-      "total": 13,
-      "expression": 6,
-      "object-prop": 3,
-      "prose": 3,
+      "total": 1,
       "template": 1
     },
     "pages/overview/PromptsTab.tsx": {
-      "total": 2,
-      "prose": 1,
+      "total": 1,
       "template": 1
     },
     "pages/overview/SkillsTab.tsx": {
-      "total": 17,
-      "expression": 2,
-      "prose": 7,
-      "template": 8
+      "total": 8,
+      "prose": 1,
+      "template": 7
     },
     "pages/overview/SteeringTab.tsx": {
-      "total": 6,
-      "prose": 2,
+      "total": 5,
+      "prose": 1,
       "template": 4
     },
     "pages/overview/UsageTab.tsx": {
-      "total": 4,
-      "expression": 3,
+      "total": 1,
       "template": 1
     },
     "pages/overview/VectorMemoryCard.tsx": {
-      "total": 36,
+      "total": 17,
       "array": 12,
-      "expression": 3,
       "object-prop": 3,
-      "prose": 16,
       "template": 2
     },
     "pages/OverviewPage.tsx": {
       "total": 6,
       "object-prop": 6
-    },
-    "pages/overviewStatCards.tsx": {
-      "total": 1,
-      "template": 1
     },
     "pages/PopoutFrame.tsx": {
       "total": 1,
@@ -989,45 +745,39 @@
       "template": 1
     },
     "pages/RemoteArtifactDetailPage.tsx": {
-      "total": 4,
-      "prose": 2,
+      "total": 2,
       "template": 2
     },
     "pages/scenes/GhostScene.tsx": {
-      "total": 7,
-      "prose": 4,
+      "total": 3,
       "template": 3
     },
     "pages/scenes/mission-control/MissionControlScene.tsx": {
-      "total": 19,
+      "total": 17,
       "array": 2,
-      "prose": 13,
+      "prose": 11,
       "template": 4
     },
-    "pages/scenes/mission-control/props.ts": {
-      "total": 3,
-      "prose": 3
-    },
     "pages/scenes/NeuralConstellationScene.tsx": {
-      "total": 14,
+      "total": 12,
       "array": 4,
-      "prose": 3,
+      "prose": 1,
       "template": 7
     },
     "pages/scenes/OfficeScene.tsx": {
-      "total": 11,
-      "prose": 9,
+      "total": 3,
+      "prose": 1,
       "template": 2
     },
     "pages/scenes/PandaOfficeScene.tsx": {
-      "total": 17,
+      "total": 7,
       "array": 4,
-      "prose": 11,
+      "prose": 1,
       "template": 2
     },
     "pages/scenes/UnderwaterLabScene.tsx": {
-      "total": 9,
-      "prose": 8,
+      "total": 2,
+      "prose": 1,
       "template": 1
     },
     "pages/scenes/WateringHoleScene.tsx": {
@@ -1035,8 +785,8 @@
       "template": 2
     },
     "pages/scenes/WizardTowerScene.tsx": {
-      "total": 11,
-      "prose": 10,
+      "total": 6,
+      "prose": 5,
       "template": 1
     },
     "pages/SchedulePage.tsx": {
@@ -1045,182 +795,114 @@
       "prose": 1,
       "template": 9
     },
-    "pages/SessionArchive.tsx": {
+    "pages/settings/AboutPanel.tsx": {
+      "total": 4,
+      "prose": 2,
+      "template": 2
+    },
+    "pages/settings/BotChannelPanel.tsx": {
+      "total": 8,
+      "array": 3,
+      "template": 5
+    },
+    "pages/settings/BrowserPanel.tsx": {
       "total": 1,
       "prose": 1
     },
-    "pages/settings/AboutPanel.tsx": {
-      "total": 15,
-      "expression": 3,
-      "object-prop": 2,
-      "prose": 7,
-      "template": 3
-    },
-    "pages/settings/BotChannelPanel.tsx": {
-      "total": 18,
-      "array": 3,
-      "expression": 2,
-      "object-prop": 1,
-      "prose": 3,
-      "status-call": 1,
-      "template": 8
-    },
-    "pages/settings/BrowserPanel.tsx": {
-      "total": 6,
-      "expression": 4,
-      "prose": 1,
-      "status-call": 1
-    },
-    "pages/settings/ChannelsPanel.tsx": {
-      "total": 5,
-      "prose": 5
-    },
     "pages/settings/ChatPanel.tsx": {
-      "total": 41,
-      "array": 4,
-      "expression": 9,
-      "object-prop": 8,
-      "prose": 9,
-      "template": 11
+      "total": 5,
+      "object-prop": 1,
+      "template": 4
     },
     "pages/settings/ComputerUsePanel.tsx": {
-      "total": 6,
-      "prose": 4,
+      "total": 2,
       "template": 2
     },
     "pages/settings/DisplayPanel.tsx": {
-      "total": 22,
-      "expression": 9,
+      "total": 12,
       "object-prop": 9,
-      "prose": 1,
       "template": 3
     },
     "pages/settings/InstancesPanel.tsx": {
-      "total": 27,
-      "expression": 9,
-      "prose": 6,
-      "template": 12
+      "total": 5,
+      "expression": 1,
+      "template": 4
     },
     "pages/settings/McpPoolableServers.tsx": {
       "total": 2,
       "template": 2
     },
     "pages/settings/NotificationsPanel.tsx": {
-      "total": 6,
-      "status-call": 1,
-      "template": 5
+      "total": 3,
+      "template": 3
     },
     "pages/settings/PostureDisclosure.tsx": {
-      "total": 6,
+      "total": 5,
       "expression": 2,
-      "template": 4
+      "template": 3
     },
     "pages/settings/SecurityPanel.tsx": {
-      "total": 34,
-      "expression": 10,
-      "object-prop": 2,
-      "prose": 10,
-      "template": 12
-    },
-    "pages/settings/SharedMcpGatewayToggle.tsx": {
-      "total": 15,
-      "expression": 15
+      "total": 9,
+      "prose": 2,
+      "template": 7
     },
     "pages/settings/ShortcutsPanel.tsx": {
-      "total": 2,
-      "expression": 1,
+      "total": 1,
       "template": 1
     },
-    "pages/settings/SkillsPanel.tsx": {
-      "total": 1,
-      "prose": 1
-    },
     "pages/settings/SlackPanel.tsx": {
-      "total": 17,
-      "array": 3,
-      "expression": 6,
-      "object-prop": 2,
-      "prose": 3,
+      "total": 3,
       "template": 3
     },
     "pages/settings/SttSettings.tsx": {
-      "total": 12,
+      "total": 4,
       "array": 1,
-      "expression": 5,
-      "prose": 4,
+      "prose": 1,
       "template": 2
     },
     "pages/settings/TeamsPanel.tsx": {
-      "total": 13,
+      "total": 4,
       "array": 3,
-      "expression": 6,
-      "object-prop": 1,
-      "prose": 2,
       "template": 1
     },
     "pages/settings/VoicePanel.tsx": {
-      "total": 2,
-      "prose": 2
-    },
-    "pages/settings/WebexPanel.tsx": {
-      "total": 12,
-      "array": 3,
-      "expression": 5,
-      "object-prop": 1,
-      "prose": 2,
-      "template": 1
-    },
-    "pages/settings/WeixinPanel.tsx": {
-      "total": 6,
-      "expression": 5,
+      "total": 1,
       "prose": 1
     },
+    "pages/settings/WebexPanel.tsx": {
+      "total": 1,
+      "template": 1
+    },
     "pages/SystemPage.tsx": {
-      "total": 9,
-      "object-prop": 4,
-      "prose": 4,
+      "total": 1,
       "template": 1
     },
     "pages/TelemetryPanel.tsx": {
-      "total": 8,
+      "total": 6,
       "prose": 5,
-      "template": 3
+      "template": 1
     },
     "providers/adapters/acp.ts": {
-      "total": 15,
-      "object-prop": 9,
-      "prose": 6
+      "total": 13,
+      "object-prop": 8,
+      "prose": 5
     },
     "store/chatSlice.ts": {
-      "total": 8,
-      "prose": 4,
+      "total": 4,
       "template": 4
     },
     "surfaces/builtins.tsx": {
-      "total": 23,
+      "total": 20,
       "object-prop": 18,
-      "prose": 5
-    },
-    "themeBranding.tsx": {
-      "total": 1,
-      "template": 1
-    },
-    "utils/chatPopout.ts": {
-      "total": 1,
-      "template": 1
+      "prose": 2
     },
     "utils/extractChatLinks.ts": {
       "total": 1,
       "template": 1
     },
     "utils/fileReadUrl.ts": {
-      "total": 4,
-      "expression": 2,
-      "prose": 2
-    },
-    "utils/fileTokens.ts": {
-      "total": 4,
-      "template": 4
+      "total": 2,
+      "expression": 2
     },
     "utils/offline.ts": {
       "total": 2,
@@ -1235,9 +917,9 @@
       "prose": 1
     },
     "utils/popoutController.ts": {
-      "total": 11,
-      "prose": 5,
-      "template": 6
+      "total": 5,
+      "prose": 1,
+      "template": 4
     },
     "utils/recencyTint.ts": {
       "total": 1,
@@ -1249,22 +931,13 @@
       "template": 1
     },
     "utils/sessionColors.ts": {
-      "total": 17,
+      "total": 14,
       "array": 12,
-      "expression": 3,
       "template": 2
     },
     "utils/terminalRegistry.ts": {
       "total": 1,
       "template": 1
-    },
-    "utils/tokenPrompt.ts": {
-      "total": 2,
-      "prose": 2
-    },
-    "utils/toolFilePath.ts": {
-      "total": 1,
-      "array": 1
     },
     "utils/tz.ts": {
       "total": 9,

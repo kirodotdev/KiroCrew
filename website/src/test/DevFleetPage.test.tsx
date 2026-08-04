@@ -292,10 +292,8 @@ describe('DevFleetPage', () => {
     })
     renderPage()
     await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
-    // Click the prune button
     const pruneBtn = screen.getByText('Prune merged')
     fireEvent.click(pruneBtn)
-    // Wait for the prune dialog to appear
     await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument(), { timeout: 3000 })
     // Candidates should have checkboxes
     expect(screen.getByText('merged-branch')).toBeInTheDocument()
@@ -351,6 +349,78 @@ describe('DevFleetPage', () => {
     // Menu is open (Rebase is always present) but Make live is omitted on the live row.
     expect(await screen.findByText('Rebase onto main')).toBeInTheDocument()
     expect(screen.queryByText('Make live')).toBeNull()
+  })
+
+  // --- pods unavailable on this host (non-Linux / no systemctl) ---
+  // Before pods_available existed, the backend computed a reason string and
+  // never sent it, so these controls rendered and silently failed.
+  const FLEET_NO_PODS = {
+    pods_available: false,
+    pods_unavailable_reason: 'Pods are Linux systemd --user units; this host is darwin. Preview a worktree with ./dev-backend.sh instead.',
+    worktrees: [
+      { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+      { name: 'feature-x', is_main: false, running: false, has_dist: true, behind: 0, path: '/wt/feature-x' },
+    ],
+  }
+
+  function mockFleet(payload: unknown) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+  }
+
+  it('explains WHY pods are unavailable instead of failing silently', async () => {
+    mockFleet(FLEET_NO_PODS)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    expect(screen.getByText('Pods are unavailable on this host.')).toBeInTheDocument()
+    // The backend's reason is surfaced verbatim, including the suggested fix.
+    expect(screen.getByText(/this host is darwin/)).toBeInTheDocument()
+    expect(screen.getByText(/dev-backend\.sh/)).toBeInTheDocument()
+  })
+
+  it('hides pod-dependent row actions when pods cannot run, but keeps the rest', async () => {
+    mockFleet(FLEET_NO_PODS)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('More actions'))
+    // Rebase is platform-neutral and stays -> proves the menu really opened.
+    expect(await screen.findByText('Rebase onto main')).toBeInTheDocument()
+    for (const gone of ['Spin up pod', 'Make live', 'QA + video', 'Stop pod', 'Restart pod']) {
+      expect(screen.queryByText(gone)).toBeNull()
+    }
+  })
+
+  it('keeps Provision available without pods (pod provision never touches systemd)', async () => {
+    mockFleet({
+      ...FLEET_NO_PODS,
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+        { name: 'unbuilt', is_main: false, running: false, has_dist: false, behind: 0, path: '/wt/unbuilt' },
+      ],
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unbuilt')).toBeInTheDocument())
+    expect(screen.getByText('Provision')).toBeInTheDocument()
+  })
+
+  it('keeps pod actions when the backend omits pods_available (older backend)', async () => {
+    // Absent field must not be read as "unsupported" — that would silently
+    // strip pod controls from a perfectly capable Linux host.
+    mockFleet({
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+        { name: 'feature-x', is_main: false, running: false, has_dist: true, behind: 0, path: '/wt/feature-x' },
+      ],
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    expect(screen.queryByText('Pods are unavailable on this host.')).toBeNull()
+    fireEvent.click(screen.getByLabelText('More actions'))
+    expect(await screen.findByText('Spin up pod')).toBeInTheDocument()
   })
 
   it('shows an inline "Make live" on the MAIN row when main is NOT live (switch back after cutover)', async () => {
@@ -467,7 +537,7 @@ describe('DevFleetPage', () => {
     expect(screen.getByText('feat: add pagination to users API')).toBeInTheDocument()
   })
 
-  /* ─── Row-actions dropdown: portal + flip (issue #146) ─── */
+  /* ─── Row-actions dropdown: portal + flip ─── */
   // A worktree row whose "More actions" menu has items: non-main, not live,
   // has_dist & not running → Spin up pod / Rebase onto main / Make live.
   const FLEET_MENU = {
@@ -563,7 +633,7 @@ describe('DevFleetPage', () => {
     expect(menu.style.top).toBe('')
   })
 
-  /* ─── Provision progress: expandable log panel + failure persistence (issue #231) ─── */
+  /* ─── Provision progress: expandable log panel + failure persistence ─── */
   // 'unprov' is the only non-main has_dist:false row, so it renders the single
   // "Provision" button. Provision polling uses real 2s sleeps, hence the
   // generous per-test timeouts and waitFor windows below.
@@ -634,8 +704,8 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(screen.getByText('Provision')).toBeInTheDocument(), { timeout: 6000 })
   }, 15000)
 
-  // FINDING 1: the single-flight guard returns {ok:false, run_id:<in-flight>}
-  // when a provision is already running. That must RESUME polling that run, not
+  // The single-flight guard returns {ok:false, run_id:<in-flight>} when a
+  // provision is already running. That must RESUME polling that run, not
   // render a false red "Provision failed" state.
   it('single-flight response (ok:false + run_id) resumes polling instead of failing', async () => {
     let polledInflight = false
@@ -663,9 +733,9 @@ describe('DevFleetPage', () => {
     expect(screen.queryByText(/Provision failed/)).toBeNull()
   }, 15000)
 
-  // FINDING 3: /api/run tail-truncates to the last ~60 lines, so early output
-  // scrolls out of later windows. The client accumulates windows, so an early
-  // line remains visible even after it has left the server's window.
+  // /api/run tail-truncates to the last ~60 lines, so early output scrolls out
+  // of later windows. The client accumulates windows, so an early line remains
+  // visible even after it has left the server's window.
   it('accumulates log output across polls so early lines survive the server window', async () => {
     let call = 0
     vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
@@ -740,10 +810,47 @@ describe('DevFleetPage', () => {
     expect(screen.getByText('pod still active after shutdown')).toBeInTheDocument()
     expect(screen.getByText('Prune complete')).toBeInTheDocument()
   }, 15000)
+
+  it('refetches the fleet with fresh=1 once a prune finishes', async () => {
+    // The backend serves /fleet from a stale-while-revalidate cache, so a plain
+    // refetch after a prune returns the PRE-prune snapshot and the removed rows
+    // keep rendering. The post-action refresh must force a rebuild.
+    const fleetUrls: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) {
+        fleetUrls.push(u)
+        return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      }
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/prune-candidates')) return Promise.resolve(new Response(JSON.stringify({
+        ok: true, candidates: [{ name: 'wt-a', code: 'merged' }], kept: [], scanned: 1,
+      }), { status: 200 }))
+      if (u.includes('/prune-run')) return Promise.resolve(new Response(JSON.stringify({ ok: true, total: 1 }), { status: 200 }))
+      if (u.includes('/prune-status')) return Promise.resolve(new Response(JSON.stringify({
+        running: false, total: 1, done: 1, current: null,
+        results: [{ name: 'wt-a', ok: true }],
+        items: { 'wt-a': { status: 'done', error: null } },
+      }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    // The initial load must NOT force a rebuild — only post-action refreshes do.
+    expect(fleetUrls.every((u) => !u.includes('fresh=1'))).toBe(true)
+
+    fireEvent.click(screen.getByText('Prune merged'))
+    await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Remove selected'))
+    await waitFor(
+      () => expect(fleetUrls.some((u) => u.includes('fresh=1'))).toBe(true),
+      { timeout: 8000 },
+    )
+  }, 15000)
 })
 
-// FINDING 3 (unit): the overlap-merge algorithm behind client-side log
-// accumulation — dedupes the overlapping suffix/prefix and appends the rest.
+// The overlap-merge algorithm behind client-side log accumulation — dedupes
+// the overlapping suffix/prefix and appends the rest.
 describe('mergeLogWindow', () => {
   it('returns the window when the buffer is empty', () => {
     expect(mergeLogWindow([], ['a', 'b'])).toEqual(['a', 'b'])
@@ -788,8 +895,8 @@ describe('pruneVerdictLabel', () => {
 })
 
 
-// Restart identity handshake (issue #639): "recovered" means a DIFFERENT start
-// identity appeared, never "a 200 came back".
+// Restart identity handshake: "recovered" means a DIFFERENT start identity
+// appeared, never "a 200 came back".
 describe('gatewayRecovered', () => {
   it('is true only when a captured id and a different current id are both present', () => {
     expect(gatewayRecovered('100', '200')).toBe(true)

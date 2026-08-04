@@ -255,8 +255,8 @@ _HOOK_TIMEOUT_MAX = 3593  # ~1 hour — prime for same reason
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home" and
-# issue #874; dashboard/handlers/usage.py is the reference implementation.
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
 _HOOK_STORE_PATH: Path | None = None
 
 
@@ -436,7 +436,7 @@ async def _run_hook_inner(
             break
     state.sessions.record_success(session_key)  # sync; record_failure is async
 
-    # ── Per-turn usage row (issue #647): attribute webhook spend. ──
+    # ── Per-turn usage row: attribute webhook spend. ──
     try:
         # circular import: reached while kiro_crew.slack.handler is still
         # initialising (dashboard/handlers/files.py imports is_tracked_channel

@@ -214,7 +214,6 @@ class ChannelHistory:
         # Boundary-aware containment: a bare str.startswith has no trailing
         # separator, so a sibling dir sharing the prefix (e.g. ".../hist-evil"
         # vs ".../hist") would pass. is_relative_to compares path components.
-        # (#428)
         if not path.is_relative_to(history_root):
             logger.warning("Refusing unsafe history path for channel %s", channel_id)
             return None

@@ -92,6 +92,25 @@ export interface PullRequest {
   /** True when the PR has more checks than one API page, so `checks_counts` is
    * incomplete and the card must show the aggregate rollup instead. */
   checks_truncated?: boolean
+  /**
+   * Merge READINESS, in the same vocabulary as the detail pane's `mergeable_state`
+   * (GitHub's `mergeable_state` / GraphQL's lowercased `mergeStateStatus`).
+   *
+   * On the LIST row because a bulk action cannot otherwise tell the two merge verbs
+   * apart: `clean` means mergeable NOW (GitHub *refuses* to arm auto-merge — "Pull
+   * request is in clean status"), while `blocked`/`behind`/`unstable` mean not yet,
+   * which is what auto-merge is for. Without it the bulk bar offered auto-merge for
+   * every ticked row and GitHub rejected each ready one individually.
+   *
+   * `null` / absent means UNKNOWN — GitHub computes mergeability asynchronously, so a
+   * cold read answers `unknown`. Treat it as "cannot tell", never as "not ready": a
+   * gate that cannot tell must refuse rather than guess.
+   */
+  mergeable_state?: string | null
+  /** Whether the PR has no merge CONFLICTS. Deliberately NOT "ready to merge" —
+   * a PR with unsatisfied required reviews is `mergeable: true` with
+   * `mergeable_state: 'blocked'`. `null` means unknown. */
+  mergeable?: boolean | null
   body?: string
 }
 
@@ -593,8 +612,8 @@ export type TaggingSuggestions = Record<string, SuggestedLabel[]>
 
 /** One row of the untagged queue. Carried in the response rather than resolved
  * client-side against the shared issue list, which follows the user's
- * open/closed filter — entering Tagging from a Closed filter used to show an
- * empty queue even with untagged issues waiting. */
+ * open/closed filter — resolving it client-side would show an empty queue when
+ * entering Tagging from a Closed filter even with untagged issues waiting. */
 export interface UntaggedIssue {
   number: number
   title: string
@@ -791,11 +810,10 @@ async function parseErrorBody(r: Response): Promise<string> {
 
 /** The full identity of a connected repository.
  *
- * Issue Radar was GitHub-only, so `owner`/`repo` used to be the whole identity.
- * GitLab adds the provider and — for self-managed instances — the HOST, because
- * `group/project` names an entirely different project on gitlab.com than on a
- * private instance. Every API call therefore takes a ref rather than two loose
- * strings, so a call cannot be made without saying WHICH repo it means.
+ * A ref is `owner`/`repo` plus the provider and — for self-managed instances —
+ * the HOST, because `group/project` names an entirely different project on
+ * gitlab.com than on a private instance. Every API call takes a ref rather than
+ * two loose strings, so a call cannot be made without saying WHICH repo it means.
  *
  * `provider`/`host` are optional and default to public GitHub server-side, so a
  * legacy `ConnectedRepo` record (written before GitLab support) is a valid ref.

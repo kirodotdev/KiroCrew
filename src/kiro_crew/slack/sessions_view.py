@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home" and
-# issue #874; dashboard/handlers/usage.py is the reference implementation.
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
 _SESSIONS_DIR: Path | None = None
 _SESSIONS_MAX_MSG_CHARS = 4000
 _SESSIONS_MAX_PREVIEW = 5
@@ -75,10 +75,9 @@ def _classify_session_key(key: str) -> str:
 def _default_session_title(key: str, kind: str) -> str:
     """Build a default title for a session that has no metadata title.
 
-    The taskrunner branch mirrors the prior slash-command behavior of
-    dropping the leading ``taskrunner_`` plus the next segment so that
-    on-disk keys like ``taskrunner_run_<task_id>`` (from ``taskrunner.py``
-    after ``_safe_key`` colon→underscore mangling) render as
+    The taskrunner branch drops the leading ``taskrunner_`` plus the next
+    segment so that on-disk keys like ``taskrunner_run_<task_id>`` (from
+    ``taskrunner.py`` after ``_safe_key`` colon→underscore mangling) render as
     ``Task Runner <task_id>`` instead of ``Task Runner run_<task_id>``.
     """
     if kind == _SESSION_KIND_DASHBOARD:
@@ -228,8 +227,8 @@ def _build_sessions_blocks(
         # session_task_card. Message content is redacted by session_task_card
         # itself: blocks._msg_elements -> security.redact_and_truncate, which
         # applies BOTH redact_exfiltration_urls() and redact_credentials() in
-        # the same order as the pre-refactor inline code (exfiltration first,
-        # then credentials). Section/task-card title and agent strings, plus
+        # that order (exfiltration first, then credentials). Section/task-card
+        # title and agent strings, plus
         # the Home-Tab section text, still need explicit redaction here
         # because they bypass _msg_elements entirely.
         safe_title, _ = redact_exfiltration_urls(row["title"])

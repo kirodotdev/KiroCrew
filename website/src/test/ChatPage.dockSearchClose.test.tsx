@@ -1,20 +1,20 @@
 /**
  * Regression test: opening a right-dock panel closes the find pane.
  *
- * The bug this pins: the right-hand dock is a single slot. The find/search
- * pane renders on `search.isOpen` and takes precedence — every other dock
- * panel (file viewer via `panel`, diff via `diffPanel`) is render-gated
- * behind `!search.isOpen`. The open handlers (`handleFileOpen`,
- * `handleOpenDiff`) set their panel state but originally did NOT close the
- * find pane, so the requested panel opened *underneath* the find pane and
- * only became visible once the user manually closed find ("layered").
+ * The behavior this pins: the right-hand dock is a single slot. The
+ * find/search pane renders on `search.isOpen` and takes precedence — every
+ * other dock panel (file viewer via `panel`, diff via `diffPanel`) is
+ * render-gated behind `!search.isOpen`. If the open handlers (`handleFileOpen`,
+ * `handleOpenDiff`) set their panel state without closing the find pane, the
+ * requested panel opens *underneath* the find pane and only becomes visible
+ * once the user manually closes find ("layered").
  *
- * The fix: both open handlers call `search.close()` directly (the
- * `useMessageSearch` hook is hoisted above the handlers) so the find pane
- * closes and the requested panel renders immediately. This test drives the
- * real ChatPage handlers (via a stub AssistantMessage that calls the passed
- * `onOpenDiff` / `onFileOpen` props) with the find pane open and asserts the
- * find input disappears and the target panel appears.
+ * So both open handlers call `search.close()` directly (the `useMessageSearch`
+ * hook is hoisted above the handlers) so the find pane closes and the requested
+ * panel renders immediately. This test drives the real ChatPage handlers (via a
+ * stub AssistantMessage that calls the passed `onOpenDiff` / `onFileOpen`
+ * props) with the find pane open and asserts the find input disappears and the
+ * target panel appears.
  *
  * Uses the REAL usePanelState / useDiffPanel / useMessageSearch hooks so the
  * single-dock precedence + close-on-open wiring is exercised end to end.
@@ -259,7 +259,7 @@ describe('ChatPage – opening a dock panel closes the find pane', () => {
 
 
 // The per-message identity resolver ChatPage feeds virtualKeyFor: prefer the
-// optimistic clientTs (the #253 steer-bubble stability fix), then ts, then a
+// optimistic clientTs (for steer-bubble stability), then ts, then a
 // stable minted id for ts-less messages. Mirrors the component's stableMsgKey
 // so these unit tests exercise the real key derivation.
 const makeMsgKey = () => {

@@ -1,8 +1,22 @@
+---
+title: Config System, Named Memory Stores & Plugin Architecture
+status: partial
+author: KiroCrew contributors
+created: 2026-03-25
+last-audited: 2026-08-03
+audited-at: 0ab6ed48
+doc-pr: null
+implementation-prs: []
+tracking-issues: []
+supersedes: []
+superseded-by: []
+---
 # RFC: Config System, Named Memory Stores & Plugin Architecture
 
 **Author:** KiroCrew contributors  
 **Date:** 2026-03-25 (rev 2: 2026-03-25)  
-**Status:** Draft  
+**Status:** partial — Phases 1 and 2 are verifiably on main (schema registry + `/api/config/schema`; `WorkspaceConfig`, `MemoryStoreConfig`, `resolve_agent_bindings` with seven real callers, auto-migration). Phase 3 is half-built: the markdown/lesson layer is store-scoped, but **per-store `memory.db`/`memory.faiss` isolation was affirmatively reversed** by commit `7d1ff74e`, which shares one `VectorMemoryStore` across all stores — this doc's Phase 3 text is stale on that point. Phase 4 (`MemoryBackend` / `EmbeddingBackend` plugin entry points) is unstarted. Two deviations: the merge shipped as `resolve_memory_store_config`, not `resolve_effective_config`, and per-workspace `agent` overrides were never built.
+**Branches:** both named below are **gone** — neither `feat/workspace-scoped-vector-memory` nor `config-standarize-` exists on the remote; Phases 1–2 landed via the pre-fork import commit `64e47961`.
 **Branch (parked):** `feat/workspace-scoped-vector-memory`  
 **Branch (active):** `config-standarize-`
 

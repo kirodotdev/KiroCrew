@@ -6,14 +6,12 @@ mapping so the gateway's ancestor PID-walk can resolve the caller's
 ``X-Session-Key`` for session-keyed managed MCP tools (``learn_add``, cron
 management, and every other such handler). When a surface omits it the header
 is empty and those tools reject the call with HTTP 400 ``missing
-X-Session-Key`` (#232).
+X-Session-Key``.
 
 The obligation lives here — in one function every turn-running surface calls —
-rather than as a copy-pasted, per-surface opt-in block. That duplication is the
-architectural root cause of #232: two pre-existing writers (dashboard, native
-Slack) did not stop five channel dispatchers from shipping the gap. Centralizing
-means a new channel gets identity publication by calling one function, and any
-change to the publish contract happens in exactly one place.
+rather than as a copy-pasted, per-surface opt-in block: centralizing means a new
+channel gets identity publication by calling one function, and any change to the
+publish contract happens in exactly one place.
 """
 
 from __future__ import annotations
@@ -69,7 +67,7 @@ def _channel_inbound_permitted_sync(channel_type: str) -> bool:
     Fail-CLOSED: an inbound message is externally reachable, so an internal
     governance-evaluation error DENIES (returns False) rather than dispatching an
     ungoverned turn. Default OSS build (no ``channels`` policy) → permits, so inbound
-    handling is byte-identical to today. Does blocking profile-file I/O, so callers
+    handling is unchanged. Does blocking profile-file I/O, so callers
     MUST offload it (see :func:`channel_inbound_permitted`).
     """
     try:

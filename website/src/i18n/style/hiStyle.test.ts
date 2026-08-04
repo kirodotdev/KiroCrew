@@ -50,8 +50,7 @@ describe('hi tone (style/hi.md §4)', () => {
     // Formal आप should be तुम (informal). `अपने-आप` / `अपने आप` is a DIFFERENT
     // word meaning "automatically" and merely contains those two letters, so a
     // substring check conflates them: of the 127 values matching the substring,
-    // 8 are `अपने-आप` and have nothing to do with formality. The old baseline of
-    // 127 was that substring count; the genuine figure is 119.
+    // 8 are `अपने-आप` and have nothing to do with formality, leaving 119 genuine.
     const bad = Object.entries(hi)
       .filter(([, v]) => v.replace(/अपने[-\s]?आप/g, '').includes('आप'))
       .map(([k]) => k)

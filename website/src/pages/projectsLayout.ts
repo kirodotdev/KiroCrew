@@ -6,8 +6,8 @@ import { loadColumnCollapsed, loadColumnWidth } from '../lib/columnWidth'
 export const RAIL_WIDTH_KEY = 'kc:task-runner:rail-width'
 export const RAIL_COLLAPSED_KEY = 'kc:task-runner:rail-collapsed'
 
-/** Matches the rail's former fixed `w-[260px]`, so an existing user sees no jump
- * the first time they load the resizable version. */
+/** Default rail width, matching the rail's fixed baseline so first load has no
+ * layout jump. */
 export const DEFAULT_RAIL_WIDTH = 260
 export const MIN_RAIL_WIDTH = 220
 export const MAX_RAIL_WIDTH = 460

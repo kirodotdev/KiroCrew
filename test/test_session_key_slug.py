@@ -85,8 +85,8 @@ class TestNormalizeSlotKey:
 
     def test_display_name_folds_to_filename_charset(self):
         assert (
-            _normalize_slot_key("Artifact: 2026 Code Activity Benchmark - nrb vs Dan Lloyd Org")
-            == "Artifact__2026_Code_Activity_Benchmark_-_nrb_vs_Dan_Lloyd_Org"
+            _normalize_slot_key("Artifact: 2026 Example Benchmark Report - alice vs Bob Smith Org")
+            == "Artifact__2026_Example_Benchmark_Report_-_alice_vs_Bob_Smith_Org"
         )
 
     def test_composes_ascii_fold_then_filename_fold(self):

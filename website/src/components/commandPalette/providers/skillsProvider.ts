@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../../../api/client'
+import { i18nT } from '../../../i18n/t'
 import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import { resolveInvokableEnter, usePaletteActions } from '../paletteActions'
 import type { Result, ResourceProvider } from '../types'
@@ -29,15 +30,21 @@ import type { Result, ResourceProvider } from '../types'
  * allowlisted resolution. No filesystem path is built from user input here and
  * no second resolution path is introduced (see `paletteActions.ts`).
  *
- * Matching is a client-side {@link fuzzyMatch} over the skill **name** (per the
- * task spec). The list is cached under the React-Query key `['skills']` (shared
+ * Matching is a client-side {@link fuzzyMatch} over the skill **name**. The
+ * list is cached under the React-Query key `['skills']` (shared
  * with `SkillsTab` / the inline `$`-picker) so reopening the palette is free.
  * Highlight `indices` index into the rendered `title` and are emitted as React
  * nodes by the palette, never as HTML strings (`frontend-security` lint rule).
  */
 
 const PROVIDER_ID = 'skills'
-const PROVIDER_LABEL = 'Skills'
+
+/**
+ * Catalog KEY for the palette tab label — resolved by the `label` getter below,
+ * not here. This constant is initialised at module load, so an `i18nT()` call at
+ * this position would freeze whatever language was active at boot.
+ */
+const PROVIDER_LABEL_KEY = 'components.commandPalette.providers.skillsProvider.skills'
 
 /** Cache the skill list briefly; reuses the `['skills']` React-Query entry. */
 const SKILLS_STALE_MS = 30_000
@@ -105,7 +112,12 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
 
   return {
     id: PROVIDER_ID,
-    label: PROVIDER_LABEL,
+    // A getter, not a value: the provider object is built once inside
+    // `useSkillsProvider`'s `useMemo`, whose deps do not include the language, so
+    // a plain `label: i18nT(…)` would resolve once per mount. Reading it through
+    // an accessor moves the lookup to the consumer's render, which is where the
+    // tab strip reads it. Satisfies `ResourceProvider.label: string`.
+    get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: skillIcon(),
     async search(query: string): Promise<Result[]> {
       const skills = (await fetchSkills()) ?? []
@@ -119,7 +131,7 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
         if (seen.has(s.name)) continue
         seen.add(s.name)
         const title = s.name
-        // Fuzzy-match over the skill name (task spec); indices align with title.
+        // Fuzzy-match over the skill name; indices align with title.
         const match = fuzzyMatch(query, title)
         if (!match) continue
         const token = `$${s.name}`
@@ -132,13 +144,13 @@ export function createSkillsProvider(deps: SkillsProviderDeps): ResourceProvider
           icon: skillIcon(),
           score: match.score,
           indices: match.indices,
-          // Declarative Enter contract (§2 / task 24). The central
+          // Declarative Enter contract (§2). The central
           // `dispatchEnter` in CommandPalette routes on this: primary Enter is
           // context-aware (insert `$<skill>` into the active composer, else new
           // seeded session) and ⌘Enter is always a new seeded session, both
           // keyed off `token`. `source` (the SKILL.md path) backs ⌥Enter
-          // preview. The `on*Activate` closures below stay as the legacy/mouse
-          // execution + pre-migration fallback.
+          // preview. The `on*Activate` closures below back the mouse-execution
+          // + fallback path.
           enter: { kind: 'insert-token', token, tokenKind: 'skill', source: s.path },
           // §2 matrix: Enter is context-aware; ⌘Enter is always new-session;
           // ⌥Enter opens the doc. The resolver is invoked at *activation* time

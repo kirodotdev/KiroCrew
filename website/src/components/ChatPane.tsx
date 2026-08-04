@@ -27,11 +27,11 @@ import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
 /**
- * ChatPane — one live chat session in the native session grid (Path B S3 + S3d).
+ * ChatPane — one live chat session in the native session grid.
  *
  * Renders the REAL native <ChatInput> inside <SlotProvider> with the full
  * per-slot composer (model/agent/approval-mode pickers, attachments, QueueStack).
- * Messages stream live from the store (S1/S2); per-slot metadata comes from
+ * Messages stream live from the store; per-slot metadata comes from
  * s.dashboard.slots. Server reads/writes go through React Query + the api client.
  */
 export default function ChatPane({
@@ -64,8 +64,8 @@ export default function ChatPane({
   const streamState = useAppSelector((s) => selectSlotStreamState(s, slotKey))
   const running = streamState !== 'idle'
   // Per-slot context-window usage for the input-bar ring (mirrors ChatPage; the
-  // store already keys these by slot, the pane just never read them). Default 0
-  // so the ring always renders, exactly like single chat.
+  // store keys these by slot). Default 0 so the ring always renders, exactly
+  // like single chat.
   const contextPct = useAppSelector((s) => s.chat.slotContextPct[slotKey] ?? 0)
   const contextTokens = useAppSelector((s) => s.chat.slotContextTokens?.[slotKey])
   const paneSlot = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey))
@@ -90,10 +90,10 @@ export default function ChatPane({
   // Mirrors ChatPage — split view (⌘D) is a second live QueueStack consumer.
   //
   // Memoized on `allMessages`: this pane OWNS the composer `input` state, so it
-  // re-renders on every keystroke. Recomputing these in the render body handed
-  // `messages` a fresh array identity per character, which permanently defeated
-  // the memo() on ChatMessageList and re-ran its O(N) turn grouping while the
-  // user typed.
+  // re-renders on every keystroke. Recomputing these in the render body would
+  // hand `messages` a fresh array identity per character, defeating the memo()
+  // on ChatMessageList and re-running its O(N) turn grouping while the user
+  // types.
   const { messages, queuedMessages, systemDeliveryCount } = useMemo(
     () => splitPaneMessages(allMessages),
     [allMessages],
@@ -101,7 +101,7 @@ export default function ChatPane({
 
   // Pickers — same hooks/data sources ChatPage uses, but selection targets THIS slot.
   // Subscribes to the store's global refresh so a default-agent write in ANY pane (or
-  // in single chat) lands here too; a per-hook refresh left sibling pickers stale.
+  // in single chat) lands here too; a per-hook refresh would leave sibling pickers stale.
   const agentsRefreshTrigger = useAppSelector((s) => s.dashboard.refreshTrigger ?? 0)
   const { agents: installedAgents, defaultAgent } = useAgents(agentsRefreshTrigger)
   const navigate = useNavigate()

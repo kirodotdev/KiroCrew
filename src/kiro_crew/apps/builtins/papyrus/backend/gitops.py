@@ -25,15 +25,21 @@ import logging
 import os
 import re
 import shutil
+import stat
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.apps.builtins.papyrus.backend import procio
+from kiro_crew.apps.builtins.papyrus.backend import procio, store
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    SandboxUnavailableError,
+    create_subprocess_limited,
+    sandboxed_spawn_argv,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kirocrew.app.papyrus")
@@ -82,6 +88,19 @@ class GitError(Exception):
 
 class GitConflict(GitError):
     """A pull could not be applied because of a real conflict."""
+
+
+class GitSandboxUnavailable(GitError):
+    """git never ran: this host could not build an OS-level sandbox.
+
+    A subclass so existing ``except GitError`` handlers keep working, but the
+    route layer can answer with its own code: the remedy is an operator config
+    change (``agent.sandbox_allow_unsandboxed_exec``, per
+    ``docs/WINDOWS_CHANGES.md``), not anything about the repository. Reported
+    rather than bypassed — push runs in ``standard`` mode precisely because an
+    SSH push needs the key, so silently dropping the wrap would hand an
+    agent-writable repo config a shell with ``~/.ssh`` in reach.
+    """
 
 
 @dataclass
@@ -206,11 +225,11 @@ def _pin_attributes_sync(cwd: Path) -> None:
     delete this file, so a once-at-clone-time pin would be removable by the very actor it
     defends against.
 
-    **Appended, never written over.** The first version of this used
-    ``write_text(_ATTRIBUTES_PIN)``, which silently destroyed a user's own
-    ``.git/info/attributes`` — their ``text eol=lf`` and ``binary`` rules were replaced by
-    our one line on the next status poll, and nothing said so. This file is
-    checkout-local, so git never restores it: the loss is permanent and invisible.
+    **Appended, never written over.** Overwriting with
+    ``write_text(_ATTRIBUTES_PIN)`` would silently destroy a user's own
+    ``.git/info/attributes`` — their ``text eol=lf`` and ``binary`` rules replaced by
+    our one line on the next status poll, with nothing to say so. This file is
+    checkout-local, so git never restores it: the loss would be permanent and invisible.
 
     Appending keeps the guarantee, because git resolves attributes per NAME with the LAST
     match winning — not per line. So a user rule for ``eol``/``text``/``binary`` survives
@@ -230,24 +249,85 @@ def _pin_attributes_sync(cwd: Path) -> None:
         # pin cannot be placed where git will read it. Papyrus projects are clones or
         # fresh inits, so this is not a shape it creates — refuse rather than run a git
         # command with attribute-driven programs live.
+        _audit("pin_attributes", str(cwd), "denied", error=".git is not a directory")
         raise GitError("refusing to run git: the project's .git is not a directory")
     info = git_dir / "info"
-    info.mkdir(parents=True, exist_ok=True)
     target = info / "attributes"
+    # A SYMLINK at either name is refused outright, before anything is read or
+    # written. Both are paths KiroCrew owns and writes BY NAME, so a link there is
+    # illegitimate wherever it points — the same rule `store._config_path` applies
+    # for the same reason. Two concrete failures this closes:
+    #   * `attributes -> /dev/null` (or any file) made the pin unobservable, so
+    #     `read_text` returned no pin, the append went somewhere else, and the
+    #     guard was SILENTLY inert forever while a tree `.gitattributes` won;
+    #   * the write followed the link, so a status poll appended our line to an
+    #     arbitrary file and read that file's contents back into `existing`.
+    # `info` is checked too: `mkdir(exist_ok=True)` is a no-op on an existing link,
+    # so a directory link would relocate the write just as effectively.
+    #
+    # And `.git` ITSELF — the outermost of the three. Checking only the two inner
+    # names left the whole chain rooted on an unverified link: with `.git` pointing
+    # at ANOTHER repository, `info` and `attributes` are legitimate non-links
+    # *inside that repo*, so both inner checks pass and a `GET /git` status poll
+    # rewrites a different repository's attributes, outside this project entirely.
+    # Verified before the fix. The rule has to hold for every segment KiroCrew
+    # traverses by name, not just the leaf.
+    #
+    # `store.is_reparse_link`, not `is_symlink()`: a Windows directory JUNCTION is a
+    # reparse point `is_symlink()` does not report, and it is the link type a user
+    # can create there without elevation — so a symlink-only check left this guard
+    # bypassable on the platform this PR adds support for.
+    if (
+        store.is_reparse_link(git_dir)
+        or store.is_reparse_link(info)
+        or store.is_reparse_link(target)
+    ):
+        # SEL-audited before raising, like every other refusal on this path: this is a
+        # security DECISION (a link where KiroCrew owns the name), and a denial that
+        # leaves no tamper-evident record is indistinguishable afterwards from an
+        # operation that never happened.
+        _audit("pin_attributes", str(cwd), "denied", error="attributes path is a link")
+        raise GitError("refusing to run git: the project's .git/info/attributes is a symlink")
+    info.mkdir(parents=True, exist_ok=True)
     try:
         existing = target.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         existing = ""
-    # Idempotent: the pin is re-established every call, so it must not accumulate. The
-    # check is for the pin as its own LINE — a substring test would match it inside a
-    # comment, and a `.strip()` comparison would miss it when other rules are present.
-    if _ATTRIBUTES_PIN.strip() in existing.splitlines():
-        return
-    # LAST, so it wins for the attributes it names. A trailing newline is added when the
-    # existing content lacks one, or the pin would splice onto the user's final rule and
-    # change what that line means.
-    prefix = existing if not existing or existing.endswith("\n") else existing + "\n"
-    target.write_text(prefix + _ATTRIBUTES_PIN, encoding="utf-8")
+    # The pin must end up LAST, because git resolves attributes per NAME with the
+    # LAST match winning. So "already present" is NOT a safe reason to skip: an
+    # attacker (or the co-author agent, which can write into the project) could
+    # pre-seed the pin line and follow it with `* filter=x`, which then WINS while
+    # the early return kept us from re-appending. Verified against real git: with
+    # the line pre-seeded, `check-attr` reported `filter: x`.
+    #
+    # Idempotence is preserved differently — strip every existing copy of the pin,
+    # then append exactly one. Repeat calls produce identical content (so it still
+    # cannot accumulate), but the pin's POSITION is re-established every time,
+    # which is the property that actually matters.
+    kept = [ln for ln in existing.splitlines() if ln.strip() != _ATTRIBUTES_PIN.strip()]
+    body = "".join(f"{ln}\n" for ln in kept)
+    # `atomic_write` (temp file + rename), NOT `write_text`, because this is a
+    # read-modify-write on a file two concurrent requests can touch — a toolbar
+    # status poll and a push both call this. `write_text` TRUNCATES before it
+    # writes, so an overlapping reader could observe the empty window, keep
+    # nothing, and rename its own pin-only content over the user's rules — losing
+    # `text eol=lf`/`binary` permanently, since this file is checkout-local and git
+    # never restores it. The rename also means a reader sees either the old file or
+    # the new one, never a partial pin (which would silently not be a valid guard).
+    # Carry the existing mode across the replacement. `atomic_write` renames a fresh
+    # temp file into place, so without this the new file gets the default (typically
+    # 0644) and a user who had deliberately tightened `.git/info/attributes` to 0600
+    # would find it world-readable after any status poll — a silent permission
+    # downgrade performed by a guard that is supposed to be protective. `None` on a
+    # first write (nothing to preserve) and on Windows, where the POSIX bits are not
+    # the ACL that governs.
+    mode: int | None = None
+    if not platform_compat.IS_WINDOWS:
+        try:
+            mode = stat.S_IMODE(target.stat().st_mode)
+        except OSError:
+            mode = None
+    atomic_write(target, body + _ATTRIBUTES_PIN, newline="", mode=mode)
 
 
 async def _git(
@@ -304,9 +384,8 @@ async def _git(
         "-c",
         "core.hooksPath=/dev/null",
         # `core.fsmonitor` holds the PATHNAME OF A HOOK that `git status`/`add` run on
-        # every invocation — the same class as `sshCommand`, and the one this list first
-        # missed. `false` is the documented "no monitor" value; an empty string would be
-        # read as a path.
+        # every invocation — the same class as `sshCommand`. `false` is the documented
+        # "no monitor" value; an empty string would be read as a path.
         "-c",
         "core.fsmonitor=false",
         "-c",
@@ -342,9 +421,18 @@ async def _git(
     # would otherwise stall the single loop — chat, cron and the liveness
     # heartbeat — for up to five seconds. Same form and reason as `latex._run` and
     # `apps/builtins/dev_fleet/server.py`.
-    wrapped, env, cleanup = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), sandboxed_spawn_argv, argv
-    )
+    try:
+        wrapped, env, cleanup = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), sandboxed_spawn_argv, argv
+        )
+    except SandboxUnavailableError as exc:
+        # Translated, not bypassed. See `GitSandboxUnavailable` — the wrap is what
+        # keeps an agent-written repo config from reaching a shell on the one path
+        # that deliberately keeps `~/.ssh` visible. Previously this escaped as an
+        # unhandled 500, so on a Windows host (no sandbox backend exists there)
+        # every clone/commit/push/pull reported "internal error" and named no fix.
+        _audit(args[0] if args else "run", str(cwd), "denied", error="sandbox unavailable")
+        raise GitSandboxUnavailable(str(exc)) from exc
     # A push/pull must never block on an interactive credential prompt: the
     # gateway has no terminal, so the child would hang until the timeout.
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -355,7 +443,7 @@ async def _git(
     # It is fixed HERE, in the env, and not with a `-c` override, because `core.gitProxy`
     # is MULTI-VALUED: `-c` APPENDS a value rather than replacing, git uses the first
     # match, and the repo's own value is read first. Tested — `-c core.gitProxy=none`
-    # (the obvious remedy, and the one suggested in review), `=` and `=true` ALL still
+    # (the obvious remedy), `=` and `=true` ALL still
     # executed the script, and `git -c core.gitProxy=none config --get-all core.gitProxy`
     # prints the repo's value *and* ours, which is why. `GIT_PROXY_COMMAND` is the
     # documented env equivalent and takes precedence over every config scope; verified it
@@ -470,9 +558,15 @@ async def clone(url: str, destination: Path) -> None:
 
 
 async def _remove_tree(path: Path) -> None:
-    """Remove a partially-cloned directory off the event loop."""
+    """Remove a partially-cloned directory off the event loop.
+
+    ``rmtree_force`` rather than ``ignore_errors``: a partial clone already has
+    ``.git/objects``, whose loose objects git writes read-only, and on Windows
+    that attribute blocks the unlink itself — so the abandoned clone would stay
+    on disk and keep its project name taken.
+    """
     if await asyncio.to_thread(path.is_dir):
-        await asyncio.to_thread(shutil.rmtree, path, True)
+        await asyncio.to_thread(platform_compat.rmtree_force, path)
 
 
 async def status(project: Path) -> GitStatus:

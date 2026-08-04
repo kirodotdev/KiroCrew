@@ -170,8 +170,8 @@ describe('fmtUnit', () => {
 
 describe('fmtDate / fmtTime / fmtDateTime / the numeric widths', () => {
   it('renders the phase gate\'s named example for zh-CN', async () => {
-    // Golden, and the literal the Phase 4 acceptance gate names: "a zh-CN UI on
-    // an en-US browser renders 2026年7月30日".
+    // Golden — the exact literal a zh-CN UI on an en-US browser must render:
+    // "2026年7月30日".
     await withLanguage('zh-CN', () => {
       expect(fmtDate(INSTANT, UTC)).toBe('2026年7月30日')
     })
@@ -197,12 +197,11 @@ describe('fmtDate / fmtTime / fmtDateTime / the numeric widths', () => {
   })
 
   it('reproduces every bare toLocale* default byte for byte, in every shipped locale', async () => {
-    // The contract that makes the Phase 4 batch-3 migration reviewable: the 21
-    // call sites that passed NO options rendered the locale's own all-numeric
-    // width, seconds included. These three helpers are that width, so swapping
-    // `d.toLocaleString()` for `fmtDateTimeNumeric(d)` changes WHICH locale is
-    // read and nothing else — English output is unchanged, which is why this is a
-    // formatting-source fix and not a restyle.
+    // The contract these three helpers hold: a call site that passes NO options
+    // renders the locale's own all-numeric width, seconds included. These helpers
+    // are that width, so using `fmtDateTimeNumeric(d)` in place of
+    // `d.toLocaleString()` changes WHICH locale is read and nothing else —
+    // English output is unchanged.
     //
     // Asserted against the platform call itself rather than a golden literal, so
     // a CLDR data change moves both sides together instead of turning this red.
@@ -222,9 +221,8 @@ describe('fmtDate / fmtTime / fmtDateTime / the numeric widths', () => {
 
   it('keeps the second that the numeric widths carry and the style presets drop', () => {
     // `fmtTime`/`fmtDateTime` use `timeStyle: 'short'`, which has no second. Log
-    // rows, cron execution lists and the next-run tooltip came off a bare
-    // `toLocale*String()` and use the second to tell two runs apart, so they
-    // migrated to the numeric helpers rather than the presets.
+    // rows, cron execution lists and the next-run tooltip use the second to tell
+    // two runs apart, so they use the numeric helpers rather than the presets.
     expect(fmtTimeNumeric(INSTANT)).toMatch(/:05/)
     expect(fmtDateTimeNumeric(INSTANT)).toMatch(/:05/)
     expect(fmtTime(INSTANT, UTC)).not.toMatch(/:05/)
@@ -245,10 +243,9 @@ describe('fmtDate / fmtTime / fmtDateTime / the numeric widths', () => {
   it('builds a time from explicit components without hitting the style conflict', () => {
     // Regression: `fmtTime(d, { hour, minute })` threw TypeError, because
     // `fmtTime` injects `timeStyle` and ECMA-402 CreateDateTimeFormat step 37
-    // forbids combining a style with a component. It shipped in the command
-    // palette's recents provider and emptied the palette for every session with
-    // a timestamp. The option types now make that spelling a compile error;
-    // this asserts the correct entry point works at runtime.
+    // forbids combining a style with a component. The option types now make that
+    // spelling a compile error; this asserts the correct entry point works at
+    // runtime.
     expect(fmtDateFields(INSTANT, { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }))
       .toMatch(/15|3/)
     expect(() =>
@@ -257,8 +254,8 @@ describe('fmtDate / fmtTime / fmtDateTime / the numeric widths', () => {
   })
 
   it('proves the conflict this split avoids is real', () => {
-    // The raw Intl call the old code produced. If a future refactor merges the
-    // two option types back together, this documents what breaks.
+    // The raw Intl call that merging the two option types would produce. If a
+    // future refactor merges them back together, this documents what breaks.
     expect(() =>
       new Intl.DateTimeFormat('en', { timeStyle: 'short', hour: '2-digit' }).format(INSTANT),
     ).toThrow(TypeError)
@@ -309,8 +306,8 @@ describe('fmtRelative', () => {
   it('applies the two reviewed English deltas', () => {
     // Documented in format.ts: CLDR words these idiomatically instead of
     // mechanically, which is the reason to use the platform at all.
-    expect(fmtRelative(at(0), { now })).toBe('now') // was 'just now'
-    expect(fmtRelative(at(86400), { now })).toBe('yesterday') // was '1d ago'
+    expect(fmtRelative(at(0), { now })).toBe('now')
+    expect(fmtRelative(at(86400), { now })).toBe('yesterday')
   })
 
   it('words the same instant idiomatically per language', async () => {
@@ -358,9 +355,8 @@ describe('fmtRelative', () => {
 
 describe('fmtDuration', () => {
   it('preserves the compact English compound the app already rendered', () => {
-    // Golden (en). These are byte-identical to the hand-rolled templates this
-    // replaces — `${m}m ${s}s` in useUptime, `${h}h ${m}m` in InstanceTabBar —
-    // which is what keeps the migration reviewable.
+    // Golden (en). These match the compact compounds the app renders —
+    // `${m}m ${s}s` (useUptime), `${h}h ${m}m` (InstanceTabBar).
     expect(fmtDuration([[6, 'minute'], [38, 'second']])).toBe('6m 38s')
     expect(fmtDuration([[1, 'hour'], [2, 'minute'], [3, 'second']])).toBe('1h 2m 3s')
     expect(fmtDuration([[2, 'hour'], [15, 'minute']])).toBe('2h 15m')
@@ -405,7 +401,7 @@ describe('fmtDuration', () => {
 
 describe('fmtCompact', () => {
   it('abbreviates per the language, not with a hardcoded K', async () => {
-    expect(fmtCompact(1234)).toBe('1.2K') // golden (en), matches the old ladder
+    expect(fmtCompact(1234)).toBe('1.2K') // golden (en)
     expect(fmtCompact(999)).toBe('999')
 
     // zh abbreviates on 万 (10^4), so 15300 is 1.5万 and 1234 does not
@@ -420,8 +416,7 @@ describe('fmtCompact', () => {
 
 describe('fmtBytes', () => {
   it('formats each magnitude with one shared implementation', () => {
-    // Golden (en). `kB` is the SI spelling CLDR uses; the four helpers this
-    // replaces variously said `KB`, `KB ` and `kB` for the same quantity.
+    // Golden (en). `kB` is the SI spelling CLDR uses.
     expect(fmtBytes(512)).toBe('512B')
     expect(fmtBytes(1500)).toBe('1.5kB')
     expect(fmtBytes(2_400_000)).toBe('2.4MB')
@@ -429,9 +424,9 @@ describe('fmtBytes', () => {
   })
 
   it('divides by 1000 so the SI unit label is honest', () => {
-    // The helpers this replaces divided by 1024 while labelling the result `KB`,
-    // which is the DECIMAL unit — so a "1.0 KB" file was really 1024 bytes.
-    // Intl offers no binary (kibibyte) unit, so the divisor is what had to move.
+    // `kB` is the DECIMAL SI unit, so dividing by 1000 keeps the label honest —
+    // 1000 bytes is `1kB`, not 1024. Intl offers no binary (kibibyte) unit, so
+    // the divisor is 1000.
     expect(fmtBytes(1000)).toBe('1kB')
   })
 

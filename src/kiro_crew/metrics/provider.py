@@ -72,8 +72,7 @@ def _otel_importable() -> bool:
     (``opentelemetry``, ``opentelemetry.sdk``) but not the metrics SDK itself,
     which is where the cost and the module-count blow-up live. It raises
     (rather than returning ``None``) when a parent is unimportable, so both
-    outcomes are folded into ``False`` here — same contract as the ImportError
-    guard this replaced.
+    outcomes are folded into ``False`` here.
     """
     try:
         return importlib.util.find_spec("opentelemetry.sdk.metrics") is not None
@@ -148,19 +147,18 @@ _SCOPE = "kiro_crew"
 
 # Sub-ms through a minute — pooled acquires, skill loads, HTTP requests.
 # These are dominated by ~1ms values, so the fine end matters. The 60s ceiling
-# is retained from the historical shared array rather than tightened: request
-# duration excludes WebSocket upgrades and SSE streams, but ordinary slow
-# endpoints (installers, long provisioning calls) do run past 30s, and any
-# sample above the top bound has its percentile floored at that bound — the
-# exact artifact this change exists to remove.
+# exists because request duration excludes WebSocket upgrades and SSE streams,
+# but ordinary slow endpoints (installers, long provisioning calls) do run past
+# 30s, and any sample above the top bound has its percentile floored at that
+# bound.
 _FAST_BUCKETS_MS: list[float] = [
     0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500,
     1000, 2500, 5000, 10000, 30000, 60000,
 ]
 
 # Milliseconds through ~1 minute — session startup and other cold-start work.
-# Unchanged from the historical shared array: startup spans a 0.5ms set_model
-# phase through 15-25s cold spawns, and this is the range it was sized for.
+# Sized for startup, which spans a 0.5ms set_model phase through 15-25s cold
+# spawns.
 _STARTUP_BUCKETS_MS: list[float] = [
     1, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 3000,
     5000, 7500, 10000, 15000, 20000, 30000, 45000, 60000,
@@ -168,9 +166,9 @@ _STARTUP_BUCKETS_MS: list[float] = [
 
 # One second through one hour — agent turns. A turn is an entire agent loop
 # (model calls plus every tool round-trip, and any wait on an interactive
-# approval prompt), so minutes are ordinary and the old 60s ceiling overflowed
-# on the very first sample ever recorded (227589ms). Resolution is deliberately
-# densest between 1 and 10 minutes, where turns actually land.
+# approval prompt), so minutes are ordinary and buckets extend to an hour so a
+# multi-minute turn is not floored into an overflow bucket. Resolution is
+# deliberately densest between 1 and 10 minutes, where turns actually land.
 _TURN_BUCKETS_MS: list[float] = [
     1000, 2500, 5000, 10000, 20000, 30000, 45000, 60000, 90000,
     120000, 180000, 300000, 450000, 600000, 900000, 1200000,
@@ -189,8 +187,13 @@ _TURN_BUCKETS_MS: list[float] = [
 # instrument to this map when you add the metric.
 _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
     "kirocrew.gateway.request.duration": _FAST_BUCKETS_MS,
+    "kirocrew.db.query.duration": _FAST_BUCKETS_MS,
     "kirocrew.mcp.backend.acquire.duration": _FAST_BUCKETS_MS,
     "kirocrew.skill.lazy_load.duration": _FAST_BUCKETS_MS,
+    # Telegram Bot API round-trips: typically 50-500ms, but a 429 retry_after
+    # wait or a transport timeout reaches seconds -- _FAST_BUCKETS_MS spans
+    # 0.5ms..60s, which covers both without flooring the tail percentiles.
+    "kirocrew.telegram.api.duration": _FAST_BUCKETS_MS,
     "kirocrew.session.startup.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.mcp.lazy_load.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.gateway.boot.duration": _STARTUP_BUCKETS_MS,
@@ -202,7 +205,7 @@ _recorder: Optional[MetricsRecorder] = None
 _initialized = False
 _provider: Optional["_MeterProviderT"] = None
 
-# Env-var opt-in (rec #14: easy opt-in). ``KIROCREW_TELEMETRY`` lets a host turn
+# Env-var opt-in. ``KIROCREW_TELEMETRY`` lets a host turn
 # LOCAL metrics on (or force them off) without editing ~/.kiro/crew/config.json —
 # handy for CI, containers, and one-off debugging. Truthy => enable, falsy =>
 # disable, unset/blank => defer to the ``telemetry.enabled`` config flag (itself
@@ -273,7 +276,7 @@ def _build_recorder() -> MetricsRecorder:
             export_interval_millis=float(cfg.export_interval_seconds) * 1000.0,
         )
         readers = [reader]
-        # Opt-in OTLP egress (rec #1): only when telemetry.otlp_endpoint is set.
+        # Opt-in OTLP egress: only when telemetry.otlp_endpoint is set.
         # Empty endpoint => local-only, no network egress (the default).
         otlp_reader = _build_otlp_reader(cfg)
         if otlp_reader is not None:
@@ -320,7 +323,7 @@ def _build_recorder() -> MetricsRecorder:
 def _build_otlp_reader(cfg: object) -> Optional["_ReaderT"]:
     """Build the opt-in OTLP/HTTP metric reader, or None when not configured.
 
-    Egress is OFF by default (rec #1): this returns None unless
+    Egress is OFF by default: this returns None unless
     ``telemetry.otlp_endpoint`` is a non-empty string. The OTLP exporter lives
     in the separate ``kirocrew[otlp]`` package extra (install with
     ``pip install "kirocrew[otlp]"``), not the hard dependency set. If a host

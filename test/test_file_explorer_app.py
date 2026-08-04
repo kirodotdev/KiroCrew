@@ -5,6 +5,7 @@ search, git status parsing, and HTTP handler routing. Targets ≥60% new line
 coverage for Coverlay.
 """
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -269,6 +270,83 @@ class TestSearch:
     def test_search_empty_query(self, tmp_tree):
         results = server._search(tmp_tree, "", "", "")
         assert results == []
+
+
+class TestSearchTccPruning:
+    """macOS TCC: a search rooted at the bare ``$HOME`` must not descend into the
+    gated top-level folders. Recursing into ``~/Pictures`` (the Photos library)
+    or ``~/Music`` (the media library) makes macOS pop a per-folder consent
+    dialog -- once for the bundled ``rg`` binary and again for the Python
+    fallback, which is why the same folder gets prompted more than once. A search
+    rooted AT such a folder (root != ``$HOME``) is deliberate and stays fully
+    searched. Off macOS the prune is a no-op.
+    """
+
+    @staticmethod
+    def _home_ctx(tmp_tree):
+        # expanduser("~") reads $HOME on POSIX and %USERPROFILE% on Windows;
+        # pin both so the "is root the home directory" test in platform_compat
+        # fires on every CI shard.
+        return patch.dict(
+            os.environ,
+            {"HOME": str(tmp_tree), "USERPROFILE": str(tmp_tree)},
+            clear=False,
+        )
+
+    def test_python_fallback_prunes_gated_dirs_at_home(self, tmp_tree):
+        for name in ("Pictures", "Music", "Downloads"):
+            (tmp_tree / name).mkdir()
+            (tmp_tree / name / "note.txt").write_text("needle here")
+        (tmp_tree / "code").mkdir()
+        (tmp_tree / "code" / "keep.txt").write_text("needle here")
+        with patch.object(server.platform_compat, "IS_MACOS", True), self._home_ctx(tmp_tree):
+            results = server._search_python(tmp_tree, "needle", "", "")
+        names = {Path(r["file"]).name for r in results}
+        assert "keep.txt" in names, "a non-gated top-level dir must still be searched"
+        assert "note.txt" not in names, "Pictures/Music/Downloads must not be descended"
+
+    def test_python_fallback_scoped_gated_dir_is_searched(self, tmp_tree):
+        music = tmp_tree / "Music"
+        music.mkdir()
+        (music / "note.txt").write_text("needle here")
+        # root == ~/Music (NOT $HOME) -> deliberate navigation, searched in full.
+        with patch.object(server.platform_compat, "IS_MACOS", True), self._home_ctx(tmp_tree):
+            results = server._search_python(music, "needle", "", "")
+        assert any(Path(r["file"]).name == "note.txt" for r in results)
+
+    def test_python_fallback_no_prune_off_macos(self, tmp_tree):
+        (tmp_tree / "Music").mkdir()
+        (tmp_tree / "Music" / "note.txt").write_text("needle here")
+        with patch.object(server.platform_compat, "IS_MACOS", False), self._home_ctx(tmp_tree):
+            results = server._search_python(tmp_tree, "needle", "", "")
+        assert any(Path(r["file"]).name == "note.txt" for r in results)
+
+    def _capture_rg_cmd(self, root, home):
+        captured: dict = {}
+
+        def fake_run(cmd, *a, **k):
+            captured["cmd"] = list(cmd)
+            return MagicMock(stdout="", returncode=0)
+
+        with patch.object(server.platform_compat, "IS_MACOS", True), self._home_ctx(home), \
+                patch.object(server, "cgroup_scope_argv", lambda argv: argv), \
+                patch.object(server, "resource_limit_preexec", lambda: None), \
+                patch("subprocess.run", fake_run):
+            server._search_rg(root, "needle", "", "")
+        return captured["cmd"]
+
+    def test_rg_excludes_gated_dirs_at_home(self, tmp_tree):
+        cmd = self._capture_rg_cmd(tmp_tree, tmp_tree)
+        assert "!/Pictures" in cmd
+        assert "!/Music" in cmd
+
+    def test_rg_no_tcc_globs_for_scoped_root(self, tmp_tree):
+        music = tmp_tree / "Music"
+        music.mkdir()
+        # HOME is tmp_tree; the search root is ~/Music, so it is NOT home.
+        cmd = self._capture_rg_cmd(music, tmp_tree)
+        assert "!/Music" not in cmd
+        assert "!/Pictures" not in cmd
 
 
 class TestSelAudit:

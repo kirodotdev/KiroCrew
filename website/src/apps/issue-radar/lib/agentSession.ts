@@ -14,7 +14,7 @@
 //
 // The per-item record is the SAME store on both sides
 // (via /api/apps/issue-radar/investigation), NAMESPACED by item kind. On GitHub
-// the namespace is shared and the filename keeps its historical
+// the namespace is shared and the filename keeps its
 // ``investigation-{number}.json`` form: issues and pull requests are drawn from
 // ONE number sequence per repo, so they cannot collide. GitLab numbers them
 // independently — issue ``#5`` and merge request ``!5`` are unrelated items — so a

@@ -1,13 +1,13 @@
 /**
- * Tests for TagManagerList — the tag-management list extracted from the board
- * column-filter popover so it can also back the header "Manage tags…" panel in
- * list view (Option A: surface session tags in list view). Covers both modes
+ * Tests for TagManagerList — the tag-management list shared by the board
+ * column-filter popover and the header "Manage tags…" panel in list view.
+ * Covers both modes
  * (manage / column-filter) for rename · status · delete-with-confirm · create,
  * plus the include/exclude swatch behaviour that keeps the board mutating its
  * column's tag_ids identically.
  *
  * Also carries the SessionActionsMenu regression: the per-session "Tags…" item
- * must now render regardless of the (board-only) tagColumnsEnabled config, so
+ * must render regardless of the (board-only) tagColumnsEnabled config, so
  * the tag picker is reachable from the list-view row menu too.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'

@@ -127,7 +127,7 @@ describe('panel shortcut — nav seam', () => {
   it('registers a new panel chord and derives the display key from the code', () => {
     registerPanelShortcut({ code: 'KeyG', path: '/seam-panel', label: 'Seam panel' })
     const entry = DEFAULT_SHORTCUTS.find(s => s.id === 'nav-seam-panel')
-    expect(entry?.group).toBe('Panel Navigation')
+    expect(entry?.group).toBe('panel-navigation')
     // key is DERIVED from code (KeyG -> 'g'), never diverges from the handled chord.
     expect(entry?.key).toBe('g')
   })

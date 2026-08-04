@@ -91,7 +91,7 @@ _STANDALONE_THEME_VARS: dict[str, str] = {
 }
 
 # CSP for the published standalone widget document (wrap_widget_html), rendered
-# in a null-origin sandboxed iframe. Accepted risk (security review):
+# in a null-origin sandboxed iframe. Accepted risk:
 # 'unsafe-eval' is required by the Tailwind Play CDN
 # (cdn.tailwindcss.com), a client-side JIT compiler that calls new Function();
 # 'unsafe-inline' is required because widget bodies are LLM-authored inline
@@ -709,8 +709,7 @@ def _kind_for_content_type(content_type: str) -> str:
 # Content types we can safely pull into a local artifact as UTF-8 text. A binary
 # upstream (image / PDF / Office doc) read as text would land as mojibake, so
 # pull and clone refuse anything outside this allowlist and point the user back
-# to the artifact registry. (A code review flagged the same content-type → text
-# gap on a parallel change.)
+# to the artifact registry.
 _PULLABLE_CONTENT_TYPES = {
     "text/plain",
     "text/markdown",

@@ -1,7 +1,7 @@
 """Provider identity and dispatch for Issue Radar.
 
-Issue Radar was built GitHub-only, so a connected repo was fully identified by
-``(owner, repo)``. Supporting GitLab adds two dimensions:
+A connected repo on GitHub is fully identified by ``(owner, repo)``. GitLab adds
+two dimensions:
 
 ``provider``
     ``"github"`` or ``"gitlab"``. Decides which client module runs.
@@ -12,10 +12,10 @@ Issue Radar was built GitHub-only, so a connected repo was fully identified by
     instance, so the host is part of the identity, not decoration.
 
 Both default to GitHub everywhere -- on the wire, in ``config.json``, in cache
-paths, and in every function signature. That is what makes this change additive:
-an install that has been triaging GitHub issues for months keeps its connected
-repos, its caches, and its investigation ledger untouched, and an older frontend
-that never sends ``provider`` keeps working.
+paths, and in every function signature, so the additive design holds: an install
+that has been triaging GitHub issues for months keeps its connected repos, its
+caches, and its investigation ledger untouched, and a frontend that never sends
+``provider`` keeps working.
 
 ``owner`` carries GitLab's full namespace, which may be nested
 (``group/subgroup``). It is not split further because GitLab treats the whole
@@ -132,9 +132,9 @@ def parse_repo_url(link: str) -> RepoKey:
     (``"://github.com/" in url``) routes on text that can appear ANYWHERE in the
     URL — in a path segment, a query parameter, or userinfo — so
     ``https://gitlab.example/x?u=://github.com/o/r`` would be handed to the GitHub
-    parser. The GitHub parser re-validates the host and would reject it, so this
-    was not an SSRF, but it did mean a legitimate GitLab URL containing that text
-    was refused with a GitHub-specific error instead of being parsed as GitLab.
+    parser. The GitHub parser re-validates the host and rejects it, so this
+    is not an SSRF, but it would mean a legitimate GitLab URL containing that text
+    is refused with a GitHub-specific error instead of being parsed as GitLab.
     Parsing once and comparing the host is both correct and what every other
     host check in this app already does.
 
