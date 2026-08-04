@@ -4,13 +4,18 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import PrivacyNotice, { PRIVACY_NOTICE_STORAGE_KEY } from '../components/PrivacyNotice'
 
-// The first-run banner is a GLANCE-level notice: it states the one-a-day
-// cadence and the never-sent categories, and links to Settings → Privacy, where
-// the full five-field payload is enumerated (asserted in PrivacyPanel.test.tsx).
-// It deliberately does NOT restate all five fields — a 371-character paragraph
-// above the dashboard is a wall of text a normal user skips, which defeats the
-// disclosure. The link is what carries the reader to the detail.
-const GLANCE_CLAIMS = ['one anonymous ping a day', 'prompts', 'files', 'credentials'] as const
+// The first-run banner is a GLANCE-level notice: it states the daily heartbeat,
+// the official-app receipt, and the never-sent categories, then links to
+// Settings → Privacy where both exact field sets are enumerated. It deliberately
+// stays short enough to read above the dashboard.
+const GLANCE_CLAIMS = [
+  'one anonymous ping a day',
+  'per-app receipt',
+  'official app installs or updates',
+  'prompts',
+  'files',
+  'credentials',
+] as const
 
 function renderNotice() {
   return render(

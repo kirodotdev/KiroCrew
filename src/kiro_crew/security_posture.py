@@ -424,6 +424,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # redact() (that guardrail would replace the install id with
         # "[REDACTED]" and make DAU compute as 1).
         "beacon.py",
+        # Egresses, and for the same reason carries NO redactable content: the
+        # app-install receipt sends a fixed three-field set (a truncated HMAC, a
+        # two-valued kind, the clamped release) plus the official catalog slug in
+        # the path. There is no free-form field and no caller-supplied
+        # pass-through, so the allowlist IS the control. It matches the drift
+        # scanner only because its docstring explains why it does NOT route
+        # through metrics/schema.py's redactor.
+        "apps/install_receipt.py",
         "cron_script.py",
         "eval/runner.py",
         "kiro_prerequisite.py",

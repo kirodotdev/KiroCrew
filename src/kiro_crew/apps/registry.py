@@ -41,6 +41,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps import install_receipt
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.manager import (
@@ -1592,7 +1593,10 @@ def get_registry_app(name: str) -> dict[str, Any] | None:
         if cached:
             for entry in cached:
                 if entry.get("name") == name:
-                    return entry
+                    # Old cache files may predate persisted origin tags. Restore
+                    # the authoritative discriminator at the lookup boundary so
+                    # privacy gates never mistake a custom source for official.
+                    return {**entry, "_registry": reg_name}
     return None
 
 
@@ -2351,9 +2355,18 @@ async def install_from_registry(
     # load-bearing enforcement on credential-helper setups, not the env alone).
     # Sibling repos on the same host remain anonymous+strict.
     index_originated = bool(entry.get("_registry"))
+    # OFFICIALNESS is decided here, BEFORE the owner-designated carve-out below:
+    # that carve-out flips index_originated as a CREDENTIAL decision (owner
+    # explicitly designated the repo), but an external-index entry never becomes
+    # an official-catalog entry — install receipts must not fire for it.
+    official_entry = not index_originated
     if index_originated and await asyncio.to_thread(_is_owner_designated_repo, entry):
         index_originated = False
         _sel_credential_grant("install_from_registry", _entry_git_url(entry) or "")
+    # Capture event kind before clone/build/install scripts can register or
+    # otherwise change app state. The receipt describes this call's starting
+    # state, not an intermediate side effect.
+    was_installed = get_app(name) is not None
 
     # Fetch the app's manifest for platform info and install script. This is a
     # read-only metadata fetch (git archive of app.json), safe to do before the
@@ -2635,6 +2648,16 @@ async def install_from_registry(
             for _stale in build_result.get("_pending_stale_cleanup") or []:
                 log_lines.append(f"Previous checkout retained at: {_stale}")
                 logger.info("Retained stale checkout: %s", _stale)
+            if official_entry:
+                install_receipt.dispatch(
+                    name,
+                    official=True,
+                    kind=(
+                        install_receipt.KIND_UPDATE
+                        if was_installed
+                        else install_receipt.KIND_FRESH
+                    ),
+                )
             return {
                 "ok": True,
                 "name": name,
@@ -2665,6 +2688,17 @@ async def install_from_registry(
             for _stale in build_result.get("_pending_stale_cleanup") or []:
                 log_lines.append(f"Previous checkout retained at: {_stale}")
                 logger.info("Retained stale checkout: %s", _stale)
+            if official_entry:
+                # Detached best-effort telemetry runs only after durable success.
+                install_receipt.dispatch(
+                    name,
+                    official=True,
+                    kind=(
+                        install_receipt.KIND_UPDATE
+                        if was_installed
+                        else install_receipt.KIND_FRESH
+                    ),
+                )
 
         return {
             "ok": result.ok,

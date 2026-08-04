@@ -1008,9 +1008,10 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # single-user owner; a governing policy can pin it off. Data row only —
     # CONTRACT_VERSION and the evaluator are untouched (mirrors theme_persona).
     "capabilities.theme_install": ScopeSpec(CAPABILITY, capability_default=True),
-    # The anonymous usage beacon (``beacon.py``) is the repo's ONLY default-on
-    # egress: one at-most-daily HTTP GET carrying a five-field anonymous payload.
-    # A managed fleet frequently may not egress to a vendor endpoint at all — so
+    # The anonymous heartbeat (``beacon.py``) and official-app install receipt
+    # (``apps/install_receipt.py``) are the repo's only default-on egress family.
+    # Both use fixed anonymous payloads and the same effective consent gate. A
+    # managed fleet frequently may not egress to a vendor endpoint at all — so
     # unlike the user-facing Settings toggle (which the agent and the operator can
     # both flip), an enterprise POLICY needs to pin it off in a way the running app
     # cannot undo. This row is what makes that possible: it is read from the

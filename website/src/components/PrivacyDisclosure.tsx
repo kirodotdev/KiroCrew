@@ -1,4 +1,4 @@
-import { EyeOff, HardDrive, Radio } from 'lucide-react'
+import { EyeOff, HardDrive, PackageCheck, Radio } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Toggle } from './ui'
 import { api } from '../api/client'
@@ -176,10 +176,10 @@ function DisclosureSection({
 }
 
 /**
- * The disclosure copy itself — the five-field payload, the never-sent list, and
- * the local-data boundary. Shared verbatim by Settings → Privacy and the
- * onboarding privacy step so the two can never drift; only the surrounding
- * chrome differs.
+ * The disclosure copy itself — the heartbeat payload, official-app receipt, the
+ * never-sent list, and the local-data boundary. Shared verbatim by Settings →
+ * Privacy and the onboarding privacy step so the two can never drift; only the
+ * surrounding chrome differs.
  *
  * `payloadFields` must stay an exhaustive list of what `beacon.payload()`
  * actually sends. It is the transparency commitment, so a field added to the
@@ -202,6 +202,18 @@ export function PrivacyDisclosureSections() {
             user will skip. */}
         <p className="text-[12px] text-muted leading-relaxed mt-1.5">
           {i18nT('privacyDisclosure.payloadFields')}
+        </p>
+      </div>
+      <div>
+        <h3 className="text-sm font-semibold tracking-tight text-text-strong mb-1.5 flex items-center gap-2">
+          <PackageCheck className="lucide-inline" aria-hidden="true" />
+          {i18nT('privacyDisclosure.installReceiptTitle')}
+        </h3>
+        <p className="text-sm text-muted leading-relaxed">
+          {i18nT('privacyDisclosure.installReceiptBody')}
+        </p>
+        <p className="text-[12px] text-muted leading-relaxed mt-1.5">
+          {i18nT('privacyDisclosure.installReceiptFields')}
         </p>
       </div>
       <DisclosureSection

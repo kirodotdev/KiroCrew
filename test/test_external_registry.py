@@ -391,6 +391,7 @@ class TestGetRegistryAppExternal:
         result = get_registry_app("ext-app")
         assert result is not None
         assert result["name"] == "ext-app"
+        assert result["_registry"] == "myorg"
 
     def test_returns_none_when_not_found(self, cache_dir, monkeypatch):
         mock_config = MagicMock()

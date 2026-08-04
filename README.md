@@ -395,7 +395,9 @@ model finished downloading under `~/.kiro/crew/models`. For a stale MCP configur
 
 Kiro Crew sends **one anonymous heartbeat per day** so maintainers can see how
 many copies are actively running, which versions are in use, and which
-platforms and install channels to support. This is on by default.
+platforms and install channels to support. After a successful install or update
+from the official app catalog, it also sends one anonymous per-app receipt.
+Both signals are on by default and use the same controls below.
 
 To turn it off, flip **Settings → Privacy → Send anonymous usage heartbeat** in
 the dashboard (the same switch appears on the last step of first-run
@@ -421,6 +423,21 @@ both — when it is set, the dashboard toggle is disabled and says so.
 | Install channel | `dmg` | Which install path people actually use |
 | First-run flag | `1` / `0` | New installs vs returning |
 
+**Official-app install receipts are separate and event-based.** After a
+successful official-catalog install or update, Kiro Crew sends one GET to
+`/b/1/install/<app-slug>?t=<token>&k=<fresh|update>&v=<release>` on the same
+telemetry host. The slug is the public catalog identifier. `t` is the first 32
+hex characters of HMAC-SHA256 keyed by the local beacon install id over
+`app-install:<slug>`; the raw install id is never sent, and tokens for different
+apps cannot be linked to assemble an installed-app profile. `k` separates fresh
+installs from updates, and `v` is the same release-only Kiro Crew version clamp
+used by the heartbeat.
+
+Receipts are emitted only for bundled or edition-provided official catalog
+entries. Apps from user-configured registries, local-directory installs, and
+self-registered apps emit nothing, so private app names never leave the machine.
+If no persistent beacon install id exists yet, the receipt is skipped.
+
 This list used to be nine fields. Release channel, OS, CPU architecture and
 governance posture were **removed** — each was coarse on its own, but the
 instance id is stable, so those attributes all describe the *same* copy and
@@ -440,7 +457,7 @@ log delivery does not include that field, so no IP is stored at all.
 than `~/.kiro/crew` (dev instances and pods are never counted).
 
 **Enterprise administrators can pin it off entirely.** A `capabilities.telemetry`
-entry in the security policy blocks the heartbeat regardless of the local
+entry in the security policy blocks both outbound signals regardless of the local
 setting, and the dashboard toggle then says so instead of offering a change that
 would not take effect:
 

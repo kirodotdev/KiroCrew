@@ -1,6 +1,6 @@
 # Metrics Telemetry Module
 
-Last Updated: 2026-08-01 (in-product beacon opt-out toggle + onboarding privacy step)
+Last Updated: 2026-08-04 (anonymous official-app install receipt + disclosure)
 
 ## Overview
 
@@ -382,15 +382,16 @@ from inside `config.loader`'s import chain (e.g. `acp/client.py`) MUST import
 `get_recorder` lazily (inside the function) so the provider is never loaded
 during that chain.
 
-## Anonymous usage beacon (`beacon.py`) — the THIRD telemetry path
+## Anonymous outbound telemetry (`beacon.py`, `apps/install_receipt.py`)
 
-There are now **three independent** telemetry paths. Keep them straight:
+There are now **four independent** telemetry paths. Keep them straight:
 
 | Path | Purpose | Data | Egress | Switch |
 |------|---------|------|--------|--------|
 | OTEL metrics (`metrics/`) | Ops observability | DELTA histograms / counters | **Never** (local JSONL; OTLP only if the operator sets an endpoint) | `telemetry.enabled` (**off**) |
 | Token row store (`usage/tokens/`) | Cost + context analytics | One row per model-spending turn | **Never** | always on |
 | **Beacon (`beacon.py`)** | **Product analytics** | One anonymous ping per install per day | **Yes — to the KiroCrew endpoint** | `telemetry.beacon_enabled` (**on**) |
+| **Install receipt (`apps/install_receipt.py`)** | **Official app adoption** | One anonymous receipt after a successful official-catalog install/update | **Yes — to the same endpoint** | `telemetry.beacon_enabled` (**on**) |
 
 `src/kiro_crew/beacon.py`, tests `test/test_beacon.py`. Fired from
 `slack/gateway.py::run_gateway` on a **detached daemon thread** (never awaited —
@@ -636,12 +637,13 @@ retries later rather than silently losing the day.
 
 ### Default-ON with four suppressions
 
-`telemetry.beacon_enabled` defaults **true** (the only default-on egress in the
-repo). `should_send()` suppresses when: `KIROCREW_TELEMETRY_DISABLED` is truthy,
-an enterprise **governance ceiling** pins `capabilities.telemetry` off, the config
-toggle is false, the process looks like **CI**, or `KIROCREW_HOME` is
-**non-default** (dev home / pod / worktree preview — one operator's own extra
-instances would inflate the count).
+`telemetry.beacon_enabled` defaults **true** and gates the repo's only default-on
+egress family: the heartbeat and official-app install receipts.
+`telemetry_permitted()` suppresses both when `KIROCREW_TELEMETRY_DISABLED` is
+truthy, an enterprise **governance ceiling** pins `capabilities.telemetry` off,
+the config toggle is false, the process looks like **CI**, or `KIROCREW_HOME` is
+**non-default** (dev home / pod / worktree preview). `beacon.should_send()` adds
+the heartbeat-only daily throttle; receipts are event-based and do not use it.
 
 ### Enterprise opt-out: the `capabilities.telemetry` governance scope
 
@@ -804,6 +806,60 @@ consent flow:
   configures an OTLP endpoint.
 - These surfaces add no tracking and do not alter, enable, or delay any telemetry
   path. They only explain behavior and controls that already exist.
+
+### Official-app install receipt (`apps/install_receipt.py`)
+
+A successful `install_from_registry` call emits one best-effort receipt only when
+the selected row came from the bundled or edition-contributed official catalog.
+The row's `_registry` marker is the authoritative negative discriminator: a
+user-configured external registry row is refused before dispatch. Local-path
+installs and self-registration never call the sender. This provenance gate keeps
+private/corporate app names on the host.
+
+The sender mirrors the beacon's posture: the same endpoint, the factored shared
+consent ladder (`telemetry.beacon_enabled`, `KIROCREW_TELEMETRY_DISABLED`, the
+`capabilities.telemetry` ceiling, CI/test suppression, and non-default-home
+suppression), a detached daemon thread, a 5-second timeout, and silent failure.
+It intentionally does **not** share the beacon's daily throttle because each
+successful app install is a separate event.
+
+The exact GET route is:
+
+```text
+/b/1/install/<app-slug>?t=<token>&k=<fresh|update>&v=<release>
+```
+
+| Location/field | Contract |
+|----------------|----------|
+| `<app-slug>` | Public official-catalog identifier in the path. No custom-source or local app slug is eligible. |
+| `t` | First 32 hex characters of `HMAC-SHA256(key=receipt_secret, msg=b"app-install:" + app_slug)`, where `receipt_secret` is a 64-hex random secret generated on first use, stored owner-only as `app_receipt_secret` under the data home, and **never transmitted anywhere** — deliberately independent of the beacon install id, which the collector already holds from every heartbeat and could otherwise use to recompute tokens for public slugs and link one installation's receipts across apps. Deterministic for one installation and app, different across apps, and joinable neither into an installed-app profile nor to any heartbeat row. If the secret cannot be read or created, no receipt is sent. |
+| `k` | Exactly `fresh` or `update`, derived from whether the app was installed before the successful call. Updates must not inflate adoption rank. |
+| `v` | KiroCrew release normalized by `beacon.release()`; build stamps are removed. |
+
+`test/test_install_receipt.py` mocks the network and pins every suppression,
+token, URL, provenance, success-only, and fresh/update property. Beacon tests
+remain the regression contract for the shared gate's original behavior.
+
+#### Server-side `AppInstallations` rollup (infrastructure follow-up)
+
+The telemetry-account owner must extend the existing CloudFront → S3 → Athena →
+Lambda aggregation outside this repository. The product-side contract is:
+
+1. Select only `/b/1/install/<slug>` rows with an official catalog slug, a
+   32-character lowercase-hex `t`, `k` in `{fresh, update}`, and a normalized
+   release `v`; retain the existing no-client-IP/no-User-Agent log projection.
+2. For `k=fresh`, publish `AppInstallations` as the count of distinct `(app_slug,
+   t)` pairs per UTC rollup window (equivalently `COUNT(DISTINCT t)` grouped by
+   app slug). Duplicate delivery or reinstall from the same data home must not
+   inflate the app's count.
+3. Keep `k=update` in a separate update series; never add it to install rank.
+   `v` may provide a bounded release breakdown, but is not part of uniqueness.
+4. Feed only aggregate per-app results to catalog-ranking publication. Never
+   expose or join raw tokens, and never join receipt rows to heartbeat ids.
+
+The Athena query and aggregator Lambda live in the telemetry AWS account, so
+that implementation and deployment are an explicit infra-account task outside
+this repo and outside this PR.
 
 ### Cross-machine identity hazard
 

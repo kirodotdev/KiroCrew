@@ -403,7 +403,10 @@ def install_id(*, create: bool = True) -> str:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
     except (OSError, RuntimeError, KeyError):
-        return _IN_MEMORY_ID
+        # A read-only probe must never substitute the process-local fallback:
+        # a caller inspecting state (``kirocrew telemetry status``) needs "the
+        # persistent id or nothing", not an ephemeral stand-in.
+        return _IN_MEMORY_ID if create else ""
 
 
 def _today() -> str:
@@ -588,8 +591,14 @@ def is_governance_pinned_off(*, audit_tool: str = "") -> bool:
     return getattr(decision, "layer", "") == "policy"
 
 
-def should_send(*, enabled: bool, audit: bool = True) -> tuple[bool, str]:
-    """Return ``(send, reason)``; *reason* explains a skip, for the CLI.
+def telemetry_permitted(*, enabled: bool, audit_tool: str = "") -> tuple[bool, str]:
+    """Return ``(permitted, reason)`` for ANY outbound telemetry from this install.
+
+    The consent gate, factored out of :func:`should_send` so a SECOND outbound
+    signal cannot drift from the first. ``apps/install_receipt.py`` calls this
+    rather than re-deriving the ladder: a duplicated gate is the failure mode
+    where a user flips the toggle off and one of two routes keeps sending,
+    which is worse than either route existing at all.
 
     Ordered cheapest-and-most-authoritative first: an opted-out host must not
     even stat the data home.
@@ -599,15 +608,20 @@ def should_send(*, enabled: bool, audit: bool = True) -> tuple[bool, str]:
     reason must name the policy rather than whatever the local flag happens to
     say — an admin debugging a managed host needs to see "policy", not
     "beacon_enabled is false".
+
+    Pass ``audit_tool`` from an ENFORCEMENT call site so the governance decision
+    lands a ``governance_decision`` SEL record naming which control refused;
+    leave it empty for a read-only diagnostic probe (see
+    :func:`is_governance_pinned_off`).
+
+    Deliberately does NOT include the beacon's once-per-day throttle. That
+    throttle is specific to a heartbeat: an install receipt is a per-EVENT
+    signal, so a shared day stamp would silently drop the second app a user
+    installs on any given day.
     """
     if _env_truthy(DISABLE_ENV):
         return False, f"opted out via {DISABLE_ENV}"
-    # ``audit`` distinguishes the ENFORCEMENT call (from ``send``, whose verdict
-    # decides whether a heartbeat leaves the machine — routed through the audited
-    # seam so it lands a governance_decision SEL record either way) from the
-    # read-only diagnostic call (from ``status``, which the Privacy panel refetches;
-    # auditing an inspection would flood the SEL trail).
-    if is_governance_pinned_off(audit_tool="beacon_send" if audit else ""):
+    if is_governance_pinned_off(audit_tool=audit_tool):
         return False, "disabled by governance policy (capabilities.telemetry)"
     if not enabled:
         return False, "disabled (telemetry.beacon_enabled is false)"
@@ -615,6 +629,26 @@ def should_send(*, enabled: bool, audit: bool = True) -> tuple[bool, str]:
         return False, "CI environment detected"
     if not is_default_home():
         return False, "non-default KIROCREW_HOME (dev home / pod / preview)"
+    return True, "ready"
+
+
+def should_send(*, enabled: bool, audit: bool = True) -> tuple[bool, str]:
+    """Return ``(send, reason)``; *reason* explains a skip, for the CLI.
+
+    The shared consent ladder plus the heartbeat's OWN once-per-day throttle,
+    which no other route wants (see :func:`telemetry_permitted`).
+
+    ``audit`` distinguishes the ENFORCEMENT call (from :func:`send`, whose verdict
+    decides whether a heartbeat leaves the machine — routed through the audited
+    seam so it lands a ``governance_decision`` SEL record either way) from the
+    read-only diagnostic call (from :func:`status`, which the Privacy panel
+    refetches; auditing an inspection would flood the SEL trail).
+    """
+    ok, reason = telemetry_permitted(
+        enabled=enabled, audit_tool="beacon_send" if audit else ""
+    )
+    if not ok:
+        return False, reason
     if already_sent_today():
         return False, f"already sent today ({_today()})"
     return True, "ready"
