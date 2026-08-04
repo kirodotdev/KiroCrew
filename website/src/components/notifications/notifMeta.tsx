@@ -1,7 +1,8 @@
-import { ClipboardList, Anchor, Heart, Bot, Lock, GitBranch, Bell, Clock } from 'lucide-react'
+import { ClipboardList, Anchor, Heart, Bot, Lock, GitBranch, Bell, Clock, BookOpen } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 import { i18nT } from '../../i18n/t'
+import { safeGetItem } from '../../utils/safeStorage'
 // Aliased: this module exports its own `fmtTime`/`fmtFull` wrappers that add the
 // unknown-date fallback on top of these.
 import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields } from '../../i18n/format'
@@ -12,10 +13,16 @@ import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields } from '../../i18n/
  * for kinds, filters, formatting, and date grouping).
  */
 
-export type Kind = 'cron' | 'hook' | 'heartbeat' | 'agent' | 'approval' | 'subagent' | 'taskrunner'
+export type Kind = 'cron' | 'hook' | 'heartbeat' | 'agent' | 'approval' | 'subagent' | 'taskrunner' | 'skills'
 export type Category = 'all' | Kind
 
-export const KIND_KEYS: Kind[] = ['cron', 'hook', 'heartbeat', 'agent', 'approval', 'subagent', 'taskrunner']
+export const KIND_KEYS: Kind[] = ['cron', 'hook', 'heartbeat', 'agent', 'approval', 'subagent', 'taskrunner', 'skills']
+
+/** The kind set that shipped under {@link LEGACY_KINDS_STORAGE_KEY}, frozen.
+ *  Used ONLY by the one-time filter migration in {@link loadActiveKinds} to tell
+ *  "the user had everything selected" apart from "the user chose these seven" --
+ *  which are byte-identical in the v1 payload. Never extend it. */
+const LEGACY_KIND_KEYS: Kind[] = ['cron', 'hook', 'heartbeat', 'agent', 'approval', 'subagent', 'taskrunner']
 
 /**
  * Filter chips across the top of the feed.
@@ -42,21 +49,60 @@ export const CATEGORIES: { key: Category; label: string; icon: ReactNode }[] = [
   { key: 'approval', get label() { return i18nT('components.notifications.notifMeta.kind_approval') }, icon: <Lock className="lucide-inline" /> },
   { key: 'subagent', get label() { return i18nT('components.notifications.notifMeta.kind_subagent') }, icon: <GitBranch className="lucide-inline" /> },
   { key: 'taskrunner', get label() { return i18nT('components.notifications.notifMeta.kind_tasks') }, icon: <ClipboardList className="lucide-inline" /> },
+  { key: 'skills', get label() { return i18nT('components.notifications.notifMeta.kind_skills') }, icon: <BookOpen className="lucide-inline" /> },
 ]
 
-export const KINDS_STORAGE_KEY = 'mc:notif:activeKinds'
+/** Current filter-selection storage key.
+ *
+ *  Versioned because the selection is stored as an EXPLICIT list of kinds while
+ *  `NotificationFeed` treats "every known kind selected" as the special
+ *  include-unknown-kinds state (`allActive`). Adding a kind therefore turns a
+ *  stored full set into a 7-of-8 PARTIAL set, which flips filtering to strict
+ *  and hides the new kind permanently -- for every existing install, with no
+ *  chip that brings it back until the user happens to toggle something. The
+ *  version bump makes that migration explicit instead of silent. */
+export const KINDS_STORAGE_KEY = 'mc:notif:activeKinds:v2'
+/** Pre-`skills` key. Read by {@link loadActiveKinds} and never written.
+ *
+ *  Deliberately NOT deleted after migrating: `loadActiveKinds` is a `useState`
+ *  initializer, so removing it there would put a storage write in render, and
+ *  the stale entry is inert once the versioned key exists (v2 always wins). It
+ *  costs a few bytes per install and buys a render with no side effects. */
+export const LEGACY_KINDS_STORAGE_KEY = 'mc:notif:activeKinds'
+
+function parseKinds(raw: string | null): Kind[] | null {
+  if (!raw) return null
+  try {
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return null
+    return arr.filter((k: unknown): k is Kind => typeof k === 'string' && (KIND_KEYS as string[]).includes(k))
+  } catch {
+    return null
+  }
+}
 
 export function loadActiveKinds(): Set<Kind> {
-  try {
-    const raw = localStorage.getItem(KINDS_STORAGE_KEY)
-    if (raw) {
-      const arr = JSON.parse(raw)
-      if (Array.isArray(arr)) {
-        const valid = arr.filter((k: unknown): k is Kind => typeof k === 'string' && (KIND_KEYS as string[]).includes(k))
-        return new Set(valid)
-      }
-    }
-  } catch { /* fall through to default */ }
+  // `safeGetItem`, not a bare `localStorage.getItem`: reading storage THROWS
+  // (SecurityError) when a browser policy or embedding context blocks it, and
+  // this function is a `useState` initializer -- an uncaught throw there takes
+  // the whole notification feed down, not just the filter selection. The
+  // try/catch inside `parseKinds` covers only JSON.parse, which is a different
+  // failure.
+  const current = parseKinds(safeGetItem(KINDS_STORAGE_KEY))
+  if (current) return new Set(current)
+  // One-time migration off the unversioned key. A v1 set covering every legacy
+  // kind meant "all" (the default, and the state the "All" chip produces), so
+  // it migrates to all CURRENT kinds -- otherwise the user silently loses the
+  // include-unknown-kinds behaviour they never opted out of. A genuine subset
+  // carries over verbatim: it was a deliberate choice, and the kinds added
+  // since were not available to deselect, so leaving them off is the honest
+  // reading. Not written back here -- the feed's persist effect owns writes.
+  const legacy = parseKinds(safeGetItem(LEGACY_KINDS_STORAGE_KEY))
+  if (legacy) {
+    const had = new Set(legacy)
+    if (LEGACY_KIND_KEYS.every(k => had.has(k))) return new Set(KIND_KEYS)
+    return had
+  }
   return new Set(KIND_KEYS)
 }
 
@@ -117,6 +163,7 @@ export const KIND_META: Record<string, { icon: ReactNode; color: string; label: 
   approval:   { icon: <Lock className="lucide-inline" />, color: 'bg-warn/15 text-warn',      get label() { return i18nT('components.notifications.notifMeta.kind_approval') },     borderColor: 'border-l-warn' },
   subagent:   { icon: <GitBranch className="lucide-inline" />, color: 'bg-accent/15 text-accent',  get label() { return i18nT('components.notifications.notifMeta.kind_subagent') },     borderColor: 'border-l-accent' },
   taskrunner: { icon: <ClipboardList className="lucide-inline" />, color: 'bg-accent/15 text-accent',  get label() { return i18nT('components.notifications.notifMeta.kind_task_runner') }, borderColor: 'border-l-accent' },
+  skills:     { icon: <BookOpen className="lucide-inline" />, color: 'bg-warn/15 text-warn',      get label() { return i18nT('components.notifications.notifMeta.kind_skills') },       borderColor: 'border-l-warn' },
 }
 export const DEFAULT_META = { icon: <Bell className="lucide-inline" />, color: 'bg-muted/15 text-muted', get label() { return i18nT('components.notifications.notifMeta.kind_notification') }, borderColor: 'border-l-muted' }
 

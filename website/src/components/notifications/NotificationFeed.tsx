@@ -215,7 +215,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
             key={c.key}
             type="button"
             aria-pressed={isActive}
-            title={c.key === 'all' ? (allActive ? i18nT('components.notifications.notificationFeed.clear_all_filters') : i18nT('components.notifications.notificationFeed.select_all_categories')) : `Toggle ${c.label}`}
+            title={c.key === 'all' ? (allActive ? i18nT('components.notifications.notificationFeed.clear_all_filters') : i18nT('components.notifications.notificationFeed.select_all_categories')) : i18nT('components.notifications.notificationFeed.toggle_kind', { kind: c.label })}
             className={`px-2 py-1 rounded-md text-[12px] font-medium cursor-pointer border transition-all font-body ${isActive ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:text-text hover:border-border-strong'}`}
             onClick={() => toggleCategory(c.key)}
           >

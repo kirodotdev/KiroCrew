@@ -86,6 +86,17 @@ def test_hook_reports_scripts_flag(loader):
     assert seen and seen[0]["has_scripts"] is True
 
 
+def test_hook_carries_description_and_triggers(loader):
+    # The notification body is built from these: without them it can only say
+    # THAT a skill was generated, never what it does -- the one fact a reviewer
+    # needs to decide whether to open the queue at all.
+    seen: list[dict] = []
+    S.set_pending_staged_hook(seen.append)
+    _stage(loader, "cand-detail")
+    assert seen[0]["description"] == "desc cand-detail"
+    assert seen[0]["triggers"] == "cand-detail"
+
+
 def test_no_hook_registered_is_a_silent_noop(loader):
     # CLI processes register nothing — staging must still succeed.
     assert _stage(loader, "cand-silent") == "auto/cand-silent"

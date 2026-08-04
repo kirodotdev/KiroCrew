@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 
 /* ── Mocks: must run before importing the component ── */
 const mockApi = vi.hoisted(() => ({
@@ -40,7 +41,13 @@ import SkillsTab from '../pages/overview/SkillsTab'
 
 function renderWithQuery() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={qc}><SkillsTab /></QueryClientProvider>)
+  // MemoryRouter: the pending-review panel reads (and clears) the `?review=<slug>`
+  // deep link a skill notification points at, so the tab needs a router.
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter><SkillsTab /></MemoryRouter>
+    </QueryClientProvider>,
+  )
 }
 
 const UPDATE_ROW = {

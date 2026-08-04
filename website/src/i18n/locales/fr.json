@@ -3945,6 +3945,7 @@
         "kind_heartbeat": "Heartbeat",
         "kind_hooks": "Hooks",
         "kind_notification": "Notification",
+        "kind_skills": "Compétences",
         "kind_subagent": "Sous-agent",
         "kind_task_runner": "Exécuteur de tâches",
         "kind_tasks": "Tâches",
@@ -3990,6 +3991,7 @@
         "no_notifications": "Aucune notification",
         "reject": "Refuser",
         "search": "Rechercher…",
+        "toggle_kind": "Basculer {{kind}}",
         "select_all_categories": "Sélectionner toutes les catégories",
         "show_less": "Afficher moins",
         "try_a_different_search": "Essaie une autre recherche"
@@ -7233,6 +7235,7 @@
         "skills_tip": "Compétences chargées à la demande lorsque l’agent les juge pertinentes. Les compétences portant le badge auto sont toujours injectées dans chaque session. Les compétences sont découvertes depuis Kiro Crew, kiro-cli et les paquets AIM.",
         "auto_generated_skill_candidates_awaiting_your_ap": "Candidats de compétence générés automatiquement, en attente de ton approbation. Clique sur Examiner pour inspecter le SKILL.md et tout script fourni avant d’approuver. Approuver met la compétence en service (et rend les scripts exécutables) ; Ignorer la rejette. Rien n’est mis en service avant ton approbation.",
         "hide": "Masquer",
+        "linked_candidate_no_longer_pending": "Cette compétence candidate n'attend plus de validation. Elle a été approuvée ou ignorée.",
         "on_demand_skills_loaded_when_the_agent_determine": "Compétences à la demande, chargées quand l’agent les juge pertinentes.",
         "proposed_change": "Modification proposée",
         "review": "Examiner",

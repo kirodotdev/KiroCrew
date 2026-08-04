@@ -3891,6 +3891,7 @@
         "kind_heartbeat": "Heartbeat",
         "kind_hooks": "Hooks",
         "kind_notification": "Benachrichtigung",
+        "kind_skills": "Fähigkeiten",
         "kind_subagent": "Subagent",
         "kind_task_runner": "Task Runner",
         "kind_tasks": "Aufgaben",
@@ -3936,6 +3937,7 @@
         "no_notifications": "Keine Benachrichtigungen",
         "reject": "Ablehnen",
         "search": "Suchen…",
+        "toggle_kind": "{{kind}} umschalten",
         "select_all_categories": "Alle Kategorien auswählen",
         "show_less": "Weniger anzeigen",
         "try_a_different_search": "Versuche eine andere Suche"
@@ -7149,6 +7151,7 @@
         "skills_tip": "Bedarfsgesteuerte Fähigkeiten, die geladen werden, wenn der Agent sie als relevant einstuft. Fähigkeiten mit dem auto-Abzeichen werden immer in jede Sitzung eingefügt. Fähigkeiten werden aus Kiro Crew, kiro-cli und AIM-Paketen ermittelt.",
         "auto_generated_skill_candidates_awaiting_your_ap": "Automatisch erzeugte Skill-Kandidaten, die auf deine Genehmigung warten. Klicke auf Überprüfen, um die SKILL.md und alle mitgelieferten Skripte vor der Genehmigung zu prüfen. Genehmigen schaltet den Skill live (und macht Skripte ausführbar); Schließen verwirft ihn. Nichts geht live, bevor du es genehmigst.",
         "hide": "Ausblenden",
+        "linked_candidate_no_longer_pending": "Dieser Fähigkeiten-Kandidat wartet nicht mehr auf eine Prüfung. Er wurde genehmigt oder geschlossen.",
         "on_demand_skills_loaded_when_the_agent_determine": "Bedarfsgesteuerte Skills, die geladen werden, wenn der Agent sie für relevant hält.",
         "proposed_change": "Vorgeschlagene Änderung",
         "review": "Überprüfen",

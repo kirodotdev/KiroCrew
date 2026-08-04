@@ -3945,6 +3945,7 @@
         "kind_heartbeat": "Heartbeat",
         "kind_hooks": "Hooks",
         "kind_notification": "Notificación",
+        "kind_skills": "Habilidades",
         "kind_subagent": "Subagente",
         "kind_task_runner": "Ejecutor de tareas",
         "kind_tasks": "Tareas",
@@ -3990,6 +3991,7 @@
         "no_notifications": "Sin notificaciones",
         "reject": "Rechazar",
         "search": "Buscar…",
+        "toggle_kind": "Alternar {{kind}}",
         "select_all_categories": "Seleccionar todas las categorías",
         "show_less": "Mostrar menos",
         "try_a_different_search": "Prueba con otra búsqueda"
@@ -7233,6 +7235,7 @@
         "skills_tip": "Habilidades cargadas a demanda cuando el agente determina que son relevantes. Las habilidades con la insignia auto siempre se inyectan en cada sesión. Las habilidades se descubren en Kiro Crew, kiro-cli y los paquetes de AIM.",
         "auto_generated_skill_candidates_awaiting_your_ap": "Candidatos de habilidades generados automáticamente que esperan tu aprobación. Haz clic en Revisar para inspeccionar el SKILL.md y cualquier script incluido antes de aprobarlo. Aprobar pone la habilidad en marcha (y marca los scripts como ejecutables); descartar la desecha. Nada entra en funcionamiento hasta que lo apruebes.",
         "hide": "Ocultar",
+        "linked_candidate_no_longer_pending": "Ese candidato de habilidad ya no está pendiente de revisión. Se aprobó o se descartó.",
         "on_demand_skills_loaded_when_the_agent_determine": "Habilidades a demanda que se cargan cuando el agente determina que son relevantes.",
         "proposed_change": "Cambio propuesto",
         "review": "Revisar",

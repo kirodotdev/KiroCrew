@@ -2500,7 +2500,16 @@ class DashboardState:
         except Exception:
             logger.debug("Failed to persist open_slots.json", exc_info=True)
 
-    def notify(self, kind: str, title: str, body: str, *, meta: dict | None = None) -> None:
+    def notify(
+        self,
+        kind: str,
+        title: str,
+        body: str,
+        *,
+        meta: dict | None = None,
+        url: str | None = None,
+        actions: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Push a notification to ALL connected SSE clients and persist to disk.
 
         Legacy adapter over the notification bus (see
@@ -2508,9 +2517,22 @@ class DashboardState:
         schema-v2 payload (source="system", channel="system.<kind>") and pushes
         it through :class:`NotificationBus`, which validates and hands the
         enriched note back to :meth:`_deliver_note`.
+
+        ``url`` (a dashboard-internal path that renders the detail panel's Open
+        button) and ``actions`` (up to four labelled navigation capsules on the
+        feed row) must be passed HERE, not inside ``meta``: the bus's meta merge
+        skips both names so ``meta`` cannot smuggle an unvalidated deep link,
+        so a ``meta={"url": ...}`` caller produces a note with no navigation at
+        all. Both are validated by the payload; an invalid one -- wrong type or
+        an off-dashboard path -- is dropped with a warning, so the never-raises
+        contract is preserved. That holds only because
+        :meth:`NotificationPayload.validate` turns BOTH bad values and bad types
+        into :class:`NotificationValidationError`; the payload build is inside
+        the guarded block so a future field that validates on construction
+        cannot reopen the hole either.
         """
-        payload = payload_from_legacy(kind, title, body, meta)
         try:
+            payload = payload_from_legacy(kind, title, body, meta, url=url, actions=actions)
             self.notification_bus.push(payload)
         except NotificationValidationError:
             # Legacy callers never validated inputs; keep the old

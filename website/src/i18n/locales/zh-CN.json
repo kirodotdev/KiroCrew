@@ -3837,6 +3837,7 @@
         "kind_heartbeat": "心跳",
         "kind_hooks": "钩子",
         "kind_notification": "通知",
+        "kind_skills": "技能",
         "kind_subagent": "子代理",
         "kind_task_runner": "任务运行器",
         "kind_tasks": "任务",
@@ -3882,6 +3883,7 @@
         "no_notifications": "暂无通知",
         "reject": "拒绝",
         "search": "搜索…",
+        "toggle_kind": "切换{{kind}}",
         "select_all_categories": "全选分类",
         "show_less": "收起",
         "try_a_different_search": "换个搜索词试试"
@@ -7065,6 +7067,7 @@
         "skills_tip": "按需加载的技能，当代理判断相关时才加载。带有 auto 标记的技能会始终注入每个会话。技能来自 Kiro Crew、kiro-cli 和 AIM 包。",
         "auto_generated_skill_candidates_awaiting_your_ap": "自动生成的技能候选，等待你批准。点击“审查”可在批准前检查 SKILL.md 和随附脚本。批准会让技能生效（并将脚本标记为可执行）；忽略则将其丢弃。在你批准之前不会有任何内容生效。",
         "hide": "隐藏",
+        "linked_candidate_no_longer_pending": "该技能候选项已不在待审队列中，它已被批准或忽略。",
         "on_demand_skills_loaded_when_the_agent_determine": "按需技能，在代理判断相关时加载。",
         "proposed_change": "建议的更改",
         "review": "审查",

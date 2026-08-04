@@ -984,6 +984,7 @@
         "kind_heartbeat": "Heartbeat",
         "kind_hooks": "Hooks",
         "kind_notification": "Notification",
+        "kind_skills": "Skills",
         "kind_subagent": "Subagent",
         "kind_task_runner": "Task Runner",
         "kind_tasks": "Tasks",
@@ -997,7 +998,8 @@
         "no_categories_selected_click_a_category_above": "No categories selected — click a category above",
         "select_all_categories": "Select all categories",
         "show_less": "Show less",
-        "try_a_different_search": "Try a different search"
+        "try_a_different_search": "Try a different search",
+        "toggle_kind": "Toggle {{kind}}"
       }
     },
     "onboardingFlow": {
@@ -2214,6 +2216,7 @@
         "skills_tip": "On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from Kiro Crew, kiro-cli (~/.kiro/skills), and AIM packages.",
         "auto_generated_skill_candidates_awaiting_your_ap": "Auto-generated skill candidates awaiting your approval. Click Review to inspect the SKILL.md and any bundled script before approving. Approve makes the skill live (and marks scripts executable); dismiss discards it. Nothing goes live until you approve it.",
         "hide": "Hide",
+        "linked_candidate_no_longer_pending": "That skill candidate is no longer awaiting review. It was approved or dismissed.",
         "on_demand_skills_loaded_when_the_agent_determine": "On-demand skills loaded when the agent determines they're relevant.",
         "proposed_change": "Proposed change",
         "review": "Review",

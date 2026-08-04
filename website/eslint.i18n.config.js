@@ -254,6 +254,22 @@ export default [
               // a shape UI copy takes — copy has spaces and capitals, which is what keeps
               // `['Save changes', 'Delete item']` reported.
               '^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$',
+              // A `mc:`-NAMESPACED BROWSER-STORAGE KEY, e.g.
+              // `mc:notif:activeKinds:v2`, `mc:notif:seenChannels`. The dashboard
+              // namespaces every localStorage key it owns under `mc:`, and such
+              // keys live at module level under an ALL-CAPS name, so
+              // `i18n-strict` looks inside them. None of the identifier patterns
+              // above reach them: the camelCase one forbids colons, and the
+              // Tailwind/class shape forbids the interior capital that
+              // `activeKinds` has.
+              //
+              // Deliberately anchored on the app's own prefix rather than a
+              // generic "has a colon" shape: UI copy never begins `mc:`, and the
+              // char class forbids spaces, so prose cannot match even when it
+              // contains a colon. Naming the shape here also retires the same
+              // debt on the keys that predate this entry, instead of leaving each
+              // one to a per-file ceiling that hides it.
+              '^mc:[A-Za-z0-9:._-]+$',
               '^[\\w.-]+/[\\w./-]*$',
               // EVERY PATTERN IN THIS FILE IS MATCHED FULL-STRING, so a prefix
               // pattern MUST spell out its own tail. `eslint-plugin-i18next` compiles

@@ -3945,6 +3945,7 @@
         "kind_heartbeat": "Heartbeat",
         "kind_hooks": "Hook",
         "kind_notification": "Notifica",
+        "kind_skills": "Competenze",
         "kind_subagent": "Subagente",
         "kind_task_runner": "Task Runner",
         "kind_tasks": "Attività",
@@ -3990,6 +3991,7 @@
         "no_notifications": "Nessuna notifica",
         "reject": "Rifiuta",
         "search": "Cerca…",
+        "toggle_kind": "Attiva/disattiva {{kind}}",
         "select_all_categories": "Seleziona tutte le categorie",
         "show_less": "Mostra meno",
         "try_a_different_search": "Prova una ricerca diversa"
@@ -7233,6 +7235,7 @@
         "skills_tip": "Competenze caricate su richiesta quando l’agente le ritiene pertinenti. Le competenze con il badge auto vengono sempre inserite in ogni sessione. Le competenze sono rilevate da Kiro Crew, kiro-cli e dai pacchetti AIM.",
         "auto_generated_skill_candidates_awaiting_your_ap": "Skill candidate generate automaticamente in attesa della tua approvazione. Clicca Rivedi per esaminare SKILL.md e gli eventuali script inclusi prima di approvare. Approva rende la skill attiva (e segna gli script come eseguibili); Ignora la scarta. Nulla diventa attivo finché non lo approvi.",
         "hide": "Nascondi",
+        "linked_candidate_no_longer_pending": "Questa competenza candidata non è più in attesa di revisione. È stata approvata o ignorata.",
         "on_demand_skills_loaded_when_the_agent_determine": "Skill on demand, caricate quando l’agente le ritiene pertinenti.",
         "proposed_change": "Modifica proposta",
         "review": "Rivedi",
