@@ -1096,6 +1096,26 @@ SKILL_SEARCH_SCHEMA = ToolSchema(
     ],
 )
 
+SKILL_DISCOVER_SCHEMA = ToolSchema(
+    tool_name="skill_discover",
+    fields=[
+        FieldSpec("query", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("limit", int),
+        FieldSpec("provider", str, max_len=MAX_SHORT_STRING),
+    ],
+)
+
+# ``id`` is a provider path like "owner/repo/skill" — the provider itself
+# rejects empty/./.. segments before it reaches a URL (see
+# SkillsShProvider.fetch_skill_bundle), so this schema is the shape gate only.
+SKILL_FETCH_SCHEMA = ToolSchema(
+    tool_name="skill_fetch",
+    fields=[
+        FieldSpec("id", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("provider", str, max_len=MAX_SHORT_STRING),
+    ],
+)
+
 # Absolute filesystem path. Empty string is allowed (clears the project) —
 # the validator skips the pattern check on empty values, so the regex only
 # needs to cover the non-empty case.
@@ -2029,6 +2049,8 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "learn_add": LEARN_ADD_SCHEMA,
     "learn_remove": LEARN_REMOVE_SCHEMA,
     "skill_search": SKILL_SEARCH_SCHEMA,
+    "skill_discover": SKILL_DISCOVER_SCHEMA,
+    "skill_fetch": SKILL_FETCH_SCHEMA,
     "task_run": TASK_RUN_SCHEMA,
     "send_message": SEND_MESSAGE_SCHEMA,
     "send_notification": SEND_NOTIFICATION_SCHEMA,

@@ -323,6 +323,114 @@ class TestDiscoverSearch:
 
 
 @pytest.mark.asyncio
+class TestDiscoverInstallHumanOnly:
+    """Install must refuse an internal-secret (MCP) caller.
+
+    ``/api/skills/-/discover`` is on ``_MIXED_INTERNAL_API_PATHS`` so the
+    read-only ``skill_discover`` / ``skill_fetch`` MCP tools can reach it, and
+    that admission is prefix-matched — it reaches ``/discover/install`` too.
+    The handler is the thing that keeps installing a human action, so pin it.
+    """
+
+    async def _client(self, fake_home, *, internal: bool):
+        state, skills_dir = _state_with_skills_loader(fake_home)
+        app = _make_app(state, FakeProvider())
+
+        if internal:
+            @web.middleware
+            async def mark_internal(request, handler):
+                # What token_auth_middleware sets after a verified
+                # X-Internal-Secret match.
+                request["internal_auth"] = True
+                return await handler(request)
+
+            app.middlewares.append(mark_internal)
+
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        return client, skills_dir
+
+    async def test_internal_secret_caller_is_refused(self, fake_home, reset_registry):
+        client, skills_dir = await self._client(fake_home, internal=True)
+        try:
+            resp = await client.post(
+                "/api/skills/-/discover/install",
+                json={"provider": "fakeprov", "skill_id": "fake-skill"},
+            )
+            assert resp.status == 403
+            data = await resp.json()
+            assert data["code"] == "human_only"
+            # Nothing was written to the skills dir.
+            assert not (skills_dir / "fakeprov" / "fake-skill").exists()
+        finally:
+            await client.close()
+
+    async def test_browser_caller_still_installs(self, fake_home, reset_registry):
+        client, skills_dir = await self._client(fake_home, internal=False)
+        try:
+            resp = await client.post(
+                "/api/skills/-/discover/install",
+                json={"provider": "fakeprov", "skill_id": "fake-skill"},
+            )
+            assert resp.status == 200
+            assert (skills_dir / "fakeprov" / "fake-skill" / "SKILL.md").exists()
+        finally:
+            await client.close()
+
+    async def test_read_paths_are_admitted_for_internal_callers(self):
+        """The two READ routes must be on the mixed-internal list, or the MCP
+        tools 403 with 'Token required' (the artifact-folders bug class)."""
+        from kiro_crew.dashboard.server import (
+            _MIXED_INTERNAL_API_PATHS,
+            _STRICT_INTERNAL_API_PATHS,
+        )
+
+        assert "/api/skills/-/discover" in _MIXED_INTERNAL_API_PATHS
+        assert "/api/skills/-/discover/preview" in _MIXED_INTERNAL_API_PATHS
+        # Not strict: the Skills page calls the same routes with cookie auth.
+        assert "/api/skills/-/discover" not in _STRICT_INTERNAL_API_PATHS
+
+    async def test_real_middleware_grants_the_read_paths(self):
+        """Drive the ACTUAL token_auth middleware with the ACTUAL path set.
+
+        List membership alone does not prove admission — prefix matching,
+        ``local_only`` reclassification and the secret comparison all sit in
+        between. Pin the behavior the MCP tools depend on.
+        """
+        from unittest.mock import MagicMock
+
+        from kiro_crew.dashboard.server import _MIXED_INTERNAL_API_PATHS
+        from kiro_crew.dashboard.token_auth import token_auth_middleware
+
+        secret = "test-secret-123"
+        mw = token_auth_middleware(
+            mixed_internal_paths=_MIXED_INTERNAL_API_PATHS,
+            internal_secret=secret,
+        )
+
+        async def _ok(_request):
+            return web.Response(text="ok")
+
+        def _req(path, sent_secret):
+            req = MagicMock(spec=web.Request)
+            req.path = path
+            req.query = {}
+            req.cookies = {}
+            req.remote = "127.0.0.1"
+            req.headers = {"X-Internal-Secret": sent_secret}
+            req.method = "GET"
+            return req
+
+        for path in ("/api/skills/-/discover", "/api/skills/-/discover/preview"):
+            resp = await mw(_req(path, secret), _ok)
+            assert resp.status == 200, f"{path} not admitted: {resp.status}"
+
+        # A wrong secret is still denied on the same paths.
+        resp = await mw(_req("/api/skills/-/discover", "nope"), _ok)
+        assert resp.status == 403
+
+
+@pytest.mark.asyncio
 class TestDiscoverInstallLogSanitization:
     """Regression for CWE-117 log forging in the install handler's error logs.
 

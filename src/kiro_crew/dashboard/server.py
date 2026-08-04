@@ -369,6 +369,22 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # anything holding the internal secret. This route is local-only triage
         # state — no forge write, no shared ledger.
         "/api/apps/issue-radar/investigation",
+        # Registry skill discovery — the READ leg only, for the
+        # ``skill_discover`` / ``skill_fetch`` MCP tools. The Skills page calls
+        # the same two routes with cookie auth, hence mixed rather than strict.
+        #
+        # Prefix-matching (path == p or startswith(p + "/")) means the first
+        # entry ALSO admits ``/api/skills/-/discover/install`` — a WRITE that
+        # fetches third-party files and writes them into the skills dir. That is
+        # closed off at the handler instead: ``api_skills_discover_install``
+        # refuses an internal-secret caller outright (see its ``internal_auth``
+        # guard), so installation stays a deliberate human action in the
+        # dashboard. Do not remove that guard to add an install MCP tool without
+        # re-reviewing this admission.
+        "/api/skills/-/discover",
+        # Redundant under the prefix match above, kept explicit so a reader of
+        # this list sees both routes the MCP tools actually call.
+        "/api/skills/-/discover/preview",
         "/v1/chat/completions",  # OpenAI-compat API
     }
 )
