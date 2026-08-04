@@ -53,12 +53,15 @@ def _raster_body(size: int) -> bytes:
     """`size` bytes of high-entropy but DETERMINISTIC raster payload.
 
     These tests assert a genuine raster is *exempted* from redaction, which needs its
-    base64 body to carry no credential pattern. `os.urandom` cannot promise that:
-    `_ENCODED_CREDENTIAL_RE` matches the bare prefixes `xox[abposr]` and `sk-ant`, and
-    random base64 produces one ~1.07% of the time per 20 KB (measured 32/3000), which
-    made two of these the 3rd and 4th most frequent failures in CI. A fixed seed keeps
-    the payload high-entropy, which is the property under test since it is what makes
-    the bare-secret heuristic fire, while fixing the outcome on every host.
+    base64 body to carry no credential pattern. `os.urandom` cannot promise that, and
+    it used to be actively likely: `_ENCODED_CREDENTIAL_RE` matched the BARE prefixes
+    `xox[abposr]` and `sk-ant`, which random base64 produced ~1.07% of the time per
+    20 KB (measured 32/3000), making two of these the 3rd and 4th most frequent CI
+    failures. Every alternative now requires its separator (`-`/`_`), which base64
+    cannot contain, so a chance match is no longer possible — but a fixed seed is
+    still the right fixture: it keeps the payload high-entropy, which is the property
+    under test since it is what makes the bare-secret heuristic fire, while fixing the
+    outcome on every host.
     """
     return random.Random(_RASTER_SEED).randbytes(size)
 
@@ -484,6 +487,160 @@ class TestPreviewRedaction(_RoutesFixture):
                 self.assertIn(blob, payload["bgSvg"])
                 self.assertNotIn(_FAKE_AKIA, payload["notes"])
 
+    async def test_a_raster_whose_base64_contains_a_token_prefix_still_renders(
+        self,
+    ) -> None:
+        """A bare `xox…` prefix occurring by chance inside a real raster must not
+        blank the image.
+
+        The credential scan used to match `xox[abposr]` as a bare 4-character
+        literal against the base64 body — a long run drawn from 64 symbols — so
+        chance collisions scaled with image size (measured 0.88% per 20 KB raster,
+        4.7% per 100 KB). Every hit silently replaced a legitimate picture with
+        `[REDACTED: credential]`, which is the looks-secure-renders-blank failure the
+        bitmap carve-out exists to prevent. Requiring the token's `-` separator makes
+        it impossible instead of merely unlikely: `-` is not a base64 character.
+
+        `xoxb` is placed on a base64 group boundary so it appears verbatim in the
+        encoded body rather than by luck.
+        """
+        # 8-byte PNG magic + 1 filler = 9 bytes, so the next 3 bytes start a base64
+        # group and encode to exactly "xoxb".
+        body = (
+            b"\x89PNG\r\n\x1a\n"
+            + bytes([0x42])
+            + base64.b64decode("xoxb")
+            + _raster_body(3000)
+        )
+        blob = base64.b64encode(body).decode()
+        self.assertIn("xoxb", blob, "fixture must actually embed the prefix")
+
+        (self.deck / "compose" / "intro_1.json").write_text(
+            json.dumps({
+                "bgSvg": f'<image href="data:image/png;base64,{blob}"/>',
+                "notes": f"key {_FAKE_AKIA}",
+            }),
+            encoding="utf-8",
+        )
+        resp = await self._preview("compose/intro_1.json")
+        payload = json.loads(await resp.text())
+        self.assertIn(blob, payload["bgSvg"])
+        self.assertNotIn(_FAKE_AKIA, payload["notes"])
+
+    async def test_appended_tokens_whose_separator_is_not_base64_are_caught(
+        self,
+    ) -> None:
+        """A credential appended to a real raster is excised whatever its separator.
+
+        The body class is base64-only, so `ghp_…` was cut to `ghp` and `sk-ant…` to
+        `sk` before the credential scan ran — and both scan alternatives required the
+        very character that had been cut, making them unreachable. The adjacent token
+        run is now captured separately so the whole token is scanned.
+
+        Both a padding-free and a padded body are covered: without `=` padding the
+        decoder consumes appended characters as data and re-encoding reproduces them,
+        which is the path that actually serves them.
+        """
+        # Obviously-synthetic bodies, matching the convention the sibling tests use:
+        # a realistically-shaped fixture trips GitHub's push protection.
+        tokens = {
+            "slack": "xoxb-1234567890-abcdefg",
+            "anthropic": "sk-ant-api03-abcdefghijklmnop",
+            "github": "ghp_0123456789abcdefghij0123456789abcdef",
+            # Matched by this scan but NOT by `redact()` (a real PAT body is 36 chars,
+            # so the central redactor ignores this one). It is the case that proves the
+            # refusal path must EXCISE rather than hand the region to the text pass.
+            "github_short_body": "ghp_0123456789abcdefghij",
+            # Markers the credential scan does NOT list. They are caught because the
+            # URI does not terminate at the body, not because they were enumerated.
+            "pypi": "pypi-AgEIcHlwaS5vcmcCJDAwMDAwMDAwLTAwMDAtMDAwMC0wMDAw",
+            "gitlab": "glpat-0123456789abcdefghij",
+            "jwt": (
+                "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+                ".eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r"
+            ),
+            "aws": _FAKE_AKIA,
+        }
+        for filler in (3000, 3001):  # padded vs padding-free base64
+            raster = b"\x89PNG\r\n\x1a\n" + _raster_body(filler)
+            blob = base64.b64encode(raster).decode()
+            for name, token in tokens.items():
+                with self.subTest(token=name, filler=filler):
+                    (self.deck / "compose" / "intro_1.json").write_text(
+                        json.dumps({
+                            "bgSvg": (
+                                f'<image href="data:image/png;base64,{blob}{token}"/>'
+                            ),
+                        }),
+                        encoding="utf-8",
+                    )
+                    resp = await self._preview("compose/intro_1.json")
+                    self.assertNotIn(token, await resp.text())
+
+    async def test_a_uri_the_body_does_not_terminate_forfeits_the_carve_out(self) -> None:
+        """The carve-out is granted only when the URI properly ENDS at the base64.
+
+        A credential appended to the body splits at whatever separator it uses — the
+        prefix lands in the BODY and survives the re-encode, while the remainder
+        escapes the scan, and the halves reassemble in the served text. Enumerating
+        separators is endless (`-`, `_`, a JWT's `.`, `:`, `~`…); enumerating the
+        characters that legitimately END a data URI is finite. So anything else
+        directly after the body forfeits the exemption. It costs only the inline art of
+        an artifact that was already malformed.
+
+        `pypi`, `glpat`, the JWT and the `:`/`~` forms are NOT in
+        `_ENCODED_CREDENTIAL_RE` — they are caught by this rule, not by enumeration.
+        """
+        raster = base64.b64encode(b"\x89PNG\r\n\x1a\n" + _raster_body(3000)).decode()
+        appended = {
+            "jwt_dot": (
+                "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+                ".eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r"
+            ),
+            "pypi_dash": "pypi-AgEIcHlwaS5vcmcCJDAwMDAwMDAwLTAwMDAtMDAwMC0wMDAw",
+            "gitlab_dash": "glpat-0123456789abcdefghij",
+            "colon": "svc:0123456789abcdefghijklmn",
+            "tilde": "key~0123456789abcdefghijklmn",
+            "benign_underscore": "-caption_v2",
+        }
+        for label, glued in appended.items():
+            with self.subTest(appended=label):
+                doc = '{"img": "data:image/png;base64,' + raster + glued + '"}'
+                out = routes._redact_artifact(doc.encode("utf-8")).decode("utf-8")
+                # Assert no substantial FRAGMENT survives, not merely the whole token.
+                # Excising only the body left a PyPI macaroon's 49-char tail in the
+                # text — the full-token assertion passed while secret material shipped.
+                for size in (8,):
+                    for i in range(len(glued) - size + 1):
+                        self.assertNotIn(glued[i:i + size], out, f"{label} @{i}")
+                # The blob is not exempted either, so no half can be reassembled.
+                self.assertNotIn(raster, out, label)
+                # The terminator is not part of the match, so the document keeps it.
+                self.assertTrue(out.rstrip().endswith('"}'), out[-40:])
+
+    async def test_every_legal_uri_terminator_keeps_the_image(self) -> None:
+        """The allowlist must admit every shape the engine really emits, or this fix
+        becomes the blank-image bug it is meant to remove.
+
+        Each context ends the URI with a different character: a JSON string (`"`), the
+        escaped quote a raw JSON file carries (`\\`), CSS `url(...)` and markdown
+        `](...)` (`)`), and end-of-text (no character at all).
+        """
+        blob = base64.b64encode(b"\x89PNG\r\n\x1a\n" + _raster_body(3000)).decode()
+        contexts = {
+            "json_quote": '{"img": "data:image/png;base64,' + blob + '"}',
+            "escaped_quote": json.dumps(
+                {"bgSvg": f'<image href="data:image/png;base64,{blob}"/>'}
+            ),
+            "css_paren": ".x{background:url(data:image/png;base64," + blob + ");}",
+            "markdown_paren": "![alt](data:image/png;base64," + blob + ")",
+            "end_of_text": "data:image/png;base64," + blob,
+        }
+        for label, doc in contexts.items():
+            with self.subTest(context=label):
+                out = routes._redact_artifact(doc.encode("utf-8")).decode("utf-8")
+                self.assertEqual(out, doc, label)
+
     async def test_an_svg_data_uri_is_not_exempted_from_scanning(self) -> None:
         """`image/svg+xml` is deliberately absent from the bitmap subtype list: it
         is a document rather than a bitmap and the engine never emits it, so a
@@ -580,13 +737,13 @@ class TestRedactArtifactHelper(unittest.TestCase):
         self.assertEqual(routes._redact_artifact(original.encode()).decode("utf-8"), original)
 
     def test_the_bitmap_probe_rejects_a_body_that_is_not_a_raster(self) -> None:
-        self.assertIsNone(routes._scanned_bitmap_bytes(_FAKE_AKIA))
-        self.assertIsNone(routes._scanned_bitmap_bytes(""))
-        self.assertIsNone(routes._scanned_bitmap_bytes("!!!not base64!!!"))
+        self.assertEqual(routes._scanned_bitmap_bytes(_FAKE_AKIA), (None, False))
+        self.assertEqual(routes._scanned_bitmap_bytes(""), (None, False))
+        self.assertEqual(routes._scanned_bitmap_bytes("!!!not base64!!!"), (None, False))
 
     def test_the_bitmap_probe_accepts_a_real_raster(self) -> None:
         blob = base64.b64encode(b"\x89PNG\r\n\x1a\n" + _raster_body(64)).decode()
-        self.assertIsNotNone(routes._scanned_bitmap_bytes(blob))
+        self.assertIsNotNone(routes._scanned_bitmap_bytes(blob)[0])
 
 
 class TestConfigRoutes(_RoutesFixture):
@@ -838,7 +995,7 @@ class TestLibraryRoutes(_RoutesFixture):
             b"\x89PNG\r\n\x1a\n" + b"tEXtComment\x00AKIAIOSFODNN7EXAMPLE" + b"\x00" * 64
         ).decode()
         doc = '{"img": "data:image/png;base64,' + evil + '"}'
-        self.assertIsNone(routes._scanned_bitmap_bytes(evil))
+        self.assertEqual(routes._scanned_bitmap_bytes(evil), (None, True))
         out = routes._redact_artifact(doc.encode("utf-8")).decode("utf-8")
         self.assertNotIn(evil, out)
 
@@ -876,7 +1033,7 @@ class TestLibraryRoutes(_RoutesFixture):
         """
         clean = base64.b64encode(b"\x89PNG\r\n\x1a\n" + _raster_body(20000)).decode()
         doc = '{"img": "data:image/png;base64,' + clean + '"}'
-        self.assertIsNotNone(routes._scanned_bitmap_bytes(clean))
+        self.assertIsNotNone(routes._scanned_bitmap_bytes(clean)[0])
         self.assertEqual(routes._redact_artifact(doc.encode("utf-8")).decode("utf-8"), doc)
 
     async def test_style_cover_thumbnails_are_redacted(self) -> None:

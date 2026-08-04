@@ -5253,6 +5253,12 @@ def _decode_b64_safe(text: str) -> str:
 # (`StreamRedactor.feed`) so the on-the-wire marker is identical everywhere.
 _REDACTED_CREDENTIAL_TAG = "[REDACTED: credential]"
 
+# Public alias for modules that must emit the SAME tag rather than duplicate the
+# literal — e.g. the pptx-maker preview, which excises a credential-bearing bitmap
+# itself because this module's redactor recognises a narrower token set than that
+# scan matches.
+REDACTED_CREDENTIAL_TAG = _REDACTED_CREDENTIAL_TAG
+
 
 def redact_credentials(text: str) -> tuple[str, list[str]]:
     """Redact raw credential patterns from text, including base64-encoded.
