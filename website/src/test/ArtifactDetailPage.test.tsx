@@ -276,8 +276,9 @@ describe('ArtifactDetailPage', () => {
       .mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    // Widget kind keeps iframe-based rendering.
-    expect(document.querySelector('iframe')).not.toBeNull()
+    // Widget kind keeps iframe-based rendering. The blob URL is set via
+    // useEffect (async), so wait for the iframe to appear.
+    await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
   })
 
   // ── inline edit + revert ───────────────────────────
@@ -840,7 +841,7 @@ describe('ArtifactDetailPage', () => {
       .mockResolvedValue({ slug: 'cr-queue', versions: [1] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    expect(document.querySelector('iframe')).not.toBeNull()
+    await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
   })
 
   it('Live dropdown change with dirty buffer prompts before discarding', async () => {
