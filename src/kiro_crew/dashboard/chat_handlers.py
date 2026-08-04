@@ -72,6 +72,7 @@ from kiro_crew.dashboard.state import (
     _mark_permission_resolved,
     _normalize_slot_key,
     parse_cls_meta,
+    request_slot_origin,
 )
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import carry_provenance
@@ -185,6 +186,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         slot = state.get_or_create_slot(
             slot_name,
             app=request.get("app", ""),
+            origin=request_slot_origin(request.get("app", "")),
             memory_mode=requested_memory_mode,
         )
     except ValueError as exc:
@@ -1087,6 +1089,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 memory_mode=memory_mode,
                 ephemeral=body.get("ephemeral"),
                 app=request.get("app", ""),
+                origin=request_slot_origin(request.get("app", "")),
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=409)
@@ -3475,6 +3478,16 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             }
         )
 
+    # Read the history metadata BEFORE creating the slot: this endpoint RESUMES a
+    # persisted conversation, so its origin is a property of that conversation,
+    # not of whoever is resuming it. Deriving it from the request would label a
+    # resumed CRON slot as USER, and `slots:user` would then hand the dashboard
+    # user's private cron output to any app holding that scope. An absent
+    # persisted origin stays empty (get_or_create_slot then derives APP for an
+    # app token, otherwise leaves it untagged, which is invisible to cross-slot
+    # scopes) rather than claiming USER on a conversation we cannot attribute.
+    meta = state.conversation_log.get_metadata(history_key)
+
     slot = state.get_or_create_slot(
         name,
         app=request.get("app", ""),
@@ -3482,6 +3495,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # that conversation, so the tab is channel-origin even when the session
         # map can no longer name its session.
         channel_origin=is_channel_session_key(history_key),
+        origin=str(meta.get("origin", "")),
     )
     # PERSISTED METADATA IS AUTHORITATIVE for the title. The sidebar's resume
     # call always sends a ``title`` (see website/src/api/client.ts
@@ -3771,7 +3785,12 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                     # flag the slot or the write can be lost on restart.
                     if _mark_permission_resolved(slot.messages, aid, mode):
                         slot._dirty = True
-                    state.broadcast_ws("approval_resolved", {"id": aid, "approved": True})
+                    # ``slot`` keys the frame for the slot-scoped WS gate — an
+                    # app token cannot receive its own resolution without it.
+                    state.broadcast_ws(
+                        "approval_resolved",
+                        {"id": aid, "approved": True, "slot": slot.key},
+                    )
                     try:
                         sel().log_api_access(
                             caller=f"dashboard:{slot.key}",
@@ -3983,7 +4002,14 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     # Broadcast first to ensure frontend is unblocked
     if request_id:
         state.broadcast_ws(
-            "approval_resolved", {"id": request_id, "approved": resolved != "rejected"}
+            "approval_resolved",
+            {
+                "id": request_id,
+                "approved": resolved != "rejected",
+                # Keys the frame for the slot-scoped WS gate (see
+                # ws_event_scope._SLOT_SCOPED_EVENTS).
+                "slot": owner.key,
+            },
         )
     state.push_slots_update()
     # SEL audit (best-effort — must not block the UI-unblocking path above)

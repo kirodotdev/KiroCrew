@@ -290,7 +290,7 @@ class TestSessionSummaryBroadcast:
         state = _make_state(tmp_path)
         state._ws_clients = [MagicMock()]
         sent: list[str] = []
-        state._send_ws_all = lambda msg: sent.append(msg)  # type: ignore[method-assign]
+        state._send_ws_all = lambda msg_type, data, msg: sent.append(msg)  # type: ignore[method-assign]
 
         state.push_session_summary("dashboard:chat-7")
 

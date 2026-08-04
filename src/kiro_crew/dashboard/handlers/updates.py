@@ -1323,8 +1323,27 @@ _log_ring_handler: _RingLogHandler | None = None
 
 
 async def _safe_ws_send(ws: web.WebSocketResponse, msg: str, state: DashboardState) -> None:
-    """Send to WS, removing dead subscribers on failure."""
+    """Send a log frame to one subscriber, re-checking its scope first.
+
+    Subscription is granted once, in the ``subscribe_logs`` handler, and the
+    handler above then fans out straight to ``_ws_log_subscribers`` without
+    passing the broadcast chokepoint. Re-check here, through
+    ``DashboardState._ws_client_allowed`` itself (rather than a hand-rolled
+    scope comparison) so revoking an app's ``log`` scope (a narrowed manifest,
+    or ``app disable``) stops the stream on a socket that is already
+    subscribed, and so this decision gets the same SEL audit trail as every
+    other event instead of a silent, unaudited duplicate of the check.
+
+    This runs on the event loop (the caller hands it to ``create_task`` via
+    ``call_soon_threadsafe``), which is what makes the check safe: the scope
+    cache must never be consulted from the logging thread, where a cold miss
+    would fall back to a synchronous manifest read.
+    """
     try:
+        if not ws.get("_is_dashboard_user", False):
+            if not state._ws_client_allowed(ws, "log", {}):
+                state._ws_log_subscribers.discard(ws)
+                return
         await ws.send_str(msg)
     except Exception:
         state._ws_log_subscribers.discard(ws)

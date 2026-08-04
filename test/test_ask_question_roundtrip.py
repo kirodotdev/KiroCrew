@@ -919,7 +919,7 @@ def test_broadcast_ws_owners_targets_the_owner_client_set() -> None:
     st._ws_clients = {owner_ws, MagicMock()}
     sent: list[str] = []
     st._send_ws_owners = lambda msg: sent.append(msg)  # type: ignore[assignment]
-    st._send_ws_all = lambda msg: pytest.fail(  # type: ignore[assignment]
+    st._send_ws_all = lambda msg_type, data, msg: pytest.fail(  # type: ignore[assignment]
         "question payloads must never use the all-clients channel"
     )
 

@@ -10,4 +10,7 @@ export const {
   // Chat surfaces and the transcript row registry.
   useChatSession, ChatPanel, ChatEmbed, ChatMessageList,
   defaultMessageRenderers, mergeRenderers, resolveRenderer, ToolCallPill, GROUPED_ROLES,
+  // WS event scope prediction, so a subscription that will never be delivered warns at
+  // development time instead of silently receiving nothing.
+  checkSubscribeAllowed,
 } = m

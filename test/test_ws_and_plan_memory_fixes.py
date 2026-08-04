@@ -197,7 +197,11 @@ class TestWsNormalUserExperience:
         state.register_ws(dead)
 
         # Simulate push_notification which calls _send_ws_all internally
-        state._send_ws_all(json.dumps({"type": "notification", "data": {"text": "hi"}}))
+        state._send_ws_all(
+            "notification",
+            {"text": "hi"},
+            json.dumps({"type": "notification", "data": {"text": "hi"}}),
+        )
 
         alive.send_str.assert_called_once()
         dead.send_str.assert_not_called()
