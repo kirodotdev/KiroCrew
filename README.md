@@ -5,16 +5,16 @@
 <h1 align="center">Kiro Crew</h1>
 
 <p align="center">
-  <strong>A persistent, self-learning, self-evolving agent for work that continues beyond one chat.</strong>
+  <strong>A persistent workspace for development work that self-improves and continues beyond one session.</strong>
 </p>
 
 <p align="center">
-  Kiro Crew is an open-source personal AI agent that runs locally or remotely on
+  Kiro Crew is an open source development workspace that runs locally or remotely on
   your hardware. It is persistent, self-learning, and self-evolving. Work with it
-  from the Mac app, web dashboard, and CLI, or continue the same work through
+  from the desktop app, web dashboard, and CLI, or continue the same work through
   connection tools like Slack and Discord.
   Your multi-step tasks can run unattended, recurring jobs run on your schedule,
-  and heartbeats monitor systems until something needs attention. Kiro Crew apps
+  and heartbeats monitor systems until something needs attention. Kiro Crew Apps
   tailor that experience to a specific job, combining a purpose-built interface
   with agents, skills, schedules, integrations, and backend services.
 </p>
@@ -42,29 +42,43 @@
 
 ## Quick start
 
-**Desktop app.** [Download Kiro Crew](https://github.com/kirodotdev/KiroCrew/releases):
+You choose how to run Kiro Crew: the desktop app with automatic updates, a
+one-line install on your machine or a remote host, the Docker image for
+always-on servers, or a build from source. Every path runs on `kiro-cli`
+underneath, so the first launch installs it if needed and guides Kiro
+device-code sign-in.
 
-- **macOS**: signed `.dmg`
-- **Linux**: `.AppImage`
-- **Windows**: no desktop build yet, so run the Gateway from a [source install](#build-from-source) and open the dashboard in your browser
-- **Build it yourself**: `make desktop`
+### App downloads
 
-The app starts a bundled Gateway when no local Gateway is already running, and
-agent sessions run on demand on the same machine. It can connect to a remote
-Gateway over an SSH tunnel instead. See the
+The desktop app starts a bundled Gateway when no local Gateway is already
+running, updates itself on the channel you download, and can connect to a
+remote Gateway over an SSH tunnel. See the
 [desktop app guide](docs/desktop-app.md).
 
-**One-line install.** Install the prebuilt, SHA-256-verified wheel from the
-release CDN without cloning the repository or running `npm` and a local build:
+- **macOS**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew.dmg) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew.dmg) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew.dmg)
+- **Linux**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.AppImage) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.AppImage) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.AppImage)
+- **Windows**: no desktop build yet, so run the Gateway from a [source install](#build-from-source) and open the dashboard in your browser
+
+### One-line install
+
+Install the prebuilt, SHA-256-verified wheel from the release CDN without
+cloning the repository or running `npm` and a local build.
+
+Stable, the default:
 
 ```bash
-# Stable channel (the default)
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
+```
 
-# Or track a faster channel: insider or nightly
+Track a faster channel, `insider` or `nightly`:
+
+```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel insider
+```
 
-# Pin an exact version
+Pin an exact version:
+
+```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.1.0
 ```
 
@@ -75,7 +89,21 @@ without messaging credentials. Add [Slack](docs/slack-setup.md),
 working with the same agent away from the dashboard. These channels connect
 outbound, so you do not need to expose the dashboard port publicly.
 
-## Build from source
+### Docker
+
+For always-on servers, the Gateway ships as a public multi-arch image on GHCR:
+
+```bash
+docker run -d --name kirocrew \
+  -p 127.0.0.1:5476:5476 \
+  -v kirocrew-home:/home/kirocrew \
+  ghcr.io/kirodotdev/kirocrew:stable
+```
+
+See the [Docker guide](docs/docker.md) for first-run login, channel tags, and
+the container security model.
+
+### Build from source
 
 macOS and Linux require Python 3.10+, Node.js 18+, npm, and
 [`kiro-cli`](https://kiro.dev/docs/cli/). The first desktop or dashboard launch
@@ -98,47 +126,42 @@ kirocrew gateway
 
 ## Why Kiro Crew
 
-Kiro Crew is a persistent, self-learning, self-evolving agent that can run
-continuously, locally or remotely on your hardware. It remembers across sessions,
-turns corrections and failures into durable lessons, and synthesizes reusable
-skills from repeated patterns.
+Most agent sessions end when the chat closes. Kiro Crew runs continuously on
+hardware you control and keeps working between conversations.
 
-**Persistent and always available.** Sessions, memory, schedules, and task
-checkpoints persist beyond one chat and across Gateway restarts. Scheduled,
-proactive, and reactive work can continue without someone at the terminal while
-the host is running.
+**Persistent.** Sessions, memory, schedules, and task checkpoints survive
+Gateway restarts, and scheduled or reactive work continues without someone at
+the terminal.
 
-**Self-learning.** Corrections and task failures become durable lessons that
-change later behavior. Preferences and project context carry across sessions.
+**Self-learning.** Corrections and task failures become durable lessons.
+Preferences and project context carry into new sessions.
 
-**Self-evolving.** Repeated patterns can become reusable skills. Memory, lessons,
-and skills remain visible and editable, so each Kiro Crew becomes more tailored
-to the person and work around it over time.
+**Self-evolving.** Repeated patterns become reusable skills. Memory, lessons,
+and skills stay visible and editable, so each Kiro Crew grows more tailored to
+the person and work around it.
 
-**Runs where you choose.** Keep the runtime and its state on your Mac, in a local
-container, or on a remote machine you control.
+**Runs where you choose.** Your Mac, a local container, or a remote machine
+you control.
 
-**One Gateway, many ways to work.** The Mac app and web dashboard let you work
-directly in Kiro Crew across conversations, files, tasks, approvals, memory, and
-apps. The Gateway connects that same runtime to the CLI and to every messaging
-surface listed under [How it works](#how-it-works) when you want to continue from
-another one.
+**One Gateway, many surfaces.** Work directly in the desktop app or web dashboard,
+or continue the same work from the CLI and messaging surfaces like Slack and
+Discord.
 
 ## What Kiro Crew does
 
-| Capability | What it gives you | Ask Kiro Crew to... |
-|---|---|---|
-| **Persistent sessions** | Run concurrent, isolated conversations, resume them after Gateway restarts, search prior sessions, and carry recent context into new work. |  |
-| **Self-learning** | Turn corrections and task failures into durable lessons that change later behavior. Keep preferences, active-project context, and history scoped to the relevant workspace. | "No, always run the frontend checks before calling a change done." It saves the correction as a workspace-scoped lesson and applies it in future sessions for that workspace. |
-| **Self-evolving skills** | Synthesize reusable skills from repeated patterns, then inspect, refine, or remove them as your work changes. |  |
-| **Long-running tasks** | Give Kiro Crew a task spec and walk away. It plans steps, executes them, validates results, retries failures, and resumes from checkpoints. | "Implement this migration plan and stop if the tests fail." It runs the spec as a checkpointed task, validates each step, and reports the final review. |
-| **Unattended autonomy** | Run scheduled agent work or deterministic scripts and commands without a model call. Monitor work until it is done, or react to messaging events and authenticated webhooks without someone at the terminal. | "Every weekday at 9, summarize the open work I should review." Kiro Crew creates a timezone-aware recurring job and delivers each result to the configured surface. Ask it to watch a pull request and it keeps checking across heartbeat cycles. |
-| **Delegation** | Spawn isolated subagents for parallel work and bring their results back into the parent conversation. | "Research these three options in parallel and recommend one." It spawns isolated subagents and synthesizes the tradeoffs. |
-| **Work where you choose** | Work directly in the Mac app or web dashboard, or continue through the CLI and any connected messaging surface without moving the agent runtime or its state. |  |
-| **Installable apps** | Add focused interfaces and domain workflows through dashboard pages, scoped Gateway APIs, events, and lifecycle hooks. |  |
-| **Extensible tools** | Add MCP servers, markdown skills, and hooks without changing the core runtime. |  |
-| **Visible execution** | Watch tool calls, subagent progress, context usage, approvals, schedules, memory, and logs from the dashboard. |  |
-| **Defense in depth** | Combine tool approvals, OS sandboxing, sensitive-path checks, credential redaction, deny rules, audit events, and governance profiles. |  |
+| Capability | What it gives you |
+|---|---|
+| **Persistent sessions** | Run concurrent, isolated conversations, resume them after Gateway restarts, search prior sessions, and carry recent context into new work. |
+| **Self-learning** | Turn corrections and task failures into durable lessons that change later behavior. Keep preferences, active-project context, and history scoped to the relevant workspace. Say *"no, always run the frontend checks before calling a change done"* and it becomes a workspace-scoped lesson applied in future sessions. |
+| **Self-evolving skills** | Synthesize reusable skills from repeated patterns, then inspect, refine, or remove them as your work changes. |
+| **Long-running tasks** | Give Kiro Crew a task spec and walk away. It plans steps, executes them, validates results, retries failures, and resumes from checkpoints. *"Implement this migration plan and stop if the tests fail"* runs as a checkpointed task with validation at each step. |
+| **Unattended autonomy** | Run scheduled agent work or deterministic scripts and commands without a model call. Monitor work until it is done, or react to messaging events and authenticated webhooks without someone at the terminal. *"Every weekday at 9, summarize the open work I should review"* becomes a timezone-aware recurring job delivered to the surface you choose. |
+| **Delegation** | Spawn isolated subagents for parallel work and bring their results back into the parent conversation. *"Research these three options in parallel and recommend one"* fans out to isolated subagents and synthesizes the tradeoffs. |
+| **Work where you choose** | Work directly in the desktop app or web dashboard, or continue through the CLI and any connected messaging surface without moving the agent runtime or its state. |
+| **Installable apps** | Add focused interfaces and domain workflows through dashboard pages, scoped Gateway APIs, events, and lifecycle hooks. |
+| **Extensible tools** | Add MCP servers, markdown skills, and hooks without changing the core runtime. |
+| **Visible execution** | Watch tool calls, subagent progress, context usage, approvals, schedules, memory, and logs from the dashboard. |
+| **Defense in depth** | Combine tool approvals, OS sandboxing, sensitive-path checks, credential redaction, deny rules, audit events, and governance profiles. |
 
 You can also paste a screenshot and ask what is causing an error. Kiro Crew sends
 the image to the active Kiro model and keeps the diagnosis in the conversation
@@ -149,18 +172,16 @@ The complete inventory is in [Features](docs/features.md) and
 
 ## How it works
 
-```text
-Mac app / Web / Slack / Telegram / WeCom / CLI
-                       ↓
-                    Gateway
- access · sessions · memory · schedules · approvals · apps
-                       ↓
-                Agent sessions
-          ACP runtime · kiro-cli · MCP tools · models
+```mermaid
+flowchart TD
+    S["Desktop app · Web dashboard · Slack · Telegram · WeCom · CLI"]
+    G["Gateway<br/>access · sessions · memory · schedules · approvals · apps"]
+    A["Agent sessions<br/>ACP runtime · kiro-cli · MCP tools · models"]
+    S --> G --> A
 ```
 
 The Gateway separates where the agent runs from where you work with it. In the
-Mac app or web dashboard, you can work directly through parallel conversations,
+desktop app or web dashboard, you can work directly through parallel conversations,
 files, task runs, approvals, memory, and apps. From Slack, Telegram, WeCom, or
 the CLI, the Gateway routes your work to managed agent sessions under the same
 memory, tool, approval, and policy services. Apps extend the dashboard and
@@ -180,7 +201,7 @@ knowledge indexes remain on that host. Model requests are handled by `kiro-cli`
 and follow the account and model configuration you use there.
 
 **Gateway.** The Gateway is the long-running Kiro Crew process. It routes
-messages from the Mac app, web, CLI, and the messaging surfaces listed below. It persists
+messages from the desktop app, web, CLI, and the messaging surfaces listed below. It persists
 session state, injects memory and skills, starts scheduled work, coordinates
 subagents, brokers approvals, enforces runtime policy, and exposes activity in
 the dashboard.
@@ -201,7 +222,7 @@ logical isolation boundary, not necessarily one OS process.
 
 | Surface | Best for |
 |---|---|
-| **Mac app** | The simplest local experience, with a bundled Gateway plus multi-tab connections to local or remote Gateways. |
+| **Desktop app** | The simplest local experience, with a bundled Gateway plus multi-tab connections to local or remote Gateways. |
 | **Web dashboard** | Parallel conversations, files, approvals, activity, memory, schedules, apps, settings, and system status at `localhost:5476`. |
 | **Slack** | Work from DMs and threads with streaming replies, approvals, notifications, and session links back to the dashboard. |
 | **Telegram** | Reach your agent from private DMs on your phone or laptop, with streaming replies, inline approvals, and commands. |
@@ -215,12 +236,12 @@ logical isolation boundary, not necessarily one OS process.
 **Choose how work starts.**
 
 | Mode | Use it for | Entry point |
-|---|---|---|
-| **Scheduled** | Briefings, audits, backups, and recurring maintenance | `kirocrew cron` or a natural-language request |
-| **Proactive** | Goals that need another pass without waiting for a new user message | AutoNudge and goal-loop skills |
-| **Reactive** | CI alerts, external automation, Slack activity, and other events | Authenticated agent webhooks and messaging events |
-| **Task runner** | Bounded projects with explicit steps, tests, review, and checkpoint resume | `kirocrew run TASK.md` |
-| **Subagents** | Independent workstreams that can run concurrently | `kirocrew spawn run "task"` |
+|---|---|
+| **Scheduled** | Briefings, audits, backups, and recurring maintenance |
+| **Proactive** | Goals that need another pass without waiting for a new user message |
+| **Reactive** | CI alerts, external automation, Slack activity, and other events |
+| **Task runner** | Bounded projects with explicit steps, tests, review, and checkpoint resume |
+| **Subagents** | Independent workstreams that can run concurrently |
 
 ```bash
 kirocrew chat                         # interactive terminal conversation
@@ -296,19 +317,6 @@ Kiro Crew itself:
 pip install "https://download.crew.kiro.dev/cli/stable/<version>/kirocrew-<version>-py3-none-any.whl#sha256=<sha256>"
 ```
 
-**Docker.** For always-on servers, the Gateway ships as a public multi-arch
-image on GHCR:
-
-```bash
-docker run -d --name kirocrew \
-  -p 127.0.0.1:5476:5476 \
-  -v kirocrew-home:/home/kirocrew \
-  ghcr.io/kirodotdev/kirocrew:stable
-```
-
-See the [Docker guide](docs/docker.md) for first-run login, channel tags, and
-the container security model.
-
 **Semantic memory.** Semantic memory needs no setup. Embeddings run in-process, and the Gateway
 downloads its embedding model in the background on first start, verifies it,
 and stores it under `~/.kiro/crew/models`. Until the model lands, memory search
@@ -324,12 +332,12 @@ agent session runtime, ACP processes, and state together on one host. Your apps
 and chat surfaces connect to that Gateway.
 
 | Deployment | How to run it | Where Kiro Crew and its state live |
-|---|---|---|
-| **Mac app, local** | Install or build the desktop app with `make desktop` | The app starts its bundled Gateway. Agent sessions, ACP processes, and `~/.kiro/crew` stay on your Mac. |
-| **Native local** | `make build`, or install a wheel from `make wheel` | The Gateway and agent runtime run directly on your macOS, Linux, or Windows machine. |
-| **Local container** | Run `ghcr.io/kirodotdev/kirocrew` and persist `/home/kirocrew` | The Gateway and agent runtime run inside the official multi-arch container on your machine. |
-| **Remote hardware** | Follow the [remote host guide](docs/remote-desktop-setup.md) and install the service | The Gateway, agent sessions, and state run continuously on your Linux server, home lab, or cloud instance. Connect the Mac app or browser through an SSH tunnel. |
-| **Windows source install** | Follow [the Windows guide](docs/windows-install.md) | The Gateway, agent sessions, chat, cron, and dashboard run natively with documented feature limits. |
+|---|---|
+| **Mac app, local** | Install or build the desktop app with `make desktop` |
+| **Native local** | `make build`, or install a wheel from `make wheel` |
+| **Local container** | Run `ghcr.io/kirodotdev/kirocrew` and persist `/home/kirocrew` |
+| **Remote hardware** | Follow the [remote host guide](docs/remote-desktop-setup.md) and install the service |
+| **Windows source install** | Follow [the Windows guide](docs/windows-install.md) |
 
 For containers, mount the directory selected by `KIROCREW_HOME` so sessions,
 configuration, memory, and credentials survive replacement. Keep the Gateway
@@ -347,7 +355,7 @@ kirocrew service status
 kirocrew logs
 ```
 
-The Mac app can use this local Gateway or connect to a remote one. For an
+The desktop app can use this local Gateway or connect to a remote one. For an
 always-on VPS, home server, or cloud VM in your account, follow the
 [remote host guide](docs/remote-desktop-setup.md). Kiro Crew does not require a
 Kiro Crew-hosted control plane.
