@@ -107,6 +107,12 @@ class FakeSessionManager:
     def release(self, key):
         pass
 
+    def is_busy(self, key):
+        # Interface parity with the real SessionManager. False = no other turn is
+        # in flight, so the post-footer re-check treats a recorded OPTIONS control
+        # as still current — which is what these single-turn tests exercise.
+        return False
+
     def begin_turn(self, key):
         # Pre-dispatch gate parity with the real SessionManager (open state).
         pass

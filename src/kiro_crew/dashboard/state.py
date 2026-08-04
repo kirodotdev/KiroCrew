@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog  # noqa: F401
     from kiro_crew.messaging.transport import MessagingTransport  # noqa: F401
     from kiro_crew.power import SleepInhibitor  # noqa: F401
+    from kiro_crew.slack.outbound import PostedOptions  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -2038,6 +2039,20 @@ class DashboardState:
         self.notification_channel_settings = ChannelSettings()
         self._slots: dict[str, _ChatSlot] = {}
         self._slack_to_slot: dict[str, str] = {}  # Slack session_key → slot name
+        # Live OPTIONS controls, keyed by the SESSION KEY that owns them.
+        #
+        # Deliberately here and not on ``_ChatSlot``: a plain Slack thread often
+        # has no dashboard slot at all, and a slot-held record was simply dropped
+        # for those sessions — so the whole expiry lifecycle never engaged and the
+        # stale click it exists to prevent stayed possible (#1694). Keying by
+        # session key makes the slotless case ordinary rather than special.
+        #
+        # One store, not a slot field plus a fallback: a slot can come into
+        # existence at any moment (the channel surface reconciler creates one), so
+        # a fallback map would go invisible the instant one appeared. It also
+        # removes the two-store divergence that let a record be filed under one
+        # index and cleared under another.
+        self._slack_options_by_key: dict[str, tuple[PostedOptions, ...]] = {}
         self._slot_counter = 0
         # slot key → last context-meter reading, for seeding the bar when a
         # session is reopened after its ACP session is gone. Readings this

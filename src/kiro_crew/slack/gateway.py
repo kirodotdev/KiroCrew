@@ -84,7 +84,7 @@ from kiro_crew.cron_script import resolve_script_path, run_command_sandboxed, ru
 from kiro_crew.dashboard import start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _run_chat
-from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key, remember_slack_options
 from kiro_crew.dashboard.cron_inject import (
     context_meter_reading,
     inject_cron_result_to_dashboard,
@@ -190,6 +190,7 @@ from kiro_crew.slack.handler import (
     is_thread_incognito,
     is_thread_temporary,
 )
+from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.retry import open_dm_with_retry
 from kiro_crew.subagent import (
     DIGEST_HOLD_SECS,
@@ -1630,6 +1631,40 @@ class GatewayOrchestrator:
             max_attempts=max_attempts,
         )
 
+    def _remember_options(
+        self,
+        session_key: str,
+        channel: str,
+        ts: str,
+        choices: list[str],
+        blocks: list[dict],
+        text: str,
+    ) -> None:
+        """Record an OPTIONS control posted into *session_key*'s Slack thread.
+
+        Lets that session's next turn strike the control through, so a delivery
+        which ended on a question stops inviting an answer once the conversation
+        has moved past it. Best-effort: losing the record only means the control
+        is left live.
+        """
+        if not ts or not choices:
+            return
+        try:
+
+            remember_slack_options(
+                self.dashboard_state,
+                session_key,
+                PostedOptions(
+                    channel=channel,
+                    ts=ts,
+                    choices=tuple(choices),
+                    blocks=tuple(blocks),
+                    text=text,
+                ),
+            )
+        except Exception:
+            logger.debug("Failed to record OPTIONS control for %s", session_key, exc_info=True)
+
     async def _deliver_cron_response(
         self, parent_key: str, text: str, *, silent: bool = False
     ) -> bool:
@@ -1667,11 +1702,15 @@ class GatewayOrchestrator:
             await self.slack.post_message(channel, part, thread_ts)
         if options:
             try:
-                await self.slack.post_blocks(
+                option_blocks = build_options_blocks(options)
+                option_ts = await self.slack.post_blocks(
                     channel,
-                    build_options_blocks(options),
+                    option_blocks,
                     "Options",
                     thread_ts,
+                )
+                self._remember_options(
+                    parent_key, channel, option_ts, options, option_blocks, "Options"
                 )
             except Exception:
                 logger.debug("Cron %s: failed to post OPTIONS blocks", parent_key, exc_info=True)
@@ -4504,11 +4543,19 @@ class GatewayOrchestrator:
                                         )
                                         if options:
                                             footer_blocks.extend(build_options_blocks(options))
-                                        await self.slack.post_blocks(
+                                        _footer_ts = await self.slack.post_blocks(
                                             channel,
                                             footer_blocks,
                                             footer_text,
                                             parent_key,
+                                        )
+                                        self._remember_options(
+                                            parent_key,
+                                            channel,
+                                            _footer_ts,
+                                            options,
+                                            footer_blocks,
+                                            footer_text,
                                         )
                                     except Exception:
                                         logger.debug(

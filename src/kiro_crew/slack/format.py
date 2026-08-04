@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Callable, NamedTuple
 
 from kiro_crew.constants import OPTIONS_RE_LINE
 from kiro_crew.platform.context import redact_via_context
+
+logger = logging.getLogger(__name__)
 
 SLACK_MAX_TEXT = 39_000
 
@@ -109,6 +112,37 @@ def build_options_blocks(
     ]
 
 
+def escape_mrkdwn(text: str) -> str:
+    """Escape the three characters Slack treats as mrkdwn entity markup.
+
+    Choice text is LLM-authored, so it can carry (or be talked into carrying)
+    Slack's own entity syntax. ``<!channel>``, ``<!here>`` and ``<@U…>`` are
+    interpreted when they land in a ``mrkdwn`` field, so an OPTIONS tag reading
+    ``[OPTIONS: <!channel> | Skip]`` would notify an entire channel the moment
+    the summary is rendered -- on backfill, on submit, or on expiry.
+
+    A message's top-level ``text`` argument is the SAME kind of sink: Slack parses
+    entities there too, and it is what notifications and block-less clients show.
+    So a caller handing choice text to ``post_message`` / ``post_blocks`` /
+    ``update_message`` as the fallback text has to escape it as well -- escaping
+    only the blocks leaves the notification path wide open. Public for that
+    reason: more than one module needs it, and a second copy would drift.
+
+    Slack's documented escaping, and ``&`` MUST go first: doing it after ``<``
+    would re-escape the ampersands the earlier substitutions just introduced and
+    show ``&amp;lt;`` on screen.
+
+    Deliberately NOT folded into ``_redact_choices``, even though every mrkdwn
+    caller goes through it. Its output also feeds the ``plain_text`` checkbox
+    label -- which Slack does not interpret, so escaping there would display a
+    literal ``&lt;`` -- and the button ``value`` that is echoed back into the
+    session on submit, where an escaped entity would change the answer the user
+    actually picked. Escaping belongs at the Slack-facing sink only, never on the
+    copy the agent reads back.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def build_options_selected_blocks(
     choices: list[str],
     selected_indices: list[int] | int,
@@ -121,16 +155,64 @@ def build_options_selected_blocks(
     selected_set = set(selected_indices)
     parts = []
     for i, choice in enumerate(_redact_choices(choices[:10], redactor)):
+        # Slice THEN escape -- the opposite order from redaction above, and for
+        # the mirror-image reason. Redaction runs before slicing because a cut
+        # can leave a credential prefix its regex no longer matches; escaping
+        # runs after because a cut through an already-expanded ``&amp;`` would
+        # leave a mangled half-entity on screen. Escaping a truncated ``<`` is
+        # still complete, so nothing is lost by waiting.
         if i in selected_set:
-            parts.append(f"*{choice[:72]}*")
+            parts.append(f"*{escape_mrkdwn(choice[:72])}*")
         else:
-            parts.append(f"~{choice[:73]}~")
+            parts.append(f"~{escape_mrkdwn(choice[:73])}~")
     return [
         {
             "type": "context",
             "elements": [{"type": "mrkdwn", "text": "  |  ".join(parts)}],
         }
     ]
+
+
+def replace_options_blocks(blocks: list[dict], selected_blocks: list[dict]) -> list[dict]:
+    """Replace OPTIONS actions block(s) with *selected_blocks* in place.
+
+    Walks *blocks* looking for any ``actions`` block whose elements include
+    ``OPTIONS_CHECKBOXES_ACTION``, ``OPTIONS_SUBMIT_ACTION``, or an action_id
+    starting with ``OPTIONS_ACTION_PREFIX``. The first such block is replaced
+    by *selected_blocks* (inserted in order); subsequent OPTIONS actions blocks
+    are dropped. All other blocks are preserved unchanged.
+
+    Returns a new list; the input blocks are never mutated, and preserved
+    blocks keep their identity so a caller can assert on them.
+    """
+    result: list[dict] = []
+    inserted = False
+    for block in blocks:
+        if block.get("type") != "actions":
+            result.append(block)
+            continue
+        elements = block.get("elements", [])
+        is_options_block = any(
+            el.get("action_id") in (OPTIONS_CHECKBOXES_ACTION, OPTIONS_SUBMIT_ACTION)
+            or el.get("action_id", "").startswith(OPTIONS_ACTION_PREFIX)
+            for el in elements
+        )
+        if not is_options_block:
+            result.append(block)
+            continue
+        if not inserted:
+            result.extend(selected_blocks)
+            inserted = True
+        # Drop the OPTIONS actions block itself
+    if not inserted:
+        # No OPTIONS actions block found — append selected_blocks at end so
+        # the user still sees their selection (defensive fallback).
+        logger.warning(
+            "OPTIONS actions block not found in parent message blocks; "
+            "appending selection at end"
+        )
+        result.extend(selected_blocks)
+    return result
 
 
 def build_cron_ack_block(job_id: str) -> list[dict]:
