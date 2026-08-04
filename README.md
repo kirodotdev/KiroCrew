@@ -464,7 +464,7 @@ performance metrics that never leave your machine. See
 | Channels | [Slack](docs/slack-setup.md), [Discord](src/kiro_crew/docs/discord-integration.md), [Telegram](src/kiro_crew/docs/telegram-integration.md), [Teams](src/kiro_crew/docs/teams-integration.md), [Webex](src/kiro_crew/docs/webex-integration.md), [WeCom](src/kiro_crew/docs/wecom-integration.md), [WeChat (Weixin)](src/kiro_crew/docs/weixin-integration.md) |
 | Architecture | [System architecture](docs/project-architecture.md), [Memory](docs/memory-architecture.md), [MCP](docs/mcp-architecture.md), [App Kit](docs/app-kit/getting-started.md) |
 | Trust and dependencies | [Security](docs/security-deep-dive.md), [Security policy](SECURITY.md) |
-| Project work | [Contributing](CONTRIBUTING.md), [AI assistant rules](AGENTS.md), [Changelog](CHANGELOG.md) |
+| Project work | [Contributing](CONTRIBUTING.md), [Governance](GOVERNANCE.md), [Maintainers](MAINTAINERS.md), [AI assistant rules](AGENTS.md), [Changelog](CHANGELOG.md) |
 
 Contributions are welcome. Create a branch from `main`, keep changes focused,
 and run the relevant checks before opening a pull request:

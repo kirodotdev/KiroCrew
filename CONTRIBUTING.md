@@ -404,6 +404,19 @@ instead of describing the steps yourself.
 6. A maintainer will review. Address feedback by pushing additional commits to
    your branch.
 
+Two things are worth knowing before you start something large.
+[GOVERNANCE.md](GOVERNANCE.md) covers who decides what lands and how a
+disagreement gets resolved, and [MAINTAINERS.md](MAINTAINERS.md) lists the
+people doing it.
+
+Architectural changes get written up as an RFC first, in
+[docs/request-for-change/](docs/request-for-change/), so the design can be
+argued over before anyone writes the code. That applies to changes to a public
+interface, changes other parts of the project would have to build around, and
+anything that would be expensive to reverse. Everything else skips it, and a bug
+fix should never wait on a design document. If you are unsure which side of the
+line your change falls on, open an issue and ask.
+
 ### CI checks on your PR (forks vs. direct branches)
 
 GitHub deliberately withholds repository secrets and OIDC credentials from
