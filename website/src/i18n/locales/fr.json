@@ -7278,7 +7278,12 @@
         "enable_shortcuts": "Activer les raccourcis",
         "preferences": "Préférences",
         "search": "Rechercher",
-        "use_ctrl_not_option_for_chat_1_9": "Utiliser ⌃ Ctrl (et non ⌥ Option) pour les chats 1–9"
+        "use_ctrl_not_option_for_chat_1_9": "Utiliser ⌃ Ctrl (et non ⌥ Option) pour les chats 1–9",
+        "preset_double_shift": "Double Shift",
+        "preset_mod_k": "⌘K / Ctrl+K",
+        "preset_custom": "Personnalisé",
+        "record_prompt": "Appuyez sur les touches…",
+        "custom_hint": "Utilisez au moins une touche de modification."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analyser chaque session terminée et rédiger un SKILL.md réutilisable lorsqu'une procédure non triviale en plusieurs étapes est détectée. Désactivé par défaut. Les brouillons sont placés dans la file d'attente de l'onglet Compétences pour relecture — rien n'est activé sans votre approbation (voir ci-dessous).",

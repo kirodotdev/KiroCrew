@@ -2799,6 +2799,13 @@
         "token_description": "The Secret shown next to the Bot ID on the same settings page.",
         "token_label": "WeCom bot secret",
         "token_placeholder": "Paste WeCom bot secret"
+      },
+      "shortcutsPanel": {
+        "preset_double_shift": "Double Shift",
+        "preset_mod_k": "⌘K / Ctrl+K",
+        "preset_custom": "Custom",
+        "record_prompt": "Press keys…",
+        "custom_hint": "Use at least one modifier key."
       }
     },
     "systemPage": {

@@ -7202,7 +7202,12 @@
         "enable_shortcuts": "शॉर्टकट सक्षम करें",
         "preferences": "प्राथमिकताएँ",
         "search": "खोजें",
-        "use_ctrl_not_option_for_chat_1_9": "चैट 1–9 के लिए ⌃ Ctrl (⌥ Option नहीं) का उपयोग करें"
+        "use_ctrl_not_option_for_chat_1_9": "चैट 1–9 के लिए ⌃ Ctrl (⌥ Option नहीं) का उपयोग करें",
+        "preset_double_shift": "डबल Shift",
+        "preset_mod_k": "⌘K / Ctrl+K",
+        "preset_custom": "कस्टम",
+        "record_prompt": "कुंजियाँ दबाएँ…",
+        "custom_hint": "कम से कम एक मॉडिफ़ायर कुंजी का उपयोग करें।"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "प्रत्येक पूर्ण हुए सेशन का विश्लेषण करें और जब कोई गैर-मामूली बहु-चरणीय प्रक्रिया पहचानी जाए तो पुनः प्रयोग योग्य SKILL.md का ड्राफ़्ट बनाएँ। डिफ़ॉल्ट रूप से बंद। ड्राफ़्ट समीक्षा के लिए स्किल टैब की लंबित कतार में रखे जाते हैं — आपकी स्वीकृति के बिना कुछ भी लाइव नहीं होता (नीचे देखें)।",

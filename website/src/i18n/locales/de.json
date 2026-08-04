@@ -7202,7 +7202,12 @@
         "enable_shortcuts": "Tastenkürzel aktivieren",
         "preferences": "Präferenzen",
         "search": "Suchen",
-        "use_ctrl_not_option_for_chat_1_9": "⌃ Strg (nicht ⌥ Option) für Chat 1–9 verwenden"
+        "use_ctrl_not_option_for_chat_1_9": "⌃ Strg (nicht ⌥ Option) für Chat 1–9 verwenden",
+        "preset_double_shift": "Doppel-Shift",
+        "preset_mod_k": "⌘K / Ctrl+K",
+        "preset_custom": "Benutzerdefiniert",
+        "record_prompt": "Tasten drücken…",
+        "custom_hint": "Mindestens eine Modifikatortaste verwenden."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Jede abgeschlossene Sitzung analysieren und eine wiederverwendbare SKILL.md entwerfen, wenn ein nicht triviales mehrstufiges Verfahren erkannt wird. Standardmäßig aus. Entwürfe werden in der Warteschlange auf dem Tab „Skills“ zur Überprüfung bereitgestellt — nichts geht ohne Ihre Genehmigung live (siehe unten).",

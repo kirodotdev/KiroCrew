@@ -7278,7 +7278,12 @@
         "enable_shortcuts": "Ativar atalhos",
         "preferences": "Preferências",
         "search": "Pesquisar",
-        "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (não ⌥ Option) para chats 1–9"
+        "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (não ⌥ Option) para chats 1–9",
+        "preset_double_shift": "Shift duplo",
+        "preset_mod_k": "⌘K / Ctrl+K",
+        "preset_custom": "Personalizado",
+        "record_prompt": "Pressione as teclas…",
+        "custom_hint": "Use pelo menos uma tecla modificadora."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analisa cada sessão concluída e cria um rascunho de SKILL.md reutilizável quando um procedimento não trivial de várias etapas é detectado. Desativado por padrão. Os rascunhos vão para a fila de pendentes na aba Habilidades para revisão — nada entra em vigor sem a sua aprovação (veja abaixo).",

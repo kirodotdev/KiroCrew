@@ -7202,7 +7202,12 @@
         "enable_shortcuts": "শর্টকাট সক্রিয় করুন",
         "preferences": "পছন্দসমূহ",
         "search": "অনুসন্ধান",
-        "use_ctrl_not_option_for_chat_1_9": "চ্যাট 1–9-এর জন্য ⌃ Ctrl ব্যবহার করুন (⌥ Option নয়)"
+        "use_ctrl_not_option_for_chat_1_9": "চ্যাট 1–9-এর জন্য ⌃ Ctrl ব্যবহার করুন (⌥ Option নয়)",
+        "preset_double_shift": "ডবল Shift",
+        "preset_mod_k": "⌘K / Ctrl+K",
+        "preset_custom": "কাস্টম",
+        "record_prompt": "কী চাপুন…",
+        "custom_hint": "অন্তত একটি মডিফায়ার কী ব্যবহার করুন।"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "প্রতিটি সম্পন্ন সেশন বিশ্লেষণ করে, উল্লেখযোগ্য বহু-ধাপের প্রক্রিয়া শনাক্ত হলে পুনর্ব্যবহারযোগ্য SKILL.md-এর খসড়া তৈরি করে। ডিফল্টভাবে বন্ধ। খসড়াগুলো পর্যালোচনার জন্য স্কিল ট্যাবের অপেক্ষমাণ কিউতে রাখা হয় — আপনার অনুমোদন ছাড়া কিছুই সক্রিয় হয় না (নিচে দেখুন)।",

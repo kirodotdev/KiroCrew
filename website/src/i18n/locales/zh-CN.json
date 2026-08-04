@@ -7126,7 +7126,12 @@
         "enable_shortcuts": "启用快捷键",
         "preferences": "偏好设置",
         "search": "搜索",
-        "use_ctrl_not_option_for_chat_1_9": "聊天 1–9 使用 ⌃ Ctrl（而不是 ⌥ Option）"
+        "use_ctrl_not_option_for_chat_1_9": "聊天 1–9 使用 ⌃ Ctrl（而不是 ⌥ Option）",
+        "preset_double_shift": "双击 Shift",
+        "preset_mod_k": "⌘K / Ctrl+K",
+        "preset_custom": "自定义",
+        "record_prompt": "按下按键…",
+        "custom_hint": "请至少使用一个修饰键。"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "分析每个已完成会话，检测到有价值的多步骤流程时起草可复用 SKILL.md。默认关闭。草稿会暂存到“技能”标签页的待审队列中供审阅 — 未经你批准不会生效（见下文）。",

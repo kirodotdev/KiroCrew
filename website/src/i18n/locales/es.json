@@ -7278,7 +7278,12 @@
         "enable_shortcuts": "Activar atajos",
         "preferences": "Preferencias",
         "search": "Buscar",
-        "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (no ⌥ Option) para los chats 1–9"
+        "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (no ⌥ Option) para los chats 1–9",
+        "preset_double_shift": "Doble Shift",
+        "preset_mod_k": "⌘K / Ctrl+K",
+        "preset_custom": "Personalizado",
+        "record_prompt": "Pulsa las teclas…",
+        "custom_hint": "Usa al menos una tecla modificadora."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analiza cada sesión completada y redacta un SKILL.md reutilizable cuando se detecta un procedimiento de varios pasos no trivial. Desactivado por defecto. Los borradores pasan a la cola de pendientes de la pestaña Habilidades para su revisión — nada se activa sin tu aprobación (ver más abajo).",

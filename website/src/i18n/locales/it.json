@@ -7278,7 +7278,12 @@
         "enable_shortcuts": "Attiva le scorciatoie",
         "preferences": "Preferenze",
         "search": "Cerca",
-        "use_ctrl_not_option_for_chat_1_9": "Usa ⌃ Ctrl (non ⌥ Option) per le chat 1–9"
+        "use_ctrl_not_option_for_chat_1_9": "Usa ⌃ Ctrl (non ⌥ Option) per le chat 1–9",
+        "preset_double_shift": "Shift doppio",
+        "preset_mod_k": "⌘K / Ctrl+K",
+        "preset_custom": "Personalizzato",
+        "record_prompt": "Premi i tasti…",
+        "custom_hint": "Usa almeno un tasto modificatore."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analizza ogni sessione completata e redigi una SKILL.md riutilizzabile quando viene rilevata una procedura non banale in più passaggi. Disattivato per impostazione predefinita. Le bozze vengono messe in coda nella scheda Skill per la revisione — nulla va in produzione senza la tua approvazione (vedi sotto).",
