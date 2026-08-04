@@ -51,10 +51,10 @@ def test_a_different_command_under_the_same_name_warns_again(caplog):
     # Keyed on (name, command): editing the config to a new binary that is ALSO
     # missing is a new fact and must not be swallowed by the old entry.
     with caplog.at_level(logging.DEBUG, logger=mcp_discovery.logger.name):
-        mcp_discovery._warn_unresolvable_once("arcc", "/usr/bin/arcc")
-        mcp_discovery._warn_unresolvable_once("arcc", "/opt/bin/arcc")
-    assert _levels_for(caplog, "/usr/bin/arcc") == [logging.WARNING]
-    assert _levels_for(caplog, "/opt/bin/arcc") == [logging.WARNING]
+        mcp_discovery._warn_unresolvable_once("pw", "/usr/bin/playwright-mcp")
+        mcp_discovery._warn_unresolvable_once("pw", "/opt/bin/playwright-mcp")
+    assert _levels_for(caplog, "/usr/bin/playwright-mcp") == [logging.WARNING]
+    assert _levels_for(caplog, "/opt/bin/playwright-mcp") == [logging.WARNING]
 
 
 def test_distinct_servers_each_warn_once(caplog):

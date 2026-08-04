@@ -260,7 +260,7 @@ class TestHeartbeatAgentInstall:
                 "builder-mcp": {"command": "/bin/builder-mcp", "args": ["x"]},
                 "kirocrew-core": {"command": "/bin/mc", "args": ["mcp-core"]},
                 "kirocrew-cron": {"command": "/bin/mc", "args": ["mcp-cron"]},
-                "arcc-governance": {"command": "/bin/arcc", "args": []},
+                "playwright-mcp": {"command": "/bin/playwright-mcp", "args": []},
             },
         }
         (kiro_dir / "kirocrew.json").write_text(json.dumps(main_config))

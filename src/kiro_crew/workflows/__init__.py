@@ -184,7 +184,8 @@ class WorkflowContext(Protocol):
         """Deliver a message to a dashboard/session channel."""
 
 
-# --- Run event stream (JSON only — NEVER pickle, ARCC BSC12) ---
+# --- Run event stream (JSON only — NEVER pickle: deserializing an event stream
+# with pickle would execute arbitrary code from whatever wrote the stream) ---
 
 #: The frozen set of event ``type`` values. The runner emits exactly these.
 EVENT_TYPES = (

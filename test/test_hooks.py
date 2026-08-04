@@ -293,9 +293,8 @@ class TestToolCallEvaluatesRawCommand:
     protections. The security decision MUST run against the raw command
     (passed as ``command=``), treating the title as untrusted display text.
 
-    ARCC guidance: "AI Command Injection" (cnt_oikES5IaGqdpqw) — no
-    LLM-authored output may drive a shell/tool decision without validation;
-    "Authorization Policy Evaluation Logic" (cnt_2K0RvSVQ1kgIiT) —
+    Two principles are at stake: no LLM-authored output may drive a
+    shell/tool decision without validation, and authorization evaluates
     deny-by-default.
     """
 

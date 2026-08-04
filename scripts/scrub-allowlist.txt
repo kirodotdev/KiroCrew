@@ -52,6 +52,12 @@ CHANGELOG.md
 # that self-documenting line must be allowed to name what it forbids.
 CLAUDE.md:.*internal marker names
 
+# AGENTS.md's matching "Never re-introduce" list, for the same reason: the rule
+# forbidding an internal service has to be able to name the service. Anchored to
+# the one bullet that enumerates them, so a NEW internal reference elsewhere in
+# AGENTS.md is still caught.
+AGENTS.md:.*device-posture tunnels
+
 # This script and its allowlist
 scripts/scrub-lint.sh
 scripts/scrub-allowlist.txt

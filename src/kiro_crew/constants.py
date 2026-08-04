@@ -3,11 +3,6 @@
 import os
 import re
 
-# Retained for backward compatibility; intentionally empty in the public build
-# (no internal registry/package). Callers treat empty as "skip".
-ARCC_REGISTRY = ""
-ARCC_TOOLBOX_PACKAGE = ""
-
 # Positive-identity marker injected into the environment of every subprocess
 # tree KiroCrew spawns (the ACP provider, MCP probes, gateway pool backends).
 # Children inherit the environment, so marking the provider process
