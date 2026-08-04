@@ -6758,6 +6758,7 @@
         "computer_use": "电脑操作",
         "could_not_load_computer_use_settings": "无法加载电脑操作设置。",
         "could_not_save_computer_use_settings": "无法保存电脑操作设置。",
+        "macos_only": "仅限 macOS",
         "enable_computer_use": "启用电脑操作",
         "let_the_agent_read_desktop_app_windows_through_a": "让代理通过辅助功能读取桌面应用窗口并操作其中的控件。默认关闭，只能由你在此打开 — 代理无法自行启用。",
         "limits": "限制",

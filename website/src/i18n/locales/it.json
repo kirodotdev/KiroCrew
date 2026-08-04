@@ -6910,6 +6910,7 @@
         "computer_use": "Uso del computer",
         "could_not_load_computer_use_settings": "Impossibile caricare le impostazioni dell'uso del computer.",
         "could_not_save_computer_use_settings": "Impossibile salvare le impostazioni dell'uso del computer.",
+        "macos_only": "Solo macOS",
         "enable_computer_use": "Attiva l'uso del computer",
         "let_the_agent_read_desktop_app_windows_through_a": "Consenti all'agente di leggere le finestre delle app desktop tramite l'accessibilità e di agire sui loro controlli. È disattivato finché non lo attivi qui — un agente non può attivarlo.",
         "limits": "Limiti",

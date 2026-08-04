@@ -151,13 +151,23 @@ export function SettingsInput({ label, description, hint, value, onChange, onBlu
 
 interface SettingsSectionProps {
   title: string
+  /**
+   * Optional node rendered inline after the title — a platform/status tag such
+   * as the Computer Use panel's "macOS only" badge. Kept as a sibling of the
+   * title text (not concatenated into it) so a `getByText(title)` query still
+   * matches the header exactly.
+   */
+  badge?: React.ReactNode
   children?: React.ReactNode
 }
 
-export function SettingsSection({ title, children }: SettingsSectionProps) {
+export function SettingsSection({ title, badge, children }: SettingsSectionProps) {
   return (
     <>
-      <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2">{title}</h4>
+      <div className="flex items-center gap-2 mt-4 mb-2">
+        <h4 className="text-sm font-semibold text-text-strong">{title}</h4>
+        {badge}
+      </div>
       {children}
     </>
   )
