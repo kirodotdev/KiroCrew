@@ -729,20 +729,43 @@ def _sanitize_free_text_role(raw: str) -> str:
     [USER PROFILE] block — every other value is a slug the UI picks — so it is
     the only one that could carry newlines and bracket markers shaped like the
     block delimiters the model is taught to trust. Whitespace (including
-    newlines and tabs) is collapsed to single spaces, C0/C1 control characters
-    and square brackets are dropped, and the result is length-capped. A value
-    that sanitizes to nothing is treated as unset rather than rendered empty.
+    newlines and tabs) is collapsed to single spaces, every character outside
+    :func:`_is_allowed_role_char` is dropped, and the result is length-capped. A
+    value that sanitizes to nothing is treated as unset rather than rendered
+    empty.
     """
     if not raw:
         return ""
-    cleaned = "".join(" " if ch.isspace() else "" if _is_unsafe_role_char(ch) else ch for ch in raw)
+    cleaned = "".join(ch if not ch.isspace() and _is_allowed_role_char(ch) else " " for ch in raw)
     cleaned = " ".join(cleaned.split())
     return cleaned[:_ROLE_OTHER_MAX_LEN].strip()
 
 
-def _is_unsafe_role_char(ch: str) -> bool:
-    """True for characters that must never reach the prompt from free text."""
-    return ch in "[]" or unicodedata.category(ch) in ("Cc", "Cf", "Co", "Cs")
+#: Punctuation a job title legitimately needs. ``#`` earns its place from real
+#: titles ("C# Developer"), as ``+`` does for "C++". Deliberately excludes ``:`` —
+#: ``LABEL:`` is the shape the protocol markers themselves use — and every
+#: bracket form.
+_ROLE_PUNCT_ALLOWED = "-'.,/&()+_#"
+
+
+def _is_allowed_role_char(ch: str) -> bool:
+    """True for the only characters free text may contribute to the prompt.
+
+    An ALLOWLIST, per BSC1 Input Validation: a denylist of known-bad characters
+    is always incomplete, and this one was. The previous version dropped ASCII
+    ``[`` and ``]`` but passed every Unicode lookalike — ``】`` U+3011, ``］``
+    U+FF3D, ``〕`` U+3015 and others — each of which renders as a bracket and so
+    could still impersonate a ``[BLOCK]`` delimiter in the assembled prompt.
+    Inverting the test closes that whole tail instead of three codepoints.
+
+    Letters and combining marks are admitted by Unicode category rather than an
+    ASCII range, so a non-Latin job title survives; the product ships ten UI
+    locales and a Latin-only filter would silently blank those users' input.
+    """
+    if ch in _ROLE_PUNCT_ALLOWED:
+        return True
+    category = unicodedata.category(ch)
+    return category.startswith("L") or category.startswith("M") or category == "Nd"
 
 
 def _role_description(cfg: "KiroCrewConfig") -> str:
