@@ -15,9 +15,9 @@ import time
 from pathlib import Path
 from typing import Callable, NoReturn
 
+from kiro_crew.pod import launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
-from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod.config import PodConfig
 from kiro_crew.sel import sel
 
@@ -110,45 +110,48 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
     # Pin the resolved checkout BEFORE starting the unit so the systemd-booted
     # gateway (and any Restart= re-exec) resolves it without shelling git from a
     # clean environment. SEED (if any) is merged in without clobbering the pin.
-    rt.pin_checkout(cfg, name, checkout)
-    if args.seed:
-        rt.write_env_file(cfg, name, {"SEED": args.seed})
+    # The whole pin -> start transaction holds the per-name mutex (no-op on
+    # Linux): without it, a concurrent `down` finishing its sweep after our pin
+    # would delete the pin we just wrote and this pod would crash-loop on boot.
+    with rt.pod_name_mutex(cfg, name):
+        rt.pin_checkout(cfg, name, checkout)
+        if args.seed:
+            rt.write_env_file(cfg, name, {"SEED": args.seed})
 
-    if not rt.is_active(cfg, name):
-        # Self-heal a dangling ExecStart binary: the unit bakes an absolute
-        # kirocrew path at install time; if the worktree it resolved into was
-        # pruned since, every start fails EXEC (203). Re-render with a
-        # currently-valid binary and reload before starting.
-        if not unit_mod.unit_exec_ok(cfg):
-            unit_mod.install_unit(cfg)
-            rel = rt.systemctl("daemon-reload")
-            if rel.returncode != 0:
-                _die(f"unit self-heal daemon-reload failed: {(rel.stderr or '').strip()}")
-            _audit("pod.up", "allowed", f"name={name}", error="unit ExecStart healed")
-        cp = rt.systemctl("start", rt.pod_unit(cfg, name))
-        if cp.returncode != 0:
-            _audit("pod.up", "failure", f"name={name} port={port}", error="systemctl start failed")
-            _die(f"systemctl start failed for {name}: {cp.stderr.strip()}")
-    _audit("pod.up", "allowed", f"name={name} port={port}")
+        if not rt.is_active(cfg, name):
+            cp = rt.start_pod(cfg, name)
+            if cp.returncode != 0:
+                _audit(
+                    "pod.up", "failure", f"name={name} port={port}", error="backend start failed"
+                )
+                _die(f"starting pod {name} failed: {(cp.stderr or '').strip()}")
+        _audit("pod.up", "allowed", f"name={name} port={port}")
 
-    code = _wait_healthy(cfg, name, port)
-    if code not in (200, 401, 403):
-        # A pod IS the worktree's own gateway. If it won't boot, that's a broken
-        # worktree build (bad import / config / unbuilt dist) — NOT a pod-tooling
-        # fault. Surface the gateway's own journal so the dev fixes the real cause,
-        # and stop the half-started unit so we don't leak a crash-looping service.
-        tail = rt.recent_journal(cfg, name, 30)
-        print(tail, file=sys.stderr)
-        rt.systemctl("stop", rt.pod_unit(cfg, name))
-        if code == -1:
+        code = _wait_healthy(cfg, name, port)
+        if code not in (200, 401, 403):
+            # A pod IS the worktree's own gateway. If it won't boot, that's a broken
+            # worktree build (bad import / config / unbuilt dist) — NOT a pod-tooling
+            # fault. Surface the gateway's own journal so the dev fixes the real cause,
+            # and stop the half-started unit so we don't leak a crash-looping service.
+            #
+            # This failure cleanup runs INSIDE the same mutex hold as our start:
+            # released between the two, a down + replacement up could interleave
+            # during the health wait, and this stop_pod would then unload and
+            # erase the REPLACEMENT pod (verifier-found High). Holding the lock
+            # across the whole boot transaction means the pod we stop here can
+            # only be the one we started.
+            tail = rt.recent_journal(cfg, name, 30)
+            print(tail, file=sys.stderr)
+            rt.stop_pod(cfg, name)
+            if code == -1:
+                _die(
+                    f"{name}: the worktree's gateway failed to start (see journal above). "
+                    f"This is the worktree build, not pod — fix it, then `kirocrew pod up {name}` again."
+                )
             _die(
-                f"{name}: the worktree's gateway failed to start (see journal above). "
-                f"This is the worktree build, not pod — fix it, then `kirocrew pod up {name}` again."
+                f"{name}: gateway never became healthy on :{port} within timeout "
+                f"(see journal above; check the worktree's gateway start path)."
             )
-        _die(
-            f"{name}: gateway never became healthy on :{port} within timeout "
-            f"(see journal above; check the worktree's gateway start path)."
-        )
 
     try:
         token = rt.mint_token(cfg, name, args.ttl)
@@ -181,16 +184,35 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
 def _down(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     was_up = rt.is_active(cfg, name)
-    cp = rt.systemctl("stop", rt.pod_unit(cfg, name))
-    # If it was running but stop failed, the pod may still be live — don't claim
-    # success or delete the env file (mirrors the rc checks in _up / _install).
-    if was_up and cp.returncode != 0:
-        _audit("pod.down", "failure", f"name={name}", error=f"stop rc={cp.returncode}")
-        _die(f"systemctl stop failed for {name}: {(cp.stderr or '').strip()}")
-    # Clear the pinned CHECKOUT= / SEED= so the next `up` re-resolves cleanly.
-    env_file = cfg.env_file(name)
-    if env_file.exists():
-        env_file.unlink()
+    # The stop and the env-file removal move together under the per-name mutex
+    # (no-op on Linux): unlinking the env file after releasing the lock let a
+    # concurrent `up` — which pins its checkout under the same mutex — have its
+    # fresh pin deleted by this stale teardown.
+    with rt.pod_name_mutex(cfg, name):
+        cp = rt.stop_pod(cfg, name)
+        # A nonzero stop means the pod may still be live — don't claim success or
+        # delete the env file. On macOS this must hold even when was_up is False:
+        # a loaded-but-dead agent has no pid (is_active False) yet still needs its
+        # unload CONFIRMED; swallowing the failure deleted the metadata while
+        # leaving the service, plist and HOME behind. An absent service is rc 0 on
+        # both backends, so this cannot fire for plain "was not running".
+        if cp.returncode != 0 and (was_up or rt.IS_MACOS):
+            _audit("pod.down", "failure", f"name={name}", error=f"stop rc={cp.returncode}")
+            _die(f"stopping pod {name} failed: {(cp.stderr or '').strip()}")
+        if rt.RECLAIMED_MARKER in (cp.stdout or ""):
+            # Defense-in-depth for writers that bypass the mutex: a new pod
+            # claimed this name mid-teardown. The old pod is gone, but the env
+            # file now pins the NEW pod's checkout — leave it alone.
+            _audit("pod.down", "allowed", f"name={name} was_up={was_up} reclaimed=1")
+            print(
+                f"pod '{name}' stopped — the name was immediately reclaimed by a new "
+                "pod, whose state was left untouched"
+            )
+            return
+        # Clear the pinned CHECKOUT= / SEED= so the next `up` re-resolves cleanly.
+        env_file = cfg.env_file(name)
+        if env_file.exists():
+            env_file.unlink()
     _audit("pod.down", "allowed", f"name={name} was_up={was_up}")
     if was_up:
         print(f"pod '{name}' stopped — isolated HOME nuked (zero residue), live plane untouched")
@@ -200,6 +222,10 @@ def _down(cfg: PodConfig, args: argparse.Namespace) -> None:
 
 def _ls(cfg: PodConfig, args: argparse.Namespace) -> None:
     names = sorted(rt.active_names(cfg))
+    # macOS only: launchd has no ExecStopPost, so a pod killed without an
+    # explicit `down` leaves its isolated HOME behind. Surface those here —
+    # the docs promise `ls`/`down` make them visible — but keep the JSON array
+    # shape unchanged (three callers parse it); orphans are human-output only.
     if args.json:
         rows = [
             {"name": n, "port": rt.derive_port(cfg, n), "health": rt.health(rt.derive_port(cfg, n))}
@@ -207,13 +233,36 @@ def _ls(cfg: PodConfig, args: argparse.Namespace) -> None:
         ]
         print(json.dumps(rows))
         return
+    orphans: list[str] = []
+    if rt.IS_MACOS:
+        try:
+            orphans = launchd.orphan_homes(cfg)
+        except launchd.LaunchdError as exc:
+            # Same translation the runtime seam does: the dispatch layer's
+            # documented contract is PodError -> one-line `pod: <msg>` + exit 1,
+            # not a traceback from the fail-closed probe underneath.
+            raise rt.PodError(str(exc)) from exc
     if not names:
         print("no pods running")
+        _print_orphans(cfg, orphans)
         return
     print(f"{'POD':<28} {'PORT':<7} HEALTH")
     for n in names:
         p = rt.derive_port(cfg, n)
         print(f"{n:<28} {p:<7} {rt.health(p)}")
+    _print_orphans(cfg, orphans)
+
+
+def _print_orphans(cfg: PodConfig, orphans: list[str]) -> None:
+    """Human-readable orphan-HOME report (macOS only; empty elsewhere)."""
+    if not orphans:
+        return
+    print(
+        f"\n{len(orphans)} orphaned pod HOME(s) — left by a pod that died without "
+        "an explicit `down` (launchd has no post-stop hook):"
+    )
+    for n in orphans:
+        print(f"  {n:<26} reclaim: kirocrew pod down {n}")
 
 
 def _status(cfg: PodConfig, args: argparse.Namespace) -> None:
@@ -268,9 +317,14 @@ def _exec(cfg: PodConfig, args: argparse.Namespace) -> None:
 
 def _logs(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
-    # Gate before exec'ing journalctl — off-Linux this would raise a bare
-    # FileNotFoundError instead of the documented one-line refusal.
-    rt.require_systemd()
+    # Gate before exec'ing the log mechanism — on an unsupported host this would
+    # otherwise raise a bare FileNotFoundError instead of the documented refusal.
+    rt.require_backend()
+    if rt.IS_MACOS:
+        # launchd has no journal; the plist routes stdout/stderr to files and
+        # recent_journal tails them.
+        print(rt.recent_journal(cfg, name, args.lines))
+        return
     subprocess.run(
         ["journalctl", "--user", "-u", rt.pod_unit(cfg, name), "-n", str(args.lines), "--no-pager"],
         env=rt._systemctl_env(),
@@ -278,21 +332,24 @@ def _logs(cfg: PodConfig, args: argparse.Namespace) -> None:
 
 
 def _install(cfg: PodConfig, args: argparse.Namespace) -> None:
-    # Writing the systemd unit (which defines how pods boot + what they exec) and
-    # reloading the daemon is a security-relevant system modification → audit it.
-    # Gate FIRST: install_unit() writes to ~/.config/systemd/user, so without
-    # this an off-Linux run leaves an unusable unit file behind before failing.
-    rt.require_systemd()
-    dst = unit_mod.install_unit(cfg)
-    print(f"installed pod template unit → {dst}")
-    cp = rt.systemctl("daemon-reload")
-    if cp.returncode != 0:
+    # Writing the service definition (which defines how pods boot + what they
+    # exec) is a security-relevant system modification → audit it. The gate is
+    # inside install_backend, before anything is written.
+    try:
+        msg, reload_cp = rt.install_backend(cfg)
+    except rt.PodError as exc:
+        # Re-raise: the CLI dispatch layer turns PodError into the documented
+        # one-line refusal, and swallowing it would hand an unsupported host a
+        # SystemExit instead. The gate runs before anything is written.
+        _audit("pod.install", "failure", "", error=str(exc)[:120])
+        raise
+    if reload_cp is not None and reload_cp.returncode != 0:
         # The unit isn't loadable without a successful reload — fail fast rather
         # than telling the user it's "ready" (consistent with _up / _down).
-        _audit("pod.install", "failure", f"dst={dst}", error="daemon-reload failed")
-        _die(f"systemctl --user daemon-reload failed: {(cp.stderr or '').strip()}")
-    _audit("pod.install", "allowed", f"dst={dst}")
-    print("systemctl --user daemon-reload OK")
+        _audit("pod.install", "failure", msg.splitlines()[0][:120], error="daemon-reload failed")
+        _die(f"systemctl --user daemon-reload failed: {(reload_cp.stderr or '').strip()}")
+    _audit("pod.install", "allowed", msg.splitlines()[0][:120])
+    print(msg)
     print("ready. Next: kirocrew pod up <worktree>")
 
 
@@ -304,7 +361,10 @@ def _provision(cfg: PodConfig, args: argparse.Namespace) -> None:
     if not prov.provision(checkout, build=build):
         _die(f"provisioning {name!r} failed (see output above)")
     # Pin so a subsequent `up` (and the systemd boot) resolves the same checkout.
-    rt.pin_checkout(cfg, name, checkout)
+    # Under the per-name mutex: unlocked, a concurrent `down` finishing its
+    # teardown could unlink this fresh pin (verifier finding).
+    with rt.pod_name_mutex(cfg, name):
+        rt.pin_checkout(cfg, name, checkout)
 
 
 def _run_internal(cfg: PodConfig, args: argparse.Namespace) -> None:

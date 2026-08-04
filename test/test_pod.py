@@ -25,6 +25,20 @@ from kiro_crew.pod.config import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _systemd_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise the SYSTEMD backend by default, on every host.
+
+    ``runtime`` dispatches unit operations on ``IS_MACOS``, so without this the
+    tests that monkeypatch ``rt.systemctl`` would silently exercise the launchd
+    branch when the suite runs on a Mac — passing on Linux CI and failing (or
+    worse, vacuously passing) on a developer's laptop. Pinning it makes the
+    default explicit and keeps the Linux/Windows contract asserted everywhere.
+    Tests for the macOS path set ``IS_MACOS`` True themselves.
+    """
+    monkeypatch.setattr(rt, "IS_MACOS", False)
+
+
 @pytest.fixture
 def cfg() -> PodConfig:
     return PodConfig.load()

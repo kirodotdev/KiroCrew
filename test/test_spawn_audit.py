@@ -378,6 +378,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "platform_compat.py::process_matches",
         "platform_compat.py::restrict_to_owner",
         "pod/cli.py::_logs",
+        # launchd twin of pod/runtime.py::_run below: the single chokepoint for
+        # `launchctl <verb> gui/<uid>/dev.kirocrew.pod.<name>`. Argv is a fixed
+        # verb set plus a label built from a validate_name-checked pod name —
+        # not agent-influenced. Same disposition as the systemctl wrapper.
+        "pod/launchd.py::launchctl",
         "pod/provision.py::_run",
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",

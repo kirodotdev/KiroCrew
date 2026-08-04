@@ -42,6 +42,50 @@ def _env_int(key: str, default: int) -> int:
     return default
 
 
+def environment_vars(cfg: PodConfig) -> dict[str, str]:
+    """The pod-plane env a service-manager-booted gateway must be given.
+
+    A booted pod starts with a clean environment, so the plane the CLI resolved
+    has to be pinned into the service definition or the gateway would resolve a
+    DIFFERENT ``PodConfig`` than the CLI that started it. Only values that differ
+    from the built-in default are emitted (plus ``KIROCREW_POD_PATH``, always
+    pinned), so an all-defaults plane yields ``{}``.
+
+    This is the *selection*, deliberately separated from the *serialisation*: the
+    systemd backend renders these as ``Environment=K=V`` lines, the launchd
+    backend hands the same dict to the plist's ``EnvironmentVariables`` key.
+    Keeping one source of truth is what stops the two backends drifting into
+    booting pods with different planes.
+    """
+    home = Path.home()
+    candidates: list[tuple[str, str, str | None]] = [
+        ("KIROCREW_POD_ROOT", str(cfg.pod_root), str(home / ".kirocrew-pods")),
+        ("KIROCREW_POD_ENV_DIR", str(cfg.pods_dir), str(_default_home() / "pods")),
+        (
+            "KIROCREW_POD_ARTIFACTS_DIR",
+            str(cfg.artifacts_dir),
+            str(cfg.pod_root / ".e2e-artifacts"),
+        ),
+        ("KIROCREW_POD_BASE_PORT", str(cfg.base_port), str(DEFAULT_BASE_PORT)),
+        ("KIROCREW_POD_LIVE_PORT", str(cfg.live_port), str(DEFAULT_LIVE_PORT)),
+        ("KIROCREW_POD_UNIT_PREFIX", cfg.unit_prefix, DEFAULT_UNIT_PREFIX),
+        ("KIROCREW_POD_PATH", cfg.gateway_path, None),  # always pin PATH
+    ]
+    out = {
+        key: val
+        for key, val, default in candidates
+        if default is None or val != default
+    }
+    # Optional resolvers — pinned only when set. boot() normally reads the pinned
+    # CHECKOUT= from the per-pod env file directly, so these are belt-and-braces
+    # so a booted service can still resolve the same repo/root the CLI used.
+    if cfg.repo_hint is not None:
+        out["KIROCREW_POD_REPO"] = str(cfg.repo_hint)
+    if cfg.worktrees_root is not None:
+        out["KIROCREW_POD_WORKTREES_ROOT"] = str(cfg.worktrees_root)
+    return out
+
+
 @dataclass(frozen=True)
 class PodConfig:
     """Resolved, immutable view of where pods live and how they are named.

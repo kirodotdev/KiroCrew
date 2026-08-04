@@ -9,6 +9,7 @@ layer. No state is held; each function reads what it needs from a
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -16,13 +17,16 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from kiro_crew.platform_compat import IS_LINUX
+from kiro_crew.platform_compat import IS_LINUX, IS_MACOS
+from kiro_crew.pod import launchd
 from kiro_crew.pod import provision as prov
+from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod.config import PodConfig
 
 # Pod names become systemd instance names and path segments; keep them strict.
@@ -302,12 +306,36 @@ def require_systemd() -> None:
         )
 
 
+def require_backend() -> None:
+    """Gate on whatever service manager THIS host uses for pods.
+
+    Dispatches instead of replacing :func:`require_systemd`: that function is
+    still the systemd gate with its own contract and messages, so Linux and
+    Windows behaviour is provably unchanged by the macOS work — on any non-darwin
+    host this is exactly ``require_systemd()``.
+    """
+    if IS_MACOS:
+        try:
+            launchd.require_backend()
+        except launchd.LaunchdError as exc:  # translate to the pod error type
+            raise PodError(str(exc)) from exc
+        return
+    require_systemd()
+
+
 def systemctl(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
     require_systemd()
     return _run(["systemctl", "--user", *args], timeout=timeout)
 
 
 def is_active(cfg: PodConfig, name: str) -> bool:
+    if IS_MACOS:
+        try:
+            return launchd.is_active(cfg, name)
+        except launchd.LaunchdError as exc:
+            # Fail closed as the documented pod error, not a traceback: the
+            # probe REFUSES to call a pod absent when launchctl cannot answer.
+            raise PodError(str(exc)) from exc
     cp = systemctl("is-active", "--quiet", pod_unit(cfg, name))
     return cp.returncode == 0
 
@@ -319,7 +347,13 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
     build, import error, bad config) apart from one that is just slow to come up —
     so we fail fast with the gateway's own error instead of polling a dead unit
     for the full timeout.
+
+    On macOS launchd exposes no restart counter; see
+    :func:`kiro_crew.pod.launchd.unit_state` for how the crash signal is
+    preserved without one.
     """
+    if IS_MACOS:
+        return launchd.unit_state(cfg, name)
     cp = systemctl("show", pod_unit(cfg, name), "-p", "ActiveState", "-p", "NRestarts")
     state, restarts = "unknown", 0
     for ln in cp.stdout.splitlines():
@@ -333,7 +367,13 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
 
 
 def recent_journal(cfg: PodConfig, name: str, lines: int = 30) -> str:
-    """Tail the pod unit's journal — used to surface a boot failure's real cause."""
+    """Tail the pod's log — used to surface a boot failure's real cause.
+
+    launchd has no journal, so on macOS this tails the files the pod's plist
+    routes stdout/stderr to. Same contract, different mechanism.
+    """
+    if IS_MACOS:
+        return launchd.recent_journal(cfg, name, lines=lines)
     # journalctl is a sibling of systemctl, not routed through it — gate it too,
     # or this one call still raises a bare FileNotFoundError off-Linux.
     require_systemd()
@@ -349,6 +389,11 @@ def recent_journal(cfg: PodConfig, name: str, lines: int = 30) -> str:
 
 def active_names(cfg: PodConfig) -> set[str]:
     """Worktree names with an active pod unit (one cheap call)."""
+    if IS_MACOS:
+        try:
+            return launchd.active_names(cfg)
+        except launchd.LaunchdError as exc:
+            raise PodError(str(exc)) from exc
     pat = f"{cfg.unit_prefix}@*.service"
     cp = systemctl("list-units", pat, "--state=active", "--no-legend", "--plain", "--no-pager")
     rx = re.compile(rf"{re.escape(cfg.unit_prefix)}@(.+)\.service")
@@ -361,6 +406,156 @@ def active_names(cfg: PodConfig) -> set[str]:
         if m:
             names.add(m.group(1))
     return names
+
+
+# --------------------------------------------------------------------------- #
+# Sentinel in stop_pod's stdout meaning the pod NAME was reclaimed by a new pod
+# mid-teardown (down/up race). The old pod is gone, but per-name state (the env
+# file pinning CHECKOUT=) now belongs to the NEW pod and must not be deleted.
+RECLAIMED_MARKER = "pod-name-reclaimed-by-new-pod"
+
+
+# Backend-agnostic lifecycle. The CLI calls these so no verb has to know which
+# service manager it is talking to — and so the launchd-only teardown obligation
+# (below) cannot be forgotten at one call site and honoured at another.
+# --------------------------------------------------------------------------- #
+def pod_name_mutex(cfg: PodConfig, name: str):
+    """Per-name lifecycle mutex for callers composing multi-step transactions.
+
+    The CLI wraps `up` (pin -> plist -> bootstrap) and `down` (stop -> sweep ->
+    env unlink) in this so per-name METADATA moves atomically with the service
+    operations — the review-blocking down/up races all lived in those seams.
+    Reentrant with the acquisition inside start_pod/stop_pod. On Linux the unit
+    (ExecStopPost) owns teardown ordering, so this is a no-op there.
+    """
+    if IS_MACOS:
+        return launchd.pod_mutex(cfg, name)
+    return contextlib.nullcontext()
+
+
+def start_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
+    """Bring pod *name* up through whichever service manager this host uses."""
+    if IS_MACOS:
+        # Re-rendered every start, which is why launchd needs no equivalent of
+        # the systemd path's stale-ExecStart self-heal. The mutex serializes
+        # against a concurrent stop of the same name, whose plist unlink and
+        # HOME sweep would otherwise race this write (see launchd.pod_mutex).
+        with launchd.pod_mutex(cfg, name):
+            launchd.write_plist(cfg, name)
+            return launchd.start(cfg, name)
+
+    # Self-heal a dangling ExecStart binary: the template unit bakes an absolute
+    # kirocrew path at install time; if the worktree it resolved into was pruned
+    # since, every start fails EXEC (203).
+    if not unit_mod.unit_exec_ok(cfg):
+        unit_mod.install_unit(cfg)
+        rel = systemctl("daemon-reload")
+        if rel.returncode != 0:
+            return rel
+    return systemctl("start", pod_unit(cfg, name))
+
+
+def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
+    """Stop pod *name* and guarantee its isolated HOME is gone.
+
+    On Linux the unit's ``ExecStopPost`` runs ``pod _cleanup``, so teardown
+    happens whatever stopped the service. launchd has **no post-stop hook**, so
+    the HOME removal is done here after a successful ``bootout`` — routed through
+    :func:`cleanup_home`, which re-validates the name, rather than a raw
+    recursive delete. Both paths therefore end with zero residue; only the macOS
+    one depends on this call being reached, which is why the crash case is
+    covered separately by ``launchd.orphan_homes()``.
+    """
+    if IS_MACOS:
+        # One mutex across bootout + confirmation + the HOME sweep: a
+        # concurrent `up` of the same name blocks until teardown fully
+        # finishes instead of interleaving with it (the plist-presence
+        # reclaim check below stays as defense-in-depth — the flock is
+        # advisory and only guards paths that route through it).
+        with launchd.pod_mutex(cfg, name):
+            # launchd.stop() is authoritative: rc 0 means the label is confirmed
+            # unloaded (a bootout of an unloaded label is a no-op success). A non-zero
+            # rc means the unload could NOT be confirmed — in that case do NOT touch
+            # the HOME: it may belong to a live gateway, and deleting it while
+            # returning success was exactly the blocking review finding here.
+            cp = launchd.stop(cfg, name)
+            if cp.returncode != 0:
+                return cp
+            # Reap with a short grace window. launchd confirms the SERVICE process is
+            # unloaded, but a dying child can outlive it by a beat and flush state on
+            # exit — observed in a real teardown: cleanup ran, verification passed,
+            # then a child wrote settings back and resurrected the HOME milliseconds
+            # later. Retry the reap a few times so a final write cannot win the race;
+            # if the directory still reappears after the window, someone is genuinely
+            # alive in there and we must say so, not shrug.
+            leftover = pod_home(cfg, name)
+            # Observe the FULL window — no early exit on a clean sample (the dying
+            # child that motivated this flushed state after a beat). But DO exit the
+            # moment the name is claimed by a NEW pod: `down` and `up` are
+            # independent Dev Fleet endpoints with no per-name lock, so a quick
+            # down→up would otherwise put the fresh gateway's HOME under the
+            # remaining rmtree passes. Our unload was already confirmed, and a new
+            # `up` re-writes the plist BEFORE bootstrapping — so plist presence is
+            # the claim marker. Deliberately a pure filesystem check: probing
+            # launchctl here would shell out on every sweep and break on hosts
+            # without launchd (the unit suites run this path on Linux/Windows CI).
+            #
+            # A reclaimed name is reported via RECLAIMED_MARKER in stdout so the
+            # caller knows the teardown handed over: it must NOT delete the per-pod
+            # env file, which now pins the NEW pod's checkout.
+            for _ in range(6):
+                if launchd.plist_path(cfg, name).exists():
+                    return subprocess.CompletedProcess(
+                        args=[], returncode=0, stdout=RECLAIMED_MARKER, stderr=""
+                    )
+                cleanup_home(cfg, name)
+                time.sleep(0.5)
+            if launchd.plist_path(cfg, name).exists():
+                return subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=RECLAIMED_MARKER, stderr=""
+                )
+            cleanup_home(cfg, name)
+            if leftover.exists():
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout=cp.stdout or "",
+                    stderr=(
+                        f"pod stopped but its isolated HOME keeps reappearing at "
+                        f"{leftover} — a process is still writing there, so teardown "
+                        "is incomplete. Remove it by hand and report this."
+                    ),
+                )
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout=cp.stdout or "", stderr="")
+    return systemctl("stop", pod_unit(cfg, name))
+
+
+def install_backend(cfg: PodConfig) -> tuple[str, subprocess.CompletedProcess | None]:
+    """Install whatever machine-wide definition the backend needs.
+
+    systemd needs one template unit + a daemon-reload. launchd has no template
+    concept — each pod's plist is written at ``up`` — so there is nothing to
+    install, and saying so is better than writing a file that does nothing.
+
+    Returns ``(message, reload_result)``. Raises :class:`PodError` only for an
+    unusable host, and does so BEFORE writing anything, so an unsupported
+    platform never leaves a stray definition behind. A failed reload comes back
+    as the second element rather than an exception, because the caller reports
+    that as a hard exit while the gate refusal is converted by the CLI's
+    dispatch layer — two different documented behaviours.
+    """
+    require_backend()
+    if IS_MACOS:
+        return (
+            "nothing to install on macOS: launchd has no template units, so each "
+            "pod's agent plist is written at `kirocrew pod up <worktree>`.",
+            None,
+        )
+    dst = unit_mod.install_unit(cfg)
+    cp = systemctl("daemon-reload")
+    if cp.returncode != 0:
+        return f"installed pod template unit → {dst}", cp
+    return f"installed pod template unit → {dst}\nsystemctl --user daemon-reload OK", cp
 
 
 def health(port: int, timeout: int = 3) -> int:

@@ -17,13 +17,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from kiro_crew.config.paths import _default_home
-from kiro_crew.pod.config import (
-    DEFAULT_BASE_PORT,
-    DEFAULT_LIVE_PORT,
-    DEFAULT_UNIT_PREFIX,
-    PodConfig,
-)
+from kiro_crew.pod.config import PodConfig, environment_vars
 
 _UNIT_TEMPLATE = """\
 [Unit]
@@ -82,37 +76,13 @@ def _kirocrew_bin() -> str:
 
 
 def _environment_block(cfg: PodConfig) -> str:
-    """``Environment=`` lines for every config value that differs from the built-in
-    default, so the systemd-booted gateway resolves the same plane the installing
-    CLI used. Returns "" when everything is at defaults.
+    """``Environment=`` lines for the shared pod-plane env selection.
+
+    The *selection* lives in :func:`kiro_crew.pod.config.environment_vars` so the
+    launchd backend pins the identical plane; this function only serialises it in
+    systemd's syntax. Returns "" when everything is at defaults.
     """
-    home = Path.home()
-    candidates = [
-        ("KIROCREW_POD_ROOT", str(cfg.pod_root), str(home / ".kirocrew-pods")),
-        ("KIROCREW_POD_ENV_DIR", str(cfg.pods_dir), str(_default_home() / "pods")),
-        (
-            "KIROCREW_POD_ARTIFACTS_DIR",
-            str(cfg.artifacts_dir),
-            str(cfg.pod_root / ".e2e-artifacts"),
-        ),
-        ("KIROCREW_POD_BASE_PORT", str(cfg.base_port), str(DEFAULT_BASE_PORT)),
-        ("KIROCREW_POD_LIVE_PORT", str(cfg.live_port), str(DEFAULT_LIVE_PORT)),
-        ("KIROCREW_POD_UNIT_PREFIX", cfg.unit_prefix, DEFAULT_UNIT_PREFIX),
-        ("KIROCREW_POD_PATH", cfg.gateway_path, None),  # always pin PATH
-    ]
-    lines = [
-        f"Environment={key}={val}\n"
-        for key, val, default in candidates
-        if default is None or val != default
-    ]
-    # Optional resolvers — pinned only when set. boot() normally reads the pinned
-    # CHECKOUT= from the per-pod env file directly, so these are belt-and-braces so
-    # a systemd-booted unit can still resolve the same repo/root the CLI used.
-    if cfg.repo_hint is not None:
-        lines.append(f"Environment=KIROCREW_POD_REPO={cfg.repo_hint}\n")
-    if cfg.worktrees_root is not None:
-        lines.append(f"Environment=KIROCREW_POD_WORKTREES_ROOT={cfg.worktrees_root}\n")
-    return "".join(lines)
+    return "".join(f"Environment={key}={val}\n" for key, val in environment_vars(cfg).items())
 
 
 def render_unit(cfg: PodConfig) -> str:
