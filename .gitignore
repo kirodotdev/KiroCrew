@@ -54,6 +54,10 @@ frontend/tsconfig.node.tsbuildinfo
 src/kiro_crew/static/dist/
 src/kiro_crew/static/dist
 
+# Build-time provenance stamp (scripts/stamp-distribution.sh). Generated per
+# packaging path; a committed copy would mislabel every other build's beacon.
+src/kiro_crew/_build_info.py
+
 # JVM crash logs
 hs_err_pid*.log
 

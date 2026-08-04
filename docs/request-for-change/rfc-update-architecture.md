@@ -47,9 +47,13 @@ Five shapes, enumerated at `src/kiro_crew/beacon.py:136`:
 KNOWN_DISTRIBUTIONS = frozenset({"dmg", "appimage", "wheel", "source", "docker"})
 ```
 
-That value is stamped at build time by the packaging scripts into
-`KIROCREW_DISTRIBUTION` (`beacon.py:135`) and is read **only by telemetry**. No
-update code consults it.
+Each packaging path stamps that value at build time into a generated
+`kiro_crew/_build_info.py` (via `scripts/stamp-distribution.sh`), which
+`beacon.distribution()` prefers over the `KIROCREW_DISTRIBUTION` env var: a
+baked module ships with the artifact and a running install cannot change it,
+whereas the env var is inherited by child processes and settable by anyone with
+a shell. Windows (Squirrel) has no value in the set and reports `source`. The
+field is read **only by telemetry**; no update code consults it.
 
 Three mechanisms:
 
