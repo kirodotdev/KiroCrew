@@ -1,0 +1,120 @@
+name: PR Readiness Self-Heal Sweep
+
+# Backstop for a dropped `workflow_run` event.
+#
+# `pr-readiness.yml` publishes a live "PR Readiness" commit status, then relies
+# on the `workflow_run: completed` event from each monitored workflow (CI,
+# Build, Code Review, the AI reviewers) to re-fire and flip the status from the
+# mid-flight `pending` to its terminal verdict (`success` for a same-repository
+# PR, `failure`/maintainer-review for a fork PR). GitHub does NOT guarantee
+# delivery of `workflow_run` events and silently drops them under Actions load.
+# When the FINAL completion event for a head SHA is dropped, nothing recomputes
+# the unchanged commit, so the required "PR Readiness" status is frozen at the
+# stale `pending` forever and the PR can never merge -- even though every check
+# is actually green. (Observed on PR #1461: all checks green at 20:00-20:11,
+# zero workflow_run readiness runs fired afterward, status stuck `pending`.)
+#
+# This sweep finds open PRs whose "PR Readiness" status has been `pending` for
+# longer than a live fan-out could plausibly still be running, and re-fires the
+# EXISTING recompute via `pr-readiness.yml`'s `workflow_dispatch` path. It does
+# NOT re-run CI/Build/reviewers and never computes a verdict itself -- it only
+# nudges the authoritative readiness workflow to re-evaluate. The recompute is
+# idempotent and stale-SHA guarded, so a spurious nudge just republishes the
+# correct verdict (including `pending` again, harmlessly, if a long CI run is
+# genuinely still in flight) and stops.
+on:
+  schedule:
+    # Every 15 minutes. A normal fan-out publishes terminal state via events
+    # well inside this window; anything still `pending` past STALE_MINUTES is
+    # treated as a dropped-event freeze and nudged.
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  actions: write        # dispatch pr-readiness.yml (workflow_dispatch)
+  contents: read
+  pull-requests: read   # list open PRs
+  statuses: read        # read the "PR Readiness" commit status
+
+concurrency:
+  # Collapse an overlapping sweep into one. The sweep is idempotent, so
+  # cancelling an in-flight run is safe.
+  group: pr-readiness-sweep
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    name: Nudge stuck PR Readiness statuses
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Re-fire readiness for stale-pending pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          STATUS_CONTEXT: "PR Readiness"
+          # A `pending` status older than this (minutes) is considered a
+          # dropped-event freeze rather than an in-flight fan-out.
+          STALE_MINUTES: "15"
+          # Runaway backstop: never dispatch more than this many recomputes in
+          # a single sweep. Anything beyond the cap is left for the next sweep
+          # (it stays stale-pending, so it is picked up again).
+          MAX_DISPATCH: "10"
+        run: |
+          set -euo pipefail
+
+          now_epoch="$(date -u +%s)"
+          stale_seconds=$(( STALE_MINUTES * 60 ))
+
+          # Open PRs with their current head SHA. A single cheap list call.
+          prs="$(gh pr list --repo "$REPO" --state open --limit 300 \
+            --json number,headRefOid)"
+
+          total="$(jq 'length' <<<"$prs")"
+          echo "Scanning $total open pull request(s) for stale-pending PR Readiness."
+
+          dispatched=0
+          skipped_cap=0
+
+          while read -r row; do
+            [ -n "$row" ] || continue
+            number="$(jq -r '.number' <<<"$row")"
+            sha="$(jq -r '.headRefOid' <<<"$row")"
+            [ -n "$sha" ] && [ "$sha" != "null" ] || continue
+
+            # Most-recent "PR Readiness" commit status for this head SHA. The
+            # statuses API returns newest first, so `first` is authoritative.
+            status_json="$(gh api "repos/$REPO/commits/$sha/statuses" --paginate 2>/dev/null \
+              | jq -c --arg ctx "$STATUS_CONTEXT" \
+                  '[.[] | select(.context == $ctx)] | first // empty' \
+              || echo "")"
+
+            # No readiness status yet -> the PR's own run is coming; not stuck.
+            [ -n "$status_json" ] || continue
+
+            state="$(jq -r '.state' <<<"$status_json")"
+            [ "$state" = "pending" ] || continue
+
+            updated_at="$(jq -r '.updated_at' <<<"$status_json")"
+            updated_epoch="$(date -u -d "$updated_at" +%s 2>/dev/null || echo 0)"
+            age=$(( now_epoch - updated_epoch ))
+            if [ "$updated_epoch" -eq 0 ] || [ "$age" -lt "$stale_seconds" ]; then
+              # Either unparseable, or still within the plausible-running window.
+              continue
+            fi
+
+            if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
+              skipped_cap=$(( skipped_cap + 1 ))
+              continue
+            fi
+
+            echo "PR #$number: PR Readiness pending for ${age}s (> ${stale_seconds}s) at $sha -> re-firing recompute."
+            if gh workflow run pr-readiness.yml --repo "$REPO" \
+                -f pr="$number" -f sha="$sha" >/dev/null 2>&1; then
+              dispatched=$(( dispatched + 1 ))
+            else
+              echo "PR #$number: failed to dispatch pr-readiness.yml (will retry next sweep)."
+            fi
+          done < <(jq -c '.[]' <<<"$prs")
+
+          echo "Re-fired $dispatched recompute(s); $skipped_cap stale PR(s) deferred to next sweep by MAX_DISPATCH=$MAX_DISPATCH."
