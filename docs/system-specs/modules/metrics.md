@@ -305,6 +305,27 @@ startups multiplies the startup count by the number of phases and sums several
 unrelated latency distributions into one set of buckets, which renders as a
 spurious multi-modal "distribution".
 
+**Failures are reported as counts, not as success rates.** Both outcome
+instruments are fail-closed — `AcpClient.ensure_ready` and
+`AcpSessionProvider._start_kiro_runtime` each default their outcome to `error`
+and overwrite it with `ready` only on the success path, and `_turn_outcome` maps
+a real `stop_reason` — so a zero here is a measurement rather than an instrument
+that cannot report bad news. What a *rate* over these populations cannot do is
+survive rounding: a window of ~1400 startups makes one failed startup 99.93%,
+which renders as a flawless `100%`. A rate had no reachable value between
+"perfect" and a problem big enough to clear half a percent, and it saturated in
+the direction that hides failure. A count has no such ceiling, so the page shows
+the absolute number of non-`ready` startups and of non-`ok` turns. Where a rate
+is still shown (turn fault rate, which answers a different question — faults per
+unit of work), a non-zero value below the rounding threshold renders as `<1%`
+and never in the success colour.
+
+Both figures count *everything* outside the success value rather than naming the
+failure values. Enumerating them (`error` + `timeout`) silently excluded any
+third outcome — `auth_required`, and the `unknown` that shards predating the
+attribute aggregate under — which put the displayed count and the rate beside it
+on two different populations.
+
 **`context` block.** The response also carries per-turn context-window
 occupancy — `{turns, p50_pct, p90_pct, max_pct, sessions[]}` — sourced from the
 per-turn token row store below, NOT from the OTEL shards: occupancy is a
@@ -373,9 +394,36 @@ imports nothing from `dashboard.handlers`, so there is no cycle to dodge).
 Without it the two fields were
 write-only: recorded on every turn since #647, read by nothing.
 
+`usage.cost_breakdown(days)` is the second reader, same cache contract, serving
+the `cost` block of the same endpoint. It answers "where did the credits go"
+from fields the row store already carries — no new instrumentation:
+
+| sub-block | derivation |
+|-----------|-----------|
+| totals | `credits` summed over the window, plus the preceding window of equal length and the delta between them |
+| `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show |
+| `by_channel` | same shape, keyed by `telemetry_channel_of(slot)` |
+| `context_bands` | mean credits per turn bucketed by absolute `context_used`, which is what makes the cost/context relationship legible (a turn at 900k costs ~4.7x one at 100k) |
+| `conversations` | top spenders with peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction |
+
+**Channel comes from the slot key, not from `surface`.** `surface` cannot
+separate transports: `chat_runner` stamps `surface="dashboard"` for every turn
+that flows through it regardless of where the message arrived from, so a
+Telegram turn is booked as dashboard spend (observable in the row store as a
+`telegram_*` slot carrying `surface="dashboard"`). The slot key is assigned by
+the transport that created the session and is therefore the only field that
+distinguishes them.
+
+Growth rate and the compaction projection are **withheld** below
+`_COST_MIN_GROWTH_TURNS` turns: a slope fitted to two or three points is noise,
+and rendering it beside real slopes invites acting on it.
+
 Tests: `test/test_usage.py` (`TestReadContextTokens`,
 `TestBuildTokenRecordContextFields`, `TestPersistTokenRecord*`),
-`test/metrics/test_context_occupancy.py` (aggregation, skips, latest-turn wins).
+`test/metrics/test_context_occupancy.py` (aggregation, skips, latest-turn wins),
+`test/metrics/test_cost_breakdown.py` (channel attribution incl. the bare
+dashboard slot form, no-truncation, prior-window deltas, band bucketing, growth
+withholding).
 
 ## Circular-import rule
 

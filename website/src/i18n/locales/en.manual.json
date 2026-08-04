@@ -2859,12 +2859,7 @@
       "status_disabled": "Disabled",
       "status_unknown": "Unknown"
     },
-    "telemetryPanel": {
-      "first_use_spawn_of_an_mcp_server_backend": "First-use spawn of an MCP server backend",
-      "on_demand_read_of_a_skill_body_from_disk": "On-demand read of a skill body from disk",
-      "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "Sessions reusing a warm MCP backend vs a cold spawn",
-      "time_to_hand_a_pooled_mcp_backend_to_a_session": "Time to hand a pooled MCP backend to a session"
-    },
+    "telemetryPanel": {},
     "worldsPage": {
       "hide_controls": "Hide controls",
       "show_controls": "Show controls"
@@ -2921,7 +2916,7 @@
           "label": "System"
         },
         "telemetry": {
-          "description": "Session startup latency (p50/p90) and MCP/skill acceleration metrics",
+          "description": "Credit spend, context cost, and session startup latency",
           "label": "Telemetry"
         }
       }

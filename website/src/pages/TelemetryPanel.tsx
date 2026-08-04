@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
-import { Activity, Gauge, Rocket, Zap } from 'lucide-react'
+import { Activity, Coins, Gauge, MessageSquare, Rocket } from 'lucide-react'
 import { api } from '../api/client'
 
+import { fmtDateNumeric, fmtNumber, fmtPercent, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 // ── GET /api/telemetry/startup shape (dashboard/handlers/telemetry.py) ──
 type Stat = {
@@ -63,6 +64,45 @@ type Other = {
   // backend splits on (_OTHER_SPLIT_ATTRS). Keyed "attr=value", e.g. "warm=false".
   splits?: Record<string, Stat>
 }
+type CostRow = {
+  name: string
+  credits: number
+  turns: number
+  per_turn: number
+  share_pct: number
+  // Absent for a name with no spend in the preceding period: there is no
+  // percentage change from zero, and rendering one would invent a number.
+  delta_pct?: number | null
+}
+type CostBand = { label: string; turns: number; mean_credits: number }
+type CostConvo = {
+  slot: string
+  // Present only while the conversation is still open — titles are not persisted.
+  title?: string
+  credits: number
+  turns: number
+  peak_pct: number
+  span_days: number
+  first_ts: number
+  growth_pct_per_turn?: number | null
+  turns_to_compaction?: number | null
+}
+type Cost = {
+  window_days: number
+  credits: number
+  turns: number
+  per_turn: number
+  prior_credits: number
+  prior_turns: number
+  prior_per_turn: number
+  delta_pct?: number | null
+  priciest: { credits: number; slot: string; ts: string }
+  by_model: CostRow[]
+  by_channel: CostRow[]
+  context_bands: CostBand[]
+  conversations: CostConvo[]
+  conversation_count: number
+}
 type Resp = {
   enabled: boolean
   window_days: number
@@ -71,12 +111,12 @@ type Resp = {
   startup: Startup | null
   turn: Turn | null
   context: Context | null
+  cost: Cost | null
   other: Other[]
 }
 
 const fmtMs = (ms?: number | null): string =>
   ms == null ? '—' : ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms'
-const pct = (n: number, d: number): number => (d > 0 ? Math.round((n / d) * 100) : 0)
 
 function Notice({ children }: { children: React.ReactNode }) {
   return <div className="text-muted text-sm py-12 text-center leading-relaxed">{children}</div>
@@ -144,15 +184,6 @@ function GenNote({ shown, total }: { shown?: number; total?: number }) {
   )
 }
 
-function Card({ title, meaning, children }: { title: string; meaning: string; children: React.ReactNode }) {
-  return (
-    <div className="card-glow border border-border bg-card rounded-xl p-3.5">
-      <div className="text-[13px] font-semibold">{title}</div>
-      <div className="text-[10px] text-muted mb-2">{meaning}</div>
-      {children}
-    </div>
-  )
-}
 
 /**
  * Occupancy colour thresholds. Compaction triggers at 90% of the window, so
@@ -165,8 +196,6 @@ function Card({ title, meaning, children }: { title: string; meaning: string; ch
 const occColor = (p: number): string =>
   p >= 90 ? 'var(--danger)' : p >= 70 ? 'var(--warn)' : 'var(--accent)'
 
-const fmtTokens = (n: number): string =>
-  n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? Math.round(n / 1000) + 'k' : String(n)
 
 /**
  * Per-turn context-window occupancy, read from the token row store rather than
@@ -174,6 +203,183 @@ const fmtTokens = (n: number): string =>
  * unbounded slot id is not a metric label. Rendered whether or not OTEL export
  * is on, because these rows are always written.
  */
+/** Bars carry magnitude by length; hue is reserved for the one alarm on the page. */
+const BAR = 'var(--muted-strong)'
+
+/**
+ * One grid template shared by the model and channel tables AND their headers.
+ *
+ * Both tables previously laid out with flex and omitted the delta cell for
+ * channels, so the flexible bar absorbed that width and the two tables' columns
+ * landed in different places. A fixed template makes misalignment impossible,
+ * and every cell is always rendered — empty where a column does not apply —
+ * so a missing value cannot reflow the row.
+ */
+const SHARE_GRID =
+  'grid items-center gap-2.5 grid-cols-[168px_minmax(0,1fr)_52px_76px_60px_104px]'
+
+function ShareHeader({ first }: { first: string }) {
+  return (
+    <div
+      className={`${SHARE_GRID} text-[10px] text-muted uppercase tracking-wide `
+        + 'pb-1.5 mb-1 border-b border-border'}
+    >
+      <span>{first}</span>
+      <span />
+      <span className="text-right">{i18nT('pages.telemetryPanel.share_col')}</span>
+      <span className="text-right">{i18nT('pages.telemetryPanel.credits_col')}</span>
+      <span className="text-right">{i18nT('pages.telemetryPanel.per_turn_col')}</span>
+      <span className="text-right">{i18nT('pages.telemetryPanel.vs_last_col')}</span>
+    </div>
+  )
+}
+
+function ShareRows({ rows, showDelta }: { rows: CostRow[]; showDelta?: boolean }) {
+  const peak = Math.max(1, ...rows.map(r => r.share_pct))
+  return (
+    <>
+      {rows.map(r => (
+        <div key={r.name} className={`${SHARE_GRID} py-[3px] text-[11px]`}>
+          <span className="min-w-0 truncate" title={r.name}>{r.name}</span>
+          <div className="h-1.5 bg-[var(--bg)] rounded-full overflow-hidden">
+            <span className="block h-full rounded-full"
+                  style={{ width: `${(r.share_pct / peak) * 100}%`, background: BAR }} />
+          </div>
+          <span className="text-right tabular-nums">
+            {/* Composed, not a catalog string: "<1%" carries no letter in any
+                language, so it is built from the locale-formatted 1% instead. */}
+            {r.share_pct > 0 && r.share_pct < 0.5
+              ? `<${fmtPercent(0.01)}`
+              : fmtPercent(r.share_pct / 100)}
+          </span>
+          <span className="text-right tabular-nums">{fmtNumber(r.credits)}</span>
+          <span className="text-right tabular-nums">{fmtNumber(r.per_turn)}</span>
+          <span className="text-right tabular-nums text-muted">
+            {!showDelta
+              ? ''
+              : r.delta_pct == null
+                ? i18nT('pages.telemetryPanel.cost_new')
+                : (r.delta_pct > 0 ? '+' : '') + fmtPercent(r.delta_pct / 100)}
+          </span>
+        </div>
+      ))}
+    </>
+  )
+}
+
+function CostSections({ c }: { c: Cost }) {
+  const bandPeak = Math.max(1, ...c.context_bands.map(b => b.mean_credits))
+  const convoPeak = Math.max(1, ...c.conversations.map(v => v.credits))
+  return (
+    <>
+      <Section title={i18nT('pages.telemetryPanel.credits')} icon={<Coins size={13} />}>
+        <div className="grid gap-2.5 grid-cols-[repeat(auto-fit,minmax(140px,1fr))] mb-3">
+          <Tile
+            label={i18nT('pages.telemetryPanel.credits_this_period', { days: c.window_days })}
+            value={fmtNumber(c.credits)}
+            color="var(--accent)"
+            sub={i18nT('pages.telemetryPanel.turns_measured', { count: c.turns, n: fmtNumber(c.turns) })}
+          />
+          <Tile
+            label={i18nT('pages.telemetryPanel.vs_previous_period')}
+            value={c.delta_pct == null
+              ? '—'
+              : (c.delta_pct > 0 ? '+' : '') + fmtPercent(c.delta_pct / 100)}
+            color="var(--accent)"
+            sub={`${fmtNumber(c.prior_credits)} · ${fmtNumber(c.prior_turns)}`}
+          />
+          <Tile
+            label={i18nT('pages.telemetryPanel.credits_per_turn')}
+            value={fmtNumber(c.per_turn)}
+            sub={i18nT('pages.telemetryPanel.was_value', { value: c.prior_per_turn })}
+          />
+          <Tile
+            label={i18nT('pages.telemetryPanel.priciest_turn')}
+            value={fmtNumber(c.priciest.credits)}
+          />
+        </div>
+        <div className="card-glow border border-border bg-card rounded-xl p-3.5">
+          <ShareHeader first={i18nT('pages.telemetryPanel.by_model')} />
+          <ShareRows rows={c.by_model} showDelta />
+          <div className="mt-3">
+            <ShareHeader first={i18nT('pages.telemetryPanel.by_channel')} />
+          </div>
+          <ShareRows rows={c.by_channel} showDelta />
+        </div>
+      </Section>
+
+      {c.context_bands.length > 0 && (
+        <Section title={i18nT('pages.telemetryPanel.cost_by_context_size')} icon={<Activity size={13} />}>
+          <div className="card-glow border border-border bg-card rounded-xl p-3.5">
+            {c.context_bands.map(b => (
+              <div key={b.label} className="flex items-center gap-2.5 py-[3px] text-[11px]">
+                <span className="w-24 shrink-0 text-muted">{b.label}</span>
+                <div className="flex-1 h-1.5 bg-[var(--bg)] rounded-full overflow-hidden">
+                  <span className="block h-full rounded-full"
+                        style={{ width: `${(b.mean_credits / bandPeak) * 100}%`, background: BAR }} />
+                </div>
+                <span className="w-14 text-right shrink-0 tabular-nums">{fmtNumber(b.mean_credits)}</span>
+                <span className="w-14 text-right shrink-0 text-muted tabular-nums">{i18nT('pages.telemetryPanel.sample_count', { count: b.turns })}</span>
+              </div>
+            ))}
+            <div className="text-[10px] text-muted mt-2">{i18nT('pages.telemetryPanel.mean_credits_by_occupancy')}</div>
+          </div>
+        </Section>
+      )}
+
+      {c.conversations.length > 0 && (
+        <Section
+          title={i18nT('pages.telemetryPanel.conversations_by_spend')}
+          icon={<MessageSquare size={13} />}
+        >
+          <div className="card-glow border border-border bg-card rounded-xl p-3.5">
+            <div className="flex flex-col gap-1.5">
+              {c.conversations.map(v => (
+                <div key={v.slot} className="flex items-center gap-2.5 text-[11px]">
+                  <span className="w-56 shrink-0 min-w-0">
+                    {v.title ? (
+                      <a href={`/chat?sid=${encodeURIComponent(v.slot)}`}
+                         className="block truncate text-[var(--accent)] hover:underline"
+                         title={v.title}>{v.title}</a>
+                    ) : (
+                      <a href={`/chat?sid=${encodeURIComponent(v.slot)}`}
+                         className="block truncate text-muted hover:underline" title={v.slot}>
+                        {i18nT('pages.telemetryPanel.untitled_conversation_on', { date: fmtDateNumeric(v.first_ts * 1000) })}
+                      </a>
+                    )}
+                  </span>
+                  <div className="flex-1 h-1.5 bg-[var(--bg)] rounded-full overflow-hidden">
+                    <span className="block h-full rounded-full"
+                          style={{ width: `${(v.credits / convoPeak) * 100}%`, background: BAR }} />
+                  </div>
+                  <span className="w-16 text-right shrink-0 tabular-nums">{fmtNumber(v.credits)}</span>
+                  <span className="w-10 text-right shrink-0 tabular-nums text-muted">{fmtNumber(v.turns)}</span>
+                  <span className="w-10 text-right shrink-0 tabular-nums"
+                        style={{ color: occColor(v.peak_pct) }}>{fmtPercent(v.peak_pct / 100)}</span>
+                  <span className="w-12 text-right shrink-0 tabular-nums text-muted max-[720px]:hidden">
+                    {fmtUnit(v.span_days, 'day')}
+                  </span>
+                  <span className="w-40 text-right shrink-0 text-muted max-[900px]:hidden">
+                    {v.growth_pct_per_turn == null || v.turns_to_compaction == null
+                      ? '—'
+                      : i18nT('pages.telemetryPanel.context_growth_forecast', {
+                          rate: v.growth_pct_per_turn,
+                          turns: v.turns_to_compaction,
+                        })}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="text-[10px] text-muted mt-2">
+              {i18nT('pages.telemetryPanel.conversations_caption', { count: c.conversation_count })}
+            </div>
+          </div>
+        </Section>
+      )}
+    </>
+  )
+}
+
 function ContextSection({ c }: { c: Context }) {
   return (
     <Section title={i18nT('pages.telemetryPanel.context_window')} icon={<Gauge size={13} />}>
@@ -189,7 +395,7 @@ function ContextSection({ c }: { c: Context }) {
           value={String(c.p50_pct)}
           unit="%"
           color={occColor(c.p50_pct)}
-          sub={i18nT('pages.telemetryPanel.turns_measured', { count: c.turns })}
+          sub={i18nT('pages.telemetryPanel.turns_measured', { count: c.turns, n: fmtNumber(c.turns) })}
         />
         <Tile
           label={i18nT('pages.telemetryPanel.occupancy_p90')}
@@ -204,36 +410,6 @@ function ContextSection({ c }: { c: Context }) {
           color={occColor(c.max_pct)}
         />
       </div>
-      {c.sessions.length > 0 && (
-        <div className="card-glow border border-border bg-card rounded-xl p-3.5">
-          <div className="text-[10px] text-muted mb-2">{i18nT('pages.telemetryPanel.hottest_sessions_by_peak_occupancy')}</div>
-          <div className="flex flex-col gap-1.5">
-            {c.sessions.map(s => (
-              <div key={s.slot} className="flex items-center gap-2 text-[10px]">
-                {/* Identity is rendered, not just hover-titled: a title= tooltip
-                    is unreachable by keyboard and touch, and "which session is
-                    at 92%" is the whole point of the row. */}
-                <span className="w-40 shrink-0 min-w-0">
-                  <span className="block truncate font-mono text-text" title={s.slot}>{s.slot}</span>
-                  <span className="block truncate text-muted">
-                    {[s.surface, s.agent, s.model].filter(Boolean).join(' · ') || '—'}
-                  </span>
-                </span>
-                <div className="flex-1 h-3 bg-[var(--bg)] rounded overflow-hidden">
-                  <span
-                    className="block h-full rounded"
-                    style={{ width: `${Math.min(100, s.peak_pct)}%`, background: occColor(s.peak_pct) }}
-                  />
-                </div>
-                <span className="text-text font-mono w-10 text-right shrink-0">{s.peak_pct}%</span>
-                <span className="text-muted font-mono w-24 text-right shrink-0 max-[720px]:hidden">
-                  {fmtTokens(s.used)}/{fmtTokens(s.window)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </Section>
   )
 }
@@ -286,27 +462,46 @@ export default function TelemetryPanel() {
     return <Notice>{i18nT('pages.telemetryPanel.no_telemetry_recorded_yet_in_the_last')} {data?.window_days ?? 14} {i18nT('pages.telemetryPanel.days')}</Notice>
   }
 
-  const oh = (name: string) => other.find(o => o.name === name && o.kind === 'histogram')
-  const oc = (name: string) => other.find(o => o.name === name && o.kind === 'counter')
-  const warm = oc('kirocrew.mcp.warm_pool.acquire')
-  const warmHit = warm?.by_attr?.['result=hit'] ?? 0
-  const warmMiss = warm?.by_attr?.['result=miss'] ?? 0
-  const warmRate = pct(warmHit, warmHit + warmMiss)
-  const acquire = oh('kirocrew.mcp.backend.acquire.duration')
-  // Cold spawn = the cold side of the acquire split. This used to read
-  // kirocrew.mcp.lazy_load.duration, which only the LEGACY lazy-spawn path
-  // emits (gatewayd: "only pre-ensure_backend stubs reach here"); modern stubs
-  // pre-flight via ensure_backend, so that instrument records nothing and the
-  // card read "no data yet" permanently while real cold spawns were happening.
-  const coldSpawn = acquire?.splits?.['warm=false']
-  const skillLazy = oh('kirocrew.skill.lazy_load.duration')
-  const skillLazyN = oc('kirocrew.skill.lazy_load.count')?.total ?? 0
 
-  const readyRate = s ? pct(s.outcome.ready ?? 0, Object.values(s.outcome).reduce((a, b) => a + b, 0)) : 0
+  // Startup health as an absolute count, not a rate. A rate over this
+  // denominator cannot report a failure: the window measured 1411 startups, so
+  // one failed startup is 99.93% — which Math.round takes straight back to a
+  // perfect "100%". That is the same rounding erasure fixed on the fault-rate
+  // tile below, made worse by a denominator ~3x larger, and it saturated: a
+  // ready rate had no reachable value between "100%" and a visible problem. A
+  // count has no such ceiling — the first real failure moves 0 to 1.
+  const startupTotal = s ? Object.values(s.outcome).reduce((a, b) => a + b, 0) : 0
+  const startupFaults = s
+    ? Object.entries(s.outcome).reduce((n, [k, v]) => (k === 'ready' ? n : n + v), 0)
+    : 0
+  // Count faults the way the API computes fault_rate: everything that is not
+  // "ok". Naming the failure outcomes explicitly (error + timeout) dropped any
+  // other value — including the "unknown" that shards predating the attribute
+  // aggregate under — so the tile could show a rate over one population beside
+  // a count over another, and a fault in a third outcome read as zero faults.
+  const turnFaults = t
+    ? Object.entries(t.outcome).reduce((n, [k, v]) => (k === 'ok' ? n : n + v), 0)
+    : 0
   const faultPct = t ? Math.round(t.fault_rate * 100) : null
+  // A real failure must never render as a clean zero. One error in 499 turns is
+  // 0.2%, which Math.round takes to 0 and the old `< 2 → --ok` branch painted
+  // in the success colour: the tile read a green "0%" directly above the sub
+  // line reporting 1 fault. Sub-threshold is shown as "<1", and the success
+  // colour is reserved for a genuinely empty fault set.
+  const faultLabel =
+    faultPct == null
+      ? '—'
+      : faultPct === 0 && turnFaults > 0
+        ? `<${fmtNumber(1)}`
+        : fmtNumber(faultPct)
   const faultColor =
-    faultPct == null ? undefined : faultPct < 2 ? 'var(--ok)' : faultPct < 10 ? 'var(--warn)' : 'var(--danger)'
-  const turnFaults = t ? (t.outcome.error ?? 0) + (t.outcome.timeout ?? 0) : 0
+    faultPct == null
+      ? undefined
+      : turnFaults === 0
+        ? 'var(--ok)'
+        : faultPct < 10
+          ? 'var(--warn)'
+          : 'var(--danger)'
 
   // Startup latency distribution: only render non-empty buckets.
   const distRows: { label: string; count: number }[] = []
@@ -323,6 +518,8 @@ export default function TelemetryPanel() {
 
   return (
     <div className="overflow-y-auto flex-1 min-h-0 pb-8">
+      {data.cost && <CostSections c={data.cost} />}
+
       {/* ── Section 1: Key metrics ─────────────────────────────── */}
       <Section title={i18nT('pages.telemetryPanel.key_metrics')} icon={<Activity size={13} />}>
         <div className="grid gap-2.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))]">
@@ -334,18 +531,23 @@ export default function TelemetryPanel() {
           />
           <Tile
             label={i18nT('pages.telemetryPanel.fault_rate')}
-            value={faultPct == null ? '—' : String(faultPct)}
+            value={faultLabel}
             unit={faultPct == null ? undefined : '%'}
-            sub={t ? `${turnFaults} faults / ${t.count} turns` : 'no turns yet'}
+            sub={t
+              ? i18nT('pages.telemetryPanel.turn_faults', {
+                  count: turnFaults,
+                  n: fmtNumber(turnFaults),
+                  turns: fmtNumber(t.count),
+                })
+              : 'no turns yet'}
             color={faultColor}
           />
           <Tile label={i18nT('pages.telemetryPanel.throughput')} value={t ? String(t.count) : '—'} unit={t ? 'turns' : undefined} sub={`last ${data.window_days}d`} />
           <Tile
-            label={i18nT('pages.telemetryPanel.ready_rate')}
-            value={s ? String(readyRate) : '—'}
-            unit={s ? '%' : undefined}
-            sub={s ? `${s.overall.count} startups` : undefined}
-            color={s && readyRate >= 95 ? 'var(--ok)' : undefined}
+            label={i18nT('pages.telemetryPanel.startup_faults')}
+            value={s ? fmtNumber(startupFaults) : '—'}
+            sub={s ? i18nT('pages.telemetryPanel.startups_recorded', { count: startupTotal, n: fmtNumber(startupTotal) }) : undefined}
+            color={s ? (startupFaults === 0 ? 'var(--ok)' : 'var(--danger)') : undefined}
           />
         </div>
         {t && (t.outcome.ok ?? 0) + turnFaults > 0 && (
@@ -437,71 +639,6 @@ export default function TelemetryPanel() {
       {/* ── Section 3: Context window ──────────────────────────── */}
       {ctx && <ContextSection c={ctx} />}
 
-      {/* ── Section 4: Acceleration internals ──────────────────── */}
-      <Section title={i18nT('pages.telemetryPanel.acceleration_internals')} icon={<Zap size={13} />}>
-        <div className="grid grid-cols-2 gap-2.5 max-[720px]:grid-cols-1">
-          <Card title={i18nT('pages.telemetryPanel.warm_pool_efficiency')} meaning={i18nT('pages.telemetryPanel.sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp')}>
-            {warmHit + warmMiss > 0 ? (
-              <>
-                <div className="text-[18px] font-bold" style={{ color: warmRate >= 50 ? 'var(--ok)' : 'var(--warn)' }}>
-                  {warmRate}
-                  <span className="text-[10px] text-muted font-normal">{i18nT('pages.telemetryPanel.hit')}</span>
-                </div>
-                <div className="flex h-3.5 rounded-md overflow-hidden border border-border mt-1.5">
-                  <span style={{ flex: warmHit, background: 'var(--ok)' }} title={`hit ${warmHit}`} />
-                  <span style={{ flex: warmMiss, background: 'var(--muted)' }} title={`miss ${warmMiss}`} />
-                </div>
-                <div className="text-[10px] text-muted mt-1">{warmHit} {i18nT('pages.telemetryPanel.hit_2')} {warmMiss} {i18nT('pages.telemetryPanel.cold_spawn')}</div>
-              </>
-            ) : (
-              <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_acquisitions_yet')}</div>
-            )}
-          </Card>
-          <Card title={i18nT('pages.telemetryPanel.mcp_backend_acquire')} meaning={i18nT('pages.telemetryPanel.time_to_hand_a_pooled_mcp_backend_to_a_session')}>
-            {acquire ? (
-              <>
-                <div className="text-[18px] font-bold">
-                  {fmtMs(acquire.p50_ms)}
-                  <span className="text-[10px] text-muted font-normal"> {i18nT('pages.telemetryPanel.typ_p90')} {fmtMs(acquire.p90_ms)} {i18nT('pages.telemetryPanel.n')}{acquire.count ?? 0}</span>
-                </div>
-                <GenNote shown={acquire.count} total={acquire.total_count} />
-              </>
-            ) : (
-              <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_data_yet')}</div>
-            )}
-          </Card>
-          <Card title={i18nT('pages.telemetryPanel.mcp_cold_load_first_use')} meaning={i18nT('pages.telemetryPanel.first_use_spawn_of_an_mcp_server_backend')}>
-            {/* Gated on the ACQUIRE instrument, not on the cold split. A window
-                with zero cold spawns is a healthy pool, not absent telemetry —
-                reporting it as "no data yet" would recreate the permanently
-                empty card this change exists to fix. */}
-            {acquire ? (
-              <>
-                <div className="text-[18px] font-bold">
-                  {fmtMs(coldSpawn?.p50_ms)}
-                  <span className="text-[10px] text-muted font-normal"> · {coldSpawn?.count ?? 0} {i18nT('pages.telemetryPanel.cold_spawn')}</span>
-                </div>
-                <GenNote shown={coldSpawn?.count} total={coldSpawn?.total_count} />
-              </>
-            ) : (
-              <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_data_yet')}</div>
-            )}
-          </Card>
-          <Card title={i18nT('pages.telemetryPanel.skill_load')} meaning={i18nT('pages.telemetryPanel.on_demand_read_of_a_skill_body_from_disk')}>
-            {skillLazy ? (
-              <>
-                <div className="text-[18px] font-bold" style={{ color: 'var(--ok)' }}>
-                  {fmtMs(skillLazy.p50_ms)}
-                  <span className="text-[10px] text-muted font-normal"> · {skillLazyN} {i18nT('pages.telemetryPanel.loads')}</span>
-                </div>
-                <GenNote shown={skillLazy.count} total={skillLazy.total_count} />
-              </>
-            ) : (
-              <div className="text-muted text-[11px]">{i18nT('pages.telemetryPanel.no_data_yet')}</div>
-            )}
-          </Card>
-        </div>
-      </Section>
 
       <div className="text-muted text-[11px] mt-2">
         {i18nT('pages.telemetryPanel.window_last')} {data.window_days}{i18nT('pages.telemetryPanel.d')} {data.shard_count} {i18nT('pages.telemetryPanel.shard_s_source')} <code>{data.metrics_dir}</code> {i18nT('pages.telemetryPanel.local_only_no_egress')}

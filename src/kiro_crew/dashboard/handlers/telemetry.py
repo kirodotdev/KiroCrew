@@ -38,7 +38,8 @@ from aiohttp import web
 from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
-from kiro_crew.dashboard.handlers.usage import context_occupancy
+from kiro_crew.dashboard.handlers.usage import context_occupancy, cost_breakdown
+from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,11 @@ _TURN_METRIC = "kirocrew.turn.duration"
 # all, so an absent phase is treated as the total (see _aggregate).
 _PHASE_TOTAL = "total"
 _WINDOW_DAYS = 14
+
+# Spend is compared against the preceding period of the same length, so the
+# window is a week: "more or less than last week" is the question, and a
+# 14-day window would have no equal-length predecessor inside the retention.
+_COST_WINDOW_DAYS = 7
 
 # Attribute keys the generic ``other`` histograms are additionally split on, so
 # one side of a split can be reported on its own.
@@ -552,26 +558,43 @@ def _context_block() -> dict[str, Any] | None:
     return block if block.get("turns") else None
 
 
+def _cost_block() -> dict[str, Any] | None:
+    """Per-turn spend attribution, or None when nothing is recorded.
+
+    Best-effort for the same reason as :func:`_context_block`: an unreadable row
+    store must not take the OTEL sections down with it.
+    """
+    try:
+        block = cost_breakdown(_COST_WINDOW_DAYS)
+    except Exception:
+        logger.debug("cost breakdown aggregation failed", exc_info=True)
+        return None
+    return block if block.get("turns") else None
+
+
 async def api_telemetry_startup(request: web.Request) -> web.Response:
     """GET /api/telemetry/startup — session-startup latency + all kirocrew.* metrics.
 
     Returns ``enabled`` (telemetry main switch), ``window_days``, ``shard_count``,
     a detailed ``startup`` block (overall/cold/warm p50/p90 + outcome + daily +
     internal phase split), a ``context`` block (per-turn context-window
-    occupancy), and a generic ``other`` list surfacing every other emitted
-    kirocrew.* metric.
+    occupancy), a ``cost`` block (spend attribution), and a generic ``other``
+    list surfacing every other emitted kirocrew.* metric.
 
-    ``context`` is sourced from the per-turn token row store, NOT from the OTEL
-    shards: occupancy is a per-session ratio and slot keys are unbounded-
-    cardinality, which is exactly what must not become a metric label. It is
-    reported here anyway because "how full is the window" belongs next to the
-    other per-turn health signals rather than on a separate page. It is
-    independent of the telemetry main switch — those rows are always written —
-    so it is fetched even when OTEL export is off.
+    ``context`` and ``cost`` are sourced from the per-turn token row store, NOT
+    from the OTEL shards: occupancy is a per-session ratio and slot keys are
+    unbounded-cardinality, which is exactly what must not become a metric label.
+    They are reported here anyway because "how full is the window" and "what did
+    it cost" belong next to the other per-turn health signals rather than on a
+    separate page. Both are independent of the telemetry main switch — those rows
+    are always written — so they are fetched even when OTEL export is off.
     """
     enabled, directory = _telemetry_cfg()
     data = await asyncio.to_thread(_parse_startup_metrics)
     context = await asyncio.to_thread(_context_block)
+    cost = await asyncio.to_thread(_cost_block)
+    if cost:
+        cost = _with_conversation_titles(request, cost)
     return web.json_response(
         {
             "enabled": enabled,
@@ -581,9 +604,31 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
             "startup": data.get("startup"),
             "turn": data.get("turn"),
             "context": context,
+            "cost": cost,
             "other": data.get("other", []),
         }
     )
+
+
+def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) -> dict[str, Any]:
+    """Attach a human title to each ranked conversation, where one is known.
+
+    Titles live only on the in-memory slot, so a conversation the user has since
+    closed has none to attach. That is reported as an absent title rather than
+    filled with the raw key, leaving the frontend to decide how to render an
+    unnamed row — a ranking of opaque keys is not a ranking anyone can act on.
+    """
+    try:
+        state = request.app["state"]
+        slots = getattr(state, "slots", None) or {}
+    except (KeyError, AttributeError):
+        return cost
+    for row in cost.get("conversations") or []:
+        slot = slots.get(row.get("slot"))
+        title = getattr(slot, "display_title", "") if slot is not None else ""
+        if title and title != NEW_SESSION_TITLE:
+            row["title"] = title
+    return cost
 
 
 def _beacon_overlay_pins_value() -> bool:
