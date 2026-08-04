@@ -9,6 +9,7 @@ gating, Slack-origin rejection, CRUD, token-not-leaked).
 Async paths are driven through ``asyncio.run`` from sync test functions so the
 suite needs no asyncio pytest plugin.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -233,6 +234,7 @@ class TestTokenMint:
         assert '"$HOME/bin/kirocrew" token --ttl 20h --port 7879' in with_port
         # invalid port is rejected (kept out of the shell command unvalidated)
         from kiro_crew.instances.token_mint import TokenMintError
+
         with pytest.raises(TokenMintError):
             build_remote_token_command("", ttl="20h", port=99999)
 
@@ -838,13 +840,35 @@ class TestRegistry:
 
 
 class _FakeTunnel:
-    def __init__(self, iid, ssh_host, lp, rp, *, connect_timeout_secs=0, compression=True, probe_failure_threshold=0, on_exit=None):
+    def __init__(
+        self,
+        iid,
+        ssh_host,
+        lp,
+        rp,
+        *,
+        connect_timeout_secs=0,
+        compression=True,
+        probe_failure_threshold=0,
+        on_exit=None,
+        transport="ssh",
+        ssm_target="",
+        aws_profile="",
+        aws_region="",
+    ):
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
         self.iid = iid
         self.stopped = False
         self.start_result = True
         self._S = TunnelState
+        # Recorded so transport-selection tests can assert which transport the
+        # manager chose for this instance.
+        self.transport = transport
+        self.ssm_target = ssm_target
+        self.aws_profile = aws_profile
+        self.aws_region = aws_region
+        self.ssh_host = ssh_host
         self.status = TunnelStatus(instance_id=iid, local_port=lp, remote_port=rp)
 
     async def start(self):
@@ -897,7 +921,9 @@ class TestSshTunnelArgvCompression:
             captured["compression"] = compression
             return _FakeTunnel(*a, compression=compression, **k)
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def ok_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             return "SECRET_TOK"
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
@@ -912,9 +938,7 @@ class TestSshTunnelArgvCompression:
 
         # default (on) -> factory receives compression=True
         captured.clear()
-        mgr_on = SshTunnelManager(
-            reg, base_port=53500, mint_token=ok_mint, tunnel_factory=factory
-        )
+        mgr_on = SshTunnelManager(reg, base_port=53500, mint_token=ok_mint, tunnel_factory=factory)
         reg.add(name="CD2", ssh_host="cd-2-alias", instance_id="cd-2")
         assert (await mgr_on.connect("cd-2")).state == TunnelState.CONNECTED
         assert captured["compression"] is True
@@ -935,7 +959,9 @@ class TestSshTunnelManager:
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def ok_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             return "SECRET_TOK"
 
         return reg, SshTunnelManager(
@@ -1002,7 +1028,9 @@ class TestSshTunnelManager:
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
         from kiro_crew.instances.token_mint import TokenMintError
 
-        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def bad_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             raise TokenMintError("nope")
 
         reg, mgr = self._mgr(tmp_path, mint=bad_mint)
@@ -1201,7 +1229,9 @@ class TestHandlers:
         reg = self._reg(tmp_path)
         state = _State(reg)
         r = asyncio.run(
-            handlers.api_instances_add(_FakeReq(state, body={"name": "CD", "ssh_host": "cd-1-alias"}))
+            handlers.api_instances_add(
+                _FakeReq(state, body={"name": "CD", "ssh_host": "cd-1-alias"})
+            )
         )
         assert r.status == 201
         r = asyncio.run(handlers.api_instances_list(_FakeReq(state)))
@@ -1358,7 +1388,9 @@ class TestHandlers:
 
         _enable(tmp_path, monkeypatch)
         r = asyncio.run(
-            handlers.api_instances_status(_FakeReq(_State(self._reg(tmp_path)), match={"id": "ghost"}))
+            handlers.api_instances_status(
+                _FakeReq(_State(self._reg(tmp_path)), match={"id": "ghost"})
+            )
         )
         assert r.status == 404
 
@@ -1421,13 +1453,17 @@ class TestHandlers:
         state = _State(reg)
         # success (only allowed fields applied)
         r = asyncio.run(
-            handlers.api_instances_update(_FakeReq(state, match={"id": "cd-1"}, body={"name": "New"}))
+            handlers.api_instances_update(
+                _FakeReq(state, match={"id": "cd-1"}, body={"name": "New"})
+            )
         )
         assert r.status == 200 and _body(r)["name"] == "New"
         # unknown id -> 404
         assert (
             asyncio.run(
-                handlers.api_instances_update(_FakeReq(state, match={"id": "ghost"}, body={"name": "x"}))
+                handlers.api_instances_update(
+                    _FakeReq(state, match={"id": "ghost"}, body={"name": "x"})
+                )
             ).status
             == 404
         )
@@ -1441,7 +1477,10 @@ class TestHandlers:
             == 400
         )
         # bad JSON / non-object body -> 400
-        assert asyncio.run(handlers.api_instances_update(_FakeReq(state, match={"id": "cd-1"}))).status == 400
+        assert (
+            asyncio.run(handlers.api_instances_update(_FakeReq(state, match={"id": "cd-1"}))).status
+            == 400
+        )
         assert (
             asyncio.run(
                 handlers.api_instances_update(_FakeReq(state, match={"id": "cd-1"}, body=42))
@@ -1459,7 +1498,10 @@ class TestHandlers:
         r = asyncio.run(handlers.api_instances_remove(_FakeReq(state, match={"id": "cd-1"})))
         assert r.status == 200 and _body(r)["removed"] == "cd-1"
         assert (
-            asyncio.run(handlers.api_instances_remove(_FakeReq(state, match={"id": "ghost"}))).status == 404
+            asyncio.run(
+                handlers.api_instances_remove(_FakeReq(state, match={"id": "ghost"}))
+            ).status
+            == 404
         )
 
     def test_connect_503_404_and_502(self, tmp_path, monkeypatch):
@@ -1489,7 +1531,10 @@ class TestHandlers:
         state = _State(reg, FakeMgr())
         # KeyError -> 404
         assert (
-            asyncio.run(handlers.api_instances_connect(_FakeReq(state, match={"id": "ghost"}))).status == 404
+            asyncio.run(
+                handlers.api_instances_connect(_FakeReq(state, match={"id": "ghost"}))
+            ).status
+            == 404
         )
         # non-connected result -> 502 with the error surfaced
         r = asyncio.run(handlers.api_instances_connect(_FakeReq(state, match={"id": "cd-1"})))
@@ -1527,7 +1572,9 @@ class TestHandlers:
         # unknown id -> 404 (checked before the manager)
         assert (
             asyncio.run(
-                handlers.api_instances_restart(_FakeReq(_State(reg, object()), match={"id": "ghost"}))
+                handlers.api_instances_restart(
+                    _FakeReq(_State(reg, object()), match={"id": "ghost"})
+                )
             ).status
             == 404
         )
@@ -1541,12 +1588,16 @@ class TestHandlers:
 
         # success -> 200
         r = asyncio.run(
-            handlers.api_instances_restart(_FakeReq(_State(reg, FakeMgr(True)), match={"id": "cd-1"}))
+            handlers.api_instances_restart(
+                _FakeReq(_State(reg, FakeMgr(True)), match={"id": "cd-1"})
+            )
         )
         assert r.status == 200 and _body(r)["ok"] is True
         # failure -> 502
         r = asyncio.run(
-            handlers.api_instances_restart(_FakeReq(_State(reg, FakeMgr(False)), match={"id": "cd-1"}))
+            handlers.api_instances_restart(
+                _FakeReq(_State(reg, FakeMgr(False)), match={"id": "cd-1"})
+            )
         )
         assert r.status == 502
 
@@ -1738,10 +1789,26 @@ class TestDiagnostics:
 class _ResilTunnel:
     """Controllable fake tunnel for self-heal tests."""
 
-    def __init__(self, iid, ssh_host, lp, rp, *, connect_timeout_secs=0, compression=True, probe_failure_threshold=0, on_exit=None):
+    def __init__(
+        self,
+        iid,
+        ssh_host,
+        lp,
+        rp,
+        *,
+        connect_timeout_secs=0,
+        compression=True,
+        probe_failure_threshold=0,
+        on_exit=None,
+        transport="ssh",
+        ssm_target="",
+        aws_profile="",
+        aws_region="",
+    ):
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
         self._S = TunnelState
+        self.transport = transport
         self.status = TunnelStatus(instance_id=iid, local_port=lp, remote_port=rp)
         self.start_result = True
 
@@ -1779,7 +1846,9 @@ class TestSelfHealRefreshRestart:
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def ok_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             return "TOK"
 
         return reg, SshTunnelManager(
@@ -1863,7 +1932,10 @@ class TestSelfHealRefreshRestart:
         old = _ResilTunnel("cd-1", "cd-1-alias", 53999, 7777)
         old.status.state = TunnelState.ERROR
         mgr._tunnels["cd-1"] = old
-        ok = await mgr._rebuild(reg.get("cd-1"), "cd-1-alias", 53999)
+        inst = reg.get("cd-1")
+        # _rebuild takes resolved transport params (not a bare ssh host) so the
+        # same code path serves both the ssh and ssm transports.
+        ok = await mgr._rebuild(inst, mgr._resolve_transport(inst), 53999)
         assert ok is True
         # The old tunnel's child must be stopped (port freed) before the replace,
         # else it orphans and holds the forward port -> respawn loop.
@@ -1925,7 +1997,9 @@ class TestSelfHealRefreshRestart:
         assert "post-quantum" not in err.lower()
         assert "already in use" in err.lower()
         # Pure-noise stderr falls back to the bare exit code (no false detail).
-        t._stderr_buf = "** WARNING: connection is not using a post-quantum key exchange algorithm.\n"
+        t._stderr_buf = (
+            "** WARNING: connection is not using a post-quantum key exchange algorithm.\n"
+        )
         assert t._exit_error(255) == "ssh exited with code 255"
 
     def test_exit_error_classifies_wssh_transport_vs_auth(self):
@@ -2014,7 +2088,9 @@ class TestSelfHealRefreshRestart:
         # instance gets an invalid re-minted token.
         seen: list = []
 
-        async def capturing_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def capturing_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             seen.append(remote_port)
             return "TOK"
 
@@ -2219,7 +2295,9 @@ class TestPortMirror:
 
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": port_free)
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def ok_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             return "TOK"
 
         return SshTunnelManager(reg, mint_token=ok_mint, tunnel_factory=factory)
@@ -2305,7 +2383,9 @@ class TestLastError:
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def ok_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             return "SECRET_TOK"
 
         return reg, SshTunnelManager(
@@ -2338,7 +2418,9 @@ class TestLastError:
     async def test_retained_on_mint_failure_after_teardown(self, tmp_path):
         from kiro_crew.instances.token_mint import TokenMintError
 
-        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def bad_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             raise TokenMintError("nope")
 
         reg, mgr = self._mgr(tmp_path, mint=bad_mint)
@@ -2354,7 +2436,9 @@ class TestLastError:
 
         calls = {"n": 0}
 
-        async def flaky_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def flaky_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise TokenMintError("first attempt fails")
@@ -2372,7 +2456,9 @@ class TestLastError:
     async def test_cleared_on_explicit_disconnect(self, tmp_path):
         from kiro_crew.instances.token_mint import TokenMintError
 
-        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def bad_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             raise TokenMintError("nope")
 
         reg, mgr = self._mgr(tmp_path, mint=bad_mint)
@@ -2399,7 +2485,9 @@ class TestStatusForRetainedError:
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def ok_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             return "SECRET_TOK"
 
         return reg, SshTunnelManager(
@@ -2413,7 +2501,9 @@ class TestStatusForRetainedError:
         from kiro_crew.dashboard.handlers_instances import _status_for
         from kiro_crew.instances.token_mint import TokenMintError
 
-        async def bad_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def bad_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             raise TokenMintError("nope")
 
         reg, mgr = self._mgr(tmp_path, mint=bad_mint)
@@ -2469,7 +2559,9 @@ class TestStartupRevive:
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
-        async def ok_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def ok_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
             return "SECRET_TOK"
 
         return reg, SshTunnelManager(
@@ -2590,3 +2682,572 @@ class TestStartupRevive:
         release.set()
         for t in list(state._background_tasks):
             await asyncio.wait_for(t, timeout=2.0)
+
+
+# ── SSM connection method ──────────────────────────────────────────────────
+
+
+class TestSsmValidation:
+    """Injection-safe validation of the SSM-transport inputs."""
+
+    def test_valid_targets(self):
+        from kiro_crew.instances.validation import validate_ssm_target
+
+        assert validate_ssm_target("i-0123456789abcdef0") == "i-0123456789abcdef0"
+        assert validate_ssm_target("mi-0123456789abcdef0") == "mi-0123456789abcdef0"
+        assert validate_ssm_target("i-abcdef12") == "i-abcdef12"  # legacy 8-char id
+        assert validate_ssm_target("  i-0123456789abcdef0  ") == "i-0123456789abcdef0"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "i-",
+            "x-0123456789abcdef0",  # wrong prefix
+            "i-0123456789ABCDEF0",  # uppercase hex not used by AWS ids
+            "i-0123456789abcdef0; rm -rf /",  # shell metacharacters
+            "-i-0123456789abcdef0",  # option injection
+            "i-0123456789abcdef0 --region evil",  # argv smuggling
+            "$(whoami)",
+        ],
+    )
+    def test_rejects_bad_targets(self, bad):
+        from kiro_crew.instances.validation import SsmValidationError, validate_ssm_target
+
+        with pytest.raises(SsmValidationError):
+            validate_ssm_target(bad)
+
+    def test_profile_and_region(self):
+        from kiro_crew.instances.validation import (
+            SsmValidationError,
+            validate_aws_profile,
+            validate_aws_region,
+        )
+
+        # Empty is allowed: "use the default chain / default region".
+        assert validate_aws_profile("") == ""
+        assert validate_aws_region("") == ""
+        assert validate_aws_profile("my-profile_1.x") == "my-profile_1.x"
+        assert validate_aws_region("us-east-1") == "us-east-1"
+        assert validate_aws_region("us-gov-west-1") == "us-gov-west-1"
+        # Option injection + metacharacters + bogus region shapes are refused.
+        for bad in ("-oProxyCommand=x", "a b", "a;b", "a$(b)"):
+            with pytest.raises(SsmValidationError):
+                validate_aws_profile(bad)
+        for bad in ("useast1", "US-EAST-1", "us-east-1; rm -rf /", "-us-east-1"):
+            with pytest.raises(SsmValidationError):
+                validate_aws_region(bad)
+
+    def test_ssm_run_as_accepts_unix_usernames_and_defaults_when_empty(self):
+        """Empty means "the default user", never an empty ``sudo -u``."""
+        from kiro_crew.instances.validation import validate_ssm_run_as
+
+        assert validate_ssm_run_as("ubuntu") == "ubuntu"
+        assert validate_ssm_run_as("ec2-user") == "ec2-user"
+        assert validate_ssm_run_as("_svc_01") == "_svc_01"
+        assert validate_ssm_run_as("  ubuntu  ") == "ubuntu"
+        # Empty / None fall back to the default rather than producing `sudo -u ''`.
+        assert validate_ssm_run_as("") == "ec2-user"
+        assert validate_ssm_run_as(None) == "ec2-user"  # type: ignore[arg-type]
+
+    def test_ssm_run_as_rejects_injection_and_bad_usernames(self):
+        """It is interpolated into `sudo -u <user> -i` on the remote box."""
+        from kiro_crew.instances.validation import SsmValidationError, validate_ssm_run_as
+
+        for bad in (
+            "root; rm -rf /",
+            "user name",
+            "-oProxyCommand=x",
+            "Ubuntu",  # uppercase is not a valid Unix username here
+            "1user",  # must not start with a digit
+            "us$er",
+            "a" * 33,  # over the length cap
+        ):
+            with pytest.raises(SsmValidationError):
+                validate_ssm_run_as(bad)
+
+
+class TestSsmRegistry:
+    """Registry support for connection_method + the SSM coordinate fields."""
+
+    def _reg(self, tmp_path):
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        return InstancesRegistry(path=tmp_path / "instances.json")
+
+    def test_defaults_to_ssh_for_backcompat(self, tmp_path):
+        reg = self._reg(tmp_path)
+        inst = reg.add(name="Dev", ssh_host="dev-1")
+        assert inst.connection_method == "ssh"
+        assert inst.ssm_target == "" and inst.aws_profile == "" and inst.aws_region == ""
+
+    def test_legacy_record_without_connection_method_loads_as_ssh(self, tmp_path):
+        """A pre-SSM instances.json must keep working (defaults to ssh)."""
+        import json
+
+        path = tmp_path / "instances.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "instances": [
+                        {"id": "old", "name": "Old", "ssh_host": "old-host", "remote_port": 7777}
+                    ],
+                    "last_active_id": "old",
+                }
+            ),
+            encoding="utf-8",
+        )
+        inst = self._reg(tmp_path).get("old")
+        assert inst is not None
+        assert inst.connection_method == "ssh"
+        assert inst.ssh_host == "old-host"
+
+    def test_add_ssm_instance(self, tmp_path):
+        reg = self._reg(tmp_path)
+        inst = reg.add(
+            name="EC2 Box",
+            connection_method="ssm",
+            ssm_target="i-0123456789abcdef0",
+            aws_profile="dev",
+            aws_region="eu-west-2",
+            remote_port=7777,
+        )
+        assert inst.connection_method == "ssm"
+        assert inst.ssm_target == "i-0123456789abcdef0"
+        assert inst.aws_profile == "dev" and inst.aws_region == "eu-west-2"
+        # Round-trips through disk.
+        reloaded = self._reg(tmp_path).get(inst.id)
+        assert reloaded.connection_method == "ssm"
+        assert reloaded.ssm_target == "i-0123456789abcdef0"
+
+    def test_ssm_requires_target_and_ssh_requires_host(self, tmp_path):
+        from kiro_crew.instances.registry import InvalidInstanceError
+
+        reg = self._reg(tmp_path)
+        # ssm without a target is invalid...
+        with pytest.raises(InvalidInstanceError):
+            reg.add(name="No target", connection_method="ssm")
+        # ...and ssh without a host is still invalid.
+        with pytest.raises(InvalidInstanceError):
+            reg.add(name="No host", connection_method="ssh")
+        # An unknown method is refused rather than silently treated as ssh.
+        with pytest.raises(InvalidInstanceError):
+            reg.add(name="Bogus", connection_method="telnet", ssh_host="h")
+
+    def test_update_can_switch_method(self, tmp_path):
+        reg = self._reg(tmp_path)
+        reg.add(name="Dev", ssh_host="dev-1", instance_id="dev")
+        u = reg.update("dev", connection_method="ssm", ssm_target="i-0123456789abcdef0")
+        assert u.connection_method == "ssm"
+
+    def test_no_aws_credentials_persisted(self, tmp_path):
+        """Only the profile NAME may be stored — never a key/secret."""
+        reg = self._reg(tmp_path)
+        reg.add(
+            name="EC2",
+            connection_method="ssm",
+            ssm_target="i-0123456789abcdef0",
+            aws_profile="dev",
+            instance_id="ec2",
+        )
+        raw = (tmp_path / "instances.json").read_text(encoding="utf-8")
+        for marker in ("AKIA", "ASIA", "aws_secret_access_key", "aws_session_token"):
+            assert marker not in raw
+
+    def test_ssm_run_as_defaults_and_round_trips(self, tmp_path):
+        """A record written before ssm_run_as existed must load as the default.
+
+        Regression guard for the design-review finding: the remote user was
+        hard-coded to ``ec2-user`` inside ``cloud.ssm.run_command``, so an Ubuntu
+        AMI's mint failed. It is now a per-instance field — but an older registry
+        file has no key at all, and a file with an explicit empty string would
+        fail validation, so BOTH must resolve to the default.
+        """
+        from kiro_crew.instances.registry import Instance
+
+        assert Instance.from_dict({"id": "a", "name": "A"}).ssm_run_as == "ec2-user"
+        assert Instance.from_dict({"id": "a", "ssm_run_as": ""}).ssm_run_as == "ec2-user"
+        assert Instance.from_dict({"id": "a", "ssm_run_as": "ubuntu"}).ssm_run_as == "ubuntu"
+
+        reg = self._reg(tmp_path)
+        inst = reg.add(
+            name="Ubuntu box",
+            connection_method="ssm",
+            ssm_target="i-0123456789abcdef0",
+            ssm_run_as="ubuntu",
+            instance_id="ubu",
+        )
+        assert inst.ssm_run_as == "ubuntu"
+        assert reg.list()[0].ssm_run_as == "ubuntu"
+        assert "ssm_run_as" in inst.to_dict()
+
+    def test_ssm_run_as_is_validated_on_add(self, tmp_path):
+        """User input reaches `sudo -u` on the remote box, so it is validated."""
+        from kiro_crew.instances.registry import InvalidInstanceError
+
+        reg = self._reg(tmp_path)
+        with pytest.raises(InvalidInstanceError):
+            reg.add(
+                name="bad",
+                connection_method="ssm",
+                ssm_target="i-0123456789abcdef0",
+                ssm_run_as="root; rm -rf /",
+                instance_id="bad",
+            )
+
+    def test_error_messages_carry_no_raw_regex(self, tmp_path):
+        """Form errors must read in plain English, not as a regex.
+
+        UX-review finding: the pattern flowed verbatim into the Settings form.
+        """
+        from kiro_crew.instances.registry import InvalidInstanceError
+
+        reg = self._reg(tmp_path)
+        with pytest.raises(InvalidInstanceError) as e:
+            reg.add(
+                name="bad",
+                connection_method="ssm",
+                ssm_target="not-an-id",
+                instance_id="bad2",
+            )
+        msg = str(e.value)
+        assert "^" not in msg and "[a-f0-9]" not in msg and "{8,17}" not in msg
+        assert "hex digits" in msg
+
+
+class TestSsmTunnelArgv:
+    """The SSM port-forward argv (loopback-bound, no shell, no injected opts)."""
+
+    def test_argv_shape(self):
+        from kiro_crew.instances.ssh_tunnel_manager import _build_ssm_tunnel_argv
+
+        argv = _build_ssm_tunnel_argv(
+            "i-0123456789abcdef0", 7777, 7777, profile="dev", region="eu-west-2"
+        )
+        assert argv[:3] == ["aws", "ssm", "start-session"]
+        assert "--target" in argv and "i-0123456789abcdef0" in argv
+        assert "AWS-StartPortForwardingSession" in argv
+        assert "portNumber=7777,localPortNumber=7777" in argv
+        assert argv[argv.index("--region") + 1] == "eu-west-2"
+        assert argv[argv.index("--profile") + 1] == "dev"
+        # argv list => no shell; nothing is a single concatenated string.
+        assert all(isinstance(a, str) for a in argv)
+
+    def test_omits_empty_profile_and_region(self):
+        from kiro_crew.instances.ssh_tunnel_manager import _build_ssm_tunnel_argv
+
+        argv = _build_ssm_tunnel_argv("i-0123456789abcdef0", 7777, 7777)
+        assert "--profile" not in argv and "--region" not in argv
+
+    def test_ssh_argv_unchanged_for_ssh_instances(self):
+        """Regression guard: the SSH argv must not gain SSM flags."""
+        from kiro_crew.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv
+
+        argv = _build_ssh_tunnel_argv("dev-1", 7777, 7777)
+        assert argv[0] == "ssh" and "-N" in argv
+        assert argv[-1] == "dev-1"
+        assert "-L" in argv
+        assert argv[argv.index("-L") + 1] == "127.0.0.1:7777:127.0.0.1:7777"
+        assert "ssm" not in argv
+
+
+class TestSsmTunnelProcessGroup:
+    """Cross-platform teardown of the aws wrapper + session-manager-plugin.
+
+    The plugin grandchild is what holds the forwarded port, so a teardown that
+    signals only the ``aws`` wrapper wedges the port. GPT/design review found the
+    original code used bare ``start_new_session=True`` and raw
+    ``os.killpg``/``os.getpgid`` — both POSIX-only — so on native Windows (a
+    supported platform) the plugin orphaned. Everything must route through
+    ``platform_compat``.
+    """
+
+    def _tunnel(self, transport):
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        return _SshTunnel(
+            instance_id="i1",
+            ssh_host="dev-1",
+            local_port=7777,
+            remote_port=7777,
+            transport=transport,
+            ssm_target="i-0123456789abcdef0" if transport == "ssm" else "",
+        )
+
+    @pytest.mark.asyncio
+    async def test_ssm_spawn_passes_both_isolation_kwargs(self, monkeypatch):
+        """POSIX gets setsid; Windows gets CREATE_NEW_PROCESS_GROUP."""
+        import kiro_crew.instances.ssh_tunnel_manager as mod
+
+        seen = {}
+
+        async def fake_exec(*argv, **kw):
+            seen.update(kw)
+            raise OSError("stop here — we only care about the spawn kwargs")
+
+        monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(mod.platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(mod.platform_compat, "CREATE_NEW_PROCESS_GROUP", 0x200)
+        await self._tunnel("ssm").start()
+        assert seen["start_new_session"] is True
+        assert seen["creationflags"] == 0x200
+
+        # Same call on Windows: no setsid (it is silently ignored there), but the
+        # creation flag is what makes the tree taskkill /T-reapable.
+        seen.clear()
+        monkeypatch.setattr(mod.platform_compat, "IS_POSIX", False)
+        await self._tunnel("ssm").start()
+        assert seen["start_new_session"] is False
+        assert seen["creationflags"] == 0x200
+
+    @pytest.mark.asyncio
+    async def test_ssh_spawn_gets_no_process_group(self, monkeypatch):
+        """Regression guard: the SSH transport's spawn is unchanged."""
+        import kiro_crew.instances.ssh_tunnel_manager as mod
+
+        seen = {}
+
+        async def fake_exec(*argv, **kw):
+            seen.update(kw)
+            raise OSError("stop")
+
+        monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(mod.platform_compat, "IS_POSIX", True)
+        await self._tunnel("ssh").start()
+        assert seen["start_new_session"] is False
+        assert seen["creationflags"] == 0
+
+    def test_teardown_routes_through_the_platform_shim(self, monkeypatch):
+        """Not raw os.killpg — that leaves the plugin alive on Windows."""
+        import kiro_crew.instances.ssh_tunnel_manager as mod
+
+        calls = []
+        monkeypatch.setattr(
+            mod.platform_compat,
+            "kill_process_tree",
+            lambda pid, sig: (calls.append((pid, sig)), True)[1],
+        )
+        assert self._tunnel("ssm")._signal_group(4321, 15) is True
+        assert calls == [(4321, 15)]
+
+    def test_teardown_reports_undelivered_instead_of_raising(self, monkeypatch):
+        """The shim propagates; a failure must degrade to the single-proc kill."""
+        import kiro_crew.instances.ssh_tunnel_manager as mod
+
+        for exc in (ProcessLookupError, PermissionError, OSError, ValueError):
+
+            def boom(pid, sig, _e=exc):
+                raise _e("nope")
+
+            monkeypatch.setattr(mod.platform_compat, "kill_process_tree", boom)
+            assert self._tunnel("ssm")._signal_group(4321, 15) is False
+
+
+class TestSsmTransportSelection:
+    """The manager must drive the transport each instance is configured for."""
+
+    def _mgr(self, tmp_path, *, mint=None):
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
+
+        async def ok_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+        ):
+            return "SSH_TOKEN"
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        return reg, SshTunnelManager(
+            reg,
+            base_port=53500,
+            mint_token=mint or ok_mint,
+            tunnel_factory=_FakeTunnel,
+        )
+
+    @pytest.mark.asyncio
+    async def test_ssh_instance_uses_ssh_transport(self, tmp_path):
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="Dev", ssh_host="dev-1", instance_id="dev", remote_port=53510)
+        await mgr.connect("dev")
+        tunnel = mgr._tunnels["dev"]
+        assert tunnel.transport == "ssh"
+        assert tunnel.ssh_host == "dev-1"
+        assert mgr.get_token("dev") == "SSH_TOKEN"
+        await mgr.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_ssm_instance_uses_ssm_transport_and_ssm_mint(self, tmp_path, monkeypatch):
+        import kiro_crew.instances.ssh_tunnel_manager as mod
+
+        seen = {}
+
+        async def fake_ssm_mint(target, **kwargs):
+            seen["target"] = target
+            seen.update(kwargs)
+            return "SSM_TOKEN"
+
+        monkeypatch.setattr(mod, "mint_remote_token_ssm", fake_ssm_mint)
+        # The plugin presence check must not gate the unit test.
+        monkeypatch.setattr("kiro_crew.cloud.ssm.session_manager_plugin_installed", lambda: True)
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(
+            name="EC2",
+            connection_method="ssm",
+            ssm_target="i-0123456789abcdef0",
+            aws_profile="dev",
+            aws_region="eu-west-2",
+            instance_id="ec2",
+            remote_port=53511,
+        )
+        await mgr.connect("ec2")
+
+        tunnel = mgr._tunnels["ec2"]
+        assert tunnel.transport == "ssm"
+        assert tunnel.ssm_target == "i-0123456789abcdef0"
+        assert tunnel.aws_profile == "dev" and tunnel.aws_region == "eu-west-2"
+        # Token came from the SSM mint (NOT the ssh mint seam).
+        assert mgr.get_token("ec2") == "SSM_TOKEN"
+        assert seen["target"] == "i-0123456789abcdef0"
+        assert seen["aws_profile"] == "dev" and seen["aws_region"] == "eu-west-2"
+        await mgr.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_ssm_connect_fails_clean_without_plugin(self, tmp_path, monkeypatch):
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        monkeypatch.setattr("kiro_crew.cloud.ssm.session_manager_plugin_installed", lambda: False)
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(
+            name="EC2",
+            connection_method="ssm",
+            ssm_target="i-0123456789abcdef0",
+            instance_id="ec2",
+            remote_port=53512,
+        )
+        st = await mgr.connect("ec2")
+        assert st.state == TunnelState.ERROR
+        assert "session-manager-plugin" in st.error
+        # No tunnel was spawned for a missing prerequisite.
+        assert mgr.status("ec2") is None
+        await mgr.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_invalid_ssm_target_surfaces_error_without_spawn(self, tmp_path, monkeypatch):
+        """A registry record hand-edited to a bad target must not reach argv."""
+        import dataclasses
+
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(
+            name="EC2",
+            connection_method="ssm",
+            ssm_target="i-0123456789abcdef0",
+            instance_id="ec2",
+            remote_port=53513,
+        )
+        # Simulate a hand-edited instances.json that bypassed registry validation:
+        # the authoritative guard is the tunnel manager's pre-argv validation.
+        tampered = dataclasses.replace(reg.get("ec2"), ssm_target="-oProxyCommand=evil")
+        monkeypatch.setattr(mgr._registry, "get", lambda iid: tampered if iid == "ec2" else None)
+        st = await mgr.connect("ec2")
+        assert st.state == TunnelState.ERROR
+        assert "invalid" in st.error.lower()
+        await mgr.shutdown()
+
+
+class TestSsmDiagnostics:
+    """The SSM diagnosis ladder reports the first broken link, SSM-worded."""
+
+    @pytest.mark.asyncio
+    async def test_unreachable_node_is_first_rung(self, monkeypatch):
+        import kiro_crew.instances.diagnostics as diag
+
+        async def no_node(*a, **k):
+            return False
+
+        monkeypatch.setattr(diag, "_probe_ssm_managed", no_node)
+        res = await diag.diagnose_instance_ssm("i-0123456789abcdef0", 7777, 7777)
+        assert res.code == diag.SSM_UNREACHABLE
+        assert res.ok is False
+        # Must NOT tell an SSM user to check SSH access.
+        assert "ssh" not in res.reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_remote_down_then_not_connected_then_ok(self, monkeypatch):
+        import kiro_crew.instances.diagnostics as diag
+
+        async def node_ok(*a, **k):
+            return True
+
+        monkeypatch.setattr(diag, "_probe_ssm_managed", node_ok)
+
+        async def dash_down(*a, **k):
+            return False
+
+        monkeypatch.setattr(diag, "_probe_remote_dashboard_ssm", dash_down)
+        res = await diag.diagnose_instance_ssm("i-0123456789abcdef0", 7777, 7777)
+        assert res.code == diag.REMOTE_DOWN
+
+        async def dash_ok(*a, **k):
+            return True
+
+        monkeypatch.setattr(diag, "_probe_remote_dashboard_ssm", dash_ok)
+        # local_port == 0 -> never connected (not a broken tunnel)
+        res = await diag.diagnose_instance_ssm("i-0123456789abcdef0", 7777, 0)
+        assert res.code == diag.NOT_CONNECTED
+
+        async def fwd_ok(_lp):
+            return True
+
+        monkeypatch.setattr(diag, "_probe_local_forward", fwd_ok)
+        res = await diag.diagnose_instance_ssm("i-0123456789abcdef0", 7777, 7777)
+        assert res.code == diag.OK and res.ok is True
+
+    @pytest.mark.asyncio
+    async def test_invalid_target_short_circuits(self):
+        import kiro_crew.instances.diagnostics as diag
+
+        res = await diag.diagnose_instance_ssm("-oProxyCommand=evil", 7777, 7777)
+        assert res.code == diag.UNKNOWN
+        assert res.probes == []
+
+
+class TestSsmExitErrorClassification:
+    """SSM stderr must be classified with SSM vocabulary, not ssh's."""
+
+    def _tunnel(self, stderr):
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        t = _SshTunnel("ec2", "", 7777, 7777, transport="ssm", ssm_target="i-0123456789abcdef0")
+        t._stderr_buf = stderr
+        return t
+
+    @pytest.mark.parametrize(
+        "stderr,expected",
+        [
+            ("An error occurred (AccessDeniedException) ...", "IAM denied ssm:StartSession"),
+            ("The security token included in the request is expired", "credentials missing"),
+            ("SessionManagerPlugin is not found", "session-manager-plugin is not installed"),
+            ("TargetNotConnected: i-0 is not connected", "not a connected managed node"),
+        ],
+    )
+    def test_classification(self, stderr, expected):
+        t = self._tunnel(stderr)
+        msg = t._exit_error(255)
+        assert expected.lower() in msg.lower()
+        # Never mislabels an SSM failure as an ssh auth problem.
+        assert "ssh auth failed" not in msg
+
+    def test_probe_failure_message_shared(self):
+        t = self._tunnel("")
+        t._probe_failed = True
+        assert "health probe failed" in t._exit_error(0)
+
+    def test_ssh_classification_unchanged(self):
+        """Regression guard: the ssh classifier still owns ssh instances."""
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        t = _SshTunnel("dev", "dev-1", 7777, 7777)
+        t._stderr_buf = "Permission denied (publickey)."
+        assert "ssh auth failed" in t._exit_error(255)

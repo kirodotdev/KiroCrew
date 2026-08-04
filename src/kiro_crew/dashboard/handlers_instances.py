@@ -207,6 +207,11 @@ async def api_instances_add(request: web.Request) -> web.Response:
             remote_port=int(body.get("remote_port", 7777)),
             ttl=str(body.get("ttl", "20h")),
             remote_bin=str(body.get("remote_bin", "")),
+            connection_method=str(body.get("connection_method", "ssh")),
+            ssm_target=str(body.get("ssm_target", "")),
+            ssm_run_as=str(body.get("ssm_run_as", "")),
+            aws_profile=str(body.get("aws_profile", "")),
+            aws_region=str(body.get("aws_region", "")),
             instance_id=body.get("id"),
         )
     except (DuplicateInstanceError, InvalidInstanceError) as e:
@@ -234,7 +239,18 @@ async def api_instances_update(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "body must be an object"}, status=400)
     # Only allow editing user-facing config fields (not internal hints).
-    allowed = {"name", "ssh_host", "remote_port", "ttl", "remote_bin"}
+    allowed = {
+        "name",
+        "ssh_host",
+        "remote_port",
+        "ttl",
+        "remote_bin",
+        "connection_method",
+        "ssm_target",
+        "ssm_run_as",
+        "aws_profile",
+        "aws_region",
+    }
     changes = {k: v for k, v in body.items() if k in allowed}
     try:
         inst = reg.update(instance_id, **changes)
@@ -306,7 +322,9 @@ async def api_instances_connect(request: web.Request) -> web.Response:
                 # token would just reproduce the stuck-iframe 403, so surface a
                 # clean error instead of a token we know we can't stand behind.
                 _audit(
-                    "connect", "failure", request_id=instance_id,
+                    "connect",
+                    "failure",
+                    request_id=instance_id,
                     error="token unconfirmed and re-mint failed",
                 )
                 body["error"] = "token expired and re-mint failed"
@@ -339,7 +357,9 @@ async def api_instances_refresh_token(request: web.Request) -> web.Response:
     token = await mgr.refresh_token(instance_id)
     if not token:
         _audit(
-            "refresh_token", "failure", request_id=instance_id,
+            "refresh_token",
+            "failure",
+            request_id=instance_id,
             error="mint failed or instance not connected",
         )
         return web.json_response(

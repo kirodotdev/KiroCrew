@@ -442,6 +442,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "kiro_prerequisite.py",
         "instances/ssh_tunnel_manager.py",
         "instances/token_mint.py",
+        "instances/ssm_token_mint.py",
         "publish_sync.py",
         "cli_commands.py",
         # Slack sub-surfaces whose posted output is covered by the two Slack rows.

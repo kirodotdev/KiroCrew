@@ -722,7 +722,14 @@ export interface InstanceTunnelStatus {
   connected_at?: number
   token_ttl_remaining?: number
   diagnosis?: {
-    code: 'ok' | 'not_connected' | 'ssh_unreachable' | 'remote_down' | 'tunnel_down' | 'unknown'
+    code:
+      | 'ok'
+      | 'not_connected'
+      | 'ssh_unreachable'
+      | 'ssm_unreachable'
+      | 'remote_down'
+      | 'tunnel_down'
+      | 'unknown'
     ok: boolean
     reason: string
     probes: { name: string; ok: boolean }[]
@@ -744,16 +751,33 @@ export interface InstanceView {
   local_port: number
   ttl: string
   remote_bin: string
+  /** Transport used to reach the instance. Older records default to 'ssh'. */
+  connection_method: 'ssh' | 'ssm'
+  /** SSM-only: EC2 instance id (i-...) or SSM managed-instance id (mi-...). */
+  ssm_target: string
+  /** SSM-only: named AWS profile ('' = default credential chain). */
+  aws_profile: string
+  /** SSM-only: AWS region ('' = profile/environment default). */
+  aws_region: string
+  ssm_run_as: string
   was_connected: boolean
   status: InstanceTunnelStatus
 }
 
 export interface AddInstanceBody {
   name: string
-  ssh_host: string
+  /** Required when connection_method is 'ssh' (the default). */
+  ssh_host?: string
   remote_port?: number
   ttl?: string
   remote_bin?: string
+  /** Transport to reach the instance. Defaults to 'ssh' when omitted. */
+  connection_method?: 'ssh' | 'ssm'
+  /** Required when connection_method is 'ssm': i-... / mi-... instance id. */
+  ssm_target?: string
+  aws_profile?: string
+  aws_region?: string
+  ssm_run_as?: string
   id?: string
 }
 
