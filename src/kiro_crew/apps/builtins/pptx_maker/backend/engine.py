@@ -198,6 +198,12 @@ def _spawn(argv: list[str], *, cwd: str, timeout: int) -> EngineResult:
     # credentials file and typeset it into a slide. Strict escalates only the
     # credential-dir hiding, so the engine venv and the deck tree stay visible and
     # uv's network access is unaffected.
+    # No preview-tool PATH is injected here on purpose: these children run only the
+    # metadata snippets and the icon scripts. `pdftoppm`/`soffice` are shelled out to
+    # from `skill/sdpm/api.py` inside the engine's MCP server, which kiro-cli spawns
+    # from the rendered agent config — so the managed tool dir belongs on THAT
+    # process's PATH (`provision.mcp_tools_path`), and putting it here would only
+    # look like a fix.
     wrapped, env, cleanup = sandboxed_spawn_argv(argv, mode="strict", strip_python_env=True)
     wrapped = cgroup_scope_argv(wrapped)  # cgroup DoS ceiling
     try:
@@ -296,9 +302,28 @@ def user_subdir(sub: str) -> Path | None:
     return (base / sub) if base is not None else None
 
 
+def optional_dep_path(name: str) -> str | None:
+    """Absolute path to *name*, preferring the user's OWN install over the managed one.
+
+    ``PATH`` is consulted first so a real system LibreOffice/poppler always wins —
+    the same precedence :func:`papyrus.backend.latex.find_compiler_sync` gives a
+    user's own TeX distribution over the managed Tectonic. The app-managed
+    directory is only a fallback for a host that has neither.
+
+    Returns ``None`` when the tool is available from neither source.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    # `shutil.which` with an explicit `path=` so the managed dir is probed even
+    # though it is not on this process's PATH.
+    managed = shutil.which(name, path=str(paths.preview_tools_bin()))
+    return managed or None
+
+
 def missing_optional_deps() -> list[str]:
-    """Optional preview binaries that are not on PATH."""
-    return [name for name in OPTIONAL_DEPS if shutil.which(name) is None]
+    """Optional preview binaries available from neither ``PATH`` nor the managed dir."""
+    return [name for name in OPTIONAL_DEPS if optional_dep_path(name) is None]
 
 
 def load_lists() -> dict:

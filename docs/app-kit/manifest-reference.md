@@ -277,6 +277,16 @@ If `onEnable` fails (non-zero exit), the enable is rolled back — the app
 stays disabled and any registered resources are deregistered. `onDisable`
 failures are logged as warnings but do not block the disable operation.
 
+**Exception — `platform.installMode: "client"` apps.** For a client app the
+script is **advisory**: a failure is reported on the response as
+`onEnable.failed` but the app stays enabled, and the script is skipped entirely
+(`onEnable.skipped: "unsupported_platform"`) when the gateway's OS is not in the
+app's `platform.os`. Such an app's real payload is a desktop application the user
+installs on their own machine, so its script addresses something that may
+legitimately be absent here — rolling back would make the app's dashboard half
+impossible to enable on exactly the hosts that need it to explain how to get the
+desktop half.
+
 Install scripts run in a sandboxed environment with a minimal set of
 environment variables (PATH, HOME, SSH_AUTH_SOCK, etc.) to prevent
 leaking secrets from the gateway process.

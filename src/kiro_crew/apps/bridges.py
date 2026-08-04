@@ -732,6 +732,12 @@ def _placeholder_values(app_name: str) -> dict[str, str]:
         "{ENGINE_ROOT}": str(pptx_paths.engine_root()),
         "{ENGINE_MCP_DIR}": str(pptx_paths.engine_mcp_dir()),
         "{APP_PROMPTS}": str(app_dir(app_name) / "prompts"),
+        # The engine invokes `pdftoppm`/`soffice` BY NAME from inside its MCP
+        # server, which kiro-cli spawns from this config — not from any gateway
+        # subprocess. So the app's managed tool dir has to be on the PATH declared
+        # here or the managed install is invisible at the one moment it matters.
+        # Appended, so a real system poppler still wins the engine's own lookup.
+        "{TOOLS_PATH}": pptx_provision.mcp_tools_path(),
     }
 
 

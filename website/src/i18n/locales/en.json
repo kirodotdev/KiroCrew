@@ -1188,6 +1188,7 @@
         "no_decks_yet_hint": "Start one above and the agent will write it here.",
         "no_matching_decks": "No deck matches that search",
         "optional_deps_missing": "{{labels}} is not installed, so slide thumbnails and PDF preview are unavailable.",
+        "optional_deps_missing_with_hint": "{{labels}} is not installed, so slide thumbnails and PDF preview are unavailable. Install it with: {{command}}",
         "reset": "Reset",
         "retry_install": "Try the install again",
         "save": "Save",

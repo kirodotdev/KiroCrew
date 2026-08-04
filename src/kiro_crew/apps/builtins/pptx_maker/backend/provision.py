@@ -78,6 +78,12 @@ PLACEHOLDER_APP_PROMPTS = "{APP_PROMPTS}"
 #: with executable-not-found. :func:`resolve_uv` already computes the absolute path
 #: for this module's own subprocesses — the agent configs now get the same value.
 PLACEHOLDER_UV_BIN = "{UV_BIN}"
+#: ``PATH`` for the engine's MCP server, which is the process that actually shells
+#: out to ``pdftoppm``/``soffice`` by name (``skill/sdpm/api.py``). kiro-cli spawns
+#: that server from the rendered agent config, so this is the ONLY place the app can
+#: put its managed tool dir where those lookups will see it — an overlay applied to
+#: a gateway subprocess reaches a different child entirely.
+PLACEHOLDER_TOOLS_PATH = "{TOOLS_PATH}"
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 _AGENTS_SUBDIR = "agents"
@@ -176,6 +182,32 @@ def _resolve_uv_uncached() -> str | None:
             return candidate
 
     return shutil.which(_UV_BASENAME)
+
+
+def mcp_tools_path() -> str:
+    """``PATH`` value for the engine MCP server's ``env`` block.
+
+    The engine resolves ``pdftoppm``/``soffice`` with ``shutil.which()`` inside the
+    MCP server process that kiro-cli spawns, so the app's managed tool directory has
+    to be on THAT process's ``PATH``. Nothing the gateway does to its own
+    subprocesses affects it.
+
+    The managed directory is **appended** to the inherited ``PATH``, so a real
+    system poppler or LibreOffice still wins the engine's own lookup and the managed
+    launcher stays a fallback. Returns the inherited ``PATH`` unchanged when there
+    is no managed directory yet, so rendering never produces an empty entry (an
+    empty element in ``PATH`` means "the current directory" on POSIX, which would
+    make tool resolution depend on the server's cwd).
+    """
+    # Local import: `paths` imports the app manager, which imports the builtins
+    # package that owns this module.
+    from kiro_crew.apps.builtins.pptx_maker.backend import paths as _paths
+
+    inherited = os.environ.get("PATH", "")
+    managed = _paths.preview_tools_bin()
+    if not managed.is_dir():
+        return inherited
+    return f"{inherited}{os.pathsep}{managed}" if inherited else str(managed)
 
 
 def reset_uv_cache() -> None:
@@ -416,6 +448,7 @@ def _render_agents(install_dir: Path, log: list[str]) -> int:
                 .replace(PLACEHOLDER_ENGINE_MCP_DIR, _json_escape(str(paths.engine_mcp_dir())))
                 .replace(PLACEHOLDER_ENGINE_ROOT, _json_escape(str(engine_root)))
                 .replace(PLACEHOLDER_UV_BIN, _json_escape(uv_bin))
+                .replace(PLACEHOLDER_TOOLS_PATH, _json_escape(mcp_tools_path()))
                 .replace(
                     PLACEHOLDER_APP_PROMPTS,
                     _json_escape(str(install_dir / _PROMPTS_SUBDIR)),
@@ -572,6 +605,32 @@ def provision() -> ProvisionOutcome:
     if not _venv_ready(engine_root):
         if not _ensure_venv(engine_root, log, uv_bin):
             return ProvisionOutcome(ok=False, log="\n".join(log))
+
+    # The managed `pdftoppm` launcher, installed BEFORE the agent configs are
+    # rendered. Ordering is load-bearing: `mcp_tools_path()` only adds the managed
+    # directory to the rendered `PATH` once that directory EXISTS, so rendering
+    # first baked a `PATH` without it on every first-ever provision — the launcher
+    # then landed in a directory no agent config named, and thumbnails stayed
+    # broken until the next gateway boot re-rendered. `/deps` meanwhile probes the
+    # directory directly and reported the tool present, so the two disagreed.
+    #
+    # It is installed here rather than behind its own endpoint because it is not a
+    # system package: it runs the engine venv's own `pypdfium2`, so it only becomes
+    # installable once the venv above exists, and this is the step the user already
+    # triggers to make the app usable. Keeping it off a `/deps/install` route also
+    # preserves the app's rule that no browser request installs a system package.
+    #
+    # Best effort: without it the deck still builds, only the thumbnails are
+    # missing, so a failure is reported and does not fail provisioning.
+    try:
+        # circular import: preview_tools imports paths, which imports the app
+        # manager, which imports the builtins package that owns this module.
+        from kiro_crew.apps.builtins.pptx_maker.backend import preview_tools
+
+        tool_ok, tool_msg = preview_tools.install_pdftoppm()
+        log.append(tool_msg if tool_ok else f"pdftoppm could not be installed: {tool_msg}")
+    except Exception as exc:  # noqa: BLE001 - provisioning must report, not raise
+        log.append(f"pdftoppm setup skipped: {exc}")
 
     _stage_static(install_dir, log)
     written = _render_agents(install_dir, log)

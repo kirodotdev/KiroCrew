@@ -196,6 +196,13 @@ Expand `setup` in `app.json` from two hooks to five:
    - `onEnable` failure: the enable operation is rolled back (app stays
      disabled), error returned to the user. Rationale: if the app can't
      start properly, enabling it would leave it in a broken state.
+     **Exception — `platform.installMode: "client"` apps.** Their script
+     launches a desktop application distributed separately, which may
+     legitimately not be installed on this host, so the failure is advisory
+     (reported as `onEnable.failed`, app stays enabled) and the script is
+     skipped outright when the gateway's OS is not in the app's `platform.os`.
+     Rolling back there made the app's dashboard half unreachable on exactly
+     the hosts that needed it to explain how to get the desktop half.
    - `onDisable` failure: the disable operation still proceeds, but the
      response includes a `warnings` array with the script output. The
      gateway logs the failure at WARNING level. Rationale: we must be

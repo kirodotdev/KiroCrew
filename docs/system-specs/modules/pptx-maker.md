@@ -52,8 +52,8 @@ wrapped in `_require_enabled` (403 when the app is disabled).
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/engine` | Engine readiness (`clone`/`venv` probes) + the provisioning job's state, log tail and pinned tag |
-| POST | `/engine/provision` | Fetch the engine at the pinned digest and build its venv. 202 + poll `/engine`; idempotent |
-| GET | `/deps` | Optional preview binaries (`soffice`, `pdftoppm`) — reports only |
+| POST | `/engine/provision` | Fetch the engine at the pinned digest, build its venv, and install the managed `pdftoppm` launcher. 202 + poll `/engine`; idempotent |
+| GET | `/deps` | Optional preview binaries (`soffice`, `pdftoppm`): `present`/`missing`/`managed` plus a per-OS install `hints` command for the ones the app will not install — reports only |
 | GET | `/assets` | Icon-pack provisioning status, keyed on the engine tag |
 | POST | `/assets/provision` | Download the engine's bundled icon packs (`?force=true` to redo) |
 | GET/PUT | `/config` | The deck output directory. The PUT accepts **only** `deckRoot` (exact key equality) and writes `output_dir` into the ENGINE's own config |
@@ -78,8 +78,94 @@ pins the absence of `POST /deps/install`. That decision is unchanged, and
 `POST /engine/provision` is not a counter-example: it invokes no package manager
 and elevates nothing, writes only inside this app's own data dir, installs bytes
 verified against a sha256 pin, and is reversible by deleting one directory. It is
-the same distinction `papyrus`'s managed Tectonic install draws. `/deps` still
-only *reports* on `soffice`/`pdftoppm`, which really would be system packages.
+the same distinction `papyrus`'s managed Tectonic install draws.
+
+### Preview tools (`soffice`, `pdftoppm`)
+
+Slide thumbnails are a two-step pipeline the engine drives by shelling out **by
+name**: `soffice` converts the `.pptx` to PDF, then
+`pdftoppm -png -scale-to 1280 <pdf> <dir>/page` rasterizes it and the engine globs
+`page-<N>.png` back. Neither tool is on a stock machine, and the engine resolves
+both with `shutil.which()` **in its own subprocess** — so anything this app
+provides must land on the *child's* `PATH`, not the gateway's.
+
+The two are handled differently, because only one of them can be installed
+honestly:
+
+- **`pdftoppm` — provided, on every OS, with no download.** `pypdfium2` is already
+  a dependency of the engine's own venv, so the capability is on disk the moment
+  the engine is provisioned; what was missing was a command of that name.
+  `preview_tools.install_pdftoppm()` writes a launcher (`pdftoppm`, or
+  `pdftoppm.cmd` on Windows so `shutil.which` resolves it via `PATHEXT`) that
+  execs the engine interpreter against `pdftoppm_shim.py`. The shim implements
+  only the flags the engine passes (`-png`, `-scale-to`, `-r`, `-f`, `-l`) and
+  **refuses anything else** rather than mis-rendering, and reproduces poppler's
+  1-based, unpadded `page-<N>.png` naming exactly, since the engine's own regex
+  depends on it. It runs inside the provision step, not behind an endpoint, so no
+  browser request installs anything. The launcher names the interpreter and the
+  shim FILE directly — never a venv console script, whose shebangs point at the
+  staging dir the install swapped away and are therefore unrunnable.
+- **`soffice` — reported, never installed.** LibreOffice publishes only OS
+  installers, one per platform and none of them an unpack-and-run tree: a ~283MB
+  `.dmg` (needs `hdiutil`), a ~207MB tarball that is really **42 `.deb`
+  archives**, and a ~355MB `.msi` whose single cab is **LZX-compressed**, which
+  the Python stdlib cannot decompress at all (`msilib` was removed in 3.13). So
+  the Windows leg has no in-stdlib path even before the ~730MB unpacked footprint
+  and the per-platform digest maintenance are considered, and macOS headless
+  conversion — exactly how a gateway would invoke it — was only enabled upstream
+  after the current stable. Digests are pinnable (`.sha256` sidecars exist beside
+  each artifact, which the mirror redirect makes mandatory rather than optional),
+  so this is a cost-and-coverage decision, not an integrity one: shipping it
+  would mean a partial, platform-asymmetric installer for a tool the user can get
+  in one command. `/deps` therefore returns a per-OS `hints` command and the user
+  runs it.
+
+  `conda-forge` poppler was rejected on the same axis rather than for integrity:
+  the tree IS relocatable (`@loader_path`/`$ORIGIN`), but it is not
+  self-contained — poppler alone dies with `dyld: Library not loaded:
+  @rpath/liblcms2.2.dylib`, and closing the dependency graph took ~31 packages
+  and ~133MB unpacked, i.e. ~31 digests to maintain per platform.
+
+**Which PROCESS sees the managed dir is the whole problem.** `pdftoppm` and
+`soffice` are invoked *by name* from `skill/sdpm/api.py`, which runs inside the
+engine's **`sdpm` MCP server** — a process **kiro-cli** spawns from the rendered
+agent config, not any gateway subprocess. `engine._spawn`'s children only ever run
+the metadata snippets and the icon scripts, so a `PATH` overlay applied there
+reaches a child that never rasterizes anything. The managed dir therefore has to
+be on the `PATH` declared in `mcpServers.sdpm.env` of the four `agents/*.json`
+templates, rendered from the `{TOOLS_PATH}` placeholder by **both** renderers
+(`provision._render_agents` and the gateway's `bridges._placeholder_values`, which
+compute it identically via `provision.mcp_tools_path()`).
+
+**A user's own install always wins**, which takes two things pointing the same way:
+
+1. `engine.optional_dep_path()` probes `PATH` before the managed dir. This governs
+   what `/deps` REPORTS.
+2. `mcp_tools_path()` **appends** the managed dir to the inherited `PATH`. This
+   governs what actually EXECUTES. Prepending would let the shim shadow a real
+   poppler — silently downgrading a full tool to the shim's compatibility subset
+   while `/deps` still reported the system one. It also never emits an empty
+   `PATH` element, since an empty element means the CWD on POSIX and would make
+   tool resolution depend on where the MCP server was started.
+
+**`install_pdftoppm()` runs BEFORE `_render_agents()`** inside `provision()`, and the
+order is load-bearing: `mcp_tools_path()` only adds the managed directory once it
+exists, so rendering first baked a `PATH` without it on every first-ever provision.
+The launcher then landed in a directory no agent config named, thumbnails stayed
+broken until the next gateway boot re-rendered, and `/deps` reported the tool
+present the whole time because it probes the directory directly.
+
+`TestRenderAgents` pins all of this at the layer that matters: it asserts the
+engine's own `shutil.which()` against the RENDERED `env.PATH`, and asserts the
+install-then-render call order. Deleting the template's `PATH`, flipping the append
+order, or restoring the old install-after-render order each fail a test. Asserting
+only on a gateway-side overlay dict caught none of them.
+
+This mirrors the precedence `papyrus.latex.find_compiler_sync` gives a real TeX
+distribution over managed Tectonic, but the mechanism differs: `papyrus` never
+mutates `PATH` at all (it invokes the compiler by absolute path), so it has no
+equivalent of step 2. `/deps` derives `present` and `missing` from the single
+resolver in step 1 (so they cannot disagree) and flags which entries are `managed`.
 
 ### Error responses
 
@@ -130,6 +216,8 @@ disagree about state.
   app.json, installed.json          # platform-written
   data/vendor/sdpm/                 # the pinned engine tree + its uv venv
     .kirocrew-engine.json           #   tag/commit/digest of the verified install
+  data/vendor/preview-tools/bin/    # managed preview tools; prepended to the
+    pdftoppm (or pdftoppm.cmd)      #   engine child's PATH, never the gateway's
   agents/*.json                     # rendered from the shipped templates
   prompts/                          # staged from the package at provision time
 
@@ -749,7 +837,7 @@ state immediately.
 
 ## Tests
 
-Backend, in the repo-level `test/` tree as `test_pptx_maker_*.py` (350 tests —
+Backend, in the repo-level `test/` tree as `test_pptx_maker_*.py` (457 tests —
 `setup.cfg` sets `testpaths = test transfer`, so a test under
 `src/kiro_crew/apps/builtins/...` would never be collected by CI):
 `..._paths.py` (segment grammar, traversal, symlink escape, deck-root
@@ -763,13 +851,18 @@ byte-identical, inline raster art survives, an undecodable byte sequence does no
 raise — `PUT /config` key equality, no `/deps/install`), `..._engine.py`
 (readiness probes, marker-derived tag, snippet spawning),
 `..._provision.py` (the `uv` resolver's four legs incl. the frozen-bundle one, the
-credential-scrubbing spawn, provisioning's failure ladder), and
+credential-scrubbing spawn, provisioning's failure ladder),
 `..._engine_source.py` (digest refusal, URL-override scheme check, tar traversal /
 symlink / device / bomb refusal on BOTH the 3.11+ and the 3.10 extraction leg,
-source-marker honesty, previous-tree preservation). No real subprocess is ever
-spawned and no test reaches the network.
+source-marker honesty, previous-tree preservation), and `..._preview_tools.py`
+(the shim's poppler-compatible output naming and sizing flags against REAL PDFs,
+its refuse-rather-than-mis-render behavior, and the launcher's install —
+executable, not group-writable, idempotent, refused before the engine venv exists,
+and runnable from a data-home path containing `$`/backtick/quote/space, which
+plain double-quoting corrupted). No real subprocess is ever spawned against the
+engine and no test reaches the network.
 
-Frontend: `website/src/test/PptxMakerPage.test.tsx` (35 tests) — the pure helpers
+Frontend: `website/src/test/PptxMakerPage.test.tsx` (46 tests) — the pure helpers
 plus the page against a mocked API (layout contract, engine banner states, deck
 selection, library and settings views). `SlidePreviewSanitize.test.tsx` (21 tests)
 is deliberately a SECOND file — `PptxMakerPage.test.tsx` mocks both

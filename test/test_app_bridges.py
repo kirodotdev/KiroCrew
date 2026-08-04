@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import threading
 from pathlib import Path
@@ -2535,9 +2536,19 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
         from kiro_crew.apps.bridges import _placeholder_values
 
         values = _placeholder_values("pptx-maker")
-        assert set(values) == {"{UV_BIN}", "{ENGINE_ROOT}", "{ENGINE_MCP_DIR}", "{APP_PROMPTS}"}
+        assert set(values) == {
+            "{UV_BIN}",
+            "{ENGINE_ROOT}",
+            "{ENGINE_MCP_DIR}",
+            "{APP_PROMPTS}",
+            "{TOOLS_PATH}",
+        }
         # Under the data home this fixture set, i.e. derived here rather than read.
         assert str(app_env["home"]) in values["{ENGINE_ROOT}"]
+        # `{TOOLS_PATH}` becomes the MCP server's PATH, and an empty element there
+        # means the CWD on POSIX — tool resolution would depend on where kiro-cli
+        # happened to start the server.
+        assert "" not in values["{TOOLS_PATH}"].split(os.pathsep)
 
     def test_an_unknown_app_resolves_nothing(self, tmp_path, app_env):
         """Fail-closed: adding a placeholder to a new app's config is inert until its

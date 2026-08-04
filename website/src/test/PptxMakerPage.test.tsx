@@ -365,7 +365,13 @@ describe('PptxMakerPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockApi.engine.mockResolvedValue(READY_ENGINE)
-    mockApi.deps.mockResolvedValue({ labels: {}, present: {}, missing: [] })
+    mockApi.deps.mockResolvedValue({
+      labels: {},
+      present: {},
+      managed: {},
+      missing: [],
+      hints: {},
+    })
     mockApi.config.mockResolvedValue({ deckRoot: '/home/u/decks', default: '~/.config/sdpm/decks' })
     mockApi.decks.mockResolvedValue({ decks: [deck()] })
     mockApi.deck.mockResolvedValue({
@@ -449,10 +455,40 @@ describe('PptxMakerPage', () => {
     mockApi.deps.mockResolvedValue({
       labels: { soffice: 'LibreOffice' },
       present: { soffice: false },
+      managed: { soffice: false },
       missing: ['soffice'],
+      hints: {},
     })
     await renderPage()
     expect(await screen.findByText(/LibreOffice is not installed/)).toBeTruthy()
+  })
+
+  it('shows the install command for a dependency it cannot install itself', async () => {
+    // The warning used to name the tool and stop, leaving no next step.
+    mockApi.deps.mockResolvedValue({
+      labels: { soffice: 'LibreOffice' },
+      present: { soffice: false },
+      managed: { soffice: false },
+      missing: ['soffice'],
+      hints: { soffice: 'brew install --cask libreoffice' },
+    })
+    await renderPage()
+    // The command is interpolated into the one whole-sentence key (the i18n gate
+    // rejects a sentence split across keys), so match the substring.
+    expect(await screen.findByText(/brew install --cask libreoffice/)).toBeTruthy()
+  })
+
+  it('says nothing once a tool resolves from the app-managed install', async () => {
+    // pdftoppm ships with the app now, so warning about it would be a false alarm.
+    mockApi.deps.mockResolvedValue({
+      labels: { soffice: 'LibreOffice', pdftoppm: 'poppler' },
+      present: { soffice: true, pdftoppm: true },
+      managed: { soffice: false, pdftoppm: true },
+      missing: [],
+      hints: {},
+    })
+    await renderPage()
+    expect(screen.queryByText(/is not installed/)).toBeNull()
   })
 
   it('lists decks and opens the first one in the viewer', async () => {

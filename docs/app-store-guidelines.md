@@ -147,7 +147,7 @@ Rules:
 - `onUninstall` also receives `KEEP_DATA=1` or `KEEP_DATA=0` — if the user chose "Keep app data", the script should skip deleting user data directories.
 - Timeout limits: `onInstall`/`onUpdate` = 300s, `onUninstall` = 120s, `onEnable`/`onDisable` = configurable (default 30s).
 - `onUninstall` should only clean up resources that KiroCrew cannot manage (e.g. app binaries, shell aliases, external config directories). For `resources: "gateway"` apps, agent configs, skills, MCP entries, and cron jobs are handled by the gateway automatically — do not duplicate that cleanup in your uninstall script. For `resources: "app"` apps, the gateway does not deregister resources — your `onUninstall` script is responsible for cleaning up its own agent configs, skills, MCP entries, and cron jobs.
-- If `onEnable` fails, the enable is rolled back (app stays disabled).
+- If `onEnable` fails, the enable is rolled back (app stays disabled) — **except** for a `platform.installMode: "client"` app, whose script is advisory: the failure is reported as `onEnable.failed` and the app stays enabled. It is skipped altogether when the gateway's OS is not in the app's `platform.os`. A client app's script launches a separately-distributed desktop application, which may legitimately not be installed on this host.
 - If `onDisable` fails, the disable proceeds anyway (with warnings in the response).
 - If `onUpdate` fails, the update is rolled back to the previous version.
 

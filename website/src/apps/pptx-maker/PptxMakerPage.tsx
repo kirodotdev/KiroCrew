@@ -160,7 +160,14 @@ function EngineBanner() {
   )
 }
 
-/** Non-blocking note about optional preview binaries. */
+/**
+ * Non-blocking note about the optional preview binaries still missing.
+ *
+ * Shows the install command for each one, because the previous copy named the
+ * missing tool and stopped there — leaving the user with a warning and no next
+ * step. `pdftoppm` no longer appears here at all on a provisioned install (the
+ * app ships its own), so in practice this is the LibreOffice note.
+ */
 function DepsNote() {
   const { data } = useQuery({
     queryKey: ['pptx-maker', 'deps'],
@@ -169,10 +176,20 @@ function DepsNote() {
   })
   if (!data || data.missing.length === 0) return null
   const labels = data.missing.map((key) => data.labels[key] ?? key).join(' / ')
+  const hints = data.missing.map((key) => data.hints?.[key]).filter(Boolean) as string[]
+  // One key per phrasing rather than a sentence assembled from fragments: a
+  // translator has to control the whole word order, and the command's position
+  // differs by language.
+  const text = hints.length
+    ? i18nT('apps.pptxMaker.pptxMakerPage.optional_deps_missing_with_hint', {
+        labels,
+        command: hints.join(' / '),
+      })
+    : i18nT('apps.pptxMaker.pptxMakerPage.optional_deps_missing', { labels })
   return (
     <div className="mb-4 text-[12px] text-muted flex items-start gap-2">
       <AlertTriangle className="lucide-inline text-warn shrink-0" />
-      <span>{i18nT('apps.pptxMaker.pptxMakerPage.optional_deps_missing', { labels })}</span>
+      <span className="min-w-0">{text}</span>
     </div>
   )
 }

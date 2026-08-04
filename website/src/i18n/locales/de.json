@@ -1575,6 +1575,7 @@
         "no_decks_yet_hint": "Starte oben eine und der Agent schreibt sie hierher.",
         "no_matching_decks": "Keine Präsentation passt zu dieser Suche",
         "optional_deps_missing": "{{labels}} ist nicht installiert, daher sind Folien-Miniaturansichten und die PDF-Vorschau nicht verfügbar.",
+        "optional_deps_missing_with_hint": "{{labels}} ist nicht installiert, daher sind Folien-Miniaturansichten und die PDF-Vorschau nicht verfügbar. Installieren Sie es mit: {{command}}",
         "reset": "Zurücksetzen",
         "retry_install": "Installation erneut versuchen",
         "save": "Speichern",

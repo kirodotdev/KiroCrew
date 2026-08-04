@@ -30,7 +30,7 @@ import subprocess
 from pathlib import Path
 from unittest import mock
 
-from kiro_crew.apps.builtins.pptx_maker.backend import engine, engine_source
+from kiro_crew.apps.builtins.pptx_maker.backend import engine, engine_source, paths
 
 
 class TestEngineResult:
@@ -428,13 +428,37 @@ class TestIconScripts:
 class TestMissingOptionalDeps:
     def test_reports_only_what_is_absent_from_path(self):
         with mock.patch.object(
-            engine.shutil, "which", side_effect=lambda n: None if n == "soffice" else "/usr/bin/x"
+            engine.shutil,
+            "which",
+            side_effect=lambda n, path=None: None if n == "soffice" else "/usr/bin/x",
         ):
             assert engine.missing_optional_deps() == ["soffice"]
 
     def test_empty_when_every_optional_binary_is_present(self):
         with mock.patch.object(engine.shutil, "which", return_value="/usr/bin/x"):
             assert engine.missing_optional_deps() == []
+
+    def test_a_managed_install_counts_as_present(self):
+        """A tool only in the app's managed bin dir is NOT missing.
+
+        The engine sees it because the rendered agent config puts that dir on the MCP
+        server's PATH (``provision.mcp_tools_path``), so reporting it as missing would
+        warn about a tool that works.
+        """
+        managed = str(paths.preview_tools_bin() / "pdftoppm")
+
+        def _which(name, path=None):
+            # Absent from the process PATH; present when the managed dir is named.
+            return managed if (path and name == "pdftoppm") else None
+
+        with mock.patch.object(engine.shutil, "which", side_effect=_which):
+            assert "pdftoppm" not in engine.missing_optional_deps()
+            assert engine.optional_dep_path("pdftoppm") == managed
+
+    def test_a_real_system_binary_wins_over_the_managed_one(self):
+        """Precedence: a user's own poppler must never be shadowed by the shim."""
+        with mock.patch.object(engine.shutil, "which", return_value="/usr/bin/pdftoppm"):
+            assert engine.optional_dep_path("pdftoppm") == "/usr/bin/pdftoppm"
 
 
 class TestProvisionState:

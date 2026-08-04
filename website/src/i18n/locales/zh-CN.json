@@ -1474,6 +1474,7 @@
         "no_decks_yet_hint": "在上方开始一个，代理会把它写到这里。",
         "no_matching_decks": "没有演示文稿符合该搜索",
         "optional_deps_missing": "{{labels}} 未安装，因此幻灯片缩略图和 PDF 预览不可用。",
+        "optional_deps_missing_with_hint": "{{labels}} 未安装，因此幻灯片缩略图和 PDF 预览不可用。请使用以下命令安装：{{command}}",
         "reset": "重置",
         "retry_install": "重试安装",
         "save": "保存",

@@ -61,7 +61,14 @@ export interface EngineStatus {
 export interface DepsStatus {
   labels: Record<string, string>
   present: Record<string, boolean>
+  /** True for a tool KiroCrew installed itself, rather than one found on PATH. */
+  managed: Record<string, boolean>
   missing: string[]
+  /**
+   * Per-tool install command for the ones the app deliberately cannot install
+   * (LibreOffice — a system package). Display only; the user runs it.
+   */
+  hints: Record<string, string>
 }
 
 export interface AssetsStatus {

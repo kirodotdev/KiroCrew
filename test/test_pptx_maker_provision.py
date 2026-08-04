@@ -15,7 +15,9 @@ the sandboxed spawn, and provisioning's failure ladder.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +42,40 @@ def _json_strings(node: object) -> list[str]:
     if isinstance(node, list):
         return [s for item in node for s in _json_strings(item)]
     return []
+
+
+def _same_path(a: str | None, b: Path) -> bool:
+    """Whether a ``shutil.which`` result names the same file as *b*.
+
+    Compares identity on the filesystem rather than the two strings, because on
+    Windows ``which`` returns the extension as spelled in ``PATHEXT``
+    (upper-case ``.CMD``) while the file was created as ``.cmd`` — the same file
+    under a case-insensitive filesystem, so a string compare tests the wrong
+    thing. ``os.path.samefile`` answers the actual question on every platform;
+    ``normcase`` would not, since it is the identity function on POSIX.
+    """
+    if a is None:
+        return False
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _fake_tool(directory: Path, name: str) -> Path:
+    """Create an executable stub *name* that ``shutil.which`` can actually find.
+
+    The suffix is not cosmetic. On Windows ``shutil.which`` only resolves a bare
+    name against ``PATHEXT``, so an extensionless stub is invisible and the
+    assertion fails for a reason that has nothing to do with the ``PATH`` under
+    test. Production has the same constraint, which is why ``preview_tools``
+    installs ``pdftoppm.cmd`` there.
+    """
+    suffix = ".cmd" if sys.platform == "win32" else ""
+    tool = directory / f"{name}{suffix}"
+    tool.write_text("@echo off\r\n" if suffix else "#!/bin/sh\n")
+    tool.chmod(0o700)
+    return tool
 
 
 def _declared_placeholders() -> list[str]:
@@ -127,9 +163,7 @@ class TestEditableInstallSurvivesTheSwap:
             return True
 
         with (
-            mock.patch.object(
-                provision.engine_source, "install_engine", side_effect=_fake_install
-            ),
+            mock.patch.object(provision.engine_source, "install_engine", side_effect=_fake_install),
             mock.patch.object(provision, "_relink_editable_skill", return_value=True) as relink,
         ):
             assert provision._ensure_engine(tmp_path, [], "/opt/uv") is True
@@ -147,14 +181,13 @@ class TestEditableInstallSurvivesTheSwap:
         """Reporting success with an unimportable engine is the bug this whole finding
         is about, so the re-link's result must not be discarded — `install_engine`
         returns False when its `finalize` fails."""
+
         def _fake_install(root, log, validate=None, finalize=None):  # noqa: ANN001
             # Mirrors the real contract: a failing `finalize` fails the install.
             return bool(finalize is None or finalize(root))
 
         with (
-            mock.patch.object(
-                provision.engine_source, "install_engine", side_effect=_fake_install
-            ),
+            mock.patch.object(provision.engine_source, "install_engine", side_effect=_fake_install),
             mock.patch.object(provision, "_relink_editable_skill", return_value=False),
         ):
             assert provision._ensure_engine(tmp_path, [], "/opt/uv") is False
@@ -350,9 +383,7 @@ class TestRunSandboxing:
         registered: list[str] = []
         log: list[str] = []
         with (
-            mock.patch(
-                "kiro_crew.apps.manager.is_app_enabled", return_value=False
-            ),
+            mock.patch("kiro_crew.apps.manager.is_app_enabled", return_value=False),
             mock.patch(
                 "kiro_crew.apps.bridges.register_app",
                 side_effect=lambda name: registered.append(name),
@@ -504,6 +535,117 @@ class TestRenderAgents:
             assert leftover == [], f"{rendered.name} kept {leftover}"
             # An unsubstituted config is also a config kiro-cli cannot parse.
             json.loads(text)
+
+    def test_the_mcp_server_path_finds_the_managed_tool(self, tmp_path: Path):
+        """The rendered MCP ``env.PATH`` is the ONLY place a managed tool is visible.
+
+        The engine shells out to ``pdftoppm``/``soffice`` by name from inside the MCP
+        server that kiro-cli spawns from this config — not from any gateway
+        subprocess. So this asserts the engine's own resolution (``shutil.which``
+        against the rendered value), which is what an overlay applied to the wrong
+        child silently fails to satisfy.
+        """
+        managed = tmp_path / "preview-tools" / "bin"
+        managed.mkdir(parents=True)
+        tool = _fake_tool(managed, "pdftoppm")
+
+        install_dir = tmp_path / "install"
+        with mock.patch.object(provision.paths, "preview_tools_bin", return_value=managed):
+            assert provision._render_agents(install_dir, log=[]) > 0
+
+        for rendered in sorted((install_dir / "agents").glob("*.json")):
+            env = json.loads(rendered.read_text(encoding="utf-8"))["mcpServers"]["sdpm"]["env"]
+            assert _same_path(shutil.which("pdftoppm", path=env["PATH"]), tool), rendered.name
+
+    def test_a_system_tool_still_wins_the_engine_lookup(self, tmp_path: Path):
+        """Appended, not prepended: the managed launcher is a fallback, not an override."""
+        system_dir = tmp_path / "usr-bin"
+        managed = tmp_path / "preview-tools" / "bin"
+        system_dir.mkdir(parents=True)
+        managed.mkdir(parents=True)
+        system_tool = _fake_tool(system_dir, "pdftoppm")
+        _fake_tool(managed, "pdftoppm")
+
+        install_dir = tmp_path / "install"
+        with (
+            mock.patch.object(provision.paths, "preview_tools_bin", return_value=managed),
+            mock.patch.dict(os.environ, {"PATH": str(system_dir)}, clear=False),
+        ):
+            assert provision._render_agents(install_dir, log=[]) > 0
+
+        rendered = sorted((install_dir / "agents").glob("*.json"))[0]
+        env = json.loads(rendered.read_text(encoding="utf-8"))["mcpServers"]["sdpm"]["env"]
+        assert _same_path(shutil.which("pdftoppm", path=env["PATH"]), system_tool)
+
+    def test_the_tool_is_installed_before_its_path_is_baked_in(self, tmp_path: Path):
+        """Ordering inside ``provision()``, and it is load-bearing.
+
+        ``mcp_tools_path()`` only adds the managed directory once it EXISTS, so
+        rendering before ``install_pdftoppm()`` baked a ``PATH`` without it on every
+        first-ever provision: the launcher landed in a directory no agent config
+        named, thumbnails stayed broken until the next gateway boot re-rendered, and
+        ``/deps`` — which probes the directory directly — reported the tool present
+        the whole time.
+
+        Asserted as a call ORDER rather than through a full provision, because the
+        rest of ``provision()`` fetches an engine over the network.
+        """
+        calls: list[str] = []
+        with (
+            mock.patch.object(
+                provision, "_render_agents", side_effect=lambda *a, **k: calls.append("render") or 1
+            ),
+            mock.patch.object(provision, "_stage_static", side_effect=lambda *a, **k: None),
+            mock.patch.object(provision, "resolve_uv", return_value="/opt/uv"),
+            mock.patch.object(provision, "_ensure_engine", return_value=True),
+            mock.patch.object(provision, "_venv_ready", return_value=True),
+            mock.patch.object(provision, "_seed_deck_root", side_effect=lambda *a, **k: None),
+            mock.patch.object(provision, "_current_tag", return_value="v0"),
+            mock.patch(
+                "kiro_crew.apps.builtins.pptx_maker.backend.preview_tools.install_pdftoppm",
+                side_effect=lambda: (calls.append("install_tool"), (True, "ready"))[1],
+            ),
+        ):
+            outcome = provision.provision()
+
+        assert outcome.ok, outcome.log
+        assert calls == ["install_tool", "render"], (
+            "install_pdftoppm must run BEFORE _render_agents so the managed dir "
+            f"exists when its PATH is rendered; got {calls}"
+        )
+
+    def test_a_windows_shaped_path_survives_json_rendering(self, tmp_path: Path):
+        """A Windows ``PATH`` is full of backslashes, and ``\\U``/``\\A`` are invalid
+        JSON escapes — an unescaped substitution makes every rendered config
+        unparseable, i.e. no agent configs at all on Windows."""
+        win_path = r"C:\Users\me\AppData\Local\Programs\Python;C:\Windows\system32"
+        managed = tmp_path / "preview-tools" / "bin"
+        managed.mkdir(parents=True)
+
+        install_dir = tmp_path / "install"
+        with (
+            mock.patch.object(provision.paths, "preview_tools_bin", return_value=managed),
+            mock.patch.dict(os.environ, {"PATH": win_path}, clear=False),
+        ):
+            assert provision._render_agents(install_dir, log=[]) > 0
+
+        for rendered in sorted((install_dir / "agents").glob("*.json")):
+            # json.loads is the assertion: it raises on a bad escape.
+            env = json.loads(rendered.read_text(encoding="utf-8"))["mcpServers"]["sdpm"]["env"]
+            assert win_path in env["PATH"]
+
+    def test_the_rendered_path_never_contains_an_empty_element(self, tmp_path: Path):
+        """An empty ``PATH`` element means the CWD on POSIX — tool resolution would
+        then depend on wherever the MCP server happened to be started."""
+        install_dir = tmp_path / "install"
+        with mock.patch.object(
+            provision.paths, "preview_tools_bin", return_value=tmp_path / "absent"
+        ):
+            assert provision._render_agents(install_dir, log=[]) > 0
+
+        for rendered in sorted((install_dir / "agents").glob("*.json")):
+            env = json.loads(rendered.read_text(encoding="utf-8"))["mcpServers"]["sdpm"]["env"]
+            assert "" not in env["PATH"].split(os.pathsep)
 
     def test_the_prompts_placeholder_points_into_the_install_dir(self, tmp_path: Path):
         install_dir = tmp_path / "install"

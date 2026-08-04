@@ -76,6 +76,28 @@ def engine_python() -> Path:
     return engine_root() / "mcp-local" / ".venv" / "bin" / "python"
 
 
+def preview_tools_root() -> Path:
+    """Root of the app-managed preview-tool installs (``soffice``/``pdftoppm``).
+
+    A sibling of the engine checkout under ``vendor/`` rather than inside it,
+    because the engine tree is REPLACED wholesale on every version bump: a tool
+    installed inside it would be discarded on each update and re-downloaded.
+    """
+    return app_root() / "vendor" / "preview-tools"
+
+
+def preview_tools_bin() -> Path:
+    """The single directory prepended to ``PATH`` for engine spawns.
+
+    The engine resolves both binaries with ``shutil.which()``, so a managed
+    install is only reachable if it is on the child's ``PATH``. Every managed
+    tool therefore exposes its executable here — as the real file or a link to
+    it inside its own unpacked tree — so exactly one directory has to be
+    injected no matter how many tools are managed.
+    """
+    return preview_tools_root() / "bin"
+
+
 def engine_mcp_dir() -> Path:
     """The engine's MCP project dir — the cwd every engine call uses."""
     return engine_root() / "mcp-local"

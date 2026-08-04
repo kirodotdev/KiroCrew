@@ -5,7 +5,7 @@
     "sdpm": {
       "command": "{UV_BIN}",
       "args": ["run", "--directory", "{ENGINE_MCP_DIR}", "python", "server_acp.py"],
-      "env": { "PYTHONPATH": "" },
+      "env": { "PYTHONPATH": "", "PATH": "{TOOLS_PATH}" },
       "timeout": 120000
     }
   },

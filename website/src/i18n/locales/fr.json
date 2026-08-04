@@ -1600,6 +1600,7 @@
         "no_decks_yet_hint": "Lancez-en une ci-dessus et l’agent l’écrira ici.",
         "no_matching_decks": "Aucune présentation ne correspond à cette recherche",
         "optional_deps_missing": "{{labels}} n’est pas installé : les vignettes de diapositive et l’aperçu PDF sont donc indisponibles.",
+        "optional_deps_missing_with_hint": "{{labels}} n’est pas installé : les vignettes de diapositive et l’aperçu PDF sont donc indisponibles. Installez-le avec : {{command}}",
         "reset": "Réinitialiser",
         "retry_install": "Réessayer l’installation",
         "save": "Enregistrer",

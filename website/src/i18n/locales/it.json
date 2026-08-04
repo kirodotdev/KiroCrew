@@ -1518,6 +1518,7 @@
         "no_decks_yet_hint": "Avviane una qui sopra e l’agente la scriverà qui.",
         "no_matching_decks": "Nessuna presentazione corrisponde a questa ricerca",
         "optional_deps_missing": "{{labels}} non è installato, quindi le miniature delle diapositive e l’anteprima PDF non sono disponibili.",
+        "optional_deps_missing_with_hint": "{{labels}} non è installato, quindi le miniature delle diapositive e l’anteprima PDF non sono disponibili. Installalo con: {{command}}",
         "reset": "Reimposta",
         "retry_install": "Riprova l’installazione",
         "save": "Salva",

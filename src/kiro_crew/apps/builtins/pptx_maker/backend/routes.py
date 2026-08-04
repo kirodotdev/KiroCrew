@@ -72,6 +72,7 @@ from kiro_crew.apps.builtins.pptx_maker.backend import (
     engine,
     library,
     paths,
+    preview_tools,
     provision,
 )
 from kiro_crew.apps.manager import is_app_enabled
@@ -635,25 +636,53 @@ async def _handle_engine_provision(request: web.Request) -> web.Response:
 
 
 def _deps_status() -> dict:
-    """Optional preview binaries, and the command that installs them.
+    """Optional preview binaries: whether each resolves, and from where.
 
-    BLOCKING (``shutil.which`` over PATH) — called through ``off_loop``.
+    ``present`` and ``missing`` are derived from the SAME resolver
+    (:func:`engine.optional_dep_path`) so they can never disagree. Resolving via
+    a bare ``shutil.which`` here while ``missing_optional_deps`` also consults
+    the app-managed directory would report a tool as absent and not-missing at
+    once.
+
+    ``managed`` distinguishes the app's own install from the user's system one,
+    which is what lets the UI say "installed by KiroCrew" rather than implying
+    the host changed.
+
+    BLOCKING (filesystem probes over ``PATH``) — called through ``off_loop``.
     """
-    missing = engine.missing_optional_deps()
+    resolved = {name: engine.optional_dep_path(name) for name in engine.OPTIONAL_DEPS}
+    managed_bin = str(paths.preview_tools_bin())
+    missing = [name for name, path in resolved.items() if path is None]
     return {
         "labels": dict(engine.OPTIONAL_DEPS),
-        "present": {name: shutil.which(name) is not None for name in engine.OPTIONAL_DEPS},
+        "present": {name: path is not None for name, path in resolved.items()},
+        "managed": {
+            name: bool(path and path.startswith(managed_bin)) for name, path in resolved.items()
+        },
         "missing": missing,
+        # The one missing tool the user must install themselves, with the command
+        # for THIS platform. Data for the UI to show — never run from here.
+        "hints": (
+            {preview_tools.SOFFICE: preview_tools.soffice_hint()}
+            if preview_tools.SOFFICE in missing
+            else {}
+        ),
     }
 
 
 async def _handle_deps(request: web.Request) -> web.Response:
     """GET /deps — optional-binary status.
 
-    Reports only; installing a system package is deliberately NOT an endpoint.
+    Reports only; installing a system PACKAGE is deliberately NOT an endpoint.
     The upstream app shelled out to ``brew``/``apt-get`` from a browser request,
     which is a privileged host mutation driven by an unauthenticated-to-the-OS
     caller — the dashboard shows the command and the user runs it.
+
+    ``pdftoppm`` is no longer in that category: it is provided by an app-private
+    launcher over the engine venv's own ``pypdfium2`` (see :mod:`.preview_tools`),
+    installed as part of ``POST /engine/provision``. Nothing is elevated and
+    nothing is written outside this app's data dir, so there is still no
+    dependency-INSTALL endpoint here.
     """
     return web.json_response(await off_loop(_deps_status))
 
@@ -1166,6 +1195,7 @@ def _redact_metadata(entry: dict) -> dict:
     (`theme`, `layouts`), and to the KEY-BEARING values only: keys themselves are
     fixed schema names, never agent text.
     """
+
     def _clean(value: object) -> object:
         if isinstance(value, str):
             return redact(value)
@@ -1185,9 +1215,7 @@ def _redacted_template_list() -> list[dict]:
     `name` and `description` arrive from the agent-reachable import route. Nothing
     here was scanned before, so this route served them verbatim.
     """
-    return [
-        _redact_metadata(t) for t in library.list_templates() if isinstance(t, dict)
-    ]
+    return [_redact_metadata(t) for t in library.list_templates() if isinstance(t, dict)]
 
 
 def _redacted_style_list() -> list[dict]:

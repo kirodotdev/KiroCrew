@@ -17,6 +17,7 @@ import os
 import posixpath
 import re
 import shutil
+import sys
 import time
 import urllib.parse
 from pathlib import Path
@@ -66,7 +67,7 @@ from kiro_crew.apps.manager import (
     uninstall_app,
     update_app,
 )
-from kiro_crew.apps.manifest import Dependencies
+from kiro_crew.apps.manifest import Dependencies, PlatformConfig
 from kiro_crew.apps.registry import (
     _git_url_host,
     get_registry_app_by_repo,
@@ -1001,13 +1002,57 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     return web.json_response(resp)
 
 
+def _client_install_manifest(manifest: dict[str, Any]) -> PlatformConfig | None:
+    """The app's :class:`PlatformConfig` when it is a CLIENT-install app, else ``None``.
+
+    A ``client`` app's real payload is a desktop application the user installs on
+    their OWN machine; what the gateway holds is metadata plus a dashboard page.
+    So its lifecycle scripts address something that legitimately may not be on
+    this host, which is what makes them advisory rather than a health check —
+    see :func:`handle_enable_app`.
+
+    Never raises. ``PlatformConfig.from_dict`` iterates ``os`` and ``arch``
+    directly, so a hand-edited ``app.json`` carrying ``"os": null`` raises
+    ``TypeError`` there; this is the first place the enable path parses
+    ``platform`` at all, so an unguarded call would turn a malformed manifest into
+    a 500 on enable. A manifest this app cannot read is treated as "not a client
+    app", which keeps the strict rollback behavior rather than silently widening
+    the advisory path.
+    """
+    platform_raw = manifest.get("platform")
+    if not isinstance(platform_raw, dict):
+        return None
+    try:
+        platform_cfg = PlatformConfig.from_dict(platform_raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning("Ignoring an unreadable platform block on app enable: %s", exc)
+        return None
+    return platform_cfg if platform_cfg.installMode == "client" else None
+
+
 async def handle_enable_app(request: web.Request) -> web.Response:
     """POST /api/apps/{name}/enable — enable an app.
 
     Behavior depends on ``resources`` field:
     - ``gateway``: register_app() + start_backend() + run onEnable
     - ``app``: run onEnable only
-    If onEnable fails, the enable is rolled back (app stays disabled).
+
+    If onEnable fails, the enable is rolled back (app stays disabled) — EXCEPT
+    for a ``platform.installMode: "client"`` app, whose script is advisory. For a
+    server-install app the script is part of bringing the app up, so a failure
+    means the app would be enabled but broken and rolling back is right. A client
+    app's script instead launches a desktop application distributed SEPARATELY
+    (``crew-companion``'s ``open "$HOME/Applications/Crew Companion.app"``), so on
+    a host where the user has not installed that application yet the script can
+    only fail — and rolling back made the dashboard half of the app impossible to
+    enable at all, reporting "onEnable script failed — app remains disabled" with
+    no way forward. Enabling is also the step that reveals the app's own page,
+    which is where a user learns how to get the desktop half.
+
+    The script is skipped outright when the gateway's OS is not in the app's
+    ``platform.os``: nothing else on the enable path consults that field, so a
+    macOS-only app enabled on Linux/Windows would otherwise run a command that
+    cannot succeed there.
     """
     name = request.match_info["name"]
     info = get_app(name)
@@ -1083,12 +1128,25 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             if dep_info:
                 resp["dependencies"] = dep_info
 
-        # Run onEnable script
-        if on_enable:
+        # Run onEnable script. A client-install app's script is advisory: it
+        # addresses a separately-distributed desktop application, so it neither
+        # gates nor rolls back the enable (see this handler's docstring).
+        client_platform = _client_install_manifest(manifest)
+        if (
+            on_enable
+            and client_platform is not None
+            and not client_platform.supports_platform(sys.platform)
+        ):
+            resp["onEnable"] = {
+                "output": "",
+                "failed": False,
+                "skipped": "unsupported_platform",
+            }
+        elif on_enable:
             script_output = await _run_lifecycle_script(
                 name, on_enable, timeout=enable_timeout, action="on_enable"
             )
-            if script_output.get("failed"):
+            if script_output.get("failed") and client_platform is None:
                 # Rollback: disable the app again
                 if resources == "gateway":
                     await asyncio.get_running_loop().run_in_executor(
@@ -1112,6 +1170,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                         "name": name,
                         "error": "onEnable script failed — app remains disabled",
                         "script_output": cleaned,
+                        "code": "on_enable_failed",
                     },
                     status=400,
                 )
