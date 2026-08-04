@@ -39,7 +39,7 @@ dev = [
     "pytest-split==0.9.0",
     "flake8==7.1.0",
     "mypy==1.14.1",
-    "black==24.10.0",
+    "black==26.3.1",
     "isort==6.0.0",
     # Not a dev TOOL. kiro_crew.config.validation imports jsonschema behind a
     # try/except and returns the config unvalidated when the import fails, so a
