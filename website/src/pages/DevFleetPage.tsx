@@ -376,7 +376,7 @@ interface Worktree {
   own_commits?: number; real_dirty?: boolean; is_live?: boolean; legacy?: boolean
   path?: string
 }
-interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; pods_available?: boolean; pods_unavailable_reason?: string | null }
+interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; phase: number; phaseAt?: number; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
 // Provision run state: the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
@@ -1002,6 +1002,13 @@ export default function DevFleetPage() {
   // a dashboard talking to an older dev-fleet backend keeps its pod controls.
   const podsAvailable = fleet?.pods_available !== false
   const podsReason = fleet?.pods_unavailable_reason || null
+  // Why Restart / Make live are unavailable, when they are. Rendered rather
+  // than swallowed: hiding these controls with no explanation is what left a
+  // macOS user with a successful Pull+Build and no way to apply it. Server-
+  // provided prose, same as podsReason.
+  const gatewayReason = fleet?.gateway_service_active === false
+    ? (fleet?.gateway_service_reason || null)
+    : null
   const isDiscoveryError = !fleetError && !!fleet?.error
   const ql = q.trim().toLowerCase()
   const matchesRow = (w: Worktree) => !ql || (w.name + ' ' + (w.branch || '')).toLowerCase().includes(ql)
@@ -1373,6 +1380,17 @@ export default function DevFleetPage() {
                   <span className="text-text-strong">{i18nT('pages.devFleetPage.pods_are_unavailable_on_this_host')}</span>{' '}
                   {podsReason ? <><span className="text-muted">{podsReason}</span>{' '}</> : null}
                   <span className="text-muted">{i18nT('pages.devFleetPage.pod_and_make_live_actions_are_hidden_everything')}</span>
+                </div>
+              </div>
+            )}
+            {gatewayReason && (
+              <div
+                role="note"
+                className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5 mt-3 max-w-[860px] text-[12.5px] leading-relaxed"
+              >
+                <Info size={14} className="lucide-inline shrink-0 mt-0.5 text-muted" />
+                <div className="min-w-0">
+                  <span className="text-muted">{gatewayReason}</span>
                 </div>
               </div>
             )}

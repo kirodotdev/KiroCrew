@@ -1842,10 +1842,21 @@ def _mk_make_live_wt(tmp_path, *, venv: bool = False, dist: bool = False,
     return wt
 
 
-def _stub_make_live(monkeypatch, wt, *, live=None, in_pod=False, unit_status="ok"):
+def _stub_make_live(monkeypatch, wt, *, live=None, in_pod=False, unit_status="ok",
+                    platform="linux"):
     """Wire the make-live seams: the path resolves to *wt*, pod/live/unit state
     fixed. ``unit_status`` stubs _live_user_unit_status so tests never depend on
-    the host's real systemd --user state."""
+    the host's real systemd --user state.
+
+    ``platform`` pins the service backend (default systemd). Without it these
+    assertions silently follow the HOST's platform: the same test would check a
+    systemd drop-in on Linux and a launchd agent on macOS. Pinning keeps every
+    systemd expectation deterministic everywhere, and the launchd twins pin
+    ``"darwin"`` explicitly.
+    """
+    monkeypatch.setattr(mod, "sys", MagicMock(platform=platform))
+    tool = "/usr/bin/systemctl" if platform == "linux" else "/bin/launchctl"
+    monkeypatch.setattr(mod, "shutil", MagicMock(which=MagicMock(return_value=tool)))
     monkeypatch.setattr(
         mod, "_discover_worktrees",
         AsyncMock(return_value=[{"path": str(wt), "branch": "feat", "is_main": False}]),
@@ -2212,10 +2223,67 @@ async def test_make_live_no_systemd(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_live_user_unit_status_no_systemd(monkeypatch):
-    """Non-Linux -> no_systemd, without spawning systemctl."""
-    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+async def test_live_user_unit_status_no_manager(monkeypatch):
+    """A platform with neither systemd nor launchd -> no_systemd, no spawn.
+
+    Was previously asserted with ``platform="darwin"``; darwin is now a
+    SUPPORTED backend, so the "no manager at all" case has to be expressed with
+    a platform that really has none.
+    """
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="win32"))
     assert await mod._live_user_unit_status() == "no_systemd"
+
+
+@pytest.mark.asyncio
+async def test_live_user_unit_status_darwin_no_agent(monkeypatch):
+    """macOS with launchctl but no such agent loaded -> no_agent."""
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
+    )
+    monkeypatch.setattr(mod, "_run_cmd", AsyncMock(return_value=(1, "", "no such")))
+    assert await mod._live_user_unit_status() == "no_agent"
+
+
+@pytest.mark.asyncio
+async def test_live_user_unit_status_darwin_agent_not_indirected(monkeypatch, tmp_path):
+    """Agent loaded, but its plist does not go through the live-gateway symlink.
+
+    Swapping the symlink would then be a silent no-op, so make-live must refuse
+    with an actionable code instead of reporting a cutover that did nothing.
+    """
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
+    )
+    monkeypatch.setattr(mod, "_run_cmd", AsyncMock(return_value=(0, "  pid = 7\n", "")))
+    plist = tmp_path / "agent.plist"
+    plist.write_text("<string>/usr/local/bin/kirocrew</string>")
+    monkeypatch.setattr(
+        mod.gateway_service.LaunchdBackend, "plist_path", staticmethod(lambda: plist)
+    )
+    assert await mod._live_user_unit_status() == "agent_not_indirected"
+
+
+@pytest.mark.asyncio
+async def test_live_user_unit_status_darwin_ok(monkeypatch, tmp_path):
+    """Agent loaded AND indirected through the live-gateway symlink -> ok."""
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
+    )
+    monkeypatch.setattr(mod, "_run_cmd", AsyncMock(return_value=(0, "  pid = 7\n", "")))
+    link = tmp_path / "live-gateway"
+    link.write_text("#!/bin/sh\nexec '/usr/local/bin/kirocrew' \"$@\"\n")
+    plist = tmp_path / "agent.plist"
+    plist.write_text(f"<string>{link}</string>")
+    monkeypatch.setattr(
+        mod.gateway_service.LaunchdBackend, "plist_path", staticmethod(lambda: plist)
+    )
+    monkeypatch.setattr(
+        mod.gateway_service.LaunchdBackend, "live_program", staticmethod(lambda: link)
+    )
+    assert await mod._live_user_unit_status() == "ok"
 
 
 @pytest.mark.asyncio
@@ -2322,6 +2390,225 @@ async def test_make_live_unsafe_path_returns_code(monkeypatch, tmp_path):
     res = await mod._make_live(str(wt), dry_run=True)
     assert res["ok"] is False and res["code"] == "unsafe_path"
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_restart_gateway_darwin_kickstarts_the_agent(monkeypatch):
+    """macOS restart is ONE `launchctl kickstart -k`, performed by launchd.
+
+    It has to be a single call: `unload` + `load` cannot be issued from inside
+    the gateway, because the unload SIGTERMs the caller before the load can run.
+    That is precisely why Restart was unimplementable on macOS before this.
+    """
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
+    )
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_ACTIVE", None, raising=False)
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_CHECK_AT", 0.0, raising=False)
+    calls: list = []
+
+    async def fake_run_cmd(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["launchctl", "print"]:
+            return (0, "  state = running\n  pid = 4242\n", "")
+        return (0, "", "")
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    res = await mod._restart_gateway()
+    assert res["ok"] is True
+    # The PID stands in for systemd's monotonic start stamp: it changes on every
+    # respawn, which is the edge the frontend handshake waits for.
+    assert res["start_id"] == "4242"
+    kick = [c for c in calls if c[:2] == ["launchctl", "kickstart"]]
+    assert len(kick) == 1, f"expected exactly one kickstart, got {calls}"
+    assert kick[0][2] == "-k" and kick[0][3].startswith("gui/")
+    assert not any(c[:2] == ["launchctl", "unload"] for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_restart_gateway_darwin_not_active(monkeypatch):
+    """No loaded agent -> refuse, without attempting a kickstart."""
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
+    )
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_ACTIVE", None, raising=False)
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_CHECK_AT", 0.0, raising=False)
+    calls: list = []
+
+    async def fake_run_cmd(cmd, **kw):
+        calls.append(cmd)
+        return (1, "", "no such service")
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    res = await mod._restart_gateway()
+    assert res["ok"] is False
+    assert not any(c[:2] == ["launchctl", "kickstart"] for c in calls)
+
+
+# The launchd cutover tests create a REAL symlink, because the mechanism being
+# verified IS the atomic symlink swap. The code under test is macOS-only and
+# Windows has no unprivileged symlink creation, so they are POSIX-gated. They
+# still run on Linux CI and on the macOS job (whose glob now includes this file),
+# so gating costs no coverage.
+_posix_symlink_only = pytest.mark.skipif(
+    os.name != "posix",
+    reason="creates a real symlink to verify the launchd cutover; macOS-only code",
+)
+
+
+@pytest.mark.asyncio
+@_posix_symlink_only
+async def test_make_live_darwin_rewrites_launcher_and_kickstarts(monkeypatch, tmp_path):
+    """A macOS cutover rewrites the live-gateway launcher, then kickstarts.
+
+    The plist is deliberately NOT rewritten: launchd only re-reads it on
+    bootout+bootstrap, and bootout would kill this process before the bootstrap
+    could run. Verified against real launchd — swapping the link and
+    kickstarting runs the new target.
+    """
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    link = tmp_path / "live-gateway"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.write_text("#!/bin/sh\nexec '/previous/kirocrew' \"$@\"\n")
+    _stub_make_live(monkeypatch, wt, platform="darwin")
+    monkeypatch.setattr(
+        mod.gateway_service.LaunchdBackend, "live_program", staticmethod(lambda: link)
+    )
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+    calls: list = []
+
+    async def fake_run_cmd(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["launchctl", "print"]:
+            return (0, "  pid = 99\n", "")
+        return (0, "", "")
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is True and res.get("cutover") is True
+    written = link.read_text()
+    real = wt.resolve()  # _find_worktree_by_path resolves; /var -> /private/var
+    assert f"exec '{real}/.venv/bin/kirocrew' \"$@\"" in written
+    # The cutover must move CWD and PATH too, not just the binary: a binary-only
+    # swap leaves PATH-resolved subprocesses on the OLD install.
+    assert f"cd '{real}'" in written
+    assert f"PATH='{real}/.venv/bin:" in written
+    assert os.access(link, os.X_OK), "the launcher must stay executable"
+    assert any(c[:3] == ["launchctl", "kickstart", "-k"] for c in calls)
+    # The plist is never touched by a cutover.
+    assert not any("bootout" in c or "bootstrap" in c for c in calls)
+
+
+@pytest.mark.asyncio
+@_posix_symlink_only
+async def test_make_live_darwin_rolls_back_symlink_on_restart_failure(
+    monkeypatch, tmp_path
+):
+    """A failed kickstart restores the previous link target.
+
+    Leaving the swapped link in place would silently activate the new checkout
+    on the NEXT unrelated restart — the same hazard the systemd path rolls the
+    drop-in back for.
+    """
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    link = tmp_path / "live-gateway"
+    link.write_text("#!/bin/sh\nexec '/previous/kirocrew' \"$@\"\n")
+    _stub_make_live(monkeypatch, wt, platform="darwin")
+    monkeypatch.setattr(
+        mod.gateway_service.LaunchdBackend, "live_program", staticmethod(lambda: link)
+    )
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+
+    async def fake_run_cmd(cmd, **kw):
+        if cmd[:2] == ["launchctl", "print"]:
+            return (0, "  pid = 99\n", "")
+        if cmd[:2] == ["launchctl", "kickstart"]:
+            return (1, "", "kickstart refused")
+        return (0, "", "")
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is False and res["code"] == "restart_failed"
+    assert res["rolled_back"] is True
+    assert "'/previous/kirocrew'" in link.read_text()
+    # A failed cutover must NOT latch: the user has to be able to retry.
+    assert mod._MAKE_LIVE_COMMITTED is False
+
+
+@pytest.mark.asyncio
+@_posix_symlink_only
+async def test_make_live_darwin_dry_run_plan(monkeypatch, tmp_path):
+    """The macOS plan names the link and its target, and mutates nothing."""
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    link = tmp_path / "live-gateway"
+    link.write_text("#!/bin/sh\nexec '/previous/kirocrew' \"$@\"\n")
+    _stub_make_live(monkeypatch, wt, platform="darwin")
+    monkeypatch.setattr(
+        mod.gateway_service.LaunchdBackend, "live_program", staticmethod(lambda: link)
+    )
+    calls: list = []
+
+    async def fake_run_cmd(cmd, **kw):
+        calls.append(cmd)
+        return (0, "", "")
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    res = await mod._make_live(str(wt), dry_run=True)
+    assert res["ok"] is True and res["dry_run"] is True
+    plan = res["plan"]
+    assert plan["live_program"] == str(link)
+    # The plan shows the script that will really run - no promise the cutover
+    # does not keep (an earlier revision advertised a working_directory that
+    # stage() never applied).
+    content = plan["live_program_content"]
+    real = wt.resolve()
+    assert f"exec '{real}/.venv/bin/kirocrew' \"$@\"" in content
+    assert f"cd '{real}'" in content
+    assert plan["target"] == str(wt)
+    assert calls == []
+    assert "'/previous/kirocrew'" in link.read_text()
+
+
+@pytest.mark.asyncio
+@_posix_symlink_only
+async def test_make_live_refuses_when_prior_definition_is_unreadable(
+    monkeypatch, tmp_path
+):
+    """An unreadable prior live definition aborts BEFORE anything is staged.
+
+    ``rollback(None)`` means "there was nothing here" and DELETES the target, so
+    treating a read failure as absent would let a failed cutover destroy a live
+    definition it merely could not read. The abort must therefore happen before
+    staging, leaving the existing definition byte-identical and issuing no
+    restart at all.
+    """
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    link = tmp_path / "live-gateway"
+    original = "#!/bin/sh\nexec '/previous/kirocrew' \"$@\"\n"
+    link.write_text(original)
+    _stub_make_live(monkeypatch, wt, platform="darwin")
+    monkeypatch.setattr(
+        mod.gateway_service.LaunchdBackend, "live_program", staticmethod(lambda: link)
+    )
+    monkeypatch.setattr(
+        mod.gateway_service.LaunchdBackend, "snapshot",
+        lambda self: (_ for _ in ()).throw(PermissionError("unreadable")),
+    )
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+    calls: list = []
+
+    async def fake_run_cmd(cmd, **kw):
+        calls.append(cmd)
+        return (0, "  pid = 99\n", "")
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is False and res["code"] == "write_failed"
+    assert link.read_text() == original, "the live definition must be untouched"
+    assert not any(c[:2] == ["launchctl", "kickstart"] for c in calls)
+    assert mod._MAKE_LIVE_COMMITTED is False
 
 
 # --- make-live: atomic write + failure rollback (Codex round 2, Finding B) ---

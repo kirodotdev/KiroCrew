@@ -51,6 +51,7 @@ from typing import Any, Callable
 from aiohttp import web
 
 from kiro_crew import hooks, platform_compat
+from kiro_crew.apps.builtins.dev_fleet import gateway_service
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
@@ -191,16 +192,23 @@ _START_EPOCH = time.time()
 
 
 def _build_pending() -> bool:
-    """True when the built SPA dist mtime is NEWER than this module's import time
-    (gateway process start). Mirrors the upstream _beta_build_pending() semantics:
-    a completed Pull+Build has artifacts waiting to be applied on the next restart."""
+    """True when MAIN_REPO's built SPA dist is NEWER than this process's start.
+
+    The dist inspected is the one Pull+Build actually writes — the MAIN CHECKOUT's
+    — not the dist of the installation this backend happens to be running from.
+    Those coincide only when the gateway runs from that same source tree. With the
+    packaged desktop app the running installation's dist lives inside the .app
+    bundle and its mtime never changes, so the previous ``parents[3]`` lookup
+    could never fire: a completed Pull+Build reported nothing pending and the
+    dashboard never told the user there was a build to apply.
+    """
     try:
-        # parents[3] == the kiro_crew package root (dev_fleet -> builtins ->
-        # apps -> kiro_crew). The relative parent-chain is location-sensitive,
-        # so a test pins the shape.
-        dist = Path(__file__).resolve().parents[3] / "static" / "dist"
+        dist = Path(MAIN_REPO) / "src" / "kiro_crew" / "static" / "dist"
         if not dist.exists():
             return False
+        # stat() follows a symlink on purpose: a source-tree install points
+        # static/dist at website/dist, and the rebuild time we care about is the
+        # target's.
         return dist.stat().st_mtime > _START_EPOCH
     except OSError:
         return False
@@ -353,6 +361,33 @@ def _same_path(a: str, b: str) -> bool:
         return False
 
 
+def _launchd_live_worktree() -> str | None:
+    """Resolve the live checkout from the launchd agent's live-gateway launcher.
+
+    The launcher is a generated script whose ``exec`` line names the target
+    binary; the checkout is that binary's ``.venv`` grandparent. Returns ``None``
+    when the launcher is absent (no agent installed) or names something that is
+    not a worktree venv binary — e.g. a freshly installed agent still aimed at
+    the system-wide ``kirocrew``. ``None`` correctly means "no row is live"
+    rather than guessing.
+    """
+    try:
+        script = gateway_service.LaunchdBackend.live_program().read_text()
+    except OSError:
+        return None
+    m = re.search(r"^exec '((?:[^']|'\\'')+)'", script, re.MULTILINE)
+    if not m:
+        return None
+    exe = Path(m.group(1).replace("'\\''", "'"))
+    # <checkout>/.venv/bin/kirocrew -> <checkout>
+    if ".venv" not in exe.parts:
+        return None
+    try:
+        return str(exe.parents[2].resolve())
+    except (OSError, IndexError):
+        return None
+
+
 async def _live_worktree_path(*, fresh: bool = False) -> str | None:
     """Resolve the checkout the live gateway unit runs from (or None).
 
@@ -365,6 +400,13 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
     if not fresh and _LIVE_CHECK_AT and (now - _LIVE_CHECK_AT) < _LIVE_TTL:
         return _LIVE_WORKTREE
     _LIVE_CHECK_AT = now
+    if sys.platform == "darwin" and shutil.which("launchctl"):
+        # launchd has no WorkingDirectory to query: the live target IS whatever
+        # the agent's ProgramArguments symlink currently points at. Reading the
+        # link is authoritative, needs no service query, and reflects a make-live
+        # swap immediately.
+        _LIVE_WORKTREE = _launchd_live_worktree()
+        return _LIVE_WORKTREE
     if sys.platform != "linux" or not shutil.which("systemctl"):
         _LIVE_WORKTREE = None
         return None
@@ -1544,6 +1586,12 @@ async def _build_fleet() -> dict:
         "sync_run_id": _SYNC_RID,
         "build_pending": _build_pending(),
         "gateway_service_active": await _gateway_service_active(),
+        # WHY the gateway cannot be restarted/repointed from here, when it
+        # cannot. Same lesson as pods_unavailable_reason below: the previous
+        # behaviour was to hide Restart and Make live with no explanation, so a
+        # macOS user saw a Pull+Build succeed with no way to apply it and
+        # nothing on screen saying why. ``None`` when the service is drivable.
+        "gateway_service_reason": await _gateway_service_reason(),
         # Whether pods can run on THIS host, and if not, why. Previously
         # _POD_ERROR was computed and then never read by anything, so a
         # non-Linux user saw pod controls that silently failed with no
@@ -3005,6 +3053,11 @@ _GATEWAY_SERVICE_ACTIVE: bool | None = None
 _GATEWAY_SERVICE_CHECK_AT: float = 0.0
 _GATEWAY_SERVICE_TTL = 30.0
 _LIVE_GATEWAY_UNIT = "kirocrew-gateway.service"
+# The launchd counterpart of the live systemd unit. Same agent
+# `kirocrew service install` writes (kiro_crew.service.common.LAUNCHD_LABEL);
+# duplicated as a literal rather than imported so this module keeps importing
+# cleanly on hosts where the service package's optional deps are unavailable.
+_LIVE_GATEWAY_LABEL = "dev.kirocrew.gateway"
 
 # Single-flights the make-live cutover. Two concurrent cutovers would race on
 # the shared drop-in (snapshot -> atomic-write -> daemon-reload -> systemd-run
@@ -3048,8 +3101,74 @@ def _gateway_unit_name() -> str:
     return _LIVE_GATEWAY_UNIT
 
 
+def _gateway_label() -> str:
+    """Resolve the launchd label of the gateway THIS backend belongs to.
+
+    The launchd counterpart of :func:`_gateway_unit_name`, with the same pod
+    rule for the same reason: inside a pod the owning agent is that pod's own,
+    and kickstarting the live agent from a pod plane would bounce the user's
+    LIVE gateway. The label shape mirrors ``pod.launchd.pod_label`` — every
+    plane carries its ``unit_prefix`` segment, including the default one.
+    """
+    try:
+        from kiro_crew.config.loader import config_dir
+        from kiro_crew.pod.config import DEFAULT_UNIT_PREFIX
+        from kiro_crew.pod.launchd import LABEL_PREFIX
+
+        home = config_dir()
+        if home.parent.name == ".kirocrew-pods":
+            prefix = os.environ.get("KIROCREW_POD_UNIT_PREFIX", DEFAULT_UNIT_PREFIX)
+            return f"{LABEL_PREFIX}.{prefix}.{home.name}"
+    except Exception:  # noqa: BLE001 — fall through to the live agent
+        pass
+    return _LIVE_GATEWAY_LABEL
+
+
+def _gateway_backend() -> "gateway_service.GatewayServiceBackend | None":
+    """Build the service backend for this host.
+
+    Constructed per call, never cached: ``platform`` and ``which`` are resolved
+    HERE, through this module's globals, so the existing tests that drive
+    platform detection by patching ``server.sys`` / ``server.shutil`` keep
+    controlling it. Caching the instance would freeze the first verdict and
+    silently escape those patches.
+    """
+    return gateway_service.backend(
+        _run_cmd,
+        unit=_gateway_unit_name,
+        label=_gateway_label,
+        platform=sys.platform,
+        which=shutil.which,
+        # Resolved at call time so tests patching these module attributes still
+        # control the systemd rendering (see SystemdBackend's docstring).
+        dropin_path=_dropin_path,
+        dropin_content=_dropin_content,
+    )
+
+
+async def _gateway_service_reason() -> str | None:
+    """Human-readable reason the gateway service cannot be driven, or ``None``.
+
+    Reuses the make-live eligibility codes so one probe explains both controls.
+    The live-checkout hint is appended for the case that motivated this field:
+    on a packaged desktop app the gateway runs from inside the bundle, so even a
+    successful restart would not pick up a Pull+Build of the main checkout — and
+    the previous UI said nothing at all.
+    """
+    if await _gateway_service_active():
+        return None
+    status = await _live_user_unit_status()
+    reason = _make_live_status_error(status)
+    if status in {"no_agent", "no_user_unit"} and await _live_worktree_path() is None:
+        reason += (
+            ". The running gateway does not belong to any known worktree, so "
+            "restarting it would not apply a Pull+Build of the main checkout"
+        )
+    return reason
+
+
 async def _gateway_service_active() -> bool:
-    """Cached check: is the gateway running as a user service?
+    """Cached check: is the gateway running as a service we can drive?
 
     Async and routed through the sandboxed ``_run_cmd`` chokepoint: a sync
     ``subprocess.run`` here would block the event loop on cache miss AND
@@ -3059,20 +3178,18 @@ async def _gateway_service_active() -> bool:
     now = time.monotonic()
     if _GATEWAY_SERVICE_ACTIVE is not None and (now - _GATEWAY_SERVICE_CHECK_AT) < _GATEWAY_SERVICE_TTL:
         return _GATEWAY_SERVICE_ACTIVE
-    if sys.platform != "linux" or not shutil.which("systemctl"):
-        _GATEWAY_SERVICE_ACTIVE = False
-        _GATEWAY_SERVICE_CHECK_AT = now
-        return False
-    rc, _, _err = await _run_cmd(
-        ["systemctl", "--user", "is-active", _gateway_unit_name()], timeout=5,
-    )
-    _GATEWAY_SERVICE_ACTIVE = rc == 0
+    svc = _gateway_backend()
+    _GATEWAY_SERVICE_ACTIVE = False if svc is None else await svc.active()
     _GATEWAY_SERVICE_CHECK_AT = now
     return _GATEWAY_SERVICE_ACTIVE
 
 
 async def _gateway_start_id() -> str | None:
-    """Monotonic start identity of the live gateway unit, or ``None``.
+    """Start identity of the live gateway, or ``None``. Delegated per platform.
+
+    On systemd this is ``ExecMainStartTimestampMonotonic``; on launchd it is the
+    agent's PID (launchd exposes no monotonic start stamp). See
+    ``gateway_service`` for each backend's rationale and caveats.
 
     Reads ``ExecMainStartTimestampMonotonic`` -- the CLOCK_MONOTONIC microsecond
     stamp of the unit's ExecStart *main* PID. Chosen over a wall-clock stamp or
@@ -3083,29 +3200,17 @@ async def _gateway_start_id() -> str | None:
     the "the new process is up" signal the restart handshake needs (a unit can
     enter ``active`` before its replacement main PID exists).
 
-    Returns ``None`` on non-Linux / no ``systemctl`` / a failed probe / an unset
-    value (systemd prints ``0`` when no main-start stamp is recorded). Callers
+    Returns ``None`` when no service manager applies, the probe fails, or the
+    manager reports no usable identity (systemd prints ``0`` when no main-start
+    stamp is recorded; launchd omits the pid line for a loaded-but-not-running
+    agent). Callers
     MUST treat ``None`` as "identity unavailable" and degrade to the legacy
     reload-on-first-response behaviour rather than waiting forever in
     "restarting". Uses ``_gateway_unit_name()`` so it matches whichever unit
     ``_restart_gateway`` / ``_make_live`` actually bounce (pod or live).
     """
-    if sys.platform != "linux" or not shutil.which("systemctl"):
-        return None
-    rc, out, _err = await _run_cmd(
-        ["systemctl", "--user", "show", _gateway_unit_name(),
-         "--property=ExecMainStartTimestampMonotonic", "--value"],
-        timeout=5,
-    )
-    if rc != 0:
-        return None
-    val = out.strip()
-    # "0" == systemd has no recorded main-start stamp; empty == property absent.
-    # Both are indistinguishable from "unknown" for a handshake, so normalise to
-    # None (comparing against a stamp that can never change would hang the UI).
-    if not val or val == "0":
-        return None
-    return val
+    svc = _gateway_backend()
+    return None if svc is None else await svc.start_id()
 
 
 async def _restart_gateway() -> dict:
@@ -3119,25 +3224,16 @@ async def _restart_gateway() -> dict:
     identity appears -- a 200 from this same process still winding down must
     not read as "recovered". ``start_id`` is None-safe (see _gateway_start_id).
     """
-    if sys.platform != "linux" or not shutil.which("systemctl"):
+    svc = _gateway_backend()
+    if svc is None or not await svc.active():
         return {"ok": False, "error": "gateway is not running as a user service"}
-    rc, _, stderr = await _run_cmd(
-        ["systemctl", "--user", "is-active", _gateway_unit_name()],
-        timeout=5,
-    )
-    if rc != 0:
-        return {"ok": False, "error": "gateway is not running as a user service"}
-    # Capture identity BEFORE scheduling the restart: afterwards the systemd-run
+    # Capture identity BEFORE scheduling the restart: afterwards the detached
     # bounce can tear this process down at any moment, and the whole point is to
     # hand the frontend the OLD identity to wait past.
     start_id = await _gateway_start_id()
-    rc, _, stderr = await _run_cmd(
-        ["systemd-run", "--user", "--collect",
-         "systemctl", "--user", "restart", _gateway_unit_name()],
-        timeout=10,
-    )
-    if rc != 0:
-        return {"ok": False, "error": _redact(stderr.strip()[:200]) or "systemd-run failed"}
+    ok, err = await svc.restart_detached()
+    if not ok:
+        return {"ok": False, "error": _redact(err)}
     return {"ok": True, "start_id": start_id}
 
 
@@ -3189,15 +3285,18 @@ def _dropin_path() -> Path:
     return base / "systemd" / "user" / f"{_LIVE_GATEWAY_UNIT}.d" / "make-live.conf"
 
 
-class _UnsafeUnitValue(ValueError):
-    """A path/value cannot be safely serialised into a systemd unit directive.
-
-    Raised for a value containing a newline, NUL, or any other control
-    character. Such a value would split or truncate the drop-in, and because
-    the broken override is PERSISTED, the failed cutover would then poison
-    every subsequent restart of the live unit (the restart stops the gateway
-    but the malformed unit refuses to start, and recovery restarts hit the
-    same wall)."""
+#: A path/value cannot be safely serialised into a service definition.
+#:
+#: Aliased to the adapter's exception so the systemd renderer below and the
+#: launchd backend raise ONE type: ``_make_live`` catches a single class, and the
+#: existing ``pytest.raises(mod._UnsafeUnitValue)`` assertions keep working.
+#:
+#: Raised for a value containing a newline, NUL, or any other control character.
+#: Such a value would split or truncate the drop-in, and because the broken
+#: override is PERSISTED, the failed cutover would then poison every subsequent
+#: restart of the live unit (the restart stops the gateway but the malformed unit
+#: refuses to start, and recovery restarts hit the same wall).
+_UnsafeUnitValue = gateway_service._UnsafeTargetValue
 
 
 # Control chars (C0 range + DEL) are unrepresentable in a single directive
@@ -3255,19 +3354,6 @@ def _dropin_content(worktree: Path, kcbin: Path) -> str:
     )
 
 
-def _atomic_write_text(path: Path, content: str) -> None:
-    """Write *content* to *path* atomically: a temp file in the same directory
-    then ``os.replace`` (an atomic same-filesystem rename), so a crash or
-    partial write never leaves a half-written unit drop-in that systemd would
-    fail to parse."""
-    tmp = path.parent / f".{path.name}.tmp-{uuid.uuid4().hex}"
-    try:
-        tmp.write_text(content)
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
 def _restore_dropin(dropin: Path, prior: str | None) -> bool:
     """Restore the drop-in to its pre-cutover state after a failed cutover:
     rewrite *prior* content, or delete the file when there was none. Returns
@@ -3277,7 +3363,7 @@ def _restore_dropin(dropin: Path, prior: str | None) -> bool:
         if prior is None:
             dropin.unlink(missing_ok=True)
         else:
-            _atomic_write_text(dropin, prior)
+            gateway_service.atomic_write_text(dropin, prior)
         return True
     except OSError:
         return False
@@ -3319,14 +3405,55 @@ async def _live_user_unit_status() -> str:
       ``"no_systemd"``   — not Linux / systemctl absent (make-live needs --user systemd);
       ``"no_user_unit"`` — systemctl present but the live unit is not a loaded
                            --user unit (a system-unit install, or not installed);
-      ``"ok"``           — the live unit is known to the --user manager.
+      ``"no_launchd"`` / ``"no_agent"`` / ``"agent_not_indirected"`` — the launchd
+                           counterparts (see ``gateway_service``);
+      ``"ok"``           — the live service is known to the manager.
     """
-    if sys.platform != "linux" or not shutil.which("systemctl"):
-        return "no_systemd"
-    rc, _out, _err = await _run_cmd(
-        ["systemctl", "--user", "cat", _LIVE_GATEWAY_UNIT], timeout=5,
-    )
-    return "ok" if rc == 0 else "no_user_unit"
+    svc = _gateway_backend()
+    # No manager at all on this host: report the systemd code, which the
+    # dashboard already maps, rather than inventing a third "no platform" state.
+    return "no_systemd" if svc is None else await svc.status()
+
+
+def _make_live_status_error(code: str) -> str:
+    """Operator-facing message for a non-``ok`` service status.
+
+    Every message names the concrete remedy: an unmanageable service is the one
+    make-live failure a user cannot diagnose from the UI alone, and the macOS
+    variants are only reachable on a host where the previous behaviour was to
+    hide the control entirely.
+    """
+    return {
+        "no_systemd": (
+            "make-live requires the gateway to run as a systemd --user service"
+        ),
+        "no_user_unit": (
+            f"the live gateway is not running as the user service "
+            f"{_LIVE_GATEWAY_UNIT} — make-live only supports systemd --user "
+            "installs (a `kirocrew service install` system unit cannot be "
+            "repointed this way)"
+        ),
+        "no_launchd": (
+            "make-live requires the gateway to run as a launchd user agent"
+        ),
+        "no_agent": (
+            f"the live gateway is not running as the launchd agent "
+            f"{_LIVE_GATEWAY_LABEL} — it was most likely started by the "
+            "packaged app or from a terminal. Install it as a service "
+            "(`kirocrew service install`) so it can be repointed"
+        ),
+        "agent_not_indirected": (
+            f"the launchd agent {_LIVE_GATEWAY_LABEL} does not run through the "
+            "live-gateway launcher, so repointing it would silently do nothing. "
+            "Re-run `kirocrew service install` to refresh the agent definition"
+        ),
+        "live_program_missing": (
+            f"the launchd agent {_LIVE_GATEWAY_LABEL} is loaded but its "
+            "live-gateway launcher is missing (deleted application-support "
+            "directory?), so it has nothing to execute. Re-run "
+            "`kirocrew service install` to restore it"
+        ),
+    }.get(code, f"the live gateway cannot be repointed ({code})")
 
 
 async def _make_live(path: str, dry_run: bool = False) -> dict:
@@ -3376,21 +3503,16 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
             "(run this from the live dashboard)"
         )}
 
-    # The live gateway must be a loaded systemd --user unit, else the --user
-    # drop-in + restart is a silent no-op false success (a `kirocrew service
-    # install` SYSTEM unit is not controllable via `systemctl --user`).
+    # The live gateway must be a service THIS backend can actually drive, else
+    # staging + restart is a silent no-op false success: a `kirocrew service
+    # install` SYSTEM unit is not controllable via `systemctl --user`, and a
+    # launchd agent whose ProgramArguments bypasses the live-gateway symlink
+    # cannot be repointed by swapping that symlink.
+    svc = _gateway_backend()
     unit_status = await _live_user_unit_status()
-    if unit_status == "no_systemd":
-        return {"ok": False, "code": "no_systemd", "error": (
-            "make-live requires the gateway to run as a systemd --user service"
-        )}
-    if unit_status != "ok":
-        return {"ok": False, "code": "no_user_unit", "error": (
-            f"the live gateway is not running as the user service "
-            f"{_LIVE_GATEWAY_UNIT} — make-live only supports systemd --user "
-            "installs (a `kirocrew service install` system unit cannot be "
-            "repointed this way)"
-        )}
+    if unit_status != "ok" or svc is None:
+        code = unit_status if unit_status != "ok" else "no_systemd"
+        return {"ok": False, "code": code, "error": _make_live_status_error(code)}
 
     live = await _live_worktree_path()
     if live is not None and _same_path(str(real), live):
@@ -3422,22 +3544,15 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
             "cutover without a built dist serves a broken dashboard"
         )}
 
-    unit = _LIVE_GATEWAY_UNIT
-    dropin = _dropin_path()
     try:
-        content = _dropin_content(real, kcbin)
-    except _UnsafeUnitValue as exc:
+        plan = svc.plan(real, kcbin)
+    except gateway_service._UnsafeTargetValue as exc:
         return {"ok": False, "code": "unsafe_path", "error": (
             "refusing make-live: the worktree path is not safely representable "
-            "in a systemd unit directive (contains control characters): "
+            "in a service definition (contains control characters): "
             f"{_redact(str(exc))}"
         )}
-    plan = {
-        "unit": unit,
-        "dropin_path": str(dropin),
-        "dropin_content": content,
-        "target": str(real),
-    }
+    plan["target"] = str(real)
     if dry_run:
         return {"ok": True, "dry_run": True, "plan": plan}
 
@@ -3464,55 +3579,54 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
                 "a cutover has been scheduled; the gateway is restarting — "
                 "retry after it comes back"
             )}
-        # Snapshot the prior drop-in (content, or None when absent) BEFORE
-        # writing so a failed cutover can be rolled back — a persisted-but-
-        # uninstalled override would otherwise silently activate on the NEXT
-        # unrelated restart. Write atomically (temp file + os.replace) so a
-        # partial write can't leave a truncated, unparseable unit either.
+        # Snapshot the prior live target BEFORE staging so a failed cutover can
+        # be rolled back — a persisted-but-uninstalled override would otherwise
+        # silently activate on the NEXT unrelated restart. Staging itself is
+        # atomic on both backends (temp file + os.replace), so a partial write
+        # can never leave a truncated definition either.
+        #
+        # An UNREADABLE (as opposed to absent) prior definition aborts here,
+        # before anything is staged: rollback interprets None as "there was
+        # nothing here" and deletes the target, so continuing would let a failed
+        # kickstart destroy a live definition we merely could not read.
         try:
-            dropin.parent.mkdir(parents=True, exist_ok=True)
-            prior_content = dropin.read_text() if dropin.exists() else None
-            _atomic_write_text(dropin, content)
+            prior_content = svc.snapshot()
         except OSError as exc:
-            return {"ok": False, "code": "write_failed",
-                    "error": f"failed to write drop-in: {_redact(str(exc))}"}
+            return {"ok": False, "code": "write_failed", "error": (
+                "refusing make-live: the current live definition exists but "
+                f"could not be read, so a failed cutover could not be rolled "
+                f"back: {_redact(str(exc))}"
+            )}
+        staged, code, err = await svc.stage(real, kcbin)
+        if not staged:
+            rolled_back = svc.rollback(prior_content)
+            # Re-read definitions (best-effort) so the loaded config matches the
+            # restored disk state rather than the rejected override.
+            await svc.reload()
+            return {"ok": False, "code": code, "rolled_back": rolled_back,
+                    "error": _redact(err)}
 
-        rc, _out, stderr = await _run_cmd(
-            ["systemctl", "--user", "daemon-reload"], timeout=10,
-        )
-        if rc != 0:
-            rolled_back = _restore_dropin(dropin, prior_content)
-            # Re-reload (best-effort) so the loaded config matches the restored
-            # disk state rather than the rejected override.
-            await _run_cmd(["systemctl", "--user", "daemon-reload"], timeout=10)
-            return {"ok": False, "code": "reload_failed", "rolled_back": rolled_back,
-                    "error": _redact(stderr.strip()[:200]) or "daemon-reload failed"}
-
-        # The restart tears down THIS backend with the gateway, so schedule it
-        # via `systemd-run --collect` (same pattern as _restart_gateway) so the
-        # restart survives our own death. Capture the pre-restart identity FIRST
-        # so the dashboard reuses the same handshake it uses for restart-gateway
-        # (wait for a DIFFERENT start id, not "a 200 came back") -- a cutover is
-        # just a restart into different code, so it has the identical early-200
-        # hazard. None-safe (see _gateway_start_id).
+        # The restart tears down THIS backend with the gateway, so it is handed
+        # to the service manager to perform (systemd-run on Linux, launchd's own
+        # kickstart on macOS) so it survives our own death. Capture the
+        # pre-restart identity FIRST so the dashboard reuses the same handshake
+        # it uses for restart-gateway (wait for a DIFFERENT start id, not "a 200
+        # came back") -- a cutover is just a restart into different code, so it
+        # has the identical early-200 hazard. None-safe (see _gateway_start_id).
         start_id = await _gateway_start_id()
-        rc, _out, stderr = await _run_cmd(
-            ["systemd-run", "--user", "--collect",
-             "systemctl", "--user", "restart", unit],
-            timeout=10,
-        )
-        if rc != 0:
-            rolled_back = _restore_dropin(dropin, prior_content)
-            # Nothing has restarted yet (the detached launch failed), so reload
-            # the reverted drop-in to keep the loaded config == disk.
-            await _run_cmd(["systemctl", "--user", "daemon-reload"], timeout=10)
+        restarted, err = await svc.restart_detached()
+        if not restarted:
+            rolled_back = svc.rollback(prior_content)
+            # Nothing has restarted yet (the detached launch failed), so re-read
+            # the reverted definition to keep the loaded config == disk.
+            await svc.reload()
             return {"ok": False, "code": "restart_failed", "rolled_back": rolled_back,
-                    "error": _redact(stderr.strip()[:200]) or "systemd-run failed"}
+                    "error": _redact(err)}
 
-        # COMMITTED: systemd-run has scheduled the detached restart (it returns
-        # before the restart lands). Latch process-locally BEFORE returning so
-        # no further cutover can mutate the drop-in while the restart is pending
-        # — the fresh process the restart spawns starts with this clear.
+        # COMMITTED: the restart is scheduled (the call returns before it
+        # lands). Latch process-locally BEFORE returning so no further cutover
+        # can mutate the live target while the restart is pending — the fresh
+        # process the restart spawns starts with this clear.
         _MAKE_LIVE_COMMITTED = True
 
         # Invalidate the live-worktree cache so the next fleet poll re-resolves

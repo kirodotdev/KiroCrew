@@ -1375,6 +1375,11 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
             max_recovery_attempts=_cfg.instances.max_recovery_attempts,
             recover_backoff_max_secs=_cfg.instances.recover_backoff_max_secs,
             probe_failure_threshold=_cfg.instances.probe_failure_threshold,
+            # The port this gateway ACTUALLY bound, not the configured guess:
+            # it becomes the CSP frame-ancestor claim in every minted remote
+            # token, and a claim that disagrees with the parent's real origin
+            # makes the browser refuse to frame the remote pane.
+            parent_port=port,
         )
         state.instances_registry = registry
         state.instances_manager = manager

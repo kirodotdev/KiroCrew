@@ -152,7 +152,9 @@ function fakeDeps({ listenSeq, command = "python -m kiro_crew gateway", onKill =
 test("forceStopPort: no owner on the port reports freed, kills nothing", async () => {
   const deps = fakeDeps({ listenSeq: [[]] });
   const r = await forceStopPort(7788, deps);
-  assert.deepStrictEqual(r, { killed: 0, freed: true, survivors: [], foreignHolder: false });
+  assert.deepStrictEqual(r, {
+    killed: 0, freed: true, survivors: [], foreignHolder: false, serviceHolder: false,
+  });
   assert.strictEqual(deps.killed.length, 0);
 });
 
@@ -230,6 +232,80 @@ test("classifyPortOwner: local KiroCrew gateway is ours", async () => {
     getCommand: async () => "python -m kiro_crew gateway --port 5476",
   });
   assert.strictEqual(owner, "kirocrew");
+});
+
+// A gateway the OS service manager owns (launchd LaunchAgent / systemd unit) is
+// reparented to init. Evicting it cannot free the port — KeepAlive/Restart=
+// respawns it in milliseconds, so a "successful" force-stop only makes our own
+// retry race the respawn. These four tests pin the reuse-not-evict direction.
+test("classifyPortOwner: a service-managed gateway (ppid 1) is 'service'", async () => {
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [4242],
+    getCommand: async () => "python -m kiro_crew gateway --port 5476",
+    getPpid: async () => "1",
+  });
+  assert.strictEqual(owner, "service");
+});
+
+test("classifyPortOwner: an app-spawned gateway (real ppid) stays 'kirocrew'", async () => {
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [4242],
+    getCommand: async () => "python -m kiro_crew gateway --port 5476",
+    getPpid: async () => "  3310\n",
+  });
+  assert.strictEqual(owner, "kirocrew");
+});
+
+test("classifyPortOwner: an unreadable ppid fails closed to 'service'", async () => {
+  // Mistaking a service for a wedge kills a gateway the OS instantly respawns;
+  // mistaking a wedge for a service only costs an eviction we can explain.
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [4242],
+    getCommand: async () => "python -m kiro_crew gateway --port 5476",
+    getPpid: async () => { throw new Error("ps failed"); },
+  });
+  assert.strictEqual(owner, "service");
+});
+
+test("classifyPortOwner: without a ppid probe the old classification stands", async () => {
+  // Windows has no /bin/ps; omitting the probe must not silently reclassify
+  // every local gateway as a service.
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [4242],
+    getCommand: async () => "python -m kiro_crew gateway --port 5476",
+  });
+  assert.strictEqual(owner, "kirocrew");
+});
+
+test("forceStopPort: never SIGKILLs a service-managed gateway", async () => {
+  const killed = [];
+  const res = await forceStopPort(5476, {
+    getListenPids: async () => [4242],
+    getCommand: async () => "python -m kiro_crew gateway --port 5476",
+    getPpid: async () => "1",
+    kill: (pid, sig) => killed.push([pid, sig]),
+    sleep: async () => {},
+  });
+  assert.deepStrictEqual(killed, [], "a service-managed gateway must not be signalled");
+  assert.strictEqual(res.killed, 0);
+  assert.strictEqual(res.serviceHolder, true);
+  assert.strictEqual(res.freed, false, "the port is still held, so a respawn would fail to bind");
+});
+
+test("forceStopPort: still evicts a gateway this app spawned", async () => {
+  const killed = [];
+  let probes = 0;
+  const res = await forceStopPort(5476, {
+    // Second probe reports the port free, i.e. the kill took.
+    getListenPids: async () => (probes++ === 0 ? [4242] : []),
+    getCommand: async () => "python -m kiro_crew gateway --port 5476",
+    getPpid: async () => "3310",
+    kill: (pid, sig) => killed.push([pid, sig]),
+    sleep: async () => {},
+  });
+  assert.deepStrictEqual(killed, [[4242, "SIGKILL"]]);
+  assert.strictEqual(res.serviceHolder, false);
+  assert.strictEqual(res.freed, true);
 });
 
 test("classifyPortOwner: an ssh -L forward is foreign, not ours", async () => {

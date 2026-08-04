@@ -333,6 +333,7 @@ function probeGatewayPortOwner(port) {
   return classifyPortOwner(port, {
     getListenPids: _lsofListenPids,
     getCommand: _psCommand,
+    getPpid: _psPpid,
     log: glog,
   });
 }
@@ -548,6 +549,15 @@ function spawnGateway(resolve) {
         glog(`no gateway on :${PORT} — spawning bundled backend: bin=${bin} bundled=${bundled} ${execState}`);
         sendStatus("Starting gateway…");
 
+        // Strip KIROCREW_PORT and pass the port EXPLICITLY instead (below).
+        // Inheriting it would leave the child free to re-derive its own port
+        // from env/config; the explicit flag makes the shell's resolvePort()
+        // the single source of truth. Before this, the shell honoured
+        // KIROCREW_PORT while the stripped child fell back to config.json (or
+        // 5476), so the two could disagree — the window loaded one port while
+        // the backend bound another, and the backend's own DASHBOARD_PORT (used
+        // as the remote-embed frame-ancestor claim) named a port nothing was
+        // served on.
         const { KIROCREW_PORT: _ignored, ...cleanEnv } = process.env;
 
         // Tee the child's stdout+stderr straight to the launch log via a file
@@ -571,7 +581,10 @@ function spawnGateway(resolve) {
         // spaced install path is fragile -- the shim exists for humans and
         // find-bin identity; the process tree runs python.exe.
         let spawnBin = bin;
-        let spawnArgs = ["gateway", "--no-open"];
+        // --port is explicit so the child binds exactly what resolvePort()
+        // chose. Never omit it: an unset port makes the backend re-derive one,
+        // which is how the shell and the backend came to disagree.
+        let spawnArgs = ["gateway", "--no-open", "--port", String(PORT)];
         if (bin.endsWith("kirocrew.cmd")) {
           const pyExe = path.resolve(path.dirname(bin), "..", "python.exe");
           if (fs.existsSync(pyExe)) {
@@ -1596,6 +1609,18 @@ function _psCommand(pid) {
   });
 }
 
+// Parent PID of `pid`. Used to tell an OS-service-managed gateway (reparented to
+// init) from one this app spawned, so a service-managed holder is reused rather
+// than evicted — killing it just loses a race with launchd/systemd's respawn.
+// Resolves "" on any failure; classifyPortOwner treats that as "do not touch".
+function _psPpid(pid) {
+  return new Promise((resolve) => {
+    execFile("/bin/ps", ["-p", String(pid), "-o", "ppid="], { timeout: 5000 }, (_e, out) => {
+      resolve(String(out || ""));
+    });
+  });
+}
+
 /**
  * Best-effort force-stop of whatever holds `port`, scoped to KiroCrew processes
  * only, then VERIFY the port actually freed (see forceStopPort in gateway-stop.js).
@@ -1610,6 +1635,7 @@ function forceStopGatewayPort(port) {
   return forceStopPort(port, {
     getListenPids: _lsofListenPids,
     getCommand: _psCommand,
+    getPpid: _psPpid,
     kill: (pid, sig) => process.kill(pid, sig),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     log: glog,

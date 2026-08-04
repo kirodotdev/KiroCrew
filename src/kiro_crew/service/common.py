@@ -6,9 +6,37 @@ import enum
 import os
 import shutil
 import sys
+from pathlib import Path
 
 SERVICE_NAME = "kirocrew"  # systemd unit name (without .service)
 LAUNCHD_LABEL = "dev.kirocrew.gateway"  # launchd Label
+
+
+def launchd_live_program() -> "os.PathLike[str]":
+    """Stable path the launchd agent's ``ProgramArguments[0]`` points at.
+
+    The agent is deliberately installed with this indirection instead of the
+    resolved binary, so the running gateway can be repointed at a different
+    checkout (Dev Fleet's "Make live") without rewriting the plist.
+
+    Rewriting ``ProgramArguments`` cannot work from inside the gateway: launchd
+    only re-reads a plist on ``bootout`` + ``bootstrap`` (``kickstart`` restarts
+    the in-memory job definition), and ``bootout`` kills the very process that
+    would have to run the ``bootstrap``. The gateway would stop and never come
+    back. Rewriting THIS file plus ``kickstart -k`` leaves nothing for a dying
+    process to do.
+
+    It is a generated launcher SCRIPT rather than a symlink to the binary
+    because a cutover must also move the working directory and put the target
+    checkout's venv first on ``PATH`` — exactly what the systemd drop-in sets
+    alongside ``ExecStart``. A bare symlink can only change which binary runs,
+    which would leave PATH-resolved subprocesses re-invoking the OLD install
+    while the gateway ran the new one.
+    """
+    return (
+        Path.home() / "Library" / "Application Support" / "KiroCrew"
+        / "live-gateway"
+    )
 
 
 def kirocrew_bin() -> str:

@@ -14,7 +14,9 @@ subprocess calls in :mod:`kiro_crew.service.linux` and
 
 from __future__ import annotations
 
+import os
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -282,29 +284,43 @@ class TestLinuxUnitRendering:
 
 
 class TestMacOSPlistRendering:
-    def test_render_plist_includes_label_and_program_args(self):
+    def test_render_plist_runs_the_live_program_not_the_resolved_bin(self, monkeypatch, tmp_path):
+        """ProgramArguments[0] is the live-gateway launcher.
+
+        The resolved binary deliberately does NOT appear in the plist: the agent
+        runs the launcher so Dev Fleet can repoint it - working directory and
+        PATH included - without rewriting and re-bootstrapping the plist (see
+        service.common.launchd_live_program).
+        """
         from kiro_crew.service import macos as svc_macos
 
+        link = tmp_path / "live-gateway"
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", link)
         with patch(
             "kiro_crew.service.common.shutil.which",
             return_value="/opt/homebrew/bin/kirocrew",
         ):
             plist = svc_macos.render_plist()
         assert f"<string>{LAUNCHD_LABEL}</string>" in plist
-        assert "<string>/opt/homebrew/bin/kirocrew</string>" in plist
+        assert f"<string>{link}</string>" in plist
+        assert "/opt/homebrew/bin/kirocrew" not in plist
         assert "<string>gateway</string>" in plist
         assert "<key>RunAtLoad</key>" in plist
         assert "<key>KeepAlive</key>" in plist
 
-    def test_render_plist_xml_escapes_special_chars(self):
+    def test_render_plist_xml_escapes_special_chars(self, monkeypatch, tmp_path):
+        """The Program path is XML-escaped.
+
+        It is now the launcher path, which sits under $HOME — a home directory
+        containing ``&`` or ``<`` would otherwise emit invalid XML that
+        ``launchctl load`` rejects.
+        """
         from kiro_crew.service import macos as svc_macos
 
-        with patch(
-            "kiro_crew.service.common.shutil.which",
-            return_value="/path/with/<bad>&chars",
-        ):
-            plist = svc_macos.render_plist()
-        # The bad characters should be escaped, not present raw.
+        monkeypatch.setattr(
+            svc_macos, "LIVE_PROGRAM", Path("/path/with/<bad>&chars/live-gateway")
+        )
+        plist = svc_macos.render_plist()
         assert "<bad>" not in plist
         assert "&chars" not in plist
         assert "&lt;bad&gt;" in plist
@@ -1046,13 +1062,14 @@ class TestMacOSControlPaths:
             svc_macos.stop()
         run.assert_not_called()
 
-    def test_restart_unloads_then_loads_plist_when_present(self, tmp_path, monkeypatch):
-        # ``launchctl restart`` is deprecated and behaves like ``stop``
-        # under KeepAlive (SIGTERM, immediate respawn — no plist re-read).
-        # The supported way to actually pick up plist changes is a
-        # transient unload+load. Both calls MUST omit ``-w`` so persistent
-        # enable state is unchanged (otherwise we'd flip disabled and
-        # re-enabled, which is a no-op state-wise but a confusing audit).
+    def test_restart_kickstarts_the_service_target(self, tmp_path, monkeypatch):
+        # ``launchctl restart`` is deprecated and behaves like ``stop`` under
+        # KeepAlive (SIGTERM, immediate respawn — no plist re-read). The former
+        # implementation used a transient unload+load, which cannot be issued
+        # from INSIDE the gateway: the unload SIGTERMs the caller, so the load
+        # never runs and the agent stays down. ``kickstart -k`` is performed by
+        # launchd itself, so it survives the caller's death — the property Dev
+        # Fleet's Restart control depends on.
         from kiro_crew.service import macos as svc_macos
 
         plist_path = tmp_path / "agent.plist"
@@ -1062,21 +1079,27 @@ class TestMacOSControlPaths:
         with patch(
             "kiro_crew.service.macos.subprocess.run", return_value=ok
         ) as run:
-            svc_macos.restart()
+            assert svc_macos.restart() is True
         called = [c.args[0] for c in run.call_args_list]
-        # unload then load — order matters: load before unload would race.
-        unload_idx = next(
-            i for i, c in enumerate(called) if c[:2] == ["launchctl", "unload"]
-        )
-        load_idx = next(
-            i for i, c in enumerate(called) if c[:2] == ["launchctl", "load"]
-        )
-        assert unload_idx < load_idx, f"unload must precede load; got {called}"
-        # Neither call uses -w (persistent flag).
-        assert ["launchctl", "unload", str(plist_path)] in called
-        assert ["launchctl", "load", str(plist_path)] in called
-        # And we must NOT have called the deprecated `launchctl restart`.
-        assert not any(c[:2] == ["launchctl", "restart"] for c in called)
+        assert len(called) == 1, "restart must be a single launchd operation"
+        argv = called[0]
+        assert argv[:3] == ["launchctl", "kickstart", "-k"]
+        # Addressed as gui/<uid>/<label>, what the modern verbs require.
+        assert argv[3].startswith("gui/")
+        assert argv[3].endswith(f"/{LAUNCHD_LABEL}")
+        # No unload anywhere: an unload would kill the caller mid-restart.
+        assert not any(c[:2] == ["launchctl", "unload"] for c in called)
+
+    def test_restart_is_false_when_launchd_rejects_it(self, tmp_path, monkeypatch):
+        """A rejected kickstart must not be reported as a restart."""
+        from kiro_crew.service import macos as svc_macos
+
+        plist_path = tmp_path / "agent.plist"
+        plist_path.write_text("<plist/>")
+        monkeypatch.setattr(svc_macos, "PLIST_PATH", plist_path)
+        bad = MagicMock(returncode=1, stdout="", stderr="no such service")
+        with patch("kiro_crew.service.macos.subprocess.run", return_value=bad):
+            assert svc_macos.restart() is False
 
     def test_restart_no_op_when_plist_absent(self, tmp_path, monkeypatch):
         # Restart on an uninstalled service is a no-op rather than an
@@ -1361,14 +1384,61 @@ class TestServiceEnvironment:
         with pytest.raises(ValueError):
             svc_linux.render_unit()
 
-    def test_plist_program_uses_spaced_override_verbatim(self, monkeypatch):
-        # launchd plist ProgramArguments are separate XML <string> elements, so
-        # a spaced path needs no quoting — just XML escaping (none needed here).
+    @pytest.mark.skipif(
+        os.name != "posix",
+        reason=(
+            "creates a real symlink to exercise the launchd live-gateway link; "
+            "the code under test is macOS-only and Windows has no unprivileged "
+            "symlink creation. Still runs on Linux CI and on the macOS job "
+            "(which now includes test_service.py), so coverage is not lost."
+        ),
+    )
+    def test_live_program_quotes_a_spaced_override(self, monkeypatch, tmp_path):
+        # The resolved binary now goes into a generated shell script, so a spaced
+        # path must be QUOTED there or the launcher would exec the wrong argv.
+        # Compared against what kirocrew_bin() actually returned rather than a
+        # literal, so the test does not re-encode one platform's path shape.
         from kiro_crew.service import macos as svc_macos
 
+        link = tmp_path / "live-gateway"
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", link)
         monkeypatch.setenv("KIROCREW_SERVICE_BIN", "/opt/Kiro Crew/kirocrew")
-        plist = svc_macos.render_plist()
-        assert "<string>/opt/Kiro Crew/kirocrew</string>" in plist
+        resolved = svc_macos.kirocrew_bin()
+        assert " " in resolved, "the spaced override must survive resolution"
+        svc_macos.write_live_program(svc_macos.render_live_program(resolved))
+        script = link.read_text()
+        assert f"exec '{resolved}' \"$@\"" in script
+        assert os.access(link, os.X_OK), "launchd must be able to exec it"
+
+    def test_live_program_escapes_a_single_quote_in_the_path(self):
+        # A path containing ' would otherwise terminate the shell quoting and
+        # turn the rest of the path into separate argv words.
+        from kiro_crew.service import macos as svc_macos
+
+        script = svc_macos.render_live_program("/opt/it's/kirocrew")
+        assert """exec '/opt/it'\\''s/kirocrew' "$@\"""" in script
+
+    @pytest.mark.skipif(
+        os.name != "posix",
+        reason="real-symlink test for macOS-only code; see the test above",
+    )
+    def test_write_live_program_is_atomic_and_leaves_no_temp_files(self, monkeypatch, tmp_path):
+        """Rewriting must never expose a partial or non-executable launcher.
+
+        The agent can be kickstarted at any moment, so the write goes through a
+        temp sibling that is chmod'd before the rename.
+        """
+        from kiro_crew.service import macos as svc_macos
+
+        link = tmp_path / "live-gateway"
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", link)
+        svc_macos.write_live_program(svc_macos.render_live_program("/first/kirocrew"))
+        svc_macos.write_live_program(svc_macos.render_live_program("/second/kirocrew"))
+        assert "'/second/kirocrew'" in link.read_text()
+        assert "'/first/kirocrew'" not in link.read_text()
+        assert os.access(link, os.X_OK)
+        # No temp siblings left behind.
+        assert [p.name for p in tmp_path.iterdir()] == ["live-gateway"]
 
 
 class TestAppArmorGate:

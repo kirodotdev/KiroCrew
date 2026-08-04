@@ -526,8 +526,22 @@ class SshTunnelManager:
         probe_failure_threshold: int = _PROBE_FAILS,
         mint_token: Callable[..., Awaitable[str]] = mint_remote_token,
         tunnel_factory: Callable[..., _SshTunnel] | None = None,
+        parent_port: int | None = None,
     ) -> None:
         self._registry = registry
+        # The port the embedding dashboard ACTUALLY bound, carried into every
+        # minted remote token as the CSP frame-ancestor parent origin.
+        #
+        # Falls back to the configured value only when the caller cannot supply
+        # the real one. The distinction matters: ``DASHBOARD_PORT`` is derived
+        # from env/config at import time, so in the desktop app — which resolves
+        # its own port but spawns the backend without passing it through — the
+        # two disagree, the claim names a port the parent is not served on, and
+        # the remote's ``frame-ancestors`` then blocks the iframe ("Pane failed
+        # to load"). The gateway already knows its real port (``app["port"]``,
+        # passed to ``_register_instances_hooks``), so it is threaded in here
+        # rather than re-derived.
+        self._parent_port = parent_port if parent_port else _LOCAL_DASHBOARD_PORT
         self._allocator = PortAllocator(base_port=base_port)
         self._connect_timeout = connect_timeout_secs
         self._ssh_compression = ssh_compression
@@ -722,7 +736,7 @@ class SshTunnelManager:
                     remote_bin=remote_bin,
                     ttl=inst.ttl,
                     remote_port=inst.remote_port,
-                    embed_parent_port=_LOCAL_DASHBOARD_PORT,
+                    embed_parent_port=self._parent_port,
                 )
             except TokenMintError as e:
                 await tunnel.stop()
@@ -921,7 +935,7 @@ class SshTunnelManager:
                 remote_bin=remote_bin,
                 ttl=inst.ttl,
                 remote_port=inst.remote_port,
-                embed_parent_port=_LOCAL_DASHBOARD_PORT,
+                embed_parent_port=self._parent_port,
             )
         except TokenMintError as e:
             logger.warning("Self-heal re-mint failed for %s: %s", instance_id, e)
@@ -1167,7 +1181,7 @@ class SshTunnelManager:
                 remote_bin=remote_bin,
                 ttl=inst.ttl,
                 remote_port=inst.remote_port,
-                embed_parent_port=_LOCAL_DASHBOARD_PORT,
+                embed_parent_port=self._parent_port,
             )
         except TokenMintError as e:
             logger.warning("Proactive token refresh failed for %s: %s", instance_id, e)

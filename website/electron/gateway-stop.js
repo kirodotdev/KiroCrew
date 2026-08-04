@@ -21,6 +21,17 @@ const path = require("path");
 // mis-target a stranger's process.
 const KIROCREW_PROC_RE = /kiro_crew|kirocrew/i;
 
+// A gateway whose parent is init (PID 1) is owned by the OS service manager —
+// a launchd LaunchAgent on macOS, a systemd unit on Linux — not by this app.
+// It must never be evicted: launchd's KeepAlive (and systemd's Restart=)
+// respawns it within milliseconds, so a "successful" force-stop frees the port
+// only long enough for our retry's bind to race the respawn and fail with a
+// confusing "address already in use". Reuse is always the correct move there.
+//
+// A process whose parent shell has exited is also reparented to PID 1. Treating
+// that as non-evictable is equally right: it is not our child either.
+const INIT_PPID = 1;
+
 /**
  * POST /api/shutdown with the local secret (mirrors the dashboard's
  * X-Local-Secret auth). Resolves true on HTTP 200, false on any failure
@@ -144,6 +155,7 @@ async function forceStopPort(
     getCommand,
     kill,
     sleep,
+    getPpid = null,
     isKirocrew = KIROCREW_PROC_RE,
     verifyTimeoutMs = 4000,
     pollIntervalMs = 250,
@@ -153,15 +165,24 @@ async function forceStopPort(
   const owners = await getListenPids(port);
   if (!owners.length) {
     log(`force-stop: no LISTEN owner found on :${port}`);
-    return { killed: 0, freed: true, survivors: [], foreignHolder: false };
+    return { killed: 0, freed: true, survivors: [], foreignHolder: false, serviceHolder: false };
   }
 
   // Only signal PIDs we can positively identify as KiroCrew — never SIGKILL an
   // unrelated app that happens to share the port.
   const targets = [];
+  let serviceHolder = false;
   for (const pid of owners) {
     const cmd = (await getCommand(pid)).trim();
     if (isKirocrew.test(cmd)) {
+      // A service-managed gateway is respawned by launchd/systemd the moment we
+      // kill it, so evicting it cannot free the port — it only makes the retry
+      // race the respawn. Leave it alone and tell the caller why.
+      if (await isServiceManaged(pid, getPpid)) {
+        serviceHolder = true;
+        log(`force-stop: SKIP pid=${pid} — service-managed KiroCrew gateway (${cmd.slice(0, 80)})`);
+        continue;
+      }
       try {
         kill(pid, "SIGKILL");
         targets.push(pid);
@@ -207,7 +228,10 @@ async function forceStopPort(
   } else if (foreignHolder) {
     log(`force-stop: port :${port} held by a non-KiroCrew process we won't kill — respawn would fail to bind`);
   }
-  return { killed, freed, survivors, foreignHolder };
+  if (serviceHolder && !freed) {
+    log(`force-stop: port :${port} is held by a service-managed gateway — the OS respawns it, so the app must reuse it instead of retrying a spawn`);
+  }
+  return { killed, freed, survivors, foreignHolder, serviceHolder };
 }
 
 /**
@@ -242,7 +266,7 @@ async function forceStopPort(
  */
 async function classifyPortOwner(
   port,
-  { getListenPids, getCommand, isKirocrew = KIROCREW_PROC_RE, log = () => {} }
+  { getListenPids, getCommand, getPpid = null, isKirocrew = KIROCREW_PROC_RE, log = () => {} }
 ) {
   let pids;
   try {
@@ -258,6 +282,10 @@ async function classifyPortOwner(
   for (const pid of pids) {
     const cmd = (await getCommand(pid)).trim();
     if (isKirocrew.test(cmd)) {
+      if (await isServiceManaged(pid, getPpid)) {
+        log(`port-owner: :${port} held by SERVICE-MANAGED KiroCrew pid=${pid} (${cmd.slice(0, 80)}) — reuse, never evict`);
+        return "service";
+      }
       log(`port-owner: :${port} held by local KiroCrew pid=${pid} (${cmd.slice(0, 80)})`);
       return "kirocrew";
     }
@@ -266,10 +294,31 @@ async function classifyPortOwner(
   return "foreign";
 }
 
+/**
+ * Is `pid` owned by the OS service manager rather than by us? See INIT_PPID.
+ *
+ * Fails CLOSED (returns true, i.e. "do not touch") when the parent cannot be
+ * determined: mistaking a service for a wedge kills a gateway the OS instantly
+ * respawns, while mistaking a wedge for a service only costs an eviction we can
+ * still explain to the user.
+ */
+async function isServiceManaged(pid, getPpid) {
+  if (!getPpid) return false; // caller opted out of the probe (e.g. Windows)
+  try {
+    const ppid = parseInt(String(await getPpid(pid)).trim(), 10);
+    if (!Number.isInteger(ppid)) return true;
+    return ppid === INIT_PPID;
+  } catch {
+    return true;
+  }
+}
+
 module.exports = {
   postShutdown,
   stopGatewayGracefully,
   forceStopPort,
   classifyPortOwner,
+  isServiceManaged,
   KIROCREW_PROC_RE,
+  INIT_PPID,
 };

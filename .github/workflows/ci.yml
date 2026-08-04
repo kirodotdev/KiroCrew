@@ -278,7 +278,9 @@ jobs:
             test/test_socketsec.py \
             test/test_platform_compat.py \
             test/test_mcp_apps_e2e.py \
-            test/test_pod*.py
+            test/test_pod*.py \
+            test/test_service.py \
+            test/test_dev_fleet_app.py
 
   # Runs the tests the sharded matrix deselects. They need unprivileged user
   # namespaces (unshare NEWNS), which ubuntu-24.04 restricts via AppArmor --
