@@ -28,6 +28,7 @@ from kiro_crew.dashboard.state import DashboardState, _ChatSlot, _normalize_slot
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.history import (
     _archive_lines,
+    carry_provenance,
     transcript_sort_key,
     update_metadata_off_loop,
 )
@@ -562,6 +563,10 @@ def _rehydrate_slot_from_history(
             # meta to a client.
             meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
         )
+        # Provenance is not a slot.append() argument, so carry it onto the
+        # message the append just created. Without this the window loses where
+        # each turn came from and the next flush restamps it "dashboard".
+        carry_provenance(slot.messages[-1], m)
         _attach_variants(slot, m)
     slot.drain()
     slot._resumed_count = len(slot.messages)
@@ -791,6 +796,8 @@ def _restore_recent_sessions_steps(
                 broadcast=False,
                 meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
             )
+            # See the equivalent call in _rehydrate_slot_from_history.
+            carry_provenance(slot.messages[-1], m)
             _attach_variants(slot, m)
         slot.drain()
         slot._resumed_count = len(slot.messages)
@@ -916,9 +923,18 @@ def _build_message_entry(m: dict) -> dict | None:
         "role": role,
         "content": content,
         "ts": m.get("ts", ""),
+        # "dashboard" is the fallback, not the answer. A channel tab shares the
+        # channel's transcript, so the window this re-serializes can hold turns
+        # that arrived FROM Slack or Discord with their own recorded origin; the
+        # load paths carry that origin onto the in-memory message so it survives
+        # the round trip. Hardcoding "dashboard" flattened it on the next flush,
+        # making the audit trail claim inbound channel traffic was typed into
+        # the dashboard. A message with no recorded origin genuinely IS a
+        # dashboard-authored turn, so it keeps these defaults.
         "source_thread": "dashboard",
         "source_user": "dashboard",
     }
+    carry_provenance(entry, m)
     if m.get("variants"):
         redacted_variants: list[dict] = []
         for v in m["variants"]:

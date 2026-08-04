@@ -60,6 +60,7 @@ import weakref
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.state import _normalize_slot_key
+from kiro_crew.history import carry_provenance
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -329,6 +330,12 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
             broadcast=False,
             meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
         )
+        # This transcript is the CHANNEL's, so most of these lines arrived from
+        # Slack/Discord and carry a real origin. Provenance is not a
+        # slot.append() argument, so copy it onto the message the append just
+        # created — the save path re-serializes this window and would otherwise
+        # restamp every line "dashboard".
+        carry_provenance(slot.messages[-1], msg)
     slot.drain()
     slot._resumed_count = len(slot.messages)
     slot._disk_window_len = len(slot.messages)
@@ -426,6 +433,8 @@ def refresh_channel_window(
             ts=msg.get("ts", ""),
             meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
         )
+        # See the equivalent call in _rebuild_window.
+        carry_provenance(slot.messages[-1], msg)
     slot.drain()
     slot._resumed_count = len(slot.messages)
     slot._disk_window_len = len(slot.messages)

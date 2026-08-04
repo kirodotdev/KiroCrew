@@ -13,6 +13,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.history import carry_provenance
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -227,6 +228,10 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 content, _ = redact_credentials(content)
             cls = "msg msg-u" if role == "user" else "msg msg-a"
             new_slot.append(role, content, cls, ts=m.get("ts", ""), meta=m.get("meta"), broadcast=False)
+            # A fork copies the parent's messages into a new session. Origin is
+            # a property of the message, not of the file, so a copied inbound
+            # channel turn keeps the origin it actually had.
+            carry_provenance(new_slot.messages[-1], m)
         new_slot.drain()
         await save_slot_off_loop(state, new_slot)
         new_slot._resumed_count = len(new_slot.messages)
