@@ -147,7 +147,7 @@ def _gh_bin() -> str:
     if sys.platform == "win32":
         raise GhCliError(
             "Issue Radar requires a POSIX platform (macOS/Linux); "
-            "Windows is not supported — use WSL to run the KiroCrew gateway"
+            "Windows is not supported — use WSL to run the Kiro Crew gateway"
         )
 
     from kiro_crew.dashboard.handlers.source_providers import (

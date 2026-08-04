@@ -116,7 +116,7 @@ _DASHBOARD_HTML_NOT_FOUND = (
     " newly-installed version). It can also mean the web assets were never"
     " built (dev / first-run) &mdash; build the frontend and stage it into"
     " the package before starting the gateway.</p>"
-    "<p><strong>Try restarting KiroCrew.</strong> The exact restart step"
+    "<p><strong>Try restarting Kiro Crew.</strong> The exact restart step"
     " depends on your environment: if you installed it as a service use"
     " <code>kirocrew service restart</code> (systemd / launchd); otherwise"
     " stop the running <code>kirocrew gateway</code> process and start it"

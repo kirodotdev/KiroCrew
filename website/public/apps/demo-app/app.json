@@ -2,7 +2,7 @@
   "name": "demo-app",
   "version": "0.1.0",
   "displayName": "Demo App",
-  "description": "Minimal proof-of-concept for the KiroCrew federated app platform",
+  "description": "Minimal proof-of-concept for the Kiro Crew federated app platform",
   "author": "kirocrew",
   "tags": ["demo", "platform"],
   "ui": {

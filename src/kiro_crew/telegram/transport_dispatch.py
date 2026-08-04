@@ -76,7 +76,7 @@ _DEFAULT_KIROCREW_AGENT = "kirocrew"
 _MAX_COLLAPSE = 50
 
 _HELP_TEXT = """\
-🦞 KiroCrew — Telegram
+🦞 Kiro Crew — Telegram
 
 Commands:
 /new — Start a fresh conversation

@@ -35,7 +35,7 @@ word. When a Latin-script term (product name) appears inside Devanagari text, a 
 visual break already exists at the script boundary — **do not add extra spaces** around
 Latin runs.
 
-Write: `KiroCrewसे कनेक्ट करें` or `KiroCrew से कनेक्ट करें` — a single space after the
+Write: `Kiro Crewसे कनेक्ट करें` or `Kiro Crew से कनेक्ट करें` — a single space after the
 Latin term is acceptable because Hindi uses spaces between words, but do not double-space.
 
 **Font fallback**: ensure CSS `font-family` lists a Devanagari font (Noto Sans Devanagari)
@@ -46,7 +46,7 @@ before the Latin fallback so conjuncts render correctly.
 ## 3. Do not translate
 
 Product names stay in Latin script. The list is in `glossary.json` under `dnt`.
-`KiroCrew`, `MCP`, `Slack`, `GitHub` etc. must appear verbatim — do not transliterate
+`KiroCrew` / `Kiro Crew`, `MCP`, `Slack`, `GitHub` etc. must appear verbatim — do not transliterate
 into Devanagari (not `किरोक्रू`).
 
 Checked by `glossary.test.ts`.

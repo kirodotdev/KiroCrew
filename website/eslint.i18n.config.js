@@ -342,8 +342,9 @@ export default [
               // which excluded most English prose and hid five of six strings in a
               // six-string probe file.
               '^[^A-Za-z]*$',
-              // The product brand, which the do-not-translate glossary already covers as
-              // `KiroCrew`; the spaced form is the same name and is equally DNT. Anchored
+              // The product brand. The display name is `Kiro Crew`; the unspaced
+              // `KiroCrew` is the same name (and the glossary term that still guards the
+              // generated Slack app name), so both are equally DNT. Anchored
               // to the whole value, so a sentence merely *containing* the brand is still
               // reported — only the bare name is exempt.
               '^Kiro ?Crew$',

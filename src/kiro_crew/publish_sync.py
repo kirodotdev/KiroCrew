@@ -581,7 +581,15 @@ async def unpublish(slug: str) -> None:
 
 # Sentinel prefix for the out-of-band-drift sync note, so refresh can both set
 # and later clear it without clobbering a genuine push-conflict message.
-_DRIFT_PREFIX = "The remote copy changed outside KiroCrew"
+_DRIFT_PREFIX = "The remote copy changed outside Kiro Crew"
+
+# This prefix is not only displayed -- it is PERSISTED in `last_error` and matched
+# back on the next reconcile. Publications written before the display-name rename
+# carry the unspaced brand, so recognising only the current spelling would leave a
+# pre-upgrade drift note stuck forever: the remote reconciles, the `elif` below
+# never matches, and the banner never clears. Match both spellings when clearing;
+# only the current one is ever written.
+_DRIFT_PREFIXES = (_DRIFT_PREFIX, "The remote copy changed outside KiroCrew")
 
 
 async def refresh_publication(slug: str) -> Artifact:
@@ -651,12 +659,12 @@ async def refresh_publication(slug: str) -> Artifact:
             f"v{expected_dest_v}" if expected_dest_v is not None else "an unknown version"
         )
         drift_msg = (
-            f"{_DRIFT_PREFIX}: it is showing {cur_v_str} (KiroCrew published "
-            f"{expected_str}). Force re-sync to re-publish KiroCrew's current version."
+            f"{_DRIFT_PREFIX}: it is showing {cur_v_str} (Kiro Crew published "
+            f"{expected_str}). Force re-sync to re-publish Kiro Crew's current version."
         )
         if pub.last_error != drift_msg:
             fields["last_error"] = drift_msg
-    elif pub.last_error.startswith(_DRIFT_PREFIX):
+    elif pub.last_error.startswith(_DRIFT_PREFIXES):
         # A previously-flagged drift has been reconciled (e.g. a re-sync landed).
         fields["last_error"] = ""
     if not fields:

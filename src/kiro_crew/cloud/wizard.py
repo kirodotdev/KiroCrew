@@ -529,7 +529,7 @@ def launch(
         ui.warn("Dashboard tunnel did not become ready.")
         ui.detail(conn.error)
     # Register for the managed /instances experience (best effort).
-    connect_mod.register_instance(instance_id, name=f"KiroCrew Cloud ({result.tag})")
+    connect_mod.register_instance(instance_id, name=f"Kiro Crew Cloud ({result.tag})")
 
     # ── Done ──────────────────────────────────────────────────────────────
     print()

@@ -327,7 +327,7 @@ class TestFormatVersion:
         summary, err = _validate_theme_dir(self._fmt_theme(tmp_path, 2))
         assert summary is None
         assert err is not None
-        assert "requires a newer version of KiroCrew" in err
+        assert "requires a newer version of Kiro Crew" in err
         assert "formatVersion 2" in err and "supported 1" in err
 
     @pytest.mark.parametrize("bad", ["1", 1.5, None, True])

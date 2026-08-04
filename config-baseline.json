@@ -166,7 +166,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Sandbox",
-      "help": "Sandbox mode for ACP provider. Default 'off' defers isolation to kiro-cli's internal agent sandbox (kiro-cli >= 2.13). Set to 'auto' to re-enable KiroCrew's OS-level sandbox (namespace on Linux, sandbox-exec on macOS). The two layers are mutually exclusive on macOS (nested seatbelt causes EPERM).",
+      "help": "Sandbox mode for ACP provider. Default 'off' defers isolation to kiro-cli's internal agent sandbox (kiro-cli >= 2.13). Set to 'auto' to re-enable Kiro Crew's OS-level sandbox (namespace on Linux, sandbox-exec on macOS). The two layers are mutually exclusive on macOS (nested seatbelt causes EPERM).",
       "hasChildren": false,
       "enumValues": [
         "auto",
@@ -257,7 +257,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Ad-hoc Auto-approve Duration",
-      "help": "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from the dashboard picker, Slack, or the API. Every one of those surfaces uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or until_shutdown to keep it on with no timed expiry until KiroCrew restarts. Timed values are capped at 24h. Does NOT apply to a grant declared via 'dangerously_skip_permissions' above, which persists.",
+      "help": "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from the dashboard picker, Slack, or the API. Every one of those surfaces uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or until_shutdown to keep it on with no timed expiry until Kiro Crew restarts. Timed values are capped at 24h. Does NOT apply to a grant declared via 'dangerously_skip_permissions' above, which persists.",
       "hasChildren": false,
       "enumValues": [
         "30m",
@@ -320,7 +320,7 @@
       "sensitive": false,
       "tags": [],
       "label": "MCP Tool Search",
-      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli backend only. When enabled, KiroCrew forces deferral always-on (minPct=0/minTokens=0) via the per-session kiro settings overlay; disabling reverts to sending full tool specs. No effect on an alternate ACP backend.",
+      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli backend only. When enabled, Kiro Crew forces deferral always-on (minPct=0/minTokens=0) via the per-session kiro settings overlay; disabling reverts to sending full tool specs. No effect on an alternate ACP backend.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -915,7 +915,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Use Transport",
-      "help": "Route inbound Slack messages through the SlackTransport → TurnDriver → SlackRenderer channel-neutral path instead of the native handle_message monolith. Default ON in KiroCrew (the transport abstraction is the canonical path, shared with future channels). Set to false to fall back to the legacy native handler.",
+      "help": "Route inbound Slack messages through the SlackTransport → TurnDriver → SlackRenderer channel-neutral path instead of the native handle_message monolith. Default ON in Kiro Crew (the transport abstraction is the canonical path, shared with future channels). Set to false to fall back to the legacy native handler.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -1118,7 +1118,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Embedding Model URL",
-      "help": "Override HTTPS URL for the embedding model GGUF download (mirrored/airgapped deployments). Empty uses the public KiroCrew CDN default; the KIROCREW_EMBED_MODEL_URL env var wins over both. The download is sha256-verified regardless of source.",
+      "help": "Override HTTPS URL for the embedding model GGUF download (mirrored/airgapped deployments). Empty uses the public Kiro Crew CDN default; the KIROCREW_EMBED_MODEL_URL env var wins over both. The download is sha256-verified regardless of source.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -1751,7 +1751,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Enabled",
-      "help": "Main switch for KiroCrew metrics telemetry. Off by default: metric call sites are no-ops and nothing is written. When on, a local-first JSONL sink under ~/.kiro/crew/metrics is enabled (no network egress).",
+      "help": "Main switch for Kiro Crew metrics telemetry. Off by default: metric call sites are no-ops and nothing is written. When on, a local-first JSONL sink under ~/.kiro/crew/metrics is enabled (no network egress).",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -2381,7 +2381,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Instances",
-      "help": "Multi-instance management — manage/switch remote KiroCrews over SSH.",
+      "help": "Multi-instance management — manage/switch remote Kiro Crews over SSH.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
@@ -2403,7 +2403,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Enabled",
-      "help": "Enable multi-instance management — lets this gateway open SSH tunnels to remote KiroCrews and embed their dashboards. Default off (opt-in). Enabling also scopes a CSP frame-src relaxation to active tunnel ports.",
+      "help": "Enable multi-instance management — lets this gateway open SSH tunnels to remote Kiro Crews and embed their dashboards. Default off (opt-in). Enabling also scopes a CSP frame-src relaxation to active tunnel ports.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -3862,6 +3862,7 @@
         "auto_open_browser": true,
         "quick_send": false,
         "session_grid": false,
+        "mcp_app_panel": false,
         "terminal": {
           "enabled": true
         },
@@ -4111,6 +4112,20 @@
       "tags": [],
       "label": "Session Grid (Split View)",
       "help": "Opt-in: enable terminal-style split view to run multiple chat sessions side by side.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.mcp_app_panel",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Open MCP Apps in the side panel",
+      "help": "Render interactive MCP Apps (such as Excalidraw diagrams) in the right side panel instead of inline in the chat bubble. The panel opens automatically and can be expanded; the chat keeps a compact placeholder linking to it.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -4606,7 +4621,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Agents",
-      "help": "Named KiroCrew agent definitions.",
+      "help": "Named Kiro Crew agent definitions.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
@@ -4732,7 +4747,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Default Agent",
-      "help": "Active KiroCrew agent name from the agents section.",
+      "help": "Active Kiro Crew agent name from the agents section.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

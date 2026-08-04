@@ -2471,7 +2471,7 @@ async def install_from_registry(
                     "ok": False,
                     "name": name,
                     "error": f"{name} is already installed on this machine. "
-                    f"Launch it to register with KiroCrew automatically.",
+                    f"Launch it to register with Kiro Crew automatically.",
                 }
         except (asyncio.TimeoutError, OSError):
             pass

@@ -1,6 +1,6 @@
 {
-  "name": "KiroCrew",
-  "short_name": "KiroCrew",
+  "name": "Kiro Crew",
+  "short_name": "Kiro Crew",
   "description": "Autonomous AI agent dashboard",
   "start_url": "/",
   "display": "standalone",
@@ -11,7 +11,7 @@
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
   ],
   "screenshots": [
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "form_factor": "wide", "label": "KiroCrew Dashboard" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "label": "KiroCrew Dashboard" }
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "form_factor": "wide", "label": "Kiro Crew Dashboard" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "label": "Kiro Crew Dashboard" }
   ]
 }

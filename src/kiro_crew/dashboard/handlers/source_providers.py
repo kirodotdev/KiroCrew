@@ -376,7 +376,7 @@ def _provider_setup_message(executable: str, override_name: str, last_error: str
         )
     return (
         f"Can't load pull requests: the {provider} CLI ({executable}) isn't "
-        "available to the KiroCrew gateway.\n"
+        "available to the Kiro Crew gateway.\n"
         "\n"
         "Install it and sign in, then click Retry:\n"
         "\n"

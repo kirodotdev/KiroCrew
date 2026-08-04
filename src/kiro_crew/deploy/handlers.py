@@ -652,7 +652,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     if os.name == "nt":
         return 400, {
             "error": "Artifact Deploy requires a POSIX shell (bash) for deploy scripts. "
-            "Use WSL (Windows Subsystem for Linux) to run the KiroCrew gateway on Windows."
+            "Use WSL (Windows Subsystem for Linux) to run the Kiro Crew gateway on Windows."
         }
     try:
         profile, region = await _resolve_profile(params)
@@ -1862,7 +1862,7 @@ async def _handle_teardown(request: web.Request) -> web.Response:
     if os.name == "nt":
         return web.json_response(
             {"error": "Artifact Deploy requires a POSIX shell (bash) for deploy scripts. "
-             "Use WSL (Windows Subsystem for Linux) to run the KiroCrew gateway on Windows."},
+             "Use WSL (Windows Subsystem for Linux) to run the Kiro Crew gateway on Windows."},
             status=400,
         )
     if not _HAS_ARTIFACTS:

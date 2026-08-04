@@ -506,7 +506,7 @@ def _fmt_duration(secs: int) -> str:
     return f"{secs // 60}min"
 
 
-_NO_EXPIRY_TEXT = "stays on until KiroCrew restarts"
+_NO_EXPIRY_TEXT = "stays on until Kiro Crew restarts"
 
 
 def describe_grant_lifetime() -> str:
@@ -1951,7 +1951,7 @@ async def _handle_slash_command(
     if cmd == "!allowlist":
         await slack.post_message(
             channel,
-            "⛔ Multi-user access is disabled for security. Only the owner can use KiroCrew via Slack.",
+            "⛔ Multi-user access is disabled for security. Only the owner can use Kiro Crew via Slack.",
             reply_ts,
         )
         return ""

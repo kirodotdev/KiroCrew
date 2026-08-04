@@ -241,7 +241,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         role = str(message.get("role", "") or "")
         content = redact_and_truncate(message.get("content") or "", max_chars=2000)
         if role in ("user", "assistant") and content:
-            speaker = "You" if role == "user" else "KiroCrew"
+            speaker = "You" if role == "user" else "Kiro Crew"
             try:
                 # Historical context is a sequence of separate egress actions.
                 # Stop immediately if policy narrows while the loop is yielding.

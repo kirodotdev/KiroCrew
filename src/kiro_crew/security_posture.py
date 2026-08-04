@@ -228,7 +228,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Onboarding import",
         "onboarding_import.py",
-        "Imported foreign-agent history and config before it enters KiroCrew.",
+        "Imported foreign-agent history and config before it enters Kiro Crew.",
     ),
     (
         "Discord / Telegram / WeCom / Webex",
@@ -627,7 +627,7 @@ def _sensitive_path_items() -> list[PostureItem]:
         # as ours just because it shares a string prefix.
         first = entry.split("/", 1)[0]
         if first in own:
-            detail = "KiroCrew trust root — the agent can neither read nor write it"
+            detail = "Kiro Crew trust root — the agent can neither read nor write it"
         else:
             detail = "Third-party credential store"
         items.append(PostureItem(label=f"~/{entry}", detail=detail))

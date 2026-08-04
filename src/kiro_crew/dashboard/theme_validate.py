@@ -1041,7 +1041,7 @@ def _validate_theme_dir(path: Path) -> tuple[dict[str, Any] | None, str | None]:
         )
     if fmt > _THEME_FORMAT_VERSION:
         return None, (
-            f"this pack requires a newer version of KiroCrew "
+            f"this pack requires a newer version of Kiro Crew "
             f"(pack formatVersion {fmt}, supported {_THEME_FORMAT_VERSION})"
         )
     if fmt < 1:

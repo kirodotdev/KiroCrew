@@ -117,8 +117,11 @@ export function isFiller(s) {
  *     they all render on `/settings?tab=display`, one of the gated surfaces.
  */
 export const ALWAYS_LATIN = [
-  // glossary.json `dnt`
-  'AWS', 'Discord', 'Docker', 'Git', 'GitHub', 'GitLab', 'JSON', 'Kiro', 'KiroCrew',
+  // glossary.json `dnt`, plus the spaced display name `Kiro Crew`, which is NOT a
+  // glossary term (see glossary.json) but must still be stripped before leak
+  // detection or the `Crew` half orphans as a reportable Latin run.
+  'AWS', 'Discord', 'Docker', 'Git', 'GitHub', 'GitLab', 'JSON', 'Kiro', 'Kiro Crew',
+  'KiroCrew',
   'MCP', 'Markdown', 'Node.js', 'OAuth', 'Playwright', 'Python', 'Slack',
   'TypeScript', 'YAML', 'npm',
   // language endonyms from SUPPORTED_LANGUAGES

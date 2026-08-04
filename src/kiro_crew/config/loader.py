@@ -754,7 +754,7 @@ class AgentConfig:
             "Sandbox",
             "Sandbox mode for ACP provider. Default 'off' defers isolation to "
             "kiro-cli's internal agent sandbox (kiro-cli >= 2.13). Set to 'auto' "
-            "to re-enable KiroCrew's OS-level sandbox (namespace on Linux, "
+            "to re-enable Kiro Crew's OS-level sandbox (namespace on Linux, "
             "sandbox-exec on macOS). The two layers are mutually exclusive on "
             "macOS (nested seatbelt causes EPERM).",
             enum=["auto", "off"],
@@ -824,7 +824,7 @@ class AgentConfig:
             "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from "
             "the dashboard picker, Slack, or the API. Every one of those surfaces "
             "uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or "
-            "until_shutdown to keep it on with no timed expiry until KiroCrew "
+            "until_shutdown to keep it on with no timed expiry until Kiro Crew "
             "restarts. Timed values are capped at 24h. Does NOT apply to a grant "
             "declared via 'dangerously_skip_permissions' above, which persists.",
             enum=["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
@@ -859,7 +859,7 @@ class AgentConfig:
             "Load MCP tool specs on demand (search-and-call) instead of sending "
             "every tool definition each turn, keeping the context window clear "
             "when many MCP servers are configured. kiro-cli backend only. When "
-            "enabled, KiroCrew forces deferral always-on (minPct=0/minTokens=0) "
+            "enabled, Kiro Crew forces deferral always-on (minPct=0/minTokens=0) "
             "via the per-session kiro settings overlay; disabling reverts to "
             "sending full tool specs. No effect on an alternate ACP backend.",
         ),
@@ -1180,7 +1180,7 @@ class MessagingConfig:
             "Use Transport",
             "Route inbound Slack messages through the SlackTransport → TurnDriver → "
             "SlackRenderer channel-neutral path instead of the native handle_message "
-            "monolith. Default ON in KiroCrew (the transport abstraction is the canonical "
+            "monolith. Default ON in Kiro Crew (the transport abstraction is the canonical "
             "path, shared with future channels). Set to false to fall back to the legacy "
             "native handler.",
         ),
@@ -1274,7 +1274,7 @@ class MemoryConfig:
         metadata=_meta(
             "Embedding Model URL",
             "Override HTTPS URL for the embedding model GGUF download (mirrored/airgapped "
-            "deployments). Empty uses the public KiroCrew CDN default; the "
+            "deployments). Empty uses the public Kiro Crew CDN default; the "
             "KIROCREW_EMBED_MODEL_URL env var wins over both. The download is "
             "sha256-verified regardless of source.",
         ),
@@ -2216,7 +2216,7 @@ class TelemetryConfig:
         default=False,
         metadata=_meta(
             "Enabled",
-            "Main switch for KiroCrew metrics telemetry. Off by default: metric "
+            "Main switch for Kiro Crew metrics telemetry. Off by default: metric "
             "call sites are no-ops and nothing is written. When on, a local-first "
             "JSONL sink under ~/.kiro/crew/metrics is enabled (no network egress).",
         ),
@@ -3060,7 +3060,7 @@ class InstancesConfig:
         metadata=_meta(
             "Enabled",
             "Enable multi-instance management — lets this gateway open SSH tunnels "
-            "to remote KiroCrews and embed their dashboards. Default off (opt-in). "
+            "to remote Kiro Crews and embed their dashboards. Default off (opt-in). "
             "Enabling also scopes a CSP frame-src relaxation to active tunnel ports.",
         ),
     )
@@ -3881,7 +3881,7 @@ class KiroCrewConfig:
     instances: InstancesConfig = field(
         default_factory=InstancesConfig,
         metadata=_meta(
-            "Instances", "Multi-instance management — manage/switch remote KiroCrews over SSH."
+            "Instances", "Multi-instance management — manage/switch remote Kiro Crews over SSH."
         ),
     )
     heartbeat: HeartbeatConfig = field(
@@ -3959,11 +3959,11 @@ class KiroCrewConfig:
     )
     agents: dict[str, KiroCrewAgentConfig] = field(
         default_factory=dict,
-        metadata=_meta("Agents", "Named KiroCrew agent definitions."),
+        metadata=_meta("Agents", "Named Kiro Crew agent definitions."),
     )
     default_agent: str = field(
         default="",
-        metadata=_meta("Default Agent", "Active KiroCrew agent name from the agents section."),
+        metadata=_meta("Default Agent", "Active Kiro Crew agent name from the agents section."),
     )
     workspaces: dict[str, WorkspaceConfig] = field(
         default_factory=dict,

@@ -478,7 +478,7 @@ async def _handle_allowlist_cmd(
 ) -> None:
     """Multi-user access disabled — user management is blocked."""
     await respond(
-        "⛔ Multi-user access is disabled for security. Only the owner can use KiroCrew via Slack."
+        "⛔ Multi-user access is disabled for security. Only the owner can use Kiro Crew via Slack."
     )
 
 
@@ -924,7 +924,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                     "type": "mrkdwn",
                     "text": (
                         ":warning: *Do not enter sensitive or confidential data"
-                        " into KiroCrew.* Follow your organization's data handling"
+                        " into Kiro Crew.* Follow your organization's data handling"
                         " policy when using this tool."
                     ),
                 },
@@ -1361,7 +1361,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     user_match = re.search(r"<@([A-Z0-9]+)(?:\|([^>]+))?>", cmd_text)
     if user_match:
         _spawn_tracked(
-            _respond("⛔ Multi-user access is disabled. Only the owner can use KiroCrew via Slack.")
+            _respond("⛔ Multi-user access is disabled. Only the owner can use Kiro Crew via Slack.")
         )
         return
 

@@ -125,7 +125,7 @@ export default function WelcomeView({
       {mode === 'orchestrator' && (
         <button
           className="px-4 py-2 rounded-lg text-[13px] text-muted border border-border bg-card hover:border-accent hover:text-text transition-all cursor-pointer"
-          onClick={() => setInput('Create a plan to analyze KiroCrew code package and report file count by major components')}
+          onClick={() => setInput('Create a plan to analyze Kiro Crew code package and report file count by major components')}
         >
           {i18nT('components.welcomeView.try_create_a_plan_to_analyze_kirocrew_code_packa')}
         </button>

@@ -27,7 +27,7 @@ gets sent, so a change here is the only way to change translator behaviour.
 
 ## PROMPT BEGIN
 
-You are translating the UI catalog of KiroCrew, a developer tool, from English
+You are translating the UI catalog of Kiro Crew, a developer tool, from English
 into **{{LANGUAGE_LABEL}} (`{{LOCALE}}`)**.
 
 Your output is consumed by a machine and validated by CI. A single deviation from

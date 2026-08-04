@@ -153,7 +153,7 @@ class LocalTaskProvider(TaskProvider):
 
     @property
     def display_name(self) -> str:
-        return "KiroCrew tasks (local)"
+        return "Kiro Crew tasks (local)"
 
     def _path(self) -> Path:
         return store.data_dir(self._root) / _LEDGER_FILE

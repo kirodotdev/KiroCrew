@@ -92,7 +92,7 @@
       "id": "dev-fleet",
       "feature": "Dev Fleet",
       "title": "Manage worktrees and pods from the dashboard",
-      "body": "Building KiroCrew itself? Enable the **Dev Fleet** app under **Apps → Installed → Show**, then open **Dev Fleet** to manage git worktrees and isolated test pods.",
+      "body": "Building Kiro Crew itself? Enable the **Dev Fleet** app under **Apps → Installed → Show**, then open **Dev Fleet** to manage git worktrees and isolated test pods.",
       "why": "",
       "doc": "",
       "cta_prompt": "",

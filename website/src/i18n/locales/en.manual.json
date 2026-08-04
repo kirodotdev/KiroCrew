@@ -31,7 +31,7 @@
     "view_full_changelog": "▸ View Full Changelog",
     "star_us": "Star us",
     "report_issue": "Report issue",
-    "star_kirocrew_on_github": "Star KiroCrew on GitHub",
+    "star_kirocrew_on_github": "Star Kiro Crew on GitHub",
     "report_an_issue_on_github": "Report an issue on GitHub",
     "click_to_collapse_readouts": "click to collapse readouts",
     "click_to_expand_readouts": "click to expand readouts",
@@ -257,7 +257,7 @@
             "no_members_found_for_this_repo": "No members found for this repo.",
             "proposing_new_labels_for_this_repo_now_lives_on": "Proposing NEW labels for this repo now lives on the Tagging dashboard, next to the untagged issues those labels get applied to.",
             "sign_in_no_extra_credentials_no_webhook": "sign-in (no\n          extra credentials, no {{provider}} webhook).",
-            "watch_this_repo_in_the_background_and_post_a_kir": "Watch this repo in the background and post a KiroCrew notification whenever a new issue is opened.",
+            "watch_this_repo_in_the_background_and_post_a_kir": "Watch this repo in the background and post a Kiro Crew notification whenever a new issue is opened.",
             "which_labels_mark_newcomer_friendly_work_so_issu": "Which labels mark newcomer-friendly work, so Issue Radar can surface issues to route to first-time contributors.",
             "which_labels_mean_an_issue_still_needs_triage_dr": "Which labels mean an issue still needs triage. Drives the Overview's “Untriaged” count and the needs-attention queue.",
             "role_admin": "Admin",
@@ -508,19 +508,19 @@
     "approvalModePicker": {
       "approval_mode_aria": "Approval mode: {{mode}}",
       "normal_label": "Normal",
-      "normal_tooltip": "KiroCrew asks you before doing anything",
-      "normal_desc": "KiroCrew checks with you before doing anything",
+      "normal_tooltip": "Kiro Crew asks you before doing anything",
+      "normal_desc": "Kiro Crew checks with you before doing anything",
       "reads_label": "Reads",
-      "reads_tooltip": "KiroCrew looks things up on its own, but asks before making changes",
-      "reads_desc": "KiroCrew looks things up on its own, but asks before making any changes",
+      "reads_tooltip": "Kiro Crew looks things up on its own, but asks before making changes",
+      "reads_desc": "Kiro Crew looks things up on its own, but asks before making any changes",
       "trust_label": "Trust",
-      "trust_tooltip": "In this chat, KiroCrew works without asking you first",
-      "trust_desc": "In this chat, KiroCrew works without asking you first",
+      "trust_tooltip": "In this chat, Kiro Crew works without asking you first",
+      "trust_desc": "In this chat, Kiro Crew works without asking you first",
       "yolo_label": "YOLO",
-      "yolo_tooltip": "In every chat, KiroCrew works without asking you first",
-      "yolo_desc": "In every chat, KiroCrew works without asking you first",
+      "yolo_tooltip": "In every chat, Kiro Crew works without asking you first",
+      "yolo_desc": "In every chat, Kiro Crew works without asking you first",
       "configure_duration": "Configure duration",
-      "yolo_expiration_until_shutdown": "Stays on until KiroCrew restarts — no timed expiry.",
+      "yolo_expiration_until_shutdown": "Stays on until Kiro Crew restarts — no timed expiry.",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again."
     },
     "appstore": {
@@ -528,7 +528,7 @@
         "all_apps": "All apps"
       },
       "installedAppCard": {
-        "app_cannot_be_opened_kirocrew_is_running_in_a_he": "App cannot be opened — KiroCrew is running in a headless environment.",
+        "app_cannot_be_opened_kirocrew_is_running_in_a_he": "App cannot be opened — Kiro Crew is running in a headless environment.",
         "collapse_details": "Collapse details",
         "disable": "Disable",
         "disabled": "Disabled",
@@ -543,7 +543,7 @@
       },
       "types": {
         "built_in": "Built-in",
-        "kirocrew_registry": "KiroCrew registry"
+        "kirocrew_registry": "Kiro Crew registry"
       },
       "categories": {
         "agents_automation": "Agents & Automation",
@@ -657,7 +657,7 @@
           "developer": "Developer",
           "explore": "Explore",
           "hooks": "Hooks",
-          "kirocrew_agents": "KiroCrew Agents",
+          "kirocrew_agents": "Kiro Crew Agents",
           "logs": "Logs",
           "pages": "Pages",
           "remote_crew": "Remote Crew",
@@ -958,7 +958,7 @@
       "view_raw": "view raw"
     },
     "migrationBanner": {
-      "install_app_from_apps": "Install \"{{app}}\" from Apps before the next KiroCrew update to keep using it."
+      "install_app_from_apps": "Install \"{{app}}\" from Apps before the next Kiro Crew update to keep using it."
     },
     "monacoCodeBlock": {
       "copied": "Copied!",
@@ -1002,7 +1002,7 @@
       "saving": "Saving…",
       "set_your_look_and_tell_kiro_about_you_so_respons": "Set your look and tell Kiro about you so responses fit the way you work.",
       "pop_apps_body": "Install purpose-built tools that unlock new capabilities and workflows.",
-      "pop_apps_title": "Extend what you can do with KiroCrew",
+      "pop_apps_title": "Extend what you can do with Kiro Crew",
       "pop_chat_body": "Ask a question, assign a task, or just say hi — your agent is ready.",
       "pop_chat_title": "Start your first session",
       "pop_schedule_body": "Set tasks to run automatically so things happen without you lifting a finger.",
@@ -1528,7 +1528,7 @@
       "failed_to_load_registry": "Failed to load registry",
       "find_apps_in_the_discover_tab_or_install_from_a": "Find apps in the Discover tab, or install from a local path via the sources gear above.",
       "hidden_you_can_re_enable_it_from_the_discover_ta": "Disabled. You can re-enable it from the Discover tab.",
-      "kirocrew_registry": "KiroCrew registry",
+      "kirocrew_registry": "Kiro Crew registry",
       "library": "Library",
       "no_apps_installed_yet": "No apps installed yet",
       "removing": "Removing…",
@@ -1536,15 +1536,15 @@
       "try_a_different_search_term": "Try a different search term",
       "update_all": "Update All",
       "the_app_itself_is_managed_externally": "The app itself is managed externally.",
-      "uninstall_removes_metadata_and_source": "Installed from Apps — KiroCrew metadata and the downloaded source code will be removed.",
-      "uninstall_removes_metadata_secret_and_source": "Installed from Apps — KiroCrew metadata, the app secret, and the downloaded source code will be removed."
+      "uninstall_removes_metadata_and_source": "Installed from Apps — Kiro Crew metadata and the downloaded source code will be removed.",
+      "uninstall_removes_metadata_secret_and_source": "Installed from Apps — Kiro Crew metadata, the app secret, and the downloaded source code will be removed."
     },
     "artifactDeployPage": {
       "aws_profiles_count": "AWS Profiles ({{count}})",
       "deployments_count": "Deployments ({{count}})",
       "pending_confirmations_count": "Pending confirmations ({{count}})",
       "ready_to_deploy_count": "Ready to deploy ({{count}})",
-      "aws_profiles_tip": "Every deploy runs as a registered profile. Register your existing AWS CLI profiles or create new ones — KiroCrew stores only the name, never credentials.",
+      "aws_profiles_tip": "Every deploy runs as a registered profile. Register your existing AWS CLI profiles or create new ones — Kiro Crew stores only the name, never credentials.",
       "ready_to_deploy_tip": "Webapp artifacts that haven't been deployed yet. Deploy opens a skill-loaded chat session that adapts the app and ships it.",
       "deployments_tip": "All deployed assets — static sites published from artifacts and full-stack webapp deployments. Recall = reversible takedown; Destroy = permanent infra removal.",
       "confirm_deploy": "Confirm Deploy",
@@ -2135,7 +2135,7 @@
     "overview": {
       "agentCfgTab": {
         "agent_config_file": "Agent Config ({{file}})",
-        "agent_config_tip": "The {{process}} agent definition — prompt, tools, MCP servers, model settings. This is the execution layer config, separate from KiroCrew's operational bindings.",
+        "agent_config_tip": "The {{process}} agent definition — prompt, tools, MCP servers, model settings. This is the execution layer config, separate from Kiro Crew's operational bindings.",
         "save": "Save"
       },
       "kiroCrewCfgTab": {
@@ -2161,11 +2161,12 @@
         "error": "Error",
         "online": "Online",
         "outdated": "Outdated",
-        "unknown": "Unknown"
+        "unknown": "Unknown",
+        "servers_scope_tip": "MCP servers across Kiro Crew and your interactive {{provider}}/Kiro globals. The Kiro Crew badge shows if it'll load in Kiro Crew sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply."
       },
       "memoryGraphTab": {
         "all_count": "All ({{count}})",
-        "gpu_rendered_visualization_of_all_kirocrew_memor": "GPU-rendered visualization of all KiroCrew memory. Nodes are color-coded by type. Zoom in to reveal labels, click a node to inspect, use filters to focus.",
+        "gpu_rendered_visualization_of_all_kirocrew_memor": "GPU-rendered visualization of all Kiro Crew memory. Nodes are color-coded by type. Zoom in to reveal labels, click a node to inspect, use filters to focus.",
         "group_history_count": "History ({{count}})",
         "group_lessons_count": "Lessons ({{count}})",
         "group_preferences_count": "Preferences ({{count}})",
@@ -2190,7 +2191,7 @@
         "no_skills_match_query": "No skills match “{{query}}”.",
         "pending_review_count": "Pending review ({{count}})",
         "skills_count": "Skills ({{count}})",
-        "skills_tip": "On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from KiroCrew, kiro-cli (~/.kiro/skills), and AIM packages.",
+        "skills_tip": "On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from Kiro Crew, kiro-cli (~/.kiro/skills), and AIM packages.",
         "auto_generated_skill_candidates_awaiting_your_ap": "Auto-generated skill candidates awaiting your approval. Click Review to inspect the SKILL.md and any bundled script before approving. Approve makes the skill live (and marks scripts executable); dismiss discards it. Nothing goes live until you approve it.",
         "hide": "Hide",
         "on_demand_skills_loaded_when_the_agent_determine": "On-demand skills loaded when the agent determines they're relevant.",
@@ -2404,7 +2405,7 @@
         "download_failed": "Download failed",
         "download_the_latest_version": "download the latest version",
         "install_failed": "Couldn’t install the update",
-        "installing_quiet_note": "Installing — KiroCrew will go quiet for a minute or two, then restart itself.",
+        "installing_quiet_note": "Installing — Kiro Crew will go quiet for a minute or two, then restart itself.",
         "manual_install_fallback": "If updating doesn't work, you can {{link}} and reinstall over this copy. Your settings, chats, and files are kept.",
         "published": "published {{when}}",
         "restarting": "Restarting...",
@@ -2436,7 +2437,7 @@
         "longest_edge_of_the_screenshot_in_pixels_smaller": "Longest edge of the screenshot, in pixels. Smaller is cheaper and faster to read; larger keeps small text legible if the agent has to fall back to the image.",
         "not_applicable": "Not applicable",
         "not_detected": "Not detected",
-        "not_detected_does_not_always_mean_unavailable_ma": "Not detected does not always mean unavailable — macOS attributes a permission grant to the process that launched KiroCrew, not to KiroCrew itself.",
+        "not_detected_does_not_always_mean_unavailable_ma": "Not detected does not always mean unavailable — macOS attributes a permission grant to the process that launched Kiro Crew, not to Kiro Crew itself.",
         "the_app_lists_in_computer_use_json_could_not_be": "The app lists in computer_use.json could not be read, so they are shown empty here. The agent still refuses every action that depends on them until the file is valid JSON.",
         "your_chat_sessions_were_restarted_so_this_takes": "Your chat sessions were restarted so this takes effect right away — Kiro reads its tool list once per session, so an open chat would not have picked it up otherwise. Your messages are still there; the agent re-reads its context on your next message."
       },
@@ -2595,7 +2596,7 @@
         "disable_all_built_in_denies_2": "Disable all built-in denies?",
         "disable_this_denied_command": "Disable this denied command?",
         "disabled_by_policy": "Disabled by policy",
-        "disabling_all_built_in_denies_removes_kirocrew_s": "Disabling all built-in denies removes KiroCrew’s protection against destructive and credential-exfiltration commands. Some commands may stay blocked by independent defense-in-depth controls (sensitive paths, IMDS, git-publish).",
+        "disabling_all_built_in_denies_removes_kirocrew_s": "Disabling all built-in denies removes Kiro Crew’s protection against destructive and credential-exfiltration commands. Some commands may stay blocked by independent defense-in-depth controls (sensitive paths, IMDS, git-publish).",
         "enabled": "Enabled",
         "expand_category_rules": "Expand {{category}} rules",
         "hide_pattern": "Hide pattern",
@@ -2628,7 +2629,7 @@
         "feature_sel_audit": "SEL Audit Logging",
         "feature_sel_audit_description": "Immutable, HMAC-chained security event trail with credential redaction before forwarding",
         "feature_sensitive_paths": "Sensitive Path Blocking",
-        "feature_sensitive_paths_description": "Credential directories and KiroCrew trust roots blocked at the hook layer before tool execution",
+        "feature_sensitive_paths_description": "Credential directories and Kiro Crew trust roots blocked at the hook layer before tool execution",
         "feature_suspicious_patterns": "Suspicious Bash Patterns",
         "feature_suspicious_patterns_description": "Detects deletion, exfiltration, and pipe-execution attack shapes in shell commands",
         "feature_token_auth": "Dashboard Token Auth",
@@ -2669,20 +2670,20 @@
         "yolo_duration_6h": "6 hours",
         "yolo_duration_12h": "12 hours",
         "yolo_duration_24h": "24 hours",
-        "yolo_duration_until_shutdown": "Until KiroCrew restarts",
+        "yolo_duration_until_shutdown": "Until Kiro Crew restarts",
         "yolo_duration_locked": "Disabled by your organization's policy",
         "yolo_duration_next_activation_note": "Applies the next time you turn auto-approve on.",
         "failed_to_save_yolo_duration": "Could not save the duration.",
-        "yolo_active_until_restart": "Auto-approve is on and stays on until KiroCrew restarts.",
+        "yolo_active_until_restart": "Auto-approve is on and stays on until Kiro Crew restarts.",
         "yolo_active_expires_at": "Auto-approve is on until {{time}}.",
         "third_party_apps_section": "Third-party apps",
         "third_party_apps_state_unknown": "Unavailable",
         "third_party_apps_unavailable": "Could not read the current setting, so it cannot be shown or changed here. If it was already on, third-party apps stay allowed — reload the page to try again.",
         "third_party_apps_title": "Let third-party apps run their own code",
-        "third_party_apps_desc": "Apps that did not ship with KiroCrew cannot run their own code until you allow it. Leave this off and such an app will install but refuse to start.",
-        "third_party_apps_tip": "Applies to any app that is not built into KiroCrew. Built-in apps are unaffected and keep working either way.",
-        "third_party_apps_on_warning": "This trusts every third-party app, including ones you install later — not just the one you were trying to start. A trusted app runs with the same access KiroCrew has: your files, your saved credentials, and the internet.",
-        "third_party_apps_scope_note": "Takes effect the next time an app's code is loaded. Turning it back off stops KiroCrew admitting that code again; an app already running stays up until it is switched off or KiroCrew restarts.",
+        "third_party_apps_desc": "Apps that did not ship with Kiro Crew cannot run their own code until you allow it. Leave this off and such an app will install but refuse to start.",
+        "third_party_apps_tip": "Applies to any app that is not built into Kiro Crew. Built-in apps are unaffected and keep working either way.",
+        "third_party_apps_on_warning": "This trusts every third-party app, including ones you install later — not just the one you were trying to start. A trusted app runs with the same access Kiro Crew has: your files, your saved credentials, and the internet.",
+        "third_party_apps_scope_note": "Takes effect the next time an app's code is loaded. Turning it back off stops Kiro Crew admitting that code again; an app already running stays up until it is switched off or Kiro Crew restarts.",
         "third_party_apps_save_failed": "Could not save this setting."
       },
       "sharedMcpGatewayToggle": {
@@ -2906,7 +2907,7 @@
           "label": "Archive"
         },
         "config": {
-          "description": "KiroCrew and agent configuration viewers (read-only)",
+          "description": "Kiro Crew and agent configuration viewers (read-only)",
           "label": "Config"
         },
         "logs": {
@@ -2971,7 +2972,7 @@
         "auto": "Auto",
         "description": "Language for the dashboard interface.",
         "label": "Language",
-        "sync_failed": "Couldn't save this to your KiroCrew config — the language applies in this browser only and may reset on reload."
+        "sync_failed": "Couldn't save this to your Kiro Crew config — the language applies in this browser only and may reset on reload."
       }
     },
     "groups": {
@@ -3008,7 +3009,7 @@
         "label": "Display"
       },
       "imports": {
-        "description": "Bring data from another AI agent, and back up or restore KiroCrew configuration",
+        "description": "Bring data from another AI agent, and back up or restore Kiro Crew configuration",
         "label": "Import / Export"
       },
       "instances": {

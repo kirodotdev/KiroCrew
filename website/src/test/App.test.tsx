@@ -129,7 +129,7 @@ describe('App routing', () => {
       expect(localStorage.getItem('mc-import-onboarded')).toBe('1')
     })
     expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('dialog', { name: 'Welcome to KiroCrew' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Welcome to Kiro Crew' })).not.toBeInTheDocument()
   })
 
   it('waits for theme boot before deciding the foreign-agent import gate', async () => {
@@ -352,7 +352,7 @@ describe('App routing', () => {
     // plus the icon-only Discord link. The kiro.dev link was removed.
     expect(screen.getByText('Star us')).toBeInTheDocument()
     expect(screen.getByText('Report issue')).toBeInTheDocument()
-    expect(screen.getByLabelText('Star KiroCrew on GitHub')).toBeInTheDocument()
+    expect(screen.getByLabelText('Star Kiro Crew on GitHub')).toBeInTheDocument()
     expect(screen.getByLabelText('Report an issue on GitHub')).toBeInTheDocument()
     expect(screen.getByLabelText('Kiro Discord community')).toBeInTheDocument()
     expect(screen.queryByLabelText('Kiro website (kiro.dev)')).not.toBeInTheDocument()

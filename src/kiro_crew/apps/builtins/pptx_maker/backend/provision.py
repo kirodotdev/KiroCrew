@@ -555,7 +555,7 @@ def provision() -> ProvisionOutcome:
     uv_bin = resolve_uv()
     if uv_bin is None:
         log.append(
-            "`uv` could not be found. It ships with KiroCrew as a Python "
+            "`uv` could not be found. It ships with Kiro Crew as a Python "
             "dependency, so this usually means the install is incomplete — "
             "reinstall with `pip install --force-reinstall uv`, or install uv "
             "yourself and put it on PATH."

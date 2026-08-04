@@ -82,7 +82,7 @@ _MAX_COLLAPSE = 50
 _MAX_COLLAPSED_ATTACHMENTS = IngestLimits().max_attachments
 
 _HELP_TEXT = """\
-🦞 **KiroCrew — Discord**
+🦞 **Kiro Crew — Discord**
 
 Commands:
 `!new` — Start a fresh conversation

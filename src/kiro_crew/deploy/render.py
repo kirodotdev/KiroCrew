@@ -40,7 +40,7 @@ _HTML_DOC_RE = re.compile(r"<html[\s>]", re.IGNORECASE)
 
 
 def _wrap(body: str, title: str) -> str:
-    return _SHELL.format(title=_html.escape(title or "Published with KiroCrew"), css=_THEME_CSS, body=body)
+    return _SHELL.format(title=_html.escape(title or "Published with Kiro Crew"), css=_THEME_CSS, body=body)
 
 
 def _render_markdown(md: str) -> str:

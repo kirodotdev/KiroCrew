@@ -1251,7 +1251,7 @@ _BUILTIN_APPS: list[dict[str, Any]] = [
         "displayName": "Agent Worlds",
         "description": (
             "Turns your running agents into characters in an animated pixel-art scene, so a "
-            "glance tells you how busy KiroCrew is. Each active agent appears as a sprite that "
+            "glance tells you how busy Kiro Crew is. Each active agent appears as a sprite that "
             "reacts as work starts and finishes, across themed scenes from a classic office to "
             "a wizard tower or an underwater lab. Pop it out into its own window to keep it on "
             "a second screen while you work."

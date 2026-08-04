@@ -81,7 +81,7 @@ function DemoApp() {
 
     // Footer
     h('div', { className: 'mt-6 text-[12px] text-muted/60 text-center' },
-      'This app was loaded dynamically from /apps/demo-app/ui/index.mjs via the KiroCrew App Platform.'
+      'This app was loaded dynamically from /apps/demo-app/ui/index.mjs via the Kiro Crew App Platform.'
     ),
   )
 }

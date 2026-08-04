@@ -560,7 +560,7 @@ async def test_refresh_flags_rollback(store, fake_client):
     }
     refreshed = await publish_sync.refresh_publication(art.slug)
     assert refreshed.publication is not None
-    assert refreshed.publication.last_error.startswith("The remote copy changed outside KiroCrew")
+    assert refreshed.publication.last_error.startswith("The remote copy changed outside Kiro Crew")
 
 
 @pytest.mark.asyncio
@@ -568,9 +568,38 @@ async def test_refresh_clears_drift_when_reconciled(store, fake_client):
     art = store.create(name="Doc", content="hello", kind="text")
     await publish_sync.publish(art.slug, visibility="PRIVATE")
     store.update_publication(
-        art.slug, last_error="The remote copy changed outside KiroCrew: it is showing v9."
+        art.slug, last_error="The remote copy changed outside Kiro Crew: it is showing v9."
     )
     # The remote now matches what KiroCrew published again → note clears.
+    fake_client.get_response = {
+        "artifact": {
+            "visibility": "PRIVATE",
+            "sharedWith": [],
+            "currentVersionNumber": 1,
+            "sha256": "sha-v1",
+        }
+    }
+    refreshed = await publish_sync.refresh_publication(art.slug)
+    assert refreshed.publication is not None
+    assert refreshed.publication.last_error == ""
+
+
+@pytest.mark.asyncio
+async def test_refresh_clears_drift_written_before_the_brand_rename(store, fake_client):
+    """A drift note persisted under the OLD product spelling still clears.
+
+    The prefix is a persisted sentinel, not just display text: it is written into
+    ``last_error`` and matched back on the next reconcile. Publications created
+    before the display name gained its space carry the unspaced brand, so matching
+    only the current spelling would strand them -- the remote reconciles and the
+    banner never clears. Without the legacy prefix in ``_DRIFT_PREFIXES`` this
+    asserts ``last_error == ""`` against the untouched legacy string and fails.
+    """
+    art = store.create(name="Doc", content="hello", kind="text")
+    await publish_sync.publish(art.slug, visibility="PRIVATE")
+    store.update_publication(
+        art.slug, last_error="The remote copy changed outside KiroCrew: it is showing v9."
+    )
     fake_client.get_response = {
         "artifact": {
             "visibility": "PRIVATE",

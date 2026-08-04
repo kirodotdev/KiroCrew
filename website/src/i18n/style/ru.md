@@ -37,7 +37,7 @@ cases:
 |---|---|
 | `в GitHub` | `в Гитхабе` |
 | `через Slack` | `через Слэк` |
-| `настройки KiroCrew` | `настройки КироКрю` |
+| `настройки Kiro Crew` | `настройки КироКрю` |
 
 Russian routinely declines borrowed common nouns (пул-реквест → пул-реквеста) — that is
 fine for common nouns. But DNT proper nouns from `glossary.json` must remain verbatim.

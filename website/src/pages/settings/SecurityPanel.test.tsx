@@ -194,7 +194,7 @@ describe('SecurityPanel — denied commands', () => {
 
     // Ack the warning, then Disable → the mutation fires with enabled=false.
     fireEvent.click(
-      screen.getByLabelText("I understand this weakens KiroCrew's protection."),
+      screen.getByLabelText("I understand this weakens Kiro Crew's protection."),
     )
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disable' }))
     await waitFor(() =>
@@ -259,7 +259,7 @@ describe('SecurityPanel — denied commands', () => {
     fireEvent.click(disableAll)
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(
-      screen.getByLabelText("I understand this weakens KiroCrew's protection."),
+      screen.getByLabelText("I understand this weakens Kiro Crew's protection."),
     )
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disable' }))
     await waitFor(() => expect(api.setDeniedCommandsDisableAll).toHaveBeenCalledWith(true))

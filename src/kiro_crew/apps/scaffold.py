@@ -227,7 +227,7 @@ def scaffold_app(
     if not display_name:
         display_name = name.replace("-", " ").title()
     if not description:
-        description = f"A KiroCrew app: {display_name}"
+        description = f"A Kiro Crew app: {display_name}"
     if not author:
         import os
         author = os.environ.get("USER", "developer")

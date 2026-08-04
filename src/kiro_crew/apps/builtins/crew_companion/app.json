@@ -2,7 +2,7 @@
   "name": "crew-companion",
   "version": "1.0.0",
   "displayName": "Crew Companion",
-  "description": "A desktop companion for KiroCrew that helps you pace your day: it nudges you to take breaks, holds the reminders you set in plain language, and runs a short breathing exercise when you need to reset. It also lets you know when a session finishes, fails, or needs your OK.",
+  "description": "A desktop companion for Kiro Crew that helps you pace your day: it nudges you to take breaks, holds the reminders you set in plain language, and runs a short breathing exercise when you need to reset. It also lets you know when a session finishes, fails, or needs your OK.",
   "author": "kirocrew",
   "license": "MIT",
   "repo": "crew-companion",

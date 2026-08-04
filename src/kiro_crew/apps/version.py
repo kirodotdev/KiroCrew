@@ -25,9 +25,9 @@ def check_min_version(min_version: str) -> str | None:
         from kiro_crew import __version__ as current
         if parse_version(current) < parse_version(min_version):
             return (
-                f"App requires KiroCrew >= {min_version}, "
+                f"App requires Kiro Crew >= {min_version}, "
                 f"but current version is {current}. "
-                f"Please update KiroCrew first."
+                f"Please update Kiro Crew first."
             )
     except (ValueError, AttributeError, ImportError):
         pass
