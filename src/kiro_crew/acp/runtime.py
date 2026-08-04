@@ -187,6 +187,13 @@ def _get_rss_mb(pid: int) -> float | None:
             return None
         return None
 
+    if platform_compat.IS_WINDOWS:
+        # No `ps` on a normal Windows PATH — the POSIX fallback below returned
+        # None for every pid, so the watchdog's RSS-recycle ceiling never fired.
+        # Read WorkingSetSize via GetProcessMemoryInfo through the shim.
+        rss = platform_compat.proc_rss_bytes_for_pid(pid)
+        return None if rss is None else rss / (1024.0 * 1024.0)
+
     # macOS / other: no /proc, fall back to ps (mirrors the sysctl/ps pattern
     # used elsewhere in this codebase for darwin system info).
     try:
@@ -256,6 +263,34 @@ def _get_rss_tree_mb(pid: int) -> float | None:
                 total += r
                 found = True
         return total if found else None
+
+    if platform_compat.IS_WINDOWS:
+        # Walk the Toolhelp parent map (the same snapshot descendant tracking
+        # uses) to find the subtree rooted at pid, then sum each process's RSS
+        # via the shim. Windows spawns kiro-cli without a launcher fork, but the
+        # tree still covers any MCP-server / tool children it spawns.
+        try:
+            parent_map = platform_compat._windows_process_parent_map()
+        except Exception:
+            return _get_rss_mb(pid)
+        win_children: dict[int, list[int]] = {}
+        for cpid, ppid in parent_map.items():
+            win_children.setdefault(ppid, []).append(cpid)
+        total_mb = 0.0
+        found = False
+        win_visited: set[int] = set()
+        stack = [pid]
+        while stack:
+            p = stack.pop()
+            if p in win_visited:
+                continue
+            win_visited.add(p)
+            r = _get_rss_mb(p)
+            if r is not None:
+                total_mb += r
+                found = True
+            stack.extend(win_children.get(p, ()))
+        return total_mb if found else None
 
     # macOS / other: build a ppid map from a single ps snapshot, then sum the
     # descendant subtree rooted at pid (ps reports RSS in KiB).

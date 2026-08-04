@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -40,6 +41,7 @@ from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
+    SandboxUnavailableError,
     cgroup_scope_argv,
     resource_limit_preexec,
     wrap_argv,
@@ -508,15 +510,32 @@ def _resolve_mcp_server(name: str) -> tuple[str, ...] | None:
     return tuple([spec["command"]] + spec.get("args", []))
 
 
+def _split_script_spec(script_path: str) -> tuple[str, str]:
+    """Split a ``"<path>:<func>"`` spec into ``(path, func)``, drive-aware.
+
+    Splits on the LAST colon. A Windows drive letter adds a second colon at
+    index 1 (``C:\\...``); taking the rightmost colon keeps the whole drive path
+    and the trailing func (``C:\\crons\\job.py:run`` -> ``C:\\crons\\job.py`` +
+    ``run``). The only ambiguous input is a bare drive path with no ``:func``
+    suffix, which would otherwise split at the drive colon into the nonsense
+    ``("C", "\\crons\\job.py")`` — so a colon that IS the drive colon does not
+    count as the separator.
+    """
+
+    drive_colon = len(script_path) >= 2 and script_path[1] == ":" and script_path[0].isalpha()
+    func_colon = script_path.rfind(":")
+    if func_colon == -1 or (drive_colon and func_colon == 1):
+        raise ValueError(f"Invalid script path '{script_path}': expected 'path.py:func'")
+    return script_path[:func_colon], script_path[func_colon + 1:]
+
+
 def resolve_script_path(script_path: str) -> tuple[str, str]:
     """Validate and resolve a script path. Returns (file_path, func_name).
 
     Scripts must be files under ``<config_dir>/crons/``.
     Format: "<config_dir>/crons/file.py:function" or "/absolute/path.py:function"
     """
-    if ":" not in script_path:
-        raise ValueError(f"Invalid script path '{script_path}': expected 'path.py:func'")
-    module_part, func_name = script_path.rsplit(":", 1)
+    module_part, func_name = _split_script_spec(script_path)
 
     file_path = Path(os.path.expanduser(module_part)).resolve()
     if not file_path.exists():
@@ -656,6 +675,11 @@ def run_script_sandboxed(
             }
     except subprocess.TimeoutExpired:
         return {"status": "error", "error": f"Script timed out after {timeout}s"}
+    except SandboxUnavailableError as exc:
+        # Same reasoning as run_command_sandboxed: a host with no sandbox backend
+        # must surface a failed job carrying the remedy, not an escaping
+        # exception the scheduler cannot attribute to this job.
+        return {"status": "error", "error": f"{_SANDBOX_UNAVAILABLE_PREFIX}{exc}"}
     finally:
         Path(launcher_path).unlink(missing_ok=True)
         Path(secret_path).unlink(missing_ok=True)
@@ -665,13 +689,66 @@ def run_script_sandboxed(
 
 _MAX_COMMAND_OUTPUT = 65536  # 64KB cap
 
+# Leads a cron failure caused by the fail-closed sandbox rather than by the job
+# itself. The distinction matters to the reader: the job is fine, the host cannot
+# isolate it, and the remedy is a config opt-in — which the wrapped message
+# carries verbatim.
+_SANDBOX_UNAVAILABLE_PREFIX = "❌ Cron could not run in an OS sandbox: "
+
+# Git-for-Windows ships sh/bash under these dirs but only Git Bash itself puts
+# them on PATH — a gateway launched from PowerShell / a shortcut / the desktop
+# app inherits a registry PATH that has Git\cmd (git.exe) but no shell. Probe
+# the standard install roots so a command cron works regardless of how the
+# gateway was started.
+_WINDOWS_GIT_SHELL_DIRS = (
+    r"C:\Program Files\Git\bin",
+    r"C:\Program Files\Git\usr\bin",
+    r"C:\Program Files (x86)\Git\bin",
+    r"C:\Program Files (x86)\Git\usr\bin",
+)
+
+
+def _resolve_command_shell() -> str | None:
+    """Return an absolute path to a POSIX shell for ``sh -c`` command crons.
+
+    Command crons are authored as POSIX shell one-liners (and vetted by
+    ``mcp_cron._vet_shell_command`` under POSIX quoting), so cmd.exe is NOT a
+    substitute — a missing shell must fail loudly rather than silently changing
+    the command language. On POSIX ``sh`` is always present; on Windows it is
+    absent from a normal (non-Git-Bash) PATH, so also probe the Git-for-Windows
+    install roots. Returns ``None`` when no POSIX shell can be found.
+    """
+
+    for name in ("bash", "sh"):
+        found = shutil.which(name)
+        if found:
+            return found
+    if platform_compat.IS_WINDOWS:
+        for directory in _WINDOWS_GIT_SHELL_DIRS:
+            for name in ("bash.exe", "sh.exe"):
+                candidate = Path(directory) / name
+                if candidate.is_file():
+                    return str(candidate)
+    return None
+
 
 def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None = None) -> dict:
     """Run a shell command in a sandboxed subprocess via wrap_argv().
 
     Returns: {"status": "ok"|"error"|"cancelled", "output": "...", "exit_code": N}
     """
-    argv = ["sh", "-c", command]
+    shell = _resolve_command_shell()
+    if shell is None:
+        return {
+            "status": "error",
+            "output": (
+                "❌ No POSIX shell available to run this command cron. Command "
+                "crons are executed with `sh -c`; install Git for Windows (which "
+                "ships bash) or put sh/bash on PATH, then retry."
+            ),
+            "exit_code": -1,
+        }
+    argv = [shell, "-c", command]
     # mode="cc" (not "standard"): the command string is fully model-supplied via
     # cron_add and executes outside the kiro-cli ACP permission/hook flow, so this
     # is a low-trust exec path. "cc" hides the credential dirs/files (.aws, .kube,
@@ -683,10 +760,16 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
     # which blocks any .ssh reference) — the primary control. This sandbox is
     # defense-in-depth and is bypassed when the OS backend falls back to "none"
     # (e.g. macOS >= 26 — see _clean_cron_env).
-    sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc")
-    sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
-    clean_env = _clean_cron_env()
+    #
+    # wrap_argv is INSIDE the try: on a host with no OS sandbox backend (every
+    # Windows host) it fail-closes by raising, and outside the try that escaped
+    # this function entirely — the scheduler's caller saw a bare exception
+    # instead of a job it could mark failed, so the remedy never reached the user.
+    sandbox_cleanup: str | None = None
     try:
+        sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc")
+        sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
+        clean_env = _clean_cron_env()
         proc = subprocess.Popen(
             sandboxed_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=clean_env, start_new_session=True,
@@ -717,6 +800,12 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
             "status": "ok" if proc.returncode == 0 else "error",
             "output": output,
             "exit_code": proc.returncode,
+        }
+    except SandboxUnavailableError as exc:
+        return {
+            "status": "error",
+            "output": f"{_SANDBOX_UNAVAILABLE_PREFIX}{exc}",
+            "exit_code": -1,
         }
     except Exception as exc:
         return {"status": "error", "output": f"❌ Command failed: {exc}", "exit_code": -1}

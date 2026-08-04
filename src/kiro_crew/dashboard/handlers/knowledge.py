@@ -692,9 +692,16 @@ async def add_source(request: web.Request) -> web.Response:
 
     # Validate URI format for sources without a dedicated connector
     if source_type == "local_file":
-        # local_file sources use absolute file paths as URIs
-        if not uri.startswith("/"):
-            return web.json_response({"error": "local_file URI must be an absolute path"}, status=400)
+        # local_file sources use absolute file paths as URIs. Use is_absolute()
+        # rather than a leading-"/" test: a Windows absolute path starts with a
+        # drive letter (C:\... or C:/...), never "/", so the string test
+        # rejected every valid Windows input and made single-file ingest 100%
+        # unusable there.
+        if not Path(uri).is_absolute():
+            return web.json_response(
+                {"error": "local_file URI must be an absolute path", "code": "uri_not_absolute"},
+                status=400,
+            )
         # Resolve symlinks and .. components before security check
         resolved = Path(uri).resolve()
         if is_sensitive_path(str(resolved)):

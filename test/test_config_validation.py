@@ -120,6 +120,34 @@ class TestValidateConfigData:
             validation.validate_config_data({"totally_unknown_key": 1})
         assert any("unrecognized top-level keys" in r.message for r in caplog.records)
 
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    def test_save_stamped_meta_key_is_not_reported_as_unrecognized(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # ``meta`` is written by KiroCrewConfig.save() itself, so warning about
+        # it means every launch scolds the user for KiroCrew's own bookkeeping —
+        # on stdout of `kirocrew token`, whose URL the user has to copy.
+        data = {
+            "meta": {"lastTouchedVersion": "1.2.3", "lastTouchedAt": "2026-01-01T00:00:00+00:00"},
+            "agent": {"provider": "acp"},
+        }
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            validation.validate_config_data(data)
+        assert not [r for r in caplog.records if "unrecognized top-level keys" in r.message]
+
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    def test_genuinely_unknown_key_still_warns_alongside_meta(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Excluding the reserved keys must not silence the real warning.
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            validation.validate_config_data({"meta": {}, "totally_unknown_key": 1})
+        warnings = [r.message for r in caplog.records if "unrecognized top-level keys" in r.message]
+        assert warnings and "totally_unknown_key" in warnings[0]
+        assert "meta" not in warnings[0]
+
     def test_warning_logger_name_is_loader_not_validation(self) -> None:
         # Pin the deliberate logger-name choice so an accidental
         # getLogger(__name__) refactor is caught.

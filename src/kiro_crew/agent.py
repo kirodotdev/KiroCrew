@@ -449,6 +449,15 @@ def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
     Returns:
         The shim path if one was created/updated, else ``None``.
     """
+    # Windows has no ~/.local/bin symlink convention, and creating a symlink
+    # there needs Developer Mode or elevation — a normal session raises
+    # OSError [WinError 1314] mid-wizard. pip's Scripts\kirocrew.exe console
+    # script is already the supported Windows launcher (docs/windows-install.md),
+    # so this POSIX install.sh mirror has nothing to do here. Return before any
+    # filesystem attempt so `kirocrew setup` never prints a traceback for it.
+    if platform_compat.IS_WINDOWS:
+        return None
+
     target = _resolve_kirocrew_bin()
     # Nothing concrete to point at — bare "kirocrew" or a non-executable file.
     if not (os.path.isabs(target) and os.path.isfile(target) and os.access(target, os.X_OK)):
@@ -492,8 +501,11 @@ def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
                 return None
             link.unlink()
         link.symlink_to(target)
-    except OSError:
-        logger.warning("Could not create kirocrew shim at %s", link, exc_info=True)
+    except OSError as exc:
+        # A best-effort PATH convenience must never dump a traceback into the
+        # interactive setup wizard (which runs without logging.basicConfig, so
+        # exc_info would hit Python's lastResort handler and print the stack).
+        logger.warning("Could not create kirocrew shim at %s: %s", link, exc)
         return None
     logger.info("Linked kirocrew shim: %s -> %s", link, target)
     return str(link)

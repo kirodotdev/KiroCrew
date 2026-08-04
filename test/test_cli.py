@@ -135,6 +135,49 @@ class TestDoctor:
         ):
             _doctor()
 
+    def test_doctor_windows_missing_whisper_ffmpeg_is_non_fatal(self, tmp_path, monkeypatch):
+        """On Windows, STT ships enabled-by-default but whisper/ffmpeg are not
+        dependencies there. Reporting them as hard issues made `doctor` exit 1
+        on a healthy install and broke the guide's `doctor && gateway` chain, so
+        they must be non-fatal notes: doctor exits 0."""
+        import kiro_crew.cli_doctor as _doc
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        agent_file = tmp_path / "kirocrew.json"
+        _healthy_agent_file(agent_file)
+        mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
+        monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", True)
+
+        # STT enabled with whisper provider (the shipped default), but neither
+        # binary present — the autouse fixture pins STT OFF, so re-enable here.
+        def _cfg_with_stt() -> KiroCrewConfig:
+            cfg = KiroCrewConfig()
+            cfg.stt.enabled = True
+            cfg.stt.provider = "whisper"
+            return cfg
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _cfg_with_stt()))
+        monkeypatch.setattr(_doc, "_find_whisper", lambda path=None: None)
+        monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
+
+        def _which(binary, **_kw):
+            # Everything resolves EXCEPT the two STT binaries.
+            if binary in ("whisper", "ffmpeg"):
+                return None
+            return f"C:\\tools\\{binary}.exe"
+
+        with (
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=_which),
+            patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
+            patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
+            patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
+            patch("kiro_crew.cli_doctor.is_local_only", return_value=True),
+            patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
+        ):
+            # Must NOT raise SystemExit(1): the two STT gaps are notes on Windows.
+            _doctor()
+
     def test_doctor_reports_platform_boot_error_without_crashing(self, tmp_path, capsys):
         """A PlatformCompositionError from boot must be REPORTED by the doctor,
         not crash it — the doctor is the tool that diagnoses a broken setup, so
@@ -1084,6 +1127,78 @@ class TestSetupTimezone:
 
         monkeypatch.setenv("TZ", ":America/Chicago")
         assert _detect_system_timezone() == "America/Chicago"
+
+    def test_windows_uses_tzlocal_when_no_posix_signal(self, monkeypatch):
+        """On Windows (no TZ, no /etc/localtime), the zone comes from tzlocal —
+        otherwise the product silently ran in UTC and cron fired hours off."""
+        import sys
+        import types
+
+        from kiro_crew import cli_setup
+
+        monkeypatch.delenv("TZ", raising=False)
+        monkeypatch.setattr(cli_setup.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(cli_setup.Path, "is_symlink", lambda self: False)
+        fake_tzlocal = types.SimpleNamespace(
+            get_localzone_name=lambda: "America/Los_Angeles"
+        )
+        monkeypatch.setitem(sys.modules, "tzlocal", fake_tzlocal)
+
+        assert cli_setup._detect_system_timezone() == "America/Los_Angeles"
+
+    def test_windows_tzlocal_missing_degrades_to_empty(self, monkeypatch):
+        """A source checkout without tzlocal must skip-and-ask, never crash."""
+        import builtins
+
+        from kiro_crew import cli_setup
+
+        monkeypatch.delenv("TZ", raising=False)
+        monkeypatch.setattr(cli_setup.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(cli_setup.Path, "is_symlink", lambda self: False)
+        real_import = builtins.__import__
+
+        def _no_tzlocal(name, *args, **kwargs):
+            if name == "tzlocal":
+                raise ImportError("no tzlocal")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _no_tzlocal)
+        assert cli_setup._detect_system_timezone() == ""
+
+    def test_input_or_skip_returns_none_on_eof(self, monkeypatch):
+        """A closed/piped stdin must skip the step, not raise EOFError into a
+        raw traceback mid-wizard (the Windows first-run failure)."""
+        from kiro_crew.cli_setup import _input_or_skip
+
+        def _raise_eof(_prompt):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _raise_eof)
+        assert _input_or_skip("tz: ") is None
+
+    def test_timezone_retry_eof_skips_without_crash(self, tmp_path, monkeypatch):
+        """An invalid entry followed by EOF on the retry prompt skips cleanly."""
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text("{}")
+        monkeypatch.setattr("kiro_crew.cli_setup.config_path", lambda: cfg_file)
+
+        from kiro_crew.cli_setup import _setup_timezone
+
+        answers = iter(["Not/AZone"])
+
+        def _input(_prompt):
+            try:
+                return next(answers)
+            except StopIteration:
+                raise EOFError
+
+        with patch("builtins.input", _input):
+            with patch("kiro_crew.cli_setup._detect_system_timezone", return_value=""):
+                _setup_timezone()  # must not raise
+
+        # Skipped: no timezone persisted.
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
+        assert not data.get("timezone")
 
     def test_auto_detect_from_symlink(self, tmp_path, monkeypatch):
         """When /etc/localtime is a symlink, timezone is auto-detected."""

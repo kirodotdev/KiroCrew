@@ -36,8 +36,20 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import kiro_crew.agent as agent
 import kiro_crew.mcp_cleanup as mcp_cleanup
+
+# The ~/.local/bin symlink shim is POSIX-only: ensure_kirocrew_on_path returns
+# early on Windows (pip's Scripts\kirocrew.exe is the launcher there, and a
+# symlink needs Developer Mode / elevation). These exercise the symlink
+# behavior itself, so they are POSIX-only; a dedicated Windows no-op test
+# covers the other branch.
+_posix_shim_only = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX ~/.local/bin symlink shim; Windows uses pip's Scripts\\kirocrew.exe",
+)
 
 
 # --------------------------------------------------------------------------
@@ -188,6 +200,7 @@ def test_cleanup_purges_meshclaw_predecessor_entries(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 # Shim install — mirrors install.sh for install paths that skip it (the app)
 # --------------------------------------------------------------------------
+@_posix_shim_only
 def test_ensure_kirocrew_on_path_creates_shim(tmp_path, monkeypatch):
     """A frozen app with no `kirocrew` on PATH must get a shim pointing at the
     bundled binary."""
@@ -204,6 +217,7 @@ def test_ensure_kirocrew_on_path_creates_shim(tmp_path, monkeypatch):
     assert os.access(link, os.X_OK), "shim must be executable"
 
 
+@_posix_shim_only
 def test_ensure_kirocrew_on_path_idempotent(tmp_path, monkeypatch):
     """Re-running setup when the shim is already correct is a no-op."""
     exe = _fake_frozen_exe(tmp_path)
@@ -213,6 +227,20 @@ def test_ensure_kirocrew_on_path_idempotent(tmp_path, monkeypatch):
     assert agent.ensure_kirocrew_on_path(bin_dir=bin_dir) is not None
     assert agent.ensure_kirocrew_on_path(bin_dir=bin_dir) is None
     assert os.path.realpath(bin_dir / "kirocrew") == os.path.realpath(exe)
+
+
+def test_ensure_kirocrew_on_path_is_noop_on_windows(tmp_path, monkeypatch):
+    """On Windows the POSIX symlink shim must be skipped entirely — pip's
+    Scripts\\kirocrew.exe is the launcher, and attempting the symlink raises
+    WinError 1314 without Developer Mode, printing a traceback into the setup
+    wizard. It must return None WITHOUT touching the filesystem."""
+    monkeypatch.setattr(agent.platform_compat, "IS_WINDOWS", True)
+    bin_dir = tmp_path / "localbin"
+
+    # Even with a resolvable target, Windows returns None and creates nothing.
+    with patch.object(agent, "_resolve_kirocrew_bin", return_value=str(tmp_path / "kc")):
+        assert agent.ensure_kirocrew_on_path(bin_dir=bin_dir) is None
+    assert not bin_dir.exists()
 
 
 # --------------------------------------------------------------------------
@@ -351,6 +379,7 @@ def test_ensure_shim_noop_when_no_binary(tmp_path, monkeypatch):
     assert not (bin_dir / "kirocrew").exists()
 
 
+@_posix_shim_only
 def test_ensure_shim_refreshes_stale_symlink(tmp_path, monkeypatch):
     exe = _fake_frozen_exe(tmp_path)
     _simulate_frozen_app(monkeypatch, exe)
@@ -465,6 +494,7 @@ def test_ensure_shim_declines_a_worktree_target(tmp_path, monkeypatch):
     assert not (bin_dir / "kirocrew").exists(), "worktree venv must not be linked"
 
 
+@_posix_shim_only
 def test_ensure_shim_declines_a_symlink_pointing_into_a_worktree(tmp_path, monkeypatch):
     """The ancestry walk is lexical, so a target that is ITSELF a symlink into a
     worktree must be resolved first — otherwise its own parents carry no `.git`
@@ -497,6 +527,7 @@ def test_ensure_shim_declines_a_bare_repo_worktree_target(tmp_path, monkeypatch)
     assert not (bin_dir / "kirocrew").exists()
 
 
+@_posix_shim_only
 def test_ensure_shim_links_an_ordinary_clone_target(tmp_path, monkeypatch):
     """Negative control: the same setup in a normal clone still gets linked, so
     the guard rejects worktrees specifically rather than disabling the shim."""
@@ -510,6 +541,7 @@ def test_ensure_shim_links_an_ordinary_clone_target(tmp_path, monkeypatch):
     assert os.path.realpath(bin_dir / "kirocrew") == os.path.realpath(binary)
 
 
+@_posix_shim_only
 def test_ensure_shim_keeps_a_working_shim_when_target_is_a_worktree(tmp_path, monkeypatch):
     """The regression that broke the machine: an existing, working shim must
     survive a resolution that lands in a worktree — not be replaced by it."""

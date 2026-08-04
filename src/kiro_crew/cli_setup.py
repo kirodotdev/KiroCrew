@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+from kiro_crew import platform_compat
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.browser.setup import (
     ensure_playwright_installed,
@@ -502,7 +503,17 @@ def _configured_port() -> int:
 
 
 def _detect_system_timezone() -> str:
-    """Return IANA tz name from TZ env var or /etc/localtime symlink, or empty string."""
+    """Return the system IANA tz name, or empty string if it can't be detected.
+
+    ``TZ`` and ``/etc/localtime`` are POSIX-only. On Windows the zone lives in
+    the registry as a Windows zone id ("Pacific Standard Time") that needs a
+    Windows->IANA mapping, so without a Windows branch this returned "" there and
+    the whole product silently fell back to UTC — cron schedules and the agent's
+    "today" were off by the local offset. ``tzlocal`` (a Windows-marked dep whose
+    only requirement, ``tzdata``, we already ship) resolves it via the CLDR
+    windowsZones table; it is imported lazily so a source checkout without it
+    degrades to the old skip-and-ask flow rather than crashing.
+    """
     tz_env = os.environ.get("TZ", "").lstrip(":")
     if tz_env and not tz_env.startswith("/"):
         return tz_env
@@ -514,7 +525,36 @@ def _detect_system_timezone() -> str:
                 return target.split("zoneinfo/", 1)[1]
     except Exception:
         pass
+    if platform_compat.IS_WINDOWS:
+        try:
+            # tzlocal ships no type stubs; it is a Windows-only lazy import, so
+            # ignore the missing-stub error rather than add a types-* dep.
+            import tzlocal  # type: ignore[import-untyped]
+
+            name = tzlocal.get_localzone_name()
+            if name:
+                return str(name)
+        except Exception:
+            # No tzlocal / unmappable zone: fall through to the ask-or-skip path
+            # rather than crash the setup wizard.
+            pass
     return ""
+
+
+def _input_or_skip(prompt: str) -> str | None:
+    """``input(prompt).strip()``, returning ``None`` on EOF instead of crashing.
+
+    A closed/piped stdin (non-interactive setup, or a Windows console quirk)
+    makes bare ``input()`` raise ``EOFError``. The timezone step's retry loop is
+    only entered on a validation failure, so a Windows user who mistyped a zone
+    once — the common case, since detection used to yield nothing there — hit an
+    uncaught traceback. Callers treat ``None`` as "skip this step".
+    """
+
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        return None
 
 
 def _setup_slash_command() -> None:
@@ -567,20 +607,21 @@ def _setup_timezone() -> None:
     print("── Timezone ──\n")
     if current:
         print(f"  Current: {current}")
-        answer = input(f"  Timezone [{current}]: ").strip()
+        answer = _input_or_skip(f"  Timezone [{current}]: ")
         if not answer:
             print(f"  ✅ Keeping: {current}\n")
             return
         tz_val = answer
     elif detected:
         print(f"  Detected: {detected}")
-        answer = input(f"  Timezone [{detected}]: ").strip()
+        answer = _input_or_skip(f"  Timezone [{detected}]: ")
         tz_val = answer or detected
     else:
-        tz_val = input("  IANA timezone (e.g. America/Los_Angeles): ").strip()
-        if not tz_val:
+        raw = _input_or_skip("  IANA timezone (e.g. America/Los_Angeles): ")
+        if not raw:
             print("  ⏭  Skipped. Cron schedules will show UTC.\n")
             return
+        tz_val = raw
 
     # Validate with retry
     abbrev_to_iana: dict[str, str] = {
@@ -617,10 +658,11 @@ def _setup_timezone() -> None:
                 print(f"  ❌ Unknown timezone '{tz_val}'.")
                 print("     Use IANA format, e.g. America/Los_Angeles, Europe/London")
             if attempt < max_retries - 1:
-                tz_val = input("  Timezone: ").strip()
-                if not tz_val:
+                retry = _input_or_skip("  Timezone: ")
+                if not retry:
                     print("  ⏭  Skipped.\n")
                     return
+                tz_val = retry
             else:
                 print("  ⏭  Skipped after too many attempts.\n")
                 return

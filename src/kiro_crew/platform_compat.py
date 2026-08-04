@@ -20,6 +20,7 @@ import stat
 import struct
 import subprocess
 import sys
+import time
 import zlib
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
@@ -707,6 +708,14 @@ def _windows_last_error() -> int:
     return int(getter()) if callable(getter) else 0
 
 
+# Bounds for the exited-but-exit-FILETIME-unpublished window (see
+# _windows_process_handle_identity). The observed window closes within ~20ms;
+# the ceiling is generous enough to absorb a loaded host without letting a
+# genuinely unreadable handle stall a caller.
+_WINDOWS_EXIT_FILETIME_TIMEOUT_SECS = 0.25
+_WINDOWS_EXIT_FILETIME_POLL_SECS = 0.002
+
+
 def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None] | None:
     """Return ``(pid, creation_time, exit_time)`` for an exact process handle."""
 
@@ -770,6 +779,21 @@ def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None]
 
         creation_value = _filetime_value(creation)
         exit_value = _filetime_value(exit_)
+        # GetExitCodeProcess reports the exit BEFORE the kernel publishes the
+        # exit FILETIME, so a just-terminated process reads back as
+        # exited-with-exit_time==0 for a sub-millisecond-to-tens-of-milliseconds
+        # window (observed on 57/60 back-to-back spawns, resolving in
+        # 0.05-20ms). Treating that window as "no identity" makes the caller
+        # reject a perfectly good handle, so poll briefly for the real value
+        # instead. The bound stays short because the only alternative to a
+        # published exit time is refusing the handle.
+        if not active and exit_value <= 0:
+            deadline = time.monotonic() + _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS
+            while exit_value <= 0 and time.monotonic() < deadline:
+                time.sleep(_WINDOWS_EXIT_FILETIME_POLL_SECS)
+                if not _read_times():
+                    return None
+                exit_value = _filetime_value(exit_)
         if creation_value <= 0 or (not active and exit_value <= 0):
             return None
         return pid, creation_value, None if active else exit_value
@@ -1262,15 +1286,36 @@ def pid_exists(pid: int) -> bool:
             return True  # exists but we can't signal it
     try:
         _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000  # noqa: N806 — Windows API constant
+        _STILL_ACTIVE = 259  # noqa: N806 — Windows STILL_ACTIVE exit code
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
         handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if handle:
-            kernel32.CloseHandle(handle)
-            return True
+            # OpenProcess SUCCEEDS for an EXITED process as long as any handle to
+            # the kernel process object is still open — and asyncio's Proactor
+            # transport keeps its duplicated handle open until GC, so a
+            # just-killed child we awaited would read back as "exists". Confirm
+            # with GetExitCodeProcess: STILL_ACTIVE means genuinely running;
+            # any other code means it has exited (a defunct handle to a dead
+            # PID), so report not-exists. Without this every Windows session
+            # recycle logged a false "PID survived kill" and left dead PIDs in
+            # the tracker until the periodic sweep.
+            try:
+                code = wintypes.DWORD()
+                got = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+                if got and code.value != _STILL_ACTIVE:
+                    return False
+                return True
+            finally:
+                kernel32.CloseHandle(handle)
         return getattr(ctypes, "get_last_error", lambda: 0)() == 5  # ERROR_ACCESS_DENIED → exists
     except Exception:
         return False
@@ -2223,6 +2268,18 @@ def proc_rss_bytes() -> int:
 
         psapi = ctypes.WinDLL("psapi", use_last_error=True)  # type: ignore[attr-defined]
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        # argtypes/restype are load-bearing on 64-bit: without them ctypes
+        # defaults GetCurrentProcess's return to a 32-bit int and TRUNCATES the
+        # pseudo-handle, so GetProcessMemoryInfo fails and this returned 0 for
+        # every process — silently disabling the watchdog's RSS-recycle ceiling.
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi.GetProcessMemoryInfo.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(PROCESS_MEMORY_COUNTERS),
+            wintypes.DWORD,
+        ]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
         counters = PROCESS_MEMORY_COUNTERS()
         counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
         if psapi.GetProcessMemoryInfo(
@@ -2232,6 +2289,69 @@ def proc_rss_bytes() -> int:
         return 0
     except Exception:
         return 0
+
+
+def proc_rss_bytes_for_pid(pid: int) -> int | None:
+    """Resident set size (bytes) of an ARBITRARY *pid*, or None if unavailable.
+
+    Unlike :func:`proc_rss_bytes` (self only), this measures another process so
+    the watchdog can sum a spawned agent's whole tree. Linux reads
+    ``/proc/<pid>/statm``; Windows opens the PID and calls
+    ``GetProcessMemoryInfo``; macOS has no ctypes-only per-pid path, so it
+    returns None and the caller keeps its ``ps`` route.
+    """
+
+    if sys.platform == "linux":
+        try:
+            fields = Path(f"/proc/{pid}/statm").read_text().split()
+            # statm resident pages * page size.
+            return int(fields[1]) * os.sysconf("SC_PAGE_SIZE")
+        except (OSError, ValueError, IndexError):
+            return None
+    if not IS_WINDOWS:
+        return None
+    try:
+
+        class PROCESS_MEMORY_COUNTERS(ctypes.Structure):  # noqa: N801 — Windows struct
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000  # noqa: N806 — Windows constant
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        psapi.GetProcessMemoryInfo.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(PROCESS_MEMORY_COUNTERS),
+            wintypes.DWORD,
+        ]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            counters = PROCESS_MEMORY_COUNTERS()
+            counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+            if psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                return int(counters.WorkingSetSize)
+            return None
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
 
 
 def proc_cpu_seconds() -> float:

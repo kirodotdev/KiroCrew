@@ -17,6 +17,7 @@ from kiro_crew.cron_script import (
     Skip,
     _resolve_internal_secret,
     _resolve_mcp_server,
+    _split_script_spec,
     resolve_script_path,
     run_command_sandboxed,
     run_script_sandboxed,
@@ -60,6 +61,19 @@ class TestResolveScriptPath:
     def test_missing_colon_raises(self):
         with pytest.raises(ValueError, match="expected"):
             resolve_script_path("no_colon_here")
+
+    def test_windows_drive_path_splits_on_func_colon_not_drive_colon(self):
+        # rsplit on the last colon must keep the whole drive path and take the
+        # trailing func — the drive colon at index 1 must not become the
+        # separator (which yielded the nonsense path "...\C").
+        module_part, func = _split_script_spec(r"C:\crons\job.py:run")
+        assert module_part == r"C:\crons\job.py"
+        assert func == "run"
+
+    def test_windows_drive_path_without_func_is_rejected(self):
+        # A bare drive path (no :func) must raise, not split at the drive colon.
+        with pytest.raises(ValueError, match="expected"):
+            _split_script_spec(r"C:\crons\job.py")
 
     def test_file_not_found_raises(self, tmp_path):
         with patch("pathlib.Path.home", return_value=tmp_path):
@@ -130,6 +144,82 @@ class TestRunCommandSandboxed:
         result = run_command_sandboxed("head -c 70000 /dev/zero | tr '\\0' 'x'")
         assert "truncated" in result["output"]
         assert len(result["output"]) <= 70000
+
+
+class TestCronSandboxUnavailableIsStructuredNotRaised:
+    """A host with no OS sandbox backend (every Windows host) makes wrap_argv
+    fail-closed. That must come back as a failed job carrying the remedy, not an
+    exception escaping into the scheduler — which is what left command/script
+    crons dead-on-arrival on Windows with an uncaught SandboxUnavailableError."""
+
+    @pytest.fixture
+    def _sandbox_refuses(self, monkeypatch):
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        def _raise(argv, **k):
+            raise SandboxUnavailableError(
+                "Sandbox backend unavailable and allow_unsandboxed_exec is not "
+                "set. Probe detail: not Linux. Set "
+                "agent.sandbox_allow_unsandboxed_exec=true to allow it.",
+                kind="no_backend",
+                detail="not Linux",
+            )
+
+        monkeypatch.setattr("kiro_crew.cron_script.wrap_argv", _raise)
+
+    def test_command_cron_returns_error_with_remedy(self, _sandbox_refuses):
+        result = run_command_sandboxed("echo hello")
+        assert result["status"] == "error"
+        assert result["exit_code"] == -1
+        # The remedy the user must act on survives into the message.
+        assert "allow_unsandboxed_exec" in result["output"]
+
+    def test_script_cron_returns_error_with_remedy(self, _sandbox_refuses, tmp_path, monkeypatch):
+        script = tmp_path / "job.py"
+        script.write_text("def run(msg=''):\n    return {'status': 'ok'}\n")
+        # resolve_script_path enforces an allowed root; point it at tmp_path so
+        # this test exercises the wrap_argv failure, not the path guard.
+        monkeypatch.setattr(
+            "kiro_crew.cron_script.resolve_script_path",
+            lambda spec: (str(script), "run"),
+        )
+        result = run_script_sandboxed(f"{script}:run", "job-id", timeout=10)
+        assert result["status"] == "error"
+        assert "allow_unsandboxed_exec" in result["error"]
+
+
+class TestCommandCronShellResolution:
+    """Command crons run `sh -c`; a POSIX shell must be resolved before spawn,
+    with a legible error (not a bare WinError 2) when none exists on Windows."""
+
+    def test_posix_shell_is_found_on_path(self, monkeypatch):
+        from kiro_crew import cron_script
+
+        monkeypatch.setattr(cron_script.shutil, "which", lambda name: f"/usr/bin/{name}")
+        assert cron_script._resolve_command_shell() == "/usr/bin/bash"
+
+    def test_windows_falls_back_to_git_bash_when_not_on_path(self, monkeypatch, tmp_path):
+        from kiro_crew import cron_script
+
+        git_bin = tmp_path / "Git" / "bin"
+        git_bin.mkdir(parents=True)
+        bash = git_bin / "bash.exe"
+        bash.write_text("")
+        monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(cron_script.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cron_script, "_WINDOWS_GIT_SHELL_DIRS", (str(git_bin),))
+        assert cron_script._resolve_command_shell() == str(bash)
+
+    def test_no_shell_returns_legible_error_not_winerror(self, monkeypatch):
+        from kiro_crew import cron_script
+
+        monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(cron_script.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cron_script, "_WINDOWS_GIT_SHELL_DIRS", ())
+        result = cron_script.run_command_sandboxed("echo hi", timeout=10)
+        assert result["status"] == "error"
+        assert "No POSIX shell" in result["output"]
+        assert "Git for Windows" in result["output"]
 
 
 class TestRunScriptSandboxed:

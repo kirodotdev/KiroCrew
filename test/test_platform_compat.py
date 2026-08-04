@@ -97,6 +97,25 @@ class TestProcessHelpers:
         # A very high PID is almost certainly not live on any test host.
         assert pc.pid_exists(2_000_000_000) is False
 
+    def test_pid_exists_false_after_kill_even_while_handle_open(self):
+        # Windows OpenProcess succeeds for an EXITED process while any handle to
+        # it is open (asyncio's transport keeps one until GC). pid_exists must
+        # still report False via GetExitCodeProcess, or every session recycle
+        # logs a false "PID survived kill" and leaks a dead PID into the tracker.
+        # On POSIX this reaps normally and is equally False.
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"]
+        )
+        try:
+            assert pc.pid_exists(child.pid) is True
+            child.kill()
+            child.wait()  # reap; the Popen keeps its OS handle referenced here
+            assert pc.pid_exists(child.pid) is False
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+
     def test_get_ppid_returns_int(self):
         # Returns the parent (>0 normally) or -1 on failure — never raises.
         ppid = pc.get_ppid(os.getpid())
@@ -360,6 +379,23 @@ class TestResourceShims:
     def test_proc_rss_bytes_nonnegative(self):
         # Returns this process's RSS (>0 normally) or 0 on failure — never raises.
         assert pc.proc_rss_bytes() >= 0
+
+    def test_proc_rss_bytes_is_positive_for_a_live_process(self):
+        # A running interpreter always has resident memory. This must be > 0 on
+        # every supported platform: on Windows GetCurrentProcess's handle was
+        # truncated without argtypes and this silently returned 0, disabling the
+        # watchdog's RSS ceiling.
+        assert pc.proc_rss_bytes() > 0
+
+    def test_proc_rss_bytes_for_pid_self_positive(self):
+        rss = pc.proc_rss_bytes_for_pid(os.getpid())
+        # macOS has no ctypes-only per-pid path and returns None by design.
+        if rss is None:
+            pytest.skip("per-pid RSS unavailable on this platform")
+        assert rss > 0
+
+    def test_proc_rss_bytes_for_pid_none_for_unused_pid(self):
+        assert pc.proc_rss_bytes_for_pid(2_000_000_000) is None
 
     def test_proc_cpu_seconds_nonnegative(self):
         assert pc.proc_cpu_seconds() >= 0.0
@@ -745,6 +781,104 @@ class TestProcessDescendants:
             for handle in handles.values():
                 pc.close_process_handle(handle)
             pc.close_process_handle(root_handle)
+
+
+@pytest.mark.skipif(
+    not pc.IS_WINDOWS,
+    reason="exercises the real Windows ctypes identity path (ctypes.WinDLL, "
+    "wintypes.FILETIME); the logic is Windows-native and runs on the Windows shard",
+)
+class TestWindowsHandleIdentityExitFiletimeRace:
+    """GetExitCodeProcess reports the exit before the exit FILETIME is published.
+
+    A handle read inside that window looks exited-with-exit_time==0. Treating it
+    as "no identity" made ``descendant_termination_handles`` raise on a healthy
+    tree, which surfaced as a ~1-in-3 false "Install Kiro CLI" on Windows.
+    """
+
+    # The pid every faked handle below reports.
+    FAKE_PID = 4242
+
+    @classmethod
+    def _kernel32(cls, exit_filetimes):
+        """Fake kernel32 replaying *exit_filetimes* from successive time reads.
+
+        A ``0`` entry is the exited-but-unpublished window; a non-zero entry is a
+        published exit FILETIME. The process always reports as exited.
+        """
+
+        reads = iter(exit_filetimes)
+
+        class _Fn:
+            """Stands in for a ctypes function pointer (assignable argtypes)."""
+
+            argtypes: list = []
+            restype = None
+
+            def __init__(self, impl):
+                self._impl = impl
+
+            def __call__(self, *args):
+                return self._impl(*args)
+
+        def _get_process_times(_handle, creation, exit_, _kernel, _user):
+            creation._obj.dwHighDateTime = 0
+            creation._obj.dwLowDateTime = 100
+            exit_._obj.dwHighDateTime = 0
+            exit_._obj.dwLowDateTime = next(reads, 0)
+            return 1
+
+        def _get_exit_code(_handle, code):
+            code._obj.value = 0  # any value but STILL_ACTIVE (259)
+            return 1
+
+        return types.SimpleNamespace(
+            GetProcessId=_Fn(lambda _handle: cls.FAKE_PID),
+            GetProcessTimes=_Fn(_get_process_times),
+            GetExitCodeProcess=_Fn(_get_exit_code),
+        )
+
+    def test_identity_retries_until_exit_filetime_is_published(self, monkeypatch):
+        # First two reads land inside the unpublished window; the third has the
+        # real exit time. The identity must be returned, not refused.
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        fake = self._kernel32([0, 0, 0, 777])
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: fake)
+        monkeypatch.setattr(pc.time, "sleep", lambda _s: None)
+
+        identity = pc._windows_process_handle_identity(5)
+
+        assert identity is not None
+        pid, creation, exit_time = identity
+        assert (pid, creation, exit_time) == (4242, 100, 777)
+
+    def test_identity_gives_up_when_exit_filetime_never_publishes(self, monkeypatch):
+        # A handle whose exit time never appears must still be refused, so the
+        # PID-recycling guard the caller depends on is not weakened into a
+        # blanket "assume it is fine".
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        fake = self._kernel32([0] * 500)
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: fake)
+        monkeypatch.setattr(pc.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(pc, "_WINDOWS_EXIT_FILETIME_TIMEOUT_SECS", 0.01)
+
+        assert pc._windows_process_handle_identity(5) is None
+
+    def test_descendant_scan_does_not_raise_for_a_root_inside_the_window(
+        self,
+        monkeypatch,
+    ):
+        # The defect's actual blast radius: an exited root whose FILETIME has not
+        # published yet must not make the scan raise "root handle identity
+        # mismatch" at its caller, which is what failed the whole kiro-cli probe.
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        fake = self._kernel32([0, 0, 555])
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: fake)
+        monkeypatch.setattr(pc.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: {})
+
+        # 4242 is the pid the fake handle reports, so the root identity matches.
+        assert pc.descendant_termination_handles(4242, {}, 8001) == {}
 
 
 class TestKillSubprocessPosix:

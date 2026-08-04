@@ -46,18 +46,23 @@ jobs:
           # PEP 440 integer ordering stays monotonic across days. Seconds close the
           # same-minute double-dispatch window; publish-cli.yml additionally enforces
           # never-republish with an S3 conditional write (If-None-Match).
-          STAMP=$(date -u +%Y%m%d%H%M%S)
-          # Slice the ONE stamp instead of calling `date` again: three separate
-          # `date -u` calls can straddle UTC midnight, which would pair an
-          # old-day date with a new-day time (version goes backward -> the feed
-          # offers clients a downgrade) and could also make the desktop stamp
-          # and the wheel stamp below disagree for the SAME run.
-          STAMP_DATE="${STAMP:0:8}"
-          STAMP_TIME="${STAMP:8:6}"
+          # ONE clock read, everything sliced from it. The format appends
+          # %y%j (2-digit year + zero-padded day-of-year) to the full
+          # timestamp so BOTH the wheel's YYYYMMDDHHMMSS and the desktop's
+          # compact YYDDD can come from a single `date` — three separate
+          # `date -u` calls can straddle UTC midnight, pairing an old-day date
+          # with a new-day time (version goes backward -> the feed offers
+          # clients a downgrade) and can also make the desktop and wheel stamps
+          # disagree for the SAME run.
+          STAMP=$(date -u +%Y%m%d%H%M%S%y%j)
+          STAMP_DATE="${STAMP:0:8}"       # YYYYMMDD (wheel)
+          STAMP_TIME="${STAMP:8:6}"       # HHMMSS   (both)
+          STAMP_FULL="${STAMP:0:14}"      # YYYYMMDDHHMMSS (wheel .dev<N>)
+          STAMP_YYDOY="${STAMP:14:5}"     # YYDDD    (desktop, compact date)
           BASE=$(grep -m1 '__version__' src/kiro_crew/__init__.py | sed -E 's/.*= *"([^"]+)".*/\1/')
           # Desktop/Squirrel needs semver; the pip wheel needs PEP 440. Emit both:
-          #   nightly_version (semver):  <base>-nightly.<date>.<HHMMSS> -> Electron app + S3 build path
-          #   wheel_version   (PEP 440): <base>.dev<date+HHMMSS>        -> pip wheel, unique per RUN
+          #   nightly_version (semver):  <base>-nightly.<YYDDD>t<HHMMSS> -> Electron app + S3 build path
+          #   wheel_version   (PEP 440): <base>.dev<YYYYMMDDHHMMSS>      -> pip wheel, unique per RUN
           # The desktop stamp carries the same seconds precision as the wheel:
           # a date-only stamp meant two nightlies on one UTC date overwrote the
           # same signed/<channel>/<version>/ and notarized/<channel>/<version>/
@@ -67,27 +72,31 @@ jobs:
           # every nightly wheel down to the base version (all became 0.1.0). ".dev<date>"
           # is valid PEP 440 and keeps nightly wheels uniquely versioned.
           #
-          # DATE AND TIME ARE ONE ALPHANUMERIC IDENTIFIER SEPARATED BY "t"
-          # (<YYYYMMDD>t<HHMMSS>), never a bare 14-digit number and never two
-          # dot-separated numeric identifiers. Two independent constraints
-          # force this exact shape, both proven live on windows-latest:
+          # DATE AND TIME ARE ONE ALPHANUMERIC IDENTIFIER SEPARATED BY "t", using
+          # the COMPACT date <YYDDD> (2-digit year + zero-padded day-of-year),
+          # never a bare number and never two dot-separated numeric identifiers.
+          # Three independent constraints force this exact shape:
           #
-          # 1. Squirrel.Windows Int32 overflow. Squirrel derives each release
+          # 1. NuGet / Squirrel 20-char "special version" cap. The Squirrel
+          #    target bundled with electron-builder-squirrel-windows 26.x rejects
+          #    a prerelease part over 20 chars ("The special version part cannot
+          #    exceed 20 characters."), which killed every Windows nightly on the
+          #    old "nightly.<YYYYMMDD>t<HHMMSS>" (23 chars). "nightly." (8) + a
+          #    mandatory letter separator leaves room for 11 stamp digits, so the
+          #    date is compacted to YYDDD: "nightly.<YYDDD>t<HHMMSS>" is exactly
+          #    20 chars and keeps full seconds precision.
+          # 2. Squirrel.Windows Int32 overflow. Squirrel derives each release
           #    entry's version from the nupkg FILENAME
           #    (ReleaseEntry.Version -> Filename.ToSemanticVersion()) and sorts
           #    entries in WriteReleaseFile; that comparison Int32-parses digit
           #    runs, so a run above 2147483647 makes `Update.com --releasify`
-          #    die with System.OverflowException and the whole Windows leg
-          #    fails. Proven: `-nightly.20260727152449` FAILS (run
-          #    30279849180, 2.0e13), `-nightly.1785000002` PASSES (run
-          #    30295008698, 1.78e9 -- so the bound is MAGNITUDE, not digit
-          #    count), `-nightly.20260727t184500` PASSES (run 30294993944).
-          #    Dot-splitting does NOT help: electron-builder concatenates the
-          #    identifiers into the nupkg filename, so `-nightly.20260727.183000`
-          #    becomes `nightly20260727183000` and still overflows (run
-          #    30293292843 FAILED). A LETTER between the digit runs is what
-          #    survives that concatenation.
-          # 2. SemVer forbids leading zeros in a purely NUMERIC prerelease
+          #    die with System.OverflowException. Proven: `-nightly.20260727152449`
+          #    (2.0e13) FAILS, `-nightly.20260727t184500` PASSES. The compact
+          #    runs here (YYDDD <= 99366, HHMMSS <= 235959) are far under Int32
+          #    and, unlike an epoch, never cross it (no 2038 cliff). Dot-splitting
+          #    does NOT help: electron-builder concatenates the identifiers into
+          #    the nupkg filename, so a LETTER between the digit runs is required.
+          # 3. SemVer forbids leading zeros in a purely NUMERIC prerelease
           #    identifier. The 06:00 cron yields HHMMSS=060000, so a bare
           #    `.${STAMP_TIME}` identifier would be invalid and electron-builder
           #    would reject it. Inside an alphanumeric identifier (the "t" makes
@@ -95,16 +104,17 @@ jobs:
           #
           # Ordering still works: the identifier is fixed-width, and semver
           # compares alphanumeric identifiers lexically -- which for a
-          # zero-padded YYYYMMDDtHHMMSS is chronological.
+          # zero-padded YYDDDtHHMMSS is chronological (YYDDD sorts as the date
+          # does within this century).
           #
           # The "-nightly." prefix is load-bearing and preserved: auto-update.js
           # channelForVersion, instance-guard identityFamily, and
           # packaging/build-desktop.sh's *-nightly.* glob all match on it.
           # test/test_nightly_version_contract.py pins every property above.
-          echo "version=${BASE}-nightly.${STAMP_DATE}t${STAMP_TIME}" >> "$GITHUB_OUTPUT"
-          echo "wheel_version=${BASE}.dev${STAMP}" >> "$GITHUB_OUTPUT"
-          echo "Nightly (semver): ${BASE}-nightly.${STAMP_DATE}t${STAMP_TIME}"
-          echo "Wheel (PEP 440):  ${BASE}.dev${STAMP}"
+          echo "version=${BASE}-nightly.${STAMP_YYDOY}t${STAMP_TIME}" >> "$GITHUB_OUTPUT"
+          echo "wheel_version=${BASE}.dev${STAMP_FULL}" >> "$GITHUB_OUTPUT"
+          echo "Nightly (semver): ${BASE}-nightly.${STAMP_YYDOY}t${STAMP_TIME}"
+          echo "Wheel (PEP 440):  ${BASE}.dev${STAMP_FULL}"
 
   dependency-vulnerability-gate:
     name: Production Dependency Vulnerability Gate

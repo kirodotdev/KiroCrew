@@ -993,8 +993,35 @@ def validate_installer_script(platform_name: str, content: bytes) -> bool:
     return prefix.startswith("#!/bin/bash") and "Kiro CLI Installation Script" in prefix
 
 
+def _allowlisted_env(
+    environ: MutableMapping[str, str],
+    allowed: frozenset[str],
+) -> dict[str, str]:
+    """Filter *environ* down to *allowed*, honoring Windows' case-insensitive env.
+
+    Windows environment names are case-INSENSITIVE and CPython upper-cases every
+    key, so ``os.environ.items()`` yields ``SYSTEMROOT`` — never the
+    ``SystemRoot`` spelling Microsoft documents and these allowlists write. A
+    literal membership test therefore dropped exactly the variable it was
+    extended to carry, and the failure is silent at the boundary and fatal in the
+    child: ``powershell.exe`` without ``SystemRoot`` cannot load the CLR
+    ("Loading managed Windows PowerShell failed with error 8009001d"), so the
+    Install Kiro CLI button could never succeed.
+
+    Folding on Windows only, rather than upper-casing the lists, keeps POSIX
+    exact: ``PATH`` and ``Path`` are genuinely different variables there, and a
+    case-insensitive match would let a lookalike through. Mirrors
+    ``apps.registry._is_safe_env_key``.
+    """
+
+    if not platform_compat.IS_WINDOWS:
+        return {key: value for key, value in environ.items() if key in allowed}
+    folded = {name.upper() for name in allowed}
+    return {key: value for key, value in environ.items() if key.upper() in folded}
+
+
 def _child_env(environ: MutableMapping[str, str], search_path: str) -> dict[str, str]:
-    result = {key: value for key, value in environ.items() if key in _SAFE_ENV_KEYS}
+    result = _allowlisted_env(environ, _SAFE_ENV_KEYS)
     result["PATH"] = search_path
     result["NO_COLOR"] = "1"
     result["TERM"] = "dumb"
@@ -1004,7 +1031,7 @@ def _child_env(environ: MutableMapping[str, str], search_path: str) -> dict[str,
 def _probe_env(environ: MutableMapping[str, str], search_path: str) -> dict[str, str]:
     """Build a non-interactive probe environment without proxy or desktop IPC."""
 
-    result = {key: value for key, value in environ.items() if key in _PROBE_ENV_KEYS}
+    result = _allowlisted_env(environ, _PROBE_ENV_KEYS)
     result["PATH"] = search_path
     result["NO_COLOR"] = "1"
     result["TERM"] = "dumb"

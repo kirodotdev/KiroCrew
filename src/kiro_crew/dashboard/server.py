@@ -389,10 +389,17 @@ _BASE_CSP = (
     "script-src 'self' 'unsafe-inline' "
     "https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
     "https://esm.sh; "
+    # https://fonts.googleapis.com + https://fonts.gstatic.com: index.html loads
+    # the UI's two brand faces (Space Grotesk, JetBrains Mono) from Google Fonts.
+    # Without these the stylesheet is refused and BOTH families fall through the
+    # stack. macOS lands on -apple-system and looks deliberate; Windows has no
+    # such entry, so it drops to the generic sans-serif/monospace and the whole
+    # dashboard renders in a face the design never targeted (metrics tuned for
+    # Space Grotesk/JetBrains Mono then mis-fit, so chrome text also mis-sizes).
     "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net "
-    "https://esm.sh; "
+    "https://esm.sh https://fonts.googleapis.com; "
     "img-src 'self' data: blob: https:; "
-    "font-src 'self' data: https://esm.sh; "
+    "font-src 'self' data: https://esm.sh https://fonts.gstatic.com; "
     # Loopback http(s) origins ({connect_src_extra}) mirror the frame-src note
     # below: WebPreviewPanel does not merely FRAME the local dev server, it also
     # polls it with a no-cors `fetch` liveness probe (a cross-origin iframe

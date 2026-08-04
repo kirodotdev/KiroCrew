@@ -64,6 +64,29 @@ class TestAddSourceLocalFile:
             assert resp.status == 400
             data = await resp.json()
             assert "absolute path" in data["error"]
+            # Machine-readable code so the frontend can translate (AGENTS.md:
+            # new non-2xx JSON bodies must carry a `code`).
+            assert data["code"] == "uri_not_absolute"
+
+    @pytest.mark.asyncio
+    async def test_accepts_windows_drive_path(self, store, tmp_path):
+        # The absoluteness gate must use Path.is_absolute(), not a leading-"/"
+        # test — a Windows absolute path (C:\...) never starts with "/", so the
+        # old check made single-file ingest 100% unusable on Windows.
+        from pathlib import PureWindowsPath
+
+        # A drive-letter path is absolute under Windows path semantics.
+        assert PureWindowsPath("C:\\Users\\me\\notes\\design.md").is_absolute()
+        # And the handler's own gate accepts a real absolute path on this host:
+        test_file = tmp_path / "win.md"
+        test_file.write_text("# Win")
+        pipeline = MagicMock()
+        pipeline.ingest_file = AsyncMock()
+        async with TestClient(TestServer(_make_app(store, pipeline=pipeline))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "win.md", "source_type": "local_file", "uri": str(test_file)
+            })
+            assert resp.status == 201
 
     @pytest.mark.asyncio
     async def test_rejects_sensitive_path(self, store, tmp_path):
@@ -78,10 +101,15 @@ class TestAddSourceLocalFile:
             assert "restricted" in data["error"]
 
     @pytest.mark.asyncio
-    async def test_rejects_nonexistent_file(self, store):
+    async def test_rejects_nonexistent_file(self, store, tmp_path):
+        # A platform-absolute path that does not exist: under tmp_path so it is
+        # absolute on both POSIX ("/...") and Windows ("C:\..."). A hardcoded
+        # "/tmp/..." is NOT absolute on Windows and would trip the 400
+        # absoluteness gate before reaching the not-found check.
+        missing = str(tmp_path / "nonexistent_xyz_12345.md")
         async with TestClient(TestServer(_make_app(store))) as client:
             resp = await client.post("/api/knowledge/sources", json={
-                "name": "test", "source_type": "local_file", "uri": "/tmp/nonexistent_xyz_12345.md"
+                "name": "test", "source_type": "local_file", "uri": missing
             })
             assert resp.status == 404
 

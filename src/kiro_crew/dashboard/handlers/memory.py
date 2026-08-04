@@ -40,7 +40,12 @@ from kiro_crew.embeddings import (
     validate_custom_model_path,
 )
 from kiro_crew.executors import embed_executor, run_in_embed_pool
-from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.sandbox import (
+    SandboxUnavailableError,
+    cgroup_scope_argv,
+    create_subprocess_limited,
+    wrap_argv,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 from ._shared import _get_memory, _is_restricted_session
@@ -856,52 +861,70 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                 return web.json_response(
                     {"error": f"{pip_err}. Click Enable to retry."}, status=500
                 )
-            sandboxed_argv, cleanup = wrap_argv(
-                [sys.executable, "-m", "pip", "install", "-q",
-                 "faiss-cpu", "--only-binary=:all:"],
-                mode="standard",
-            )
-            sandboxed_argv = cgroup_scope_argv(
-                sandboxed_argv
-            )  # cgroup DoS ceiling
             try:
-                proc = await create_subprocess_limited(
-                    *sandboxed_argv,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                sandboxed_argv, cleanup = wrap_argv(
+                    [sys.executable, "-m", "pip", "install", "-q",
+                     "faiss-cpu", "--only-binary=:all:"],
+                    mode="standard",
                 )
+            except SandboxUnavailableError:
+                # faiss is a pure accelerator; episodic recall still works via
+                # the stdlib cosine fallback (_sqlite_vector_search). On a host
+                # with no sandbox backend the install cannot run, but that must
+                # not wedge setup: reset the non-terminal "installing_faiss"
+                # status (else the 2s poll latches it and every later Enable
+                # click 409s until restart) and continue to the embed_fn wiring
+                # below with faiss absent. `kirocrew doctor` points the user at a
+                # manual `pip install faiss-cpu` if they want the accelerator.
+                logger.info(
+                    "Skipping on-demand faiss-cpu install: no sandbox backend on "
+                    "this host. Episodic recall uses the stdlib cosine fallback."
+                )
+                _embedding_setup_status = {"step": "idle", "error": ""}
+                cleanup = None
+                sandboxed_argv = None
+            if sandboxed_argv is not None:
+                sandboxed_argv = cgroup_scope_argv(
+                    sandboxed_argv
+                )  # cgroup DoS ceiling
                 try:
-                    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
-                    logger.warning("faiss-cpu install timed out")
-                    _embedding_setup_status = {
-                        "step": "idle",
-                        "error": "faiss-cpu install timed out — click Enable to retry",
-                    }
-                    return web.json_response(
-                        {"error": "faiss-cpu install timed out."}, status=500,
+                    proc = await create_subprocess_limited(
+                        *sandboxed_argv,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
                     )
-                if proc.returncode != 0:
-                    logger.warning("faiss-cpu install failed: %s", stderr.decode()[:500])
-                    _embedding_setup_status = {
-                        "step": "idle",
-                        "error": "faiss-cpu installation failed — click Enable to retry",
-                    }
-                    return web.json_response(
-                        {"error": "faiss-cpu installation failed. Click Enable to retry."},
-                        status=500,
-                    )
-                else:
-                    importlib.invalidate_caches()
-                    logger.info("Installed faiss-cpu for vector indexing")
-            finally:
-                if cleanup:
                     try:
-                        os.unlink(cleanup)
-                    except OSError:
-                        pass
+                        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        await proc.wait()
+                        logger.warning("faiss-cpu install timed out")
+                        _embedding_setup_status = {
+                            "step": "idle",
+                            "error": "faiss-cpu install timed out — click Enable to retry",
+                        }
+                        return web.json_response(
+                            {"error": "faiss-cpu install timed out."}, status=500,
+                        )
+                    if proc.returncode != 0:
+                        logger.warning("faiss-cpu install failed: %s", stderr.decode()[:500])
+                        _embedding_setup_status = {
+                            "step": "idle",
+                            "error": "faiss-cpu installation failed — click Enable to retry",
+                        }
+                        return web.json_response(
+                            {"error": "faiss-cpu installation failed. Click Enable to retry."},
+                            status=500,
+                        )
+                    else:
+                        importlib.invalidate_caches()
+                        logger.info("Installed faiss-cpu for vector indexing")
+                finally:
+                    if cleanup:
+                        try:
+                            os.unlink(cleanup)
+                        except OSError:
+                            pass
 
     # Wire embed_fn now that the model file is confirmed present.
     store = _get_vector_store(request.app["state"])

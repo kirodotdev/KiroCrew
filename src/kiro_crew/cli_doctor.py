@@ -15,6 +15,7 @@ import urllib.request
 from pathlib import Path
 
 from kiro_crew import __version__ as _mc_version
+from kiro_crew import platform_compat
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.agent import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
@@ -75,9 +76,20 @@ def _agents_dir() -> Path:
     return KIRO_AGENTS_DIR if KIRO_AGENTS_DIR is not None else kiro_agents_dir()
 
 
-def _os_fix_hint(mac: str, linux: str) -> str:
-    """Return the OS-appropriate Fix hint (brew on macOS, else Linux guidance)."""
-    return mac if _plat.system() == "Darwin" else linux
+def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
+    """Return the OS-appropriate Fix hint (brew on macOS, winget on Windows,
+    else Linux guidance).
+
+    Without a Windows arm, Windows fell through to the Linux text — telling a
+    Windows user to ``pipx``/drop a static build in ``~/.local/bin``, neither of
+    which applies. When *windows* is omitted the Linux text is still used, so
+    callers only pass it where a Windows-specific remedy exists.
+    """
+    if _plat.system() == "Darwin":
+        return mac
+    if windows is not None and _plat.system() == "Windows":
+        return windows
+    return linux
 
 
 # KiroCrew's agent backend is kiro-cli (the sole public ACP backend). The
@@ -542,8 +554,14 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
         print(f"  node:        ⚠️  not found (frontend needs Node {_MIN_NODE_VERSION}+)")
         print("               Fix: install Node.js >= 16")
 
-    # venv detection — used by the runtime section below
-    venv_py = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python3"
+    # venv detection — used by the runtime section below. Windows venvs put the
+    # interpreter under .venv\Scripts\python.exe, not .venv/bin/python3, so a
+    # hardcoded POSIX layout misreported the venv (and the runtime section) on
+    # every Windows install.
+    if platform_compat.IS_WINDOWS:
+        venv_py = Path(__file__).resolve().parents[2] / ".venv" / "Scripts" / "python.exe"
+    else:
+        venv_py = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python3"
     is_venv_install = venv_py.is_file()
 
     # ── Project ──
@@ -700,6 +718,20 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
         print("  runtime:     ❌ vendored runtime failed to load")
         issues.append("embedding runtime")
 
+    # FAISS is an optional accelerator — never a dependency, on any platform.
+    # Without it, episodic recall uses the stdlib cosine fallback (correct, just
+    # slower on a large store). Report it as an informational note, never an
+    # issue, so the user knows the speed-up exists without doctor failing.
+    try:
+        import faiss  # noqa: F401
+
+        print("  faiss:       ✅ vector-search accelerator installed")
+    except ImportError:
+        print(
+            "  faiss:       ⏹ not installed (optional) — episodic recall uses "
+            "the stdlib fallback; `pip install faiss-cpu` to accelerate it"
+        )
+
     _custom = resolve_custom_model()
     if _custom is not None:
         # A custom model is configured. Never suggest the CDN here: the default
@@ -733,19 +765,30 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
     else:
         print(f"  provider:    ✅ {cfg.stt.provider}")
 
+    # STT ships enabled-by-default, but neither whisper nor ffmpeg is on a stock
+    # Windows box and neither is a KiroCrew dependency there. Reporting them as
+    # hard issues made `kirocrew doctor` exit 1 on a healthy first install, and
+    # the guide's `kirocrew doctor && kirocrew gateway` then never launched the
+    # gateway. On Windows treat them as non-fatal notes; POSIX keeps failing so
+    # a real STT setup gap is still surfaced.
+    stt_fatal = not platform_compat.IS_WINDOWS
+
     whisper_bin = _find_whisper(cfg.stt.whisper_path)
     if whisper_bin:
         print(f"  whisper:     ✅ {whisper_bin}")
     elif needs_whisper:
-        print("  whisper:     ❌ not found")
+        mark = "❌" if stt_fatal else "⚠️ "
+        print(f"  whisper:     {mark} not found")
         print(
             "               Fix: "
             + _os_fix_hint(
                 "brew install openai-whisper",
                 "pipx install openai-whisper  (or pip install --user openai-whisper)",
+                windows="pip install openai-whisper",
             )
         )
-        issues.append("whisper")
+        if stt_fatal:
+            issues.append("whisper")
     else:
         print("  whisper:     ⏭  not installed (not needed)")
 
@@ -754,16 +797,19 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
     if ffmpeg_bin:
         print(f"  ffmpeg:      ✅ {ffmpeg_bin}")
     elif needs_ffmpeg:
-        print("  ffmpeg:      ❌ not found")
+        mark = "❌" if stt_fatal else "⚠️ "
+        print(f"  ffmpeg:      {mark} not found")
         print(
             "               Fix: "
             + _os_fix_hint(
                 "brew install ffmpeg",
                 "drop a static ffmpeg build into ~/.local/bin "
                 "(not in AL2023 repos; KiroCrew auto-detects it)",
+                windows="winget install Gyan.FFmpeg",
             )
         )
-        issues.append("ffmpeg")
+        if stt_fatal:
+            issues.append("ffmpeg")
     else:
         print("  ffmpeg:      ⏭  not installed (not needed)")
 

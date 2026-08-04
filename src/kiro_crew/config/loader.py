@@ -109,6 +109,13 @@ from kiro_crew.mcp_gateway.rewriter import default_overlay_dir, default_socket_p
 
 logger = logging.getLogger(__name__)
 
+# Top-level config.json keys that save() stamps itself rather than modelling as
+# a section. They are neither parsed into a field nor round-tripped through
+# to_dict(), so every consumer that classifies top-level keys — the
+# _extra_sections capture below and validation.py's unrecognized-key warning —
+# must exclude them, or KiroCrew warns the user about a key it wrote itself.
+CONFIG_RESERVED_TOP_KEYS: frozenset = frozenset({"meta"})
+
 # Top-level config.json sections this core models AND round-trips through
 # to_dict(). Any other top-level key found at load() is captured into
 # KiroCrewConfig._extra_sections and re-emitted by to_dict() so an
@@ -4265,7 +4272,9 @@ class KiroCrewConfig:
         # silently dropped. ``meta`` is stamped by save() itself, so it is never
         # treated as an unknown section to preserve.
         extra_sections = {
-            k: v for k, v in data.items() if k not in _KNOWN_CONFIG_SECTIONS and k != "meta"
+            k: v
+            for k, v in data.items()
+            if k not in _KNOWN_CONFIG_SECTIONS and k not in CONFIG_RESERVED_TOP_KEYS
         }
 
         cfg = cls(

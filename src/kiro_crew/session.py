@@ -985,7 +985,18 @@ class SessionManager:
                             logger.debug(
                                 "get_bg_session: dead _bg runtime kill failed", exc_info=True
                             )
-                    runtime = AcpRuntime(agent="kirocrew-lite")
+                    # Pass the CONFIGURED sandbox mode, not AcpRuntime's "auto"
+                    # default: on a host with no OS sandbox backend (every
+                    # Windows host, macOS >= 26) "auto" fail-closes, so the bg
+                    # session — chat titles, suggestions, tips, nav links, the
+                    # model picker — silently died. The main chat path already
+                    # passes the config mode (default "off", which kiro-cli's own
+                    # internal sandbox covers); mirror it here so the bg session
+                    # has the same posture rather than a stricter accidental one.
+                    runtime = AcpRuntime(
+                        agent="kirocrew-lite",
+                        sandbox_mode=getattr(self._cfg.agent, "sandbox", "auto"),
+                    )
                     await runtime.spawn()
                     self._bg_runtime = runtime
             try:

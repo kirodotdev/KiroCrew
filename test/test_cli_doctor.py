@@ -25,6 +25,18 @@ class TestFixHint:
         monkeypatch.setattr(cli_doctor._plat, "system", lambda: "Linux")
         assert cli_doctor._os_fix_hint("brew install ffmpeg", "static build") == "static build"
 
+    def test_os_fix_hint_windows_returns_windows_arm(self, monkeypatch) -> None:
+        monkeypatch.setattr(cli_doctor._plat, "system", lambda: "Windows")
+        assert (
+            cli_doctor._os_fix_hint("brew x", "linux x", windows="winget install Gyan.FFmpeg")
+            == "winget install Gyan.FFmpeg"
+        )
+
+    def test_os_fix_hint_windows_falls_back_to_linux_without_arm(self, monkeypatch) -> None:
+        # No Windows arm supplied → keep the Linux text rather than inventing one.
+        monkeypatch.setattr(cli_doctor._plat, "system", lambda: "Windows")
+        assert cli_doctor._os_fix_hint("brew x", "linux x") == "linux x"
+
 
 class TestDataHome:
     """`kirocrew doctor` Data Home section — location + leftover legacy home."""

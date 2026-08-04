@@ -41,9 +41,15 @@ INT32_MAX = 2_147_483_647
 
 # Worst-case stamp components. The TIME is deliberately the 06:00 cron's value:
 # HHMMSS=060000 is the case that makes a bare numeric identifier invalid SemVer
-# (leading zero), which electron-builder rejects outright.
+# (leading zero), which electron-builder rejects outright. The desktop stamp
+# uses the COMPACT date (YYDDD, 2-digit year + zero-padded day-of-year); its
+# worst case is the widest value (year 99, day 366).
 _WORST_CASE_DATE = "29991231"
 _WORST_CASE_TIME = "060000"
+_WORST_CASE_YYDOY = "99366"
+# NuGet / Squirrel reject a prerelease ("special version") part over this many
+# characters, which is what broke the old 23-char "nightly.<YYYYMMDD>t<HHMMSS>".
+NUGET_SPECIAL_VERSION_MAX = 20
 
 
 def _workflow_text() -> str:
@@ -61,12 +67,32 @@ def _rendered_nightly_version() -> str:
     assert match, "nightly.yml no longer emits a version= output in the expected shape"
     suffix = match.group(1)
     rendered = (
-        suffix.replace("${STAMP_DATE}", _WORST_CASE_DATE)
+        suffix.replace("${STAMP_YYDOY}", _WORST_CASE_YYDOY)
+        .replace("${STAMP_DATE}", _WORST_CASE_DATE)
         .replace("${STAMP_TIME}", _WORST_CASE_TIME)
+        .replace("${STAMP_FULL}", _WORST_CASE_DATE + _WORST_CASE_TIME)
         .replace("${STAMP}", _WORST_CASE_DATE + _WORST_CASE_TIME)
     )
     assert "$" not in rendered, f"unresolved shell variable in rendered stamp: {rendered!r}"
     return "0.1.0" + rendered
+
+
+def test_prerelease_fits_nuget_special_version_cap() -> None:
+    """NuGet / Squirrel reject a prerelease part longer than 20 characters.
+
+    The Squirrel target bundled with electron-builder-squirrel-windows 26.x
+    fails releasify with "The special version part cannot exceed 20 characters."
+    The old "nightly.<YYYYMMDD>t<HHMMSS>" was 23 chars and broke every Windows
+    nightly; the compact "nightly.<YYDDD>t<HHMMSS>" is exactly 20."""
+    version = _rendered_nightly_version()
+    _, _, prerelease = version.partition("-")
+    assert prerelease, f"nightly version carries no prerelease part: {version!r}"
+    assert len(prerelease) <= NUGET_SPECIAL_VERSION_MAX, (
+        f"prerelease part {prerelease!r} is {len(prerelease)} chars, over the "
+        f"NuGet/Squirrel {NUGET_SPECIAL_VERSION_MAX}-char cap; `Update.com "
+        "--releasify` fails with 'The special version part cannot exceed 20 "
+        "characters.' and the Windows desktop leg dies."
+    )
 
 
 def test_digit_runs_fit_int32_after_identifier_concatenation() -> None:
@@ -124,14 +150,22 @@ def test_nightly_channel_prefix_is_preserved() -> None:
 
 
 def test_stamp_keeps_seconds_precision() -> None:
-    """Two nightlies in the same minute must not collide on immutable keys."""
+    """Two nightlies in the same minute must not collide on immutable keys.
+
+    The compact desktop stamp is <date>t<HHMMSS>: a unique date identifier plus
+    six digits of time. What matters is that the time component carries full
+    SECONDS (HHMMSS, 6 digits), so a same-minute re-dispatch differs; the date
+    half no longer needs to be the full 8-digit YYYYMMDD (it is YYDDD, 5 digits)
+    to keep that guarantee."""
     version = _rendered_nightly_version()
     _, _, prerelease = version.partition("-")
-    digits = "".join(re.findall(r"\d", prerelease))
-    assert len(digits) >= 14, (
-        f"{version!r} carries {len(digits)} stamp digits; seconds precision "
-        "(YYYYMMDD + HHMMSS = 14) is required so a same-minute re-dispatch "
-        "cannot republish an immutable signed/notarized version key"
+    # The time is the last digit run after the "t" separator.
+    time_part = prerelease.rsplit("t", 1)[-1]
+    time_digits = "".join(re.findall(r"\d", time_part))
+    assert len(time_digits) >= 6, (
+        f"{version!r} time component {time_part!r} carries {len(time_digits)} "
+        "digits; full seconds precision (HHMMSS = 6) is required so a same-minute "
+        "re-dispatch cannot republish an immutable signed/notarized version key"
     )
 
 
@@ -142,21 +176,30 @@ def test_stamp_orders_chronologically() -> None:
     assert match
     suffix = match.group(1)
 
+    from datetime import datetime
+
     def render(date: str, time: str) -> str:
+        # Derive the compact YYDDD the workflow computes with `date -u +%y%j`,
+        # so the ordering assertion tracks the real stamp shape.
+        dt = datetime.strptime(date, "%Y%m%d")
+        yydoy = dt.strftime("%y%j")
         return (
-            suffix.replace("${STAMP_DATE}", date)
+            suffix.replace("${STAMP_YYDOY}", yydoy)
+            .replace("${STAMP_DATE}", date)
             .replace("${STAMP_TIME}", time)
+            .replace("${STAMP_FULL}", date + time)
             .replace("${STAMP}", date + time)
         )
 
     earlier = render("20260727", "060000")
     later_same_day = render("20260727", "184500")
     next_day = render("20260728", "010000")
-    assert earlier < later_same_day < next_day, (
+    year_rollover = render("20270101", "000000")
+    assert earlier < later_same_day < next_day < year_rollover, (
         "stamp does not sort chronologically as a string "
-        f"({earlier!r} < {later_same_day!r} < {next_day!r} is false); semver "
-        "compares alphanumeric identifiers lexically, so a non-fixed-width or "
-        "unpadded stamp would order releases wrongly"
+        f"({earlier!r} < {later_same_day!r} < {next_day!r} < {year_rollover!r} "
+        "is false); semver compares alphanumeric identifiers lexically, so a "
+        "non-fixed-width or unpadded stamp would order releases wrongly"
     )
 
 

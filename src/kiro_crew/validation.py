@@ -1779,11 +1779,21 @@ CRON_ADD_SCHEMA = ToolSchema(
         #                                  + _clean_cron_env() env scrubbing
         # Do not treat these regexes as the guard, and do not relax them assuming
         # downstream code re-validates the value as safe.
+        # The shape is "<path>:<func>". The path allows backslash and an
+        # OPTIONAL leading "<letter>:" Windows drive prefix, so a real Windows
+        # absolute path (C:\Users\...\job.py:run) validates — the old class
+        # omitted "\" and ":", rejecting every path Explorer/a file picker
+        # produces. The trailing ":<func>" is still required and unambiguous:
+        # the drive colon is at index 1 followed by a separator, the func colon
+        # is last and followed by an identifier. resolve_script_path splits on
+        # that last colon drive-aware.
         FieldSpec(
             "script",
             str,
             max_len=200,
-            pattern=re.compile(r"^[a-zA-Z0-9_.~/-]+:[a-zA-Z_][a-zA-Z0-9_]*$"),
+            pattern=re.compile(
+                r"^(?:[a-zA-Z]:)?[a-zA-Z0-9_.~/\\-]+:[a-zA-Z_][a-zA-Z0-9_]*$"
+            ),
         ),
         FieldSpec("command", str, max_len=5000, pattern=re.compile(r"^[^\x00-\x1f\x7f]*$")),
         FieldSpec("timeout", int, min_val=0, max_val=3600),

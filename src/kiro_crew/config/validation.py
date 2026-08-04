@@ -259,11 +259,15 @@ def validate_config_data(data: dict) -> dict:
     # circular import: schema.py imports KiroCrewConfig from config.loader, which
     # re-exports this module — importing schema at module level here would close
     # a config.loader -> validation -> schema -> loader cycle at import time.
+    from kiro_crew.config.loader import CONFIG_RESERVED_TOP_KEYS
     from kiro_crew.config.schema import JSON_SCHEMA, SCHEMA_REGISTRY
 
-    # 1. Detect unrecognized top-level keys
+    # 1. Detect unrecognized top-level keys. The schema registry models only the
+    # config's *sections*, so the keys save() stamps itself are not in it and
+    # must be excluded — otherwise every load of a config KiroCrew has ever
+    # saved warns about KiroCrew's own bookkeeping.
     known_top_keys = {e.path for e in SCHEMA_REGISTRY if "." not in e.path and e.path != "*"}
-    unknown = sorted(set(data.keys()) - known_top_keys)
+    unknown = sorted(set(data.keys()) - known_top_keys - CONFIG_RESERVED_TOP_KEYS)
     if unknown:
         logger.warning("Config: unrecognized top-level keys: %s", ", ".join(unknown))
 

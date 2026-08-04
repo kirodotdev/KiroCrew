@@ -332,6 +332,38 @@ class TestValidateToolArgs:
                 CRON_ADD_SCHEMA,
             )
 
+    def test_cron_add_accepts_windows_script_path(self):
+        # A Windows absolute script path (drive letter + backslashes) must pass
+        # the shape check — the old POSIX-only class rejected every path
+        # Explorer / a file picker produces.
+        win_path = "C:\\Users\\me\\.kiro\\crew\\crons\\job.py:run"
+        result = validate_tool_args(
+            {"name": "win", "script": win_path, "every": 300},
+            CRON_ADD_SCHEMA,
+        )
+        assert result["script"] == win_path
+
+    def test_cron_add_accepts_windows_forward_slash_script_path(self):
+        result = validate_tool_args(
+            {"name": "win", "script": "C:/Users/me/crons/job.py:run", "every": 300},
+            CRON_ADD_SCHEMA,
+        )
+        assert result["script"] == "C:/Users/me/crons/job.py:run"
+
+    def test_cron_add_still_accepts_posix_script_path(self):
+        result = validate_tool_args(
+            {"name": "p", "script": "~/.kiro/crew/crons/job.py:run", "every": 300},
+            CRON_ADD_SCHEMA,
+        )
+        assert result["script"] == "~/.kiro/crew/crons/job.py:run"
+
+    def test_cron_add_script_without_func_rejected(self):
+        with pytest.raises(ValidationError, match="invalid format"):
+            validate_tool_args(
+                {"name": "x", "script": "C:\\crons\\job.py", "every": 300},
+                CRON_ADD_SCHEMA,
+            )
+
     def test_task_run_valid(self):
         result = validate_tool_args({"spec": "do things"}, TASK_RUN_SCHEMA)
         assert result["spec"] == "do things"

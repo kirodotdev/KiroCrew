@@ -146,6 +146,47 @@ class TestFaissAlreadyInstalled:
             mock_exec.assert_not_called()
 
 
+class TestFaissSandboxUnavailableDoesNotWedge:
+    """On a host with no sandbox backend (every Windows host), the on-demand
+    faiss install can't run. That must NOT latch the non-terminal
+    'installing_faiss' status — otherwise the 2s poll shows it forever and every
+    later Enable click 409s until the gateway restarts. It skips the install and
+    continues (episodic recall uses the stdlib cosine fallback)."""
+
+    @pytest.mark.asyncio
+    async def test_returns_200_and_status_not_wedged(self, tmp_path: Path) -> None:
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        cfg_path = tmp_path / "kirocrew.json"
+        cfg_path.write_text("{}", encoding="utf-8")
+        patches, store, proc, mgr = _common_patches(cfg_path, faiss_available=False)
+
+        def _refuse(argv, **kw):
+            raise SandboxUnavailableError(
+                "no backend; set agent.sandbox_allow_unsandboxed_exec=true",
+                kind="no_backend",
+                detail="not Linux",
+            )
+
+        with patches["mgr"], patches["model_present"], patches["cfg_load"], \
+             patches["cfg_path"], patches["subprocess"] as mock_exec, \
+             patches["embed_fn"], patches["faiss"], patches["store"], \
+             patch(f"{_MOD}.wrap_argv", side_effect=_refuse):
+            async with TestClient(TestServer(_make_app())) as c:
+                resp = await c.post("/api/memory/enable-embeddings")
+                assert resp.status == 200
+                assert (await resp.json()).get("ok") is True
+
+            # No install subprocess was ever spawned.
+            mock_exec.assert_not_called()
+
+        # Setup completed, so the status is the terminal "done" — crucially NOT
+        # the non-terminal "installing_faiss" that latched the 409 guard forever.
+        assert mem_mod._embedding_setup_status["step"] == "done"
+        assert mem_mod._embedding_setup_status["step"] != "installing_faiss"
+        assert not mem_mod._embedding_setup_status["error"]
+
+
 class TestModelDownloadFlow:
     """Model absent → the endpoint kicks a background ensure_model task and
     returns 200 "downloading" immediately (never awaits the download; failures
