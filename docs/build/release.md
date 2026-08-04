@@ -139,11 +139,16 @@ stable) moves only after the version tag and its attestation exist. GHCR needs
 no AWS credentials: the push authenticates with the workflow's own
 `GITHUB_TOKEN`, so this lane also works on forks.
 
-The GHCR package is intentionally private for now. Both canonical callers pass
-`require_public_access: false`; authorized consumers authenticate with a token
-carrying `read:packages`. Going public is a release-policy change: setting
-`require_public_access: true` enables the logged-out-pull gate that proves
-anonymous consumers can resolve the image.
+The GHCR package is public, so `docker pull ghcr.io/kirodotdev/kirocrew:stable`
+works with no login. That is not automatic: GHCR creates every package private
+and inherits only *access permissions* from the linked repository, never
+visibility — a public repo does not imply a pullable image, and the flip is
+one-way (a public package cannot be made private again). Both canonical callers
+pass `require_public_access: true`, which arms the logged-out-pull gate proving
+anonymous consumers can resolve the image; a visibility regression fails the
+lane instead of shipping an unpullable tag. The input itself still defaults to
+`false` and the step is scoped to `kirodotdev`, so forks keep private packages
+and authenticate with a token carrying `read:packages`.
 
 ### GitHub Releases
 

@@ -213,8 +213,9 @@ jobs:
       channel: nightly
       version: ${{ needs.version.outputs.nightly_version }}
       publish: true
-      # The GHCR package intentionally remains private for now.
-      require_public_access: false
+      # The GHCR package is public. Nightly is the earliest signal that the
+      # package's visibility regressed, so assert anonymous pull here too.
+      require_public_access: true
       wheel_artifact: cli-wheel
     # No `secrets: inherit`: the lane authenticates with GITHUB_TOKEN only
     # (implicitly available to reusable workflows). Inheriting would expose
