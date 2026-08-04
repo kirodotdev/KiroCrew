@@ -80,7 +80,7 @@ class TestMcpServerInfo:
         assert info.error == ""
         assert info.source == "agent"
 
-    def test_remote_server_fields(self) -> None:
+    def test_remote_server_fields_redact_header_values(self) -> None:
         info = McpServerInfo(
             name="deepwiki",
             url="https://mcp.deepwiki.com/mcp",
@@ -90,7 +90,8 @@ class TestMcpServerInfo:
         assert info.command == ""
         d = info.to_dict()
         assert d["url"] == "https://mcp.deepwiki.com/mcp"
-        assert d["headers"] == {"Authorization": "Bearer tok"}
+        assert d["headers"] == {"Authorization": "[REDACTED: credential]"}
+        assert "Bearer tok" not in json.dumps(d)
 
     def test_is_remote_false_for_local(self) -> None:
         info = McpServerInfo(name="x", command="cmd")
@@ -597,6 +598,100 @@ class TestDiscoverNew:
         assert len(new) == 1
         assert new[0].name == "brand-new"
         assert new[0].source == "discovered"
+
+    def test_discover_new_remote_preserves_url_and_headers(self, tmp_path, monkeypatch) -> None:
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        mcp_json = tmp_path / "mcp.json"
+        headers = {"Authorization": "Bearer sync-secret", "X-Tenant": "acme"}
+        mcp_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "url": "https://mcp.example.com/v1",
+                            "headers": headers,
+                        }
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+
+        result = discover_servers_to_sync()
+
+        assert len(result) == 1
+        assert result[0].name == "remote"
+        assert result[0].is_remote is True
+        assert result[0].command == ""
+        assert result[0].url == "https://mcp.example.com/v1"
+        assert result[0].headers == headers
+
+    def test_discover_flags_existing_remote_url_change(self, tmp_path, monkeypatch) -> None:
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        headers = {"Authorization": "Bearer sync-secret"}
+        cfg = {
+            "mcpServers": {
+                "remote": {"url": "https://mcp.example.com/v1", "headers": headers}
+            }
+        }
+        (agent_dir / "defaults.json").write_text(json.dumps(cfg))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        mcp_json = tmp_path / "mcp.json"
+        mcp_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "url": "https://mcp.example.com/v2",
+                            "headers": headers,
+                        }
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+
+        result = discover_servers_to_sync()
+
+        assert len(result) == 1
+        assert result[0].url == "https://mcp.example.com/v2"
+
+    def test_discover_flags_existing_remote_headers_change(self, tmp_path, monkeypatch) -> None:
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        cfg = {
+            "mcpServers": {
+                "remote": {
+                    "url": "https://mcp.example.com/v1",
+                    "headers": {"Authorization": "Bearer old"},
+                }
+            }
+        }
+        (agent_dir / "defaults.json").write_text(json.dumps(cfg))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        mcp_json = tmp_path / "mcp.json"
+        mcp_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "url": "https://mcp.example.com/v1",
+                            "headers": {"Authorization": "Bearer new"},
+                        }
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+
+        result = discover_servers_to_sync()
+
+        assert len(result) == 1
+        assert result[0].headers == {"Authorization": "Bearer new"}
 
     def test_discover_none_when_all_known(self, tmp_path, monkeypatch) -> None:
         agent_dir = tmp_path / "agents"

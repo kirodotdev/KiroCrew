@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.mcp import (
     _is_valid_mcp_name,
     _replace_kirocrew_spec,
 )
+from kiro_crew.mcp_discovery import redact_mcp_headers
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -240,11 +241,12 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
 
 
 async def api_mcp_custom_get(request: web.Request) -> web.Response:
-    """GET /api/mcp/custom/{name} — the raw editable spec of one server.
+    """GET /api/mcp/custom/{name} — the editable spec of one server.
 
     The servers list endpoint intentionally omits ``env``; the edit modal
-    must prefill from the FULL spec or a save would silently drop the
-    user's env vars.  Reads the same scope PUT writes (404 otherwise).
+    must prefill from the full spec or a save would silently drop the
+    user's env vars. Header names remain visible, but their values are
+    preserve-only redaction markers. Reads the same scope PUT writes.
     """
     name = request.match_info.get("name", "")
     if not _is_valid_mcp_name(name):
@@ -257,6 +259,8 @@ async def api_mcp_custom_get(request: web.Request) -> web.Response:
 
     enabled = not entry.get("disabled", False)
     spec = {k: v for k, v in entry.items() if k != "disabled"}
+    if "headers" in spec:
+        spec["headers"] = redact_mcp_headers(spec["headers"])
     return web.json_response({"name": name, "spec": spec, "enabled": enabled})
 
 
@@ -302,7 +306,8 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
             return web.json_response({"error": err}, status=400)
         assert isinstance(submitted, dict)  # narrowed by _validate_spec
         for key, on_disk in carried.items():
-            if key in submitted and submitted[key] != on_disk:
+            visible_value = redact_mcp_headers(on_disk) if key == "headers" else on_disk
+            if key in submitted and submitted[key] != visible_value:
                 return web.json_response(
                     {
                         "error": f"'{key}' is managed by other flows and cannot be"

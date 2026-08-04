@@ -303,6 +303,59 @@ class TestApiMcpSyncToolsUpdate:
         mock_batch.assert_called_once_with(["aws-outlook-mcp"], enabled=True)
 
     @pytest.mark.asyncio
+    async def test_sync_writes_remote_url_and_headers_to_global_config(self, mcp_env):
+        """A remote sync must never be serialized as an empty stdio command."""
+        from kiro_crew.dashboard.handlers.mcp import api_mcp_sync
+        from kiro_crew.mcp_discovery import McpServerInfo
+
+        _, mcp_json = mcp_env
+        data = _load(mcp_json)
+        data["mcpServers"]["remote"] = {
+            "url": "https://mcp.example.com/v1",
+            "headers": {"Authorization": "Bearer old"},
+            "disabled": True,
+            "disabledTools": ["write"],
+        }
+        mcp_json.write_text(json.dumps(data))
+        remote = McpServerInfo(
+            name="remote",
+            url="https://mcp.example.com/v2",
+            headers={"Authorization": "Bearer current"},
+            source="discovered",
+        )
+        req = MagicMock()
+        req.app = {"state": MagicMock()}
+
+        with (
+            patch(
+                "kiro_crew.mcp_discovery.discover_servers_to_sync",
+                return_value=[remote],
+            ),
+            patch("kiro_crew.mcp_discovery.sync_to_agent_config", return_value=True),
+            patch("kiro_crew.mcp_discovery.register_servers_for_cc"),
+            patch("kiro_crew.dashboard.handlers.mcp._get_mcp_lock") as mock_lock,
+            patch("kiro_crew.dashboard.handlers.mcp._write_mcp_json") as mock_write,
+            patch("kiro_crew.dashboard.handlers.mcp._sync_mcp_to_agent_batch"),
+            patch(
+                "kiro_crew.dashboard.handlers.sessions._reset_all_sessions",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+        ):
+            mock_lock.return_value = AsyncMock()
+            resp = await api_mcp_sync(req)
+
+        assert resp.status == 200
+        written = mock_write.call_args.args[0]["mcpServers"]["remote"]
+        assert written == {
+            "url": "https://mcp.example.com/v2",
+            "headers": {"Authorization": "Bearer current"},
+            "disabled": True,
+            "disabledTools": ["write"],
+        }
+        assert "command" not in written
+
+    @pytest.mark.asyncio
     async def test_sync_no_tools_update_when_nothing_discovered(self, mcp_env):
         """api_mcp_sync should not call _sync_mcp_to_agent_batch when empty."""
         from kiro_crew.dashboard.handlers.mcp import api_mcp_sync

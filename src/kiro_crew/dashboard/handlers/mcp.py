@@ -15,6 +15,7 @@ from aiohttp import web
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.mcp_discovery import redact_mcp_error, redact_mcp_headers
 from kiro_crew.mcp_gateway import is_gateway_supported
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.platform.governance import may_skip_gate_now
@@ -681,7 +682,17 @@ async def api_mcp_probe_cached(request: web.Request) -> web.Response:
         task = asyncio.create_task(_bg_mcp_probe())
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
-    return web.json_response(_mcp_probe_cache)
+
+    result: list[dict] = []
+    for cached in _mcp_probe_cache:
+        item = dict(cached)
+        raw_headers = item.get("headers")
+        if "error" in item:
+            item["error"] = redact_mcp_error(item["error"], raw_headers)
+        if "headers" in item:
+            item["headers"] = redact_mcp_headers(raw_headers)
+        result.append(item)
+    return web.json_response(result)
 
 
 async def api_mcp_sync(request: web.Request) -> web.Response:
@@ -713,8 +724,20 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
                 gdata = {"mcpServers": {}}
             gservers = gdata.setdefault("mcpServers", {})
             for s in to_sync:
-                if s.name not in gservers:
-                    entry: dict[str, Any] = {"command": s.command}
+                if s.is_remote:
+                    current = gservers.get(s.name)
+                    entry: dict[str, Any] = dict(current) if isinstance(current, dict) else {}
+                    for key in ("command", "args", "env", "type"):
+                        entry.pop(key, None)
+                    entry["url"] = s.url
+                    if s.headers:
+                        entry["headers"] = s.headers
+                    else:
+                        entry.pop("headers", None)
+                    if current != entry:
+                        gservers[s.name] = entry
+                elif s.name not in gservers:
+                    entry = {"command": s.command}
                     if s.args:
                         entry["args"] = s.args
                     if s.env:

@@ -312,6 +312,13 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "abort a send when redaction would alter the content — not egress.)",
     ),
     (
+        "MCP custom server specs",
+        "dashboard/handlers/mcp_custom.py",
+        "Editable MCP server specs returned by the dashboard HTTP API to the browser. "
+        "Configured header values receive credential redaction only before they cross "
+        "that boundary.",
+    ),
+    (
         "MCP app tool results",
         "dashboard/handlers/mcp_apps.py",
         "Recursively redacts every string leaf of an MCP app's tool result before "

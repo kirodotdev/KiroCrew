@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -266,6 +267,88 @@ def _cache_probe(server: McpServerInfo) -> None:
     )
 
 
+MCP_REDACTED_HEADER_VALUE = "[REDACTED: credential]"
+# Two regimes, chosen by the only property that matters: whether the value could
+# plausibly occur inside ordinary prose by chance.
+#
+# At or above this length it cannot, so the credential is masked as a BARE
+# substring — a server reflecting it glued to other characters
+# ("prefix<credential>") must still be caught.
+_MCP_CREDENTIAL_UNANCHORED_MIN_LENGTH = 8
+# Below that, masking is restricted to a standalone token, because an unanchored
+# short value would corrupt unrelated words. One- and two-character values are
+# skipped entirely: no boundary rule separates them from prose words like "a".
+_MCP_CREDENTIAL_SUFFIX_MIN_LENGTH = 3
+_MCP_AUTH_VALUE_RE = re.compile(r"^\S+\s+(.+)$")
+
+
+def redact_mcp_headers(headers: object) -> dict[str, str]:
+    """Preserve header names while hiding every client-facing value.
+
+    Custom header names can carry credentials too, so only names are safe
+    metadata for dashboard responses.
+    """
+    if not isinstance(headers, dict):
+        return {}
+    return {
+        name: MCP_REDACTED_HEADER_VALUE
+        for name in headers
+        if isinstance(name, str)
+    }
+
+
+def redact_mcp_error(error: object, headers: object) -> str:
+    """Hide configured header values reflected by a remote server."""
+    if not isinstance(error, str) or not isinstance(headers, dict):
+        return error if isinstance(error, str) else ""
+
+    # Values map to whether they require lexical boundaries. Full header values
+    # and long credentials are bare substring matches; only SHORT credentials
+    # need boundaries, since only they could collide with ordinary words.
+    values: dict[str, bool] = {}
+    for name, raw_value in headers.items():
+        if not isinstance(raw_value, str):
+            continue
+        value = raw_value.strip()
+        if not value:
+            continue
+        values[value] = False
+
+        if not isinstance(name, str) or name.casefold() != "authorization":
+            continue
+        match = _MCP_AUTH_VALUE_RE.fullmatch(value)
+        if match:
+            credential = match.group(1).strip()
+            if len(credential) >= _MCP_CREDENTIAL_SUFFIX_MIN_LENGTH:
+                needs_boundary = (
+                    len(credential) < _MCP_CREDENTIAL_UNANCHORED_MIN_LENGTH
+                )
+                values.setdefault(credential, needs_boundary)
+
+    if not values:
+        return error
+
+    # Check the characters outside a suffix instead of using \b: base64 padding
+    # ends in a non-word "=", so \b would fail between that padding and ordinary
+    # punctuation. Longest-first keeps a full header ahead of its own suffix.
+    pattern = "|".join(
+        (
+            rf"(?<!\w){re.escape(value)}(?!\w)"
+            if boundary_safe
+            else re.escape(value)
+        )
+        for value, boundary_safe in sorted(
+            values.items(), key=lambda item: len(item[0]), reverse=True
+        )
+    )
+    return re.sub(
+        pattern,
+        MCP_REDACTED_HEADER_VALUE,
+        error,
+        flags=re.IGNORECASE,
+    )
+
+
 @dataclass
 class McpServerInfo:
     """Metadata for a single MCP server (local stdio or remote HTTP)."""
@@ -305,14 +388,14 @@ class McpServerInfo:
             "args": self.args or [],
             "status": self.status,
             "tools": self.tools,
-            "error": self.error,
+            "error": redact_mcp_error(self.error, self.headers),
             "source": self.source,
             "presence": dict(self.presence),
         }
         if self.url:
             d["url"] = self.url
             if self.headers:
-                d["headers"] = self.headers
+                d["headers"] = redact_mcp_headers(self.headers)
         if self.disabled_tools:
             d["disabledTools"] = self.disabled_tools
         if self.disabled:
@@ -1186,7 +1269,7 @@ def discover_servers_to_sync() -> list[McpServerInfo]:
     """Find MCP servers in mcp.json that need syncing to the agent config.
 
     Returns new servers not yet in the agent config, plus existing servers
-    whose env, command, or args have diverged from the mcp.json source.
+    whose source-owned transport fields have diverged from mcp.json.
     """
     agent_cfg = _load_agent_config()
     agent_mcp = agent_cfg.get("mcpServers", {})
@@ -1204,18 +1287,24 @@ def discover_servers_to_sync() -> list[McpServerInfo]:
             command=spec.get("command", ""),
             args=spec.get("args"),
             env=spec.get("env") or {},
+            url=spec.get("url", ""),
+            headers=spec.get("headers") or {},
             source="discovered",
         )
         if name not in agent_names:
             out.append(info)
         else:
-            # Include existing local servers with divergent command or env.
             # Args divergence is intentionally excluded: user-customized
             # args (e.g. --include-tools additions) are preserved by
             # install_agent()'s setdefault merge, so triggering a full
             # rebuild on args-only differences is wasted work.
             existing = agent_mcp[name]
-            if not isinstance(existing, dict) or info.is_remote:
+            if not isinstance(existing, dict):
+                continue
+            if info.is_remote:
+                existing_headers = existing.get("headers") or {}
+                if existing.get("url", "") != info.url or existing_headers != info.headers:
+                    out.append(info)
                 continue
             existing_env = existing.get("env", {})
             if not isinstance(existing_env, dict):
