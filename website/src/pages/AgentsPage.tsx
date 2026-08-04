@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { modelListRefetchInterval } from '../providers/modelListHealth'
-import { Check, Star, StarOff, Brain, Plug, X, Pin, Package, Lock, Hourglass, Bot, ChevronDown } from 'lucide-react'
+import { Star, StarOff, Brain, Plug, X, Pin, Package, Lock, Hourglass, Bot, ChevronDown } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { useAppSelector } from '../store'
 import { api } from '../api/client'
@@ -63,40 +63,6 @@ interface AgentDetail extends Partial<InstalledAgent> {
   toolsSettings?: { execute_bash?: { deniedCommands?: string[] } }
   /** `skill://` resources the catalog editor cannot express (wildcards, foreign paths). */
   unmanaged_skills?: string[]
-}
-
-function AgentMetadataEditor({ name }: { name: string }) {
-  const [content, setContent] = useState('')
-  const [original, setOriginal] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [msg, setMsg] = useState<ReactNode>('')
-  const [msgOk, setMsgOk] = useState(false)
-  useEffect(() => {
-    api.agentMetadata(name).then(d => { setContent(d.content || ''); setOriginal(d.content || '') }).catch(() => {})
-  }, [name])
-  const dirty = content !== original
-  const save = async () => {
-    setSaving(true); setMsg('')
-    try {
-      await api.agentMetadataSave(name, content)
-      setOriginal(content); setMsg(<><Check className="lucide-inline" /> {i18nT('pages.agentsPage.saved')}</>); setMsgOk(true)
-      setTimeout(() => setMsg(''), 2000)
-    } catch (e) { setMsg(e instanceof Error ? e.message : String(e)); setMsgOk(false) }
-    finally { setSaving(false) }
-  }
-  return (
-    <div className="mb-3">
-      <div className="flex items-center gap-2 mb-1">
-        <span className="text-[12px] text-muted font-medium uppercase tracking-wider">{i18nT('pages.agentsPage.routing_metadata')}</span>
-        <InfoTip text={i18nT('pages.agentsPage.routing_hints_for_the_conductor_skill_describe_t')} />
-      </div>
-      <textarea aria-label={i18nT('pages.agentsPage.routing_metadata_2')} className="w-full bg-bg-elevated border border-border rounded-md p-2.5 text-text font-mono text-[12px] outline-none resize-y leading-relaxed transition-colors focus-ring" rows={4} value={content} onChange={e => setContent(e.target.value)} placeholder={i18nT('pages.agentsPage.describe_when_to_use_this_agent')} />
-      <div className="flex items-center gap-2 mt-1">
-        <Btn primary onClick={save} disabled={!dirty || saving}>{saving ? i18nT('pages.agentsPage.saving') : i18nT('pages.agentsPage.save_metadata')}</Btn>
-        {msg && <span className={`text-[12px] ${msgOk ? 'text-ok' : 'text-danger'}`}>{msg}</span>}
-      </div>
-    </div>
-  )
 }
 
 export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
@@ -311,7 +277,6 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                     </div>
                   </div>
                   {selectedAgent.description && <div className="text-[13px] text-muted mb-3 leading-relaxed">{selectedAgent.description}</div>}
-                  <AgentMetadataEditor name={selectedAgent.name} />
                   {selectedAgent.skills === undefined ? (
                     /* The agent-detail fetch failed, so the real mapping is
                      * UNKNOWN. An empty-but-enabled editor here is destructive:

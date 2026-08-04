@@ -211,10 +211,13 @@ function WorkspaceModal({
 }
 
 /** One labelled control in the editor panel, with an optional explainer. */
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, info, children }: { label: string; hint?: string; info?: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-[11px] text-muted uppercase tracking-wider font-medium">{label}</span>
+      <span className="flex items-center gap-1.5 text-[11px] text-muted uppercase tracking-wider font-medium">
+        {label}
+        {info && <InfoTip text={info} />}
+      </span>
       {children}
       {hint && <span className="text-[11.5px] leading-relaxed text-muted">{hint}</span>}
     </div>
@@ -890,7 +893,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
         <section className="flex flex-col gap-3">
           <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.routing')}</h3>
-          <Field label={i18nT('pages.kiroCrewAgentsPage.triggers')} hint={i18nT('pages.kiroCrewAgentsPage.triggers_hint')}>
+          <Field label={i18nT('pages.kiroCrewAgentsPage.triggers')} hint={i18nT('pages.kiroCrewAgentsPage.triggers_hint')} info={i18nT('pages.kiroCrewAgentsPage.triggers_info')}>
             <Input
               placeholder={i18nT('pages.kiroCrewAgentsPage.triggers_placeholder')}
               value={triggers}

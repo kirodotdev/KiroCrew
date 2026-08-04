@@ -957,8 +957,6 @@ export const api = {
   agentDetail: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name)).then(j),
   agentPatch: (name: string, body: object) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   agentDelete: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'DELETE' }).then(j),
-  agentMetadata: (name: string) => fetch('/api/agent-metadata/' + encodeURIComponent(name)).then(j),
-  agentMetadataSave: (name: string, content: string) => fetch('/api/agent-metadata/' + encodeURIComponent(name), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }).then(j),
   // KiroCrew agents
   kirocrewAgents: () => fetch('/api/agents').then(j),
   /** The model a new session on this KiroCrew agent would run on. Empty

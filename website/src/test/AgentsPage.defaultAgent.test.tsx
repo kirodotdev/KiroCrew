@@ -16,7 +16,6 @@ const mockApi = vi.hoisted(() => ({
   mcpProbeCache: vi.fn(),
   defaultAgent: vi.fn(),
   agentDetail: vi.fn(),
-  agentMetadata: vi.fn(),
   skills: vi.fn(),
   agentPatch: vi.fn(),
   spawnClear: vi.fn(),
@@ -62,7 +61,6 @@ beforeEach(() => {
   mockApi.sessionsUsage.mockResolvedValue({ usage: null })
   mockApi.agentsInstalled.mockResolvedValue([mkAgent('kirocrew'), mkAgent('fable')])
   mockApi.mcpProbeCache.mockResolvedValue([])
-  mockApi.agentMetadata.mockResolvedValue({ content: '' })
   mockApi.skills.mockResolvedValue([])
   mockApi.agentDetail.mockResolvedValue({ ...mkAgent('kirocrew'), unmanaged_skills: [] })
   mockApi.setDefaultAgent.mockResolvedValue({ ok: true, default_agent: '' })

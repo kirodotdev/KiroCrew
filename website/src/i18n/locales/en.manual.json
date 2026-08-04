@@ -1501,9 +1501,6 @@
       "default": "Default",
       "default_for_new_sessions": "Default for new sessions",
       "remove_default_agent": "Remove default agent",
-      "routing_hints_for_the_conductor_skill_describe_t": "Routing hints for the conductor skill: describe the tasks and triggering conditions where this agent should be picked (e.g. 'Use for frontend/React UI work' or 'Handle DB migrations'). An incoming task is matched against this text to delegate to the right specialist. These hints only take effect once Orchestrator Mode is enabled in Config (Developer → Config → Orchestrator Mode); otherwise they're ignored. Markdown format.",
-      "save_metadata": "Save Metadata",
-      "saving": "Saving…",
       "set_as_default": "Set as default",
       "set_as_default_agent": "Set as default agent"
     },

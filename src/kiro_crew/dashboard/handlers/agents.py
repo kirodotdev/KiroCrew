@@ -1394,7 +1394,7 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-# ── Agent metadata (Phase 1: Agents as Skills) ──────────────────────
+# ── Conductor skill regeneration ────────────────────────────────────
 
 
 def _regen_conductor() -> None:
@@ -1409,77 +1409,3 @@ def _regen_conductor() -> None:
         generate_conductor_skill(SkillsLoader())
     except Exception:
         logger.exception("Failed to regenerate conductor skill")
-
-
-async def api_agent_metadata_get(request: web.Request) -> web.Response:
-    """GET /api/agent-metadata/{name} — read agent routing metadata."""
-    name = request.match_info["name"]
-    from kiro_crew.agent_metadata import load  # noqa: F811
-
-    content = load(name)
-    return web.json_response({"name": name, "content": content})
-
-
-async def api_agent_metadata_put(request: web.Request) -> web.Response:
-    """PUT /api/agent-metadata/{name} — write agent routing metadata."""
-    caller = request.get("user", "")
-    if not caller:
-        try:
-            _sel().log_api_access(
-                caller="anonymous",
-                operation="agent_metadata.put",
-                outcome="denied",
-                source="dashboard",
-                resources="unauthenticated",
-            )
-        except Exception:
-            logger.warning("SEL logging failed", exc_info=True)
-        return web.json_response({"error": "authentication required"}, status=401)
-    name = request.match_info["name"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    content = body.get("content", "").strip()
-    if not content:
-        return web.json_response({"error": "content required"}, status=400)
-    from kiro_crew.agent_metadata import save  # noqa: F811
-
-    save(name, content)
-    _regen_conductor()
-    try:
-        _sel().log_api_access(
-            caller=caller, operation="agent_metadata.put", outcome="ok", resources=name
-        )
-    except Exception:
-        logger.warning("SEL logging failed", exc_info=True)
-    return web.json_response({"ok": True, "name": name})
-
-
-async def api_agent_metadata_delete(request: web.Request) -> web.Response:
-    """DELETE /api/agent-metadata/{name} — delete agent routing metadata."""
-    caller = request.get("user", "")
-    if not caller:
-        try:
-            _sel().log_api_access(
-                caller="anonymous",
-                operation="agent_metadata.delete",
-                outcome="denied",
-                source="dashboard",
-                resources="unauthenticated",
-            )
-        except Exception:
-            logger.warning("SEL logging failed", exc_info=True)
-        return web.json_response({"error": "authentication required"}, status=401)
-    name = request.match_info["name"]
-    from kiro_crew.agent_metadata import delete  # noqa: F811
-
-    delete(name)
-    _regen_conductor()
-    try:
-        _sel().log_api_access(
-            caller=caller, operation="agent_metadata.delete", outcome="ok", resources=name
-        )
-    except Exception:
-        logger.warning("SEL logging failed", exc_info=True)
-    return web.json_response({"ok": True, "name": name})
