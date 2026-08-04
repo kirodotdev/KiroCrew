@@ -44,6 +44,7 @@ const PasteHighlightLayer = forwardRef<HTMLDivElement, Props>(function PasteHigh
     <div
       ref={ref}
       aria-hidden
+      data-composer-typo
       className={`pointer-events-none absolute inset-0 overflow-hidden select-none text-transparent whitespace-pre-wrap break-words ${INPUT_TYPO}`}
       style={{ overflowWrap: 'break-word', wordBreak: 'normal' }}
     >
