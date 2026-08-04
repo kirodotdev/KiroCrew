@@ -62,9 +62,9 @@ describe('normalizeChord', () => {
 })
 
 describe('load / save round-trip', () => {
-  it('returns the double-shift default when nothing is stored', () => {
+  it('returns the mod-k default when nothing is stored', () => {
     expect(loadQuickSearchConfig()).toEqual(DEFAULT_QUICK_SEARCH_CONFIG)
-    expect(DEFAULT_QUICK_SEARCH_CONFIG).toEqual({ mode: 'double-shift' })
+    expect(DEFAULT_QUICK_SEARCH_CONFIG).toEqual({ mode: 'mod-k' })
   })
 
   it('round-trips the mod-k preset', () => {
