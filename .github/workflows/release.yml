@@ -4,11 +4,11 @@ on:
   push:
     tags: ["v*"]
 
-# All build/sign/notarize/publish logic lives in reusable workflows shared
-# with nightly.yml (build-wheel.yml, build-desktop.yml, publish-cli.yml,
-# sign-and-notarize.yml). This file owns only what is genuinely
-# release-specific: the tag trigger, the tag -> version/channel derivation,
-# and the GitHub Release job.
+# Prerelease tags build, sign, publish, and record one immutable promotion
+# bundle. A bare stable tag never rebuilds source: it resolves the newest
+# successful prerelease run for this exact commit/release line, verifies the
+# GitHub artifact archive by its API-recorded digest, and promotes those exact
+# bytes. Reusable workflows own the per-lane publish details.
 
 # Serialize release runs: insider/stable feed writes are last-writer-wins;
 # two tags pushed close together must publish in order or the channel feed
@@ -29,26 +29,25 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.channel.outputs.version }}
+      base_version: ${{ steps.channel.outputs.base_version }}
       channel: ${{ steps.channel.outputs.channel }}
       wheel_version: ${{ steps.channel.outputs.wheel_version }}
     steps:
       - name: Derive version + channel from tag
         id: channel
         run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           case "$VERSION" in
             *-*)
               CHANNEL="insider"
+              BASE="${VERSION%%-*}"
               # The pip wheel needs a valid PEP 440 version; semver prerelease
               # labels ("-insider.4", "-rc.2") are not one, and setuptools
               # would silently normalize an invalid stamp down to the base
               # version -- making two insider releases collide on the same
               # immutable cli/<channel>/<version>/ key. Map any prerelease to
               # rcN using its trailing number: 1.2.3-insider.4 -> 1.2.3rc4.
-              # (Corollary: do not tag both v1.2.3-insider.N and v1.2.3-rc.N
-              # -- they map to the same wheel version, and publish-cli's
-              # conditional write would fail the second as a republish.)
-              BASE="${VERSION%%-*}"
               PRE="${VERSION#*-}"
               N="${PRE##*.}"
               case "$N" in
@@ -58,13 +57,104 @@ jobs:
               ;;
             *)
               CHANNEL="stable"
+              BASE="$VERSION"
               WHEEL_VERSION="$VERSION"
               ;;
           esac
+          if ! [[ "$BASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release base must be exactly x.y.z with numeric components"
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "base_version=$BASE" >> "$GITHUB_OUTPUT"
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "wheel_version=$WHEEL_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Releasing $VERSION on channel $CHANNEL (wheel: $WHEEL_VERSION)"
+          echo "Releasing $VERSION on channel $CHANNEL (base: $BASE, wheel: $WHEEL_VERSION)"
+
+  # Release tags do not trigger ci.yml, so prerelease candidates run a
+  # dedicated backend test gate against the exact commit being packaged. The
+  # immutable promotion record cannot be assembled unless this same-SHA gate
+  # succeeds.
+  release-candidate-tests:
+    name: Test Release Candidate SHA
+    if: needs.version.outputs.channel == 'insider'
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify exact candidate SHA
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::checked out ${ACTUAL_SHA}, expected release candidate ${GITHUB_SHA}"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install pinned test dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Run release candidate tests
+        run: |
+          pytest -q -n auto --timeout=120 --no-cov \
+            --deselect=test/test_script_hooks.py \
+            --deselect=test/test_cron_script.py
+
+  resolve-promotion:
+    name: Resolve Tested Candidate
+    if: needs.version.outputs.channel == 'stable'
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      source_version: ${{ steps.resolve.outputs.source_version }}
+      source_tag: ${{ steps.resolve.outputs.source_tag }}
+      source_run_id: ${{ steps.resolve.outputs.source_run_id }}
+      docker_image: ${{ steps.resolve.outputs.docker_image }}
+      docker_digest: ${{ steps.resolve.outputs.docker_digest }}
+      artifact_digest: ${{ steps.resolve.outputs.artifact_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve and verify immutable candidate bundle
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_promotion.py resolve \
+            --repository "${GITHUB_REPOSITORY}" \
+            --source-sha "${GITHUB_SHA}" \
+            --base-version "${{ needs.version.outputs.base_version }}" \
+            --archive-path "${RUNNER_TEMP}/stable-promotion.zip" \
+            --output-dir "${RUNNER_TEMP}/stable-promotion" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Attach verified bundle to this run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: KiroCrew-notarized-stable-${{ needs.version.outputs.version }}
+          path: ${{ runner.temp }}/stable-promotion/*
+          if-no-files-found: error
+          retention-days: 14
 
   dependency-vulnerability-gate:
     name: Production Dependency Vulnerability Gate
@@ -72,6 +162,7 @@ jobs:
 
   build-wheel:
     name: Build Wheel
+    if: needs.version.outputs.channel == 'insider'
     needs: [version, dependency-vulnerability-gate]
     uses: ./.github/workflows/build-wheel.yml
     with:
@@ -79,6 +170,7 @@ jobs:
 
   build-desktop:
     name: Build Desktop
+    if: needs.version.outputs.channel == 'insider'
     needs: [version, dependency-vulnerability-gate]
     uses: ./.github/workflows/build-desktop.yml
     with:
@@ -114,7 +206,11 @@ jobs:
   # failure never blocks the CLI release.
   publish-cli:
     name: Publish CLI (${{ needs.version.outputs.channel }} channel)
-    needs: [version, build-wheel]
+    needs: [version, build-wheel, resolve-promotion]
+    if: >-
+      ${{ always() && needs.version.result == 'success' &&
+          ((needs.version.outputs.channel == 'insider' && needs.build-wheel.result == 'success') ||
+           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
     permissions:
       contents: read
       id-token: write
@@ -123,7 +219,9 @@ jobs:
     with:
       channel: ${{ needs.version.outputs.channel }}
       version: ${{ needs.version.outputs.version }}
-      wheel_artifact: cli-wheel
+      wheel_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'cli-wheel' }}
+      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      promotion_base_version: ${{ needs.version.outputs.base_version }}
     secrets: inherit
 
   # ── Linux desktop publish ─────────────────────────────────────────────
@@ -134,7 +232,11 @@ jobs:
   # macOS signing failure can block it (per-platform releases).
   publish-linux:
     name: Publish Linux Desktop (${{ needs.version.outputs.channel }} channel)
-    needs: [version, build-desktop]
+    needs: [version, build-desktop, resolve-promotion]
+    if: >-
+      ${{ always() && needs.version.result == 'success' &&
+          ((needs.version.outputs.channel == 'insider' && needs.build-desktop.result == 'success') ||
+           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
     permissions:
       contents: read
       id-token: write
@@ -142,9 +244,11 @@ jobs:
     uses: ./.github/workflows/publish-linux.yml
     with:
       channel: ${{ needs.version.outputs.channel }}
-      version: ${{ needs.version.outputs.version }}
+      version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
       publish: true
-      appimage_artifact: build-linux-x64
+      appimage_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-x64' }}
+      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      promotion_base_version: ${{ needs.version.outputs.base_version }}
     secrets: inherit
 
   # ── Docker image publish ──────────────────────────────────────────────
@@ -155,7 +259,11 @@ jobs:
   # also moves :latest.
   publish-docker:
     name: Publish Docker Image (${{ needs.version.outputs.channel }} channel)
-    needs: [version, build-wheel]
+    needs: [version, build-wheel, resolve-promotion]
+    if: >-
+      ${{ always() && needs.version.result == 'success' &&
+          ((needs.version.outputs.channel == 'insider' && needs.build-wheel.result == 'success') ||
+           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
     permissions:
       contents: read
       packages: write
@@ -168,7 +276,9 @@ jobs:
       publish: true
       # The GHCR package intentionally remains private for now.
       require_public_access: false
-      wheel_artifact: cli-wheel
+      wheel_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'cli-wheel' }}
+      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      promote_digest: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.docker_digest || '' }}
     # No `secrets: inherit`: the lane authenticates with GITHUB_TOKEN only
     # (implicitly available to reusable workflows). Inheriting would expose
     # every repo secret (signing, CDN) to a lane documented as needing none.
@@ -181,7 +291,11 @@ jobs:
   # test_workflow_permissions.py).
   sign-and-notarize:
     name: Sign + Notarize macOS
-    needs: [version, build-wheel, build-desktop]
+    needs: [version, build-wheel, build-desktop, resolve-promotion]
+    if: >-
+      ${{ always() && needs.version.result == 'success' &&
+          ((needs.version.outputs.channel == 'insider' && needs.build-wheel.result == 'success' && needs.build-desktop.result == 'success') ||
+           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
     permissions:
       id-token: write
       contents: read
@@ -190,8 +304,11 @@ jobs:
     secrets: inherit
     with:
       channel: ${{ needs.version.outputs.channel }}
-      version: ${{ needs.version.outputs.version }}
+      version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
       write_feed: true
+      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      promotion_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || '' }}
+      promotion_base_version: ${{ needs.version.outputs.base_version }}
 
   github-release:
     name: Create GitHub Release
@@ -201,9 +318,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts
+
+      - name: Verify promoted release bytes
+        if: needs.version.outputs.channel == 'stable'
+        run: |
+          python3 scripts/release_promotion.py verify \
+            --bundle-dir "artifacts/KiroCrew-notarized-stable-${{ needs.version.outputs.version }}" \
+            --expected-source-sha "${GITHUB_SHA}" \
+            --expected-base-version "${{ needs.version.outputs.base_version }}"
 
       # Assemble release assets: everything built, with macOS assets accepted
       # only from the exact gated artifact emitted after notarization, stapling,
@@ -283,3 +410,74 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ needs.version.outputs.channel == 'insider' }}
           files: release/*
+
+  # Record the exact prerelease deliverables only after every publishing lane
+  # succeeds. Stable resolves this immutable GitHub artifact by the successful
+  # source run, verifies the API digest, then verifies every file hash in the
+  # manifest before any channel pointer moves.
+  record-promotion:
+    name: Record Immutable Promotion Bundle
+    if: >-
+      ${{ always() && needs.version.outputs.channel == 'insider' &&
+          needs.release-candidate-tests.result == 'success' &&
+          needs.publish-cli.result == 'success' &&
+          needs.publish-linux.result == 'success' &&
+          needs.publish-docker.result == 'success' &&
+          needs.sign-and-notarize.result == 'success' }}
+    needs: [version, release-candidate-tests, publish-cli, publish-linux, publish-docker, sign-and-notarize]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download this run's immutable artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+
+      - name: Assemble canonical promotion bundle
+        env:
+          DOCKER_DIGEST: ${{ needs.publish-docker.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir promotion-bundle
+          one() {
+            label="$1"; shift
+            mapfile -t matches < <(find artifacts -type f "$@")
+            if [ "${#matches[@]}" -ne 1 ]; then
+              echo "::error::expected exactly one ${label}, found ${#matches[@]}"
+              printf '%s\n' "${matches[@]}"
+              exit 1
+            fi
+            printf '%s' "${matches[0]}"
+          }
+          WHEEL=$(one wheel -name '*.whl')
+          SDIST=$(one sdist -name '*.tar.gz')
+          APPIMAGE=$(one AppImage -name '*.AppImage')
+          MAC_ZIP=$(one notarized.zip -path '*KiroCrew-notarized-*' -name 'notarized.zip')
+          DMG=$(one notarized-DMG -path '*KiroCrew-notarized-*' -name 'KiroCrew.dmg')
+          cp "$WHEEL" "promotion-bundle/$(basename "$WHEEL")"
+          cp "$SDIST" "promotion-bundle/$(basename "$SDIST")"
+          cp "$APPIMAGE" promotion-bundle/KiroCrew-x86_64.AppImage
+          cp "$MAC_ZIP" promotion-bundle/notarized.zip
+          cp "$DMG" promotion-bundle/KiroCrew.dmg
+          OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          python3 scripts/release_promotion.py create \
+            --bundle-dir promotion-bundle \
+            --source-sha "${GITHUB_SHA}" \
+            --source-tag "${GITHUB_REF_NAME}" \
+            --source-version "${{ needs.version.outputs.version }}" \
+            --base-version "${{ needs.version.outputs.base_version }}" \
+            --wheel-version "${{ needs.version.outputs.wheel_version }}" \
+            --source-run-id "${GITHUB_RUN_ID}" \
+            --docker-image "ghcr.io/${OWNER}/kirocrew" \
+            --docker-digest "${DOCKER_DIGEST}"
+
+      - name: Upload immutable promotion record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stable-promotion-${{ needs.version.outputs.base_version }}
+          path: promotion-bundle/*
+          if-no-files-found: error
+          retention-days: 90

@@ -55,6 +55,16 @@ on:
         description: "Name of the uploaded artifact containing the AppImage"
         required: true
         type: string
+      promote:
+        description: "Publish verified prerelease bytes to stable without rebuilding"
+        required: false
+        type: boolean
+        default: false
+      promotion_base_version:
+        description: "Bare stable version whose candidate manifest must match"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -80,6 +90,7 @@ jobs:
     environment: prod
     env:
       HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
+      GH_TOKEN: ${{ github.token }}
       CHANNEL: ${{ inputs.channel }}
       VERSION: ${{ inputs.version }}
       # Pinned published basename, arch-qualified: Linux has no universal
@@ -88,6 +99,8 @@ jobs:
       # beside this one.
       LINUX_BASENAME: KiroCrew-x86_64
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Configure AWS credentials
         if: env.HAS_SIGNING_SECRETS
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -101,6 +114,14 @@ jobs:
         with:
           name: ${{ inputs.appimage_artifact }}
           path: artifacts
+
+      - name: Verify immutable promotion bundle
+        if: env.HAS_SIGNING_SECRETS && inputs.promote
+        run: |
+          python3 scripts/release_promotion.py verify \
+            --bundle-dir artifacts \
+            --expected-source-sha "${GITHUB_SHA}" \
+            --expected-base-version "${{ inputs.promotion_base_version }}"
 
       - name: Locate AppImage
         if: env.HAS_SIGNING_SECRETS
@@ -126,10 +147,17 @@ jobs:
       # write so un-attested bytes never go live; if attestation fails,
       # the job fails and nothing is published.
       - name: Attest AppImage provenance
-        if: env.HAS_SIGNING_SECRETS
+        if: env.HAS_SIGNING_SECRETS && !inputs.promote
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-path: ${{ env.APPIMAGE_PATH }}
+
+      - name: Verify promoted AppImage provenance
+        if: env.HAS_SIGNING_SECRETS && inputs.promote
+        run: |
+          gh attestation verify "${APPIMAGE_PATH}" \
+            --repo "${{ github.repository }}" \
+            --signer-workflow "${{ github.repository }}/.github/workflows/publish-linux.yml"
 
       # Same never-republish discipline as the mac zip/DMG and the cli/*
       # wheels: the versioned key is immutable-cached by CloudFront and must

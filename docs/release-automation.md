@@ -35,13 +35,27 @@ is ever overwritten.
 **The release branch and RC promotion are human process, not automation.**
 Feature releases are cut as a `release/x.y.z` branch off `main` on 0.1
 increments; fixes for that release land on the branch (not `main`) and each
-is tagged as a new RC to insider; stable is the last good RC **promoted by
-tagging its commit**, never rebuilt; hot patches bump the patch digit from
-the same branch. After a stable cut, `main` is bumped by 0.1 and the
-branch's fixes are merged back. The pipeline has no knowledge of any of
-this — it only reacts to a pushed tag, which is why there is no
-`beta-cut.yml`, `beta-hotfix.yml`, or `promote-stable.yml`. See
-CONTRIBUTING.md → "Releasing New Versions" for the process itself.
+is tagged as a new RC to insider. A successful RC run records a 90-day
+`stable-promotion-{x.y.z}` GitHub artifact containing the exact wheel/sdist,
+AppImage, notarized zip/DMG, their SHA-256/SHA-512/size manifest, source
+SHA/tag/run id, and the attested OCI manifest digest. Stable is the last good
+RC **promoted by tagging its exact commit**. The bare-tag run resolves the
+newest successful same-commit/same-base RC, verifies the artifact ZIP against
+GitHub's API-recorded digest, safely extracts it, verifies every manifest
+field/file digest, and publishes or retags only those bytes. It never calls
+either build workflow, CDSigner, Apple notarization, or the OCI build step.
+Missing/expired/ambiguous records and every digest mismatch fail closed; cut a
+fresh RC instead of rebuilding stable.
+
+The promoted binaries retain the RC's embedded version because changing that
+metadata would change the tested bytes (and invalidate macOS signatures). The
+bare git tag, GitHub Release, and stable channel are the final stable identity.
+Hot patches likewise require a recorded RC before the bare patch tag. After a
+stable cut, `main` is bumped by 0.1 and the branch's fixes are merged back. The
+pipeline does not automate branch cuts, RC numbering, promote decisions, or
+back-merges, which is why there is no standalone `beta-cut.yml`,
+`beta-hotfix.yml`, or `promote-stable.yml`. See CONTRIBUTING.md → "Releasing
+New Versions" for the human process.
 
 There is no `rollback.yml` and no rollback mechanism: **we roll forward by
 cutting a new version.**
@@ -187,11 +201,21 @@ no beta→insider name mapping.
   signature, malformed/duplicate fields, wrong key id, bad signature, redirect
   metadata, and digest mismatch all refuse installation with no unsigned
   fallback.
-- **CI-direct feed, independent of desktop signing.** The wheel has no desktop `signed/` stage. `publish-cli.yml` signs the artifact manifest with the CLI-specific KMS key and writes `latest-cli.json` straight from CI (as every lane now does — see "Feed (as built)" above). It depends only on the built wheel and that manifest key, so an Apple/CDSigner failure never blocks a CLI release.
-- **Build once per tag.** `nightly.yml` publishes the nightly wheel;
-  `release.yml` publishes the tagged wheel to insider (RC tag) or stable
-  (bare tag). Promotion is a human step — tagging the good RC's commit — so
-  the stable build comes from the same commit the RC was validated on.
+- **CI-direct feed, independent of desktop signing.** The wheel has no desktop
+  `signed/` stage. `publish-cli.yml` signs the artifact manifest with the
+  CLI-specific KMS key and writes `latest-cli.json` straight from CI. It depends
+  only on the built wheel and that manifest key, so an Apple/CDSigner failure
+  never blocks a CLI release.
+- **Build once per candidate.** `nightly.yml` builds/publishes nightly;
+  a prerelease `release.yml` run builds/publishes insider and records the exact
+  wheel in the immutable promotion bundle. A bare stable tag on that candidate's
+  commit downloads and verifies the recorded bundle, reuses the same wheel
+  bytes, verifies their original `publish-cli.yml` provenance, signs a stable
+  channel manifest, and writes only stable channel objects/pointers. The
+  promoted stable feed therefore reports the candidate wheel's PEP 440 version;
+  rewriting it to a bare version would create untested bytes. Direct-feed
+  installs remain channel-sticky; pip users selecting a prerelease-versioned
+  promoted wheel must allow prereleases.
 
 ### Topology
 
@@ -217,7 +241,7 @@ flowchart TB
         BMACF["feed/insider/latest-mac.yml"]
         BCLIF["feed/insider/latest-cli.json"]
     end
-    subgraph CH_S["Channel: stable (promoted RC commit)"]
+    subgraph CH_S["Channel: stable (digest-verified RC bytes)"]
         SMACF["feed/stable/latest-mac.yml"]
         SCLIF["feed/stable/latest-cli.json"]
     end
@@ -233,7 +257,7 @@ flowchart TB
     NCLI --> NCLIF
     RMAC --> BMACF
     RCLI --> BCLIF
-    CH_B -. "promote: bare tag on the RC commit" .-> CH_S
+    CH_B -. "promote: verify recorded bundle + OCI digest" .-> CH_S
     NMACF --> MACAPP
     BMACF --> MACAPP
     SMACF --> MACAPP

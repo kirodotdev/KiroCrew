@@ -131,6 +131,13 @@ class TestReleasePermissions:
 
         assert _workflow_permissions("release.yml") == {"contents": "read"}
         assert _permission_block(lines, "  version:") is None
+        assert _permission_block(lines, "  resolve-promotion:") == {
+            "actions": "read",
+            "contents": "read",
+        }
+        assert _permission_block(lines, "  record-promotion:") == {
+            "contents": "read",
+        }
         assert _permission_block(lines, "  build-wheel:") is None
         assert _permission_block(lines, "  build-desktop:") is None
         # Windows build: OIDC for signing, never contents:write (see nightly).

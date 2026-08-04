@@ -10,11 +10,14 @@ Deeper detail: [`release-process-design.md`](release-process-design.md).
   increments: `0.1.0` → `0.2.0` → `0.3.0`.
 - **Bug fixes go on the release branch**, not `main`. Each produces a new
   insider RC (release candidate): `0.2.0.rc1`, `0.2.0.rc2`, …
-- **Stable is the last RC we judge stable enough** — promoted by tagging it, not
-  rebuilt. So `0.2.0.rc5` becomes stable `0.2.0`.
+- **Stable is the last RC we judge stable enough** — promoted by tagging its
+  exact commit, not rebuilt. The successful RC run records a 90-day immutable
+  bundle and OCI digest; the bare stable tag verifies that record and promotes
+  only those bytes. The binaries retain the RC's embedded version because
+  rewriting it would change the tested bytes; the bare tag/Release/channel are
+  the final stable identity.
 - **Hot patches bump the patch digit** (`0.2.0` → `0.2.1`), cut from the release
-  branch. Small ones go straight to stable; larger ones go through an RC on
-  insider first.
+  branch, and also pass through at least one recorded RC before stable.
 - **After each stable cut**, bump the version on `main` by 0.1 and merge the
   branch's fixes back. Releasing stable `0.2.0` moves `main` to `0.3.0`.
 
@@ -35,20 +38,24 @@ lanes of one production app, switchable in Settings.
 2. Tag RCs on the branch as fixes land: `v0.2.0-rc.1`, `-rc.2`, … → insider.
 3. Tag the good RC's commit with a bare `v0.2.0` → stable.
 4. Bump `main` to `0.3.0`, merge the fixes back.
-5. Hot patch: fix on the branch, tag `v0.2.1`.
+5. Hot patch: fix on the branch, cut/test an RC, then put the bare patch tag on
+   that candidate's exact commit.
 
 ## How builds are triggered
 
 - **Nightly** runs on a schedule every night, and can be kicked off on demand
   any time.
 - **Insider and stable** are triggered by pushing a version tag — an RC tag
-  publishes to insider, a plain version tag publishes to stable.
+  builds/publishes to insider and records the promotion bundle; a plain version
+  tag on that exact commit verifies and promotes the record to stable. If the
+  record is missing, expired, or digest-mismatched, cut a fresh RC.
 
 The release branch, RC numbering, promote decision, and back-merge are all
-human process; the pipeline only reacts to the tag.
+human process; the pipeline reacts to the tag and enforces exact-byte promotion.
 
-Each build ships a signed and notarized macOS app, a Linux AppImage, a CLI
-installer, a pip wheel, and a Docker image. The update feed for a channel is
+Nightly and RC builds produce a signed and notarized macOS app, a Linux AppImage,
+a CLI installer, a pip wheel, and a Docker image. Stable reuses those candidate
+bytes; it does not run the build workflows. The update feed for a channel is
 repointed last, after the artifacts are verified downloadable, and clients only
 install with the user's consent. Windows builds but is not yet signed or
 published.

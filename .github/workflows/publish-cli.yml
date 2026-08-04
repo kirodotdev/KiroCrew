@@ -29,6 +29,16 @@ on:
         description: "Name of the uploaded artifact containing the wheel"
         required: true
         type: string
+      promote:
+        description: "Publish verified prerelease bytes to stable without rebuilding"
+        required: false
+        type: boolean
+        default: false
+      promotion_base_version:
+        description: "Bare stable version whose candidate manifest must match"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -50,6 +60,7 @@ jobs:
     env:
       HAS_PUBLISH_ROLE: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
       HAS_MANIFEST_KEY: ${{ vars.CLI_MANIFEST_SIGNING_KEY_ARN != '' && 'true' || '' }}
+      GH_TOKEN: ${{ github.token }}
       CHANNEL: ${{ inputs.channel }}
       VERSION_LABEL: ${{ inputs.version }}
     steps:
@@ -69,6 +80,14 @@ jobs:
         with:
           name: ${{ inputs.wheel_artifact }}
           path: cli-dist
+
+      - name: Verify immutable promotion bundle
+        if: ${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && inputs.promote }}
+        run: |
+          python3 scripts/release_promotion.py verify \
+            --bundle-dir cli-dist \
+            --expected-source-sha "${GITHUB_SHA}" \
+            --expected-base-version "${{ inputs.promotion_base_version }}"
 
       - name: Locate wheel and compute checksum
         id: wheel
@@ -100,7 +119,7 @@ jobs:
           echo "Wheel: $WHEEL_NAME (version $WHEEL_VERSION, label '${VERSION_LABEL}')"
 
       - name: Attest wheel provenance
-        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        if: ${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}
         # Signed SLSA provenance binding the published wheel's digest to this
         # repo/workflow/commit (CWE-1104) — complements the self-hosted
         # SHA256SUMS (integrity, not authenticity). Runs before the wheel is
@@ -108,6 +127,13 @@ jobs:
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-path: ${{ steps.wheel.outputs.path }}
+
+      - name: Verify promoted wheel provenance
+        if: ${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && inputs.promote }}
+        run: |
+          gh attestation verify "${{ steps.wheel.outputs.path }}" \
+            --repo "${{ github.repository }}" \
+            --signer-workflow "${{ github.repository }}/.github/workflows/publish-cli.yml"
 
       - name: Configure AWS credentials
         if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY

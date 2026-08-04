@@ -8,7 +8,7 @@
 | Scope | Channel model, versioning, CI builds, distribution infrastructure, client auto-update, platform-lane contract |
 | Out of scope | Signing/notarization operations (separate doc, TBD); bootstrap installers; app-store app updates |
 
-> Statuses in this doc are as of 2026-07-28, cross-checked against the
+> Statuses in this doc are as of 2026-08-01, cross-checked against the
 > merged PR record of this repo. `docs/release-automation.md` is the
 > operational companion (workflow details, feed structure, CLI/EC2
 > distribution); this doc records the design and its rationale.
@@ -63,6 +63,7 @@ decisions, not product requirements.
 | T3 | Distribution is private by default: no public S3, artifacts served only through the CDN | Done: BLOCK_ALL buckets + CloudFront OAC; live CDN `d28nxu9if70cmc.cloudfront.net` | #98 (artifacts were 403 in the private bucket; copied to the public CDN bucket instead of opening it) |
 | T4 | One pipeline builds every platform lane and every channel, so adding one means adding a matrix entry instead of building a new system. Lanes fail independently ("a macOS signing failure never blocks a CLI release") | Done: reusable build/sign/publish workflows shared by nightly and tag releases | #132, #133 |
 | T5 | An update must never corrupt a running install: versioned CDN keys are immutable (never republished), and the embedded Python gateway stops gracefully before the bundle swap | Done: `--if-none-match` never-republish discipline + unique per-build versions (minute, later seconds precision) after live cache-mismatch incidents; gateway stop before `quitAndInstall` | #62 (edge-cache sha256 mismatch observed live), #95, #98 |
+| T6 | Stable must promote the already-tested candidate bits, not merely rebuild the same source commit and hope for reproducibility | Done: successful prerelease runs record a 90-day artifact bundle with per-file digests and the attested OCI digest; a bare tag resolves only a successful same-SHA/same-base run, verifies the GitHub artifact API digest and manifest, then republishes/retags those exact bytes. Missing or mismatched evidence fails closed | Immutable promotion contract in `release.yml`, `scripts/release_promotion.py`, and focused contract tests |
 
 ## 2. Channel model
 
@@ -73,7 +74,7 @@ at v0.1.0).
 |---|---|---|---|---|
 | nightly | Like pulling the latest code from `main` once a day. Mostly internal: us and contributors | Daily, sometimes more | Scheduled 06:00 UTC run + manual dispatch, from `main` HEAD | `{base}-nightly.{YYYYMMDDHHMMSS}` |
 | insider | Beta versions customers test for us: power users who want new versions 1 to 2 weeks earlier | When a candidate is cut, typically every 1 to 2 weeks | Pushing a `v{x.y.z}-insider.{N}` tag | `{x.y.z}-insider.{N}` |
-| stable | All users (client default) | After the insider bake and bug-bash (~2 weeks) | Pushing a bare `v{x.y.z}` tag on the validated insider commit | `{x.y.z}` |
+| stable | All users (client default) | After the insider bake and bug-bash (~2 weeks) | Pushing a bare `v{x.y.z}` tag on the validated insider commit; the workflow verifies and promotes that run's recorded bytes | Release identity `{x.y.z}`; artifacts retain the selected `{x.y.z}-insider.{N}` / PEP 440 RC version |
 
 Why the versions look like this:
 
@@ -89,17 +90,23 @@ Why the versions look like this:
   lane: PEP 440 sorts every `-insider.{N}` below the bare `{x.y.z}`, so a
   stable consumer never resolves an insider build and installing insider
   requires an explicit `--pre`.
-- Stable is the bare `{x.y.z}` because it is the release's final
-  identity. The same string names the git tag, the GitHub Release, the
-  wheel metadata, and the artifact paths.
+- Stable's release identity is the bare `{x.y.z}`: it names the git tag and
+  GitHub Release and selects the stable channel. The artifacts themselves keep
+  the selected candidate's embedded prerelease version. That distinction is
+  deliberate: changing wheel metadata, Electron/package metadata, a signed app,
+  or image labels would produce bytes users never baked and invalidate the
+  recorded digests/signatures. Stable promotion changes distribution pointers
+  and tags, not artifact contents.
 
 Changes ride nightly continuously. An insider tag freezes a candidate;
-hotfixes increment `-insider.{N}`. After the bake and bug-bashing period
-on insider, stable is cut by tagging the exact commit the last green
-insider run validated (v0.1.0 was tagged on the insider.3 commit,
-deliberately excluding three unvalidated commits that had landed on
-`main` since). Every future stable release is another bare `v{x.y.z}`
-tag.
+hotfixes increment `-insider.{N}`. After the bake and bug-bashing period,
+stable is cut by tagging the exact commit the last green insider run validated.
+The bare-tag run finds the newest successful prerelease run for that exact SHA
+and release base, verifies its immutable promotion artifact and every contained
+digest, then promotes only those bytes. It does not invoke source builds,
+CDSigner, notarization, or the OCI builder. Missing or expired evidence requires
+a fresh RC. Every future stable release is another bare `v{x.y.z}` tag on a
+recorded candidate.
 
 How the channels present to users (PRs #193, #224): nightly ships as a
 separate installable app (KiroCrew Nightly.app, its own icon, shared
@@ -119,14 +126,17 @@ The source of truth is `src/kiro_crew/__init__.py`, specifically
   republished
 - insider: `{x.y.z}-insider.{N}`, tagged `v{x.y.z}-insider.{N}` (maps to
   PEP 440 for the pip lane)
-- stable: `{x.y.z}`, tagged `v{x.y.z}`
+- stable release identity: `{x.y.z}`, tagged `v{x.y.z}`; promoted artifacts
+  retain the selected insider/RC version embedded by their only build
 
 For nightly, the `version` job derives the stamp and each build job stamps
 both `__init__.py` (the runtime `--version` string) and `pyproject.toml`
 (which drives the wheel's metadata version). The desktop build reads the
 stamp and passes it to electron-builder, and the Electron `package.json`
-version is stamped as well so the updater's version compare works. Tag
-builds carry the tag's version; there is no auto-bump.
+version is stamped as well so the updater's version compare works.
+Prerelease tags likewise stamp and build once. Bare stable tags do not stamp or
+build: they verify the selected candidate manifest and reuse its embedded
+version and byte digests unchanged.
 
 ## 4. CI build pipeline
 
@@ -140,7 +150,7 @@ CLI/EC2 distribution design, while this section covers the design shape.)
 | `ci.yml` | push/PR to `main` | nothing | Quality gates: backend lint (isort/flake8/mypy blocking) + pytest (py3.10, 3.12), frontend tsc/eslint-ratchet/jscpd + vitest |
 | `build.yml` | push/PR to `main` | wheel + desktop (both platforms) | Build validation including a `pip install dist/*.whl` smoke test |
 | `nightly.yml` | cron + dispatch | wheel + desktop matrix | Full publish path (section 5); concurrency-guarded |
-| `release.yml` | `v*` tag | wheel + sdist + desktop matrix | GitHub Release with generated notes |
+| `release.yml` | `v*` tag | Prerelease: wheel + sdist + desktop matrix. Stable: no build | Prerelease publishes and records an immutable promotion bundle; a bare tag verifies that same-commit bundle and promotes exact files/OCI digest into stable, then creates the GitHub Release |
 | `pages.yml` | push to `main` (`site/**`) | landing site | GitHub Pages; the build job runs unprivileged by design because npm lifecycle scripts run untrusted code |
 | review workflows | PR | nothing | LLM review gates (Claude via a Bedrock role, Codex via an isolated Bedrock role), Semgrep, dependency audit; all fail closed |
 
@@ -525,7 +535,7 @@ Public repo era (kirodotdev/KiroCrew, all merged):
 | 07-22 | #152 | Universal arm64+x86_64 app; Intel Macs no longer locked out |
 | 07-22 | #162 | Human-clickable per-channel latest-DMG permalinks |
 | 07-22 | #176 | Tag-triggered CLI publish fixed (first-ever tag publish had failed on OIDC trust) |
-| 07-22 | (launch) | Insider channel live (v0.1.0-insider.3) and stable channel live (v0.1.0, promote-what-you-tested), each with 7 verified public surfaces |
+| 07-22 | (launch) | Insider channel live (v0.1.0-insider.3) and stable channel live (v0.1.0, same-commit promotion before immutable-bundle enforcement), each with 7 verified public surfaces |
 | 07-22 | #193, #215 | Nightly as a side-by-side app with its own identity and in-app branding |
 | 07-23 | #224, #241 | In-place stable/insider channel switcher; inform-only update nudge |
 

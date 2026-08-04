@@ -811,9 +811,18 @@ def test_publish_workflow_gates_all_artifact_work_before_side_effects() -> None:
         "Checkout manifest verifier contract",
         "Download wheel artifact",
         "Locate wheel and compute checksum",
-        "Attest wheel provenance",
     ):
         assert _workflow_step(name)["if"] == complete_config
+
+    promote = (
+        "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && inputs.promote }}"
+    )
+    fresh_build = (
+        "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}"
+    )
+    assert _workflow_step("Verify immutable promotion bundle")["if"] == promote
+    assert _workflow_step("Attest wheel provenance")["if"] == fresh_build
+    assert _workflow_step("Verify promoted wheel provenance")["if"] == promote
 
 
 def test_installer_fetches_authenticated_urls_without_redirects() -> None:
