@@ -593,7 +593,7 @@ make this tool possible:
 <a href="https://github.com/hoang-phan98" title="Hoang "><img src="https://github.com/hoang-phan98.png?size=64" width="64" height="64" alt="Hoang " /></a>
 <a href="https://github.com/hugoncosta" title="Hugo Costa"><img src="https://github.com/hugoncosta.png?size=64" width="64" height="64" alt="Hugo Costa" /></a>
 <a href="https://github.com/hungtnvu" title="Hung Vu"><img src="https://github.com/hungtnvu.png?size=64" width="64" height="64" alt="Hung Vu" /></a>
-<a href="https://github.com/iamwhatever" title="iamwhatever"><img src="https://github.com/iamwhatever.png?size=64" width="64" height="64" alt="iamwhatever" /></a>
+<a href="https://github.com/iamwhatever" title="Zejiang Guo (Joe)"><img src="https://github.com/iamwhatever.png?size=64" width="64" height="64" alt="Zejiang Guo (Joe)" /></a>
 <a href="https://github.com/inaoy" title="inaoy"><img src="https://github.com/inaoy.png?size=64" width="64" height="64" alt="inaoy" /></a>
 <a href="https://github.com/IngridMorstrad" title="IngridMorstrad"><img src="https://github.com/IngridMorstrad.png?size=64" width="64" height="64" alt="IngridMorstrad" /></a>
 <a href="https://github.com/ishansmishra" title="Ishan Mishra"><img src="https://github.com/ishansmishra.png?size=64" width="64" height="64" alt="Ishan Mishra" /></a>
