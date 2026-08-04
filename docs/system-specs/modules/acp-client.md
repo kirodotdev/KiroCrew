@@ -403,12 +403,16 @@ The `audit_source` constructor param (default `None`) tags an `AcpClient` that r
 
 `_send_prompt()` auto-detects image file paths in messages (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`) via regex. When a valid image path is found:
 
-1. Reads the file and base64-encodes it
-2. Appends an image content block: `{"type": "image", "data": "<base64>", "mimeType": "image/png"}`
-3. Replaces the path in the text with `[image: filename.png]`
-4. Sends both text and image blocks in the `prompt` array
+1. Reads the file (paths over `MAX_IMAGE_BYTES` = 10 MB stay as text, not inlined)
+2. Downscales so the longest edge is <= `MAX_IMAGE_EDGE_PX` (2000 px), preserving aspect ratio and re-encoding to the same format (an oversized GIF becomes a PNG still frame)
+3. Base64-encodes the (possibly downscaled) bytes
+4. Appends an image content block: `{"type": "image", "data": "<base64>", "mimeType": "image/png"}`
+5. Replaces the path in the text with `[image: filename.png]`
+6. Sends both text and image blocks in the `prompt` array
 
 This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM receives the image inline — no tool call needed.
+
+**Dimension backstop** (`build_prompt_blocks` in `acp/prompt_blocks.py`). This shared builder is the single funnel every channel's images cross before reaching kiro-cli, so the `MAX_IMAGE_EDGE_PX` (2000 px) downscale runs for all of them — dashboard upload/paste/screenshot, Slack, Discord. Anthropic rejects the ENTIRE request when a many-image conversation (>20 images) carries any image over 2000 px on a side; because kiro-cli replays the full message history every turn, one oversized image would otherwise sit at a fixed history index and wedge the session permanently (a follow-up resize cannot evict the original). The browser's client-side resize (1568 px, `website/src/utils/resizeImage.ts`) is a token-cost optimization on top; this server-side cap is the correctness guarantee that still holds when that resize is skipped or bypassed (e.g. the native `/api/screenshot` capture, or non-dashboard channels).
 
 
 ## AcpRuntime & AcpSessionHandle (session multiplexing)
