@@ -3,6 +3,36 @@
 Thanks for your interest in contributing! KiroCrew is an open-source project and
 we welcome issues and pull requests.
 
+## Reporting Bugs and Requesting Features
+
+Open a [GitHub issue](https://github.com/kirodotdev/KiroCrew/issues). Before you
+do, search the open issues, because the fastest resolution is often a thread that
+already exists.
+
+For a bug, what actually helps is a way to reproduce it, the version you are on,
+your operating system, and anything unusual about how KiroCrew is installed or
+where it runs. A stack trace beats a description of a stack trace. If it only
+happens on one surface, say which one, because the dashboard, the CLI, and a chat
+channel take different paths through the code.
+
+For a feature, lead with the problem rather than the design. What you were trying
+to do and what stopped you tells a maintainer more than a proposed solution, and
+it leaves room for an answer nobody had thought of.
+
+## Finding Something to Work On
+
+Two labels mark work that is ready for someone outside the core team.
+[`good first issue`](https://github.com/kirodotdev/KiroCrew/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+is scoped small and does not assume much context.
+[`help wanted`](https://github.com/kirodotdev/KiroCrew/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+is work the team wants done but is not doing right now.
+
+Before starting anything substantial, check whether someone is already on it and
+comment on the issue saying you are picking it up. For a large change, open an
+issue first and get a reaction to the approach. Nobody enjoys declining a
+finished pull request that went the wrong direction, and a maintainer can usually
+tell you in a paragraph.
+
 ## Prerequisites
 
 - macOS or Linux (Windows is not supported by the `kiro-cli` backend)
@@ -320,6 +350,41 @@ npm run test:integration     # MSW-based integration tests
 npm run test:playwright      # E2E (requires a running backend)
 ```
 
+## Using AI Tools
+
+Most of us build with coding agents, and you are welcome to. This project exists
+because of that kind of work.
+
+You are still the author of your pull request. Before you open it, make sure you
+understand the change well enough to explain why it works, defend the design, and
+fix it when something breaks later. If you could not walk a reviewer through it
+line by line, it is not ready, and a reviewer will find that out faster than you
+expect.
+
+Three things make agent-assisted contributions land:
+
+Keep the change small and focused on one thing. A large diff that touches many
+areas is harder to review than the same work split into three, and it is the most
+common reason a well-intentioned pull request stalls.
+
+Open an issue first for anything significant, so the approach is agreed before you
+or your agent spend real time on it.
+
+Read every line before you send it. Delete what is not needed, simplify what is
+over-built, and check that the tests exercise the behaviour rather than merely
+passing. Trimming your own diff is the single highest-leverage thing you can do to
+get it merged.
+
+When your change is ready, the workflow is already codified rather than left to
+taste. See Development Skills above: `kirocrew-worktree-dev` covers building and
+verifying in a worktree, and `prepare-pr` takes it from there, driving the change
+to a review-ready pull request by committing, syncing onto the base, squashing to
+the single commit this repo requires, opening or updating the PR, then polling CI
+and the review bots and fixing what they find. An agent that loads it follows the
+same route a maintainer would, which is why the process holds regardless of who or
+what wrote the code. If you are contributing with an agent, point it at that skill
+instead of describing the steps yourself.
+
 ## Pull Request Workflow
 
 1. **Fork** the repository on GitHub.
@@ -394,3 +459,18 @@ discussion in the repository.
 
 **Do not** report security vulnerabilities through public GitHub issues. See
 [SECURITY.md](SECURITY.md) for responsible disclosure instructions.
+
+## Code of Conduct
+
+This project has adopted a [Code of Conduct](CODE_OF_CONDUCT.md). Participating
+means following it, and the file names where to report a concern.
+
+## Licensing
+
+KiroCrew is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for the
+full text and [NOTICE](NOTICE) for attribution. Third-party components carry their
+own licenses, recorded in [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
+
+Contributions are accepted under the same license as the project. If your change
+adds or updates a third-party dependency, say so in the pull request, because it
+affects what has to be recorded in the notices file.
