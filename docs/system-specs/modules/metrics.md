@@ -346,10 +346,14 @@ Each row (`_build_token_record`) carries:
 | `agent` | str | **(#647)** agent id resolved for the turn; `""` if unset |
 | `context_used` | int | **(#647)** context-window tokens occupied after the turn (int-coerced) |
 | `context_window` | int | **(#647)** served context-window size in tokens (int-coerced) |
+| `ctx_blocks` | dict[str,int] | per-turn injection breakdown: context block label → **characters** (never tokens); non-positive / non-numeric sizes dropped; `{}` when the turn injected nothing |
+| `phase` | str | `session_start` (the first turn's one-off injection) vs `per_turn` (every later turn); `""` if unset |
 
-The last four fields are **additive** — every field defaults (`""` / `0`) so
-existing callers stay valid and pre-#647 shards (which lack the keys) remain
-parseable; readers must tolerate their absence. `context_used` / `context_window`
+The `surface` / `agent` / `context_used` / `context_window` fields (all #647) and
+the later `ctx_blocks` / `phase` pair are all **additive** — every field defaults
+(`""` / `{}` / `0`) so existing callers stay valid and shards predating a field
+(which lack its key) remain parseable; readers must tolerate their absence.
+`context_used` / `context_window`
 are read from the provider at the persist call site via
 `usage.read_context_tokens(source)`, which calls the provider's public
 `context_used_tokens()` / `context_window_tokens()` accessors
@@ -362,18 +366,103 @@ task_runner/workflow) attribute their spend; zero-token surfaces (cron
 `script=`/`command=` modes, heartbeat maintenance ticks) never call a model and
 must not write a row.
 
+**Per-turn injection breakdown (`ctx_blocks` / `phase`).** `ctx_blocks` is
+produced by `context_blocks.split_blocks(prompt, user_chars=…)`, which attributes
+the FINAL assembled prompt to the blocks that produced it by matching the bracket
+markers the assembly emits (`[CRITICAL RULES`, `[Memory`, `[Skills:]`,
+`[USER PROFILE]`, `[UI LANGUAGE]`, `[CURRENT USER REQUEST`, the trailing
+reply-format contract, …) rather than counting at each of the ~30 append sites.
+Reading the OUTPUT means the attribution cannot drift from what was actually
+sent. `_MARKERS` is deliberately kept in sync with EVERY opener the assembly can
+emit — including the identity/session banners (`[USER PROFILE]`, `[UI LANGUAGE]`,
+`[CHANNEL]`, `[INCOGNITO SESSION]`, `[TEMPORARY SESSION]`, the cancelled-turn
+preamble) and the openers added AFTER `build_message` returns (`[THEME PERSONA]`,
+the re-injected `[Previous chat history for this tab …]`, `[Hook context]` — in
+both emitted spellings, with and without the colon — and the `[System: …]`
+regenerate line): a marker absent from `_MARKERS` does NOT surface as its own
+bucket, it
+folds into the PRECEDING recognised block and mislabels those bytes, so the set
+must stay complete. Only leading bytes before the first marker fall outside every
+block and surface as `unclassified`. The returned sizes sum EXACTLY to `len(prompt)` (closure); the user's
+own text is carved into the `your_message` label using the exact `(start, end)`
+span that `build_message` reports through its `user_span_out` out-parameter. That
+span is authoritative because `build_message` is the only code that sees every
+transform applied to the turn: a `HOOK_MODIFY` transform hook can REWRITE it
+wholesale, marker neutralization rewrites forgeable boundary markers (changing the
+length of anything ahead of the user's text), and the return path folds
+`_MULTIBYTE_TABLE` punctuation over the whole message (`—` → `--`, `…` → `...`).
+A caller measuring the pre-transform message cannot know the post-transform
+offsets, so it passes the bounds of the user's text *within the text it hands
+over* and `build_message` maps them forward. When a transform hook has replaced
+the turn, the caller's bounds describe text that no longer exists, so the hook's
+output is attributed to `your_message` in full — it IS the user's turn at that
+point. Steps that PREPEND to the finished prompt after `build_message` returns
+(the incognito/temporary notice, re-injected history, hook context, the
+regenerate system line) slide that span, so the caller re-derives it once from the
+length delta and **verifies the shifted slice still holds the same text**; if it
+does not, the span is dropped and the reconstruction below is used rather than
+persisting a wrong attribution. The legacy `user_chars` / `user_offset` reconstruction stays as the
+fallback for callers that do not assemble through `build_message`.
+Sizes are **characters, not tokens** — characters are exact, free
+and tokenizer-independent, whereas the only tokenizer available here is OpenAI's
+BPE, which would add a systematic unknown error against a Claude backend, and
+comparing one turn against another (the whole point of the breakdown) wants an
+exact unit rather than an approximate one. `phase` separates the one-off
+session-start injection from the much smaller per-turn one so a reader never
+pools the two populations.
+
 **Read side.** `usage.context_occupancy(days)` aggregates these rows into
 per-turn occupancy percentiles plus a per-session peak ranking (own
 shard-fingerprint + 30s-TTL cache, same contract as `_parse_token_history`), and
 `handlers/telemetry.py` serves it as the `context` block of
 `GET /api/telemetry/startup` (a plain module-scope import — `handlers.usage`
 imports nothing from `dashboard.handlers`, so there is no cycle to dodge).
-Without it the two fields were
-write-only: recorded on every turn since #647, read by nothing.
+`usage.context_trace(slot, days)` is the per-session drill-down: it returns each
+turn's `ctx_blocks` in chronological order plus per-block `totals`,
+`injected_chars`, `user_chars` (the `your_message` label) and
+`estimated_other_chars` — the un-instrumented remainder of the window: kiro-cli's
+own base prompt + tool catalogue + steering AND the conversation transcript and
+tool output accumulated over the session (occupancy is cumulative, `injected` is
+only this turn's injection). It is expressed in characters via
+`_EST_CHARS_PER_TOKEN` (≈4) and clamped to `0` when occupancy is unknown or the
+subtraction would go negative. Because it mixes fixed kiro overhead with the
+growing conversation it is surfaced as **"Not measured"** (never "Kiro built-in")
+and always tagged an estimate — it is not a claim that the bytes are Kiro's or
+unremovable. Rows
+predating the field carry no `ctx_blocks` and are skipped, not zero-filled, so
+the trace starts where the recording does. `handlers/telemetry.py::api_context_trace`
+serves it as `GET /api/telemetry/context-trace?slot=<session key>` (`400` when
+`slot` is missing or blank), independent of the `telemetry.enabled` switch since
+these rows are always written.
+
+**Where it renders.** The breakdown is a **per-session side-panel tab**
+(`ViewKind` `context`, opened from the panel's `+` menu directly under Logs), not
+a section of the global Telemetry page. It is a **developer surface**: the `+`
+menu offers it only when Developer Mode is on (Settings > Developer, the
+`mc-dev-mode` consent gate the standalone Developer page also uses), so ordinary
+users never see it. The tab is scoped to the chat slot it was
+opened from, which is why it carries no session picker: a per-turn drill-down that
+first asks the reader to choose a session cannot say anything until they do, and
+Logs — the other "what actually happened in THIS session" view — already sets the
+precedent. It refetches on an interval because the trace gains a row per turn, so
+a tab left open would otherwise go stale. The Telemetry page keeps the aggregate
+`context` occupancy block only.
+
+Both readers stay OUT of the OTEL metric pipeline for the same reason: occupancy
+and the per-turn breakdown are per-session, per-turn detail, and slot keys are
+unbounded-cardinality labels that must never become metric labels (the
+`context_occupancy` docstring states the same rule). The bounded half — block
+label → size, aggregated — is what could belong on a metric; this per-session
+half is the drill-down. Without these readers the fields were write-only:
+recorded on every turn, read by nothing.
 
 Tests: `test/test_usage.py` (`TestReadContextTokens`,
-`TestBuildTokenRecordContextFields`, `TestPersistTokenRecord*`),
-`test/metrics/test_context_occupancy.py` (aggregation, skips, latest-turn wins).
+`TestBuildTokenRecordContextFields`, `TestBuildTokenRecordCtxBlocks`,
+`TestPersistTokenRecord*`), `test/metrics/test_context_occupancy.py` (occupancy
+aggregation, skips, latest-turn wins), `test/metrics/test_context_blocks.py`
+(`split_blocks` closure + per-marker correctness + reply-format collapse), and
+`test/metrics/test_context_trace.py` (the per-turn trace reader and the
+`context-trace` endpoint).
 
 ## Circular-import rule
 

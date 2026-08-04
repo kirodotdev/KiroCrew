@@ -352,6 +352,7 @@ from kiro_crew.dashboard.handlers.taskrunner import (  # noqa: E402, F401
 )
 from kiro_crew.dashboard.handlers.telemetry import (  # noqa: E402, F401
     api_beacon_status,
+    api_context_trace,
     api_telemetry_startup,
 )
 from kiro_crew.dashboard.handlers.terminal import (  # noqa: E402, F401

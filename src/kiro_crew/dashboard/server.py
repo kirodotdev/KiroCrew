@@ -2371,6 +2371,7 @@ async def start_dashboard(
     app.router.add_get("/api/usage/kiro", handlers.api_kiro_usage)
     app.router.add_get("/api/usage", handlers.api_usage)
     app.router.add_get("/api/telemetry/startup", handlers.api_telemetry_startup)
+    app.router.add_get("/api/telemetry/context-trace", handlers.api_context_trace)
     app.router.add_get("/api/telemetry/beacon", handlers.api_beacon_status)
     app.router.add_post("/api/sessions/restart", handlers.api_sessions_restart)
     # NOTE: /search must be registered before /{key} to avoid the path param catching "search"

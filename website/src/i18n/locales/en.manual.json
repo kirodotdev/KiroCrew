@@ -1413,6 +1413,7 @@
       "artifacts": "Artifacts",
       "browser": "Browser",
       "changes": "Changes",
+      "context": "Context",
       "files": "Files",
       "issues": "Issues",
       "logs": "Logs",
@@ -1754,15 +1755,14 @@
       },
       "sidePanel": {
         "hide_line_numbers": "Hide line numbers",
-        "show_line_numbers": "Show line numbers",
-        "switch_to_split_view": "Switch to split view",
-        "switch_to_unified_view": "Switch to unified view",
         "menu_artifacts": "Artifacts",
         "menu_artifacts_desc": "In-session documents & stars",
         "menu_browser": "Browser",
         "menu_browser_desc": "View a web page or a local dev server",
         "menu_changes": "Changes",
         "menu_changes_desc": "Pull requests, checks & reviews",
+        "menu_context": "Context breakdown",
+        "menu_context_desc": "What this session's turns injected",
         "menu_files": "Files",
         "menu_files_desc": "Browse & edit files",
         "menu_issues": "Issues",
@@ -1776,7 +1776,10 @@
         "menu_terminal": "Terminal",
         "menu_terminal_desc": "Shell on the gateway host",
         "menu_workflows": "Workflows",
-        "menu_workflows_desc": "Runs, phases & restartable steps"
+        "menu_workflows_desc": "Runs, phases & restartable steps",
+        "show_line_numbers": "Show line numbers",
+        "switch_to_split_view": "Switch to split view",
+        "switch_to_unified_view": "Switch to unified view"
       },
       "subagentProgressBar": {
         "retry_failed_count": "Retry failed ({{count}})",

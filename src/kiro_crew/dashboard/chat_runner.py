@@ -36,6 +36,13 @@ from kiro_crew.config.loader import (
     normalize_agent_model,
     resolve_agent_bindings,
 )
+from kiro_crew.context_blocks import (
+    PHASE_PER_TURN,
+    PHASE_SESSION_START,
+    USER_LABEL,
+    attributable_user_chars,
+    split_blocks,
+)
 from kiro_crew.context_management import (
     ensure_go_all_option,
     looks_like_plan,
@@ -2816,6 +2823,13 @@ async def _run_chat(
         await publish_turn_identity(state.sessions, session_key)
 
         # ── @prompt expansion: resolve @name to SOP/prompt content ──
+        # Captured BEFORE any expansion: `@prompt` replaces `message` and
+        # `$skill` appends to it, so len(message) at classification time no
+        # longer reflects what the user actually typed. See
+        # attributable_user_chars. Transform-side corrections (marker
+        # neutralization, the multibyte fold, a rewriting hook) are NOT applied
+        # here — build_message maps these bounds to their final position itself.
+        user_typed_len = len(message)
         prompt_expanded = False
         if message.startswith("@") and not is_slash and _prompt_depth < 1:
             original = message
@@ -2888,6 +2902,19 @@ async def _run_chat(
         # context_builder would hit UnboundLocalError at the mirror legs.
         _user_msg_for_mirror = message
 
+        # Per-turn injection breakdown, recorded on the usage row at turn end.
+        # Empty when this turn injected nothing (no context builder / raw path).
+        slot_ctx_blocks: dict[str, int] = {}
+        slot_ctx_phase = ""
+        # Chars this turn prepends between the request header and the user's
+        # text; set in the context_builder branch, 0 elsewhere.
+        _user_prepend_offset = 0
+        # Exact bounds of the user's text in the final prompt, reported by
+        # build_message. Empty on the non-context-builder paths. The probe/base
+        # pair re-derives the bounds after the later prepends (see below).
+        _user_span: list[int] = []
+        _span_probe = ""
+        _span_base_len = -1
         if is_slash:
             full_message = message
             sel().log_tool_invocation(
@@ -2900,6 +2927,12 @@ async def _run_chat(
                 metadata={"command": first_word, "slot": slot.key},
             )
         elif state.context_builder:
+
+            # Length of the message as the user's text stands NOW (after any
+            # @prompt/$skill expansion, before the context this branch prepends).
+            # The difference against len(message) at build_message time is how
+            # far the user's text was pushed down — its offset for split_blocks.
+            _core_msg_len = len(message)
 
             compressed: str | None = None
             # Provider-agnostic session replay: KiroCrew's conversation_log
@@ -2975,8 +3008,17 @@ async def _run_chat(
             # Use resolved kiro agent name (e.g. "kirocrew"), not the slot
             # name (e.g. "default"), so build_message's is_custom check
             # correctly identifies kirocrew sessions and enables skills.
-            # Theme persona injection — prepend to message so build_message
-            # accounts for it in context budget calculations.
+            # Snapshot the message length AFTER every prefix this branch
+            # prepended (cancelled-turn preamble, subagent failures, drained
+            # pending context) but BEFORE the theme persona, which APPENDS a
+            # suffix after the user's text. The prepend offset for split_blocks
+            # must count only the prefixes; folding the appended persona in
+            # would shove the user span past the real typed text and mis-carve.
+            _msg_len_pre_persona = len(message)
+            # Theme persona injection — APPENDS a persona suffix after the user
+            # text (see _maybe_inject_persona); build_message still accounts for
+            # it in the context budget. It is deliberately excluded from
+            # _user_prepend_offset below (an append, not a prepend).
             # Folder breadcrumb: inject once per session, and again after a
             # folder move (no session reset — it's just a label refresh).
             folder_path = None
@@ -3030,6 +3072,17 @@ async def _run_chat(
             from kiro_crew.context import window_for_provider_client  # circular: context -> chat
 
             model_window = window_for_provider_client(client)
+            # Everything this branch PREPENDED (cancelled-turn preamble,
+            # subagent failures, drained pending context) sits between the
+            # request header and the user's text; record its length so the
+            # breakdown carves the user span at the right offset, not flush
+            # against the header. Both $skill AND the theme persona append AFTER
+            # the user text, so neither shifts this — the persona suffix is
+            # excluded by measuring the length before it was appended.
+            _user_prepend_offset = max(0, _msg_len_pre_persona - _core_msg_len)
+            # build_message resolves where the user's own text ENDS UP (it owns
+            # the hook rewrite, the neutralization and the multibyte fold) and
+            # writes the exact bounds into _user_span.
             # build_message performs blocking work (episodic query embed via
             # urllib to Ollama, file reads) — run off-loop (mc-embed bulkhead)
             # so a slow embedding endpoint can't stall the gateway event loop.
@@ -3051,18 +3104,26 @@ async def _run_chat(
                 exclude_last_n=1,
                 folder_path=folder_path,
                 model_window=model_window,
+                user_text_range=(
+                    _user_prepend_offset,
+                    _user_prepend_offset
+                    + attributable_user_chars(user_typed_len, prompt_expanded=prompt_expanded),
+                ),
+                user_span_out=_user_span,
             )
+            # The reported span is valid for the message as build_message
+            # returned it. Several later steps PREPEND to the finished prompt
+            # (incognito/temporary notice, re-injected history, hook context, a
+            # regenerate system line), each of which slides the span. Rather than
+            # patch every site, snapshot the length and the spanned text here and
+            # re-derive the offset once, just before classification — and verify
+            # the shifted span still holds the same text, so a future transform
+            # that breaks the assumption degrades to the legacy reconstruction
+            # instead of silently persisting a wrong attribution.
+            if len(_user_span) == 2:
+                _span_probe = full_message[_user_span[0] : _user_span[1]]
+                _span_base_len = len(full_message)
             full_message = _apply_incognito_prefix(slot, full_message)
-            if is_new:
-                ctx_len = len(full_message) - len(message)
-                state.broadcast_ws(
-                    "activity_event",
-                    {
-                        "slot": slot.key,
-                        "kind": "context",
-                        "text": f"Injected {ctx_len:,} chars of context (memory, lessons, history, episodic)",
-                    },
-                )
         else:
             full_message = message
 
@@ -3115,6 +3176,54 @@ async def _run_chat(
 
         # Slash commands use _kiro.dev/commands/execute for full native output;
         # regular messages use session/prompt.
+        # Attribute the FINAL prompt back to the blocks that produced it, after
+        # every prefix above has been applied. Classifying the OUTPUT rather than
+        # counting at each of the ~30 append sites means the breakdown cannot
+        # drift from what was actually sent, and an unrecognised block surfaces
+        # as `unclassified` instead of being folded into a neighbour.
+        ctx_len = len(full_message) - len(message)
+        if ctx_len > 0:
+            # Re-derive the user span against the FINAL prompt: everything added
+            # after build_message is a pure prepend, so the whole shift is the
+            # length delta. Accept it only when the shifted slice still holds the
+            # same text — otherwise fall back to the reconstruction below.
+            _span_arg: tuple[int, int] | None = None
+            if len(_user_span) == 2 and _span_base_len >= 0:
+                _shift = len(full_message) - _span_base_len
+                _s, _e = _user_span[0] + _shift, _user_span[1] + _shift
+                if 0 <= _s <= _e <= len(full_message) and full_message[_s:_e] == _span_probe:
+                    _span_arg = (_s, _e)
+                else:
+                    logger.warning(
+                        "context breakdown: user span did not survive post-assembly "
+                        "prefixes (shift=%d); falling back to reconstruction",
+                        _shift,
+                    )
+            slot_ctx_blocks = split_blocks(
+                full_message,
+                user_chars=attributable_user_chars(user_typed_len, prompt_expanded=prompt_expanded),
+                user_offset=_user_prepend_offset,
+                user_span=_span_arg,
+            )
+            slot_ctx_phase = PHASE_SESSION_START if is_new else PHASE_PER_TURN
+            # Named rather than counted: naming only four blocks by hand
+            # under-describes most of the bytes being reported.
+            _named = ", ".join(
+                label.replace("_", " ")
+                for label, _ in sorted(slot_ctx_blocks.items(), key=lambda kv: -kv[1])
+                if label != USER_LABEL
+            )
+            state.broadcast_ws(
+                "activity_event",
+                {
+                    "slot": slot.key,
+                    "kind": "context",
+                    "text": f"Injected {ctx_len:,} chars of context ({_named})"
+                    if _named
+                    else f"Injected {ctx_len:,} chars of context",
+                },
+            )
+
         event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         state.broadcast_ws("chat_status", {"slot": slot.key, "status": "Thinking…"})
         state.broadcast_ws(
@@ -4614,6 +4723,8 @@ async def _run_chat(
                         agent=read_effective_agent(client) or slot.agent or "",
                         context_used=_ctx_used,
                         context_window=_ctx_window,
+                        ctx_blocks=slot_ctx_blocks,
+                        phase=slot_ctx_phase,
                         # Same wall clock the turn-duration histogram below is
                         # given, so the row store and the histogram can never
                         # disagree about one turn. acp reports 0 here.

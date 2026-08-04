@@ -422,6 +422,7 @@ export default function TelemetryPanel() {
       {/* ── Section 3: Context window ──────────────────────────── */}
       {ctx && <ContextSection c={ctx} />}
 
+
       {/* ── Section 4: Acceleration internals ──────────────────── */}
       <Section title={i18nT('pages.telemetryPanel.acceleration_internals')} icon={<Zap size={13} />}>
         <div className="grid grid-cols-2 gap-2.5 max-[720px]:grid-cols-1">

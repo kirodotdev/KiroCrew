@@ -864,6 +864,10 @@ export const api = {
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
   system: () => fetch('/api/system').then(j),
   telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
+  // Per-turn context injection breakdown for one session. Independent of the
+  // telemetry main switch: the usage rows it reads are always written.
+  telemetryContextTrace: (slot: string) =>
+    fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot)).then(j),
   beaconStatus: () => fetch('/api/telemetry/beacon').then(j),
   // Background polls read the gateway's latched state (no kiro-cli subprocess).
   // `refresh` is the explicit user action (Refresh / Check again) that forces a

@@ -38,7 +38,7 @@ from aiohttp import web
 from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
-from kiro_crew.dashboard.handlers.usage import context_occupancy
+from kiro_crew.dashboard.handlers.usage import context_occupancy, context_trace
 from kiro_crew.hooks import validate_file_path
 
 logger = logging.getLogger(__name__)
@@ -570,6 +570,27 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
             "other": data.get("other", []),
         }
     )
+
+
+async def api_context_trace(request: web.Request) -> web.Response:
+    """GET /api/telemetry/context-trace?slot=<session key> — per-turn injection.
+
+    Returns what KiroCrew added to each turn of one session, block by block, so
+    the user can audit their own context rather than reverse-engineering it. The
+    aggregate (bounded, block-keyed) half of the same data belongs on a metric;
+    this per-session, per-turn half deliberately does not — see
+    :func:`kiro_crew.dashboard.handlers.usage.context_trace`.
+
+    Independent of the telemetry main switch: the usage rows this reads are
+    always written, so the trace works with OTEL collection off.
+    """
+    slot = (request.query.get("slot") or "").strip()
+    if not slot:
+        return web.json_response(
+            {"error": "slot is required", "code": "slot_required"}, status=400
+        )
+    trace = await asyncio.to_thread(context_trace, slot, _WINDOW_DAYS)
+    return web.json_response(trace)
 
 
 def _beacon_overlay_pins_value() -> bool:

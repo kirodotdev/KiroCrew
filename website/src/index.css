@@ -127,6 +127,37 @@
   --shadow-md:0 4px 12px rgba(0,0,0,.25),0 0 0 1px rgba(255,255,255,.03);
   --shadow-lg:0 12px 28px rgba(0,0,0,.35);
 }
+
+/* Context-breakdown ramp. Eight discrete steps mixed from the existing
+   foreground/surface tokens rather than invented hex, so the ramp tracks every
+   theme and its polarity. Rank 0 is the largest block; --ctx-fgN is the inverse
+   mix so a label stays legible at either end. --ctx-hatch marks the portion of
+   the window KiroCrew did not inject, which is an estimate. */
+:root{
+  --ctx-k1:color-mix(in srgb, var(--text) 60%, var(--card));
+  --ctx-k2:color-mix(in srgb, var(--text) 54%, var(--card));
+  --ctx-k3:color-mix(in srgb, var(--text) 49%, var(--card));
+  --ctx-k4:color-mix(in srgb, var(--text) 43%, var(--card));
+  --ctx-k5:color-mix(in srgb, var(--text) 38%, var(--card));
+  --ctx-k6:color-mix(in srgb, var(--text) 33%, var(--card));
+  --ctx-k7:color-mix(in srgb, var(--text) 27%, var(--card));
+  --ctx-k8:color-mix(in srgb, var(--text) 22%, var(--card));
+  /* A label sits on a fill that is N% --text mixed into --card, so the readable
+     choice is the OPPOSITE endpoint, not another mid-mix: a mid-mix on a mid-mix
+     has almost no contrast. Steps at or above ~45% text take --card; the lighter
+     steps take --text. Because every fill is the same "text into card" mix, this
+     mapping holds in both theme polarities. */
+  --ctx-fg1:var(--card);
+  --ctx-fg2:var(--card);
+  --ctx-fg3:var(--card);
+  --ctx-fg4:var(--text);
+  --ctx-fg5:var(--text);
+  --ctx-fg6:var(--text);
+  --ctx-fg7:var(--text);
+  --ctx-fg8:var(--text);
+  --ctx-user-fg:var(--accent-fg, var(--bg));
+  --ctx-hatch:repeating-linear-gradient(135deg, color-mix(in srgb, var(--text) 9%, var(--card)) 0 5px, color-mix(in srgb, var(--text) 20%, var(--card)) 5px 10px);
+}
 /* Stronger shadows for some dark themes */
 [data-theme="monokai-dark"],[data-theme="solarized-dark"],[data-theme="nord-dark"],[data-theme="dracula-dark"],[data-theme="rosepine-dark"],[data-theme="catppuccin-dark"],[data-theme="tokyonight-dark"],[data-theme="gruvbox-dark"],[data-theme="ice-dark"]{
   --shadow-sm:0 1px 2px rgba(0,0,0,.3);

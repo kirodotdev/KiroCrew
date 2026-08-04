@@ -955,6 +955,61 @@ class TestBuildTokenRecordContextFields:
         assert record["context_window"] == 1_000_000
 
 
+class TestBuildTokenRecordCtxBlocks:
+    """_build_token_record emits the per-turn injection breakdown + phase."""
+
+    @staticmethod
+    def _event():
+        return SimpleNamespace(
+            input_tokens=10,
+            output_tokens=5,
+            cache_creation_tokens=0,
+            cache_read_tokens=0,
+            cost_usd=0.0,
+            credits=0.0,
+            num_turns=1,
+            duration_ms=0,
+        )
+
+    def test_emits_ctx_blocks_and_phase(self):
+        rec = usage_mod._build_token_record(
+            "chat-1",
+            "claude-opus-4-8",
+            self._event(),
+            "acp",
+            datetime.now(timezone.utc),
+            ctx_blocks={"memory": 1200, "lessons": 800},
+            phase="session_start",
+        )
+        assert rec["ctx_blocks"] == {"memory": 1200, "lessons": 800}
+        assert rec["phase"] == "session_start"
+
+    def test_drops_non_positive_and_non_numeric_block_sizes(self):
+        # A zero, a negative, and two non-numeric sizes are all dropped so the
+        # row carries only real spans and stays json.dumps-safe.
+        rec = usage_mod._build_token_record(
+            "s",
+            "m",
+            self._event(),
+            "acp",
+            datetime.now(timezone.utc),
+            ctx_blocks={"keep": 10, "zero": 0, "neg": -5, "text": "x", "none": None},
+            phase="per_turn",
+        )
+        assert rec["ctx_blocks"] == {"keep": 10}
+        assert rec["phase"] == "per_turn"
+        json.dumps(rec)
+
+    def test_backcompat_defaults_when_omitted(self):
+        # Legacy callers pass neither: the fields still exist, defaulted, so old
+        # readers and old shards stay valid.
+        rec = usage_mod._build_token_record(
+            "chat-1", "opus", self._event(), "acp", datetime.now(timezone.utc)
+        )
+        assert rec["ctx_blocks"] == {}
+        assert rec["phase"] == ""
+
+
 class _Inner:
     def __init__(self, model):
         self._model = model

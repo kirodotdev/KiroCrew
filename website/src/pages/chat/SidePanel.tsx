@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, Layers } from 'lucide-react'
 import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
@@ -31,7 +32,7 @@ import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import { i18nT } from '../../i18n/t'
 const KIND_ICON: Record<TabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
-  logs: <ScrollText size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
+  logs: <ScrollText size={16} />, context: <Layers size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Component size={16} />, folder: <Folder size={16} />,
   app: <PanelRight size={16} />,
 }
@@ -60,6 +61,7 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
   subagents: 'pages.chat.sidePanel.menu_subagents',
   workflows: 'pages.chat.sidePanel.menu_workflows',
   logs: 'pages.chat.sidePanel.menu_logs',
+  context: 'pages.chat.sidePanel.menu_context',
   side: 'pages.chat.sidePanel.menu_side',
   browser: 'pages.chat.sidePanel.menu_browser',
   terminal: 'pages.chat.sidePanel.menu_terminal',
@@ -73,6 +75,7 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
   subagents: 'pages.chat.sidePanel.menu_subagents_desc',
   workflows: 'pages.chat.sidePanel.menu_workflows_desc',
   logs: 'pages.chat.sidePanel.menu_logs_desc',
+  context: 'pages.chat.sidePanel.menu_context_desc',
   side: 'pages.chat.sidePanel.menu_side_desc',
   browser: 'pages.chat.sidePanel.menu_browser_desc',
   terminal: 'pages.chat.sidePanel.menu_terminal_desc',
@@ -88,12 +91,29 @@ const NEW_MENU: { kind: ViewKind | 'terminal'; icon: ReactNode }[] = [
   { kind: 'subagents', icon: <Bot size={15} /> },
   { kind: 'workflows', icon: <Workflow size={15} /> },
   { kind: 'logs', icon: <ScrollText size={15} /> },
+  { kind: 'context', icon: <Layers size={15} /> },
   { kind: 'side', icon: <MessageSquare size={15} /> },
   { kind: 'browser', icon: <Globe size={15} /> },
   { kind: 'terminal', icon: <TerminalSquare size={15} /> },
 ]
 
-const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'side'])
+const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side'])
+
+/** Which `+`-menu entries are offered, given the two gates that hide entries:
+ *  Terminal is hidden when the feature is disabled server-side, and Context
+ *  breakdown is a developer surface hidden unless Developer Mode is on (Settings
+ *  > Developer) — same consent gate the standalone Developer page uses. The
+ *  auto-managed pinned views (Changes / Files / Artifacts) are never listed;
+ *  they appear on their own when they have content. */
+export function newMenuItems(
+  opts: { devMode: boolean; terminalEnabled: boolean },
+): { kind: ViewKind | 'terminal'; icon: ReactNode }[] {
+  return NEW_MENU.filter(item =>
+    (opts.terminalEnabled || item.kind !== 'terminal')
+    && (opts.devMode || item.kind !== 'context')
+    && !(PINNED_VIEWS as string[]).includes(item.kind),
+  )
+}
 
 interface SidePanelProps {
   tabsCtl: ReturnType<typeof usePanelTabs>
@@ -249,14 +269,13 @@ export default function SidePanel({
   const subagents = useAppSelector(s => selectSlotSubagents(s, slot))
   const toolLog = useAppSelector(s => selectSlotToolLog(s, slot))
   const terminalEnabled = useTerminalEnabled()
+  const devMode = useDevMode()
   // The + menu / empty-state launcher hide Terminal when the feature is
-  // disabled server-side, and never list the auto-managed pinned views
-  // (Changes / Files / Artifacts) — those appear on their own when they have
-  // content (see the syncPinned reconcile below).
-  const menuItems = NEW_MENU.filter(item =>
-    (terminalEnabled || item.kind !== 'terminal')
-    && !(PINNED_VIEWS as string[]).includes(item.kind)
-  )
+  // disabled server-side and Context breakdown unless Developer Mode is on, and
+  // never list the auto-managed pinned views (Changes / Files / Artifacts) —
+  // those appear on their own when they have content (see the syncPinned
+  // reconcile below).
+  const menuItems = newMenuItems({ devMode, terminalEnabled })
   // Files / Artifacts / Changes are ALWAYS present — pinned to the front,
   // non-closable, and never in the + menu — regardless of whether they
   // currently have content.
@@ -540,7 +559,7 @@ export default function SidePanel({
             return (
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer
-                  view={t.kind as 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'side'}
+                  view={t.kind as 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side'}
                   open onToggle={onClose} slot={slot}
                   subagents={subagents} toolLog={toolLog}
                   files={files}

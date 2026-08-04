@@ -17,6 +17,7 @@ from aiohttp import web
 from kiro_crew import model_registry
 from kiro_crew.acp.types import TurnUsage
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
+from kiro_crew.context_blocks import USER_LABEL
 from kiro_crew.hooks import validate_file_path
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,13 @@ _CONTEXT_TOP_SESSIONS = 8
 # Fingerprint + TTL cache, same contract as _TOKEN_CACHE: the Telemetry panel
 # polls every 5s, and the shards are append-only, so (name, mtime, size) over
 # the window invalidates exactly when a turn lands.
+# Rough characters-per-token for English prose, used ONLY to express the
+# un-instrumented remainder (kiro-cli's base prompt + tool catalogue + steering)
+# in the same unit as KiroCrew's own exactly-counted blocks. Never applied to
+# those blocks themselves, and every surface that shows the derived number
+# labels it as an estimate.
+_EST_CHARS_PER_TOKEN = 4.0
+
 _CONTEXT_CACHE: dict[str, Any] | None = None
 _CONTEXT_CACHE_KEY: tuple[Any, ...] | None = None
 _CONTEXT_CACHE_TS: float = 0.0
@@ -261,6 +269,91 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
             "window_days": days,
         }
     )
+
+
+def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
+    """Per-turn injection breakdown for one session, newest shard last.
+
+    Reads the ``ctx_blocks`` / ``phase`` fields ``persist_token_record`` writes
+    each turn and returns them in chronological order, plus per-block totals.
+
+    Kept out of the OTEL pipeline for the same reason as
+    :func:`context_occupancy`: this is per-session, per-turn detail, and slot
+    keys are unbounded-cardinality labels that must not become metric labels.
+    The bounded half (block label -> size, aggregated) is what belongs on a
+    metric; this is the drill-down.
+
+    Rows written before this field existed simply carry no ``ctx_blocks`` and
+    are skipped, so the trace starts where the recording does rather than
+    inventing zeros for history.
+
+    ``estimated_other_chars`` is the remainder of the model's context that
+    KiroCrew did NOT inject — kiro-cli's own base prompt, its tool catalogue and
+    its steering files. It is an ESTIMATE and labelled as one everywhere it is
+    surfaced: the provider reports occupancy in tokens while every KiroCrew
+    block here is counted in exact characters, so the two can only be compared
+    through :data:`_EST_CHARS_PER_TOKEN`. Zero when occupancy is unknown or the
+    subtraction would go negative.
+    """
+    turns: list[dict[str, Any]] = []
+    totals: dict[str, int] = {}
+    for shard_path in _shards_in_window(days):
+        try:
+            with shard_path.open() as fh:
+                for line in fh:
+                    try:
+                        obj = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if not isinstance(obj, dict) or obj.get("_type") != "tokens":
+                        continue
+                    if str(obj.get("slot") or "") != slot:
+                        continue
+                    raw = obj.get("ctx_blocks")
+                    if not isinstance(raw, dict) or not raw:
+                        continue
+                    blocks = {
+                        str(k): _coerce_int(v) for k, v in raw.items() if _coerce_int(v) > 0
+                    }
+                    if not blocks:
+                        continue
+                    for label, size in blocks.items():
+                        totals[label] = totals.get(label, 0) + size
+                    turns.append(
+                        {
+                            "ts": str(obj.get("ts") or ""),
+                            "phase": str(obj.get("phase") or ""),
+                            "blocks": blocks,
+                            "total_chars": sum(blocks.values()),
+                            "context_used": _coerce_int(obj.get("context_used")),
+                            "context_window": _coerce_int(obj.get("context_window")),
+                            "model": str(obj.get("model") or ""),
+                        }
+                    )
+        except (OSError, UnicodeDecodeError):
+            continue
+
+    turns.sort(key=lambda t: str(t["ts"]))
+    injected = sum(totals.values())
+    # Occupancy is per-turn cumulative, so the largest reading in the session is
+    # the closest thing to "how full did this window get".
+    peak_used = max((int(t["context_used"]) for t in turns), default=0)
+    estimated_other = 0
+    if peak_used > 0:
+        estimated_other = max(0, int(peak_used * _EST_CHARS_PER_TOKEN) - injected)
+    return {
+        "slot": slot,
+        "turns": turns,
+        "totals": totals,
+        "injected_chars": injected,
+        "user_chars": totals.get(USER_LABEL, 0),
+        "estimated_other_chars": estimated_other,
+        "peak_context_used": peak_used,
+        "context_window": next(
+            (int(t["context_window"]) for t in reversed(turns) if t["context_window"]), 0
+        ),
+        "window_days": days,
+    }
 
 
 def read_context_tokens(source: object) -> tuple[int, int]:
@@ -416,6 +509,8 @@ def _build_token_record(
     context_used: int = 0,
     context_window: int = 0,
     elapsed_ms: int = 0,
+    ctx_blocks: dict[str, int] | None = None,
+    phase: str = "",
 ) -> dict[str, Any]:
     """Build the JSONL token-usage record dict (no I/O).
 
@@ -467,6 +562,15 @@ def _build_token_record(
         "agent": agent or "",
         "context_used": _coerce_int(context_used),
         "context_window": _coerce_int(context_window),
+        # Per-turn injection breakdown: block label -> characters, from
+        # kiro_crew.context_blocks.split_blocks. Sizes are characters (exact and
+        # tokenizer-independent). ``phase`` separates the one-off session-start
+        # injection from the much smaller per-turn one so a reader never pools
+        # the two populations into one meaningless percentile.
+        "ctx_blocks": {
+            str(k): _coerce_int(v) for k, v in (ctx_blocks or {}).items() if _coerce_int(v) > 0
+        },
+        "phase": phase or "",
     }
 
 
@@ -492,6 +596,8 @@ def persist_token_record(
     context_used: int = 0,
     context_window: int = 0,
     elapsed_ms: int = 0,
+    ctx_blocks: dict[str, int] | None = None,
+    phase: str = "",
     model_source: object = None,
 ) -> None:
     """Append a token usage record to today's shard under
@@ -530,6 +636,8 @@ def persist_token_record(
                 context_used=context_used,
                 context_window=context_window,
                 elapsed_ms=elapsed_ms,
+                ctx_blocks=ctx_blocks,
+                phase=phase,
             ),
             now,
         )
@@ -548,6 +656,8 @@ async def persist_token_record_async(
     context_used: int = 0,
     context_window: int = 0,
     elapsed_ms: int = 0,
+    ctx_blocks: dict[str, int] | None = None,
+    phase: str = "",
     model_source: object = None,
 ) -> None:
     """Async variant: builds the record on-loop, offloads the file write.
@@ -574,6 +684,8 @@ async def persist_token_record_async(
             context_used=context_used,
             context_window=context_window,
             elapsed_ms=elapsed_ms,
+            ctx_blocks=ctx_blocks,
+            phase=phase,
         )
         await asyncio.to_thread(_write_token_record, record, now)
     except Exception:

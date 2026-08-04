@@ -144,6 +144,102 @@ _STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
 _STRUCTURAL_MARKER_NEUTRALIZED = "[marker-removed]"
 
 
+def _structural_marker_spans(text: str) -> list[tuple[int, int]]:
+    """Merged spans of forgeable boundary markers in *text*, in ORIGINAL coords.
+
+    Split out from :func:`_neutralize_structural_markers` so the same match set
+    can drive both the rewrite and an offset mapping: the per-turn context
+    breakdown needs to know where the user's own text LANDED after neutralization
+    changed the length of everything before it.
+
+    Matching runs against a NORMALIZED VIEW (fold ``_MULTIBYTE_TABLE``
+    punctuation, drop format/zero-width chars such as ZWNJ U+200C / ZWJ U+200D,
+    map every Unicode dash — category ``Pd`` — to ASCII ``-``) with an index map
+    back to the original offsets, so a forged ``[CRIT<zwsp>ICAL RULES‐x]`` is
+    caught while legitimate Persian/Arabic text, emoji ZWJ sequences and
+    ordinary prose dashes keep their bytes. Overlapping matches are merged, so a
+    span is never rewritten twice.
+    """
+    if text.isascii():  # pure ASCII cannot contain confusables — match directly
+        raw = [m.span() for pattern in _STRUCTURAL_MARKER_RES for m in pattern.finditer(text)]
+    else:
+        # Normalized matching view + origin map (norm char i came from original
+        # index ``origin[i]``). Cf chars are dropped from the view only.
+        norm: list[str] = []
+        origin: list[int] = []
+        for idx, ch in enumerate(text):
+            if ch.isascii():
+                norm.append(ch)
+                origin.append(idx)
+                continue
+            if unicodedata.category(ch) == "Cf":
+                continue  # invisible for matching; still inside any marker's original span
+            folded = ch.translate(_MULTIBYTE_TABLE)
+            if folded != ch:
+                for c in folded:  # e.g. em dash -> "--"
+                    norm.append(c)
+                    origin.append(idx)
+                continue
+            norm.append("-" if unicodedata.category(ch) == "Pd" else ch)
+            origin.append(idx)
+
+        norm_str = "".join(norm)
+        raw = []
+        for pattern in _STRUCTURAL_MARKER_RES:
+            for m in pattern.finditer(norm_str):
+                s, e = m.span()
+                # Through the last matched char, in original coordinates.
+                raw.append((origin[s], origin[e - 1] + 1))
+
+    if not raw:
+        return []
+    raw.sort()
+    merged: list[tuple[int, int]] = []
+    for s, e in raw:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _apply_marker_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """Rewrite each span of *text* to the neutralized placeholder."""
+    if not spans:
+        return text
+    out: list[str] = []
+    cursor = 0
+    for s, e in spans:
+        if s < cursor:
+            continue
+        out.append(text[cursor:s])
+        out.append(_STRUCTURAL_MARKER_NEUTRALIZED)
+        cursor = e
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+def _map_offset_through_spans(off: int, spans: list[tuple[int, int]]) -> int:
+    """Map an offset in the ORIGINAL text to its offset after neutralization.
+
+    Each rewritten span changes the length by ``len(placeholder) - (end-start)``,
+    so an offset shifts by the sum of the deltas of every span that ends before
+    it. An offset that falls INSIDE a rewritten span (the user's text opening
+    with a forged marker, say) clamps to that span's start in output coords —
+    the original bytes there no longer exist.
+    """
+    delta = 0
+    placeholder = len(_STRUCTURAL_MARKER_NEUTRALIZED)
+    for s, e in spans:
+        if e <= off:
+            delta += placeholder - (e - s)
+        elif s < off:
+            return s + delta  # inside the span: clamp to where it now starts
+        else:
+            break
+    return off + delta
+
+
 def _neutralize_structural_markers(text: str) -> str:
     """Strip forgeable primary boundary markers from untrusted prompt content.
 
@@ -153,69 +249,10 @@ def _neutralize_structural_markers(text: str) -> str:
     legitimately carries these markers.
 
     SPAN-LOCAL: only a matched marker span is rewritten; every other byte of the
-    input is preserved verbatim. To catch exotic-character forgeries without
-    mutating legitimate text, matching runs against a NORMALIZED VIEW (fold
-    ``_MULTIBYTE_TABLE`` punctuation, drop format/zero-width chars such as ZWNJ
-    U+200C / ZWJ U+200D, map every Unicode dash — category ``Pd`` — to ASCII
-    ``-``) with an index map back to the ORIGINAL offsets. A match on the view is
-    rewritten at its original span, so a forged ``[CRIT<zwsp>ICAL RULES‐x]`` is
-    neutralized while surrounding Persian/Arabic text, emoji ZWJ sequences, and
-    ordinary dashes in prose are left byte-for-byte intact (fixing the global
-    fold that corrupted them).
+    input is preserved verbatim. See :func:`_structural_marker_spans` for how
+    exotic-character forgeries are caught without mutating legitimate text.
     """
-    # Fast path: pure ASCII cannot contain confusables — match/replace directly.
-    if text.isascii():
-        for pattern in _STRUCTURAL_MARKER_RES:
-            text = pattern.sub(_STRUCTURAL_MARKER_NEUTRALIZED, text)
-        return text
-
-    # Build the normalized matching view + origin map (norm char i came from
-    # original index ``origin[i]``). Cf chars are dropped from the view only.
-    norm: list[str] = []
-    origin: list[int] = []
-    for idx, ch in enumerate(text):
-        if ch.isascii():
-            norm.append(ch)
-            origin.append(idx)
-            continue
-        if unicodedata.category(ch) == "Cf":
-            continue  # invisible for matching; still inside any marker's original span
-        folded = ch.translate(_MULTIBYTE_TABLE)
-        if folded != ch:
-            for c in folded:  # e.g. em dash -> "--"
-                norm.append(c)
-                origin.append(idx)
-            continue
-        norm.append("-" if unicodedata.category(ch) == "Pd" else ch)
-        origin.append(idx)
-
-    norm_str = "".join(norm)
-    spans: list[tuple[int, int]] = []
-    for pattern in _STRUCTURAL_MARKER_RES:
-        spans.extend(m.span() for m in pattern.finditer(norm_str))
-    if not spans:
-        return text
-
-    spans.sort()
-    merged: list[tuple[int, int]] = []
-    for s, e in spans:
-        if merged and s <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-        else:
-            merged.append((s, e))
-
-    out: list[str] = []
-    cursor = 0  # original-text index
-    for s, e in merged:
-        orig_s = origin[s]
-        orig_e = origin[e - 1] + 1  # through the last matched char in original coords
-        if orig_s < cursor:
-            continue
-        out.append(text[cursor:orig_s])
-        out.append(_STRUCTURAL_MARKER_NEUTRALIZED)
-        cursor = orig_e
-    out.append(text[cursor:])
-    return "".join(out)
+    return _apply_marker_spans(text, _structural_marker_spans(text))
 
 
 # kiro-cli task_executor slices strings at fixed byte offsets (e.g. 4096).
@@ -1842,6 +1879,8 @@ class ContextBuilder:
         exclude_last_n: int = 0,
         folder_path: str | None = None,
         model_window: int | None = None,
+        user_text_range: tuple[int, int] | None = None,
+        user_span_out: list[int] | None = None,
     ) -> tuple[str, HookResult]:
         """Build the full message with context and hook processing.
 
@@ -1854,6 +1893,16 @@ class ContextBuilder:
         Pass *compressed_history* (from ``compress_thread_history()``) to
         inject LLM-compressed thread context instead of naive truncation.
 
+        Pass *user_text_range* — the ``(start, end)`` bounds of the user's own
+        typed text within *text* — to have the EXACT bounds of that text in the
+        returned message written into *user_span_out* as ``[start, end]``. This
+        method is the only code that sees every transform applied to the turn (a
+        rewriting hook, marker neutralization, the ``_MULTIBYTE_TABLE`` fold), so
+        it resolves the span rather than leaving the caller to reconstruct it from
+        pre-transform lengths. An out-parameter keeps the 2-tuple return that
+        every existing caller unpacks; the list is caller-owned, so concurrent
+        turns cannot interfere.
+
         Returns:
             (full_message, hook_result) — hook_result may be a reply/modify/inject.
         """
@@ -1861,6 +1910,9 @@ class ContextBuilder:
         hook_result = self.hooks.on_message(text)
 
         parts: list[str] = []
+        # Set together with the user's text part when user_text_range is given.
+        _user_bounds: tuple[int, int] | None = None
+        _user_part_index: int | None = None
         is_cc = provider_type == "claude_code"
 
         # Session context on first message only
@@ -2187,7 +2239,30 @@ class ContextBuilder:
         # forge a second boundary after the request header above. This covers the
         # HOOK_MODIFY path too — a transform hook may re-emit untrusted input.
         turn_text = hook_result.text if hook_result.action == HOOK_MODIFY else text
-        parts.append(_neutralize_structural_markers(turn_text))
+        _marker_spans = _structural_marker_spans(turn_text)
+        _turn_neutralized = _apply_marker_spans(turn_text, _marker_spans)
+        # Where the user's own text lands is resolved HERE rather than
+        # reconstructed by the caller, because this is the only code that sees
+        # every transform applied to the turn: a rewriting hook, marker
+        # neutralization (which changes the length of anything before the user's
+        # text), and the final _MULTIBYTE_TABLE fold. A caller measuring the
+        # pre-transform message cannot know the post-transform offsets.
+        if user_text_range is not None:
+            if hook_result.action == HOOK_MODIFY:
+                # A transform hook replaced the whole turn, so the caller's
+                # bounds describe text that no longer exists. The hook's output
+                # IS the user's turn now, so attribute all of it.
+                _u0, _u1 = 0, len(turn_text)
+            else:
+                _u0, _u1 = user_text_range
+                _u0 = max(0, min(_u0, len(turn_text)))
+                _u1 = max(_u0, min(_u1, len(turn_text)))
+            _user_bounds = (
+                _map_offset_through_spans(_u0, _marker_spans),
+                _map_offset_through_spans(_u1, _marker_spans),
+            )
+            _user_part_index = len(parts)
+        parts.append(_turn_neutralized)
 
         # Lightweight reminder for interactive choices. ALL providers (incl.
         # Claude Code) use the [OPTIONS: ...] text tag — the dashboard/Slack UI
@@ -2229,4 +2304,15 @@ class ContextBuilder:
 
         # Widget instructions live in the bundled `widgets` skill.
 
-        return "".join(parts).translate(_MULTIBYTE_TABLE), hook_result
+        final = "".join(parts).translate(_MULTIBYTE_TABLE)
+        if user_span_out is not None and _user_bounds is not None and _user_part_index is not None:
+            # str.translate is per-character, so it distributes over
+            # concatenation: the translated length of everything before the turn
+            # IS the turn's offset in `final`. That makes the reported span exact
+            # even though the fold changes lengths (em dash -> "--", "..." etc.).
+            head = len("".join(parts[:_user_part_index]).translate(_MULTIBYTE_TABLE))
+            seg = parts[_user_part_index]
+            start = head + len(seg[: _user_bounds[0]].translate(_MULTIBYTE_TABLE))
+            end = head + len(seg[: _user_bounds[1]].translate(_MULTIBYTE_TABLE))
+            user_span_out.extend((start, end))
+        return final, hook_result

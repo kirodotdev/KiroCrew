@@ -84,6 +84,7 @@
     "pages.chat.subagentProgressBar.s": "The unit \"s\" = seconds, rendered directly after a number (`30s`). Not a plural marker.",
     "pages.chatSidebar.min": "The unit \"min\" = minutes, rendered after a number. An abbreviation, not the word \"minimum\".",
     "pages.chatSidebar.new": "Label on the \"+\" button in the chat sidebar header that starts a new chat. A verb-less shorthand for \"new chat\" sitting beside a plus icon, not the adjective \"recently added\". Width-constrained: it is hidden entirely when the header is compact, so keep it as short as the target language allows.",
+    "pages.contextBreakdown.row_all": "Row label on the Context Breakdown table's final summary row, which totals every turn of the session — the collective sense of \"all\", not \"everything\" or \"any\".",
     "pages.devFleetPage.mb": "The unit \"MB\" = megabytes, rendered after a numeric size.",
     "pages.devFleetPage.pod": "A KiroCrew dev \"pod\" — an isolated development environment. Product terminology; see the do-not-translate glossary before translating.",
     "pages.devFleetPage.pod_2": "A KiroCrew dev \"pod\" — an isolated development environment. Product terminology; see the do-not-translate glossary before translating.",

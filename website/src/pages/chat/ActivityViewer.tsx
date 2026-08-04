@@ -26,6 +26,7 @@ import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
 
+import { ContextBreakdownTab } from '../ContextBreakdownPanel'
 import { i18nT } from '../../i18n/t'
 import { fmtDateFields } from '../../i18n/format'
 const STATUS = {
@@ -1190,7 +1191,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   onPreviewPathChange?: (path: string | null) => void
   /** When set, render ONLY this view and hide the internal SegmentedControl.
    *  Used by SidePanel, which owns the top-level tab strip. */
-  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'files' | 'artifacts' | 'side' | 'workflows'
+  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'context' | 'files' | 'artifacts' | 'side' | 'workflows'
 }) {
   const dispatch = useAppDispatch()
   const [, setSelected] = useState(0)
@@ -1356,7 +1357,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         <div className="px-3 py-2 shrink-0 flex justify-center">
           <SegmentedControl
             segments={TABS}
-            value={effectiveTab}
+            value={effectiveTab === 'context' ? tab : effectiveTab}
             onChange={t => { setTab(t); explicitTab.current = true; dispatch(openActivityToTab(t)) }}
             layoutId="activity-tab"
           />
@@ -1526,6 +1527,11 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       {effectiveTab === 'artifacts' && <SessionArtifactsTab slot={slot} onArtifactOpen={onArtifactOpen} />}
 
       {/* Side tab */}
+      {/* Sits next to Logs on purpose: both answer "what actually happened
+          in THIS session" — Logs for the tool calls, this for the context
+          that was injected around them. */}
+      {effectiveTab === 'context' && <ContextBreakdownTab slot={slot} />}
+
       {effectiveTab === 'side' && <SideChat slot={slot} />}
 
       {/* Scroll to bottom button (tools tab only) */}
