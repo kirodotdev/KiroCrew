@@ -25,7 +25,7 @@ A ``link`` verdict returns the directory that authorises later reads of the
 file. :class:`~kiro_crew.artifacts.ArtifactStore` re-validates ``source_path``
 containment on **every** read (a symlink swap after the fact must not escape),
 and its default roots are the user's home dir plus the data home. A project at
-``/workplace/nrb/repo`` is outside both, so a linked project file would be
+``/workplace/alice/repo`` is outside both, so a linked project file would be
 refused on read — and the store would silently fall back to its stale snapshot.
 Recording the authorising root on the artifact (``source_root``) is what makes
 an out-of-home link actually work. It has to be recorded at create time because
