@@ -1841,6 +1841,18 @@ function ChatSidebar({
     onSuccess: () => { requestAnimationFrame(() => { if (!isTouchDevice()) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus() }) },
   })
 
+  // Create a PLAIN chat, ignoring the `defaultAutopilot` preference.
+  // The caret menu lists "New chat" and "New autopilot chat" side by side, so
+  // each must name exactly what it makes. Routing the plain entry through
+  // createChatMutation would hand an autopilot session to anyone who turned the
+  // default on — the one case where they picked the non-default on purpose.
+  // The button's main segment keeps honouring the preference; only this explicit
+  // entry pins the mode.
+  const createPlainChatMutation = useMutation({
+    mutationFn: () => dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '' })).unwrap(),
+    onSuccess: () => { requestAnimationFrame(() => { if (!isTouchDevice()) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus() }) },
+  })
+
   // Session colors
   const { paletteColors, boost, colorMode } = useSessionPalette()
 
@@ -2768,7 +2780,15 @@ function ChatSidebar({
                   title={i18nT('pages.chatSidebar.create')} aria-label={i18nT('pages.chatSidebar.more_create_options')}><ChevronDown size={13} /></button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-[200px]" onCloseAutoFocus={onMenuCloseAutoFocus}>
-                <DropdownMenuItem onClick={() => { createAutopilotMutation.mutate() }}>
+                {/* The plain chat is what the button's main segment does, but a
+                 *  menu that lists every OTHER way to create and omits the
+                 *  ordinary one reads as if autopilot were the only kind of
+                 *  chat the caret can make. Listed first so the default stays
+                 *  the default. */}
+                <DropdownMenuItem disabled={creatingSlot} onClick={() => { createPlainChatMutation.mutate() }}>
+                  <MessageSquarePlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat')}
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={creatingSlot} onClick={() => { createAutopilotMutation.mutate() }}>
                   <Zap size={14} className="text-accent" /> {i18nT('pages.chatSidebar.new_autopilot_chat')}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
