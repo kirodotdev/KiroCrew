@@ -37,8 +37,12 @@ def _load_script(name: str):
 @pytest.fixture(autouse=True)
 def _isolate_config(tmp_path: Path, monkeypatch):
     cfg = tmp_path / "config.json"
-    monkeypatch.setattr(handlers, "CONFIG_PATH", cfg)
-    monkeypatch.setattr(handlers, "DATA_DIR", tmp_path)
+    import kiro_crew.deploy as _deploy_pkg
+    from kiro_crew.deploy import profiles as _profiles_mod
+
+    monkeypatch.setattr(handlers, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(_profiles_mod, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(_deploy_pkg, "config_dir", lambda: tmp_path)
     # Isolate pending store
     store_path = tmp_path / "deploy" / "pending-deploys.json"
     monkeypatch.setattr(pending, "_store_path", lambda: store_path)

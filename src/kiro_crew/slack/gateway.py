@@ -71,6 +71,7 @@ from kiro_crew.config.loader import (
     _session_work_dir,
     build_provider_factory,
     config_dir,
+    data_home,
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import CHAT_TURN_TIMEOUT, DATA_WARNING
@@ -2567,7 +2568,7 @@ class GatewayOrchestrator:
                             self.cron_svc.clear_active_session_key(job.id)
                 # Restore per-job env vars (single-agent path) — now handled via extra_env passthrough
 
-        self.cron_svc = await CronService.create(base_dir=config_dir(), on_job=_cron_callback)
+        self.cron_svc = await CronService.create(base_dir=data_home(), on_job=_cron_callback)
         if self.dashboard_state:
             self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
         if self._no_crons:
@@ -3164,7 +3165,7 @@ class GatewayOrchestrator:
                     },
                 )
 
-        self.autonudge_svc = AutoNudgeService(base_dir=config_dir(), on_fire=_fire)
+        self.autonudge_svc = AutoNudgeService(base_dir=data_home(), on_fire=_fire)
         self.autonudge_svc.subscribe(_observer)
         await self.autonudge_svc.start()
 
@@ -5614,7 +5615,7 @@ class GatewayOrchestrator:
                 "port": self._dashboard_port,
                 "token": ready_token,
                 "pid": os.getpid(),
-                "home": str(config_dir()),
+                "home": str(data_home()),
             }
             print(f"KIROCREW_READY:{json.dumps(ready_payload)}", flush=True)
 

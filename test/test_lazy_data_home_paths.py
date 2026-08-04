@@ -70,6 +70,69 @@ def _path_factories() -> set[str]:
     return out
 
 
+def _transitive_path_factories() -> set[str]:
+    """Transitive closure: Path-returning functions that resolve through a paths.py factory.
+
+    Extends the root set (functions declared in ``paths.py``) with every
+    ``Path``-returning function elsewhere in ``src/kiro_crew/`` that calls
+    (directly or transitively) any member of the set. This closes the gap where
+    accessors like ``kiro_agents_dir_path()`` or ``_subagents_dir()`` resolve
+    through ``kiro_agents_dir()`` or ``data_home()`` but were not themselves in
+    the forbidden set, allowing ``FROZEN = kiro_agents_dir_path()`` at module
+    level without tripping the guard.
+
+    Precision constraints (issue #1059):
+    - Only ``Path``-returning functions are candidates (same restriction as the
+      root set -- avoids false-positives on generically-named helpers).
+    - A function must CALL a member of the growing set, not merely share a name
+      with one (the match is on call-expression names within the function body).
+    - Functions whose body contains no call to any set member are never added,
+      even if they return a Path -- this excludes functions that merely
+      manipulate a caller-supplied Path argument.
+    """
+    roots = _path_factories()
+
+    # Build a map: function_name -> set of names it calls, for every
+    # Path-returning function in the tree. We only need function names (not
+    # qualified paths) because the guard's detector matches bare call names.
+    candidates: dict[str, set[str]] = {}  # name -> called names
+    for py in sorted(SRC.rglob("*.py")):
+        if "__pycache__" in py.parts:
+            continue
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name.startswith("__") or node.returns is None:
+                continue
+            if "Path" not in ast.unparse(node.returns):
+                continue
+            called = _called_names(node)
+            if called:
+                # Merge: same-named functions across files union their callees.
+                if node.name in candidates:
+                    candidates[node.name] |= called
+                else:
+                    candidates[node.name] = called
+
+    # Fixed-point: expand the set until stable.
+    forbidden = set(roots)
+    changed = True
+    while changed:
+        changed = False
+        for name, calls in candidates.items():
+            if name in forbidden:
+                continue
+            if calls & forbidden:
+                forbidden.add(name)
+                changed = True
+
+    return forbidden
+
+
 def _called_names(node: ast.AST) -> set[str]:
     out: set[str] = set()
     for sub in ast.walk(node):
@@ -81,7 +144,7 @@ def _called_names(node: ast.AST) -> set[str]:
 
 
 def _frozen_path_constants() -> list[str]:
-    """Every import-time evaluation of a path factory.
+    """Every import-time evaluation of a path factory (transitively).
 
     Three shapes freeze identically at import and all three are covered:
 
@@ -93,8 +156,12 @@ def _frozen_path_constants() -> list[str]:
 
     Walking only ``tree.body`` would miss the last two, which is how a guard can
     document a stronger invariant than it enforces.
+
+    Uses the TRANSITIVE factory set so accessors that resolve through a
+    paths.py factory (e.g. ``kiro_agents_dir_path()``, ``_subagents_dir()``)
+    are also forbidden at module level.
     """
-    factories = _path_factories()
+    factories = _transitive_path_factories()
     offenders: list[str] = []
     for py in sorted(SRC.rglob("*.py")):
         if "__pycache__" in py.parts:
@@ -167,6 +234,26 @@ class TestNoImportTimePathResolution:
         for node in (annotated, nested):
             assert _called_names(node.value) & _path_factories()
 
+    def test_transitive_accessor_is_detected(self) -> None:
+        """Issue #1059: a module-level call to an accessor (not just a paths.py
+        factory) must be detected.
+
+        This is the reproduction from the issue: capturing
+        ``kiro_agents_dir_path()`` at module level freezes the path, and the
+        guard must now catch it via the transitive closure.
+        """
+        factories = _transitive_path_factories()
+        # Simulate the offending pattern: X = kiro_agents_dir_path()
+        bad = ast.parse("X = kiro_agents_dir_path()").body[0]
+        assert isinstance(bad, ast.Assign)
+        called = _called_names(bad.value)
+        assert called & factories, (
+            "kiro_agents_dir_path should be in the transitive factory set"
+        )
+        # Also for _subagents_dir
+        bad2 = ast.parse("X = _subagents_dir()").body[0]
+        assert _called_names(bad2.value) & factories
+
     def test_factory_set_excludes_non_path_helpers(self) -> None:
         """Precision control: only Path-returning helpers may be factories.
 
@@ -188,6 +275,25 @@ class TestNoImportTimePathResolution:
             assert name not in factories, name
         # a Path | None returner still counts
         assert "_valid_override_home" in factories
+
+    def test_transitive_closure_covers_accessors(self) -> None:
+        """The transitive set must include accessors that resolve through paths.py."""
+        factories = _transitive_path_factories()
+        # Root factories from paths.py must be present
+        assert {"config_dir", "kiro_sessions_dir", "kiro_agents_dir", "data_home"} <= factories
+        # Accessors that call paths.py factories transitively must also be present
+        assert "kiro_agents_dir_path" in factories, "kiro_agents_dir_path calls kiro_agents_dir"
+        assert "_subagents_dir" in factories, "_subagents_dir calls data_home"
+        assert "_token_usage_dir" in factories, "_token_usage_dir calls data_home"
+        assert "_upload_dir" in factories, "_upload_dir calls data_home"
+        assert "_screenshot_dir" in factories, "_screenshot_dir calls data_home"
+        # Non-Path returners must still be excluded
+        for name in (
+            "preserved_entries",
+            "_safe_dir_name",
+            "_is_unsafe_home",
+        ):
+            assert name not in factories, name
 
     def test_detector_covers_class_body_and_default_args(self, tmp_path, monkeypatch) -> None:
         """Negative control for the two shapes a ``tree.body``-only walk misses.
@@ -219,6 +325,39 @@ class TestNoImportTimePathResolution:
         kinds = {f.split("[")[1].split("]")[0] for f in found if "[" in f}
         assert "class-body" in kinds, found
         assert "def-default" in kinds, found
+
+    def test_detector_covers_transitive_accessor(self, tmp_path, monkeypatch) -> None:
+        """Issue #1059: a module-level call to an accessor that transitively
+        calls a paths.py factory must be flagged.
+        """
+        import sys
+
+        mod = sys.modules[__name__]
+
+        fake_src = tmp_path / "kiro_crew"
+        (fake_src / "config").mkdir(parents=True)
+        (fake_src / "config" / "paths.py").write_text(
+            "from pathlib import Path\n\n\ndef data_home() -> Path:\n    return Path('.')\n",
+            encoding="utf-8",
+        )
+        # An accessor that calls data_home()
+        (fake_src / "accessor.py").write_text(
+            "from pathlib import Path\n\n"
+            "def _subagents_dir() -> Path:\n"
+            "    return data_home() / 'subagents'\n",
+            encoding="utf-8",
+        )
+        # A module that freezes the accessor at import time
+        (fake_src / "bad_module.py").write_text(
+            "FROZEN = _subagents_dir()\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(mod, "SRC", fake_src)
+        monkeypatch.setattr(mod, "PATHS_MODULE", fake_src / "config" / "paths.py")
+
+        found = _frozen_path_constants()
+        assert any("_subagents_dir" in f for f in found), (
+            f"Transitive accessor not detected: {found}"
+        )
 
 
 # (module import path, override constant, accessor) for every accessor that

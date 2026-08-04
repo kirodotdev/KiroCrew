@@ -28,7 +28,7 @@ from kiro_crew.autonudge import get_instance as _autonudge_get
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
 from kiro_crew.browser.setup import migrate_owned_playwright_registration
 from kiro_crew.channel_transcript_migration import migrate_channel_transcripts
-from kiro_crew.config import config_dir
+from kiro_crew.config import data_home
 from kiro_crew.config.loader import KiroCrewConfig, refresh_materialized_agents
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import (
@@ -2778,7 +2778,7 @@ async def start_dashboard(
     # succeeds — both live in _write_secret_file, offloaded below — to avoid
     # poisoning the secret file when a second instance fails to start and to
     # keep blocking fs I/O off the event loop.
-    _secret_path = config_dir() / ".local_secret"
+    _secret_path = data_home() / ".local_secret"
     _internal_secret = os.urandom(16).hex()
     app["local_secret"] = _internal_secret
 
@@ -3265,7 +3265,7 @@ async def start_api_server(
     # start_dashboard): both live in _write_secret_file, offloaded below, so a
     # failed second instance never poisons the live gateway's secret file and no
     # blocking fs I/O runs on the event loop.
-    _secret_path = config_dir() / ".local_secret"
+    _secret_path = data_home() / ".local_secret"
     _internal_secret = os.urandom(16).hex()
     app["local_secret"] = _internal_secret
 

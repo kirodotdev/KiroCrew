@@ -51,6 +51,7 @@ def _cfg(**kw: object) -> KiroCrewConfig:
 _SEL = "kiro_crew.sel.sel"
 _LOAD = "kiro_crew.config.loader.KiroCrewConfig.load"
 _CFGDIR = "kiro_crew.config.loader.config_dir"
+_DATAHOME = "kiro_crew.dashboard.handlers.files.data_home"
 
 
 # ── Create handler ──
@@ -100,6 +101,7 @@ class TestCreateHandler:
             patch(_LOAD, return_value=cfg),
             patch.object(cfg, "save"),
             patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
             patch(_SEL) as mock_sel,
         ):
             resp = await api_workspaces_create(_req({"name": "staging"}))
@@ -120,6 +122,7 @@ class TestCreateHandler:
             patch(_LOAD, return_value=cfg),
             patch.object(cfg, "save"),
             patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
             patch(_SEL),
         ):
             resp = await api_workspaces_create(_req({"name": "copied", "copy_from": "default"}))
@@ -135,6 +138,7 @@ class TestCreateHandler:
         with (
             patch(_LOAD, return_value=cfg),
             patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
         ):
             resp = await api_workspaces_create(_req({"name": "evil", "dir": "../../etc"}))
         assert resp.status == 400
@@ -171,6 +175,7 @@ class TestUpdateHandler:
             patch(_LOAD, return_value=cfg),
             patch.object(cfg, "save"),
             patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
             patch(_SEL) as mock_sel,
         ):
             resp = await api_workspaces_update(
@@ -186,6 +191,7 @@ class TestUpdateHandler:
         with (
             patch(_LOAD, return_value=cfg),
             patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
         ):
             resp = await api_workspaces_update(
                 _req({"dir": "../../etc"}, match_info={"name": "default"})
@@ -199,6 +205,7 @@ class TestUpdateHandler:
             patch(_LOAD, return_value=cfg),
             patch.object(cfg, "save"),
             patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
             patch(_SEL),
         ):
             resp = await api_workspaces_update(

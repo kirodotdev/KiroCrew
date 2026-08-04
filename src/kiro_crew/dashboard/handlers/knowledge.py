@@ -16,7 +16,7 @@ from pathlib import Path
 from aiohttp import web
 
 from kiro_crew.artifacts import get_default_store
-from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
 from kiro_crew.dashboard.handlers.files import _ZIP_CONTAINER_EXTS, _content_matches_ext
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
@@ -1549,7 +1549,7 @@ async def search_for_context(request: web.Request) -> web.Response:
     if not q:
         return web.json_response({"error": "q parameter required"}, status=400)
 
-    cfg_path = config_dir() / "config.json"
+    cfg_path = data_home() / "config.json"
     try:
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
     except Exception:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import data_home
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
 from kiro_crew.weixin.client import (
     ILINK_BASE_URL,
@@ -52,11 +52,11 @@ async def maybe_start_weixin(orch: "GatewayOrchestrator") -> "WeixinClient | Non
         base_url = getattr(orch, "_weixin_base_url", "") or ILINK_BASE_URL
         dm_policy = getattr(orch, "_weixin_dm_policy", "allowlist")
         allowed = set(getattr(orch, "_weixin_allowed_user_ids", []) or [])
-        # Resolve through config_dir() so KIROCREW_HOME (isolated profiles, the
+        # Resolve through data_home() so KIROCREW_HOME (isolated profiles, the
         # dev backend, tests) is honoured. A hardcoded expanduser() would write
         # peer context state into the DEFAULT home, letting separate profiles
         # overwrite each other's reply state.
-        home = getattr(orch, "_weixin_home", "") or str(config_dir())
+        home = getattr(orch, "_weixin_home", "") or str(data_home())
 
         if dm_policy == "allowlist" and not allowed:
             logger.warning(
