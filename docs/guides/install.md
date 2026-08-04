@@ -13,6 +13,25 @@ Builds use plain `pip` + `npm`/Vite + `pytest`, driven by the repo-root
 > `kiro_crew.platform_compat`. See
 > [windows-install.md](windows-install.md) for the Windows walkthrough.
 
+---
+
+- [Prerequisites](#prerequisites)
+- [Install paths](#install-paths)
+- [Makefile targets](#makefile-targets)
+- [First run](#first-run)
+- [Configuration](#configuration)
+- [Verify the install](#verify-the-install)
+- [Running as a service](#running-as-a-service)
+- [Linux: the agent sandbox and unprivileged user namespaces](#linux-the-agent-sandbox-and-unprivileged-user-namespaces)
+- [Troubleshooting](#troubleshooting)
+- [Uninstalling](#uninstalling)
+- [Removing user data](#removing-user-data)
+- [Clean reinstall](#clean-reinstall)
+- [Data retention details](#data-retention-details)
+- [Next steps](#next-steps)
+
+---
+
 ## Prerequisites
 
 | Requirement | Needed for | Floor |
@@ -452,11 +471,139 @@ kirocrew doctor
 kirocrew gateway --port auto   # bind an OS-assigned port if 5476 is taken
 ```
 
-## Uninstall and data retention
+## Uninstalling
 
-Uninstalling Kiro Crew preserves `$KIROCREW_HOME` (`~/.kiro/crew` by default).
-That directory holds configuration, credentials, memory, sessions, apps, and the
-audit chain, and none of the repository-controlled uninstall paths remove it:
+Uninstalling removes the Kiro Crew binary and its runtime but **preserves your
+data home** (`~/.kiro/crew`) — configuration, credentials, memory, sessions,
+apps, and the audit chain remain intact. This is intentional: reinstalling picks
+up where you left off without re-running setup or losing history.
+
+Before uninstalling, stop any running gateway and remove the system service if
+one is installed:
+
+```bash
+kirocrew service uninstall   # removes the systemd unit / launchd plist
+```
+
+Then follow the section matching your install method.
+
+### One-line install via `cli.sh` (pipx)
+
+If `cli.sh` used `pipx` (the default when pipx is on `PATH`):
+
+```bash
+pipx uninstall kirocrew
+```
+
+### One-line install via `cli.sh` (managed venv)
+
+If `pipx` was not available, `cli.sh` created a managed venv and a symlink.
+Remove both:
+
+```bash
+rm -f ~/.local/bin/kirocrew
+rm -rf "${KIROCREW_VENV:-$HOME/.kiro/crew-venv}"
+```
+
+### pip / pip wheel install
+
+```bash
+pip uninstall kirocrew
+```
+
+If installed in a dedicated virtualenv:
+
+```bash
+rm -rf /path/to/your/venv
+```
+
+### From source (development)
+
+Remove the editable install and the build artifacts:
+
+```bash
+cd /path/to/KiroCrew
+pip uninstall kirocrew        # removes the editable install from .venv
+rm -rf .venv build dist       # remove the local venv and build outputs
+```
+
+### macOS desktop app (DMG / zip)
+
+1. Quit KiroCrew from the menu bar or Dock.
+2. Drag **KiroCrew.app** from `/Applications` to the Trash (or `rm -rf`).
+
+There is no installer package or receipt to clean — the DMG is a drag-install.
+
+### Linux AppImage
+
+Delete the AppImage file wherever you placed it:
+
+```bash
+rm -f ~/Applications/KiroCrew-x86_64.AppImage   # or wherever you saved it
+```
+
+### Windows (NSIS installer)
+
+Use **Settings → Apps → Installed apps**, find "Kiro Crew", and click
+**Uninstall**. The NSIS uninstaller removes the application directory and
+shortcuts but does not touch `~/.kiro/crew`.
+
+### Docker
+
+```bash
+docker rm -f kirocrew          # stop and remove the container
+docker rmi ghcr.io/kirodotdev/kirocrew   # remove the image
+```
+
+## Removing user data
+
+Uninstalling via any method above leaves your data home intact. To also remove
+all user data:
+
+```bash
+# Back up first — this is irreversible
+kirocrew snapshot                         # optional: create a portable backup
+rm -rf "${KIROCREW_HOME:-$HOME/.kiro/crew}"
+```
+
+This deletes configuration, credentials (`.env`), session history, memory
+databases, installed apps, and the embedding model cache.
+
+> **Note:** App Kit data is preserved per-app by default. To remove an
+> individual app's data before or instead of purging the whole home:
+> `kirocrew app uninstall NAME --purge-data`
+
+## Clean reinstall
+
+A clean reinstall removes both the binary and the data home, then installs
+fresh. Use this when `kirocrew doctor` reports issues that setup cannot fix,
+or when you want a completely fresh start.
+
+```bash
+# 1. Stop and remove the service
+kirocrew service uninstall 2>/dev/null
+
+# 2. Uninstall the binary (use the matching command from above)
+pipx uninstall kirocrew          # or: pip uninstall kirocrew, rm the AppImage, etc.
+
+# 3. Back up and remove the data home
+cp -a ~/.kiro/crew ~/.kiro/crew.backup   # optional safety net
+rm -rf ~/.kiro/crew
+
+# 4. Reinstall
+curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
+
+# 5. Run first-time setup
+kirocrew setup
+kirocrew doctor
+```
+
+Replace step 4 with your preferred install method (pip wheel, source build,
+desktop app) as described in the [Install paths](#install-paths) section above.
+
+## Data retention details
+
+For reference, the data home structure and what each uninstall path touches:
 
 - `kirocrew service uninstall` removes only the systemd unit (plus the AppArmor
   profile it installed) or the launchd plist.
@@ -469,15 +616,11 @@ audit chain, and none of the repository-controlled uninstall paths remove it:
   `kirocrew app uninstall NAME --purge-data`, or unchecking **Keep app data** in
   the confirmation dialog.
 
-There is intentionally no implicit whole-home purge. Back up with `kirocrew
-snapshot` before manually removing a data home you no longer need.
-
-**External certification dependency.** Windows desktop releases use an NSIS
-installer, whose uninstaller electron-builder generates. `nsis.oneClick` is false
-and `nsis.deleteAppDataOnUninstall` is left false, so the uninstaller removes only
+**Windows NSIS uninstaller behavior.** `nsis.oneClick` is false and
+`nsis.deleteAppDataOnUninstall` is left false, so the uninstaller removes only
 the application install directory and its shortcuts; it never resolves or removes
 the Kiro Crew home, which lives outside the install directory. Each signed Windows
-installer must nevertheless pass an install, create-sentinel-under-`~/.kiro/crew`,
+installer must pass an install, create-sentinel-under-`~/.kiro/crew`,
 uninstall, verify-sentinel smoke test before release. A separate Kiro-family
 uninstaller could remove the parent `~/.kiro/` directory; it must exclude
 `~/.kiro/crew` or prompt explicitly. That release-blocking cross-product
