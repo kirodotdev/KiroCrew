@@ -1312,6 +1312,461 @@ class TestAcpClientStaleTurnOracleGate:
         assert actions == []
         assert "Stale turn detected" in caplog.text
 
+    @pytest.mark.asyncio
+    async def test_consult_skips_while_prior_is_in_flight(self, tmp_path):
+        """An unfinished consult prevents another executor job from starting."""
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        client._liveness_oracle = MagicMock()
+        client._consult_future = asyncio.get_running_loop().create_future()
+
+        verdict = await client._consult_liveness_model_wait()
+
+        assert verdict == (VERDICT_UNKNOWN, "prior consult still in flight")
+        client._liveness_oracle.check_model_wait.assert_not_called()
+
+        client._consult_future.set_result((VERDICT_WORKING, "done"))
+        client._liveness_oracle.check_model_wait.return_value = (VERDICT_DEAD, "flat")
+
+        assert await client._consult_liveness_model_wait() == (VERDICT_DEAD, "flat")
+        client._liveness_oracle.check_model_wait.assert_called_once_with(4242)
+
+    @pytest.mark.asyncio
+    async def test_consult_consumes_a_failed_prior_consults_exception(self, tmp_path):
+        """Reopening the guard must consume a failed prior consult's exception.
+
+        ``wait_for`` cancels shield's outer future while the /proc walk is still
+        running, and shield's outer-done callback then detaches the inner-done
+        callback that would have retrieved the inner result — so a walk that
+        raises after the timeout leaves its exception unretrieved.
+        ``Future.__del__`` reports that through the loop exception handler, which
+        the gateway records as an unhandled-asyncio crash for an ordinary probe
+        failure.
+        """
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        client._liveness_oracle = MagicMock()
+        client._liveness_oracle.check_model_wait.return_value = (VERDICT_DEAD, "flat")
+
+        prior = asyncio.get_running_loop().create_future()
+        prior.set_exception(OSError("wedged /proc read"))
+        client._consult_future = prior
+
+        assert await client._consult_liveness_model_wait() == (VERDICT_DEAD, "flat")
+
+        # _log_traceback is the flag Future.__del__ consults to decide whether to
+        # report an exception as never retrieved.
+        assert prior._log_traceback is False
+
+    @pytest.mark.asyncio
+    async def test_consult_reports_unknown_when_the_submission_itself_fails(self, tmp_path):
+        """A failed executor submission must degrade to UNKNOWN, not raise.
+
+        The caller is a silent-read poll inside ``_prompt_loop``; an exception
+        escaping here aborts the live turn. Submission can fail for ordinary
+        reasons — a shut-down executor during teardown, or thread creation
+        refused under load — so it stays inside the same guard that already
+        converts probe failures to UNKNOWN.
+        """
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        client._liveness_oracle = MagicMock()
+
+        with patch(
+            "kiro_crew.acp.client.subprocess_executor",
+            side_effect=RuntimeError("cannot schedule new futures after shutdown"),
+        ):
+            assert await client._consult_liveness_model_wait() == (
+                VERDICT_UNKNOWN,
+                "oracle offload error",
+            )
+
+        # Nothing was tracked, so the guard is not left latched shut by a
+        # submission that never produced a future.
+        assert client._consult_future is None
+
+    @pytest.mark.asyncio
+    async def test_reset_state_releases_a_consult_from_the_dead_generation(self, tmp_path):
+        """A walk wedged on the dead PID must not gate the replacement process.
+
+        ``_reset_state`` is the process-generation boundary. A /proc walk blocked
+        on the old PID can never say anything about the new one, so retaining it
+        answers every later poll with "prior consult still in flight" — and
+        ``_prompt_loop``'s UNKNOWN cutoff then completes a healthy turn early,
+        truncating its output.
+        """
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        client._consult_future = asyncio.get_running_loop().create_future()
+
+        with (
+            patch("kiro_crew.session_pid._pid_gone_or_unmanaged", return_value=True),
+            patch("kiro_crew.session._untrack_pid"),
+            patch("kiro_crew.session._untrack_session_pid"),
+        ):
+            client._reset_state()
+        client._pid = 5353
+        # Reset retires the oracle, so the stub belongs on the replacement.
+        client._liveness_oracle = MagicMock()
+        client._liveness_oracle.check_model_wait.return_value = (VERDICT_DEAD, "flat")
+
+        assert client._consult_future is None
+        assert await client._consult_liveness_model_wait() == (VERDICT_DEAD, "flat")
+        client._liveness_oracle.check_model_wait.assert_called_once_with(5353)
+
+    @pytest.mark.asyncio
+    async def test_released_consult_exception_is_consumed_after_reset(self, tmp_path):
+        """A released walk that fails afterwards must not read as a crash.
+
+        Reset drops the client's last reference while the walk is still running,
+        so an exception raised after that point reaches ``Future.__del__`` with
+        nobody having retrieved it.
+        """
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        wedged = asyncio.get_running_loop().create_future()
+        client._consult_future = wedged
+
+        with (
+            patch("kiro_crew.session_pid._pid_gone_or_unmanaged", return_value=True),
+            patch("kiro_crew.session._untrack_pid"),
+            patch("kiro_crew.session._untrack_session_pid"),
+        ):
+            client._reset_state()
+
+        wedged.set_exception(OSError("wedged /proc read"))
+        await asyncio.sleep(0)  # add_done_callback lands via call_soon
+
+        assert wedged._log_traceback is False
+
+    @pytest.mark.asyncio
+    async def test_reset_state_retires_the_liveness_oracle(self, tmp_path):
+        """A detached walk must not be able to pollute the next generation's baseline.
+
+        The executor job captures ``self._liveness_oracle`` as a bound method and
+        its /proc walk keeps running after the wait times out. Samples are keyed
+        ``"io"``/``"cpu"`` with no PID in the key, so a late write lands on
+        whatever the current generation reads — and any nonzero delta counts as
+        movement, including the negative one from comparing a different process
+        tree. That reads WORKING for a genuinely wedged turn and defers recovery
+        to the 2h backstop. Retiring the instance confines a late writer to an
+        object nobody reads.
+        """
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        retired = client._liveness_oracle
+        # Seed the state a dead generation would leave behind. A replacement that
+        # merely isolates writes (a deepcopy, say) would carry these over and the
+        # first probe of the new process would delta against the dead one.
+        retired._samples["io"] = (0.0, 12_345)
+        retired._samples["cpu"] = (0.0, 678)
+        retired._tracked_child = 9999
+        retired._child_gone_ts = 1.0
+
+        with (
+            patch("kiro_crew.session_pid._pid_gone_or_unmanaged", return_value=True),
+            patch("kiro_crew.session._untrack_pid"),
+            patch("kiro_crew.session._untrack_session_pid"),
+        ):
+            client._reset_state()
+
+        assert client._liveness_oracle is not retired
+        assert client._liveness_oracle._samples == {}
+        assert client._liveness_oracle._tracked_child is None
+        assert client._liveness_oracle._child_gone_ts is None
+        # A late write from the detached walk reaches the retired instance only.
+        retired._samples["io"] = (0.0, 999_999)
+        assert "io" not in client._liveness_oracle._samples
+
+    @pytest.mark.asyncio
+    async def test_every_prompt_path_retires_liveness_state(self, tmp_path):
+        """Retirement must sit where all prompt paths funnel, not on one of them.
+
+        ``send_message`` reaches ``_prompt_loop`` via ``_read_prompt_response``,
+        and ``send_message_stream`` reaches it directly — neither goes through
+        ``_dispatch_events``. Retiring only there leaves the worker-pool prompt
+        API carrying the previous turn's wedged consult, so its next turn is
+        answered "prior consult still in flight" and reaped at the 90s cutoff.
+        ``_prompt_loop`` is the one place every consumer funnels through.
+        """
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        turn_a_oracle = client._liveness_oracle
+        turn_a_oracle._samples["io"] = (0.0, 12_345)
+        client._consult_future = asyncio.get_running_loop().create_future()
+
+        observed: dict = {}
+
+        async def _record_then_silence(*_args, **_kwargs):
+            # Observed on the FIRST read, so retirement deferred to the loop's
+            # finally (or to turn completion) would fail here.
+            observed.setdefault("oracle", client._liveness_oracle)
+            observed.setdefault("future", client._consult_future)
+            return None
+
+        client._read_message = _record_then_silence
+        client._is_process_alive = lambda: True
+
+        async for _action, _msg in client._prompt_loop(req_id=7, timeout=0.05):
+            pass
+
+        assert observed["oracle"] is not turn_a_oracle
+        assert observed["future"] is None
+        assert observed["oracle"]._samples == {}
+
+    @pytest.mark.asyncio
+    async def test_a_queued_turn_does_not_reopen_the_active_turns_gate(self, tmp_path):
+        """Retirement must happen under the turn lock, not before it.
+
+        A second queued turn that retires before blocking on ``_turn_lock`` clears
+        the *active* turn's tracked consult. The active turn's next silent read
+        then sees an open gate and submits a second walk while the first is still
+        wedged — defeating the one-outstanding-walk bound this gate exists for.
+        """
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        client._read_message = AsyncMock(return_value=None)
+        client._is_process_alive = lambda: True
+
+        # Turn A owns the lock and has a walk in flight.
+        await client._turn_lock.acquire()
+        turn_a_walk = asyncio.get_running_loop().create_future()
+        client._consult_future = turn_a_walk
+        turn_a_oracle = client._liveness_oracle
+
+        async def _turn_b():
+            async for _action, _msg in client._prompt_loop(req_id=8, timeout=0.05):
+                pass
+
+        turn_b = asyncio.ensure_future(_turn_b())
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        # Turn B is parked on the lock, so turn A's gate is untouched.
+        assert client._consult_future is turn_a_walk
+        assert client._liveness_oracle is turn_a_oracle
+
+        client._turn_lock.release()
+        await turn_b
+        # Only once turn B actually owns the turn does it retire.
+        assert client._consult_future is None
+        assert client._liveness_oracle is not turn_a_oracle
+
+    @pytest.mark.asyncio
+    async def test_the_submitted_walk_is_bound_to_the_oracle_it_sampled(self, tmp_path):
+        """The walk must capture its oracle, not resolve one when it finally runs.
+
+        Retirement isolates a late writer only if the submitted callable holds the
+        instance it was submitted with. Handing the executor something that
+        resolves ``self._liveness_oracle`` at execution time would make a detached
+        walk write into whatever oracle is live *then*, silently defeating every
+        retirement in this change while leaving the other tests green. This guards
+        behaviour that is already correct rather than fixing anything.
+        """
+        from concurrent.futures import Future as ThreadFuture
+
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        submitted_against = client._liveness_oracle
+
+        thread_future: ThreadFuture = ThreadFuture()
+        thread_future.set_running_or_notify_cancel()
+        pool = MagicMock()
+        pool.submit.return_value = thread_future
+
+        _real_wait_for = asyncio.wait_for
+
+        async def _fast_timeout(awaitable, timeout=None):
+            return await _real_wait_for(awaitable, timeout=0.01)
+
+        with (
+            patch("kiro_crew.acp.client.subprocess_executor", return_value=pool),
+            patch("kiro_crew.acp.client.asyncio.wait_for", _fast_timeout),
+        ):
+            await client._consult_liveness_model_wait()
+
+        walk = pool.submit.call_args[0][0]
+        assert getattr(walk, "__self__", None) is submitted_against
+
+        # After retirement the captured callable still targets the retired
+        # instance, so a late write cannot reach the live baseline.
+        client._retire_liveness_state()
+        assert client._liveness_oracle is not submitted_against
+        assert walk.__self__ is submitted_against
+
+        thread_future.set_exception(OSError("wedged /proc read"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_a_real_submission_is_recorded_and_gates_the_next_poll(self, tmp_path):
+        """The guard is only worth anything if a real submission is tracked.
+
+        Injecting ``_consult_future`` by hand exercises the guard but proves
+        nothing about the submission path: if the assignment were dropped, every
+        timed-out walk would leave the field ``None`` and the next silent read
+        would submit another executor job — the starvation defect this exists to
+        stop.
+        """
+        from concurrent.futures import Future as ThreadFuture
+
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        client._liveness_oracle = MagicMock()
+
+        thread_future: ThreadFuture = ThreadFuture()
+        thread_future.set_running_or_notify_cancel()
+        pool = MagicMock()
+        pool.submit.return_value = thread_future
+
+        _real_wait_for = asyncio.wait_for
+
+        async def _fast_timeout(awaitable, timeout=None):
+            return await _real_wait_for(awaitable, timeout=0.01)
+
+        with (
+            patch("kiro_crew.acp.client.subprocess_executor", return_value=pool),
+            patch("kiro_crew.acp.client.asyncio.wait_for", _fast_timeout),
+        ):
+            assert await client._consult_liveness_model_wait() == (
+                VERDICT_UNKNOWN,
+                "oracle offload error",
+            )
+            assert client._consult_future is not None
+            assert pool.submit.call_count == 1
+
+            # The recorded future is what closes the guard on the next poll.
+            assert await client._consult_liveness_model_wait() == (
+                VERDICT_UNKNOWN,
+                "prior consult still in flight",
+            )
+            assert pool.submit.call_count == 1
+
+        thread_future.set_exception(OSError("wedged /proc read"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_retired_oracle_keeps_its_configuration(self, tmp_path):
+        """Retirement must not silently swap a caller's oracle config for defaults.
+
+        A client may be handed an oracle pointed at a different ``/proc`` root or a
+        different sampling interval. Replacing it with a default-constructed one at
+        the generation boundary would silently change probe behaviour.
+        """
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        sentinel_clock = MagicMock(return_value=1.0)
+        client._liveness_oracle = LivenessOracle(
+            "/fake/proc", now=sentinel_clock, sample_min_secs=0.0
+        )
+        configured = client._liveness_oracle
+
+        with (
+            patch("kiro_crew.session_pid._pid_gone_or_unmanaged", return_value=True),
+            patch("kiro_crew.session._untrack_pid"),
+            patch("kiro_crew.session._untrack_session_pid"),
+        ):
+            client._reset_state()
+
+        # Every constructor input is asserted: dropping any one of them from
+        # fresh() must fail here. Asserting only the config would also hold if
+        # retirement were removed entirely (the configured instance would simply
+        # survive), and asserting only replacement would hold for a default-
+        # constructed one that silently repoints all three.
+        assert client._liveness_oracle is not configured
+        assert client._liveness_oracle._proc == "/fake/proc"
+        assert client._liveness_oracle._sample_min_secs == 0.0
+        assert client._liveness_oracle._now is sentinel_clock
+
+    @pytest.mark.asyncio
+    async def test_pending_consult_exception_is_consumed_without_a_reset(self, tmp_path):
+        """A stale turn can return with a consult still pending and never reset.
+
+        The retrieval callback must be attached when the walk is SUBMITTED, not
+        only when a later poll observes it or ``_reset_state`` releases it. A turn
+        that reaches the 90s cutoff returns while the walk is still running; if the
+        client then goes idle, a walk that raises afterwards reaches
+        ``Future.__del__`` unretrieved and is recorded as an unhandled crash.
+        """
+        from concurrent.futures import Future as ThreadFuture
+
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        client._liveness_oracle = MagicMock()
+
+        thread_future: ThreadFuture = ThreadFuture()
+        thread_future.set_running_or_notify_cancel()
+        pool = MagicMock()
+        pool.submit.return_value = thread_future
+
+        async def _always_times_out(awaitable, timeout=None):
+            # Delegate to the REAL wait_for with a tiny timeout: its cancellation
+            # of shield's outer future is exactly what detaches the inner-done
+            # callback, and a patched raise would leave that callback attached and
+            # retrieve the exception for us — a vacuous pass.
+            return await _real_wait_for(awaitable, timeout=0.01)
+
+        _real_wait_for = asyncio.wait_for
+        with (
+            patch("kiro_crew.acp.client.subprocess_executor", return_value=pool),
+            patch("kiro_crew.acp.client.asyncio.wait_for", _always_times_out),
+        ):
+            assert await client._consult_liveness_model_wait() == (
+                VERDICT_UNKNOWN,
+                "oracle offload error",
+            )
+
+        tracked = client._consult_future
+        assert tracked is not None and not tracked.done()
+
+        # The walk fails after the turn already returned, with no reset in between.
+        thread_future.set_exception(OSError("wedged /proc read"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert tracked.done()
+        assert tracked._log_traceback is False
+
+    @pytest.mark.asyncio
+    async def test_cancelled_consult_still_consumes_a_later_failure(self, tmp_path):
+        """Cancellation is what proves the callback is attached at SUBMISSION.
+
+        Attaching it in the ``except Exception`` arm instead would cover the
+        timeout path and look equivalent — but ``CancelledError`` is a
+        ``BaseException``, so a turn cancelled while the walk is still running
+        would skip it and the walk's later failure would reach ``Future.__del__``
+        unretrieved.
+        """
+        from concurrent.futures import Future as ThreadFuture
+
+        client = AcpClient(work_dir=tmp_path)
+        client._pid = 4242
+        client._liveness_oracle = MagicMock()
+
+        thread_future: ThreadFuture = ThreadFuture()
+        thread_future.set_running_or_notify_cancel()
+        pool = MagicMock()
+        pool.submit.return_value = thread_future
+
+        with patch("kiro_crew.acp.client.subprocess_executor", return_value=pool):
+            task = asyncio.ensure_future(client._consult_liveness_model_wait())
+            while client._consult_future is None:
+                await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        tracked = client._consult_future
+        assert tracked is not None and not tracked.done()
+
+        thread_future.set_exception(OSError("wedged /proc read"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert tracked.done()
+        assert tracked._log_traceback is False
+
 
 class TestAcpClientReadMessage:
     @pytest.mark.asyncio
