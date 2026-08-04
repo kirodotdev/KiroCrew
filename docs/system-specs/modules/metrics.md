@@ -728,9 +728,15 @@ retries later rather than silently losing the day.
 egress family: the heartbeat and official-app install receipts.
 `telemetry_permitted()` suppresses both when `KIROCREW_TELEMETRY_DISABLED` is
 truthy, an enterprise **governance ceiling** pins `capabilities.telemetry` off,
-the config toggle is false, the process looks like **CI**, or `KIROCREW_HOME` is
-**non-default** (dev home / pod / worktree preview). `beacon.should_send()` adds
-the heartbeat-only daily throttle; receipts are event-based and do not use it.
+the config toggle is false, the process looks like **CI**, `KIROCREW_HOME` is
+**non-default** (dev home / pod / worktree preview), or this install has never sent
+and `dashboard.privacy_acked` is still false (the first-egress gate below).
+`beacon.should_send()` adds the heartbeat-only daily throttle; receipts are
+event-based and do not use it.
+
+Each suppression carries a stable `Verdict.code` from `beacon.REASONS` alongside the
+English `reason`, so the dashboard can translate the outcome instead of printing an
+operator diagnostic.
 
 ### Enterprise opt-out: the `capabilities.telemetry` governance scope
 
@@ -861,15 +867,11 @@ cannot disagree and the choice survives restarts and upgrades.
 The dashboard discloses the default-on beacon without turning disclosure into a
 consent flow:
 
-- On first use, it renders a labelled, passive region in normal document flow
-  above the routed main content. It is never a modal or dialog, never traps or
-  moves focus, and never pauses, gates, or blocks the application. Its dismiss
-  button and the link to the durable privacy details are keyboard-operable.
-- Dismissal is remembered with the local-storage marker
-  `mc-privacy-notice-v1`. Storage access is fail-open: a failed read shows the
-  notice, and dismissal hides it for the current session even when persisting
-  the marker fails.
-- **Settings → Privacy** remains available after dismissal. It explains the
+- The **first-run Privacy chapter** is the disclosure surface. There is no
+  passive banner above the routed content: a dismissible strip competed with the
+  chapter that already discloses the same thing, and its "Privacy details" link
+  was the only thing it added.
+- **Settings → Privacy** is the durable surface. It explains the
   default-on, at-most-daily beacon and its exact five fields: random
   installation id, app version, Python minor version, installation channel, and
   first-run flag. `PrivacyPanel.test.tsx` asserts both that all five are named and
@@ -879,10 +881,25 @@ consent flow:
   keeps the status/disable commands beneath it — the CLI remains documented
   because it is the only way to override a `config.local.json` overlay and the
   only control on a headless host.
-- **Onboarding step 6 (final)** shows the same disclosure and the same toggle in
-  the `OnboardingChapterShell` layout, so a new user sees what is sent and can
-  opt out before finishing setup. It is **passive**: no consent gate and no
-  required choice — Done always completes onboarding, and Skip/Escape still work.
+- The **mandatory first-run Privacy chapter** (`components/PrivacyChapter.tsx`,
+  chapter 2 of 3) shows the same disclosure and the same toggle in the
+  `OnboardingChapterShell` layout, so a new user sees what is sent and can opt out
+  before reaching the product. Every path out of chapter 1 routes through it,
+  including "Skip all", and it offers no skip and no Escape. It is still **not a
+  consent gate**: Continue is always enabled and never requires a choice, because
+  the default is a decision the user can change here, in Settings → Privacy, or
+  from the CLI.
+- **The first heartbeat is withheld until that chapter is acknowledged.** The
+  gateway starts the beacon thread at boot, before the dashboard has rendered, so
+  an ungated fresh install would ping before the user could decline: an opt-out
+  offered only after the fact. Continue persists `dashboard.privacy_acked` (and
+  `kirocrew telemetry enable|disable` sets it too, for headless hosts), which
+  `beacon.telemetry_permitted` reads. The gate is **first-egress only**
+  (`beacon.is_first_send()`): an install that has already sent is past the
+  disclosure, and keying every heartbeat on the flag would silence it permanently
+  rather than once. `dashboard.privacy_acked` falls back to `dashboard.onboarded`,
+  so a user who finished first run before the chapter existed is never re-gated.
+  It gates the install receipt too, via the shared consent ladder.
 - The disclosure copy and the control are single-sourced in
   `components/PrivacyDisclosure.tsx` (`PrivacyDisclosureSections`,
   `TelemetryToggle`, `PrivacyCommandList`) and consumed by both surfaces, so the
@@ -891,8 +908,14 @@ consent flow:
   performance metrics. Performance metrics are off by default and remain local
   when enabled, with one explicit exception: they egress only when the operator
   configures an OTLP endpoint.
-- These surfaces add no tracking and do not alter, enable, or delay any telemetry
-  path. They only explain behavior and controls that already exist.
+- The panel renders a **stable `reason_code`** (`beacon.REASONS`), never the
+  sibling `reason` string. `reason` is untranslated operator prose
+  (`already sent today (2026-08-04)`) kept for logs and bug reports; interpolating
+  it put a developer diagnostic on screen in all 10 languages. An unrecognized
+  code falls back to a generic translated note rather than rendering a raw key.
+- These surfaces add no tracking. They delay exactly one thing, the first
+  heartbeat, until the disclosure has been shown, and otherwise only explain
+  behavior and controls that already exist.
 
 ### Official-app install receipt (`apps/install_receipt.py`)
 

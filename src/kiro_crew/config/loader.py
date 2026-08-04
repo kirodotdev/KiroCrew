@@ -1865,6 +1865,17 @@ class DashboardConfig:
             "Whether the user has completed or skipped foreign-agent import onboarding.",
         ),
     )
+    privacy_acked: bool = field(
+        default=False,
+        metadata=_meta(
+            "Privacy Acknowledged",
+            "Whether the user has seen the mandatory first-run Privacy chapter, which "
+            "discloses the anonymous heartbeat and offers the opt-out. Server-backed "
+            "rather than browser-local because the gateway gates the very FIRST "
+            "heartbeat on it: until this is true the user has not yet been shown the "
+            "opt-out, and a ping sent before the offer makes the offer meaningless.",
+        ),
+    )
     user_role: str = field(
         default="",
         metadata=_meta(
@@ -4671,6 +4682,14 @@ class KiroCrewConfig:
                 onboarded=bool(dashboard_data.get("onboarded", False)),
                 import_onboarded=_safe_bool(
                     dashboard_data.get("import_onboarded"),
+                    _safe_bool(dashboard_data.get("onboarded"), False),
+                ),
+                # Falls back to `onboarded`: a user who finished first run before
+                # this chapter existed has already reached the product, and
+                # re-gating their heartbeat on a screen they will never be shown
+                # would suppress it forever.
+                privacy_acked=_safe_bool(
+                    dashboard_data.get("privacy_acked"),
                     _safe_bool(dashboard_data.get("onboarded"), False),
                 ),
                 user_role=str(dashboard_data.get("user_role", "")),

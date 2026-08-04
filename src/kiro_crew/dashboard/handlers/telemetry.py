@@ -651,22 +651,31 @@ async def api_beacon_status(request: web.Request) -> web.Response:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
         enabled = cfg.telemetry.beacon_enabled
         endpoint = cfg.telemetry.beacon_endpoint
+        acked = cfg.dashboard.privacy_acked
         overlay_override = await asyncio.to_thread(_beacon_overlay_pins_value)
     except Exception:
         # A diagnostic must never 500: an unreadable config is exactly when the
         # user wants to see this panel. Fail toward "off" so the UI never claims
         # telemetry is on when we cannot prove it.
         logger.debug("beacon config load failed; reporting disabled", exc_info=True)
-        enabled, endpoint = False, ""
+        enabled, endpoint, acked = False, "", False
 
     info = await asyncio.to_thread(
-        beacon.status, endpoint, enabled=enabled, app_version=__version__
+        beacon.status,
+        endpoint,
+        enabled=enabled,
+        app_version=__version__,
+        acked=acked,
     )
     return web.json_response(
         {
             "enabled": bool(info.get("beacon_enabled", enabled)),
             "would_send": bool(info.get("would_send", False)),
             "reason": str(info.get("reason", "")),
+            # The stable discriminant the panel translates. `reason` stays as
+            # untranslated operator detail for logs and bug reports; the UI must
+            # render this instead, never the prose.
+            "reason_code": str(info.get("reason_code", "")),
             "endpoint_configured": bool(info.get("endpoint_configured", False)),
             "env_override": beacon.is_env_opted_out(),
             "env_var": beacon.DISABLE_ENV,

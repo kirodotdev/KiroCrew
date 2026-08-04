@@ -1643,6 +1643,7 @@ def _telemetry(args: argparse.Namespace) -> None:
                     cfg.telemetry.beacon_endpoint,
                     enabled=cfg.telemetry.beacon_enabled,
                     app_version=__version__,
+                    acked=cfg.dashboard.privacy_acked,
                 )
             )
         )
@@ -1691,11 +1692,35 @@ def _telemetry(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    section = data.get("telemetry")
-    if not isinstance(section, dict):
-        section = {}
-    section["beacon_enabled"] = want
-    data["telemetry"] = section
+    # Same rule as the whole-file check above, applied per section: coercing a
+    # non-object section to {} would DISCARD whatever the user had there and then
+    # print success. Absent is fine (create it); present-but-wrong-type is a
+    # refusal, because this command cannot know what the value was meant to be.
+    sections: dict[str, dict[str, object]] = {}
+    for name in ("telemetry", "dashboard"):
+        existing = data.get(name)
+        if existing is None:
+            sections[name] = {}
+            continue
+        if not isinstance(existing, dict):
+            print(
+                f"❌ {path} has a non-object \"{name}\" value "
+                f"({type(existing).__name__}); refusing to overwrite it. Fix or "
+                "remove it, then retry.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        sections[name] = existing
+
+    sections["telemetry"]["beacon_enabled"] = want
+    data["telemetry"] = sections["telemetry"]
+    # Running this command IS the informed choice the first-run chapter exists to
+    # collect, so record the ack. Otherwise `telemetry enable` on a fresh
+    # headless install would write beacon_enabled: true and still send nothing,
+    # because the first-egress gate would keep waiting for a dashboard screen the
+    # user may never open.
+    sections["dashboard"]["privacy_acked"] = True
+    data["dashboard"] = sections["dashboard"]
     # Preserve the existing permissions. atomic_write creates a NEW file and
     # renames it over the old one, so without this an operator's tightened mode
     # is silently replaced by the umask default (0600 -> 0644 on a typical host).

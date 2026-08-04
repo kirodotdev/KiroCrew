@@ -141,12 +141,13 @@ def receipt_url(
     )
 
 
-def should_send(*, enabled: bool, official: bool) -> tuple[bool, str]:
+def should_send(*, enabled: bool, official: bool, acked: bool) -> beacon.Verdict:
     """Apply the provenance gate before the beacon's shared consent ladder."""
     if not official:
-        return False, "not an official catalog entry"
+        return beacon.Verdict(False, "not an official catalog entry", "unofficial")
     return beacon.telemetry_permitted(
         enabled=enabled,
+        acked=acked,
         audit_tool="install_receipt_send",
     )
 
@@ -158,14 +159,14 @@ def send(
     app_version: str,
     enabled: bool,
     official: bool,
+    acked: bool,
     kind: str,
 ) -> bool:
     """Best-effort GET. Every refusal and transport failure returns ``False``."""
     if not endpoint:
         return False
     try:
-        permitted, _reason = should_send(enabled=enabled, official=official)
-        if not permitted:
+        if not should_send(enabled=enabled, official=official, acked=acked).ok:
             return False
         secret = receipt_secret()
         token = receipt_token(secret, app_slug)
@@ -206,6 +207,7 @@ def _send_configured(app_slug: str, *, official: bool, kind: str) -> None:
             app_version=__version__,
             enabled=config.telemetry.beacon_enabled,
             official=official,
+            acked=config.dashboard.privacy_acked,
             kind=kind,
         )
     except Exception:

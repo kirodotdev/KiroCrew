@@ -3874,6 +3874,7 @@
         "recent_tint_count": 0,
         "onboarded": false,
         "import_onboarded": false,
+        "privacy_acked": false,
         "user_role": "",
         "user_role_other": "",
         "user_technical_level": "",
@@ -4259,6 +4260,20 @@
       "tags": [],
       "label": "Import Onboarded",
       "help": "Whether the user has completed or skipped foreign-agent import onboarding.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.privacy_acked",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Privacy Acknowledged",
+      "help": "Whether the user has seen the mandatory first-run Privacy chapter, which discloses the anonymous heartbeat and offers the opt-out. Server-backed rather than browser-local because the gateway gates the very FIRST heartbeat on it: until this is true the user has not yet been shown the opt-out, and a ping sent before the offer makes the offer meaningless.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

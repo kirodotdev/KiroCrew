@@ -18,14 +18,22 @@ def _make_cfg(
     onboarded: bool = False,
     import_onboarded: bool = False,
     language: str = "",
+    privacy_acked: bool = False,
 ):
-    """Build a mock KiroCrewConfig with dashboard display fields."""
+    """Build a mock KiroCrewConfig with dashboard display fields.
+
+    Every field the payload builder reads must be set explicitly: a bare
+    ``MagicMock`` attribute serializes as a mock, so a field added to
+    ``_theme_payload`` without a line here fails as a JSON TypeError rather than a
+    readable assertion.
+    """
     cfg = MagicMock()
     cfg.dashboard.theme_mode = theme_mode
     cfg.dashboard.theme_color = theme_color
     cfg.dashboard.onboarded = onboarded
     cfg.dashboard.import_onboarded = import_onboarded
     cfg.dashboard.language = language
+    cfg.dashboard.privacy_acked = privacy_acked
     return cfg
 
 
@@ -45,6 +53,7 @@ async def test_theme_boot_returns_defaults() -> None:
         "language": "",
         "onboarded": False,
         "import_onboarded": False,
+        "privacy_acked": False,
     }
 
 
@@ -68,6 +77,7 @@ async def test_theme_boot_returns_configured_values() -> None:
         "language": "",
         "onboarded": True,
         "import_onboarded": True,
+        "privacy_acked": False,
     }
 
 
@@ -92,6 +102,7 @@ async def test_theme_config_get() -> None:
         "language": "",
         "onboarded": True,
         "import_onboarded": True,
+        "privacy_acked": False,
     }
 
 
@@ -120,6 +131,7 @@ async def test_theme_config_put_updates_and_saves() -> None:
         "language": "",
         "onboarded": True,
         "import_onboarded": True,
+        "privacy_acked": False,
     }
     cfg.save.assert_called_once()
 
@@ -146,6 +158,39 @@ async def test_theme_config_put_validates_import_onboarded_boolean() -> None:
         req = MagicMock(spec=web.Request)
         req.method = "PUT"
         req.json = AsyncMock(return_value={"import_onboarded": "false"})
+        with pytest.raises(web.HTTPBadRequest):
+            await core_mod.api_theme_config(req)
+
+
+@pytest.mark.asyncio
+async def test_theme_config_put_persists_privacy_acked() -> None:
+    """The route must persist the flag the gateway's first-heartbeat gate reads.
+
+    Without this write the beacon stays withheld forever on a fresh install: the
+    first-run chapter is the only thing that sets it, and the gateway cannot see
+    the browser's localStorage copy.
+    """
+    cfg = _make_cfg()
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        req = MagicMock(spec=web.Request)
+        req.method = "PUT"
+        req.json = AsyncMock(return_value={"privacy_acked": True})
+        resp = await core_mod.api_theme_config(req)
+    assert resp.status == 200
+    assert cfg.dashboard.privacy_acked is True
+    cfg.save.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_theme_config_put_validates_privacy_acked_boolean() -> None:
+    """A truthy string must not silently release the first-heartbeat gate."""
+    cfg = _make_cfg()
+    with patch.object(core_mod, "KiroCrewConfig") as mock_cls:
+        mock_cls.load.return_value = cfg
+        req = MagicMock(spec=web.Request)
+        req.method = "PUT"
+        req.json = AsyncMock(return_value={"privacy_acked": "true"})
         with pytest.raises(web.HTTPBadRequest):
             await core_mod.api_theme_config(req)
 
@@ -196,6 +241,7 @@ async def test_theme_config_put_serializes_full_load_modify_save_transaction() -
         "language": "",
         "onboarded": False,
         "import_onboarded": False,
+        "privacy_acked": False,
     }
     json_waiters = 0
     both_parsed = asyncio.Event()
@@ -208,6 +254,7 @@ async def test_theme_config_put_serializes_full_load_modify_save_transaction() -
             self.dashboard.language = persisted["language"]
             self.dashboard.onboarded = persisted["onboarded"]
             self.dashboard.import_onboarded = persisted["import_onboarded"]
+            self.dashboard.privacy_acked = persisted["privacy_acked"]
 
         def save(self) -> None:
             persisted.update(
@@ -217,6 +264,7 @@ async def test_theme_config_put_serializes_full_load_modify_save_transaction() -
                     "language": self.dashboard.language,
                     "onboarded": self.dashboard.onboarded,
                     "import_onboarded": self.dashboard.import_onboarded,
+                    "privacy_acked": self.dashboard.privacy_acked,
                 }
             )
 

@@ -1455,6 +1455,8 @@ export const api = {
     language?: string
     onboarded?: boolean
     import_onboarded?: boolean
+    /** Gates the gateway's first heartbeat; see `beacon.telemetry_permitted`. */
+    privacy_acked?: boolean
   }) =>
     put('/api/config/theme', body).then(j),
   // Voice

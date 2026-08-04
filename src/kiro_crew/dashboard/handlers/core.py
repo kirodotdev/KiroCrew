@@ -318,6 +318,7 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "language": cfg.dashboard.language or "",
         "onboarded": cfg.dashboard.onboarded,
         "import_onboarded": cfg.dashboard.import_onboarded,
+        "privacy_acked": cfg.dashboard.privacy_acked,
     }
 
 
@@ -391,6 +392,13 @@ async def api_theme_config(request: web.Request) -> web.Response:
                 raise web.HTTPBadRequest(text="import_onboarded must be a boolean")
             if cfg.dashboard.import_onboarded != import_onboarded:
                 cfg.dashboard.import_onboarded = import_onboarded
+                changed = True
+        if "privacy_acked" in body:
+            privacy_acked = body["privacy_acked"]
+            if not isinstance(privacy_acked, bool):
+                raise web.HTTPBadRequest(text="privacy_acked must be a boolean")
+            if cfg.dashboard.privacy_acked != privacy_acked:
+                cfg.dashboard.privacy_acked = privacy_acked
                 changed = True
 
         if changed:
