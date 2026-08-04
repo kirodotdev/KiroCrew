@@ -68,6 +68,7 @@ agent backend and Slack credentials.
 - [Use Cases](use-cases.md) — Real-world workflows from the community
 - [Profiling](profiling.md) — Debug-only stack sampler (`kirocrew perf sample`) and desktop app metrics (`kirocrew desktop metrics`)
 - [Dashboard iframe hosts](dashboard-iframe-hosts.md) — Which of the four embed hosts to use, why their sandboxes differ, and why an iframe can never be moved
+- [MCP Apps](mcp-apps.md) — Render interactive MCP tool output (diagrams, viewers, forms) in chat: the two gates that enable it, what a server must declare, and why output stays plain text
 - [Troubleshooting](troubleshooting.md) — Common issues and fixes
 
 ## Security

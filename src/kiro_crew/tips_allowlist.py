@@ -26,6 +26,7 @@ TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
         "feature-tips.md",
         "getting-started.md",
         "knowledge-library-how-it-works.md",
+        "mcp-apps.md",
         "memory-and-learning.md",
         "research-lab.md",
         "skills.md",
