@@ -125,10 +125,12 @@ command -v curl    >/dev/null 2>&1 || err "curl is required"
 command -v openssl >/dev/null 2>&1 || err "openssl is required to verify the signed manifest"
 # KiroCrew needs Python >=3.10 at runtime (contextlib.aclosing, etc.) even
 # though older published wheels' METADATA claimed >=3.9 -- pip would install
-# fine on 3.9 and then crash on first run. Pick the best interpreter, newest
-# first; plain python3 only counts if it is itself >=3.10.
+# fine on 3.9 and then crash on first run. Prefer 3.12 (the version CI builds
+# and tests on), then fall back to other supported minors, then 3.13+ only as
+# a last resort (numpy<2 and other deps may lack wheels for bleeding-edge
+# interpreters). Plain python3 only counts if it is itself >=3.10.
 PY=""
-for c in python3.13 python3.12 python3.11 python3.10 python3; do
+for c in python3.12 python3.11 python3.10 python3.13 python3; do
   command -v "$c" >/dev/null 2>&1 || continue
   if "$c" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
     PY="$c"; break
