@@ -3718,12 +3718,18 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         completed = 0
         timed_out = 0
         errored = 0
+        _settled_ids: set[str] = set()  # agents confirmed settled (done or error)
         for aid in sa_ids:
             sa_st = _get(f"/api/spawn/{aid}")
             sa_name = _redact_sa(sa_st.get("agent", ""))
             label = sa_name if sa_name else aid
             if sa_st.get("error"):
                 errored += 1
+                # Only mark as settled if done is also true (confirmed terminal
+                # state). An "error" without "done" could be a transport failure
+                # from _get() — the agent may still be running.
+                if sa_st.get("done"):
+                    _settled_ids.add(aid)
                 sa_results.append(
                     json.dumps(
                         {
@@ -3738,6 +3744,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 sa_results.append(json.dumps({"agent": label, "status": "timed_out"}))
             else:
                 completed += 1
+                _settled_ids.add(aid)
                 result_text = _redact_sa(sa_st.get("result", ""))
                 # Apply the same summarize_result treatment as spawn_run:
                 # when results exceed completion_keep threshold, return a
@@ -3774,6 +3781,22 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 "errored": errored,
             },
         )
+        # Mark collected IDs so _subagent_done skips redundant injection.
+        # The blocking tool already delivered results inline; without this the
+        # on_done callback triggers a new _run_chat turn that clobbers any
+        # [OPTIONS:] buttons rendered in the synthesis.
+        # Only mark agents whose results were actually delivered inline
+        # (completed or errored) — timed-out agents may still complete later
+        # and their real result must not be suppressed.
+        if _settled_ids and parent_session:
+            try:
+                _post(
+                    "/api/spawn/mark-collected",
+                    {"ids": list(_settled_ids), "parent_session": parent_session},
+                    timeout=5,
+                )
+            except Exception:
+                pass  # best-effort; worst case = duplicate turn (pre-existing behavior)
         return "\n\n".join(sa_results)
 
     if name == "spawn_list":

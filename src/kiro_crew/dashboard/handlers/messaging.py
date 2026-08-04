@@ -30,7 +30,7 @@ from kiro_crew.browser.setup import (
 )
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
-from kiro_crew.dashboard.chat_utils import _remove_queued_by_id
+from kiro_crew.dashboard.chat_utils import _remove_queued_by_id, dashboard_slot_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.origin import is_direct_local_request, is_loopback
 from kiro_crew.dashboard.state import (
@@ -339,6 +339,38 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
         batch_id, batch_total, reason, parent_session_key=parent_session
     )
     return web.json_response({"status": "reconciled", "batch_id": batch_id})
+
+
+async def api_spawn_mark_collected(request: web.Request) -> web.Response:
+    """POST /api/spawn/mark-collected — suppress injection for blocking tool.
+
+    Called by the spawn_sub_agents MCP tool after it has polled and collected
+    results inline.  Records the agent IDs on the parent slot so that the
+    subsequent _subagent_done callback skips the _run_chat injection (the model
+    already processed these results as a tool-call return value).  Without this,
+    each completion event triggers a redundant LLM turn whose response shadows
+    any [OPTIONS:] buttons the synthesis message rendered.
+    """
+    state: DashboardState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    ids = body.get("ids")
+    if not ids or not isinstance(ids, list):
+        return web.json_response({"error": "'ids' array required", "code": "ids_required"}, status=400)
+    parent_session = str(body.get("parent_session", "") or "")
+    slot_name = dashboard_slot_key(parent_session)
+    if not slot_name:
+        return web.json_response({"status": "no_slot"})
+    slot = state.get_slot(slot_name)
+    if not slot:
+        return web.json_response({"status": "no_slot"})
+    # Record the IDs (bounded to 200 to prevent unbounded growth)
+    for aid in ids[:200]:
+        if isinstance(aid, str) and aid:
+            slot._subagents_inline_collected.add(aid)
+    return web.json_response({"status": "ok", "marked": len(ids)})
 
 
 def _redact(text: str) -> str:

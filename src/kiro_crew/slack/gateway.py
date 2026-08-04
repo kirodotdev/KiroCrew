@@ -4030,6 +4030,32 @@ class GatewayOrchestrator:
                         if _still_running == []:
                             _injection_slot._pending_synthesis = True
 
+                    # ── Skip injection for blocking-tool-collected results ──
+                    # spawn_sub_agents (blocking MCP tool) already delivered
+                    # this result inline as a tool-call return value. Injecting
+                    # it again would trigger a redundant _run_chat turn whose
+                    # assistant response shadows any [OPTIONS:] buttons from the
+                    # synthesis message. Mark delivered and return.
+                    # NOTE: This check is placed BEFORE the inflight counter and
+                    # busy-wait because at this point the blocking tool's
+                    # mark-collected POST has already landed (the tool returns
+                    # before its turn ends, and _subagent_done fires only after
+                    # the agent's terminal report, which is after the tool has
+                    # finished). However, if the slot is busy (turn still
+                    # running) we must wait first, then re-check — see the
+                    # second check after the busy-wait below.
+                    if info.id in _injection_slot._subagents_inline_collected:
+                        _injection_slot._subagents_inline_collected.discard(info.id)
+                        # Disarm synthesis — the blocking tool already delivered
+                        # all results and the model synthesized inline.
+                        if not _injection_slot._subagents_inline_collected:
+                            _injection_slot._pending_synthesis = False
+                        logger.info(
+                            "Subagent %s: skipping injection (already collected inline by spawn_sub_agents)",
+                            info.id,
+                        )
+                        return
+
                     # Fix 2 (B1) race guard: count this completion as an
                     # in-flight delivery from entry until it is handed off (turn
                     # launched or queued). The synthesis fire-gate in chat_runner
@@ -4059,6 +4085,19 @@ class GatewayOrchestrator:
                             # Re-check: another injection may have claimed the slot
                             # during the await above.
                             if _injection_slot.running:
+                                # Check inline-collected before queuing — if the
+                                # blocking tool already handled this result, don't
+                                # queue it for a later redundant turn.
+                                if info.id in _injection_slot._subagents_inline_collected:
+                                    _injection_slot._subagents_inline_collected.discard(info.id)
+                                    if not _injection_slot._subagents_inline_collected:
+                                        _injection_slot._pending_synthesis = False
+                                    logger.info(
+                                        "Subagent %s: skipping queue "
+                                        "(already collected inline)",
+                                        info.id,
+                                    )
+                                    return
                                 logger.info(
                                     "Subagent %s: slot %s claimed by another injection, queuing",
                                     info.id,
@@ -4070,6 +4109,20 @@ class GatewayOrchestrator:
                                 self.dashboard_state.push_slots_update()
                                 logger.info("Subagent %s → queued in %s", info.id, _slot_name)
                                 return
+
+                        # Slot is idle — re-check inline-collected (the
+                        # blocking tool's mark-collected POST has now landed,
+                        # since the tool returns before its owning turn ends).
+                        if info.id in _injection_slot._subagents_inline_collected:
+                            _injection_slot._subagents_inline_collected.discard(info.id)
+                            if not _injection_slot._subagents_inline_collected:
+                                _injection_slot._pending_synthesis = False
+                            logger.info(
+                                "Subagent %s: skipping injection after wait "
+                                "(already collected inline by spawn_sub_agents)",
+                                info.id,
+                            )
+                            return
 
                         # Slot is idle — start _run_chat.
                         _task = asyncio.create_task(

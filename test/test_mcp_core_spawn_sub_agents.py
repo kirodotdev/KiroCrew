@@ -235,7 +235,9 @@ class TestSpawnSubAgents:
                 "cwd": "/workspace/project",
             })
 
-            body = mock_post.call_args[0][1]
+            # The spawn call is the first _post; mark-collected is the last.
+            spawn_call = mock_post.call_args_list[0]
+            body = spawn_call[0][1]
             assert body["cwd"] == "/workspace/project"
 
     def test_multiple_agents_spawned_in_parallel(self):
@@ -243,7 +245,7 @@ class TestSpawnSubAgents:
              patch("kiro_crew.mcp_core._get") as mock_get, \
              patch("kiro_crew.mcp_core.sel"), \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
-            mock_post.side_effect = [{"id": "a1"}, {"id": "a2"}]
+            mock_post.side_effect = [{"id": "a1"}, {"id": "a2"}, {}]
             mock_get.return_value = {"done": True, "agent": "w", "result": "done"}
 
             result = _call_tool("spawn_sub_agents", {
@@ -253,7 +255,8 @@ class TestSpawnSubAgents:
                 ],
             })
 
-            assert mock_post.call_count == 2
+            # 2 spawn calls + 1 mark-collected call = 3 total
+            assert mock_post.call_count == 3
             assert result.count('"completed"') == 2
 
     def test_truncates_oversized_prompt(self):
@@ -269,7 +272,9 @@ class TestSpawnSubAgents:
                 "agents": [{"prompt": long_prompt}],
             })
 
-            body = mock_post.call_args[0][1]
+            # The spawn call is the first _post; mark-collected is the last.
+            spawn_call = mock_post.call_args_list[0]
+            body = spawn_call[0][1]
             assert len(body["task"]) <= 5000
 
     def test_truncates_oversized_agent_or_mode(self):
@@ -284,7 +289,9 @@ class TestSpawnSubAgents:
                 "agents": [{"agent_or_mode": "x" * 5000, "prompt": "task"}],
             })
 
-            body = mock_post.call_args[0][1]
+            # The spawn call is the first _post; mark-collected is the last.
+            spawn_call = mock_post.call_args_list[0]
+            body = spawn_call[0][1]
             assert len(body["agent"]) < 5000  # truncated to MAX_SHORT_STRING
 
 
