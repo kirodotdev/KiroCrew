@@ -20,6 +20,8 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Optional
 
+from kiro_crew import platform_compat
+
 logger = logging.getLogger(__name__)
 
 # The frontend is in-tree at ``<repo-root>/website``; there is no remote to
@@ -174,17 +176,21 @@ def ensure_dev_dist_symlink() -> Optional[Path]:
     kiro_crew_pkg_dir = Path(__file__).resolve().parent
     tree_dist = kiro_crew_pkg_dir / "static" / "dist"
 
+    # A prior run may have created a symlink (POSIX) OR a directory junction
+    # (non-admin Windows); both are "links" here and neither is a real dir.
+    tree_dist_is_link = platform_compat.is_link_or_junction(tree_dist)
+
     # Case 1: real directory already populated (packaged install / a prior
     # local build landing in the source tree / user ran kirocrew init --ui).
-    if tree_dist.is_dir() and not tree_dist.is_symlink():
+    if tree_dist.is_dir() and not tree_dist_is_link:
         if (tree_dist / "index.html").is_file():
             return tree_dist
         # Empty real dir — fall through and try to resolve something usable.
 
-    # Case 2: existing symlink — validate and re-use if the target still has
+    # Case 2: existing link — validate and re-use if the target still has
     # a dist in it. A dangling or empty target means the website build moved
     # or was cleaned; drop the link and re-resolve below.
-    if tree_dist.is_symlink():
+    if tree_dist_is_link:
         try:
             target = tree_dist.resolve(strict=True)
         except (FileNotFoundError, OSError):
@@ -192,9 +198,9 @@ def ensure_dev_dist_symlink() -> Optional[Path]:
         if target is not None and (target / "index.html").is_file():
             return target
         try:
-            tree_dist.unlink()
+            platform_compat.unlink_link_or_junction(tree_dist)
         except OSError as exc:
-            logger.warning("Failed to remove stale dist symlink %s: %s", tree_dist, exc)
+            logger.warning("Failed to remove stale dist link %s: %s", tree_dist, exc)
             return None
 
     # Case 3: no usable dist in place — probe and link.
@@ -203,20 +209,24 @@ def ensure_dev_dist_symlink() -> Optional[Path]:
         return None
 
     tree_dist.parent.mkdir(parents=True, exist_ok=True)
-    # Guard against a lingering empty real dir from Case 1's fall-through.
-    if tree_dist.exists() or tree_dist.is_symlink():
+    # Guard against a lingering empty real dir from Case 1's fall-through, or a
+    # stale link/junction (rmtree must never descend THROUGH a link).
+    if tree_dist.exists() or platform_compat.is_link_or_junction(tree_dist):
         try:
-            if tree_dist.is_dir() and not tree_dist.is_symlink():
+            if tree_dist.is_dir() and not platform_compat.is_link_or_junction(tree_dist):
                 shutil.rmtree(tree_dist)
             else:
-                tree_dist.unlink()
+                platform_compat.unlink_link_or_junction(tree_dist)
         except OSError as exc:
-            logger.warning("Failed to clear %s before symlink: %s", tree_dist, exc)
+            logger.warning("Failed to clear %s before linking: %s", tree_dist, exc)
             return None
     try:
-        tree_dist.symlink_to(candidate)
+        # symlink on POSIX; directory junction on non-admin Windows, where a
+        # plain symlink needs SeCreateSymbolicLinkPrivilege and would fail with
+        # WinError 1314 — leaving a source-tree gateway with no SPA bundle.
+        platform_compat.symlink_or_junction(str(candidate), str(tree_dist))
     except OSError as exc:
-        logger.warning("Failed to symlink %s -> %s: %s", tree_dist, candidate, exc)
+        logger.warning("Failed to link %s -> %s: %s", tree_dist, candidate, exc)
         return None
     logger.info("Linked frontend dist: %s -> %s", tree_dist, candidate)
     return candidate
@@ -274,7 +284,10 @@ def build_frontend_sync(
     if not website_dir.is_dir():
         log("  ⚠️  No website/ directory — skipping frontend build")
         return
-    if not shutil.which("npm"):
+    # Resolve to a full path: on Windows npm is ``npm.CMD``, which PATHEXT-aware
+    # shutil.which finds but CreateProcess cannot spawn by the bare name "npm".
+    npm = shutil.which("npm")
+    if not npm:
         log("  ⚠️  npm not found — skipping frontend build")
         return
     if edition_sources_missing():
@@ -289,7 +302,7 @@ def build_frontend_sync(
     )
     try:
         r = subprocess.run(
-            ["npm", *install_args],
+            [npm, *install_args],
             cwd=str(website_dir), capture_output=True, timeout=_INSTALL_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -301,7 +314,7 @@ def build_frontend_sync(
 
     try:
         r = subprocess.run(
-            ["npm", "run", "build"],
+            [npm, "run", "build"],
             cwd=str(website_dir), capture_output=True, timeout=_BUILD_TIMEOUT,
             env=_edition_build_env(),
         )
@@ -341,7 +354,10 @@ async def build_frontend_async(
     if not website_dir.is_dir():
         _warn("No website/ directory -- skipping frontend build")
         return
-    if not shutil.which("npm"):
+    # Resolve to a full path: on Windows npm is ``npm.CMD``, which PATHEXT-aware
+    # shutil.which finds but CreateProcess cannot spawn by the bare name "npm".
+    npm = shutil.which("npm")
+    if not npm:
         _warn("npm not found -- skipping frontend build")
         return
     if edition_sources_missing():
@@ -354,7 +370,7 @@ async def build_frontend_async(
         else ["install", "--no-audit", "--no-fund"]
     )
     npm_i = await asyncio.create_subprocess_exec(
-        "npm", *install_args,
+        npm, *install_args,
         cwd=str(website_dir),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
@@ -374,7 +390,7 @@ async def build_frontend_async(
         return
 
     npm_build = await asyncio.create_subprocess_exec(
-        "npm", "run", "build",
+        npm, "run", "build",
         cwd=str(website_dir),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,

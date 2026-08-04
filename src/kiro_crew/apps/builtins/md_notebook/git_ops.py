@@ -242,20 +242,44 @@ def _auth_env(pat: Optional[str]) -> dict[str, str]:
     return env
 
 
+def _windows_git_bin_dirs() -> tuple[str, ...]:
+    """Trusted, fixed Git-for-Windows install locations (never PATH).
+
+    Covers both the machine-wide install under ``%ProgramFiles%`` and the
+    per-user install under ``%LOCALAPPDATA%\\Programs\\Git`` — the latter is the
+    no-admin install `windows-install.md` recommends and what `kirocrew doctor`
+    itself detects, so omitting it made every vault op fail closed with
+    ``git_failed`` on an ordinary Windows machine. These are fixed install roots,
+    not workspace-writable, so trusting them does not reopen the PATH-hijack hole.
+    """
+    dirs: list[str] = []
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    localappdata = os.environ.get("LOCALAPPDATA", "")
+    roots = (
+        [program_files, os.path.join(localappdata, "Programs")]
+        if localappdata
+        else [program_files]
+    )
+    for root in roots:
+        dirs.append(os.path.join(root, "Git", "cmd"))
+        dirs.append(os.path.join(root, "Git", "bin"))
+        dirs.append(os.path.join(root, "Git", "mingw64", "bin"))
+    return tuple(dirs)
+
+
 #: Trusted absolute directories to resolve the ``git`` binary from, tried in
 #: order BEFORE ``PATH``: a workspace-writable entry earlier in PATH could
 #: otherwise shadow ``git`` with a planted binary that then runs unsandboxed on
 #: the next sync. On a normal POSIX host git lives in one of these, so PATH is
-#: never consulted there. The Windows entries + the ``shutil.which`` fallback
-#: exist for the CI test runners (the backend itself is macOS/Linux only).
+#: never consulted there. The Windows entries cover both the machine-wide and
+#: the per-user Git-for-Windows install roots (the backend itself is macOS/Linux
+#: only; these serve Windows dev hosts and CI test runners).
 _GIT_BIN_DIRS: tuple[str, ...] = (
     "/usr/bin",
     "/bin",
     "/usr/local/bin",
     "/opt/homebrew/bin",
-    r"C:\Program Files\Git\cmd",
-    r"C:\Program Files\Git\bin",
-)
+) + _windows_git_bin_dirs()
 _git_bin_memo: Optional[str] = None
 
 
@@ -264,8 +288,9 @@ def _git_bin() -> str:
 
     Only the trusted system directories above are searched — never ``PATH`` —
     so a planted binary in a workspace-writable PATH entry cannot win. The
-    Windows entries are for the CI test runners (the backend is macOS/Linux
-    only). Fails closed if git is not found in a trusted location.
+    Windows entries cover both the machine-wide and the per-user
+    Git-for-Windows install roots (Windows dev hosts and CI test runners).
+    Fails closed if git is not found in a trusted location.
     """
     global _git_bin_memo
     if _git_bin_memo is not None:

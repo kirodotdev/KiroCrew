@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import ntpath
 import os
+import posixpath
 import shutil
 import signal
 import subprocess
@@ -44,6 +46,27 @@ _PROBE_TIMEOUT_SECS = 15  # fallback if config not loaded yet
 # process-group reap runs, which is why it is a named constant -- tests that
 # deliberately probe a never-exiting child shrink it instead of waiting it out.
 _PROBE_TEARDOWN_WAIT_SECS = 5
+
+# Cap on a probe error string stored on server.error and surfaced by doctor /
+# the dashboard. Sized to hold a full SandboxUnavailableError, whose message
+# ends with the ~400-char remedy sentence naming
+# agent.sandbox_allow_unsandboxed_exec; the old 200-char cap chopped that tail
+# mid-word, so a Windows user saw "…Probe detail: not Linux. I" and no fix.
+_PROBE_ERROR_MAX_CHARS = 1200
+
+
+def _sanitize_probe_error(exc: BaseException) -> str:
+    """Redact THEN truncate a probe exception for server.error / doctor / logs.
+
+    A probe exception can carry untrusted, credential-bearing text — e.g. a
+    malformed remote MCP URL with an embedded token in the message. Redact
+    before truncating (the stderr-tail path already does), so raising the cap to
+    hold the sandbox remedy sentence never widens a credential-disclosure hole.
+    """
+    text = str(exc)
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return text[:_PROBE_ERROR_MAX_CHARS]
 
 
 def _get_probe_timeout() -> int:
@@ -769,7 +792,7 @@ async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
         logger.warning("MCP probe failed [%s]: timeout", server.name)
     except Exception as exc:
         server.status = "error"
-        server.error = str(exc)[:200]
+        server.error = _sanitize_probe_error(exc)
         logger.warning("MCP probe failed [%s]: %s", server.name, server.error)
 
     _cache_probe(server)
@@ -1033,7 +1056,7 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
         _warn_unresolvable_once(server.name, server.command)
     except Exception as exc:
         server.status = "error"
-        server.error = str(exc)[:200]
+        server.error = _sanitize_probe_error(exc)
         logger.warning("MCP probe failed [%s]: %s", server.name, server.error)
     finally:
         # When the probe failed, drain any stderr the child wrote and append
@@ -1156,7 +1179,7 @@ async def probe_all() -> list[McpServerInfo]:
     for i, r in enumerate(results):
         if isinstance(r, Exception):
             servers[i].status = "error"
-            servers[i].error = str(r)[:200]
+            servers[i].error = _sanitize_probe_error(r)
             logger.warning("MCP probe failed [%s]: %s", servers[i].name, servers[i].error)
             out.append(servers[i])
         else:
@@ -1174,12 +1197,28 @@ def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:
     """
     if source_cmd == agent_cmd:
         return False
-    # If one is an absolute resolved path of the other, they match.
-    if os.path.isabs(agent_cmd) and os.path.basename(agent_cmd) == source_cmd:
+    # If one is an absolute resolved path of the other, they match. Test both
+    # path flavors regardless of host OS: on Windows ``os.path is ntpath`` and
+    # would treat a POSIX-absolute config path (/usr/bin/server) as relative,
+    # so a resolved-vs-short pair authored on POSIX would spuriously read as
+    # diverged and trigger an endless re-sync.
+    if _is_abs_any(agent_cmd) and _basename_any(agent_cmd) == source_cmd:
         return False
-    if os.path.isabs(source_cmd) and os.path.basename(source_cmd) == agent_cmd:
+    if _is_abs_any(source_cmd) and _basename_any(source_cmd) == agent_cmd:
         return False
     return True
+
+
+def _is_abs_any(cmd: str) -> bool:
+    """True if ``cmd`` is absolute under POSIX or Windows path rules."""
+    return posixpath.isabs(cmd) or ntpath.isabs(cmd)
+
+
+def _basename_any(cmd: str) -> str:
+    """Basename of ``cmd`` under whichever path flavor treats it as absolute."""
+    if ntpath.isabs(cmd):
+        return ntpath.basename(cmd)
+    return posixpath.basename(cmd)
 
 
 def discover_servers_to_sync() -> list[McpServerInfo]:

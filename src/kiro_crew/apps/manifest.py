@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import ntpath
-import os
+import posixpath
 import re
 import sys
 from dataclasses import dataclass, field
@@ -45,7 +45,11 @@ def _path_escapes_app_root(rel_path: str, app_root: Path | None) -> bool:
     """
     if not rel_path:
         return False
-    if os.path.isabs(rel_path) or ntpath.isabs(rel_path):
+    # Check BOTH flavors explicitly: on Windows ``os.path is ntpath``, so
+    # ``os.path.isabs`` alone would miss POSIX-absolute paths like
+    # ``/etc/passwd`` (ntpath treats a leading "/" as relative), and on POSIX
+    # ``os.path is posixpath`` would miss Windows-drive/UNC paths.
+    if posixpath.isabs(rel_path) or ntpath.isabs(rel_path):
         return True
     if app_root is not None:
         try:

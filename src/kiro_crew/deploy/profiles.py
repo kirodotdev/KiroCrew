@@ -33,9 +33,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator
 
-from kiro_crew import flock_compat as fcntl
 from kiro_crew.config.paths import config_dir
 from kiro_crew.deploy import engine
+from kiro_crew.platform_compat import file_lock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import FieldSpec, ValidationError, validate_field
 
@@ -112,32 +112,31 @@ def locked_registry() -> Generator[dict[str, Any], None, None]:
     """
     _data_dir().mkdir(parents=True, exist_ok=True)
     lock_path = _registry_path().with_suffix(".lock")
-    fd = open(lock_path, "w")
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        reg = load_registry()
-        yield reg
-        # Persist on clean exit (exceptions skip save, lock still releases)
-        tmp_fd = tempfile.NamedTemporaryFile(
-            mode="w", dir=str(_data_dir()), suffix=".json.tmp",
-            delete=False, encoding="utf-8",
-        )
-        try:
-            tmp_fd.write(json.dumps(reg, indent=2))
-            tmp_fd.flush()
-            os.fsync(tmp_fd.fileno())
-            tmp_fd.close()
-            os.replace(tmp_fd.name, str(_registry_path()))
-        except BaseException:
-            tmp_fd.close()
+    # required=True: a lost profile write is silent data loss, so refuse to
+    # proceed without cross-process exclusion. flock_compat is a Windows no-op,
+    # so this uses platform_compat's real msvcrt lock.
+    with open(lock_path, "w") as fd:
+        with file_lock(fd.fileno(), exclusive=True, required=True):
+            reg = load_registry()
+            yield reg
+            # Persist on clean exit (exceptions skip save, lock still releases)
+            tmp_fd = tempfile.NamedTemporaryFile(
+                mode="w", dir=str(_data_dir()), suffix=".json.tmp",
+                delete=False, encoding="utf-8",
+            )
             try:
-                os.unlink(tmp_fd.name)
-            except OSError:
-                pass
-            raise
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        fd.close()
+                tmp_fd.write(json.dumps(reg, indent=2))
+                tmp_fd.flush()
+                os.fsync(tmp_fd.fileno())
+                tmp_fd.close()
+                os.replace(tmp_fd.name, str(_registry_path()))
+            except BaseException:
+                tmp_fd.close()
+                try:
+                    os.unlink(tmp_fd.name)
+                except OSError:
+                    pass
+                raise
 
 
 def make_entry(name: str, region: str, *, account: str = "", verified_at: str = "",
@@ -200,29 +199,25 @@ def load_registry() -> dict[str, Any]:
 def save_registry(reg: dict[str, Any]) -> dict[str, Any]:
     _data_dir().mkdir(parents=True, exist_ok=True)
     lock_path = _registry_path().with_suffix(".lock")
-    fd = open(lock_path, "w")
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        tmp_fd = tempfile.NamedTemporaryFile(
-            mode="w", dir=str(_data_dir()), suffix=".json.tmp",
-            delete=False, encoding="utf-8",
-        )
-        try:
-            tmp_fd.write(json.dumps(reg, indent=2))
-            tmp_fd.flush()
-            os.fsync(tmp_fd.fileno())
-            tmp_fd.close()
-            os.replace(tmp_fd.name, str(_registry_path()))
-        except BaseException:
-            tmp_fd.close()
+    with open(lock_path, "w") as fd:
+        with file_lock(fd.fileno(), exclusive=True, required=True):
+            tmp_fd = tempfile.NamedTemporaryFile(
+                mode="w", dir=str(_data_dir()), suffix=".json.tmp",
+                delete=False, encoding="utf-8",
+            )
             try:
-                os.unlink(tmp_fd.name)
-            except OSError:
-                pass
-            raise
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        fd.close()
+                tmp_fd.write(json.dumps(reg, indent=2))
+                tmp_fd.flush()
+                os.fsync(tmp_fd.fileno())
+                tmp_fd.close()
+                os.replace(tmp_fd.name, str(_registry_path()))
+            except BaseException:
+                tmp_fd.close()
+                try:
+                    os.unlink(tmp_fd.name)
+                except OSError:
+                    pass
+                raise
     return reg
 
 

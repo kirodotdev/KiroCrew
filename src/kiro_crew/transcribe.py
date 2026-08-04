@@ -104,6 +104,22 @@ def _python3_bin_dir() -> str:
         return ""
 
 
+def _find_script_in_dir(bin_dir: str, name: str) -> str | None:
+    """Return an executable ``name`` inside ``bin_dir``, trying Windows suffixes.
+
+    A pip console script is materialized as ``<name>.exe`` in ``Scripts\\`` on
+    Windows, so the extensionless POSIX name never exists there. Sweep the
+    known launcher suffixes (the idiom in dev_fleet ``_trusted_bin``).
+    """
+    suffixes = ("", ".exe", ".cmd", ".bat") if platform_compat.IS_WINDOWS else ("",)
+    for suffix in suffixes:
+        p = os.path.join(bin_dir, name + suffix)
+        # On Windows there is no execute bit, so gate on isfile only there.
+        if os.path.isfile(p) and (platform_compat.IS_WINDOWS or os.access(p, os.X_OK)):
+            return p
+    return None
+
+
 _WHISPER_SEARCH_PATHS = [
     os.path.expanduser("~/.local/bin/whisper"),
     "/usr/local/bin/whisper",
@@ -122,9 +138,9 @@ def _find_whisper(configured_path: str = "") -> str | None:
     # Check system python3's scripts dir (pip install target)
     py3_bin = _python3_bin_dir()
     if py3_bin:
-        p = os.path.join(py3_bin, "whisper")
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
+        found_script = _find_script_in_dir(py3_bin, "whisper")
+        if found_script:
+            return found_script
     for p in _WHISPER_SEARCH_PATHS:
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
@@ -197,9 +213,9 @@ def _find_mlx_whisper() -> str | None:
         return found
     py3_bin = _python3_bin_dir()
     if py3_bin:
-        p = os.path.join(py3_bin, "mlx_whisper")
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
+        found_script = _find_script_in_dir(py3_bin, "mlx_whisper")
+        if found_script:
+            return found_script
     for p in _MLX_WHISPER_SEARCH_PATHS:
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return p

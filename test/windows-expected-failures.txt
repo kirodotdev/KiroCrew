@@ -33,6 +33,10 @@ test/test_app_backend.py::TestShellDispatch::test_explicit_backend_type_exec_rou
 test/test_app_backend.py::TestShellDispatch::test_non_executable_bash_entry_honors_shebang
 test/test_app_backend.py::TestShellDispatch::test_non_executable_sh_entry_falls_back_to_bin_sh
 test/test_app_backend.py::TestShellEntryDetection::test_extensionless_non_executable_is_not_shell
+# Needs symlink-creation privilege to build the fixture: these exercise
+# copytree's handling of in-tree POSIX symlinks, which junctions cannot model.
+test/test_app_manager.py::TestCopyAppTree::test_symlink_escaping_source_root_omitted
+test/test_app_manager.py::TestCopyAppTree::test_symlink_inside_source_root_preserved
 test/test_apps_registry.py::test_communicate_with_timeout_kills_and_reaps_real_subprocess
 test/test_apps_registry.py::test_fetch_app_manifest_reaps_clone_tree_on_timeout
 test/test_apps_registry.py::test_install_from_registry_reaps_detect_probe_tree_on_timeout
@@ -118,14 +122,6 @@ test/test_flock_compat.py::TestFlockCompat::test_posix_delegates_to_real_fcntl
 test/test_gateway_lock.py::test_acquire_creates_lock_file_with_pid
 test/test_gateway_lock.py::test_second_acquire_refused_and_names_holder
 test/test_gateway_lock.py::test_stale_lock_is_reclaimed
-test/test_get_agent_names.py::test_falls_back_to_stem_on_invalid_json
-test/test_get_agent_names.py::test_falls_back_to_stem_on_non_dict_json
-test/test_get_agent_names.py::test_falls_back_to_stem_when_name_is_null
-test/test_get_agent_names.py::test_falls_back_to_stem_when_name_missing
-test/test_get_agent_names.py::test_ignores_non_json_files
-test/test_get_agent_names.py::test_multiple_agents_sorted
-test/test_get_agent_names.py::test_non_utf8_agent_file_does_not_crash
-test/test_get_agent_names.py::test_returns_name_field_not_stem
 test/test_governance_chokepoints.py::TestFilesystemEgressAtGate::test_filesystem_read_denied_via_reading_title
 test/test_governance_chokepoints.py::TestFilesystemEgressAtGate::test_filesystem_relative_path_cannot_dodge_absolute_deny
 test/test_governance_chokepoints.py::TestFilesystemEgressAtGate::test_filesystem_write_denied_via_edit_args
@@ -165,12 +161,18 @@ test/test_mcp_gateway_oversize.py::TestSpillFailure::test_unwritable_dir_returns
 test/test_mcp_gateway_wedge_ping_gate.py::test_ping_answered_while_tool_in_flight
 test/test_mcp_gateway_wedge_ping_gate.py::test_tool_cancelled_exception_suppresses_response
 test/test_mcp_oauth_banner.py::TestMarkMcpOAuthCompleted::test_targets_only_open_banner
-# SUSPECTED REAL GAP (issue #470): msvcrt.locking is best-effort vs POSIX flock;
-# concurrent appends can interleave on Windows. Fix + delete per issue #470.
-test/test_memory_selfheal.py::TestConcurrentAppend::test_concurrent_appends_do_not_lose_entries
+# Needs symlink-creation privilege: builds an in-vault FILE symlink
+# (Alias.md -> One.md); a junction is directory-only and cannot model it.
+test/test_md_notebook.py::test_trashing_a_symlink_leaves_its_target_alone
 test/test_memory_selfheal.py::TestFtsSelfHealGating::test_genuine_corruption_still_self_heals
 test/test_open_slots_persistence.py::test_persist_open_slots_handles_write_failure_gracefully
 test/test_pip_deps_consistency.py::test_all_unguarded_third_party_imports_are_declared
+# Needs symlink-creation privilege: plants a FILE symlink at the output path to
+# prove the writer replaces it rather than writing through. atomic_write already
+# does the right thing on Windows; a junction is directory-only and can't model
+# a file symlink, so the fixture cannot be built without the privilege.
+test/test_perf_sampler.py::TestArtifactWriteFailure::test_symlinked_output_does_not_write_through_the_link
+test/test_perf_sampler.py::TestPySpyPathShortening::test_symlinked_output_target_survives_the_pyspy_path
 test/test_platform_compat.py::TestRestrictToOwner::test_applies_owner_only_dacl_on_windows
 test/test_pod.py::TestCliVerbs::test_install_writes_unit
 test/test_pod.py::TestEnvFileAndPin::test_pin_checkout

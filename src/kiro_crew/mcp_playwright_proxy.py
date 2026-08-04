@@ -994,8 +994,13 @@ def _resolve_playwright_cmd() -> str | None:
         found = shutil.which(binary)
         if found:
             return found
-    if shutil.which("npx"):
-        return "npx"
+    # Return the RESOLVED path, never the bare name: on Windows npx ships only
+    # as ``npx.CMD`` and CreateProcess does not apply PATHEXT, so spawning the
+    # literal "npx" raises FileNotFoundError even though PATHEXT-aware
+    # shutil.which found it.
+    npx = shutil.which("npx")
+    if npx:
+        return npx
     return None
 
 
@@ -1019,7 +1024,9 @@ def run_proxy(args: list[str]) -> None:
         sys.exit(1)
     if playwright_cmd.endswith(".js"):
         cmd = ["node", playwright_cmd] + args
-    elif os.path.basename(playwright_cmd) == "npx":
+    elif os.path.splitext(os.path.basename(playwright_cmd))[0].lower() == "npx":
+        # Extension-insensitive: the resolved launcher is ``npx.CMD`` on Windows
+        # and bare ``npx`` on POSIX; both must still get the @playwright/mcp arg.
         cmd = [playwright_cmd, "@playwright/mcp"] + args
     else:
         cmd = [playwright_cmd] + args

@@ -582,8 +582,10 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
                 stale_project = True
     if proj and Path(proj).is_dir():
         print(f"  project dir: ✅ {proj}")
-        git_dir = Path(proj) / ".git"
-        if git_dir.is_dir():
+        # A git worktree or submodule stores ``.git`` as a FILE holding a
+        # ``gitdir:`` pointer, not a directory, so accept both forms.
+        git_marker = Path(proj) / ".git"
+        if git_marker.exists():
             print("  git repo:    ✅")
         else:
             print("  git repo:    ⚠️  not a git repo")

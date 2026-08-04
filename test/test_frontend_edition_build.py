@@ -181,7 +181,7 @@ def test_sync_build_passes_the_edition_env_to_npm_run_build(monkeypatch, tmp_pat
     monkeypatch.setattr(frontend.subprocess, "run", _run)
     frontend.build_frontend_sync(tmp_path, log=lambda _m: None)
 
-    build = [(argv, env) for argv, env in seen if argv[:3] == ["npm", "run", "build"]]
+    build = [(argv, env) for argv, env in seen if argv[:3] == ["/usr/bin/npm", "run", "build"]]
     assert build, f"npm run build was never invoked; saw {[a for a, _ in seen]}"
     _argv, env = build[0]
     assert env is not None, "npm run build inherited the env — the edition seam is lost"
@@ -238,7 +238,7 @@ def test_async_build_passes_the_edition_env_to_npm_run_build(monkeypatch, tmp_pa
     monkeypatch.setattr(frontend.asyncio, "create_subprocess_exec", _exec)
     asyncio.run(frontend.build_frontend_async(str(tmp_path)))
 
-    build = [(argv, env) for argv, env in seen if argv[:3] == ("npm", "run", "build")]
+    build = [(argv, env) for argv, env in seen if argv[:3] == ("/usr/bin/npm", "run", "build")]
     assert build, f"npm run build was never invoked; saw {[a for a, _ in seen]}"
     _argv, env = build[0]
     assert env is not None, "npm run build inherited the env — the edition seam is lost"
@@ -287,6 +287,6 @@ def test_stock_build_still_inherits_the_env(monkeypatch, tmp_path):
     monkeypatch.setattr(frontend.subprocess, "run", _run)
     frontend.build_frontend_sync(tmp_path, log=lambda _m: None)
 
-    build = [(argv, env) for argv, env in seen if argv[:3] == ["npm", "run", "build"]]
+    build = [(argv, env) for argv, env in seen if argv[:3] == ["/usr/bin/npm", "run", "build"]]
     assert build
     assert build[0][1] is None

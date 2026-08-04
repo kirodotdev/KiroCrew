@@ -272,6 +272,71 @@ else:
     import msvcrt  # type: ignore[import-not-found]
 
 
+# msvcrt's blocking lock codes (LK_LOCK / LK_RLCK) are NOT the equivalent of
+# fcntl.flock(LOCK_EX): rather than waiting until the lock is free, they retry
+# ~10 times at 1s intervals and then RAISE EDEADLOCK (errno 36). Swallowing
+# that as "acquired" lets a caller run its read-modify-write with no exclusion
+# and silently lose writes. So the Windows "blocking" acquire spins on the
+# non-blocking code (LK_NBLCK) instead — the same idiom cron._file_lock uses.
+# It is bounded rather than truly unbounded because a contended fd and a
+# non-writable fd are indistinguishable on Windows (both surface as errno 13
+# EACCES), so an unbounded spin would turn a permission error into a hang.
+#
+# Two ceilings, because on-loop and off-loop have opposite needs:
+#  - OFF the loop (cron, home migration, app backends — threads/subprocesses):
+#    the wait must cover a legitimately long holder. home_migration holds the
+#    lock across a full copy+verify+delete of the data home, which can exceed
+#    many seconds, and a waiter there must NOT give up and race it. So use a
+#    generous ceiling that no real hold approaches, matching POSIX's "wait for
+#    the lock" as closely as a bounded spin can.
+#  - ON the loop (e.g. bridges._mcp_lock during app enable): a spin-sleep would
+#    freeze chat/heartbeat, so that path never sleeps at all (single-shot).
+_WIN_LOCK_POLL_SECS = 0.01
+# Generous off-loop ceiling: longer than any legitimate hold (a large data-home
+# migration), short enough that a truly stuck/permission-denied fd still fails.
+_WIN_LOCK_TIMEOUT_SECS = 300.0
+
+
+def _win_acquire_blocking(fd: int, *, timeout: float = _WIN_LOCK_TIMEOUT_SECS) -> bool:
+    """Windows blocking lock acquire: spin on LK_NBLCK until free or timeout.
+
+    Returns True if the lock was taken, False if it could not be.
+
+    NEVER spins on the asyncio event-loop thread: ``time.sleep`` there would
+    freeze chat/heartbeat for the whole wait. A few callers still take the lock
+    on the loop (e.g. bridges._mcp_lock during app enable), so when a running
+    loop is detected the acquire is single-shot — take it if free, else return
+    False at once — and the caller fails closed rather than stalling the loop.
+    Off the loop (the common case) it polls up to ``timeout`` as a real
+    blocking wait, so a legitimately long holder (a data-home migration) is
+    waited out rather than raced.
+    """
+    def _try_once() -> bool:
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+            return True
+        except OSError:
+            return False
+
+    try:
+        asyncio.get_running_loop()
+        on_loop = True
+    except RuntimeError:
+        on_loop = False
+    if on_loop:
+        # Single attempt only — a spin-sleep here blocks the event loop.
+        return _try_once()
+
+    deadline = time.monotonic() + timeout
+    while True:
+        if _try_once():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_WIN_LOCK_POLL_SECS)
+
+
 @contextlib.contextmanager
 def file_lock(
     fd: int,
@@ -282,12 +347,23 @@ def file_lock(
     """Acquire an advisory lock on ``fd`` for the duration of the block.
 
     POSIX: ``fcntl.flock(LOCK_EX|LOCK_SH)`` with ``LOCK_UN`` release.
-    Windows: ``msvcrt.locking`` on the first byte. ``msvcrt`` has no shared
-    mode, so a shared request is satisfied with an exclusive lock (correctness
-    over concurrency — readers serialize, but never see torn writes). Windows
-    locking is best-effort by default for backward compatibility.
-    ``required=True`` propagates acquisition failure for security-sensitive
-    transactions that must never continue without cross-process exclusion.
+    Windows: ``msvcrt.locking`` on the first byte, acquired by spinning on the
+    non-blocking code up to ``_WIN_LOCK_TIMEOUT_SECS`` — because msvcrt's own
+    "blocking" code gives up after ~10s with EDEADLOCK, which cannot be treated
+    as a wait. ``msvcrt`` has no shared mode, so a shared request is satisfied
+    with an exclusive lock (correctness over concurrency — readers genuinely
+    serialize with the holder, but never see torn writes).
+
+    On Windows the acquire is single-shot when called on the asyncio event-loop
+    thread (a spin-sleep there would freeze chat/heartbeat) and a bounded poll
+    up to the timeout otherwise; either way, if the lock cannot be taken
+    ``file_lock`` FAILS CLOSED — it raises rather than entering the critical
+    section unserialized, since proceeding lock-less is the exact fail-open that
+    loses writes. The timeout is a safety ceiling against a stuck holder, not a
+    normal wait (every in-tree critical section is a sub-second read + atomic
+    rename). ``required`` is retained for call-site intent but no longer changes
+    the outcome (both paths refuse to proceed without the lock). On POSIX the
+    acquire blocks until the lock is free, as before.
 
     Note: on Windows, ``msvcrt.locking`` requires seeking to byte 0, so the
     ``fd`` must be a dedicated lock file; callers must not rely on the file
@@ -304,23 +380,26 @@ def file_lock(
             except OSError:
                 pass
     else:
-        locked = False
-        try:
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
-            locked = True
-        except OSError:
-            if required:
-                raise
+        # Fail CLOSED, not open: if the lock cannot be taken within the ceiling
+        # (a stuck/crashed holder — never a normal sub-second hold), raise rather
+        # than enter the critical section unserialized. Entering anyway is the
+        # exact fail-open that loses writes; a loud error in that rare case is
+        # strictly safer, and callers already run under `with`, so the fd is
+        # cleaned up. `required` is retained for call-site intent but no longer
+        # changes the outcome — both paths now refuse to proceed lock-less.
+        if not _win_acquire_blocking(fd):
+            raise OSError(
+                f"could not acquire exclusive file lock within {_WIN_LOCK_TIMEOUT_SECS:g}s "
+                "(a holder is stuck); refusing to proceed unserialized"
+            )
         try:
             yield
         finally:
-            if locked:
-                try:
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
-                except OSError:
-                    pass
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+            except OSError:
+                pass
 
 
 @contextlib.contextmanager
@@ -334,17 +413,22 @@ def acquire_lock(fd: int, *, exclusive: bool = True) -> None:
     """Low-level lock acquire for the acquire-now / release-later fd-handoff
     pattern (where a context manager does not fit).
 
-    POSIX: ``fcntl.flock``. Windows: best-effort ``msvcrt.locking`` on byte 0.
-    Pair every call with :func:`release_lock` on the same ``fd``.
+    POSIX: ``fcntl.flock`` (blocks until free). Windows: single-shot on the
+    asyncio loop thread, else a bounded poll up to ``_WIN_LOCK_TIMEOUT_SECS``
+    (see :func:`_win_acquire_blocking`). If the lock cannot be taken it FAILS
+    CLOSED — raises rather than letting the caller proceed unserialized — since
+    a stuck holder past the ceiling is an error, not a routine wait, and
+    proceeding lock-less is the fail-open that loses writes. Pair every call
+    with :func:`release_lock` on the same ``fd``.
     """
     if IS_POSIX:
         fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         return
-    try:
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
-    except OSError:
-        pass  # best-effort
+    if not _win_acquire_blocking(fd):
+        raise OSError(
+            f"could not acquire file lock within {_WIN_LOCK_TIMEOUT_SECS:g}s "
+            "(a holder is stuck); refusing to proceed unserialized"
+        )
 
 
 def release_lock(fd: int) -> None:
@@ -1699,6 +1783,106 @@ def rmtree_force(path: str | os.PathLike) -> bool:
     else:
         shutil.rmtree(path, onexc=_clear_readonly_and_retry)  # type: ignore[call-arg]
     return not os.path.exists(path)
+
+
+def symlink_or_junction(target: str | os.PathLike, link: str | os.PathLike) -> None:
+    """Create a directory link at *link* pointing to *target*.
+
+    POSIX: a plain ``os.symlink``.
+
+    Windows: ``os.symlink`` needs SeCreateSymbolicLinkPrivilege — held only by
+    an elevated process or one running with Developer Mode on — so it raises
+    ``OSError WinError 1314`` for the ordinary non-admin user, silently breaking
+    every feature that links a directory into place (app skills, etc.). A
+    directory JUNCTION needs no privilege, is followed transparently by reads
+    and by ``os.path.realpath`` / ``Path.resolve()`` (so app-root containment
+    checks still hold), and is the standard no-elevation substitute. Fall back
+    to it, and only if the symlink attempt fails, so the POSIX-identical path is
+    unchanged where symlinks are permitted.
+
+    ``target`` must be an existing directory on Windows (junctions are
+    directory-only). Raises if neither a symlink nor a junction can be made.
+    """
+    if IS_POSIX:
+        os.symlink(str(target), str(link))
+        return
+    try:
+        # target_is_directory=True is required on Windows: a directory link made
+        # without it is a FILE-type symlink pointing at a directory, which is not
+        # traversable. Ignored on POSIX. This helper only ever links directories.
+        os.symlink(str(target), str(link), target_is_directory=True)
+    except OSError:
+        # No symlink privilege (the common non-admin case) — use a junction,
+        # which requires none. _winapi.CreateJunction exists on all supported
+        # CPython builds on Windows.
+        import _winapi
+
+        # _winapi.CreateJunction is Windows-only; typeshed omits it on the POSIX
+        # stub, so ignore the attr error mypy raises when checking on Linux.
+        _winapi.CreateJunction(str(target), str(link))  # type: ignore[attr-defined]
+
+
+# os.path.isjunction is 3.12+; fall back to the reparse-tag check below on the
+# 3.10/3.11 interpreters this project still supports, or the junction guard is a
+# silent no-op there. Constants mirror CPython's own isjunction.
+_ISJUNCTION = getattr(os.path, "isjunction", None)
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
+
+
+def _is_junction_fallback(path: str | os.PathLike) -> bool:
+    """``os.path.isjunction`` for Python 3.10/3.11, which lack it.
+
+    A junction is a reparse point (``FILE_ATTRIBUTE_REPARSE_POINT``) whose tag is
+    ``IO_REPARSE_TAG_MOUNT_POINT``. Both fields are Windows-only additions to
+    ``os.stat_result``, so their absence off Windows makes this False — correct,
+    since junctions do not exist there. ``follow_symlinks=False``: the question
+    is what THIS name is, not what it points at.
+    """
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except (OSError, ValueError, TypeError):
+        return False
+    attrs = getattr(info, "st_file_attributes", 0)
+    if not attrs & _FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    return getattr(info, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
+
+
+def is_link_or_junction(path: str | os.PathLike) -> bool:
+    """True if *path* is a symlink OR (on Windows) a directory junction.
+
+    ``os.path.islink`` returns False for a junction, so a caller that only
+    checks ``islink`` would treat a junction as a real directory and
+    ``rmtree`` THROUGH it, destroying the target's contents. Pair with
+    :func:`unlink_link_or_junction` to remove one safely.
+    """
+    if os.path.islink(path):
+        return True
+    if _ISJUNCTION is not None:
+        try:
+            return bool(_ISJUNCTION(path))
+        except (OSError, ValueError):
+            return False
+    return _is_junction_fallback(path)
+
+
+def unlink_link_or_junction(path: str | os.PathLike) -> None:
+    """Remove a symlink or directory junction WITHOUT touching its target.
+
+    A symlink is removed with ``unlink``; a Windows junction is a directory
+    reparse point removed with ``rmdir`` (which unlinks the junction itself,
+    never the target it points at).
+    """
+    if os.path.islink(path):
+        os.unlink(path)
+        return
+    is_junction = _ISJUNCTION(path) if _ISJUNCTION is not None else _is_junction_fallback(path)
+    if is_junction:
+        os.rmdir(path)
+        return
+    # Neither — let the caller's own logic handle a real file/dir.
+    os.unlink(path)
 
 
 # Well-known SID for the file's *owner* (implicit). Under a self-relative DACL

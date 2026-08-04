@@ -11,12 +11,13 @@ Covers the runtime dist-resolution contract described:
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from kiro_crew import frontend
+from kiro_crew import frontend, platform_compat
 
 
 def _fake_kiro_crew_package(root: Path) -> Path:
@@ -78,14 +79,15 @@ def test_valid_symlink_is_kept(fake_pkg, tmp_path, monkeypatch):
     real_dist = _make_dist(tmp_path / "real-dist")
     tree_dist = fake_pkg / "static" / "dist"
     tree_dist.parent.mkdir(parents=True)
-    tree_dist.symlink_to(real_dist)
+    # symlink on POSIX, directory junction on non-admin Windows.
+    platform_compat.symlink_or_junction(str(real_dist), str(tree_dist))
 
     monkeypatch.setattr(subprocess, "run", _no_brazil_path)
 
     result = frontend.ensure_dev_dist_symlink()
 
     assert result == real_dist.resolve()
-    assert tree_dist.is_symlink()
+    assert platform_compat.is_link_or_junction(tree_dist)
     assert tree_dist.resolve() == real_dist.resolve()
 
 
@@ -94,7 +96,9 @@ def test_dangling_symlink_is_replaced_when_candidate_exists(fake_pkg, tmp_path, 
     dead_target = tmp_path / "gone"
     tree_dist = fake_pkg / "static" / "dist"
     tree_dist.parent.mkdir(parents=True)
-    tree_dist.symlink_to(dead_target)  # dangling
+    dead_target.mkdir()  # junction needs an existing target dir; removed next
+    platform_compat.symlink_or_junction(str(dead_target), str(tree_dist))
+    shutil.rmtree(dead_target)  # now dangling on both POSIX and Windows
 
     # Sibling checkout has a fresh dist — resolver should pick it up.
     sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroCrewWebsite" / "dist")
@@ -104,7 +108,7 @@ def test_dangling_symlink_is_replaced_when_candidate_exists(fake_pkg, tmp_path, 
     result = frontend.ensure_dev_dist_symlink()
 
     assert result == sibling_dist.resolve()
-    assert tree_dist.is_symlink()
+    assert platform_compat.is_link_or_junction(tree_dist)
     assert tree_dist.resolve() == sibling_dist.resolve()
 
 
@@ -112,12 +116,16 @@ def test_dangling_symlink_with_no_candidate_returns_none(fake_pkg, tmp_path, mon
     """Stale link + nothing to resolve → clean up and warn (returns None)."""
     tree_dist = fake_pkg / "static" / "dist"
     tree_dist.parent.mkdir(parents=True)
-    tree_dist.symlink_to(tmp_path / "also-gone")
+    gone = tmp_path / "also-gone"
+    gone.mkdir()  # junction needs an existing target; removed to make it dangling
+    platform_compat.symlink_or_junction(str(gone), str(tree_dist))
+    shutil.rmtree(gone)
 
     monkeypatch.setattr(subprocess, "run", _no_brazil_path)
 
     assert frontend.ensure_dev_dist_symlink() is None
-    assert not tree_dist.is_symlink()  # stale link was removed (exists() follows symlinks)
+    # stale link was removed (both a POSIX symlink and a Windows junction).
+    assert not platform_compat.is_link_or_junction(tree_dist)
 
 
 def test_symlink_to_empty_dir_is_replaced(fake_pkg, tmp_path, monkeypatch):
@@ -126,7 +134,7 @@ def test_symlink_to_empty_dir_is_replaced(fake_pkg, tmp_path, monkeypatch):
     empty_target.mkdir()
     tree_dist = fake_pkg / "static" / "dist"
     tree_dist.parent.mkdir(parents=True)
-    tree_dist.symlink_to(empty_target)
+    platform_compat.symlink_or_junction(str(empty_target), str(tree_dist))
 
     sibling_dist = _make_dist(fake_pkg.parent.parent.parent / "KiroCrewWebsite" / "dist")
     monkeypatch.setattr(subprocess, "run", _no_brazil_path)
@@ -154,7 +162,7 @@ def test_sibling_checkout_is_symlinked(fake_pkg, monkeypatch):
     tree_dist = fake_pkg / "static" / "dist"
 
     assert result == sibling_dist.resolve()
-    assert tree_dist.is_symlink()
+    assert platform_compat.is_link_or_junction(tree_dist)
     assert tree_dist.resolve() == sibling_dist.resolve()
 
 
@@ -223,7 +231,7 @@ def test_no_sibling_no_brazil_returns_none(fake_pkg, monkeypatch):
 
 
 def test_empty_real_dir_is_replaced_when_candidate_exists(fake_pkg, monkeypatch):
-    """A real dir with no index.html is unusable — replace with a symlink."""
+    """A real dir with no index.html is unusable — replace with a link."""
     tree_dist = fake_pkg / "static" / "dist"
     tree_dist.mkdir(parents=True)  # empty — no index.html
 
@@ -233,7 +241,7 @@ def test_empty_real_dir_is_replaced_when_candidate_exists(fake_pkg, monkeypatch)
     result = frontend.ensure_dev_dist_symlink()
 
     assert result == sibling_dist.resolve()
-    assert tree_dist.is_symlink()
+    assert platform_compat.is_link_or_junction(tree_dist)
 
 
 # ── Regression: the existing pwa_file symlink test still passes ────────────
@@ -259,3 +267,69 @@ def test_resolver_produces_a_symlink_the_pwa_guard_accepts(fake_pkg, tmp_path, m
 
     assert asset.is_file()  # walked through the symlink
     assert tree_dist.resolve() in asset.resolve().parents
+
+
+# ── npm resolution on Windows (npm.CMD) ────────────────────────────────────
+
+
+def test_build_frontend_sync_spawns_resolved_npm_path(tmp_path, monkeypatch):
+    """Regression: on Windows npm is ``npm.CMD``; CreateProcess cannot spawn the
+    bare name "npm". build_frontend_sync must spawn the RESOLVED path.
+    """
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "package.json").write_text("{}")
+    fake_npm = r"C:\node\npm.CMD"
+
+    monkeypatch.setattr(frontend.shutil, "which", lambda name: fake_npm)
+    monkeypatch.setattr(frontend, "_stage_dist", lambda *a, **k: None)
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+
+    def _fake_run(cmd, **kw):
+        calls.append(cmd)
+        return _Result()
+
+    monkeypatch.setattr(frontend.subprocess, "run", _fake_run)
+    frontend.build_frontend_sync(tmp_path, log=lambda *a: None)
+
+    assert calls, "no subprocess was spawned"
+    # Every spawned command uses the resolved npm path as argv[0], never "npm".
+    for cmd in calls:
+        assert cmd[0] == fake_npm
+        assert cmd[0] != "npm"
+
+
+@pytest.mark.asyncio
+async def test_build_frontend_async_spawns_resolved_npm_path(tmp_path, monkeypatch):
+    """Async sibling of the sync npm-resolution regression."""
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "package.json").write_text("{}")
+    fake_npm = r"C:\node\npm.CMD"
+
+    monkeypatch.setattr(frontend.shutil, "which", lambda name: fake_npm)
+    monkeypatch.setattr(frontend, "_stage_dist", lambda *a, **k: None)
+
+    calls: list[str] = []
+
+    class _Proc:
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+    async def _fake_exec(program, *args, **kw):
+        calls.append(program)
+        return _Proc()
+
+    monkeypatch.setattr(frontend.asyncio, "create_subprocess_exec", _fake_exec)
+    await frontend.build_frontend_async(str(tmp_path))
+
+    assert calls, "no subprocess was spawned"
+    for program in calls:
+        assert program == fake_npm
+        assert program != "npm"
