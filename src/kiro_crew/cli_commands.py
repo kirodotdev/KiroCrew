@@ -32,6 +32,7 @@ from kiro_crew.apps.manager import (
     get_app,
     install_app,
     list_apps,
+    trust_grant_removal_blocked,
     uninstall_app,
 )
 from kiro_crew.apps.scaffold import scaffold_app
@@ -609,6 +610,21 @@ def _handle_app(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     elif action == "uninstall":
+        # Precondition before anything destructive: the same reason the dashboard
+        # handler checks here rather than inside uninstall_app. deregister_app()
+        # below is irreversible, so a grant that cannot be dropped has to abort
+        # while the app is still whole.
+        blocked = trust_grant_removal_blocked(args.name)
+        if blocked:
+            print(
+                f"❌ not uninstalling {args.name!r}: its third-party execution "
+                f"grant could not be removed ({blocked}). The grant is keyed on "
+                f"the name, so removing the app while it stands would let any "
+                f"future app installed under this name run code without asking. "
+                f"Nothing has been changed — clear the cause and retry.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         _cleanup_app_crons_from_scheduler(args.name)
         deregister_app(args.name)
         keep_data = not getattr(args, "purge_data", False)

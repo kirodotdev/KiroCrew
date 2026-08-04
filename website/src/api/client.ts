@@ -69,6 +69,14 @@ export interface PlanStepInput {
 export interface InstallStreamResult {
   ok?: boolean
   error?: string
+  /**
+   * Machine-readable failure code. The registry install path checks the
+   * execution gate BEFORE cloning, so a third-party install can be refused with
+   * `app_execution_denied` — and because the stream RESOLVES that refusal (SSE
+   * `done`) instead of rejecting, the code has to travel on the result for the
+   * consent modal to open at all.
+   */
+  code?: string
   needsClientInstall?: boolean
   clientInstall?: { shell?: string; postInstall?: string }
 }
@@ -465,6 +473,38 @@ export interface TailnetStatusData {
   /** Epoch seconds of that startup resolution; `0` when it never resolved. */
   resolved_at: number
   state: 'pinned' | 'off' | 'unresolved' | 'active'
+}
+
+/**
+ * GET /api/security/trusted-apps — per-app grants that let a third-party app
+ * run its own code (Python in-process, its own backend, manifest shell
+ * commands).  Third-party app code is refused by default; a grant is made for
+ * ONE app at a time from the trust-consent modal, so `apps` is the explicit
+ * allow list and `allowAll` is the separate blanket escape hatch.
+ */
+export interface TrustedAppsData {
+  /** Grants the execution gate ACTUALLY enforces (valid app names, sorted). */
+  apps: string[]
+  /**
+   * Entries stored in `config.json` that the gate IGNORES because they fail the
+   * app-name charset — a hand-edited config can hold `LD-App`, `ld-app ` with a
+   * trailing space, a fullwidth homoglyph, `..` or `*`. They must render
+   * separately from `apps`: folded in, the panel claims trust that does not
+   * exist and the user cannot tell why their app is still blocked.
+   */
+  ineffective: string[]
+  /** Blanket grant — trusts every third-party app, present or future. */
+  allowAll: boolean
+}
+
+/**
+ * DELETE /api/security/trusted-apps/{name} — the refreshed snapshot PLUS whether
+ * the revoke also had to DISABLE the app. Revoking trust has to stop the app's
+ * code from running, so the backend disables a currently-enabled app in the same
+ * transaction; the UI must say so, otherwise an app silently stops working.
+ */
+export interface TrustedAppsRevokeResult extends TrustedAppsData {
+  disabled: boolean
 }
 
 let _sessionExpiredShown = false
@@ -1124,6 +1164,18 @@ export const api = {
     patch('/api/security/denied-commands/user/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
   deleteUserDeniedCommand: (id: string) =>
     del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
+  // Third-party app trust (Settings → Security). Like denied-commands, every
+  // endpoint returns the full refreshed snapshot so callers can seed the query
+  // cache from the mutation response instead of re-fetching.
+  listTrustedApps: () => get('/api/security/trusted-apps').then(j) as Promise<TrustedAppsData>,
+  trustApp: (name: string) =>
+    post('/api/security/trusted-apps/' + encodeURIComponent(name)).then(j) as Promise<TrustedAppsData>,
+  // Returns the snapshot PLUS `disabled` — revoking trust also disables an app
+  // that is currently enabled, so its code stops running immediately.
+  untrustApp: (name: string) =>
+    del('/api/security/trusted-apps/' + encodeURIComponent(name)).then(j) as Promise<TrustedAppsRevokeResult>,
+  setTrustAllApps: (value: boolean) =>
+    put('/api/security/trusted-apps/allow-all', { value }).then(j) as Promise<TrustedAppsData>,
   // Read-only governance policy viewer (Settings → Security). No write path —
   // the enterprise ceiling is file-authored and un-editable via the UI.
   governancePolicy: () => get('/api/governance/policy').then(j) as Promise<GovernancePolicyData>,

@@ -445,6 +445,13 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Install/start/stop script output and warnings surfaced from an app.",
     ),
     (
+        "App teardown output",
+        "apps/teardown.py",
+        "Output from an app's own onDisable script, scrubbed by the dual-pass "
+        "redact() helper before it becomes a warning on the disable and "
+        "trust-revocation responses.",
+    ),
+    (
         "App activity log",
         "apps/builtins/mochi/activity_log.py",
         "Agent-authored activity entries are redacted before persistence, for the "

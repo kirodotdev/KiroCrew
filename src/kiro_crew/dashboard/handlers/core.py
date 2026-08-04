@@ -1364,6 +1364,19 @@ def _validate_role_model(value: str, request: web.Request) -> str | None:
     return None
 
 
+# Keys a caller may reasonably try to PATCH that have a dedicated endpoint whose
+# side effects the generic config write cannot reproduce. Naming the endpoint turns
+# a dead end ("field not editable") into a next step.
+_MOVED_CONFIG_FIELDS: dict[str, str] = {
+    "agent.apps_allow_third_party": (
+        "agent.apps_allow_third_party is not editable here because turning it off "
+        "must also stop the third-party app code it was admitting. Use "
+        "PUT /api/security/trusted-apps/allow-all, which runs that teardown and "
+        "reports anything it could not stop."
+    ),
+}
+
+
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
     # Default model for new sessions. Membership can NOT be validated against a
@@ -1408,7 +1421,6 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     },
     "agent.sandbox": {"type": "enum", "values": ["auto", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
-    "agent.apps_allow_third_party": {"type": "bool"},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},
     "agent.completion_keep_chars": {"type": "int", "min": 0, "max": RESULT_FILE_MAX_BYTES},
     "agent.soft_stop_budget_secs": {"type": "float", "min": 0.5, "max": 60.0},
@@ -1580,6 +1592,16 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     value = body.get("value")
     spec = _EDITABLE_CONFIG.get(path_key)
     if not spec:
+        # `agent.apps_allow_third_party` was deliberately REMOVED from the editable
+        # set. It is not an ordinary preference: turning it off has to stop the code
+        # it was admitting, which means a teardown sweep (shutdown hooks, backend
+        # processes, cron deregistration) that this generic read-modify-write knows
+        # nothing about. A plain PATCH here would flip the flag and leave every app
+        # it admitted still executing — trust withdrawn on paper only. The dedicated
+        # endpoint owns that sequencing, so point the caller at it instead of
+        # silently accepting a write that cannot honour the setting's meaning.
+        if path_key in _MOVED_CONFIG_FIELDS:
+            return _deny(_MOVED_CONFIG_FIELDS[path_key], f"{path_key}={value}")
         return _deny(f"field not editable: {path_key}", f"{path_key}={value}")
 
     # Validate value

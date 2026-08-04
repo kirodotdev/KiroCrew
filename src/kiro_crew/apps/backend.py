@@ -1202,6 +1202,70 @@ def get_app_backend_port(app_name: str) -> int | None:
         return ap.port if ap and ap.healthy else None
 
 
+def recorded_backend_port(app_name: str) -> int | None:
+    """The port THIS GATEWAY recorded for *app_name*'s backend, or None.
+
+    Gateway-owned provenance, in preference order: the live tracking entry, then
+    the pidfile written at spawn/adoption. Neither is reachable by the app — the
+    pidfile lives under ``KIROCREW_HOME``, not in the app directory — which is
+    what makes this usable as evidence when the app's own manifest is not.
+
+    Must be read BEFORE :func:`stop_app_backend`, which drops both records.
+    """
+    with _lock:
+        ap = _processes.get(app_name)
+        if ap and ap.port:
+            return int(ap.port)
+    entry = _read_pidfile().get(app_name)
+    if isinstance(entry, dict):
+        port = entry.get("port")
+        if isinstance(port, int) and _MIN_PORT <= port <= _MAX_PORT:
+            return port
+    return None
+
+
+def unstopped_backend_port(app_name: str, *, port_hint: int | None = None) -> int | None:
+    """The port *app_name*'s backend is still listening on after a stop, else None.
+
+    Answers the one question :func:`stop_app_backend`'s boolean cannot: it returns
+    ``False`` both for "there was nothing to stop" (never started, already dead,
+    crashed) and for "something is running that I did not stop" (never adopted at
+    boot, or adopted with no usable PIDs) — and ``True`` only means the process it
+    was TRACKING is gone, which says nothing about a detached worker the app
+    spawned for itself. Those need opposite handling, so the caller observes the
+    port instead of reading a flag.
+
+    ``port_hint`` is the gateway-recorded port from :func:`recorded_backend_port`,
+    captured before the stop. It is preferred over the manifest because the
+    manifest is ``app.json`` INSIDE the app directory — writable by any app trusted
+    to run code, so an app could otherwise relabel its port (or claim ``auto``) to
+    hide from this probe. The hint also covers ``port: auto`` backends, whose real
+    port only the gateway ever knew.
+
+    The manifest is the fallback for the case the hint cannot cover: a fixed-port
+    backend this gateway never tracked at all (adoption skipped at boot), where the
+    declared port is the only lead available. Only ``backend.entryPoint`` apps are
+    considered there — an app whose backend is a loopback ``mcpServers`` URL is a
+    process the gateway never spawned and does not own, so a listener on it is not
+    an unstopped child. ``None`` means "nothing observed", not "definitely stopped".
+    """
+    if port_hint is not None:
+        return port_hint if _port_is_listening(port_hint) else None
+    try:
+        manifest = get_app_manifest(app_name)
+        if manifest is None or not manifest.backend.entryPoint:
+            return None
+        port_str = str(manifest.backend.port)
+        if not port_str or port_str == "auto":
+            return None
+        port = int(port_str)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not (_MIN_PORT <= port <= _MAX_PORT):
+        return None
+    return port if _port_is_listening(port) else None
+
+
 # ---------------------------------------------------------------------------
 # Health checking
 # ---------------------------------------------------------------------------

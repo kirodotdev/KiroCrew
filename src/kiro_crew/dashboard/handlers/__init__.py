@@ -599,4 +599,8 @@ from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_denied_commands_disable_all,
     api_denied_commands_list,
     api_governance_policy,
+    api_trusted_app_grant,
+    api_trusted_app_revoke,
+    api_trusted_apps_allow_all,
+    api_trusted_apps_list,
 )

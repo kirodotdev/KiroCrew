@@ -2616,6 +2616,13 @@ async def start_dashboard(
     app.router.add_delete(
         "/api/security/denied-commands/user/{id}", handlers.api_denied_command_user_delete
     )
+    # Per-app third-party execution grants (Settings > Security opt-IN). The
+    # blanket flag is a PUT on a fixed sub-path; grant/revoke are POST/DELETE on
+    # {name}, so the two never collide on method+path.
+    app.router.add_get("/api/security/trusted-apps", handlers.api_trusted_apps_list)
+    app.router.add_put("/api/security/trusted-apps/allow-all", handlers.api_trusted_apps_allow_all)
+    app.router.add_post("/api/security/trusted-apps/{name}", handlers.api_trusted_app_grant)
+    app.router.add_delete("/api/security/trusted-apps/{name}", handlers.api_trusted_app_revoke)
     # Read-only governance policy viewer — effective Level-1 ∩ Level-2 ceiling
     # across every governed scope (no write path; the ceiling is file-authored).
     app.router.add_get("/api/governance/policy", handlers.api_governance_policy)

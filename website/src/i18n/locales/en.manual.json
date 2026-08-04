@@ -109,8 +109,7 @@
       }
     },
     "codeReviewSage": {
-      "codeReviewSagePage": {
-      }
+      "codeReviewSagePage": {}
     },
     "fileExplorer": {
       "fileViewer": {
@@ -502,8 +501,8 @@
         "flipX": "Flip Horizontal",
         "hint8152": "Played now and then on their own. Add anything you like — a wander, a mood, a wave.",
         "importFileFailed": "Could not import that file",
-    "duplicateExtraName": "Two extras can't share the name \"{{name}}\" — rename one first",
-    "reservedExtraName": "\"{{name}}\" is a built-in slot name — pick a different name for this extra",
+        "duplicateExtraName": "Two extras can't share the name \"{{name}}\" — rename one first",
+        "reservedExtraName": "\"{{name}}\" is a built-in slot name — pick a different name for this extra",
         "invalidFile": "Invalid file",
         "loadDataFailed": "Could not load that avatar's data",
         "missing": "Missing: {{slots}}",
@@ -870,6 +869,25 @@
         "other": "Other",
         "productivity": "Productivity",
         "research_writing": "Research & Writing"
+      },
+      "trustAppModal": {
+        "title": "Trust {{app}} to run its own code?",
+        "scope": "This applies to {{app}} only. Every other third-party app stays blocked.",
+        "on_cancel": "Cancel changes nothing: {{app}} stays installed but switched off, and you can turn it on later.",
+        "intro": "If you trust {{app}}, Kiro Crew will allow it to do all of the following.",
+        "capability_python": "Run its own code inside Kiro Crew, with the same access Kiro Crew has — your files, your saved credentials, and the internet",
+        "capability_backend": "Keep a program of its own running on this computer, in the background, while Kiro Crew is open",
+        "capability_shell": "Run commands on this computer, from a list the app ships with that you have not seen",
+        "capability_note": "Trusting the app grants all three, whether or not it uses them all. Kiro Crew cannot limit it to less.",
+        "revocable": "You can take this back at any time in Settings → Security → Trusted third-party apps. The app stops working when you do.",
+        "source": "Published at",
+        "not_reviewed": "Kiro Crew lists this app but has not reviewed its code, and the name above comes from the app itself.",
+        "cancel": "Cancel",
+        "confirm": "Trust this app and enable",
+        "confirm_after_failure": "Try again",
+        "working": "Trusting and enabling...",
+        "failed": "{{app}} could not be turned on, but trust may already have been saved. Choose Try again, or open Settings → Security → Trusted third-party apps to check and remove it.",
+        "failed_generic": "{{app}} could not be turned on, and nothing was changed. Choose Try again, or check Kiro Crew's logs."
       }
     },
     "artifactBody": {
@@ -2039,8 +2057,6 @@
       "failed_to_uninstall": "Failed to uninstall",
       "open_screenshot": "Open screenshot {{n}}",
       "screenshot": "Screenshot {{n}}",
-      "third_party_blocked": "Apps that did not ship with Kiro Crew are not allowed to run their own code yet, so this one cannot start. You can allow it in Settings → Security.",
-      "open_security_settings": "Open Security settings",
       "install_complete": "Install complete",
       "install_failed": "Install failed",
       "installed_version": "Installed (v{{version}})",
@@ -3453,11 +3469,8 @@
         "third_party_apps_section": "Third-party apps",
         "third_party_apps_state_unknown": "Unavailable",
         "third_party_apps_unavailable": "Could not read the current setting, so it cannot be shown or changed here. If it was already on, third-party apps stay allowed — reload the page to try again.",
-        "third_party_apps_title": "Let third-party apps run their own code",
-        "third_party_apps_desc": "Apps that did not ship with Kiro Crew cannot run their own code until you allow it. Leave this off and such an app will install but refuse to start.",
-        "third_party_apps_tip": "Applies to any app that is not built into Kiro Crew. Built-in apps are unaffected and keep working either way.",
         "third_party_apps_on_warning": "This trusts every third-party app, including ones you install later — not just the one you were trying to start. A trusted app runs with the same access Kiro Crew has: your files, your saved credentials, and the internet.",
-        "third_party_apps_scope_note": "Takes effect the next time an app's code is loaded. Turning it back off stops Kiro Crew admitting that code again; an app already running stays up until it is switched off or Kiro Crew restarts.",
+        "third_party_apps_scope_note": "Takes effect immediately. Switching it back off also stops the apps it was admitting — their shutdown hooks run, their backends are stopped, and anything that could not be stopped is reported back to you.",
         "third_party_apps_save_failed": "Could not save this setting.",
         "section_group_status": "Status",
         "section_group_your_settings": "Your settings",
@@ -3497,7 +3510,26 @@
         "tailnet_tip": "This only affects the origin allow-list. It does not start Tailscale, open a port, or share the dashboard with anyone; you still run tailscale serve yourself.",
         "tailnet_title": "Trust this machine's tailnet name",
         "tailnet_unavailable": "Could not read the tailnet setting, so it cannot be shown or changed here. If it was already on, the tailnet name stays allowed; reload the page to try again.",
-        "tailnet_unresolved_note": "This is on, but no tailnet name was resolved when Kiro Crew started, so nothing was added to the allowed origins. A dashboard reached through tailscale serve is still refused by the origin check. Restart Kiro Crew once the name is available."
+        "tailnet_unresolved_note": "This is on, but no tailnet name was resolved when Kiro Crew started, so nothing was added to the allowed origins. A dashboard reached through tailscale serve is still refused by the origin check. Restart Kiro Crew once the name is available.",
+        "trustedApps": {
+          "description": "Apps you have allowed to run their own code on this computer. Trust covers one app at a time; every other third-party app stays blocked.",
+          "empty": "No apps trusted yet.",
+          "revoke": "Remove trust",
+          "revoke_hint": "Removing trust also switches the app off.",
+          "trusted_badge": "trusted",
+          "allow_all_label": "Trust every third-party app",
+          "allow_all_description": "Off by default. When on, every third-party app you install can run its own code straight away, without asking you first.",
+          "revoke_disables": "{{name}} is no longer trusted and has been switched off.",
+          "change_failed": "That change did not take effect: {{detail}}",
+          "unknown_error": "unknown error",
+          "revoke_confirm_title": "Remove trust from {{name}}?",
+          "revoke_confirm_body": "{{name}} will be switched off and stop working. It stays installed, and you can trust it again later.",
+          "revoke_confirm_ok": "Remove trust and switch off",
+          "allow_all_confirm_body": "Allowing every third-party app lets any app you install run its own code inside Kiro Crew, with the same access Kiro Crew has — your files, your saved credentials, and the internet. Trusting one app at a time is safer.",
+          "allow_all_confirm_ack": "I understand every third-party app I install will be able to run its own code with Kiro Crew's access.",
+          "ineffective_label": "Saved but not working",
+          "ineffective_description": "These names were saved as trusted, but Kiro Crew does not accept them, so the apps are still blocked. Remove them to tidy the list."
+        }
       },
       "sharedMcpGatewayToggle": {
         "active_sessions_share_pooled_mcp_backends_see_th": "Active — sessions share pooled MCP backends. See the live pool under Developer > System.",

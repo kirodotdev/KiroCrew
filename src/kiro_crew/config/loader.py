@@ -879,7 +879,20 @@ class AgentConfig:
             "Defaults to false. Only the JSON boolean true admits in-process Python "
             "hooks, backend processes, lifecycle/install scripts, and openCommand. "
             "App code can access the filesystem, network, and in-memory credentials; "
-            "enable this only for apps you trust (CSE SEC-012).",
+            "enable this only for apps you trust (CSE SEC-012). Prefer "
+            "apps_trusted, which grants the same admission to ONE named app.",
+        ),
+    )
+    apps_trusted: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Trusted Apps",
+            "Per-app grants for third-party execution — the narrow form of "
+            "apps_allow_third_party. An app whose manifest name appears here is "
+            "admitted to run Python hooks, its backend, lifecycle scripts, and "
+            "openCommand; every other third-party app stays blocked. Only a JSON "
+            "array of app-name strings is honoured, and no wildcard entry is "
+            "accepted (use apps_allow_third_party to trust all).",
         ),
     )
     jail: str = field(
@@ -4584,6 +4597,11 @@ class KiroCrewConfig:
                 ),
                 apps_allow_third_party=_safe_bool(
                     agent_data.get("apps_allow_third_party", False), False
+                ),
+                apps_trusted=(
+                    [a for a in _trusted if isinstance(a, str) and a]
+                    if isinstance(_trusted := agent_data.get("apps_trusted"), list)
+                    else []
                 ),
                 jail=_normalize_jail(agent_data.get("jail", "auto")),
                 dangerously_skip_permissions=_read_skip_permissions(agent_data),

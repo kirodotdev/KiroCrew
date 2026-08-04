@@ -30,6 +30,7 @@ import FeatureCard from '../components/appstore/FeatureCard'
 import CategoryRail, { type SourceRow } from '../components/appstore/CategoryRail'
 import AppListRow from '../components/appstore/AppListRow'
 import InstalledAppCard from '../components/appstore/InstalledAppCard'
+import TrustAppModal, { isTrustDeniedError, useTrustGate, type TrustAppTarget } from '../components/appstore/TrustAppModal'
 import SourcesPopover from '../components/appstore/SourcesPopover'
 import { categoryFor, categoryCounts, type Category } from '../components/appstore/categories'
 import { hasHeroArt } from '../components/appstore/useHeroArt'
@@ -260,18 +261,43 @@ export default function AppsPage() {
   }
   // autoAction travels as router STATE, never a query param — a URL-reachable
   // trigger would let a cross-site navigation start a privileged install.
+  //
+  // Get / Update on this page NAVIGATE and never call an install endpoint
+  // themselves (FeaturedSpotlight, the Browse cards and AppListRow all route
+  // their `onGet` here), so the registry-install trust refusal — which the
+  // gateway now raises before cloning — surfaces on the detail page, where
+  // `handleInstall` owns the consent modal. Nothing to gate here.
   const getApp = (name: string) => navigate(`/apps/detail/${name}`, { state: { autoAction: 'install' } })
   const updateApp = (name: string) => navigate(`/apps/detail/${name}`, { state: { autoAction: 'update' } })
+
+  // Provenance the consent modal shows. The browse-catalog row is preferred:
+  // registry rows carry `repo`/`_registry`, which the installed record does not.
+  const trustTarget = (name: string): TrustAppTarget => {
+    const row = browseApps.find(a => a.name === name)
+    if (row) return { name: row.name, displayName: row.displayName, repo: row.repo, origin: row.origin, _registry: row._registry }
+    const installed = apps.find(a => a.name === name)
+    return { name, displayName: installed?.displayName, repo: installed?.manifest?.repo, origin: installed?.origin }
+  }
+
+  /** The single enable path — shared by Discover, Library, and the trust retry. */
+  const runEnable = async (name: string) => {
+    await api.enableApp(name)
+    recordEvent('app_enable', { app: name })
+    invalidate()
+  }
+
+  const trust = useTrustGate(runEnable)
 
   const enableApp = async (name: string) => {
     setActionLoading(`${name}:enable`)
     setError('')
     try {
-      await api.enableApp(name)
-      recordEvent('app_enable', { app: name })
-      invalidate()
+      await runEnable(name)
     } catch (e) {
-      setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_enable', { name }))
+      // A third-party app that has not been granted execution trust yet is a
+      // consent prompt, not an error — branch on the machine-readable code.
+      if (isTrustDeniedError(e)) trust.open(trustTarget(name))
+      else setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_enable', { name }))
     } finally {
       setActionLoading(null)
     }
@@ -304,7 +330,7 @@ export default function AppsPage() {
     setActionLoading(`${name}:${action}`)
     setError('')
     try {
-      if (action === 'enable') await api.enableApp(name)
+      if (action === 'enable') await runEnable(name)
       else if (action === 'disable') await api.disableApp(name)
       invalidate()
       // Show toast when hiding a builtin app
@@ -316,7 +342,8 @@ export default function AppsPage() {
         }
       }
     } catch (e) {
-      setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action, name }))
+      if (action === 'enable' && isTrustDeniedError(e)) trust.open(trustTarget(name))
+      else setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action, name }))
     } finally {
       setActionLoading(null)
     }
@@ -408,6 +435,18 @@ export default function AppsPage() {
             <button aria-label={i18nT('pages.appsPage.dismiss_message')} className="text-muted hover:text-text text-sm" onClick={() => setSuccessMsg('')}><X className="lucide-inline" /></button>
           </div>
         )}
+
+        {/* Third-party execution-trust consent. Opened when an enable is
+            refused with code `app_execution_denied`, instead of surfacing the
+            raw backend string in the error card above. */}
+        <TrustAppModal
+          app={trust.target}
+          pending={trust.pending}
+          failed={trust.failed}
+          granted={trust.granted}
+          onCancel={trust.cancel}
+          onConfirm={trust.confirm}
+        />
 
         {/* Uninstall confirmation modal. The backdrop closes on click (mouse
             convenience); keyboard users press Escape (handled) or the Cancel

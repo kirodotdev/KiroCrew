@@ -1,5 +1,6 @@
+import { ApiError } from '../../api/client'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { useLocation } from 'react-router-dom'
 import { renderWithProviders, createTestStore } from '../../test/helpers'
 import type { DeniedCommandsData } from '../../api/client'
@@ -11,6 +12,18 @@ import type { DeniedCommandsData } from '../../api/client'
  * Security Posture card, and `governancePolicy` feeds the ceiling viewer.
  */
 vi.mock('../../api/client', () => ({
+  // The real class, not a stub: `trustFailureMessage` branches on `instanceof
+  // ApiError` to decide whether a structured body is available to read.
+  ApiError: class ApiError extends Error {
+    status: number
+    body: string
+    constructor(status: number, message: string, body = '') {
+      super(message)
+      this.name = 'ApiError'
+      this.status = status
+      this.body = body
+    }
+  },
   api: {
     deniedCommands: vi.fn(),
     toggleBuiltinDeniedCommand: vi.fn(),
@@ -29,12 +42,41 @@ vi.mock('../../api/client', () => ({
     // crash on an undefined queryFn; the section's behaviour is covered in
     // SecurityPanel.tailnet.test.tsx.
     tailnetStatus: vi.fn(),
+    listTrustedApps: vi.fn(),
+    trustApp: vi.fn(),
+    untrustApp: vi.fn(),
+    setTrustAllApps: vi.fn(),
   },
 }))
 
 import { api } from '../../api/client'
-import type { GovernancePolicyData, SecurityPostureData } from '../../api/client'
-import { SecurityPanel } from './SecurityPanel'
+import type { GovernancePolicyData, SecurityPostureData, TrustedAppsData } from '../../api/client'
+import { SecurityPanel, trustFailureMessage } from './SecurityPanel'
+import { i18nT } from '../../i18n/t'
+
+/** Copy is asserted through `i18nT`, not literal English.
+ *
+ * The trusted-apps catalog entries are authored separately from this component,
+ * so a literal-English assertion here would be red until they land and would have
+ * to be edited again when they do. Resolving the same key the component resolves
+ * asserts the BEHAVIOUR (this control is wired to that key) and stays green
+ * across the catalog landing — while still failing loudly if the component starts
+ * rendering a different key or hardcodes English. */
+const K = 'pages.settings.securityPanel.trustedApps'
+const T = {
+  allowAllLabel: () => i18nT(`${K}.allow_all_label`),
+  empty: () => i18nT(`${K}.empty`),
+  revoke: () => i18nT(`${K}.revoke`),
+  trustedBadge: () => i18nT(`${K}.trusted_badge`),
+  revokeDisables: (name: string) => i18nT(`${K}.revoke_disables`, { name }),
+  ineffectiveLabel: () => i18nT(`${K}.ineffective_label`),
+  ineffectiveDescription: () => i18nT(`${K}.ineffective_description`),
+  allowAllAck: () => i18nT(`${K}.allow_all_confirm_ack`),
+  confirmBtn: () => i18nT('components.trustDropdown.trust'),
+  revokeConfirmBody: (name: string) => i18nT(`${K}.revoke_confirm_body`, { name }),
+  revokeConfirmOk: () => i18nT(`${K}.revoke_confirm_ok`),
+  cancel: () => i18nT('pages.settings.securityPanel.cancel'),
+}
 
 const PINNED_DESC = 'Blocks EC2 instance termination'
 const TOGGLE_DESC = 'Blocks CloudFormation stack deletion'
@@ -187,6 +229,20 @@ function govGoverned(overrides: Partial<GovernancePolicyData> = {}): GovernanceP
     ...overrides,
   }
 }
+
+/** A trusted-apps snapshot: two per-app grants, blanket flag off. */
+function trusted(overrides: Partial<TrustedAppsData> = {}): TrustedAppsData {
+  return {
+    apps: ['launchdarkly', 'oncall-radar'],
+    ineffective: [],
+    allowAll: false,
+    ...overrides,
+  }
+}
+
+/** Stored names the gate IGNORES: a capital and a traversal-ish token, both
+ *  outside the app-name charset, so neither can ever admit anything. */
+const INEFFECTIVE = ['LD-App', '..']
 
 describe('SecurityPanel — denied commands', () => {
   beforeEach(() => {
@@ -745,105 +801,321 @@ describe('SecurityPanel — posture disclosure', () => {
  *      showing "on" for a value the gate rejects would tell the user their
  *      apps are admitted when every execution decision still denies them.
  */
-describe('SecurityPanel — third-party app execution', () => {
-  const TITLE = 'Let third-party apps run their own code'
 
+describe('SecurityPanel — trusted third-party apps', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
-    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
-    ;(api.patchConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+    ;(api.listTrustedApps as ReturnType<typeof vi.fn>).mockResolvedValue(trusted())
+    ;(api.setTrustAllApps as ReturnType<typeof vi.fn>).mockResolvedValue(trusted({ allowAll: true }))
+    ;(api.untrustApp as ReturnType<typeof vi.fn>).mockResolvedValue({
+      apps: ['oncall-radar'],
+      ineffective: [],
+      allowAll: false,
+      disabled: false,
+    })
   })
 
-  /** Render with a given `agent.apps_allow_third_party` value on the config read.
-   *
-   *  The card renders before that read resolves, and the Toggle is `disabled`
-   *  while loading — so a click landing in that window is silently swallowed by
-   *  the component's own `!disabled &&` guard. Wait for the loaded state before
-   *  handing the switch back, or every interaction test races the query.
-   */
-  async function renderWithFlag(value: unknown) {
-    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({
-      agent: { apps_allow_third_party: value },
+  it('renders one row per granted app, each with a trusted badge and a Revoke action', async () => {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    const row = await screen.findByTestId('trusted-app-launchdarkly')
+    expect(within(row).getByText('launchdarkly')).toBeInTheDocument()
+    expect(within(row).getByText(T.trustedBadge())).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: T.revoke() })).toBeInTheDocument()
+    // Both grants render — the list is not truncated to the first.
+    expect(screen.getByTestId('trusted-app-oncall-radar')).toBeInTheDocument()
+    // With grants present, the empty state must NOT also be on screen.
+    expect(screen.queryByText(T.empty())).not.toBeInTheDocument()
+  })
+
+  it('Revoke confirms BEFORE mutating — the app stops working, so say so first', async () => {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    const row = await screen.findByTestId('trusted-app-launchdarkly')
+    fireEvent.click(within(row).getByRole('button', { name: T.revoke() }))
+
+    // Nothing is revoked on the first click: a first-run reviewer flagged
+    // discovering "this also disables the app" AFTER the click as a blocker.
+    expect(api.untrustApp).not.toHaveBeenCalled()
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(T.revokeConfirmBody('launchdarkly'))).toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: T.revokeConfirmOk() }))
+    await waitFor(() => expect(api.untrustApp).toHaveBeenCalledWith('launchdarkly'))
+  })
+
+  it('Revoke needs no acknowledgement checkbox — it tightens, not weakens', async () => {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    const row = await screen.findByTestId('trusted-app-launchdarkly')
+    fireEvent.click(within(row).getByRole('button', { name: T.revoke() }))
+
+    const dialog = await screen.findByRole('dialog')
+    // Demanding "I understand this weakens protection" for the SAFE direction
+    // trains people to tick without reading, which is what makes the checkbox
+    // worthless on the dangerous direction (allow-all).
+    expect(within(dialog).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: T.revokeConfirmOk() })).toBeEnabled()
+  })
+
+  it('cancelling the revoke confirm mutates nothing', async () => {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    const row = await screen.findByTestId('trusted-app-launchdarkly')
+    fireEvent.click(within(row).getByRole('button', { name: T.revoke() }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: T.cancel() }))
+
+    expect(api.untrustApp).not.toHaveBeenCalled()
+  })
+
+  it('surfaces the also-disabled notice when the revoke response says disabled', async () => {
+    ;(api.untrustApp as ReturnType<typeof vi.fn>).mockResolvedValue({
+      apps: ['oncall-radar'],
+      ineffective: [],
+      allowAll: false,
+      disabled: true,
     })
     renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
-    const sw = await screen.findByRole('switch', { name: TITLE })
-    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
-    return sw
-  }
 
-  it('is off when the flag is absent, and shows no blanket-trust warning', async () => {
-    const sw = await renderWithFlag(undefined)
-    expect(sw).toHaveAttribute('aria-checked', 'false')
-    expect(screen.queryByText(/trusts every third-party app/i)).not.toBeInTheDocument()
+    const row = await screen.findByTestId('trusted-app-launchdarkly')
+    // The notice is a consequence of the response, so it is absent beforehand.
+    expect(screen.queryByText(T.revokeDisables('launchdarkly'))).not.toBeInTheDocument()
+    fireEvent.click(within(row).getByRole('button', { name: T.revoke() }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: T.revokeConfirmOk() }))
+
+    expect(await screen.findByText(T.revokeDisables('launchdarkly'))).toBeInTheDocument()
   })
 
-  it('turning it on writes the literal JSON boolean, not a string', async () => {
-    const sw = await renderWithFlag(false)
-    fireEvent.click(sw)
-
-    await waitFor(() =>
-      expect(api.patchConfig).toHaveBeenCalledWith('agent.apps_allow_third_party', true),
-    )
-    // Identity, not coercion: `'true'` would satisfy a loose assertion but is
-    // rejected by the backend gate.
-    const [, written] = (api.patchConfig as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(written).toBe(true)
-    expect(typeof written).toBe('boolean')
-  })
-
-  it('renders the blanket-trust warning while it is on', async () => {
-    const sw = await renderWithFlag(true)
-    expect(sw).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByText(/trusts every third-party app/i)).toBeInTheDocument()
-  })
-
-  it('a truthy non-boolean config value renders OFF, matching the backend gate', async () => {
-    // `third_party_execution_allowed()` compares with `is True`, so a
-    // hand-edited "true" / 1 in config.json grants nothing. The UI must agree.
-    for (const value of ['true', 1, 'yes']) {
-      const sw = await renderWithFlag(value)
-      expect(sw).toHaveAttribute('aria-checked', 'false')
-      cleanup()
-    }
-  })
-
-  it('turning it back off writes false', async () => {
-    const sw = await renderWithFlag(true)
-    fireEvent.click(sw)
-
-    await waitFor(() =>
-      expect(api.patchConfig).toHaveBeenCalledWith('agent.apps_allow_third_party', false),
-    )
-  })
-
-  /* A FAILED config read must not be reported as "off".
-   *
-   * The persisted value may be `true`, in which case treating an unreadable
-   * read as false is wrong twice: the blanket-trust warning disappears while
-   * third-party code is still admitted, and the switch — sitting at OFF —
-   * would write `true` on click, so an ACTIVE grant could never be revoked
-   * from this panel.
-   *
-   * Disabling the switch fixes the write but NOT the claim: `role="switch"`
-   * carries aria-checked true/false and nothing else (ARIA has no "unknown"
-   * for it — `mixed` is checkbox-only), so a rendered switch still tells a
-   * screen-reader user "not checked". So the switch must be ABSENT here, and
-   * this test asserts absence rather than a disabled state — asserting only
-   * `aria-disabled` would pass while the false OFF assertion remained.
-   */
-  it('a failed config read renders no switch at all and says the value is unknown', async () => {
-    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+  it('does NOT surface the also-disabled notice when disabled is false', async () => {
+    // Revoking trust on an already-disabled app changes nothing about whether it
+    // runs, so claiming "we also disabled it" would be a false statement.
     renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
 
+    const row = await screen.findByTestId('trusted-app-launchdarkly')
+    fireEvent.click(within(row).getByRole('button', { name: T.revoke() }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: T.revokeConfirmOk() }))
+
+    await waitFor(() => expect(api.untrustApp).toHaveBeenCalledWith('launchdarkly'))
+    expect(screen.queryByText(T.revokeDisables('launchdarkly'))).not.toBeInTheDocument()
+  })
+
+  it('turning allow-all ON requires the acknowledgement before it mutates', async () => {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    // Wait for the snapshot to land before clicking: the toggle is rendered
+    // (and findable) while `listTrustedApps` is still in flight, but DISABLED
+    // until it resolves, so an early click is silently swallowed.
+    await screen.findByTestId('trusted-app-launchdarkly')
+    const toggle = screen.getByRole('switch', { name: T.allowAllLabel() })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(toggle)
+    // Widening what un-reviewed third-party code may do must not be one click.
+    expect(api.setTrustAllApps).not.toHaveBeenCalled()
+
+    const dialog = await screen.findByRole('dialog')
+    const confirmBtn = within(dialog).getByRole('button', { name: T.confirmBtn() })
+    expect(confirmBtn).toBeDisabled()
+    // Clicking while un-acked is a no-op.
+    fireEvent.click(confirmBtn)
+    expect(api.setTrustAllApps).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByLabelText(T.allowAllAck()))
+    fireEvent.click(within(dialog).getByRole('button', { name: T.confirmBtn() }))
+    await waitFor(() => expect(api.setTrustAllApps).toHaveBeenCalledWith(true))
+  })
+
+  it('turning allow-all OFF is immediate (no modal)', async () => {
+    ;(api.listTrustedApps as ReturnType<typeof vi.fn>).mockResolvedValue(trusted({ allowAll: true }))
+    ;(api.setTrustAllApps as ReturnType<typeof vi.fn>).mockResolvedValue(trusted({ allowAll: false }))
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    await screen.findByTestId('trusted-app-launchdarkly')
+    const toggle = screen.getByRole('switch', { name: T.allowAllLabel() })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(api.setTrustAllApps).toHaveBeenCalledWith(false))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('renders the empty state when no app is granted', async () => {
+    ;(api.listTrustedApps as ReturnType<typeof vi.fn>).mockResolvedValue(trusted({ apps: [] }))
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    expect(await screen.findByText(T.empty())).toBeInTheDocument()
+    expect(screen.queryByText(T.trustedBadge())).not.toBeInTheDocument()
+    // The allow-all lever is still offered with zero grants.
+    expect(screen.getByRole('switch', { name: T.allowAllLabel() })).toBeInTheDocument()
+  })
+
+  /**
+   * Stored-but-unenforced grants.
+   *
+   * `trusted_app_names` (the enforcement reader) requires the app-name charset,
+   * so a hand-edited config.json can hold entries the gate silently ignores.
+   * Folding them into the granted list claimed trust that does not exist and
+   * left the user no way to see why their app was still blocked.
+   */
+  it('renders ineffective entries in their own group, distinct from real grants', async () => {
+    ;(api.listTrustedApps as ReturnType<typeof vi.fn>).mockResolvedValue(
+      trusted({ ineffective: INEFFECTIVE }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    const group = await screen.findByTestId('trusted-apps-ineffective')
+    // The group says what these entries are and why they do nothing.
+    expect(within(group).getByText(T.ineffectiveLabel())).toBeInTheDocument()
+    expect(within(group).getByText(T.ineffectiveDescription())).toBeInTheDocument()
+
+    for (const name of INEFFECTIVE) {
+      const row = within(group).getByTestId(`ineffective-app-${name}`)
+      expect(within(row).getByText(name)).toBeInTheDocument()
+      // Visually distinguished from an effective grant: struck through, and
+      // WITHOUT the "trusted" badge that marks an enforced grant.
+      expect(row.querySelector('code')).toHaveClass('line-through')
+      expect(within(row).queryByText(T.trustedBadge())).not.toBeInTheDocument()
+    }
+
+    // An effective grant stays in the granted list, outside this group, and keeps
+    // its badge — the two populations never merge.
+    const granted = screen.getByTestId('trusted-app-launchdarkly')
+    expect(group.contains(granted)).toBe(false)
+    expect(within(granted).getByText(T.trustedBadge())).toBeInTheDocument()
+    expect(granted.querySelector('code')).not.toHaveClass('line-through')
+  })
+
+  it('Revoke works on an ineffective entry — junk can be cleared out', async () => {
+    // The revoke endpoint deliberately does NOT validate the name being removed,
+    // precisely so an entry that can never be granted can still be deleted.
+    ;(api.listTrustedApps as ReturnType<typeof vi.fn>).mockResolvedValue(
+      trusted({ ineffective: INEFFECTIVE }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    const row = await screen.findByTestId('ineffective-app-LD-App')
+    fireEvent.click(within(row).getByRole('button', { name: T.revoke() }))
+
+    await waitFor(() => expect(api.untrustApp).toHaveBeenCalledWith('LD-App'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('omits the ineffective group entirely when every stored entry is enforced', async () => {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    await screen.findByTestId('trusted-app-launchdarkly')
+    expect(screen.queryByTestId('trusted-apps-ineffective')).not.toBeInTheDocument()
+    expect(screen.queryByText(T.ineffectiveLabel())).not.toBeInTheDocument()
+  })
+
+  it('shows the ineffective group even when no grant is effective', async () => {
+    // `apps: []` with junk stored is the exact case the split exists for: the
+    // empty state is TRUE (nothing is trusted) and the group explains the entries
+    // the user can see in their config.
+    ;(api.listTrustedApps as ReturnType<typeof vi.fn>).mockResolvedValue(
+      trusted({ apps: [], ineffective: INEFFECTIVE }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    expect(await screen.findByText(T.empty())).toBeInTheDocument()
+    const group = screen.getByTestId('trusted-apps-ineffective')
+    expect(within(group).getByTestId('ineffective-app-LD-App')).toBeInTheDocument()
+  })
+
+  it('the allow-all row carries a data-setting-label so the App Store can deep-link it', async () => {
+    // `?tab=security&highlight=<id>` resolves an id to a LABEL via SETTINGS_REGISTRY
+    // and finds the row by this attribute (see hooks/useSettingHighlight.ts). Without
+    // it the link lands on the tab and highlights nothing.
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+
+    await screen.findByRole('switch', { name: T.allowAllLabel() })
+    expect(
+      document.querySelector(`[data-setting-label="${T.allowAllLabel()}"]`),
+    ).not.toBeNull()
+  })
+})
+
+describe('trustFailureMessage', () => {
+  // REGRESSION: both new 409s carry the only actionable detail in the body's
+  // `error` — which file to edit (`config.local.json` owns the setting) or which
+  // apps are still executing after trust was withdrawn. Collapsing them into a
+  // generic message would put the UI back to reporting a change that did not
+  // happen as though it had.
+  it('prefers the backend detail over the mapped status message', () => {
+    const err = new ApiError(
+      409,
+      'Conflict',
+      JSON.stringify({
+        error: 'apps_trusted is set in /home/u/.kiro/crew/config.local.json',
+        code: 'trust_setting_overlay_owned',
+      }),
+    )
+    expect(trustFailureMessage(err)).toContain('config.local.json')
+  })
+
+  it('falls back to the mapped message when the body is not JSON', () => {
+    expect(trustFailureMessage(new ApiError(500, 'Server error', '<html>502</html>')))
+      .toBe('Server error')
+  })
+
+  it('handles a non-ApiError rejection without throwing', () => {
+    expect(trustFailureMessage(new Error('network down'))).toBe('network down')
+    expect(trustFailureMessage('nope')).toBe('unknown error')
+  })
+})
+
+/* ── Properties inherited from the standalone card #1414 added ───────────────
+ * That card owned `agent.apps_allow_third_party` through the generic config
+ * PATCH, which performs no teardown — switching it off left every app it had
+ * admitted still executing. The two controls were consolidated into the one
+ * wired to `PUT /api/security/trusted-apps/allow-all`, which sweeps. These pin
+ * the properties worth carrying over, so the consolidation cannot quietly lose
+ * them.
+ */
+describe('SecurityPanel — allow-all toggle inherits #1414 semantics', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
+  })
+
+  it('shows the blanket-trust warning only while allow-all is on', async () => {
+    ;(api.listTrustedApps as ReturnType<typeof vi.fn>).mockResolvedValue({
+      apps: [], ineffective: [], allowAll: true,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+    // The cost of the blanket flag — every third-party app, including future
+    // installs — must be stated where the switch is, not left implicit.
+    expect(await screen.findByText(/trusts every third-party app/i)).toBeInTheDocument()
+  })
+
+  it('a truthy non-boolean allowAll renders OFF, matching the backend gate', async () => {
+    // `third_party_execution_allowed()` admits ONLY the literal boolean by
+    // identity, so a hand-edited "true" grants nothing. Rendering it as ON would
+    // tell the user their apps are admitted while every decision still denies.
+    ;(api.listTrustedApps as ReturnType<typeof vi.fn>).mockResolvedValue({
+      apps: [], ineffective: [], allowAll: 'true' as unknown as boolean,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
+    const sw = await screen.findByRole('switch', { name: /trust every third-party app/i })
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('a FAILED trusted-apps read renders no switch and says so', async () => {
+    // UNKNOWN is not OFF. `role="switch"` has no unknown state (aria-checked
+    // `mixed` is checkbox-only), so a switch here would assert a state we could
+    // not read — and a click would write `true` onto a possibly-already-true
+    // setting instead of revoking it.
+    ;(api.listTrustedApps as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
     expect(await screen.findByText(/could not read the current setting/i)).toBeInTheDocument()
-    // No switch => no aria-checked => no assertion about a value we never read.
-    expect(screen.queryByRole('switch', { name: TITLE })).not.toBeInTheDocument()
-    // Never claim the grant is active either.
-    expect(screen.queryByText(/trusts every third-party app/i)).not.toBeInTheDocument()
-    // And nothing can overwrite the unknown value.
-    expect(api.patchConfig).not.toHaveBeenCalled()
+    expect(screen.queryByRole('switch', { name: /trust every third-party app/i })).toBeNull()
   })
 })
 
