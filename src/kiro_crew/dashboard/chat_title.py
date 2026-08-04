@@ -41,8 +41,8 @@ _TITLE_SOURCE_SCAN_LIMIT = _TITLE_TEXT_LIMIT + _TITLE_MAX_ATTACHMENT_FILES * (
     _TITLE_MAX_ATTACHMENT_PATH_LENGTH + 32
 )
 
-# Titling is a trivial 3-6 word task, so run it on the cheapest/fastest model
-# (Haiku) rather than the kirocrew-lite default (Opus 4.6 on the kiro-cli path).
+# Titling is a trivial 3-6 word task, so pin it to the cheapest/fastest model
+# (Haiku) rather than the kirocrew-lite default ("auto" on the kiro-cli path).
 # Applied per-session via set_model so heavier background work (compaction,
 # optimizer) keeps the lite agent's default model. Best-effort: a failed
 # override just falls back to the session's default model.

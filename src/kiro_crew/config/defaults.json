@@ -1,7 +1,7 @@
 {
   "name": "kirocrew",
   "description": "Autonomous personal AI agent — schedules recurring tasks, spawns parallel workers, learns from corrections, and operates independently via Slack",
-  "model": "claude-opus-4.8",
+  "model": "auto",
   "tools": [
     "execute_bash",
     "fs_read",

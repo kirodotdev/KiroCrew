@@ -2650,7 +2650,7 @@ def _install_lite_agent_fallback() -> None:
     lite_path = kiro_agents_dir_path() / _LITE_AGENT_FILENAME
     lite_config = {
         "name": "kirocrew-lite",
-        "model": "claude-opus-4.6",
+        "model": "auto",
         "tools": [],
         "mcpServers": {},
         "prompt": "",
@@ -2659,8 +2659,10 @@ def _install_lite_agent_fallback() -> None:
     # Cheap model for the claude_code (CC) provider. kiro-cli resolves the lite
     # model from `model` via --agent; the CC backend can't, so the provider
     # factory reads this cc_model for the lite agent. Sonnet is plenty for
-    # background title/compaction/heartbeat work and far cheaper than the global
-    # Opus 4.8 default. Stored in the sidecar (kiro spec stays schema-clean).
+    # background title/compaction/heartbeat work. "auto" for the kiro spec keeps
+    # the lite agent usable on every subscription tier (a pinned premium model
+    # is rejected outright on accounts that lack it). Stored in the sidecar
+    # (kiro spec stays schema-clean).
     agent_state.set_cc_model("kirocrew-lite", _BACKGROUND_CC_MODEL)
 
 
