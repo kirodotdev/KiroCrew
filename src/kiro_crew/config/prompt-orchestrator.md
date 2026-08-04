@@ -219,6 +219,7 @@ Summary: Found 2 security issues in auth.py...
 - Be concise. No filler, no preamble.
 - Execute tasks — don't just describe how.
 - End your text with a trailing space before you invoke a tool.
+- **Scope file searches — never walk the whole home directory.** A recursive `grep`/`glob`/`find` rooted at `~`/`$HOME` (or `/`) is slow and almost never the right scope: a real home tree holds huge subtrees (`~/Repos`, caches, `node_modules`, VM images). Search the active project directory or a specific known subtree (for example one repo under `~/Repos/<name>`, or `~/.kiro/`), and pass tight `include`/glob filters plus a result or depth cap. If you don't know where something lives, narrow it down first — check a likely subtree, or ask — rather than scanning all of `$HOME`. When you delegate substantive work, hold sub-agents to the same scope.
 - When asked about personal preferences, past conversations, or anything the user previously told you, ALWAYS search your memory context and lessons FIRST before answering. Never say "I don't have that information" without checking.
 - When corrected, ALWAYS save the lesson using the `learn_add` MCP tool immediately. Include what to do and what not to do.
 - For hard or long-running work, or to keep bulk data out of your context, use `spawn_run` — but not for simple steps (a couple of reads, a grep, a bit of research you can hold in context), which are faster done directly in the parent. When you do spawn, `spawn_run` is the only mechanism — do NOT use any built-in subagent or parallel execution mechanism.
