@@ -319,6 +319,68 @@ def _pre_tool_hooks_should_block(pre_hook_results: Any) -> bool:
     return any(not isinstance(r, str) or r.startswith("BLOCKED:") for r in pre_hook_results)
 
 
+def _pre_tool_block_reason(pre_hook_results: Any) -> str:
+    """Return the first hook-authored block reason, or a safe fallback."""
+    if isinstance(pre_hook_results, list):
+        for result in pre_hook_results:
+            if isinstance(result, str) and result.startswith("BLOCKED:"):
+                parts = result.split(":", 2)
+                reason = parts[2].strip() if len(parts) == 3 else ""
+                if reason:
+                    return reason
+    return "blocked by a PreToolUse policy hook"
+
+
+def _redacted_hook_block(event: Any, pre_hook_results: Any) -> tuple[str, str]:
+    """Build a redacted ``(tool title, hook reason)`` recovery entry."""
+    title, _ = redact_exfiltration_urls(event.title)
+    title, _ = redact_credentials(title)
+    reason, _ = redact_exfiltration_urls(_pre_tool_block_reason(pre_hook_results))
+    reason, _ = redact_credentials(reason)
+    return title, reason
+
+
+async def _reject_hook_blocked(
+    client: Any,
+    slot: Any,
+    event: Any,
+    *,
+    session_key: str,
+    pre_hook_results: Any,
+    refusal_reasons: list[tuple[str, str]],
+    metadata: dict | None = None,
+) -> None:
+    """Deny a tool a PreToolUse hook blocked, and record WHY for the model.
+
+    Four things have to happen together: reject the call, show the user a blocked
+    row, audit the denial, and append the hook's reason to ``refusal_reasons`` so
+    the recovery nudge tells the model what it did wrong. Doing the first three
+    without the fourth is the defect this fixes — the turn dies silently and the
+    model stalls with no reason to adapt to, while every other signal looks
+    correct. They live here rather than at each permission path so a path added
+    later cannot deny by omission.
+    """
+    # event.title prefers the model's own `description` field (_select_tool_title),
+    # so it is LLM-controlled display text. Redact once up front and use that
+    # everywhere: the row is broadcast to the dashboard AND persisted to the
+    # ConversationLog, and the sibling reject path (_safe_reject_title) redacts for
+    # both that row and the audit.
+    title, reason = _redacted_hook_block(event, pre_hook_results)
+    await client.reject_tool(event.request_id)
+    slot.append("tool", f"🚫 {title} (hook blocked)", "msg msg-tool")
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=title,
+        tool_kind=event.tool_kind,
+        outcome="hook_blocked",
+        request_id=event.request_id,
+        metadata=metadata,
+    )
+    refusal_reasons.append((title, reason))
+
+
 def _is_bedrock_profile_id(model: str) -> bool:
     """True if *model* is a concrete Bedrock inference-profile id rather than a
     portable model alias.
@@ -4097,20 +4159,13 @@ async def _run_chat(
                                 )
                                 continue
                             if _pre_tool_hooks_should_block(pre_hook_results):
-                                await client.reject_tool(event.request_id)
-                                slot.append(
-                                    "tool",
-                                    f"🚫 {event.title} (hook blocked)",
-                                    "msg msg-tool",
-                                )
-                                sel().log_tool_invocation(
+                                await _reject_hook_blocked(
+                                    client,
+                                    slot,
+                                    event,
                                     session_key=session_key,
-                                    agent=slot.agent or "kirocrew",
-                                    source="dashboard",
-                                    tool_name=event.title,
-                                    tool_kind=event.tool_kind,
-                                    outcome="hook_blocked",
-                                    request_id=event.request_id,
+                                    pre_hook_results=pre_hook_results,
+                                    refusal_reasons=_refusal_reasons,
                                 )
                                 continue
                             await client.approve_tool(event.request_id)
@@ -4181,16 +4236,13 @@ async def _run_chat(
                         )
                         continue
                     if _pre_tool_hooks_should_block(pre_hook_results):
-                        await client.reject_tool(event.request_id)
-                        slot.append("tool", f"🚫 {event.title} (hook blocked)", "msg msg-tool")
-                        sel().log_tool_invocation(
+                        await _reject_hook_blocked(
+                            client,
+                            slot,
+                            event,
                             session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=event.title,
-                            tool_kind=event.tool_kind,
-                            outcome="hook_blocked",
-                            request_id=event.request_id,
+                            pre_hook_results=pre_hook_results,
+                            refusal_reasons=_refusal_reasons,
                         )
                         continue
                     _pre_tool_hooks_fired = True
@@ -4394,16 +4446,13 @@ async def _run_chat(
                             )
                             continue
                         if _pre_tool_hooks_should_block(pre_hook_results):
-                            await client.reject_tool(event.request_id)
-                            slot.append("tool", f"🚫 {event.title} (hook blocked)", "msg msg-tool")
-                            sel().log_tool_invocation(
+                            await _reject_hook_blocked(
+                                client,
+                                slot,
+                                event,
                                 session_key=session_key,
-                                agent=slot.agent or "kirocrew",
-                                source="dashboard",
-                                tool_name=event.title,
-                                tool_kind=event.tool_kind,
-                                outcome="hook_blocked",
-                                request_id=event.request_id,
+                                pre_hook_results=pre_hook_results,
+                                refusal_reasons=_refusal_reasons,
                             )
                             continue
                     # always=False — KiroCrew owns trust scope; per-call request_permission
@@ -4644,16 +4693,13 @@ async def _run_chat(
                         )
                         break
                     if _pre_tool_hooks_should_block(pre_hook_results):
-                        await client.reject_tool(event.request_id)
-                        slot.append("tool", f"🚫 {event.title} (hook blocked)", "msg msg-tool")
-                        sel().log_tool_invocation(
+                        await _reject_hook_blocked(
+                            client,
+                            slot,
+                            event,
                             session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=event.title,
-                            tool_kind=event.tool_kind,
-                            outcome="hook_blocked",
-                            request_id=event.request_id,
+                            pre_hook_results=pre_hook_results,
+                            refusal_reasons=_refusal_reasons,
                             metadata={"reason": "interactive"},
                         )
                     else:

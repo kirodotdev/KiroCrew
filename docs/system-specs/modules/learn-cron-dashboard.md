@@ -1067,16 +1067,17 @@ The Agents page context window section shows per-session info:
 ### Tool-Refusal Recovery
 
 When `_run_chat` refuses a tool call for a **recoverable, system-side** reason —
-a host-gate policy deny (`hooks.on_tool_call` → `TOOL_DENY`) or the read-only
-bash safety gate (`is_read_only_bash` / `unsafe_bash_reason`) — kiro-cli ends
-the turn early by emitting the attribution-free marker `Tool uses were
-interrupted, waiting for the next user prompt`. Historically the refusal reason
-reached only the dashboard pill and the SEL audit log, never the model, so the
-agent stalled and the user had to manually prompt it to continue (and the model,
-lacking any cause in its context, often misattributed the stop to the user).
+a host-gate policy deny (`hooks.on_tool_call` → `TOOL_DENY`), the read-only
+bash safety gate (`is_read_only_bash` / `unsafe_bash_reason`), or a PreToolUse
+script hook block (`exit 2` → `BLOCKED:<hook>:<stderr>`) — kiro-cli ends the
+turn early by emitting the attribution-free marker `Tool uses were interrupted,
+waiting for the next user prompt`. Without recovery, the reason reaches only the
+dashboard pill and SEL audit log, so the model cannot adapt.
 
-`_run_chat` now records each recoverable refusal as a redacted `(title, reason)`
-tuple in a per-turn `_refusal_reasons` list. When the turn ends — and the user
+`_run_chat` records each recoverable refusal as a redacted `(title, reason)`
+tuple in a per-turn `_refusal_reasons` list. PreToolUse block reasons use the
+first non-empty hook STDERR value and fall back to a generic policy-hook reason
+for deny-by-default malformed results. When the turn ends — and the user
 did **not** stop it (`slot._stopping` is false) and no session reset is already
 re-queuing — it builds a continuation via `context.build_refusal_recovery_prompt`,
 prepends `REFUSAL_RECOVERY_PREFIX`, and `queue_insert(0, …)`s it. The existing
@@ -1088,9 +1089,9 @@ as user input (`_is_recovery` guard).
 
 By design there is **no retry cap**: the model decides when to stop, and the
 user's Stop button remains the hard breaker (a stop clears the queue and aborts
-the chain). Scope is the two reason-bearing gates above; pre-tool-use hook
-`BLOCKED:` results are not yet wired for recovery (consistent treatment across
-all three hook branches is a follow-up).
+the chain). All four permission paths that can process PreToolUse script hooks
+(declarative auto-approve, normal gating, trusted/YOLO, and interactive approval)
+route `BLOCKED:` reasons through the same recovery funnel.
 
 ### Design
 
