@@ -194,6 +194,18 @@
         "when_should_the_agent_stop": "When should the agent stop?",
         "your_answer": "Your answer",
         "your_answer_2": "Your answer..."
+      },
+      "manifest": {
+        "description": "Runs multi-cycle research campaigns that keep working after you walk away. Give it a question and it expands that into a tree of narrower sub-questions, sends agents to investigate each one, and streams findings to the page as they land. A campaign self-drives until the question is answered or it notices progress has stalled, and you can hand the finished report off to your knowledge library or a shareable artifact.",
+        "display_name": "Research Lab",
+        "highlight_1": "Expands one broad question into a scoped tree of sub-questions before spending agent time",
+        "highlight_2": "Campaigns keep researching between your check-ins, with findings streamed live",
+        "highlight_3": "Notices when a campaign stops making progress instead of looping forever",
+        "highlight_4": "Attended mode pauses to ask you a question when it needs a decision; unattended runs straight through",
+        "highlight_5": "Add follow-up questions mid-campaign without starting over",
+        "highlight_6": "Start, pause, and resume any campaign from the dashboard",
+        "highlight_7": "Export the finished report to your knowledge library or a shareable artifact",
+        "page_label": "Research Lab"
       }
     },
     "codeReviewSage": {
@@ -261,6 +273,16 @@
         "unavailable_could_not_be_fetched": "“unavailable — could not be fetched”",
         "updated": "updated",
         "usually_means": "usually means"
+      },
+      "manifest": {
+        "description": "Deep-reviews GitHub pull requests and tells you which changes actually deserve your attention. Every changed file is reviewed in its own isolated agent session, weighted by how much blast radius it carries, and rolled up into a prioritized Focus Report. Findings are staged as a draft GitHub review that stays unpublished until you submit it, and the reviewer keeps learning your repository's real standards from shipped fixes and past review comments.",
+        "display_name": "Code Review Sage",
+        "highlight_1": "Focus Report ranks changes by blast radius so the risky files get read first",
+        "highlight_2": "One isolated agent session per change, so findings never bleed between files",
+        "highlight_3": "Posts as a PENDING (draft) GitHub review — you remain the one who submits it",
+        "highlight_4": "Learns per-repository from shipped fixes, review comments, and design discussions",
+        "highlight_5": "Reviews GitHub pull requests; needs an authenticated `gh` CLI on the gateway host",
+        "page_label": "Code Review Sage"
       }
     },
     "designCritique": {
@@ -331,6 +353,19 @@
       "waitingScreen": {
         "cancel_this_run": "Cancel this run",
         "stop_this_run_and_discard_it": "Stop this run and discard it"
+      },
+      "manifest": {
+        "description": "A design critique you can run before you ask a colleague. Give it one screenshot, a whole multi-screen flow, a Figma file, a git repo, or a URL that is already serving, and it finds the candidate screens, lets you choose what to look at, then reports back the way an experienced designer would: an overall read, what is working, and the things worth tightening, each tied to a named heuristic. Multi-screen flows also get cross-screen findings that a single screen cannot show — inconsistent controls, missing progress, no way back, dead ends. It renders code and Figma before judging them, so it never critiques visuals it has not actually seen, and it says plainly which screens it could not get to instead of guessing.",
+        "display_name": "Design Critique",
+        "highlight_1": "Takes screenshots, a Figma link, a git repo, a local folder, or a running URL — and says back what it found before it starts",
+        "highlight_2": "Measures contrast and hit-target sizes from the rendered page rather than estimating them from an image",
+        "highlight_3": "Multi-screen flows get cross-screen checks: control consistency, progress, a way back, repeated asks, dead ends",
+        "highlight_4": "Every finding names the heuristic behind it (Nielsen 1-10, WCAG, Gestalt, Fitts) and carries a severity on the NN/g 1-4 scale",
+        "highlight_5": "Select any line of the report and ask a follow-up question about it, in place",
+        "highlight_6": "Tells you what it could not see instead of critiquing a blank or blocked screen",
+        "highlight_7": "Hands off the work it reviews: it never installs that project's dependencies, runs its scripts, starts its dev server, or edits its files",
+        "highlight_8": "To take pictures it uses a headless browser, downloaded once into a cache in your home directory on first use and never into the project",
+        "page_label": "Design Critique"
       }
     },
     "fileExplorer": {
@@ -375,6 +410,17 @@
       },
       "treeNode": {
         "loading": "loading..."
+      },
+      "manifest": {
+        "description": "Browse and read files on the machine running Kiro Crew without leaving the dashboard. Keep several files open in tabs, walk the directory tree with each file's git status shown beside it, search a whole folder for a string, and read markdown rendered rather than raw. It is read-only by design: it opens and searches files but never edits, moves, or deletes them, and it can only reach your home directory plus /tmp and /opt.",
+        "display_name": "Files",
+        "highlight_1": "Read-only: opens and searches files, and never writes, moves, or deletes them",
+        "highlight_2": "Multiple files open at once in tabs, with syntax highlighting",
+        "highlight_3": "Markdown files render as formatted text instead of raw source",
+        "highlight_4": "Directory tree shows each file's git status inline",
+        "highlight_5": "Search across a directory with line-level matches and surrounding preview",
+        "highlight_6": "Reachable paths are limited to your home directory, /tmp, and /opt — symlinks out are refused",
+        "page_label": "Files"
       }
     },
     "issueRadar": {
@@ -836,6 +882,20 @@
         "select_a": "Select a",
         "select_an_issue_to_see_its_details": "Select an issue to see its details.",
         "to_see_its_details": "to see its details."
+      },
+      "manifest": {
+        "description": "An issue triage assistant that remembers. Browse, filter, and triage GitHub issues and GitLab issues with AI-suggested labels and per-issue investigation notes — with findings kept in a local ledger so nothing gets re-investigated.",
+        "display_name": "Issue Radar",
+        "highlight_1": "AI summaries and suggested labels for issues and pull requests, each with its reasoning",
+        "highlight_2": "Per-issue investigation notes kept in a local ledger so nothing gets re-investigated",
+        "highlight_3": "Act on a pull request without leaving: approve, request changes, comment, merge, close or reopen, and cancel or re-run CI — one at a time or across a selection",
+        "highlight_4": "Merging never bypasses a gate: the host enforces its required reviews and checks, and auto-merge can land a change by itself once they pass",
+        "highlight_5": "An approval or a merge is pinned to the commit you were shown, so a push that lands mid-review is refused rather than approved unseen",
+        "highlight_6": "Every write needs triage or push access on the repo; a read-only connection stays suggest-only",
+        "highlight_7": "Surfaces repositories you have recently contributed to, so connecting one is a click",
+        "highlight_8": "Caches issues, labels, and members locally, refreshed on demand",
+        "highlight_9": "Works with GitHub; needs an authenticated `gh` CLI on the gateway host",
+        "page_label": "Issue Radar"
       }
     },
     "meetings": {
@@ -1021,6 +1081,16 @@
         "chat": "Chat",
         "html": "Diagram",
         "markdown": "Notes"
+      },
+      "manifest": {
+        "description": "An AI meeting assistant. Transcribes a live meeting, keeps structured notes and diagrams as it goes, extracts action items, and lets you review them before filing.",
+        "display_name": "Meetings",
+        "highlight_1": "Live transcription through Kiro Crew's own speech-to-text — no extra daemon, no cloud account beyond what you already use",
+        "highlight_2": "A crew of agents works the meeting in parallel: structured notes, an HTML/Mermaid diagram, and an action-item list",
+        "highlight_3": "Correct recurring speech-to-text mistakes once with a domain dictionary and every later meeting gets them right",
+        "highlight_4": "Review extracted action items before anything is filed — archive the noise, file the rest",
+        "highlight_5": "Pluggable task and calendar providers: ships a local task ledger and an iCalendar (.ics) reader, and an organization can register its own",
+        "page_label": "Meetings"
       }
     },
     "papyrus": {
@@ -1120,6 +1190,18 @@
         "warning_count_other": "{{count}} warnings",
         "word_count_one": "{{count}} word",
         "word_count_other": "{{count}} words"
+      },
+      "manifest": {
+        "description": "A LaTeX paper editor with live PDF preview and an AI co-author. Write in a split-pane editor, press Cmd+S (Ctrl+S on Windows and Linux) to compile with pdflatex or tectonic, and read the rendered PDF beside your source. Compilation errors are parsed into a clickable list that jumps to the offending line. Clone an existing paper from any git remote, then commit and push from the toolbar. The co-author panel is a real Kiro Crew chat session scoped to the paper, so the agent can read and edit your LaTeX while you watch the PDF update.",
+        "display_name": "Papyrus",
+        "highlight_1": "Split-pane LaTeX editor with a live PDF preview beside it",
+        "highlight_2": "Compile on save (Cmd+S, or Ctrl+S on Windows and Linux) via pdflatex or tectonic, with the bibtex cycle run for you",
+        "highlight_3": "No TeX installed? One click installs a verified Tectonic compiler into Papyrus’s own folder",
+        "highlight_4": "Compiler errors and warnings parsed into a clickable list that jumps to the line",
+        "highlight_5": "AI co-author chat scoped to the paper — it reads and edits the LaTeX you are looking at",
+        "highlight_6": "Clone a paper from any git remote, then commit, pull, and push from the toolbar",
+        "highlight_7": "Never runs the compiler with shell escape, so a hostile .tex file cannot execute commands",
+        "page_label": "Papyrus"
       }
     },
     "pptxMaker": {
@@ -1217,6 +1299,17 @@
       },
       "slidePreview": {
         "preview_unavailable": "Preview unavailable"
+      },
+      "manifest": {
+        "description": "Describe the deck you want in chat and get a real .pptx back. An agent interviews you, writes a brief, an outline and an art direction, then composes every slide and generates the file — and you watch each deliverable appear in a live preview beside the conversation. Slides render as animated SVG as they are built, so you can see a deck take shape instead of waiting for a download. Reusable styles and .pptx templates let the same content come out looking like three different presentations.",
+        "display_name": "PPTX Maker",
+        "highlight_1": "Chat your way to a finished .pptx — Spec mode plans it carefully, Vibe mode turns a URL or pasted text straight into slides",
+        "highlight_2": "Live preview of every deliverable: brief, outline, art direction, then slides as animated SVG while they compose",
+        "highlight_3": "Styles set the visual mood and .pptx templates set the structure, so one deck can be re-skinned without rewriting content",
+        "highlight_4": "Import your own HTML style or existing .pptx template and the agent follows its colours, fonts and layouts",
+        "highlight_5": "Open the finished file or reveal its folder without leaving the dashboard",
+        "highlight_6": "Wraps the public spec-driven-presentation-maker engine, fetched at a sha256-pinned version; nothing to install by hand",
+        "page_label": "PPTX Maker"
       }
     },
     "workflows": {
@@ -1255,6 +1348,16 @@
         "events": "events",
         "no_background_runs_yet_runs_started_in_the_backg": "No background runs yet. Runs started in the background appear here.",
         "select_a_run_to_see_its_phases_agents_and_result": "Select a run to see its phases, agents, and result."
+      },
+      "manifest": {
+        "description": "Author, run, and watch dynamic workflows: Python scripts, usually written for you by an agent from a plain-English goal, that drive several Kiro Crew agents through ordered phases. A script is checked against a sandboxed set of workflow commands before anything runs, so mistakes surface without executing, and the page then streams each phase and agent event as the run progresses. Runnable examples ship with the app to start from.",
+        "display_name": "Workflows",
+        "highlight_1": "Validate a workflow before running it — errors surface without anything executing",
+        "highlight_2": "Watch the run live, phase by phase, with per-agent progress events",
+        "highlight_3": "Scripts are limited to a sandboxed workflow API rather than arbitrary Python",
+        "highlight_4": "Usually authored for you from a plain-English goal, then editable by hand",
+        "highlight_5": "Ships with runnable examples to start from",
+        "page_label": "Workflows"
       }
     },
     "mdNotebook": {
@@ -1412,6 +1515,19 @@
         "empty": "Nothing has been deleted from this vault yet, so there is no .trash folder.",
         "unsupported": "Opening a folder is not supported on this system.",
         "failed": "Could not open the folder: {{message}}"
+      },
+      "manifest": {
+        "description": "Keep a markdown notebook that lives in a git repository, so your notes are versioned, portable, and readable by any other editor. Point it at a GitHub repo and it clones a working copy, or attach a folder you already have — including an existing Obsidian vault — and it adopts that checkout in place without making a second copy. Notes render as formatted text you can click straight into to edit, [[wikilinks]] connect them, and every note shows what links back to it. Sync commits, pulls and pushes in one step, and a merge conflict is reported — listing the conflicted notes and aborting the merge — rather than overwriting anything.",
+        "display_name": "Notes",
+        "highlight_1": "Your notes are plain markdown in a git repo — no lock-in, readable by Obsidian or any editor",
+        "highlight_2": "Clone a GitHub repo as a vault, or attach a folder you already have without copying it",
+        "highlight_3": "Click any rendered block to edit it in place; Enter starts a new block, Tab nests lists",
+        "highlight_4": "[[Wikilinks]] between notes, with a backlinks list showing what points at the note you are reading",
+        "highlight_5": "Full-text search across titles and content, plus folder and flat views with six sort orders",
+        "highlight_6": "One-step sync commits, pulls and pushes; a merge conflict lists the conflicted notes and overwrites nothing",
+        "highlight_7": "A save is refused if the file changed on disk since you opened it, so edits made elsewhere are never clobbered",
+        "highlight_8": "Optionally index a vault into the Knowledge library so agents can search your notes",
+        "page_label": "Notes"
       }
     },
     "mochi": {
@@ -1975,6 +2091,79 @@
           "spawn": "Agent",
           "system": "System"
         }
+      },
+      "manifest": {
+        "description": "A desktop companion that lives on your screen. Mochi chats through its own panel, watches pages and feeds for you, plans its own day around your schedule, remembers your time together, and taps you on the shoulder only when something actually changed.",
+        "display_name": "Mochi",
+        "highlight_1": "A pet window that floats on your desktop — transparent, click-through, always company",
+        "highlight_2": "Watch list with reliability guarantees: due-time scheduling, failure backoff, at-least-once notification",
+        "highlight_3": "Plans and replans its own task queue; deterministic moves and moods cost zero tokens",
+        "highlight_4": "Remembers your relationship — streaks, busiest days, milestones celebrated exactly once",
+        "highlight_5": "Quiet by design: notifications merge, silent mode holds them, meetings are respected",
+        "highlight_6": "The autonomous core is fully in-process — no second app, no extra runtime",
+        "page_label": "Mochi"
+      }
+    },
+    "agentWorlds": {
+      "manifest": {
+        "description": "Turns your running agents into characters in an animated pixel-art scene, so a glance tells you how busy Kiro Crew is. Each active agent appears as a sprite that reacts as work starts and finishes, across themed scenes from a classic office to a wizard tower or an underwater lab. Pop it out into its own window to keep it on a second screen while you work.",
+        "display_name": "Agent Worlds",
+        "highlight_1": "Live view of which agents are running, as characters rather than a list",
+        "highlight_2": "Themed scenes including Office, Panda Den, Neural Net, Wizard Tower, and Deep Lab",
+        "highlight_3": "Pop out into a separate window for a second monitor; scene choice stays in sync",
+        "highlight_4": "Remembers your chosen scene between visits",
+        "highlight_5": "Purely a visualization — it never changes what your agents do",
+        "page_label": "Worlds"
+      }
+    },
+    "channels": {
+      "manifest": {
+        "description": "A shared room where several agents work a problem together instead of one agent working alone. You assign each agent a role, and they post progress into the channel and answer each other's @mentions in the open — there is no private agent-to-agent messaging, so the whole exchange stays readable, and you remain the approver for anything that changes state. Agents stay alive in the channel until dismissed or timed out.",
+        "display_name": "Channels",
+        "highlight_1": "Several role-assigned agents collaborate in one shared, readable transcript",
+        "highlight_2": "No private agent-to-agent messaging — every exchange happens in the channel",
+        "highlight_3": "You stay the final approver for any operation that mutates state",
+        "highlight_4": "Agents persist in the channel until dismissed or timed out",
+        "highlight_5": "Hidden from the App Store grid; enable with `kirocrew app enable channels`",
+        "page_label": "Channels"
+      }
+    },
+    "crewCompanion": {
+      "manifest": {
+        "description": "A desktop companion for Kiro Crew that helps you pace your day: it nudges you to take breaks, holds the reminders you set in plain language, and runs a short breathing exercise when you need to reset. It also lets you know when a session finishes, fails, or needs your OK.",
+        "display_name": "Crew Companion",
+        "highlight_1": "Gentle break nudges — water, stretch, look away — on an interval you choose",
+        "highlight_2": "Reminders you set in plain language, like “drink water in 20 minutes”",
+        "highlight_3": "A short breathing exercise to reset when you need it",
+        "highlight_4": "Tells you when a session finishes, fails, or needs your OK",
+        "highlight_5": "Floats on your desktop with a swappable avatar",
+        "page_label": "Crew Companion"
+      }
+    },
+    "devFleet": {
+      "manifest": {
+        "description": "A control panel for working on Kiro Crew itself. Lists every feature worktree alongside its pull request state, commit count, and disk usage, and can bring any of them up as a pod: a complete preview instance on its own port with its own data directory, so you can click through an unfinished change without disturbing your live gateway. It also handles the chores around that — pulling main and rebuilding, rebasing a branch, streaming pod logs, and pruning worktrees whose work has already merged.",
+        "display_name": "Dev Fleet",
+        "highlight_1": "Bring up any worktree as an isolated pod on its own port and data directory, leaving your live gateway untouched",
+        "highlight_2": "Fleet view with per-branch PR status, commit counts, and disk usage",
+        "highlight_3": "Sync (pull main and rebuild) or rebase a branch without leaving the dashboard",
+        "highlight_4": "'Prune merged' refuses to delete a worktree with uncommitted or untracked work rather than discarding it",
+        "highlight_5": "Stream pod logs and mint pod access tokens from the UI",
+        "highlight_6": "Built for people developing Kiro Crew itself — not needed for everyday use",
+        "highlight_7": "Pods run on Linux (systemd --user) and macOS (launchd) — but the macOS pod has no enforced memory/CPU ceiling; Make Live is still Linux-only; the fleet view, PR status, sync, rebase and prune work on any platform",
+        "page_label": "Dev Fleet"
+      }
+    },
+    "projects": {
+      "manifest": {
+        "description": "Hand over a multi-step job and let it run to completion unattended. Describe the work in plain language, paste a written spec, or upload a YAML file, then either generate a plan first to review the steps or start it straight away. Each run gets its own page showing step-by-step progress, and you can pause, resume, retry, or stop it at any point.",
+        "display_name": "Task Runner",
+        "highlight_1": "Three ways in: describe the work in plain language, paste a spec, or upload YAML",
+        "highlight_2": "Generate a plan and review the steps before committing to a run",
+        "highlight_3": "Runs execute unattended, with step-by-step progress on the run's own page",
+        "highlight_4": "Pause, resume, retry, or stop a run at any point",
+        "highlight_5": "Keeps a history of past runs and their outcomes",
+        "page_label": "Task Runner"
       }
     },
     "opsMissionControl": {
@@ -2355,6 +2544,17 @@
         "verification_not_checkable_label": "sent, not confirmed",
         "verification_not_checkable_meaning": "The {{verb}} was accepted, but this app cannot observe whether it took effect — an acknowledgement leaves an alert firing by design, so the alarm's state says nothing either way.",
         "verification_pending_meaning_at": "The {{verb}} returned success, which only means the provider accepted the request. The next heartbeat after {{when}} re-reads the signal to find out whether it took effect."
+      },
+      "manifest": {
+        "display_name": "Ops Mission Control",
+        "description": "An autonomous ops first responder. Watches your alarms, pages, and monitors; claims what fires; investigates it with real context; and proposes a fix — keeping everything it learns in a local ledger so the second occurrence is faster than the first.",
+        "page_label": "Mission Control",
+        "highlight_1": "Claims a firing alarm within one heartbeat and investigates before anyone has to look",
+        "highlight_2": "Knowledge ledger with confidence and trust levels — a repeat failure resolves from what you already know",
+        "highlight_3": "Live board in the dashboard and as replyable Slack threads, so the channel is the dashboard",
+        "highlight_4": "Connects AWS CloudWatch, PagerDuty, Datadog, GitHub Issues, or any system that can POST signed JSON — including Alertmanager-shaped bodies, fanned out one incident per alert",
+        "highlight_5": "Read-only by default — write actions are opt-in per signal pattern, and every one is audited",
+        "highlight_6": "Rotation-aware: the on-shift automation tier arms and disarms itself"
       }
     },
     "specBuilder": {
@@ -2511,6 +2711,11 @@
         "dismiss_error": "Dismiss error",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "Talk through an idea, review the plan, then let an agent build it."
+      },
+      "manifest": {
+        "display_name": "Spec Builder",
+        "description": "Spec-driven development inside Kiro Crew: turn a feature idea into Requirements → Design → Tasks with an embedded agent, review the markdown in-app, then hand the approved plan off to an autonomous execution session.",
+        "page_label": "Spec Builder"
       }
     }
   },
@@ -2612,7 +2817,8 @@
         "verified_publisher": "Verified publisher",
         "verified_publisher_first_party": "Verified publisher (first-party)",
         "desktop_app": "Desktop app",
-        "desktop_app_hint": "Enabling works from here, but the app's own window needs the Kiro Crew desktop app."
+        "desktop_app_hint": "Enabling works from here, but the app's own window needs the Kiro Crew desktop app.",
+        "view_details_for": "View details for {{name}}"
       },
       "categoryRail": {
         "add_source": "Add source",
@@ -2627,7 +2833,8 @@
         "get": "Get",
         "installed": "Installed",
         "desktop_app": "Desktop app",
-        "desktop_app_hint": "Enabling works from here, but the app's own window needs the Kiro Crew desktop app."
+        "desktop_app_hint": "Enabling works from here, but the app's own window needs the Kiro Crew desktop app.",
+        "view_details_for": "View details for {{name}}"
       },
       "featuredSpotlight": {
         "enable": "Enable",
@@ -2636,7 +2843,8 @@
         "installed": "Installed",
         "v": "v",
         "verified_publisher": "Verified publisher",
-        "verified_publisher_first_party": "Verified publisher (first-party)"
+        "verified_publisher_first_party": "Verified publisher (first-party)",
+        "view_details_for": "View details for {{name}}"
       },
       "installedAppCard": {
         "agent_one": "{{count}} agent",

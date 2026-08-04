@@ -230,6 +230,19 @@
         "wait_local": "正在扫描代码中的路由…",
         "wait_repo": "正在克隆仓库并列出其中的路由…",
         "wait_url": "正在加载页面并跟踪其中的链接…"
+      },
+      "manifest": {
+        "description": "在找同事之前先自己做一轮设计评审。给它一张截图、一整套多屏流程、一个 Figma 文件、一个 git 仓库，或者一个已经在跑的 URL，它会找出候选界面，让你选择要看哪些，然后像资深设计师那样反馈：整体印象、哪些地方做得好、哪些值得收紧，每条都对应一条具名的设计准则。多屏流程还会得到单屏看不出的跨屏发现 — 控件不一致、缺少进度、无法返回、走进死路。它会先把代码和 Figma 渲染出来再判断，绝不评论自己没真正看到的画面；对于到不了的界面，它会直说，而不是猜。",
+        "display_name": "设计评审",
+        "highlight_1": "接受截图、Figma 链接、git 仓库、本地文件夹或运行中的 URL — 开始之前先告诉你它找到了什么",
+        "highlight_2": "在渲染后的页面上实测对比度和点击目标尺寸，而不是从图片上估算",
+        "highlight_3": "多屏流程会做跨屏检查：控件一致性、进度提示、返回路径、重复索取、死路",
+        "highlight_4": "每条发现都点明背后的设计准则（Nielsen 1-10、WCAG、Gestalt、Fitts），并按 NN/g 1-4 级标注严重程度",
+        "highlight_5": "选中报告里的任意一行，就地追问",
+        "highlight_6": "会告诉你哪些没看到，而不是去评论空白或被遮挡的界面",
+        "highlight_7": "对评审对象零接触：不安装项目依赖、不运行项目脚本、不启动开发服务器、也不修改任何文件",
+        "highlight_8": "截图用无头浏览器完成：首次使用时下载一次，缓存在主目录里，绝不放进项目",
+        "page_label": "设计评审"
       }
     },
     "autoResearch": {
@@ -399,6 +412,18 @@
         "state_stalled": "已停滞",
         "state_stopped": "已停止",
         "state_working": "进行中"
+      },
+      "manifest": {
+        "description": "运行多轮研究任务，你离开之后它仍会继续。给它一个问题，它会拆成一棵更细的子问题树，派代理逐个调查，并把发现实时推送到页面。研究任务会自行推进，直到问题有了答案或它发现进展停滞；完成的报告可以存入知识库，也可以导出为可分享的工件。",
+        "display_name": "研究实验室",
+        "highlight_1": "先把宽泛的问题展开成范围明确的子问题树，然后才动用代理",
+        "highlight_2": "在你两次查看之间，研究任务照常推进，发现实时推送",
+        "highlight_3": "会察觉研究任务不再有进展，而不是无限循环下去",
+        "highlight_4": "有人值守模式在需要决策时会暂停向你提问；无人值守则一路跑完",
+        "highlight_5": "研究任务进行中也能追加问题，无需从头开始",
+        "highlight_6": "在仪表板上启动、暂停和恢复任意研究任务",
+        "highlight_7": "把完成的报告导出到知识库，或导出为可分享的工件",
+        "page_label": "研究实验室"
       }
     },
     "codeReviewSage": {
@@ -474,6 +499,16 @@
         "phase_failed": "失败",
         "phase_gating": "设计门禁中…",
         "phase_queued": "已排队"
+      },
+      "manifest": {
+        "description": "深度审查 GitHub 拉取请求，告诉你哪些改动真正值得关注。每个改动过的文件都在各自独立的代理会话里审查，按影响范围加权，最后按优先级汇总成一份 Focus Report。发现会暂存为 GitHub 草稿审查，在你提交之前不会公开；审查者还会从已上线的修复和过往审查评论里，不断学习仓库真正的标准。",
+        "display_name": "Code Review Sage",
+        "highlight_1": "Focus Report 按影响范围给改动排序，风险高的文件先读",
+        "highlight_2": "每个改动一个独立的代理会话，发现不会在文件之间串扰",
+        "highlight_3": "以 PENDING（草稿）状态发布 GitHub 审查 — 提交的人始终是你",
+        "highlight_4": "按仓库分别学习已上线的修复、审查评论和设计讨论",
+        "highlight_5": "审查 GitHub 拉取请求；需要网关主机上有已认证的 `gh` CLI",
+        "page_label": "Code Review Sage"
       }
     },
     "fileExplorer": {
@@ -520,6 +555,17 @@
       },
       "treeNode": {
         "loading": "加载中…"
+      },
+      "manifest": {
+        "description": "不用离开仪表板，就能浏览和阅读运行 Kiro Crew 那台机器上的文件。多个文件在标签页里同时打开，沿目录树浏览时每个文件旁边都显示 git 状态，可以在整个文件夹里搜字符串，markdown 也是渲染后阅读而不是看源码。它按设计就是只读的：只打开和搜索文件，从不编辑、移动或删除，可访问范围仅限主目录以及 /tmp 和 /opt。",
+        "display_name": "文件",
+        "highlight_1": "只读：只打开和搜索文件，从不写入、移动或删除",
+        "highlight_2": "多个文件在标签页里同时打开，带语法高亮",
+        "highlight_3": "Markdown 文件渲染为排版后的文本，而不是原始源码",
+        "highlight_4": "目录树在每个文件旁直接显示 git 状态",
+        "highlight_5": "跨目录搜索，给出行级匹配和上下文预览",
+        "highlight_6": "可访问路径仅限主目录、/tmp 和 /opt — 指向外部的符号链接会被拒绝",
+        "page_label": "文件"
       }
     },
     "issueRadar": {
@@ -1130,6 +1176,20 @@
           "last_update": "最后更新",
           "number": "编号"
         }
+      },
+      "manifest": {
+        "description": "一个记得住事的 issue 分类助手。浏览、筛选并分类 GitHub 和 GitLab 的 issue，用 AI 建议标签，为每个 issue 留调查笔记 — 发现都记在本地账本里，同一件事不会被重复调查。",
+        "display_name": "Issue Radar",
+        "highlight_1": "为 issue 和拉取请求生成 AI 摘要与建议标签，每条都附上理由",
+        "highlight_2": "每个 issue 的调查笔记都存在本地账本里，同一件事不会被重复调查",
+        "highlight_3": "在页面内直接处理拉取请求：批准、要求修改、评论、合并、关闭或重开，以及取消或重跑 CI — 可以逐个操作，也可以批量操作",
+        "highlight_4": "合并绝不绕过任何门禁：必需的评审和检查由托管平台强制执行，全部通过后自动合并会自行把改动落地",
+        "highlight_5": "批准或合并都锁定在你看到的那个提交上，因此评审途中新推上来的改动会被拒绝，而不是在你没看见时就通过",
+        "highlight_6": "任何写操作都需要仓库的 triage 或 push 权限；只读连接只能给建议",
+        "highlight_7": "列出你最近贡献过的仓库，连接一个只需点一下",
+        "highlight_8": "在本地缓存 issue、标签和成员，按需刷新",
+        "highlight_9": "支持 GitHub；需要网关主机上有已认证的 `gh` CLI",
+        "page_label": "Issue Radar"
       }
     },
     "meetings": {
@@ -1311,6 +1371,16 @@
         "chat": "对话",
         "html": "图示",
         "markdown": "笔记"
+      },
+      "manifest": {
+        "description": "AI 会议助手。实时转录会议，边开边整理结构化笔记和图示，提取行动项，并让你在提交之前先过一遍。",
+        "display_name": "会议",
+        "highlight_1": "用 Kiro Crew 自带的语音转文字做实时转录 — 不需要额外守护进程，也不需要你现有之外的云账号",
+        "highlight_2": "一组代理并行处理会议：结构化笔记、HTML/Mermaid 图示，以及行动项清单",
+        "highlight_3": "用领域词典把反复出现的语音转文字错误纠正一次，之后每场会议都能认对",
+        "highlight_4": "在提交任何内容之前先审阅提取出的行动项 — 噪音归档，其余提交",
+        "highlight_5": "任务和日历提供方可插拔：内置本地任务账本和 iCalendar（.ics）读取器，组织也可以注册自己的实现",
+        "page_label": "会议"
       }
     },
     "papyrus": {
@@ -1406,6 +1476,18 @@
         "session_title": "Papyrus：{{name}}",
         "warning_count_other": "{{count}} 个警告",
         "word_count_other": "{{count}} 个词"
+      },
+      "manifest": {
+        "description": "带实时 PDF 预览和 AI 合著者的 LaTeX 论文编辑器。在分栏编辑器里写作，按 Cmd+S（Windows 和 Linux 上是 Ctrl+S）用 pdflatex 或 tectonic 编译，渲染好的 PDF 就在源码旁边。编译错误会解析成可点击的列表，点一下跳到出错的那一行。可以从任意 git 远端克隆已有论文，然后在工具栏里提交和推送。合著者面板是一个限定在这篇论文范围内的真实 Kiro Crew 会话，代理可以读写你的 LaTeX，你则看着 PDF 实时更新。",
+        "display_name": "Papyrus",
+        "highlight_1": "分栏 LaTeX 编辑器，旁边是实时 PDF 预览",
+        "highlight_2": "保存即编译（Cmd+S，Windows 和 Linux 上为 Ctrl+S），走 pdflatex 或 tectonic，bibtex 的多轮编译也帮你跑完",
+        "highlight_3": "没装 TeX？一键把校验过的 Tectonic 编译器装进 Papyrus 自己的文件夹",
+        "highlight_4": "编译器的错误和警告会解析成可点击的列表，点一下跳到对应行",
+        "highlight_5": "AI 合著者聊天限定在这篇论文范围内 — 它读写你正在看的 LaTeX",
+        "highlight_6": "从任意 git 远端克隆论文，然后在工具栏里提交、拉取和推送",
+        "highlight_7": "从不带 shell escape 运行编译器，因此恶意 .tex 文件无法执行命令",
+        "page_label": "Papyrus"
       }
     },
     "pptxMaker": {
@@ -1502,6 +1584,17 @@
       },
       "slidePreview": {
         "preview_unavailable": "预览不可用"
+      },
+      "manifest": {
+        "description": "在聊天里描述你想要的演示文稿，拿回一个真正的 .pptx。代理会先访谈你，写出简报、大纲和美术方向，然后排版每一张幻灯片并生成文件 — 每份产出都会在对话旁边的实时预览里出现。幻灯片在构建过程中以动画 SVG 呈现，于是你能看着演示文稿成形，而不是干等下载。可复用的样式和 .pptx 模板，让同一份内容能做出三种不同的样子。",
+        "display_name": "PPTX Maker",
+        "highlight_1": "聊着聊着就得到一个完成的 .pptx — 规格模式会仔细规划，速成模式把 URL 或粘贴的文字直接变成幻灯片",
+        "highlight_2": "每份产出都有实时预览：简报、大纲、美术方向，然后是排版过程中以动画 SVG 呈现的幻灯片",
+        "highlight_3": "样式决定视觉调性，.pptx 模板决定结构，于是同一份演示文稿可以换皮而不用重写内容",
+        "highlight_4": "导入自己的 HTML 样式或现有 .pptx 模板，代理会遵循其中的配色、字体和版式",
+        "highlight_5": "不离开仪表板就能打开成品文件或定位到它所在的文件夹",
+        "highlight_6": "封装公开的 spec-driven-presentation-maker 引擎，按 sha256 锁定的版本拉取；无需手动安装任何东西",
+        "page_label": "PPTX Maker"
       }
     },
     "workflows": {
@@ -1552,6 +1645,16 @@
         "run_detail": "运行详情",
         "select_a_run_to_see_its_phases_agents_and_result": "选择一次运行以查看其阶段、代理和结果。",
         "unknown": "未知"
+      },
+      "manifest": {
+        "description": "编写、运行并观察动态工作流：一些 Python 脚本，通常由代理根据你用自然语言写的目标生成，按顺序的阶段驱动多个 Kiro Crew 代理。脚本在任何东西开始运行之前，会先对照沙箱化的工作流命令集做检查，于是错误在不执行的情况下就能暴露出来；随后页面会随运行进展流式显示每个阶段和每次代理事件。应用自带可直接运行的示例，可以从它们开始。",
+        "display_name": "工作流",
+        "highlight_1": "运行之前先校验工作流 — 错误会在什么都没执行的情况下暴露出来",
+        "highlight_2": "实时观察运行，一个阶段接一个阶段，带每个代理的进度事件",
+        "highlight_3": "脚本只能用沙箱化的工作流 API，而不是任意 Python",
+        "highlight_4": "通常由自然语言目标自动生成，之后还能手工修改",
+        "highlight_5": "自带可直接运行的示例，方便上手",
+        "page_label": "工作流"
       }
     },
     "crewCompanion": {
@@ -1628,6 +1731,16 @@
         "repeat_hours": "每 {{n}} 小时",
         "repeat_days": "每 {{n}} 天",
         "repeat_daily": "每天"
+      },
+      "manifest": {
+        "description": "Kiro Crew 的桌面伙伴，帮你把一天过得有节奏。它会提醒你休息，记住你用自然语言设的提醒，在你需要放松时带你做一段简短呼吸练习。会话完成、失败或需要你确认时，它也会告诉你。",
+        "display_name": "Crew Companion",
+        "highlight_1": "轻声提醒你休息 — 喝水、伸展、远眺 — 间隔由你设定",
+        "highlight_2": "用自然语言设置提醒，比如“20 分钟后喝水”",
+        "highlight_3": "需要放松时做一段简短的呼吸练习",
+        "highlight_4": "会话完成、失败或需要你确认时会告诉你",
+        "highlight_5": "浮在桌面上，形象可随时更换",
+        "page_label": "Crew Companion"
       }
     },
     "mdNotebook": {
@@ -1786,6 +1899,19 @@
         "empty": "还没有从此保险库删除过任何内容，因此没有 .trash 文件夹。",
         "unsupported": "此系统不支持打开文件夹。",
         "failed": "无法打开文件夹：{{message}}"
+      },
+      "manifest": {
+        "description": "把 markdown 笔记本放在 git 仓库里，笔记因此有版本、可迁移，任何编辑器都读得懂。指向一个 GitHub 仓库，它会克隆一份工作副本；也可以挂上你已有的文件夹 — 包括现成的 Obsidian 仓库 — 它会就地接管那份检出，不再复制第二份。笔记以排版后的文本呈现，点一下就能就地编辑，[[wikilinks]] 把它们连起来，每篇笔记都会显示哪些笔记指向自己。同步一步完成提交、拉取和推送；遇到合并冲突会如实报告 — 列出冲突的笔记并中止合并 — 而不是覆盖任何内容。",
+        "display_name": "笔记",
+        "highlight_1": "笔记就是 git 仓库里的纯 markdown — 没有锁定，Obsidian 或任何编辑器都能读",
+        "highlight_2": "把 GitHub 仓库克隆为笔记仓库，或者直接挂上你已有的文件夹，不做复制",
+        "highlight_3": "点击任意渲染后的块即可就地编辑；Enter 新建一个块，Tab 缩进列表",
+        "highlight_4": "笔记之间用 [[Wikilinks]] 互联，反向链接列表会显示哪些笔记指向你正在读的这篇",
+        "highlight_5": "标题和正文全文搜索，另有文件夹视图和平铺视图，六种排序方式",
+        "highlight_6": "一步同步完成提交、拉取和推送；合并冲突会列出冲突的笔记，不覆盖任何内容",
+        "highlight_7": "如果文件在你打开后已在磁盘上改动，保存会被拒绝，别处做的修改绝不会被冲掉",
+        "highlight_8": "可以选择把笔记仓库索引进知识库，让代理能搜索你的笔记",
+        "page_label": "笔记"
       }
     },
     "mochi": {
@@ -2349,6 +2475,67 @@
           "spawn": "代理",
           "system": "系统"
         }
+      },
+      "manifest": {
+        "description": "一个住在你屏幕上的桌面伙伴。Mochi 在自己的面板里聊天，替你盯着网页和信息源，按你的日程规划一天。它记得你们相处的点滴，只在确实有变化时才拍你肩膀。",
+        "display_name": "Mochi",
+        "highlight_1": "浮在桌面上的宠物窗口 — 透明、可穿透点击、始终陪着你",
+        "highlight_2": "监视列表带可靠性保证：到点调度、失败退避、至少一次通知",
+        "highlight_3": "自行规划和重排任务队列；确定性的动作和情绪不消耗任何令牌",
+        "highlight_4": "记得你们的关系 — 连续天数、最忙的日子、里程碑只庆祝一次",
+        "highlight_5": "天生安静：通知会合并，静音模式会先扣住，开会时不打扰",
+        "highlight_6": "自主内核完全在进程内 — 没有第二个应用，也没有额外运行时",
+        "page_label": "Mochi"
+      }
+    },
+    "agentWorlds": {
+      "manifest": {
+        "description": "把正在运行的代理变成动态像素画场景里的角色，一眼就能看出 Kiro Crew 有多忙。每个活跃代理都是一个精灵图，随着工作开始和结束做出反应；场景主题从经典办公室到巫师塔或水下实验室。弹出为独立窗口，就能在工作时把它放在第二块屏幕上。",
+        "display_name": "Agent Worlds",
+        "highlight_1": "实时查看哪些代理正在运行，以角色而非列表呈现",
+        "highlight_2": "主题场景包括 Office、Panda Den、Neural Net、Wizard Tower 和 Deep Lab",
+        "highlight_3": "弹出为独立窗口放到第二台显示器上；场景选择保持同步",
+        "highlight_4": "记住你选择的场景，下次打开时沿用",
+        "highlight_5": "纯粹是可视化 — 从不改变代理的行为",
+        "page_label": "Worlds"
+      }
+    },
+    "channels": {
+      "manifest": {
+        "description": "一个共享房间，多个代理在这里一起解决问题，而不是单个代理独自干。你给每个代理分配角色，它们把进展发到频道里，公开回应彼此的 @提及 — 代理之间没有私聊，因此整段交流始终可读，而任何改变状态的操作仍由你批准。代理会一直留在频道里，直到被解散或超时。",
+        "display_name": "频道",
+        "highlight_1": "多个分配了角色的代理在同一份共享、可读的记录中协作",
+        "highlight_2": "代理之间没有私聊 — 每一次交流都发生在频道里",
+        "highlight_3": "任何改变状态的操作，最终都由你批准",
+        "highlight_4": "代理会一直留在频道里，直到被解散或超时",
+        "highlight_5": "在应用商店网格中隐藏；用 `kirocrew app enable channels` 启用",
+        "page_label": "频道"
+      }
+    },
+    "devFleet": {
+      "manifest": {
+        "description": "开发 Kiro Crew 本身用的控制面板。列出每个功能工作树及其拉取请求状态、提交数和磁盘用量，还能把其中任意一个拉起为 Pod。Pod 是一套完整预览实例，占用独立端口和独立数据目录，于是你可以点开未做完的改动，而不影响正在运行的网关。周边杂活它也一并处理 — 拉取 main 并重新构建、给分支变基、流式查看 Pod 日志，以及清理工作已合并的工作树。",
+        "display_name": "开发机群",
+        "highlight_1": "把任意工作树拉起为独立 Pod，占用自己的端口和数据目录，正在运行的网关毫不受影响",
+        "highlight_2": "机群视图显示每个分支的 PR 状态、提交数和磁盘用量",
+        "highlight_3": "在仪表板里同步（拉取 main 并重新构建）或给分支变基",
+        "highlight_4": "“Prune merged”不会删除仍有未提交或未跟踪改动的工作树，而是拒绝操作",
+        "highlight_5": "在界面上流式查看 Pod 日志，并签发 Pod 访问令牌",
+        "highlight_6": "给开发 Kiro Crew 本身的人用 — 日常使用并不需要它",
+        "highlight_7": "Pod 可以跑在 Linux（systemd --user）和 macOS（launchd）上 — 但 macOS 上的 Pod 没有强制的内存/CPU 上限；Make Live 仍然只支持 Linux；机群视图、PR 状态、同步、变基和清理在任何平台都可用",
+        "page_label": "开发机群"
+      }
+    },
+    "projects": {
+      "manifest": {
+        "description": "把多步骤的活儿交出去，让它无人值守地跑到完成。用自然语言描述工作、粘贴写好的规格，或者上传 YAML 文件，然后可以先生成计划审查步骤，也可以直接开跑。每次运行都有自己的页面，逐步显示进度，你随时可以暂停、恢复、重试或停止。",
+        "display_name": "任务运行器",
+        "highlight_1": "三种入口：用自然语言描述工作、粘贴规格，或上传 YAML",
+        "highlight_2": "先生成计划、审查步骤，再决定是否真的运行",
+        "highlight_3": "运行无人值守地执行，进度逐步显示在这次运行自己的页面上",
+        "highlight_4": "随时暂停、恢复、重试或停止一次运行",
+        "highlight_5": "保留历次运行及其结果的记录",
+        "page_label": "任务运行器"
       }
     },
     "opsMissionControl": {
@@ -2719,6 +2906,17 @@
         "verification_not_checkable_label": "sent, not confirmed",
         "verification_not_checkable_meaning": "The {{verb}} was accepted, but this app cannot observe whether it took effect — an acknowledgement leaves an alert firing by design, so the alarm's state says nothing either way.",
         "verification_pending_meaning_at": "The {{verb}} returned success, which only means the provider accepted the request. The next heartbeat after {{when}} re-reads the signal to find out whether it took effect."
+      },
+      "manifest": {
+        "display_name": "运维指挥中心",
+        "description": "一个自主的运维一线响应者。它盯着你的告警、呼叫和监控项，谁在报警就接手谁，带着真实上下文去调查，并给出修复建议 — 学到的东西都记在本地账本里，于是同一个故障第二次出现时比第一次更快解决。",
+        "page_label": "指挥中心",
+        "highlight_1": "告警一触发就在一个心跳内接手，在任何人需要去看之前就开始调查",
+        "highlight_2": "知识账本带置信度和信任级别 — 同一个故障再次出现时，直接用已经掌握的结论解决",
+        "highlight_3": "实时看板既在仪表板里，也是可回复的 Slack 话题，于是频道就是仪表板",
+        "highlight_4": "可连接 AWS CloudWatch、PagerDuty、Datadog、GitHub Issues，或任何能 POST 签名 JSON 的系统 — 包括 Alertmanager 格式的请求体，每条告警各自展开为一个事件",
+        "highlight_5": "默认只读 — 写操作按信号模式逐个显式开启，每一次都有审计记录",
+        "highlight_6": "感知轮值：值班时自动化档位自行开启，不值班时自行关闭"
       }
     },
     "specBuilder": {
@@ -2874,6 +3072,11 @@
         "dismiss_error": "关闭错误提示",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "聊清一个想法，审阅方案，然后让代理去实现。"
+      },
+      "manifest": {
+        "display_name": "Spec Builder",
+        "description": "在 Kiro Crew 内进行 spec 驱动开发：借助内嵌代理把一个功能想法变成需求 → 设计 → 任务，在应用内审阅 markdown，然后把已通过的方案交给一个自主执行会话去完成。",
+        "page_label": "Spec Builder"
       }
     }
   },
@@ -3010,7 +3213,8 @@
         "verified_publisher": "已验证发布者",
         "verified_publisher_first_party": "已验证发布者（第一方）",
         "desktop_app": "桌面端",
-        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 Kiro Crew 桌面端才能使用。"
+        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 Kiro Crew 桌面端才能使用。",
+        "view_details_for": "查看 {{name}} 的详情"
       },
       "categoryRail": {
         "add_source": "添加来源",
@@ -3025,7 +3229,8 @@
         "get": "获取",
         "installed": "已安装",
         "desktop_app": "桌面端",
-        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 Kiro Crew 桌面端才能使用。"
+        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 Kiro Crew 桌面端才能使用。",
+        "view_details_for": "查看 {{name}} 的详情"
       },
       "featuredSpotlight": {
         "enable": "启用",
@@ -3034,7 +3239,8 @@
         "installed": "已安装",
         "v": "v",
         "verified_publisher": "已验证发布者",
-        "verified_publisher_first_party": "已验证发布者（第一方）"
+        "verified_publisher_first_party": "已验证发布者（第一方）",
+        "view_details_for": "查看 {{name}} 的详情"
       },
       "installedAppCard": {
         "agent_other": "{{count}} 个代理",

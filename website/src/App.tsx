@@ -96,6 +96,7 @@ import CommandPalette from './components/CommandPalette'
 import Modal from './components/Modal'
 
 import { i18nT } from './i18n/t'
+import { appPageLabel } from './components/appstore/appManifest'
 import { fmtCompact, fmtNumber, fmtPercent } from './i18n/format'
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
 
@@ -1091,7 +1092,7 @@ export default function App() {
             return [{
               path,
               id: dynamicApp ? `app-${a.name}` : a.name,
-              label: page.label || a.displayName || a.name,
+              label: appPageLabel(a.name, page.label, a.displayName),
               group: 'Apps',
               icon,
             }]

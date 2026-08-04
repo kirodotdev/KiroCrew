@@ -66,7 +66,7 @@ def test_agent_worlds_icon_wired_to_svg() -> None:
     Regression: the shipped ``worlds/icon.svg`` was present but unreferenced, so
     the app fell back to the lucide Gamepad2 glyph in both the store and nav.
     """
-    worlds = next((a for a in mgr._BUILTIN_APPS if a["name"] == "agent-worlds"), None)
-    assert worlds is not None, "agent-worlds builtin missing from _BUILTIN_APPS"
+    worlds = next((a for a in _all_builtin_apps() if a["name"] == "agent-worlds"), None)
+    assert worlds is not None, "agent-worlds builtin missing from every registration path"
     assert worlds.get("iconUrl") == "/app-assets/worlds/icon.svg"
     assert _resolve(worlds["iconUrl"]).is_file()

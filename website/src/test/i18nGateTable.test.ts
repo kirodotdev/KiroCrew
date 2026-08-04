@@ -37,6 +37,7 @@ const HEALTHY: Record<string, { status: number, text: string }> = {
   codemod: run(0, '2 unextracted string(s) — below the baseline of 3.'),
   plural: run(0, "OK: no literal-'s' pluralization found."),
   dnt: run(0, 'OK: 19 DNT term(s) intact across 9 catalog(s) — 62207 value(s) scanned.'),
+  manifest: run(0, 'OK: 16 built-in manifests, 147 strings match locales/en.json exactly.'),
   source: run(0, '[source-strings] 0 new key(s) vs origin/main, 0 finding(s).\n[changed-values] 0 catalog QA finding(s) among values changed vs origin/main.'),
   strings: run(0, '[added-lines] 0 untranslated string(s) on lines this branch wrote.\n[vs-base] 0 touched file(s) gained untranslated strings vs the base.\nOK: 1324 untranslated strings across 241 files, at or below the baseline of 1837.\nOK: 1118 untranslated string(s) inside ALL-CAPS constants across 249 files, at or below the ceiling of 1118.'),
 }
@@ -222,7 +223,7 @@ describe('a whole-repo total over its ceiling reports and does NOT fail', () => 
 })
 
 describe('the table covers the chain it replaced', () => {
-  it('runs exactly the seven scripts, with the flags the && chain used', () => {
+  it('runs exactly the eight scripts, with the flags the && chain used', () => {
     // Dropping a script from this table is a silent loss of coverage, and this is the
     // only test that would notice. `--baseline=3` is part of the contract: the codemod
     // ratchet lived in the package.json chain and moved here.
@@ -234,6 +235,7 @@ describe('the table covers the chain it replaced', () => {
       'check-source-strings.mjs',
       'check-i18n-strings.mjs',
       'check-dnt-catalogs.mjs',
+      'check-app-manifest-sync.mjs',
     ])
   })
 

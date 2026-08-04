@@ -230,6 +230,19 @@
         "wait_local": "Analizando el código en busca de rutas…",
         "wait_repo": "Clonando el repo y enumerando sus rutas…",
         "wait_url": "Cargando la página y siguiendo sus enlaces…"
+      },
+      "manifest": {
+        "description": "Una crítica de diseño que puedes ejecutar antes de pedírsela a un colega. Le das una captura, un flujo completo de varias pantallas, un archivo de Figma, un repositorio git o una URL que ya esté sirviendo, y encuentra las pantallas candidatas, te deja elegir qué revisar y luego responde como lo haría un diseñador con experiencia: una lectura general, lo que funciona y lo que vale la pena ajustar, cada punto ligado a una heurística con nombre. Los flujos de varias pantallas también reciben hallazgos entre pantallas que una sola no puede mostrar — controles inconsistentes, falta de indicación de avance, ninguna forma de volver, callejones sin salida. Renderiza el código y Figma antes de juzgarlos, así que nunca critica elementos visuales que no vio de verdad, y dice con claridad a qué pantallas no pudo llegar en lugar de adivinar.",
+        "display_name": "Design Critique",
+        "highlight_1": "Acepta capturas, un enlace de Figma, un repositorio git, una carpeta local o una URL en ejecución — y te dice qué encontró antes de empezar",
+        "highlight_2": "Mide el contraste y el tamaño de las áreas táctiles desde la página renderizada en vez de estimarlos a partir de una imagen",
+        "highlight_3": "Los flujos de varias pantallas reciben comprobaciones entre pantallas: consistencia de los controles, indicación de avance, una forma de volver, peticiones repetidas y callejones sin salida",
+        "highlight_4": "Cada hallazgo nombra la heurística en la que se basa (Nielsen 1-10, WCAG, Gestalt, Fitts) y lleva una severidad en la escala 1-4 de NN/g",
+        "highlight_5": "Selecciona cualquier línea del informe y haz una pregunta de seguimiento sobre ella, ahí mismo",
+        "highlight_6": "Te dice qué no pudo ver en lugar de criticar una pantalla vacía o bloqueada",
+        "highlight_7": "No toca el proyecto que revisa: nunca instala sus dependencias, ejecuta sus scripts, inicia su servidor de desarrollo ni edita sus archivos",
+        "highlight_8": "Para tomar las capturas usa un navegador headless, que se descarga una vez en una caché de tu directorio home en el primer uso y nunca dentro del proyecto",
+        "page_label": "Design Critique"
       }
     },
     "autoResearch": {
@@ -399,6 +412,18 @@
         "state_stalled": "Estancado",
         "state_stopped": "Detenido",
         "state_working": "Trabajando"
+      },
+      "manifest": {
+        "description": "Ejecuta campañas de investigación de varios ciclos que siguen trabajando después de que te vas. Le das una pregunta y la expande en un árbol de subpreguntas más acotadas, envía agentes a investigar cada una y transmite los hallazgos a la página a medida que llegan. Una campaña se conduce sola hasta que la pregunta queda resuelta o detecta que el avance se estancó, y puedes enviar el informe terminado a tu biblioteca de Conocimiento o a un artefacto que puedas compartir.",
+        "display_name": "Research Lab",
+        "highlight_1": "Expande una pregunta amplia en un árbol acotado de subpreguntas antes de gastar tiempo de agentes",
+        "highlight_2": "Las campañas siguen investigando entre tus revisiones, con los hallazgos transmitidos en vivo",
+        "highlight_3": "Detecta cuando una campaña deja de avanzar en lugar de repetirse para siempre",
+        "highlight_4": "El modo supervisado se detiene para preguntarte cuando necesita una decisión; el modo sin supervisión avanza de corrido",
+        "highlight_5": "Agrega preguntas de seguimiento a mitad de la campaña sin empezar de nuevo",
+        "highlight_6": "Inicia, pausa y reanuda cualquier campaña desde el panel",
+        "highlight_7": "Exporta el informe terminado a tu biblioteca de Conocimiento o a un artefacto que puedas compartir",
+        "page_label": "Research Lab"
       }
     },
     "codeReviewSage": {
@@ -478,6 +503,16 @@
         "phase_failed": "fallido",
         "phase_gating": "barrera de diseño…",
         "phase_queued": "en cola"
+      },
+      "manifest": {
+        "description": "Revisa a fondo las pull requests de GitHub y te dice qué cambios merecen de verdad tu atención. Cada archivo modificado se revisa en su propia sesión de agente aislada, ponderada por el alcance del impacto que tiene, y todo se resume en un informe de enfoque priorizado. Los hallazgos se preparan como una revisión de GitHub en borrador que no se publica hasta que tú la envías, y el revisor sigue aprendiendo los estándares reales de tu repositorio a partir de correcciones ya integradas y comentarios de revisiones anteriores.",
+        "display_name": "Code Review Sage",
+        "highlight_1": "El informe de enfoque ordena los cambios por alcance del impacto, así los archivos riesgosos se leen primero",
+        "highlight_2": "Una sesión de agente aislada por cambio, así los hallazgos nunca se filtran entre archivos",
+        "highlight_3": "Se publica como una revisión de GitHub en estado PENDING (borrador) — tú sigues siendo quien la envía",
+        "highlight_4": "Aprende por repositorio a partir de correcciones ya integradas, comentarios de revisión y discusiones de diseño",
+        "highlight_5": "Revisa pull requests de GitHub; necesita una CLI `gh` autenticada en el host del gateway",
+        "page_label": "Code Review Sage"
       }
     },
     "fileExplorer": {
@@ -524,6 +559,17 @@
       },
       "treeNode": {
         "loading": "cargando..."
+      },
+      "manifest": {
+        "description": "Explora y lee archivos en la máquina que ejecuta Kiro Crew sin salir del panel. Mantén varios archivos abiertos en pestañas, recorre el árbol de directorios con el estado de git de cada archivo al lado, busca una cadena en toda una carpeta y lee el markdown renderizado en lugar del código fuente. Es de solo lectura por diseño: abre y busca archivos, pero nunca los edita, los mueve ni los elimina, y solo puede llegar a tu directorio home más /tmp y /opt.",
+        "display_name": "Archivos",
+        "highlight_1": "Solo lectura: abre y busca archivos, y nunca los escribe, los mueve ni los elimina",
+        "highlight_2": "Varios archivos abiertos a la vez en pestañas, con resaltado de sintaxis",
+        "highlight_3": "Los archivos Markdown se muestran como texto con formato en lugar del código fuente",
+        "highlight_4": "El árbol de directorios muestra el estado de git de cada archivo en línea",
+        "highlight_5": "Busca en un directorio con coincidencias por línea y una vista previa del contexto",
+        "highlight_6": "Las rutas accesibles se limitan a tu directorio home, /tmp y /opt — los enlaces simbólicos hacia fuera se rechazan",
+        "page_label": "Archivos"
       }
     },
     "issueRadar": {
@@ -1156,6 +1202,20 @@
           "last_update": "Última actualización",
           "number": "Número"
         }
+      },
+      "manifest": {
+        "description": "Un asistente de triaje de incidencias con memoria. Explora, filtra y clasifica incidencias de GitHub y de GitLab con etiquetas sugeridas por IA y notas de investigación por incidencia — con los hallazgos guardados en un registro local para que nada se investigue dos veces.",
+        "display_name": "Issue Radar",
+        "highlight_1": "Resúmenes con IA y etiquetas sugeridas para incidencias y pull requests, cada una con su razonamiento",
+        "highlight_2": "Notas de investigación por incidencia guardadas en un registro local para que nada se investigue dos veces",
+        "highlight_3": "Actúa sobre una pull request sin salir: aprobar, solicitar cambios, comentar, fusionar, cerrar o reabrir, y cancelar o volver a ejecutar CI — de una en una o sobre una selección",
+        "highlight_4": "Fusionar nunca se salta un control: el host aplica sus revisiones y comprobaciones obligatorias, y la fusión automática puede integrar un cambio por su cuenta en cuanto se cumplen",
+        "highlight_5": "Una aprobación o una fusión se fija al commit que se te mostró, así que un push que llega a mitad de la revisión se rechaza en lugar de aprobarse sin verlo",
+        "highlight_6": "Cada escritura necesita acceso de triaje o de push en el repositorio; una conexión de solo lectura se limita a sugerir",
+        "highlight_7": "Muestra los repositorios en los que has contribuido hace poco, así conectar uno es un clic",
+        "highlight_8": "Guarda en caché las incidencias, las etiquetas y los miembros de forma local, y los actualiza cuando lo pides",
+        "highlight_9": "Funciona con GitHub; necesita una CLI `gh` autenticada en el host del gateway",
+        "page_label": "Issue Radar"
       }
     },
     "meetings": {
@@ -1345,6 +1405,16 @@
         "chat": "Chat",
         "html": "Diagrama",
         "markdown": "Notas"
+      },
+      "manifest": {
+        "description": "Un asistente de reuniones con IA. Transcribe una reunión en vivo, mantiene notas estructuradas y diagramas a medida que avanza, extrae tareas y te deja revisarlas antes de registrarlas.",
+        "display_name": "Reuniones",
+        "highlight_1": "Transcripción en vivo con el propio motor de voz a texto de Kiro Crew — sin un daemon extra y sin una cuenta en la nube más allá de la que ya usas",
+        "highlight_2": "Un equipo de agentes trabaja la reunión en paralelo: notas estructuradas, un diagrama HTML/Mermaid y una lista de tareas",
+        "highlight_3": "Corrige una vez los errores recurrentes de voz a texto con un diccionario de tu dominio y todas las reuniones siguientes los transcriben bien",
+        "highlight_4": "Revisa las tareas extraídas antes de registrar nada — archiva el ruido y registra el resto",
+        "highlight_5": "Proveedores de tareas y de calendario conectables: incluye un registro local de tareas y un lector de iCalendar (.ics), y una organización puede registrar los suyos",
+        "page_label": "Reuniones"
       }
     },
     "papyrus": {
@@ -1448,6 +1518,18 @@
         "word_count_many": "{{count}} palabras",
         "word_count_one": "{{count}} palabra",
         "word_count_other": "{{count}} palabras"
+      },
+      "manifest": {
+        "description": "Un editor de artículos en LaTeX con vista previa del PDF en vivo y un coautor con IA. Escribe en un editor de panel dividido, pulsa Cmd+S (Ctrl+S en Windows y Linux) para compilar con pdflatex o tectonic, y lee el PDF renderizado junto a tu código fuente. Los errores de compilación se analizan en una lista donde puedes hacer clic para saltar a la línea que los provoca. Clona un artículo existente desde cualquier remoto de git y luego confirma y envía los cambios desde la barra de herramientas. El panel del coautor es una sesión de chat real de Kiro Crew acotada al artículo, así que el agente puede leer y editar tu LaTeX mientras ves cómo se actualiza el PDF.",
+        "display_name": "Papyrus",
+        "highlight_1": "Editor de LaTeX en panel dividido con una vista previa del PDF en vivo al lado",
+        "highlight_2": "Compila al guardar (Cmd+S, o Ctrl+S en Windows y Linux) con pdflatex o tectonic, y ejecuta el ciclo de bibtex por ti",
+        "highlight_3": "¿No tienes TeX instalado? Un clic instala un compilador Tectonic verificado en la carpeta propia de Papyrus",
+        "highlight_4": "Errores y advertencias del compilador analizados en una lista donde puedes hacer clic para saltar a la línea",
+        "highlight_5": "Chat con el coautor de IA acotado al artículo — lee y edita el LaTeX que tienes delante",
+        "highlight_6": "Clona un artículo desde cualquier remoto de git y luego confirma, trae y envía los cambios desde la barra de herramientas",
+        "highlight_7": "Nunca ejecuta el compilador con shell escape, así que un archivo .tex hostil no puede ejecutar comandos",
+        "page_label": "Papyrus"
       }
     },
     "pptxMaker": {
@@ -1548,6 +1630,17 @@
       },
       "slidePreview": {
         "preview_unavailable": "Vista previa no disponible"
+      },
+      "manifest": {
+        "description": "Describe en el chat la presentación que quieres y recibe un .pptx real. Un agente te entrevista, escribe un briefing, un esquema y una dirección de arte, luego compone cada diapositiva y genera el archivo — y tú ves aparecer cada entregable en una vista previa en vivo junto a la conversación. Las diapositivas se renderizan como SVG animado mientras se construyen, así que puedes ver cómo toma forma la presentación en lugar de esperar una descarga. Los estilos reutilizables y las plantillas .pptx permiten que el mismo contenido salga con el aspecto de tres presentaciones distintas.",
+        "display_name": "PPTX Maker",
+        "highlight_1": "Llega a un .pptx terminado conversando — el modo especificación lo planea con cuidado y el modo directo convierte una URL o un texto pegado directamente en diapositivas",
+        "highlight_2": "Vista previa en vivo de cada entregable: briefing, esquema, dirección de arte y luego las diapositivas como SVG animado mientras se componen",
+        "highlight_3": "Los estilos definen el aire visual y las plantillas .pptx definen la estructura, así una presentación puede cambiar de apariencia sin reescribir el contenido",
+        "highlight_4": "Importa tu propio estilo HTML o una plantilla .pptx existente y el agente sigue sus colores, tipografías y composiciones",
+        "highlight_5": "Abre el archivo terminado o muestra su carpeta sin salir del panel",
+        "highlight_6": "Envuelve el motor público spec-driven-presentation-maker, descargado en una versión fijada por sha256; nada que instalar a mano",
+        "page_label": "PPTX Maker"
       }
     },
     "workflows": {
@@ -1600,6 +1693,16 @@
         "run_detail": "Detalle de la ejecución",
         "select_a_run_to_see_its_phases_agents_and_result": "Selecciona una ejecución para ver sus fases, agentes y resultado.",
         "unknown": "Desconocido"
+      },
+      "manifest": {
+        "description": "Crea, ejecuta y observa flujos de trabajo dinámicos: scripts de Python, normalmente escritos por un agente a partir de un objetivo en lenguaje natural, que guían a varios agentes de Kiro Crew por fases ordenadas. Un script se comprueba contra un conjunto aislado de comandos de flujo de trabajo antes de que se ejecute nada, así los errores salen a la luz sin ejecutarse, y luego la página transmite cada fase y cada evento de los agentes a medida que avanza la ejecución. La aplicación incluye ejemplos ejecutables para empezar.",
+        "display_name": "Flujos de trabajo",
+        "highlight_1": "Valida un flujo de trabajo antes de ejecutarlo — los errores salen a la luz sin que se ejecute nada",
+        "highlight_2": "Observa la ejecución en vivo, fase por fase, con eventos de avance por agente",
+        "highlight_3": "Los scripts se limitan a una API de flujo de trabajo aislada en lugar de Python arbitrario",
+        "highlight_4": "Normalmente se escriben por ti a partir de un objetivo en lenguaje natural y luego los puedes editar a mano",
+        "highlight_5": "Incluye ejemplos ejecutables para empezar",
+        "page_label": "Flujos de trabajo"
       }
     },
     "crewCompanion": {
@@ -1682,6 +1785,16 @@
         "repeat_hours": "cada {{n}} h",
         "repeat_days": "cada {{n}} días",
         "repeat_daily": "cada día"
+      },
+      "manifest": {
+        "description": "Un acompañante de escritorio para Kiro Crew que te ayuda a marcar el ritmo de tu día: te recuerda tomar descansos, guarda los recordatorios que creas en lenguaje natural y hace un ejercicio corto de respiración cuando necesitas despejarte. También te avisa cuando una sesión termina, falla o necesita tu aprobación.",
+        "display_name": "Crew Companion",
+        "highlight_1": "Avisos suaves para descansar — agua, estirarse, mirar a lo lejos — en el intervalo que elijas",
+        "highlight_2": "Recordatorios que creas en lenguaje natural, como \"toma agua en 20 minutos\"",
+        "highlight_3": "Un ejercicio corto de respiración para despejarte cuando lo necesitas",
+        "highlight_4": "Te avisa cuando una sesión termina, falla o necesita tu aprobación",
+        "highlight_5": "Flota en tu escritorio con un avatar intercambiable",
+        "page_label": "Crew Companion"
       }
     },
     "mdNotebook": {
@@ -1840,6 +1953,19 @@
         "empty": "Todavía no se ha eliminado nada de este vault, así que no hay carpeta .trash.",
         "unsupported": "Abrir una carpeta no es compatible con este sistema.",
         "failed": "No se pudo abrir la carpeta: {{message}}"
+      },
+      "manifest": {
+        "description": "Mantén un cuaderno en markdown que vive en un repositorio git, así tus notas quedan versionadas, son portables y se pueden leer con cualquier otro editor. Apúntalo a un repositorio de GitHub y clona una copia de trabajo, o adjunta una carpeta que ya tengas — incluida una bóveda de Obsidian existente — y adopta ese checkout tal cual, sin hacer una segunda copia. Las notas se muestran como texto con formato en el que puedes hacer clic para editarlo directamente, los [[wikilinks]] las conectan y cada nota muestra qué apunta a ella. La sincronización confirma, trae y envía los cambios en un solo paso, y un conflicto de fusión se reporta — listando las notas en conflicto y abortando la fusión — en lugar de sobrescribir nada.",
+        "display_name": "Notas",
+        "highlight_1": "Tus notas son markdown simple en un repositorio git — sin dependencia de un proveedor, legibles con Obsidian o cualquier editor",
+        "highlight_2": "Clona un repositorio de GitHub como bóveda, o adjunta una carpeta que ya tengas sin copiarla",
+        "highlight_3": "Haz clic en cualquier bloque renderizado para editarlo ahí mismo; Enter empieza un bloque nuevo y Tab anida listas",
+        "highlight_4": "[[Wikilinks]] entre notas, con una lista de retroenlaces que muestra qué apunta a la nota que estás leyendo",
+        "highlight_5": "Búsqueda de texto completo en títulos y contenido, además de vistas de carpetas y plana con seis criterios de orden",
+        "highlight_6": "La sincronización en un paso confirma, trae y envía los cambios; un conflicto de fusión lista las notas en conflicto y no sobrescribe nada",
+        "highlight_7": "Un guardado se rechaza si el archivo cambió en el disco desde que lo abriste, así las ediciones hechas en otro lugar nunca se pisan",
+        "highlight_8": "Opcionalmente, indexa una bóveda en la biblioteca de Conocimiento para que los agentes puedan buscar tus notas",
+        "page_label": "Notas"
       }
     },
     "mochi": {
@@ -2403,6 +2529,67 @@
           "spawn": "Agente",
           "system": "Sistema"
         }
+      },
+      "manifest": {
+        "description": "Un acompañante de escritorio que vive en tu pantalla. Mochi conversa en su propio panel, vigila páginas y feeds por ti, planea su día en torno a tu agenda, recuerda el tiempo que pasan juntos y te da un toque en el hombro solo cuando algo cambió de verdad.",
+        "display_name": "Mochi",
+        "highlight_1": "Una ventana de mascota que flota en tu escritorio — transparente, con clics que la atraviesan, siempre acompañando",
+        "highlight_2": "Lista de seguimiento con garantías de fiabilidad: programación por hora de vencimiento, espera progresiva ante fallos y notificación al menos una vez",
+        "highlight_3": "Planea y replanea su propia cola de tareas; los movimientos y los estados de ánimo deterministas no cuestan tokens",
+        "highlight_4": "Recuerda su relación contigo — rachas, días más ocupados e hitos celebrados exactamente una vez",
+        "highlight_5": "Silencioso por diseño: las notificaciones se agrupan, el modo silencio las retiene y se respetan las reuniones",
+        "highlight_6": "El núcleo autónomo corre por completo en el mismo proceso — sin una segunda aplicación y sin un entorno de ejecución extra",
+        "page_label": "Mochi"
+      }
+    },
+    "agentWorlds": {
+      "manifest": {
+        "description": "Convierte tus agentes en ejecución en personajes de una escena animada de pixel art, así un vistazo te dice qué tan ocupado está Kiro Crew. Cada agente activo aparece como un sprite que reacciona cuando el trabajo empieza y termina, en escenas temáticas que van de una oficina clásica a una torre del mago o un laboratorio submarino. Ábrelo en su propia ventana para mantenerlo en una segunda pantalla mientras trabajas.",
+        "display_name": "Agent Worlds",
+        "highlight_1": "Vista en vivo de qué agentes están en ejecución, como personajes en lugar de una lista",
+        "highlight_2": "Escenas temáticas como Oficina, Guarida de pandas, Red neuronal, Torre del mago y Laboratorio submarino",
+        "highlight_3": "Ábrela en una ventana aparte para un segundo monitor; la escena elegida se mantiene sincronizada",
+        "highlight_4": "Recuerda la escena que elegiste entre visitas",
+        "highlight_5": "Es solo una visualización — nunca cambia lo que hacen tus agentes",
+        "page_label": "Worlds"
+      }
+    },
+    "channels": {
+      "manifest": {
+        "description": "Una sala compartida donde varios agentes trabajan juntos en un problema en lugar de que uno lo haga solo. Le asignas un rol a cada agente, y publican su avance en el canal y responden a las @menciones de los demás a la vista de todos — no hay mensajería privada entre agentes, así que todo el intercambio queda legible, y tú sigues siendo quien aprueba cualquier cosa que cambie el estado. Los agentes siguen activos en el canal hasta que los retiras o se agota su tiempo.",
+        "display_name": "Canales",
+        "highlight_1": "Varios agentes con roles asignados colaboran en una sola transcripción compartida y legible",
+        "highlight_2": "Sin mensajería privada entre agentes — cada intercambio ocurre en el canal",
+        "highlight_3": "Tú sigues siendo quien aprueba al final cualquier operación que modifique el estado",
+        "highlight_4": "Los agentes permanecen en el canal hasta que los retiras o se agota su tiempo",
+        "highlight_5": "Oculto en la cuadrícula de la App Store; actívalo con `kirocrew app enable channels`",
+        "page_label": "Canales"
+      }
+    },
+    "devFleet": {
+      "manifest": {
+        "description": "Un panel de control para trabajar en Kiro Crew mismo. Lista cada worktree de función junto con el estado de su pull request, su número de commits y su uso de disco, y puede levantar cualquiera de ellos como un pod: una instancia de vista previa completa en su propio puerto y con su propio directorio de datos, para que revises un cambio sin terminar sin tocar tu gateway en vivo. También se encarga de las tareas de alrededor — traer main y recompilar, hacer rebase de una rama, transmitir los logs del pod y purgar los worktrees cuyo trabajo ya se integró.",
+        "display_name": "Flota de desarrollo",
+        "highlight_1": "Levanta cualquier worktree como un pod aislado en su propio puerto y directorio de datos, sin tocar tu gateway en vivo",
+        "highlight_2": "Vista de flota con el estado del PR por rama, el número de commits y el uso de disco",
+        "highlight_3": "Sincroniza (trae main y recompila) o haz rebase de una rama sin salir del panel",
+        "highlight_4": "\"Purgar fusionados\" se niega a eliminar un worktree con trabajo sin confirmar o sin seguimiento en lugar de descartarlo",
+        "highlight_5": "Transmite los logs del pod y genera tokens de acceso al pod desde la interfaz",
+        "highlight_6": "Hecho para quienes desarrollan Kiro Crew mismo — no hace falta para el uso diario",
+        "highlight_7": "Los pods corren en Linux (systemd --user) y macOS (launchd) — pero el pod de macOS no tiene un límite de memoria/CPU aplicado; Activar sigue siendo solo para Linux; la vista de flota, el estado del PR, la sincronización, el rebase y la purga funcionan en cualquier plataforma",
+        "page_label": "Flota de desarrollo"
+      }
+    },
+    "projects": {
+      "manifest": {
+        "description": "Delega un trabajo de varios pasos y déjalo llegar al final sin supervisión. Describe el trabajo en lenguaje natural, pega una especificación escrita o sube un archivo YAML, y luego genera primero un plan para revisar los pasos o inícialo de una vez. Cada ejecución tiene su propia página con el avance paso a paso, y puedes pausarla, reanudarla, reintentarla o detenerla en cualquier momento.",
+        "display_name": "Ejecutor de tareas",
+        "highlight_1": "Tres formas de empezar: describe el trabajo en lenguaje natural, pega una especificación o sube un YAML",
+        "highlight_2": "Genera un plan y revisa los pasos antes de comprometerte con una ejecución",
+        "highlight_3": "Las ejecuciones corren sin supervisión, con el avance paso a paso en la página de cada una",
+        "highlight_4": "Pausa, reanuda, reintenta o detén una ejecución en cualquier momento",
+        "highlight_5": "Guarda un historial de las ejecuciones anteriores y sus resultados",
+        "page_label": "Ejecutor de tareas"
       }
     },
     "opsMissionControl": {
@@ -2793,6 +2980,17 @@
         "verification_not_checkable_label": "sent, not confirmed",
         "verification_not_checkable_meaning": "The {{verb}} was accepted, but this app cannot observe whether it took effect — an acknowledgement leaves an alert firing by design, so the alarm's state says nothing either way.",
         "verification_pending_meaning_at": "The {{verb}} returned success, which only means the provider accepted the request. The next heartbeat after {{when}} re-reads the signal to find out whether it took effect."
+      },
+      "manifest": {
+        "display_name": "Ops Mission Control",
+        "description": "Un primer respondedor autónomo para operaciones. Vigila tus alarmas, avisos de guardia y monitores; reclama lo que se dispara; lo investiga con contexto real; y propone una corrección — con todo lo que aprende guardado en un registro local para que la segunda vez sea más rápida que la primera.",
+        "page_label": "Mission Control",
+        "highlight_1": "Reclama en un solo heartbeat una alarma que se dispara, e investiga antes de que nadie tenga que mirar",
+        "highlight_2": "Registro de conocimiento con niveles de certeza y de confianza — un fallo repetido se resuelve con lo que ya sabes",
+        "highlight_3": "Tablero en vivo en el panel y como hilos de Slack a los que puedes responder, así el canal es el panel",
+        "highlight_4": "Se conecta con AWS CloudWatch, PagerDuty, Datadog, GitHub Issues o cualquier sistema que pueda hacer POST de JSON firmado — incluidos los cuerpos con forma de Alertmanager, repartidos en un incidente por alerta",
+        "highlight_5": "Solo lectura por defecto — las acciones de escritura se activan por patrón de señal, y cada una queda auditada",
+        "highlight_6": "Tiene en cuenta la rotación: el nivel de automatización de guardia se activa y se desactiva por su cuenta"
       }
     },
     "specBuilder": {
@@ -2950,6 +3148,11 @@
         "dismiss_error": "Descartar el error",
         "spec_builder": "Spec Builder",
         "talk_through_an_idea_review_the_plan_then_let_an": "Comenta una idea, revisa el plan y deja que un agente la construya."
+      },
+      "manifest": {
+        "display_name": "Spec Builder",
+        "description": "Desarrollo basado en especificaciones dentro de Kiro Crew: convierte una idea de función en Requisitos → Diseño → Tareas con un agente integrado, revisa el markdown en la propia app y luego entrega el plan aprobado a una sesión de ejecución autónoma.",
+        "page_label": "Spec Builder"
       }
     }
   },
@@ -3086,7 +3289,8 @@
         "verified_publisher": "Editor verificado",
         "verified_publisher_first_party": "Editor verificado (propio)",
         "desktop_app": "Aplicación de escritorio",
-        "desktop_app_hint": "Se puede activar desde aquí, pero la ventana propia de la app necesita la app de escritorio de Kiro Crew."
+        "desktop_app_hint": "Se puede activar desde aquí, pero la ventana propia de la app necesita la app de escritorio de Kiro Crew.",
+        "view_details_for": "Ver detalles de {{name}}"
       },
       "categoryRail": {
         "add_source": "Añadir origen",
@@ -3103,7 +3307,8 @@
         "get": "Obtener",
         "installed": "Instalada",
         "desktop_app": "Aplicación de escritorio",
-        "desktop_app_hint": "Se puede activar desde aquí, pero la ventana propia de la app necesita la app de escritorio de Kiro Crew."
+        "desktop_app_hint": "Se puede activar desde aquí, pero la ventana propia de la app necesita la app de escritorio de Kiro Crew.",
+        "view_details_for": "Ver detalles de {{name}}"
       },
       "featuredSpotlight": {
         "enable": "Activar",
@@ -3112,7 +3317,8 @@
         "installed": "Instalada",
         "v": "v",
         "verified_publisher": "Editor verificado",
-        "verified_publisher_first_party": "Editor verificado (propio)"
+        "verified_publisher_first_party": "Editor verificado (propio)",
+        "view_details_for": "Ver detalles de {{name}}"
       },
       "installedAppCard": {
         "agent_many": "{{count}} agentes",

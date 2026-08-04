@@ -1,0 +1,33 @@
+{
+  "name": "agent-worlds",
+  "version": "1.0.0",
+  "displayName": "Agent Worlds",
+  "description": "Turns your running agents into characters in an animated pixel-art scene, so a glance tells you how busy Kiro Crew is. Each active agent appears as a sprite that reacts as work starts and finishes, across themed scenes from a classic office to a wizard tower or an underwater lab. Pop it out into its own window to keep it on a second screen while you work.",
+  "author": "kirocrew",
+  "tags": [
+    "visualization",
+    "agents"
+  ],
+  "highlights": [
+    "Live view of which agents are running, as characters rather than a list",
+    "Themed scenes including Office, Panda Den, Neural Net, Wizard Tower, and Deep Lab",
+    "Pop out into a separate window for a second monitor; scene choice stays in sync",
+    "Remembers your chosen scene between visits",
+    "Purely a visualization — it never changes what your agents do"
+  ],
+  "defaultEnabled": false,
+  "iconUrl": "/app-assets/worlds/icon.svg",
+  "heroImage": "/app-assets/worlds/hero-light.svg",
+  "heroImageDark": "/app-assets/worlds/hero-dark.svg",
+  "heroImageDetail": "/app-assets/worlds/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/worlds/hero-detail-dark.svg",
+  "ui": {
+    "pages": [
+      {
+        "route": "/worlds",
+        "label": "Worlds",
+        "icon": "Gamepad2"
+      }
+    ]
+  }
+}
