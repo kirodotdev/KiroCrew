@@ -138,6 +138,45 @@ async def _await_routed(
         await asyncio.sleep(0.001)
 
 
+async def _await_pending(
+    rt: AcpRuntime, *, exclude: set[int] | None = None, timeout: float = 5.0
+) -> int:
+    """Wait for an in-flight control-plane request and return its id.
+
+    The ``_pending_requests`` counterpart to :func:`_await_routed`, and it exists
+    for the same reason. It replaces the
+    ``await asyncio.sleep(0); next(iter(rt._pending_requests))`` idiom, which
+    assumes one loop iteration is enough for the caller to reach
+    ``_send_and_await``. ``create_session`` first awaits ``asyncio.to_thread`` to
+    resolve the MCP-gateway overlay off the loop, so a single yield leaves
+    ``_pending_requests`` empty — and ``next()`` on an empty iterator raises
+    ``StopIteration``, which PEP 479 converts into
+    ``RuntimeError("coroutine raised StopIteration")`` on its way out of a
+    coroutine. That names neither the stale assumption nor the line that made it.
+
+    ``_send_and_await`` registers the future in the same synchronous block that
+    allocates the id (``runtime.py``), so the entry is visible as soon as the
+    request exists. ``exclude`` drops ids the caller already consumed, so a test
+    driving a second request cannot pick up a leftover entry from the first.
+    """
+    seen = exclude or set()
+    deadline = time.monotonic() + timeout
+    while True:
+        fresh = [rid for rid in rt._pending_requests if rid not in seen]
+        if fresh:
+            # These tests keep exactly one control-plane request in flight, so
+            # more than one means the id being returned is a coin flip.
+            assert len(fresh) == 1, f"expected one in-flight request, got {fresh}"
+            return fresh[0]
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"timed out after {timeout}s waiting for an in-flight request; "
+                f"currently pending: {sorted(rt._pending_requests)}"
+            )
+        # Yield rather than spin: the caller needs the loop to progress.
+        await asyncio.sleep(0.001)
+
+
 # ── The _await_routed helper itself ──
 
 
@@ -3132,8 +3171,7 @@ async def test_create_session_buffers_oauth_emitted_before_response():
     reader_task = await _start_reader(rt)
     create_task = asyncio.create_task(rt.create_session(cwd="/w"))
     try:
-        await asyncio.sleep(0)
-        request_id = next(iter(rt._pending_requests))
+        request_id = await _await_pending(rt)
         oauth_url = "https://mcp.linear.app/authorize?client_id=shared"
         _feed(
             reader,
@@ -3168,8 +3206,7 @@ async def test_failed_session_init_oauth_does_not_leak_to_reused_id():
     failed_task = asyncio.create_task(rt.create_session(cwd="/w"))
     fresh_task = None
     try:
-        await asyncio.sleep(0)
-        failed_request_id = next(iter(rt._pending_requests))
+        failed_request_id = await _await_pending(rt)
         _feed(
             reader,
             {
@@ -3193,8 +3230,7 @@ async def test_failed_session_init_oauth_does_not_leak_to_reused_id():
         assert not rt._pending_init_notifications
 
         fresh_task = asyncio.create_task(rt.create_session(cwd="/w"))
-        await asyncio.sleep(0)
-        fresh_request_id = next(iter(rt._pending_requests))
+        fresh_request_id = await _await_pending(rt, exclude={failed_request_id})
         _feed(reader, {"id": fresh_request_id, "result": {"sessionId": "sid-reused"}})
         handle = await asyncio.wait_for(fresh_task, timeout=3.0)
         assert handle.pop_pending_oauth_requests() == []
