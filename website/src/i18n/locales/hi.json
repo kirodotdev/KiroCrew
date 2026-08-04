@@ -4490,7 +4490,9 @@
       "collapse_paste": "पेस्ट समेटें",
       "expand_paste": "पेस्ट फैलाएँ",
       "paste_lines_one": "[ पेस्ट #{{seq}} · {{count}} पंक्ति ]",
-      "paste_lines_other": "[ पेस्ट #{{seq}} · {{count}} पंक्तियाँ ]"
+      "paste_lines_other": "[ पेस्ट #{{seq}} · {{count}} पंक्तियाँ ]",
+      "preview_more_lines_one": "… {{count}} और पंक्ति",
+      "preview_more_lines_other": "… {{count}} और पंक्तियाँ"
     },
     "projectPicker": {
       "back": "वापस",

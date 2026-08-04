@@ -5175,7 +5175,9 @@
       "collapse_paste": "[Çøĺĺàþşè þàşţè ·············]",
       "expand_paste": "[Èẋþàñð þàşţè ···········]",
       "paste_lines_one": "[[ Þàşţè #{{seq}} · {{count}} ĺìñè ] ·················]",
-      "paste_lines_other": "[[ Þàşţè #{{seq}} · {{count}} ĺìñèş ] ··················]"
+      "paste_lines_other": "[[ Þàşţè #{{seq}} · {{count}} ĺìñèş ] ··················]",
+      "preview_more_lines_one": "[… {{count}} ɱøŕè ĺìñè ···········]",
+      "preview_more_lines_other": "[… {{count}} ɱøŕè ĺìñèş ············]"
     },
     "terminalKeyBar": {
       "terminal_keys": "[Ţèŕɱìñàĺ ķèýş ············]"

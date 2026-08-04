@@ -4434,7 +4434,8 @@
     "pastedChip": {
       "collapse_paste": "折叠粘贴内容",
       "expand_paste": "展开粘贴内容",
-      "paste_lines_other": "[ 粘贴 #{{seq}} · {{count}} 行 ]"
+      "paste_lines_other": "[ 粘贴 #{{seq}} · {{count}} 行 ]",
+      "preview_more_lines_other": "… 还有 {{count}} 行"
     },
     "projectPicker": {
       "back": "返回",

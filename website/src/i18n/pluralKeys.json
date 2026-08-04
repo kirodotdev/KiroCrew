@@ -55,6 +55,7 @@
   "components.inlineCommentOverlay.comment",
   "components.inlineCommentOverlay.comment_unread",
   "components.pastedChip.paste_lines",
+  "components.pastedChip.preview_more_lines",
   "components.publishHub.scan_blocked_finding",
   "components.pullRequestPanel.files_changed",
   "components.queueStack.sub_agent_result",

@@ -4490,7 +4490,9 @@
       "collapse_paste": "পেস্ট সংকুচিত করো",
       "expand_paste": "পেস্ট প্রসারিত করো",
       "paste_lines_one": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
-      "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]"
+      "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
+      "preview_more_lines_one": "… আরও {{count}} লাইন",
+      "preview_more_lines_other": "… আরও {{count}} লাইন"
     },
     "projectPicker": {
       "back": "পেছনে",

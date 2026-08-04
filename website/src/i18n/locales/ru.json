@@ -4602,7 +4602,11 @@
       "paste_lines_few": "[ Вставка №{{seq}} · {{count}} строки ]",
       "paste_lines_many": "[ Вставка №{{seq}} · {{count}} строк ]",
       "paste_lines_one": "[ Вставка №{{seq}} · {{count}} строка ]",
-      "paste_lines_other": "[ Вставка №{{seq}} · {{count}} строки ]"
+      "paste_lines_other": "[ Вставка №{{seq}} · {{count}} строки ]",
+      "preview_more_lines_one": "… ещё {{count}} строка",
+      "preview_more_lines_few": "… ещё {{count}} строки",
+      "preview_more_lines_many": "… ещё {{count}} строк",
+      "preview_more_lines_other": "… ещё {{count}} строки"
     },
     "projectPicker": {
       "back": "Назад",

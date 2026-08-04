@@ -4546,7 +4546,10 @@
       "expand_paste": "Expandir texto colado",
       "paste_lines_many": "[ Colado #{{seq}} · {{count}} linhas ]",
       "paste_lines_one": "[ Colado #{{seq}} · {{count}} linha ]",
-      "paste_lines_other": "[ Colado #{{seq}} · {{count}} linhas ]"
+      "paste_lines_other": "[ Colado #{{seq}} · {{count}} linhas ]",
+      "preview_more_lines_one": "… mais {{count}} linha",
+      "preview_more_lines_many": "… mais {{count}} linhas",
+      "preview_more_lines_other": "… mais {{count}} linhas"
     },
     "projectPicker": {
       "back": "Voltar",

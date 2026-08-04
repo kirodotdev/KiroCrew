@@ -4546,7 +4546,10 @@
       "expand_paste": "Espandi il testo incollato",
       "paste_lines_many": "[ Incolla #{{seq}} · {{count}} righe ]",
       "paste_lines_one": "[ Incolla #{{seq}} · {{count}} riga ]",
-      "paste_lines_other": "[ Incolla #{{seq}} · {{count}} righe ]"
+      "paste_lines_other": "[ Incolla #{{seq}} · {{count}} righe ]",
+      "preview_more_lines_one": "… {{count}} altra riga",
+      "preview_more_lines_many": "… {{count}} altre righe",
+      "preview_more_lines_other": "… {{count}} altre righe"
     },
     "projectPicker": {
       "back": "Indietro",

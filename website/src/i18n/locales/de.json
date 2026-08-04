@@ -4490,7 +4490,9 @@
       "collapse_paste": "Einfügung einklappen",
       "expand_paste": "Einfügung aufklappen",
       "paste_lines_one": "[ Einfügen #{{seq}} · {{count}} Zeile ]",
-      "paste_lines_other": "[ Einfügen #{{seq}} · {{count}} Zeilen ]"
+      "paste_lines_other": "[ Einfügen #{{seq}} · {{count}} Zeilen ]",
+      "preview_more_lines_one": "… {{count}} weitere Zeile",
+      "preview_more_lines_other": "… {{count}} weitere Zeilen"
     },
     "projectPicker": {
       "back": "Zurück",

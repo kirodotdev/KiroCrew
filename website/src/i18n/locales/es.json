@@ -4546,7 +4546,10 @@
       "expand_paste": "Expandir el texto pegado",
       "paste_lines_many": "[ Pegado #{{seq}} · {{count}} líneas ]",
       "paste_lines_one": "[ Pegado #{{seq}} · {{count}} línea ]",
-      "paste_lines_other": "[ Pegado #{{seq}} · {{count}} líneas ]"
+      "paste_lines_other": "[ Pegado #{{seq}} · {{count}} líneas ]",
+      "preview_more_lines_one": "… {{count}} línea más",
+      "preview_more_lines_many": "… {{count}} líneas más",
+      "preview_more_lines_other": "… {{count}} líneas más"
     },
     "projectPicker": {
       "back": "Atrás",

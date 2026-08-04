@@ -4546,7 +4546,10 @@
       "expand_paste": "Développer le contenu collé",
       "paste_lines_many": "[ Collage n°{{seq}} · {{count}} lignes ]",
       "paste_lines_one": "[ Collage n°{{seq}} · {{count}} ligne ]",
-      "paste_lines_other": "[ Collage n°{{seq}} · {{count}} lignes ]"
+      "paste_lines_other": "[ Collage n°{{seq}} · {{count}} lignes ]",
+      "preview_more_lines_one": "… {{count}} ligne de plus",
+      "preview_more_lines_many": "… {{count}} lignes de plus",
+      "preview_more_lines_other": "… {{count}} lignes de plus"
     },
     "projectPicker": {
       "back": "Retour",

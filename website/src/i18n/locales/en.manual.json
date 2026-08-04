@@ -1179,7 +1179,9 @@
       "collapse_paste": "Collapse paste",
       "expand_paste": "Expand paste",
       "paste_lines_one": "[ Paste #{{seq}} · {{count}} line ]",
-      "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]"
+      "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]",
+      "preview_more_lines_one": "… {{count}} more line",
+      "preview_more_lines_other": "… {{count}} more lines"
     },
     "publishHub": {
       "checking": "Checking…",
