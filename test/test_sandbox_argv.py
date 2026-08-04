@@ -131,6 +131,7 @@ class TestWrapArgv:
         # Deny-by-default: the passthrough is gated SOLELY on the explicit
         # KIROCREW_SANDBOX_ACTIVE marker (not the dual-purpose KIROCREW_HOST_PID).
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setenv("KIROCREW_SANDBOX_TIER", "strict")
         # Fix the macOS kernel cross-check explicitly: "unanswerable" (None) is the
         # platform-neutral input, so this assertion holds on a sandboxed dev
         # machine and an unsandboxed CI runner alike.
@@ -156,6 +157,7 @@ class TestWrapArgv:
         # spawn outage (every in-sandbox MCP spawn bricked). The spawn is
         # confined by the outer namespace regardless, so we log and proceed.
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setenv("KIROCREW_SANDBOX_TIER", "strict")
         monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
         argv = ["kiro-cli", "acp"]
         with patch("kiro_crew.sel.sel", side_effect=OSError("SEL transport down")):
@@ -185,6 +187,139 @@ class TestWrapArgv:
         with patch("kiro_crew.sandbox._allow_unsandboxed_exec", return_value=True):
             result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
         mock_detect.assert_called_once()
+
+
+class TestNestedPassthroughTierComparison:
+    """Issue #691: passthrough must refuse when the requested tier is stricter
+    than the active tier.  A passthrough is only safe when the inner request is
+    equal or looser, because a nested sandbox cannot tighten the confiner."""
+
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_passthrough_refused_when_inner_is_stricter(self, mock_detect, monkeypatch):
+        """An in-standard-sandbox request for 'strict' must NOT pass through."""
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setenv("KIROCREW_SANDBOX_TIER", "standard")
+        monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
+        with pytest.raises(RuntimeError, match="stricter than the active sandbox tier"):
+            wrap_argv(["kiro-cli", "acp"], mode="strict")
+        # Should NOT reach backend detection - raises before that.
+        mock_detect.assert_not_called()
+
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_passthrough_refused_cc_inside_standard(self, mock_detect, monkeypatch):
+        """cc is stricter than standard - must refuse."""
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setenv("KIROCREW_SANDBOX_TIER", "standard")
+        monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
+        with pytest.raises(RuntimeError, match="stricter than the active sandbox tier"):
+            wrap_argv(["kiro-cli"], mode="cc")
+        mock_detect.assert_not_called()
+
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_passthrough_allowed_when_inner_is_equal(self, mock_detect, monkeypatch):
+        """Same tier as the active one - passthrough is safe."""
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setenv("KIROCREW_SANDBOX_TIER", "strict")
+        monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
+        with patch("kiro_crew.sel.sel"):
+            result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
+        assert result == ["kiro-cli"]
+        assert cleanup is None
+        mock_detect.assert_not_called()
+
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_passthrough_allowed_when_inner_is_looser(self, mock_detect, monkeypatch):
+        """A weaker request inside a stricter sandbox - safe to pass through."""
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setenv("KIROCREW_SANDBOX_TIER", "strict")
+        monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
+        with patch("kiro_crew.sel.sel"):
+            result, cleanup = wrap_argv(["kiro-cli"], mode="standard")
+        assert result == ["kiro-cli"]
+        assert cleanup is None
+        mock_detect.assert_not_called()
+
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_passthrough_refused_unknown_active_tier(self, mock_detect, monkeypatch):
+        """An unrecognised active tier has rank -1 (loosest), so any known
+        requested tier is 'stricter' and must be refused - fail closed."""
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setenv("KIROCREW_SANDBOX_TIER", "bogus")
+        monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
+        with pytest.raises(RuntimeError, match="stricter than the active sandbox tier"):
+            wrap_argv(["kiro-cli"], mode="standard")
+        mock_detect.assert_not_called()
+
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_passthrough_legacy_sandbox_no_tier_marker(self, mock_detect, monkeypatch):
+        """Pre-#691 sandboxes have no tier marker - treated as 'standard'.
+        A request for 'standard' passes through; 'strict' is refused."""
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.delenv("KIROCREW_SANDBOX_TIER", raising=False)
+        monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
+        # standard-on-standard: passes through
+        with patch("kiro_crew.sel.sel"):
+            result, _ = wrap_argv(["kiro-cli"], mode="standard")
+        assert result == ["kiro-cli"]
+        # strict-on-standard: refused
+        with pytest.raises(RuntimeError, match="stricter than the active sandbox tier"):
+            wrap_argv(["kiro-cli"], mode="strict")
+
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_passthrough_auto_mode_resolves_to_standard(self, mock_detect, monkeypatch):
+        """mode='auto' aliases to 'standard' - passes through on a standard sandbox."""
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setenv("KIROCREW_SANDBOX_TIER", "standard")
+        monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
+        with patch("kiro_crew.sel.sel"):
+            result, _ = wrap_argv(["kiro-cli"], mode="auto")
+        assert result == ["kiro-cli"]
+
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_passthrough_audit_records_both_tiers(self, mock_detect, monkeypatch):
+        """The SEL audit event on a successful passthrough records both the
+        active and requested tiers for auditability."""
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setenv("KIROCREW_SANDBOX_TIER", "strict")
+        monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
+        with patch("kiro_crew.sel.sel") as mock_sel:
+            wrap_argv(["kiro-cli"], mode="strict")
+        kwargs = mock_sel.return_value.log_tool_invocation.call_args.kwargs
+        assert kwargs["metadata"]["active_tier"] == "strict"
+        assert kwargs["metadata"]["requested_tier"] == "strict"
+
+    @patch("kiro_crew.sandbox.detect_backend")
+    def test_refusal_audit_records_denial_with_tiers(self, mock_detect, monkeypatch):
+        """A tier escalation refusal emits a 'denied' SEL event with tiers."""
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setenv("KIROCREW_SANDBOX_TIER", "standard")
+        monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
+        with patch("kiro_crew.sel.sel") as mock_sel:
+            with pytest.raises(RuntimeError):
+                wrap_argv(["kiro-cli"], mode="strict")
+        kwargs = mock_sel.return_value.log_tool_invocation.call_args.kwargs
+        assert kwargs["outcome"] == "denied"
+        assert kwargs["metadata"]["reason"] == "nested_tier_escalation_refused"
+        assert kwargs["metadata"]["requested_tier"] == "strict"
+        assert kwargs["metadata"]["active_tier"] == "standard"
+
+
+class TestTierRank:
+    """Unit tests for the _tier_rank helper."""
+
+    def test_known_tiers_in_order(self):
+        from kiro_crew.sandbox import _tier_rank
+
+        assert _tier_rank("off") == 0
+        assert _tier_rank("standard") == 1
+        assert _tier_rank("cc") == 2
+        assert _tier_rank("strict") == 3
+
+    def test_unknown_tier_returns_negative(self):
+        from kiro_crew.sandbox import _tier_rank
+
+        assert _tier_rank("bogus") == -1
+        assert _tier_rank("") == -1
 
 
 class TestBuildSeatbeltProfile:
@@ -1332,9 +1467,7 @@ class TestCgroupScopeBusEnv:
                     "kiro_crew.sandbox._probe_cgroup_scope",
                     return_value=(False, "not Linux"),
                 ),
-                patch.dict(
-                    os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}, clear=False
-                ),
+                patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}, clear=False),
             ):
                 out, injected = sb.cgroup_scope_bus_env({"PATH": "/usr/bin"})
             assert out == {"PATH": "/usr/bin"}
@@ -1378,7 +1511,13 @@ class TestCgroupScopeBusEnv:
                 patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=False),
                 patch(
                     "kiro_crew.sandbox._unset_env_argv",
-                    return_value=["/usr/bin/env", "-u", "XDG_RUNTIME_DIR", "-u", "DBUS_SESSION_BUS_ADDRESS"],
+                    return_value=[
+                        "/usr/bin/env",
+                        "-u",
+                        "XDG_RUNTIME_DIR",
+                        "-u",
+                        "DBUS_SESSION_BUS_ADDRESS",
+                    ],
                 ),
                 patch.dict(
                     os.environ,
@@ -1430,14 +1569,10 @@ class TestCgroupScopeBusEnv:
                 ),
                 patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=False),
                 patch("kiro_crew.sandbox._unset_env_argv", return_value=None),
-                patch.dict(
-                    os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}, clear=False
-                ),
+                patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}, clear=False),
                 caplog.at_level(logging.WARNING),
             ):
-                argv, env, _cleanup = sb.sandboxed_spawn_argv(
-                    ["gh"], env={"PATH": "/usr/bin:/bin"}
-                )
+                argv, env, _cleanup = sb.sandboxed_spawn_argv(["gh"], env={"PATH": "/usr/bin:/bin"})
             assert "XDG_RUNTIME_DIR" not in env
             assert "DBUS_SESSION_BUS_ADDRESS" not in env
             assert argv[argv.index("--") + 1 :] == ["gh"]
@@ -1676,9 +1811,7 @@ class TestMacOsNestingDetection:
         mock_detect.assert_not_called()
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="none")
-    def test_forged_marker_without_kernel_confirmation_is_refused(
-        self, mock_detect, monkeypatch
-    ):
+    def test_forged_marker_without_kernel_confirmation_is_refused(self, mock_detect, monkeypatch):
         # The kernel is authoritative: a marker on a process the kernel says is
         # NOT sandboxed can only have been forged or inherited into an unconfined
         # process, so it must not open the passthrough.
@@ -1698,6 +1831,7 @@ class TestMacOsNestingDetection:
         # unconditionally — that would brick in-sandbox spawns wherever the probe
         # is unavailable.
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        monkeypatch.setenv("KIROCREW_SANDBOX_TIER", "strict")
         monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: None)
         with patch("kiro_crew.sel.sel"):
             result, _ = wrap_argv(["kiro-cli", "acp"], mode="strict")

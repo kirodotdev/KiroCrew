@@ -929,6 +929,7 @@ ENV_PREFIXES = {env_prefixes_json}
 SSH_DIR = {ssh_dir}
 SSH_KNOWN_HOSTS = {ssh_known_hosts}
 HIDE_SSH = {hide_ssh}
+SANDBOX_LEVEL = {json.dumps(sandbox_level)}
 
 def main():
     argv = sys.argv[1:]
@@ -1079,6 +1080,7 @@ def main():
         # isolation is already active (nested unshare is seccomp-denied).
         # Set AFTER the scrub loop so a scrubbed prefix cannot delete it.
         os.environ["KIROCREW_SANDBOX_ACTIVE"] = "1"
+        os.environ["KIROCREW_SANDBOX_TIER"] = SANDBOX_LEVEL
 
         # Fix /etc/ssh/ssh_config.d/ ownership issue: root-owned files
         # appear as nobody:nobody inside the user namespace because UID 0
@@ -1638,8 +1640,9 @@ def sandbox_exec_argv(
     # fail-closes every app-backend and MCP spawn on the host. Set as an ``env``
     # assignment so it lands AFTER the ``-u`` flags and cannot be dropped by them.
     marker = f"{_IN_SANDBOX_MARKER}=1"
+    tier_marker = f"{_SANDBOX_TIER_MARKER}={sandbox_level}"
     return (
-        ["env", *unset_args, marker, "sandbox-exec", "-f", path, *resolved_argv],
+        ["env", *unset_args, marker, tier_marker, "sandbox-exec", "-f", path, *resolved_argv],
         path,
     )
 
@@ -1842,6 +1845,32 @@ def _allow_unsandboxed_exec() -> bool:
 # below safe for callers that use ``wrap_argv`` directly rather than
 # ``sandboxed_spawn_argv``.
 _IN_SANDBOX_MARKER = "KIROCREW_SANDBOX_ACTIVE"
+
+# Records the tier at which the outer sandbox was created.  Set alongside
+# ``_IN_SANDBOX_MARKER`` at the same two export sites (Linux launcher and macOS
+# ``env`` prefix).  The passthrough in ``wrap_argv`` compares a nested request
+# against this to refuse a proven tier escalation (issue #691).
+_SANDBOX_TIER_MARKER = "KIROCREW_SANDBOX_TIER"
+
+# Explicit ordering of sandbox tiers from loosest (0) to strictest.  Matches the
+# governance ``_ORDINAL_SCALES["sandbox"]`` tuple so there is one source of truth
+# for the ordering; a new tier added there but not here will fail closed via
+# ``_tier_rank`` returning -1.
+_TIER_ORDERING: tuple[str, ...] = ("off", "standard", "cc", "strict")
+
+
+def _tier_rank(tier: str) -> int:
+    """Return the numeric rank of *tier*, or -1 for an unknown/unrecognised value.
+
+    -1 sorts below ``"off"`` so an unknown tier is treated as the loosest
+    possible (fail-closed: the passthrough requires the inner tier to be equal or
+    looser than the outer, so an unknown OUTER tier refuses any request that is
+    not itself unknown).
+    """
+    try:
+        return _TIER_ORDERING.index(tier)
+    except ValueError:
+        return -1
 
 
 def _inside_kirocrew_sandbox() -> bool:
@@ -2149,6 +2178,61 @@ def wrap_argv(
     # does not: that says nothing, and must not invalidate a marker the Linux
     # path honours unconditionally.
     if _inside_kirocrew_sandbox() and _macos_sandbox_state() is not False:
+        # Tier comparison: passthrough is only safe when the requested tier is
+        # equal or looser than the active tier.  A stricter request cannot be
+        # honoured because a nested sandbox is impossible (seccomp/EPERM), so the
+        # caller would silently get the host's weaker tier - a privilege-tier
+        # confusion (#691).  Refuse the passthrough and fall through to the
+        # fail-closed path, which raises RuntimeError.
+        active_tier = os.environ.get(_SANDBOX_TIER_MARKER, "")
+        # Legacy sandboxes (pre-#691) set the marker but no tier.  Treat an
+        # empty/missing tier as "standard" (the default mode) so existing
+        # in-sandbox processes are not bricked by the upgrade.
+        if not active_tier:
+            active_tier = "standard"
+        requested_tier = _SANDBOX_MODE_ALIASES.get(mode, mode)
+        active_rank = _tier_rank(active_tier)
+        requested_rank = _tier_rank(requested_tier)
+        if requested_rank > active_rank:
+            logger.warning(
+                "SECURITY: nested sandbox passthrough refused — requested tier "
+                "'%s' (rank %d) is stricter than the active tier '%s' (rank %d); "
+                "a passthrough would silently grant a weaker tier than requested",
+                requested_tier,
+                requested_rank,
+                active_tier,
+                active_rank,
+            )
+            try:
+                from kiro_crew.sel import sel
+
+                sel().log_tool_invocation(
+                    session_key="sandbox",
+                    agent="system",
+                    source="sandbox.wrap_argv",
+                    tool_name=argv[0] if argv else "unknown",
+                    tool_kind="subprocess",
+                    outcome="denied",
+                    metadata={
+                        "reason": "nested_tier_escalation_refused",
+                        "requested_tier": requested_tier,
+                        "active_tier": active_tier,
+                    },
+                    critical=True,
+                )
+            except Exception:
+                logger.warning(
+                    "SEL audit failed for nested-tier refusal",
+                    exc_info=True,
+                )
+            raise RuntimeError(
+                f"sandbox: requested tier '{requested_tier}' is stricter than "
+                f"the active sandbox tier '{active_tier}' — nested sandbox "
+                f"escalation is impossible (seccomp/EPERM deny re-wrap). "
+                f"The caller must run at the active tier or delegate to an "
+                f"unsandboxed parent."
+            )
+
         if not getattr(wrap_argv, "_nested_passthrough_logged", False):
             wrap_argv._nested_passthrough_logged = True  # type: ignore[attr-defined]
             logger.info(
@@ -2190,7 +2274,12 @@ def wrap_argv(
                 tool_name=argv[0] if argv else "unknown",
                 tool_kind="subprocess",
                 outcome="allowed",
-                metadata={"reason": "nested_sandbox_passthrough", "mode": mode},
+                metadata={
+                    "reason": "nested_sandbox_passthrough",
+                    "mode": mode,
+                    "active_tier": active_tier,
+                    "requested_tier": requested_tier,
+                },
                 critical=True,
             )
         except Exception:
