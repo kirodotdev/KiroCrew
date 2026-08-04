@@ -11,14 +11,16 @@ dashboard URL via the config file. (The dashboard *port* is set with the
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import os
 import re as _re
 import stat as _stat
+import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2801,6 +2803,19 @@ class ResolvedBindings:
     # agent.model fallback. Defaulted so existing keyword constructions and
     # test doubles built before this field stay valid.
     model: str = ""
+    # Whether the REQUESTED agent name was actually honored. False means the
+    # resolver fell back to the default agent, so dispatching these bindings runs
+    # a different agent than the caller asked for. Callers that store the
+    # requested name (chat slots) must not advertise it when this is False.
+    # Defaults True so constructions predating this field keep their meaning.
+    requested_resolved: bool = True
+    # The KiroCrew ALIAS whose bindings these are ("" when no alias applied). A
+    # caller replacing an unhonored request must store THIS, not ``kiro_agent``:
+    # the stored value is re-resolved later and an alias is matched first, so a
+    # physical kiro agent name that also happens to be an alias key would resolve
+    # to that alias's target instead — reintroducing the advertised-vs-answering
+    # mismatch. An alias key round-trips to itself.
+    resolved_alias: str = ""
 
 
 @dataclass
@@ -5291,6 +5306,248 @@ def _workspace_name_for_dir(config: KiroCrewConfig, ws_dir: Path) -> str:
     return "default"
 
 
+_MATERIALIZED_AGENTS: frozenset[str] = frozenset()
+_MATERIALIZED_AGENTS_READY = False
+# Bumped by every publish. A refresh samples it before scanning and, if it moved
+# while the scan was in flight, unions instead of replacing — otherwise a scan
+# that globbed the directory BEFORE a registration wrote into it would assign its
+# stale view over the just-published names and un-dispatch a freshly enabled app.
+_MATERIALIZED_AGENTS_GENERATION = 0
+# Monotonic refresh sequencing. A refresh takes a ticket when it STARTS and, on
+# completion, discards its result if a refresh that started later already applied:
+# two scans race by completion order, not by start order, so an older scan
+# finishing second would otherwise overwrite a newer one and resurrect an agent
+# that was deleted in between.
+_MATERIALIZED_REFRESH_ISSUED = 0
+_MATERIALIZED_REFRESH_APPLIED = 0
+# Guards the three globals above. Held only for the rebind, never for the scan or
+# for a lookup: the read path stays lock-free, which is the whole point of the
+# snapshot.
+_MATERIALIZED_AGENTS_LOCK = threading.Lock()
+
+
+def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
+    """Every agent name declared by the kiro agent configs in *agents_dir*.
+
+    Both spellings are emitted: the config's ``name`` field and the filename stem
+    (mirroring :meth:`_resolve_named_agent_model`), since an app's agent is
+    registered under a namespaced filename while its config keeps the app's bare
+    name. Unreadable or non-object entries are skipped. Performs the glob and the
+    per-file reads, so callers must invoke it OFF the event loop.
+    """
+    names: set[str] = set()
+    # Deferred import: `hooks` reaches back into this module for config paths, so
+    # the edge must resolve lazily. A failure here propagates to
+    # refresh_materialized_agents, which logs and leaves the snapshot untouched —
+    # fail-closed, rather than falling back to an unguarded read.
+    from kiro_crew.hooks import safe_read_file
+
+    try:
+        candidates = sorted(agents_dir.glob("*.json"))
+    except OSError:
+        return frozenset()
+    for af in candidates:
+        try:
+            # Through the sensitive-path gate, not a bare read: this directory is
+            # user-writable, so a symlink planted there (`evil.json` ->
+            # `~/.aws/credentials`) would otherwise be read verbatim by a boot
+            # refresh. safe_read_file re-checks the RESOLVED target and raises
+            # PermissionError for a refused path — an OSError subclass, so a
+            # refused entry is skipped by the same handler as an unreadable one.
+            data = json.loads(safe_read_file(str(af)))
+        except (ValueError, OSError):
+            continue
+        # Skip stray non-object JSON a user may have dropped in the dir. The
+        # filename stem is only trusted AFTER the file parses as an agent config:
+        # naming an unparseable file dispatchable would hand kiro-cli a name it
+        # cannot load, and it would fall back to its own default silently — the
+        # same invisible mismatch this whole change removes.
+        if not isinstance(data, dict):
+            continue
+        # Trust the config's DECLARED `name`, not the filename. `kiro-cli agent
+        # list` enumerates agents by their declared name — an app agent written to
+        # `mochi--mochi.json` with `"name": "mochi"` is listed as `mochi`, and
+        # `mochi--mochi` is not listed at all. Treating the stem as dispatchable
+        # would hand kiro-cli a name it does not know, which falls back to its own
+        # default silently: the exact invisible mismatch this change removes. The
+        # stem is used ONLY when the config declares no name, where it is the only
+        # identifier available.
+        declared = data.get("name")
+        if isinstance(declared, str) and declared:
+            names.add(declared)
+        else:
+            names.add(af.stem)
+    return frozenset(names)
+
+
+def refresh_materialized_agents() -> None:
+    """Rescan the kiro agents directory into the in-memory snapshot.
+
+    MUST be called off the event loop — it globs a directory and reads every
+    config in it, which scales with agent count. Callers on the loop must use
+    :func:`schedule_materialized_agents_refresh` instead.
+
+    Placing the cost on the WRITER is the point: the read path
+    (:func:`_materialized_kiro_agent`, reached from ``_run_chat`` ->
+    :func:`resolve_agent_bindings` on every turn of an app-bound session) then
+    does zero filesystem work. Never raises.
+
+    Consequence worth stating plainly: editing an existing config IN PLACE — say
+    renaming its ``name`` field by hand — refreshes nothing, so that new name
+    stays undispatchable until the next registration or gateway boot. Hand-editing
+    is not how an app agent is meant to appear (``_register_agents`` is), and the
+    alternative is filesystem work on the loop, so the staleness is accepted
+    rather than papered over with a per-file stat.
+    """
+    global _MATERIALIZED_AGENTS, _MATERIALIZED_AGENTS_READY, _MATERIALIZED_REFRESH_ISSUED
+    global _MATERIALIZED_REFRESH_APPLIED
+    with _MATERIALIZED_AGENTS_LOCK:
+        generation_at_start = _MATERIALIZED_AGENTS_GENERATION
+        _MATERIALIZED_REFRESH_ISSUED += 1
+        my_ticket = _MATERIALIZED_REFRESH_ISSUED
+    try:
+        snapshot = _scan_materialized_agents(kiro_agents_dir())
+    except Exception:  # noqa: BLE001 — a refresh failure only costs a fallback
+        logger.debug("Failed to refresh materialized agent names", exc_info=True)
+        return
+    with _MATERIALIZED_AGENTS_LOCK:
+        if my_ticket < _MATERIALIZED_REFRESH_APPLIED:
+            # A refresh that started AFTER this one already applied, so this view
+            # is older than what is installed. Assigning it would undo the newer
+            # scan — resurrecting an agent deleted in between, whose config is gone
+            # from disk. Drop it; the newer snapshot already reflects reality.
+            logger.debug("Discarding out-of-order materialized agent refresh")
+            return
+        if _MATERIALIZED_AGENTS_GENERATION != generation_at_start:
+            # A registration published while this scan was in flight, so the scan
+            # may have globbed the directory before that write landed. Replacing
+            # would erase the published names and un-dispatch a freshly enabled
+            # app; union instead and let the refresh scheduled by that
+            # registration apply the authoritative view (including removals).
+            snapshot = frozenset(snapshot | _MATERIALIZED_AGENTS)
+        _MATERIALIZED_AGENTS = snapshot
+        _MATERIALIZED_AGENTS_READY = True
+        _MATERIALIZED_REFRESH_APPLIED = my_ticket
+
+
+def publish_materialized_agents(names: Iterable[str]) -> None:
+    """Add *names* to the snapshot immediately, with no filesystem access.
+
+    A pure set union — safe to call from anywhere, including the event loop.
+    ``apps.bridges._register_agents`` uses it to publish the agents it just wrote
+    BEFORE scheduling the full rescan, because the rescan can be delayed
+    arbitrarily when the default executor is saturated, and the window is not
+    merely cosmetic: a slot created in it is normalized to the agent that answers
+    (the default) and that substitution is STORED, so the slot would stay bound to
+    the default agent rather than recovering on the next turn.
+
+    The snapshot is marked ready, which is safe in both contexts: on the loop the
+    scheduled rescan fills in everything else moments later, and in a synchronous
+    context the scheduler rescans inline, so the union is immediately superseded
+    by a complete snapshot.
+    """
+    global _MATERIALIZED_AGENTS, _MATERIALIZED_AGENTS_READY, _MATERIALIZED_AGENTS_GENERATION
+    fresh = {n for n in names if isinstance(n, str) and n}
+    if not fresh:
+        return
+    with _MATERIALIZED_AGENTS_LOCK:
+        _MATERIALIZED_AGENTS = frozenset(_MATERIALIZED_AGENTS | fresh)
+        _MATERIALIZED_AGENTS_READY = True
+        # Signals any in-flight refresh that its view predates this write, so it
+        # unions rather than replacing (see refresh_materialized_agents).
+        _MATERIALIZED_AGENTS_GENERATION += 1
+
+
+def schedule_materialized_agents_refresh() -> None:
+    """Refresh the snapshot from ANY context without blocking an event loop.
+
+    ``apps.bridges._register_agents`` is the writer that must trigger this, and it
+    runs on the loop for the dashboard paths: ``register_app`` documents that "it
+    is called on the event loop by the enable/update handlers", so clicking Enable
+    in the App Store reaches it with the loop live. Scanning inline there is the
+    same directory-walk-per-agent-file stall the neighbouring prune comment warns
+    about, so the scan is handed to the default executor and this returns
+    immediately. In a synchronous context (CLI, tests, the boot warm already on an
+    executor) it refreshes inline.
+
+    The offloaded refresh lands a few milliseconds later, so a turn dispatched in
+    that window sees the pre-enable snapshot and falls back for that one turn,
+    then self-heals — strictly better than the alternative of staying stale until
+    the next gateway boot. Never raises; the scan itself swallows its errors.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        refresh_materialized_agents()
+        return
+    try:
+        # Fire-and-forget on purpose: nothing awaits this, and
+        # refresh_materialized_agents never raises, so the discarded future
+        # cannot surface an unretrieved exception.
+        loop.run_in_executor(None, refresh_materialized_agents)
+    except Exception:  # noqa: BLE001 — a scheduling failure only costs a fallback
+        logger.debug("Failed to schedule materialized agent refresh", exc_info=True)
+
+
+def _materialized_kiro_agent(agent_name: str | None) -> str:
+    """Return *agent_name* when a materialized kiro agent config declares it.
+
+    An APP's agents are copied into ``~/.kiro/agents/`` by
+    ``apps.bridges._register_agents`` under a namespaced FILENAME
+    (``<app>--<agent>.json``) while the config inside keeps the app's own bare
+    ``name``. Nothing adds them to ``config.agents`` — that mapping is authored
+    by setup / the user — so an app agent is resolvable by kiro-cli but is NOT a
+    KiroCrew alias. Without this lookup :func:`resolve_agent_bindings` would fall
+    all the way back to ``default_agent`` and silently dispatch the DEFAULT kiro
+    agent for a session the user explicitly bound to an app's agent: the slot
+    still shows the requested name (it is stored verbatim, unvalidated), so the
+    UI claims "mochi" while the default agent answers, without the app's MCP
+    tools.
+
+    A pure in-memory set membership test — NO filesystem I/O, not even a stat.
+    This is reached from ``_run_chat`` -> :func:`resolve_agent_bindings` on EVERY
+    turn of an app-bound session (an app agent is never an alias, so it always
+    takes this path), and a scan there would stall chat, WebSocket and heartbeat
+    processing. The snapshot is refreshed only off-loop, by the gateway at boot
+    and by ``_register_agents`` / ``_deregister_agents`` around their writes (see
+    :func:`refresh_materialized_agents`).
+
+    CONTRACT, stated deliberately because it is wider than the bug it fixes: this
+    honors ANY parseable agent config in the directory, not only app-registered
+    ones, and grafts the DEFAULT agent's workspace and memory bindings onto it. An
+    agent created by kiro-cli's own flow, or dropped in by hand, therefore becomes
+    dispatchable with default bindings — it is not restricted to
+    ``bridges._register_agents`` output. That is intentional: the directory is the
+    kiro-cli agent registry, every entry in it is a real agent kiro-cli can load,
+    and narrowing to app-registered names would mean tracking provenance the
+    directory does not record. It is safe inside the single-user trust boundary,
+    and reads go through the sensitive-path gate (see
+    :func:`_scan_materialized_agents`), but it IS a wider surface than "app agents
+    dispatch" and should be read as such.
+
+    When no snapshot exists yet, one is built lazily ONLY in a synchronous
+    context (the CLI, tests) — never while an event loop is running, where an
+    unwarmed lookup falls back to the default rather than block. Returns ``""``
+    for a blank name or when nothing declares it, so a genuinely unknown agent
+    still falls back to the default.
+    """
+    if not agent_name:
+        return ""
+    if not _MATERIALIZED_AGENTS_READY:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop on this thread: scanning here blocks nothing.
+            refresh_materialized_agents()
+        else:
+            # On the event loop with a cold snapshot: never scan. The boot warm
+            # normally precedes any turn; falling back for one turn is strictly
+            # preferable to stalling the gateway.
+            logger.debug("Materialized agent snapshot cold on the event loop; falling back")
+            return ""
+    return agent_name if agent_name in _MATERIALIZED_AGENTS else ""
+
+
 def resolve_agent_bindings(
     config: KiroCrewConfig,
     agent_name: str | None = None,
@@ -5299,16 +5556,34 @@ def resolve_agent_bindings(
 
     Resolution:
     1. If agent_name is given and exists in config.agents → use its bindings
-    2. Otherwise use config.default_agent (guaranteed to exist by load())
+    2. Otherwise use config.default_agent (guaranteed to exist by load()), but
+       keep dispatching *agent_name* itself when a materialized kiro agent
+       declares it (see :func:`_materialized_kiro_agent`) — an app's agents are
+       registered in ``~/.kiro/agents/`` and never added to ``config.agents``, so
+       this is the only thing that stops an app-bound session from silently
+       running the default agent.
     """
     import dataclasses as _dc
+
+    # An app agent is resolvable by kiro-cli but is not a KiroCrew alias, so it
+    # takes the default's workspace/memory bindings while still dispatching
+    # ITSELF. Computed only when the name is not an alias — the lookup touches
+    # the filesystem.
+    alias_hit = bool(agent_name) and agent_name in config.agents
+    passthrough = "" if alias_hit else _materialized_kiro_agent(agent_name)
+    # A non-empty name that matched NEITHER an alias nor a materialized config is
+    # about to be answered by the default agent. Reported so callers that store
+    # the requested name never advertise a binding that is not running.
+    requested_resolved = (not agent_name) or alias_hit or bool(passthrough)
 
     # Step 1: explicit agent_name
     if agent_name and agent_name in config.agents:
         agent_cfg = config.agents[agent_name]
+        resolved_alias = agent_name
     elif config.default_agent and config.default_agent in config.agents:
         # Step 2: default_agent (guaranteed valid by load())
         agent_cfg = config.agents[config.default_agent]
+        resolved_alias = config.default_agent
     elif config.agents:
         # Defensive: default_agent not in agents, use first available
         first_name = next(iter(config.agents))
@@ -5318,6 +5593,7 @@ def resolve_agent_bindings(
             first_name,
         )
         agent_cfg = config.agents[first_name]
+        resolved_alias = first_name
     else:
         # No agents at all — return safe defaults
         logger.warning("No agents configured, using bare defaults")
@@ -5325,7 +5601,8 @@ def resolve_agent_bindings(
             workspace_dir=Path("workspace"),
             memory_store_name=config.default_memory_store,
             effective_memory_config=_dc.asdict(config.memory),
-            kiro_agent=config.agent.default_agent,
+            kiro_agent=passthrough or config.agent.default_agent,
+            requested_resolved=requested_resolved,
         )
 
     # Resolve workspace
@@ -5351,7 +5628,7 @@ def resolve_agent_bindings(
         )
         store_name = config.default_memory_store
 
-    kiro_agent = agent_cfg.kiro_agent
+    kiro_agent = passthrough or agent_cfg.kiro_agent
 
     # Build effective memory config via dict-level merge
     store_cfg = config.memory_stores.get(store_name)
@@ -5365,6 +5642,8 @@ def resolve_agent_bindings(
         effective_memory_config=effective_memory,
         kiro_agent=kiro_agent,
         model=normalize_agent_model(agent_cfg.model),
+        requested_resolved=requested_resolved,
+        resolved_alias=resolved_alias,
     )
 
 

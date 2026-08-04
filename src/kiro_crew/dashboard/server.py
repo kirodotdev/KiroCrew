@@ -29,7 +29,7 @@ from kiro_crew.autonudge_authz import authorize_and_add_nudge
 from kiro_crew.browser.setup import migrate_owned_playwright_registration
 from kiro_crew.channel_transcript_migration import migrate_channel_transcripts
 from kiro_crew.config import config_dir
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewConfig, refresh_materialized_agents
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import (
     channel_slots,
@@ -2491,6 +2491,20 @@ async def start_dashboard(
             logger.warning("Failed to warm builtin app-name set for the gate", exc_info=True)
 
     await _warm_builtin_app_names()
+
+    # Prime the materialized-agent snapshot on the executor. The resolver's read
+    # path does zero filesystem work, so this boot scan (plus the one
+    # `_register_agents` does after it writes) is what keeps the snapshot current
+    # without ever scanning on the event loop.
+    async def _warm_materialized_agents() -> None:
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), refresh_materialized_agents
+            )
+        except Exception:  # noqa: BLE001 — a warm failure only costs one fallback
+            logger.debug("Failed to warm materialized agent names", exc_info=True)
+
+    await _warm_materialized_agents()
 
     # Reconcile resources (agents / skills / crons / MCP) for every ENABLED app.
     # Registration otherwise happens only in the enable path, so an app that

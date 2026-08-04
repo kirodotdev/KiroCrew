@@ -849,11 +849,37 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     cfg = None
     try:
         cfg = KiroCrewConfig.load()
-        if agent and agent in cfg.agents:
+    except Exception:
+        # Infra failure loading config must not block slot creation outright, so
+        # validation below is skipped rather than failing closed.
+        logger.warning("Failed to load config for slot create", exc_info=True)
+    # Normalize an agent nothing will dispatch to the one that WILL answer.
+    # Otherwise the name is stored verbatim and resolve_agent_bindings silently
+    # falls back to the default agent: the sidebar advertises the requested agent
+    # while a different one answers, with none of its tools. Storing the real
+    # agent keeps the slot honest, and a caller that requires a specific binding
+    # (an app panel verifying the returned agent) can see the mismatch instead of
+    # discovering it turns later.
+    if cfg is not None and agent:
+        try:
             bindings = resolve_agent_bindings(cfg, agent)
             workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
-    except Exception:
-        logger.warning("Failed to resolve bindings for slot create", exc_info=True)
+            if not bindings.requested_resolved:
+                # Log only — the requested binding is the user's intent and is
+                # stored VERBATIM. Rewriting it to whatever currently answers was
+                # destructive: the resolution behind that decision can be
+                # momentarily stale while the overwrite is permanent, so a valid
+                # binding could be silently rebound to the default forever, where a
+                # verbatim name recovers as soon as it resolves. Surfacing the
+                # effective agent to the UI is a separate, non-destructive change.
+                logger.info(
+                    "Slot %s requested agent %r, which currently resolves to %r",
+                    name,
+                    agent,
+                    bindings.resolved_alias or "(default)",
+                )
+        except Exception:
+            logger.warning("Failed to resolve bindings for slot create", exc_info=True)
 
     # Coalesce every push inside into ONE broadcast at exit, so the first frame
     # any client sees already carries the folder, title, artifact binding and
@@ -1782,21 +1808,25 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     if agent_name and not _AGENT_NAME_RE.match(agent_name):
         return web.json_response({"error": "invalid agent name"}, status=400)
 
+    # Stored verbatim — never rewritten to whatever currently answers. See the
+    # same reasoning in api_chat_slot_create.
     slot.agent = agent_name
 
     # Resolve workspace from agent bindings
     workspace = "default"
     try:
         cfg = KiroCrewConfig.load()
-        # Look up by config key or by kiro_agent name
-        matched = agent_name if agent_name in cfg.agents else None
-        if agent_name and not matched:
-            for k, v in cfg.agents.items():
-                if v.kiro_agent == agent_name:
-                    matched = k
-                    break
-        if matched:
-            bindings = resolve_agent_bindings(cfg, matched)
+        if agent_name:
+            # Resolve by the name being STORED, which is exactly the name dispatch
+            # will resolve later (`chat_runner` -> resolve_agent_bindings(
+            # slot.agent)). Looking it up as an alias first and taking THAT
+            # alias's workspace disagreed with dispatch whenever the two differ:
+            # a name that is merely some alias's `kiro_agent` target, or a
+            # materialized app agent, dispatches with the DEFAULT bindings while
+            # the slot had recorded the alias's workspace. A materialized agent
+            # previously matched nothing here at all, so the slot kept the
+            # PREVIOUS agent's project — latent until app agents could dispatch.
+            bindings = resolve_agent_bindings(cfg, agent_name)
             ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             slot.workspace = ws_name
             workspace = ws_name

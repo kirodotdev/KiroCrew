@@ -37,7 +37,11 @@ from kiro_crew.apps.manager import (
 )
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import (
+    config_dir,
+    publish_materialized_agents,
+    schedule_materialized_agents_refresh,
+)
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.cron_script import resolve_script_path
@@ -813,6 +817,7 @@ def _register_agents(app_name: str, manifest: AppManifest, app_root: Path) -> li
     Returns list of registered agent names (namespaced).
     """
     registered: list[str] = []
+    dispatchable: set[str] = set()
     agents_dir = _kiro_agents_dir()
     agents_dir.mkdir(parents=True, exist_ok=True)
     policy = _agent_mcp_policy(app_name)
@@ -908,9 +913,32 @@ def _register_agents(app_name: str, manifest: AppManifest, app_root: Path) -> li
                 merged["mcpServers"] = _strip_ungoverned_auto_approve(_servers)
             atomic_write(link_path, json.dumps(merged, indent=2) + "\n")
             registered.append(_namespace(app_name, agent_name))
+            # The DECLARED name only — kiro-cli enumerates agents by their
+            # `name` field, so the namespaced filename stem is not a name it
+            # can resolve (see _scan_materialized_agents).
+            dispatchable.add(agent_name)
             logger.info("Registered agent: %s (from %s)", link_name, agent_path)
         except OSError as exc:
             logger.warning("Failed to write agent %s: %s", link_name, exc)
+
+    if dispatchable:
+        # Publish the names just written BEFORE scheduling the rescan, and do it
+        # synchronously: publishing is a pure set union with no filesystem access,
+        # while the rescan can be delayed arbitrarily if the default executor is
+        # saturated. That window is not cosmetic — a slot created inside it would
+        # resolve to the default agent, so the app's first turn after being enabled
+        # would be answered by the wrong agent.
+        publish_materialized_agents(dispatchable)
+    # Reconcile the whole directory UNCONDITIONALLY, even when this call wrote
+    # nothing: a re-registration whose manifest no longer declares an agent (or
+    # that follows a prune) leaves the removed name in the snapshot, and only a
+    # rescan drops it. A name that is dispatchable in memory but gone from disk is
+    # the same invisible mismatch as the bug this change fixes — kiro-cli cannot
+    # load it and falls back to its own default. `_register_agents` runs ON the
+    # loop for the dashboard enable/update handlers (see the prune note in
+    # `register_app`), so the scan goes to an executor rather than walking every
+    # agent file inline.
+    schedule_materialized_agents_refresh()
 
     return registered
 
@@ -931,6 +959,14 @@ def _deregister_agents(app_name: str) -> int:
                 pass
     if removed:
         logger.info("Deregistered %d agent(s) for app %s", removed, app_name)
+        # Drop the removed names from the resolver's snapshot. Without this a
+        # disabled app's agent stays dispatchable in memory: a slot still bound to
+        # it would hand kiro-cli a name whose config is gone, and the turn fails
+        # instead of falling back. Mirrors the refresh in `_register_agents`, and
+        # goes through the scheduler for the same reason — deregistration runs ON
+        # the loop for the dashboard disable/update handlers, so the directory scan
+        # belongs on an executor.
+        schedule_materialized_agents_refresh()
     return removed
 
 

@@ -3510,6 +3510,407 @@ class TestAgentDefaultsRoundTrip:
         assert round_tripped.agent.reasoning_effort == "high"
 
 
+class TestAppAgentDispatch(unittest.TestCase):
+    """An APP's agents are materialized into ``~/.kiro/agents/`` but are never
+    added to ``config.agents``, so they must still dispatch THEMSELVES rather than
+    silently falling back to the default agent (which left the slot advertising an
+    agent that was not answering, without its MCP tools)."""
+
+    def setUp(self):
+        # The snapshot is a module global, so reset it around each test: a leaked
+        # snapshot from a sibling test would be read instead of the tmpdir under
+        # test. Left cold on purpose — these tests run synchronously (no event
+        # loop), where the lookup is allowed to build it lazily.
+        import kiro_crew.config.loader as loader
+
+        loader._MATERIALIZED_AGENTS = frozenset()
+        loader._MATERIALIZED_AGENTS_READY = False
+        loader._MATERIALIZED_AGENTS_GENERATION = 0
+        loader._MATERIALIZED_REFRESH_ISSUED = 0
+        loader._MATERIALIZED_REFRESH_APPLIED = 0
+
+    tearDown = setUp
+
+    def _config(self):
+        from kiro_crew.config.loader import (
+            KiroCrewAgentConfig,
+            KiroCrewConfig,
+            MemoryStoreConfig,
+            WorkspaceConfig,
+        )
+
+        return KiroCrewConfig(
+            agents={"default": KiroCrewAgentConfig(kiro_agent="kirocrew")},
+            default_agent="default",
+            workspaces={"default": WorkspaceConfig(dir="/tmp/ws")},
+            default_workspace="default",
+            memory_stores={"default": MemoryStoreConfig()},
+            default_memory_store="default",
+        )
+
+    def _agents_dir(self, tmp: Path, files: dict[str, dict]) -> Path:
+        d = tmp / "agents"
+        d.mkdir(parents=True, exist_ok=True)
+        for filename, body in files.items():
+            (d / filename).write_text(json.dumps(body), encoding="utf-8")
+        return d
+
+    def test_app_agent_matched_by_name_field_dispatches_itself(self):
+        # bridges._register_agents writes the NAMESPACED filename while the config
+        # inside keeps the app's bare name, and app panels bind the slot to that
+        # bare name. Before this fix the bare name was not a KiroCrew alias, so it
+        # fell through to default_agent and the DEFAULT agent answered.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"mochi--mochi.json": {"name": "mochi"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                r = loader.resolve_agent_bindings(self._config(), agent_name="mochi")
+        assert r.kiro_agent == "mochi"
+
+    def test_namespaced_filename_stem_is_not_dispatchable(self):
+        # `kiro-cli agent list` enumerates agents by their DECLARED name: a config
+        # at mochi--mochi.json with "name": "mochi" is listed as `mochi`, and
+        # `mochi--mochi` is not listed at all. Trusting the stem would hand
+        # kiro-cli a name it cannot resolve, and it would fall back to its own
+        # default silently -- the invisible mismatch this change exists to remove.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"mochi--mochi.json": {"name": "mochi"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                cfg = self._config()
+                assert loader.resolve_agent_bindings(cfg, "mochi").kiro_agent == "mochi"
+                assert (
+                    loader.resolve_agent_bindings(cfg, "mochi--mochi").kiro_agent == "kirocrew"
+                )
+
+    def test_stem_is_used_when_no_name_is_declared(self):
+        # With no `name` the stem is the only identifier, so it is trusted there.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"solo.json": {"description": "no name field"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                assert loader.resolve_agent_bindings(self._config(), "solo").kiro_agent == "solo"
+
+    def test_genuinely_unknown_agent_still_falls_back_to_default(self):
+        # Unchanged behavior: a name nothing declares must NOT be passed through
+        # to kiro-cli.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"mochi--mochi.json": {"name": "mochi"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                r = loader.resolve_agent_bindings(self._config(), agent_name="nope-xyz")
+        assert r.kiro_agent == "kirocrew"
+
+    def test_alias_still_wins_over_materialized_file(self):
+        # A KiroCrew alias keeps full control of the binding (and the directory is
+        # not even scanned for it).
+        import kiro_crew.config.loader as loader
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        cfg = self._config()
+        cfg.agents["mochi"] = KiroCrewAgentConfig(kiro_agent="explicitly-bound")
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"mochi--mochi.json": {"name": "mochi"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                r = loader.resolve_agent_bindings(cfg, agent_name="mochi")
+        assert r.kiro_agent == "explicitly-bound"
+
+    def test_non_object_json_in_agents_dir_is_skipped(self):
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "agents"
+            d.mkdir(parents=True)
+            (d / "junk.json").write_text("[1, 2, 3]", encoding="utf-8")
+            (d / "broken.json").write_text("{not json", encoding="utf-8")
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                cfg = self._config()
+                r = loader.resolve_agent_bindings(cfg, agent_name="mochi")
+                assert r.kiro_agent == "kirocrew"
+                # The FILENAME must not make an unparseable file dispatchable:
+                # kiro-cli could not load it and would fall back to its own
+                # default silently, which is the mismatch this change removes.
+                for stem in ("junk", "broken"):
+                    assert (
+                        loader.resolve_agent_bindings(cfg, agent_name=stem).kiro_agent
+                        == "kirocrew"
+                    )
+
+    def test_lookup_does_no_filesystem_io(self):
+        # This lookup runs on the gateway event loop (via _run_chat ->
+        # resolve_agent_bindings) and an app agent takes it on EVERY turn, so it
+        # must touch the filesystem zero times: no glob, no reads, not even a
+        # stat. The snapshot is refreshed only off-loop.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"mochi--mochi.json": {"name": "mochi"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                loader.refresh_materialized_agents()
+            # The directory is gone AND kiro_agents_dir is no longer patched, so
+            # any filesystem access would change the answer. It must not.
+            for _ in range(5):
+                assert (
+                    loader.resolve_agent_bindings(self._config(), agent_name="mochi").kiro_agent
+                    == "mochi"
+                )
+
+    def test_registration_refresh_makes_a_new_agent_dispatchable(self):
+        # Enabling an app writes its agent configs and then refreshes the
+        # snapshot (bridges._register_agents), so a freshly registered app agent
+        # dispatches immediately instead of after a gateway restart.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"other--other.json": {"name": "other"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                loader.refresh_materialized_agents()
+                # Not registered yet -> falls back to the default.
+                assert (
+                    loader.resolve_agent_bindings(self._config(), agent_name="mochi").kiro_agent
+                    == "kirocrew"
+                )
+                (d / "mochi--mochi.json").write_text(
+                    json.dumps({"name": "mochi"}), encoding="utf-8"
+                )
+                # Writing alone is not enough — the writer must refresh.
+                loader.refresh_materialized_agents()
+                assert (
+                    loader.resolve_agent_bindings(self._config(), agent_name="mochi").kiro_agent
+                    == "mochi"
+                )
+
+    def test_scan_reads_through_the_sensitive_path_gate(self):
+        # The agents dir is user-writable, so a symlink planted there
+        # (`evil.json` -> `~/.aws/credentials`) must not be read by a boot refresh.
+        # Reads go through hooks.safe_read_file, and a refused path is skipped
+        # without taking the rest of the directory down with it.
+        import kiro_crew.config.loader as loader
+        import kiro_crew.hooks as hooks_mod
+
+        real = hooks_mod.safe_read_file
+        refused: list[str] = []
+
+        def _guarded(path: str) -> str:
+            if path.endswith("evil.json"):
+                refused.append(path)
+                raise PermissionError("sensitive path refused")
+            return real(path)
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(
+                Path(td),
+                {"good.json": {"name": "good"}, "evil.json": {"name": "stolen"}},
+            )
+            with unittest.mock.patch.object(hooks_mod, "safe_read_file", _guarded):
+                with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                    loader.refresh_materialized_agents()
+                    cfg = self._config()
+                    # The refused entry contributes NOTHING — not even its stem.
+                    assert loader.resolve_agent_bindings(cfg, "stolen").kiro_agent == "kirocrew"
+                    assert loader.resolve_agent_bindings(cfg, "evil").kiro_agent == "kirocrew"
+                    # …and the rest of the directory still scans.
+                    assert loader.resolve_agent_bindings(cfg, "good").kiro_agent == "good"
+        assert refused, "the gate was never consulted for the planted entry"
+
+    def test_out_of_order_refresh_cannot_resurrect_a_deleted_agent(self):
+        # Two scans race by COMPLETION order, not start order. An older scan that
+        # globbed before a disable, finishing after the newer scan that saw the
+        # removal, would reinstall the deleted name — and the next turn would hand
+        # kiro-cli a config that is gone. The interleaving is driven exactly:
+        # a newer refresh completes from inside the older one's scan.
+        import kiro_crew.config.loader as loader
+
+        def _older_scan_that_is_overtaken(_p):
+            with unittest.mock.patch.object(
+                loader, "_scan_materialized_agents", lambda _p2: frozenset({"kept"})
+            ):
+                loader.refresh_materialized_agents()  # newer refresh lands first
+            # This older view still contains the agent that was deleted meanwhile.
+            return frozenset({"kept", "deleted"})
+
+        with unittest.mock.patch.object(
+            loader, "_scan_materialized_agents", _older_scan_that_is_overtaken
+        ):
+            loader.refresh_materialized_agents()
+
+        cfg = self._config()
+        assert loader.resolve_agent_bindings(cfg, "kept").kiro_agent == "kept"
+        assert loader.resolve_agent_bindings(cfg, "deleted").kiro_agent == "kirocrew"
+
+    def test_substituting_an_alias_name_round_trips_to_the_same_agent(self):
+        # The trap: storing the DEFAULT's physical `kiro_agent` when a request is
+        # unhonored. If some alias is itself NAMED that physical agent, the stored
+        # value re-resolves as that alias and dispatches its target instead — the
+        # advertised-vs-answering mismatch, reintroduced by the substitution meant
+        # to prevent it. `resolved_alias` round-trips to the same bindings.
+        import kiro_crew.config.loader as loader
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        cfg = self._config()
+        cfg.agents["default"] = KiroCrewAgentConfig(kiro_agent="worker")
+        cfg.agents["worker"] = KiroCrewAgentConfig(kiro_agent="other")
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"unrelated.json": {"name": "unrelated"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                first = loader.resolve_agent_bindings(cfg, agent_name="does-not-exist")
+                assert first.requested_resolved is False
+                # The physical name would be the trap.
+                assert first.kiro_agent == "worker"
+                assert first.resolved_alias == "default"
+                # Re-resolving what a handler stores must land on the SAME agent.
+                again = loader.resolve_agent_bindings(cfg, agent_name=first.resolved_alias)
+                assert again.kiro_agent == first.kiro_agent
+                # Whereas the physical name resolves elsewhere — the bug avoided.
+                trap = loader.resolve_agent_bindings(cfg, agent_name=first.kiro_agent)
+                assert trap.kiro_agent == "other"
+
+    def test_stale_refresh_cannot_erase_a_published_agent(self):
+        # The race: a refresh globs the directory BEFORE a registration writes into
+        # it, the registration publishes, then the stale scan finishes and assigns.
+        # A plain replace would drop the published name and un-dispatch a freshly
+        # enabled app. Simulated by publishing from inside the scan.
+        import kiro_crew.config.loader as loader
+
+        def _scan_that_races(_p):
+            # Stands in for "the directory as it looked before the write".
+            loader.publish_materialized_agents({"mochi", "mochi--mochi"})
+            return frozenset({"other", "other--other"})
+
+        with unittest.mock.patch.object(loader, "_scan_materialized_agents", _scan_that_races):
+            loader.refresh_materialized_agents()
+
+        cfg = self._config()
+        assert loader.resolve_agent_bindings(cfg, agent_name="mochi").kiro_agent == "mochi"
+        # The scan's own findings survive too — the guard unions, it does not
+        # discard the newer view.
+        assert loader.resolve_agent_bindings(cfg, agent_name="other").kiro_agent == "other"
+
+    def test_refresh_replaces_when_no_publish_intervened(self):
+        # Without an intervening publish the refresh is authoritative, so removals
+        # take effect — a union-always policy would make deleted agents immortal.
+        import kiro_crew.config.loader as loader
+
+        loader.publish_materialized_agents({"gone"})
+        assert loader.resolve_agent_bindings(self._config(), agent_name="gone").kiro_agent == "gone"
+
+        with unittest.mock.patch.object(
+            loader, "_scan_materialized_agents", lambda _p: frozenset({"kept"})
+        ):
+            loader.refresh_materialized_agents()
+
+        cfg = self._config()
+        assert loader.resolve_agent_bindings(cfg, agent_name="kept").kiro_agent == "kept"
+        assert loader.resolve_agent_bindings(cfg, agent_name="gone").kiro_agent == "kirocrew"
+
+    def test_publish_makes_names_dispatchable_with_no_filesystem_access(self):
+        # _register_agents publishes what it just wrote BEFORE scheduling the
+        # rescan, because a saturated executor can delay the rescan and a slot
+        # created in that window is normalized to the default AND stored — the
+        # slot would stay bound to the wrong agent. Publishing must therefore be
+        # immediate and touch nothing on disk.
+        import kiro_crew.config.loader as loader
+
+        def _explode(_p):
+            raise AssertionError("publish must not scan the filesystem")
+
+        with unittest.mock.patch.object(loader, "_scan_materialized_agents", _explode):
+            loader.publish_materialized_agents({"mochi", "mochi--mochi"})
+            cfg = self._config()
+            assert loader.resolve_agent_bindings(cfg, agent_name="mochi").kiro_agent == "mochi"
+            assert (
+                loader.resolve_agent_bindings(cfg, agent_name="mochi--mochi").kiro_agent
+                == "mochi--mochi"
+            )
+            # Unrelated names are unaffected — publishing adds, never asserts
+            # completeness.
+            assert loader.resolve_agent_bindings(cfg, agent_name="nope").kiro_agent == "kirocrew"
+
+    def test_publish_ignores_empty_input(self):
+        import kiro_crew.config.loader as loader
+
+        loader.publish_materialized_agents([])
+        assert loader._MATERIALIZED_AGENTS_READY is False
+        loader.publish_materialized_agents(["", None])  # type: ignore[list-item]
+        assert loader._MATERIALIZED_AGENTS_READY is False
+
+    def test_registration_refresh_is_offloaded_when_a_loop_is_running(self):
+        # bridges._register_agents runs ON the event loop for the dashboard paths
+        # (register_app documents this), so the writer-side refresh must NOT walk
+        # every agent file inline there. Assert the scan executes on a different
+        # thread than the loop.
+        import asyncio
+        import threading
+
+        import kiro_crew.config.loader as loader
+
+        scan_threads: list[int] = []
+        real_scan = loader._scan_materialized_agents
+
+        def _recording_scan(p):
+            scan_threads.append(threading.get_ident())
+            return real_scan(p)
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"mochi--mochi.json": {"name": "mochi"}})
+
+            async def _on_loop():
+                loop_thread = threading.get_ident()
+                loader.schedule_materialized_agents_refresh()
+                # Give the executor a moment to run the offloaded scan.
+                for _ in range(100):
+                    if scan_threads:
+                        break
+                    await asyncio.sleep(0.01)
+                return loop_thread
+
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                with unittest.mock.patch.object(
+                    loader, "_scan_materialized_agents", _recording_scan
+                ):
+                    loop_thread = asyncio.run(_on_loop())
+
+        assert scan_threads, "the scheduled refresh never ran"
+        assert loop_thread not in scan_threads, "the scan ran on the event loop thread"
+
+    def test_registration_refresh_runs_inline_without_a_loop(self):
+        # In a synchronous context (CLI, the boot warm already on an executor)
+        # there is no loop to protect, so the refresh happens immediately.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"mochi--mochi.json": {"name": "mochi"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                loader.schedule_materialized_agents_refresh()
+                assert "mochi" in loader._MATERIALIZED_AGENTS
+
+    def test_cold_snapshot_on_the_event_loop_falls_back_instead_of_scanning(self):
+        # With no snapshot yet, a lookup ON a running loop must NOT scan; it falls
+        # back to the default for that turn. The boot warm normally precedes any
+        # turn, so this is the safety net, not the expected path.
+        import asyncio
+
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"mochi--mochi.json": {"name": "mochi"}})
+
+            async def _on_loop():
+                return loader.resolve_agent_bindings(self._config(), agent_name="mochi")
+
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                with unittest.mock.patch.object(loader, "_MATERIALIZED_AGENTS", frozenset()):
+                    with unittest.mock.patch.object(
+                        loader, "_MATERIALIZED_AGENTS_READY", False
+                    ):
+                        assert asyncio.run(_on_loop()).kiro_agent == "kirocrew"
+
+
 class TestWeixinConfig(unittest.TestCase):
     """The WeChat allow-list must survive a config round trip.
 

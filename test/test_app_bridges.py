@@ -2628,3 +2628,65 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
         assert out is not None
         # Parses, and the separator round-trips.
         assert json.loads(out.read_text(encoding="utf-8"))["command"] == r"C:\Users\me\uv.exe"
+
+
+class TestRegisterAgentsSnapshotUpkeep:
+    """`_register_agents` owns keeping the resolver's materialized-agent snapshot
+    honest: it publishes what it writes, and it reconciles the directory even when
+    it writes nothing, so a name pruned from disk stops being dispatchable."""
+
+    def test_deregister_refreshes_the_snapshot(self, monkeypatch, tmp_path):
+        # Removing an app's agent files must drop them from the resolver's
+        # snapshot. Otherwise a disabled app's agent stays dispatchable in memory
+        # and a slot still bound to it hands kiro-cli a name whose config is gone.
+        from kiro_crew.apps import bridges
+
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "someapp--main.json").write_text(json.dumps({"name": "main"}), encoding="utf-8")
+
+        calls: list[str] = []
+        monkeypatch.setattr(bridges, "_kiro_agents_dir", lambda: agents)
+        monkeypatch.setattr(
+            bridges, "schedule_materialized_agents_refresh", lambda: calls.append("refresh")
+        )
+
+        assert bridges._deregister_agents("someapp") == 1
+        assert calls == ["refresh"]
+
+    def test_deregister_without_removals_does_not_refresh(self, monkeypatch, tmp_path):
+        from kiro_crew.apps import bridges
+
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        calls: list[str] = []
+        monkeypatch.setattr(bridges, "_kiro_agents_dir", lambda: agents)
+        monkeypatch.setattr(
+            bridges, "schedule_materialized_agents_refresh", lambda: calls.append("refresh")
+        )
+
+        assert bridges._deregister_agents("someapp") == 0
+        assert calls == []
+
+    def test_refresh_is_scheduled_even_when_nothing_was_registered(self, monkeypatch):
+        # A re-registration whose manifest no longer declares an agent (or that
+        # follows a prune) writes nothing. Skipping the rescan there would leave
+        # the removed name dispatchable in memory, and kiro-cli would silently
+        # fall back to its own default for a name it cannot load.
+        from kiro_crew.apps import bridges
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            bridges, "schedule_materialized_agents_refresh", lambda: calls.append("refresh")
+        )
+        monkeypatch.setattr(
+            bridges,
+            "publish_materialized_agents",
+            lambda names: calls.append("publish"),
+        )
+
+        out = bridges._register_agents("someapp", SimpleNamespace(agents=[]), Path("/nonexistent"))
+
+        assert out == []
+        # Nothing to publish, but the directory is still reconciled.
+        assert calls == ["refresh"]
