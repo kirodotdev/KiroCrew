@@ -8080,7 +8080,17 @@
         "product_manager": "Product Manager",
         "somewhat": "In parte",
         "tail_preserve_end_final_summary": "Fine (conserva la parte finale / il riepilogo conclusivo)",
-        "ux_designer": "Designer UX"
+        "ux_designer": "Designer UX",
+        "knowledge_library": "Libreria delle conoscenze",
+        "auto_add_documents": "Aggiungi documenti automaticamente",
+        "let_the_agent_add_documents_it_reads_while_workin": "Consente all’agente di aggiungere alla tua libreria delle conoscenze i documenti che legge mentre lavora, così restano ricercabili in seguito. Li legge con i propri strumenti e con la tua approvazione: Kiro Crew non scarica nulla da sé. I documenti aggiunti compaiono in un’unica fonte «Aggiunti automaticamente», rimovibile con un clic.",
+        "auto_register_project_documents": "Registra automaticamente i documenti di progetto",
+        "register_the_documents_of_each_project_you_work_i": "Registra i documenti di ogni progetto su cui lavori, così i suoi documenti di progettazione, le specifiche e i README diventano ricercabili senza aggiungere la cartella a mano. Solo documenti: mai codice sorgente, istruzioni per agenti o file generati.",
+        "auto_add_saved_artifacts": "Aggiungi automaticamente gli artefatti salvati",
+        "mirror_documents_you_save_as_artifacts_into_the_l": "Rispecchia nella libreria i documenti che salvi come artefatti, li mantiene sincronizzati mentre li modifichi e li rimuove quando elimini l’artefatto.",
+        "failed_to_save_knowledge_setting": "Impossibile salvare l’impostazione delle conoscenze",
+        "auto_ingest_limit_per_scan": "Limite di acquisizione automatica per scansione",
+        "how_much_an_automatically_registered_source_may_i": "Quanto una fonte registrata automaticamente può acquisire in un solo passaggio. Ogni parte di un documento costa una chiamata di estrazione, quindi è questo a limitare il costo; i documenti più recenti entrano per primi e il resto arriva nei passaggi successivi. 0 rimuove il limite. Predefinito: {{count}}."
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",

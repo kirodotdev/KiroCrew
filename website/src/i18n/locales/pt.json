@@ -8080,7 +8080,17 @@
         "product_manager": "Gerente de produto",
         "somewhat": "Um pouco",
         "tail_preserve_end_final_summary": "Fim (preserva o final / resumo final)",
-        "ux_designer": "Designer de UX"
+        "ux_designer": "Designer de UX",
+        "knowledge_library": "Biblioteca de conhecimento",
+        "auto_add_documents": "Adicionar documentos automaticamente",
+        "let_the_agent_add_documents_it_reads_while_workin": "Deixe o agente adicionar à sua biblioteca de conhecimento os documentos que lê enquanto trabalha, para que continuem pesquisáveis depois. Ele os lê com as próprias ferramentas e com a sua aprovação: o Kiro Crew não baixa nada por conta própria. Os documentos adicionados aparecem em uma única fonte “Adicionados automaticamente”, que você remove em um clique.",
+        "auto_register_project_documents": "Registrar documentos de projeto automaticamente",
+        "register_the_documents_of_each_project_you_work_i": "Registre os documentos de cada projeto em que você trabalha, para que seus documentos de design, especificações e READMEs fiquem pesquisáveis sem adicionar a pasta manualmente. Apenas documentos: nunca código-fonte, instruções de agente ou arquivos gerados.",
+        "auto_add_saved_artifacts": "Adicionar artefatos salvos automaticamente",
+        "mirror_documents_you_save_as_artifacts_into_the_l": "Espelha na biblioteca os documentos que você salva como artefatos, mantém tudo sincronizado conforme você edita e remove quando você exclui o artefato.",
+        "failed_to_save_knowledge_setting": "Falha ao salvar a configuração de conhecimento",
+        "auto_ingest_limit_per_scan": "Limite de ingestão automática por varredura",
+        "how_much_an_automatically_registered_source_may_i": "Quanto uma fonte registrada automaticamente pode absorver em uma passagem. Cada parte de um documento custa uma chamada de extração, então é isso que limita o custo; os documentos mais recentes entram primeiro e o resto vem nas passagens seguintes. 0 remove o limite. Padrão: {{count}}."
       },
       "computerUsePanel": {
         "accessibility": "Acessibilidade",

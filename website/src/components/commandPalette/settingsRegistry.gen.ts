@@ -66,11 +66,42 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.auto-add-documents",
+    "label": "Auto-Add Documents",
+    "description": "Let the agent add documents it reads while working to your knowledge library, so they stay searchable later. It reads them with its own tools under your approval — Kiro Crew fetches nothing itself. Added documents appear in one “Auto-added” source you can remove in a click.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.auto-add-saved-artifacts",
+    "label": "Auto-Add Saved Artifacts",
+    "description": "Mirror documents you save as artifacts into the library, keep them in sync as you edit, and remove them when you delete the artifact.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
     "description": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
     "tab": "chat",
     "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.auto-ingest-limit-per-scan",
+    "label": "Auto-Ingest Limit Per Scan",
+    "tab": "chat",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.auto-register-project-documents",
+    "label": "Auto-Register Project Documents",
+    "description": "Register the documents of each project you work in, so its design docs, specs and READMEs become searchable without adding the folder by hand. Documents only — never source code, agent instructions or generated files.",
+    "tab": "chat",
+    "type": "toggle",
     "occurrence": 1
   },
   {

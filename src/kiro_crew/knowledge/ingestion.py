@@ -19,8 +19,9 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 
+from .autosource import AUTO_ADDED_PROP
 from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
-from .dedup import dedup_document
+from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
 from .extractor import EntityExtractor
 from .readers import FileReader
@@ -34,6 +35,10 @@ CODE_EXTS = {
 }
 
 MARKDOWN_EXTS = {'.md', '.docx'}
+
+#: ``ingestion_jobs.status`` for a write the pre-ingest gate refused because the
+#: exact content is already in the Library. Terminal, like 'completed'.
+DUPLICATE_JOB_STATUS = 'skipped_duplicate'
 
 DEFAULT_MAX_INGEST_FILE_MB = 100.0
 _MB = 1024 * 1024
@@ -71,6 +76,19 @@ def _redact(text: str | None) -> str | None:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
+
+
+def _redact_for_ingest(text: str) -> str:
+    """Scrub a document's OWN text of secrets before anything downstream reads it.
+
+    Distinct from :func:`_redact`, which cleans text the model produced. This one
+    runs on the raw document, ahead of chunking, extraction and storage, so a
+    credential pasted into a file never reaches the extraction worker or the index.
+    Same helper the artifact path uses on its body.
+    """
+    cleaned, _ = redact_credentials(text)
+    cleaned, _ = redact_exfiltration_urls(cleaned)
+    return cleaned
 
 
 def _coerce_chunk_param(value: object, default: int, minimum: int) -> int:
@@ -122,18 +140,135 @@ class IngestionPipeline:
         self.embedder = embedder
         self._dedup_enabled = dedup_enabled
 
-    def _maybe_dedup(self, source_id: str) -> None:
+    def _skip_as_duplicate(self, content_hash: str, source_id: str | None,
+                           old_item_ids: list[str] | None = None) -> str | None:
+        """Terminal job id when this exact document is already in the Library.
+
+        Returns ``None`` when the write should proceed.
+
+        Every chunk of a document carries the document's whole-text
+        ``content_hash``, so an exact hit on that indexed column means the text is
+        already stored. Refusing the write here -- rather than writing it and
+        letting the de-duplication sweep collapse it afterwards -- is what makes
+        "no duplicate is written" true, and it costs one indexed lookup instead of
+        a chunking pass plus an LLM extraction call per chunk. It covers every
+        ingest path because it sits inside the pipeline, not at a call site.
+
+        A hit inside *source_id* itself is not a duplicate: that is the same
+        document being re-ingested, which must proceed so its item group is
+        replaced.
+
+        ``old_item_ids`` -- the items this call was going to REPLACE -- are
+        deleted before returning. Refusing the write is not the same as doing
+        nothing: the document's content changed to something already stored
+        elsewhere, so its previous items are now stale. Leaving them would keep
+        superseded text searchable, and (for a folder file, whose state row is
+        then recorded with an empty group) leave them unreachable by the deleted-
+        file path forever.
+
+        This gate is exact-hash only, and complements rather than replaces the
+        sweep: only the sweep catches a NEAR-duplicate (the same document edited
+        slightly between two sources) or a duplicate that already exists, and it
+        needs embeddings, so it can never run inline.
+
+        The skip is recorded as a terminal ``ingestion_jobs`` row rather than a
+        bare ``None`` return, so a caller can tell "already present" from
+        "nothing to do" through the job status it already reads.
+        """
+        if not content_hash:
+            return None
+        holder = self.store.find_doc_by_content_hash(
+            content_hash, exclude_source_id=source_id)
+        if not holder:
+            return None
+        if self._outranks_holder(source_id, str(holder.get("source_type") or "")):
+            return None
+        if old_item_ids:
+            self.store.delete_items_batch(list(old_item_ids), owner_source_id=source_id)
+        # This source HAS a copy of the document -- it just does not need a second
+        # physical one. Under "one document, many locations" that has to be recorded,
+        # or the copy is invisible to the reference count: deleting the holder would
+        # destroy the only items while this source's file still sits on disk, and the
+        # content would vanish from the Library with nothing to bring it back.
+        # Attaching costs nothing and makes the refusal safe.
+        if source_id:
+            for row in self.store.db.execute(
+                    "SELECT id FROM items WHERE content_hash = ? AND source_id = ?",
+                    (content_hash, holder.get("source_id"))).fetchall():
+                self.store.add_source_location(row["id"], source_id)
+        job_id = uuid4().hex[:12]
+        now = datetime.now().isoformat()
+        self.store.db.execute(
+            "INSERT INTO ingestion_jobs (id, source_id, status, items_total, "
+            "items_processed, created_at, updated_at) "
+            f"VALUES (?, ?, '{DUPLICATE_JOB_STATUS}', 0, 0, ?, ?)",
+            (job_id, source_id, now, now))
+        self.store.db.commit()
+        logger.info(
+            "Skipping ingest: identical content already in source %r (%s)",
+            holder.get("source_name"), holder.get("source_type"))
+        return job_id
+
+    def _source_is_auto_added(self, source_id: str) -> bool:
+        """True when this source was registered automatically, not chosen by the user.
+
+        Read from the source row's own properties rather than passed in, because every
+        auto path (project docs, the agent aggregate, the auto-registered drop folder)
+        already marks itself and a caller-supplied flag would be one more thing each
+        new path could forget. Failure is treated as NOT auto-added: a missing or
+        malformed row must not silently start scrubbing a hand-registered folder.
+        """
+        try:
+            row = self.store.db.execute(
+                "SELECT properties FROM sources WHERE id = ?", (source_id,)).fetchone()
+        except Exception:
+            return False
+        if not row or not row["properties"]:
+            return False
+        try:
+            props = json.loads(row["properties"])
+        except (TypeError, ValueError):
+            return False
+        return bool(isinstance(props, dict) and props.get(AUTO_ADDED_PROP))
+
+    def _outranks_holder(self, source_id: str | None, holder_type: str) -> bool:
+        """True when the incoming source must win over the current holder.
+
+        "Already exists elsewhere" does not mean the existing copy is the one
+        worth keeping. De-duplication ranks copies by ``PERSISTENT_SOURCE_TYPES``
+        -- a folder, vault or wiki, something that re-syncs, outranks a transient
+        one-shot upload or chat capture -- and this gate honours the same ranking
+        so arrival order cannot invert it.
+
+        So when a watched project folder holds content that currently lives only
+        in a transient upload, the folder copy is allowed to land and the
+        post-ingest sweep collapses the pair through ``pick_winner``, keeping the
+        persistent copy. Otherwise the only searchable copy would sit in an upload
+        whose deletion takes the content with it.
+
+        Equal rank refuses, which is the cheap path: it skips the chunking and
+        extraction the sweep would immediately undo.
+        """
+        if not source_id or holder_type in PERSISTENT_SOURCE_TYPES:
+            return False
+        row = self.store.db.execute(
+            "SELECT source_type FROM sources WHERE id = ?", (source_id,)).fetchone()
+        return bool(row) and str(row["source_type"] or "") in PERSISTENT_SOURCE_TYPES
+
+    def _maybe_dedup(self, source_id: str, content_hash: str = "") -> None:
         """Collapse cross-source duplicates of the just-ingested document.
 
         Targeted (O(n)) -- compares only the new document against the corpus, not the
-        whole corpus against itself. Best-effort: a dedup failure must never fail an
-        ingestion that already succeeded, so errors are swallowed (logged at debug).
-        No-op when disabled.
+        whole corpus against itself. *content_hash* names the document just written:
+        a source id alone is ambiguous once a source holds more than one document.
+        Best-effort: a dedup failure must never fail an ingestion that already
+        succeeded, so errors are swallowed (logged at debug). No-op when disabled.
         """
         if not self._dedup_enabled:
             return
         try:
-            dedup_document(self.store, source_id, apply=True)
+            dedup_document(self.store, source_id, content_hash=content_hash or None,
+                           apply=True)
         except Exception:
             logger.debug("Post-ingest dedup skipped", exc_info=True)
 
@@ -147,6 +282,16 @@ class IngestionPipeline:
         """
         p = Path(path)
         display_name = original_name or p.name
+        # Separate copy for the two sinks a name is allowed to reach: the error
+        # raised back to the caller who supplied it, and the audit record. It never
+        # reaches the application log -- see the oversized branch below. display_name
+        # is caller-supplied (an upload's filename, a folder file's name, a document
+        # title) and a name is free-form enough to carry a credential, so both of
+        # those sinks take the redacted form. The stored display_name is untouched --
+        # it is the document's title. No ``or`` fallback: _redact returns its input
+        # unchanged when falsy, so a fallback could only ever re-yield the same empty
+        # string while handing static analysis a genuine unredacted edge.
+        log_name = _redact(display_name)
         ext = (Path(original_name).suffix if original_name else p.suffix).lower()
 
         # Defense-in-depth: refuse sensitive paths before any filesystem access
@@ -156,9 +301,9 @@ class IngestionPipeline:
             sel().log_tool_invocation(
                 session_key="ingestion", agent="knowledge-ingest",
                 tool_name="knowledge.ingest_denied", outcome="denied",
-                resources=f"source_id={source_id} file={display_name} reason=sensitive_path",
+                resources=f"source_id={source_id} file={log_name} reason=sensitive_path",
             )
-            raise PermissionError(f"Refusing to ingest sensitive path: {display_name}")
+            raise PermissionError(f"Refusing to ingest sensitive path: {log_name}")
 
         # Size guard BEFORE reading: chunking a very large file is CPU-bound and
         # previously hung gateway startup for 25s+ with only a raw faulthandler
@@ -170,15 +315,27 @@ class IngestionPipeline:
             file_size = 0
         if limit_mb > 0 and file_size > limit_mb * _MB:
             msg = (
-                f"Skipping oversized file '{display_name}' "
+                f"Skipping oversized file '{log_name}' "
                 f"({file_size / _MB:.1f} MB > knowledge.max_ingest_file_mb={limit_mb:g} MB); "
                 f"raise knowledge.max_ingest_file_mb in config to ingest it"
             )
-            logger.warning(msg)
+            # The name goes to the caller and the audit record, NOT to the log. A
+            # document name is caller-supplied and free-form enough to carry a
+            # credential, and the application log is the one sink of the three with
+            # no redaction contract and the widest reach (files, aggregators, and
+            # anyone with host access). The size, the limit and the source id are
+            # enough to act on: they say what to raise and which source to look at,
+            # and the SEL event below carries the redacted name for the audit trail.
+            logger.warning(
+                "Skipping oversized file for source_id=%s (%.1f MB > "
+                "knowledge.max_ingest_file_mb=%g MB); raise "
+                "knowledge.max_ingest_file_mb in config to ingest it",
+                source_id or "(new)", file_size / _MB, limit_mb,
+            )
             sel().log_tool_invocation(
                 session_key="ingestion", agent="knowledge-ingest",
                 tool_name="knowledge.ingest_denied", outcome="denied",
-                resources=(f"source_id={source_id} file={display_name} "
+                resources=(f"source_id={source_id} file={log_name} "
                            f"reason=oversized size_mb={file_size / _MB:.1f} limit_mb={limit_mb:g}"),
             )
             raise FileTooLargeError(msg)
@@ -190,6 +347,16 @@ class IngestionPipeline:
         text, meta = await asyncio.to_thread(self.reader.read, path)
         if meta.get('format') == 'error':
             raise RuntimeError(f"Failed to read {path}: {meta.get('error')}")
+
+        # Content the user never explicitly chose to index gets its secrets scrubbed
+        # BEFORE anything else sees it. A hand-registered folder is a deliberate act;
+        # an auto-registered one is not, so a credential sitting in a project runbook
+        # would otherwise reach the extraction worker and the index without anyone
+        # having agreed to it. This is the same scrub the artifact path already applies
+        # to its body, in the same position -- ahead of the hash, so the stored text
+        # and its identity agree and a re-scan is stable.
+        if source_id and self._source_is_auto_added(source_id):
+            text = _redact_for_ingest(text)
 
         # 2. Hash check + source resolution
         content_hash = hashlib.sha256(text.encode()).hexdigest()
@@ -225,6 +392,9 @@ class IngestionPipeline:
                 )
 
         # 3. Job record
+        dupe_job = self._skip_as_duplicate(content_hash, source_id, _old_item_ids)
+        if dupe_job:
+            return dupe_job
         job_id = uuid4().hex[:12]
         now = datetime.now().isoformat()
         self.store.db.execute(
@@ -337,7 +507,7 @@ class IngestionPipeline:
         # 6. Finalize
         now = datetime.now().isoformat()
         if processed == total:
-            self.store.delete_items_batch(_old_item_ids)
+            self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
             if existing:
                 self.store.update_source(source_id, properties=json.dumps({**props, 'content_hash': content_hash, **meta}))
             self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
@@ -365,7 +535,7 @@ class IngestionPipeline:
             # dedup_document can merge entities -> _load_graph (full graph
             # rebuild). Offloaded so a large source's dedup cannot stall the loop
             # (RLock-guarded graph + thread-local sqlite make this thread-safe).
-            await asyncio.to_thread(self._maybe_dedup, source_id)
+            await asyncio.to_thread(self._maybe_dedup, source_id, content_hash)
         return job_id
 
     async def ingest_text(self, text: str, title: str, source_type: str = 'manual',
@@ -409,6 +579,10 @@ class IngestionPipeline:
             # Existing source, replace-all (single-text / remote-sync source).
             _old_item_ids = [row['id'] for row in self.store.db.execute(
                 "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+
+        dupe_job = self._skip_as_duplicate(content_hash, source_id, _old_item_ids)
+        if dupe_job:
+            return dupe_job
 
         job_id = uuid4().hex[:12]
         now = datetime.now().isoformat()
@@ -469,7 +643,7 @@ class IngestionPipeline:
 
         now = datetime.now().isoformat()
         if processed == total:
-            self.store.delete_items_batch(_old_item_ids)
+            self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
             self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
             self.store.update_source(source_id, last_synced=now)
             try:
@@ -497,7 +671,7 @@ class IngestionPipeline:
             # dedup_document can merge entities -> _load_graph (full graph
             # rebuild). Offloaded so a large source's dedup cannot stall the loop
             # (RLock-guarded graph + thread-local sqlite make this thread-safe).
-            await asyncio.to_thread(self._maybe_dedup, source_id)
+            await asyncio.to_thread(self._maybe_dedup, source_id, content_hash)
         return job_id
 
     def get_job_status(self, job_id: str) -> dict | None:

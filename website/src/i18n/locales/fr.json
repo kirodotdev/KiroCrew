@@ -8080,7 +8080,17 @@
         "product_manager": "Chef de produit",
         "somewhat": "Un peu",
         "tail_preserve_end_final_summary": "Fin (conserver la fin / le résumé final)",
-        "ux_designer": "Designer UX"
+        "ux_designer": "Designer UX",
+        "knowledge_library": "Bibliothèque de connaissances",
+        "auto_add_documents": "Ajouter automatiquement les documents",
+        "let_the_agent_add_documents_it_reads_while_workin": "Autorise l’agent à ajouter à votre bibliothèque de connaissances les documents qu’il lit en travaillant, afin qu’ils restent consultables plus tard. Il les lit avec ses propres outils et avec votre accord : Kiro Crew ne télécharge rien de lui-même. Les documents ajoutés apparaissent dans une source unique « Ajoutés automatiquement », supprimable en un clic.",
+        "auto_register_project_documents": "Enregistrer automatiquement les documents de projet",
+        "register_the_documents_of_each_project_you_work_i": "Enregistre les documents de chaque projet sur lequel vous travaillez, afin que ses documents de conception, spécifications et README soient consultables sans ajouter le dossier à la main. Documents uniquement : jamais de code source, d’instructions d’agent ni de fichiers générés.",
+        "auto_add_saved_artifacts": "Ajouter automatiquement les artéfacts enregistrés",
+        "mirror_documents_you_save_as_artifacts_into_the_l": "Reflète dans la bibliothèque les documents que vous enregistrez comme artéfacts, les tient à jour au fil de vos modifications et les retire quand vous supprimez l’artéfact.",
+        "failed_to_save_knowledge_setting": "Échec de l’enregistrement du paramètre de connaissances",
+        "auto_ingest_limit_per_scan": "Limite d’ingestion automatique par analyse",
+        "how_much_an_automatically_registered_source_may_i": "Ce qu’une source enregistrée automatiquement peut absorber en une passe. Chaque fragment de document coûte un appel d’extraction : c’est donc ce qui borne le coût. Les documents les plus récents arrivent d’abord, le reste suit lors des passes suivantes. 0 supprime la limite. Valeur par défaut : {{count}}."
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

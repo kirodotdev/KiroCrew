@@ -2555,7 +2555,8 @@
         "product_manager": "Product Manager",
         "somewhat": "Somewhat",
         "tail_preserve_end_final_summary": "Tail (preserve end / final summary)",
-        "ux_designer": "UX Designer"
+        "ux_designer": "UX Designer",
+        "failed_to_save_knowledge_setting": "Failed to save knowledge setting"
       },
       "displayPanel": {
         "create_theme": "Create Theme",

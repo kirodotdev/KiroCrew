@@ -7993,7 +7993,17 @@
         "product_manager": "Produktmanager",
         "somewhat": "Etwas",
         "tail_preserve_end_final_summary": "Ende (Schluss / Abschlusszusammenfassung erhalten)",
-        "ux_designer": "UX-Designer"
+        "ux_designer": "UX-Designer",
+        "knowledge_library": "Wissensbibliothek",
+        "auto_add_documents": "Dokumente automatisch hinzufügen",
+        "let_the_agent_add_documents_it_reads_while_workin": "Erlaubt dem Agenten, Dokumente, die er beim Arbeiten liest, in deine Wissensbibliothek aufzunehmen, damit sie später durchsuchbar bleiben. Er liest sie mit seinen eigenen Werkzeugen und mit deiner Zustimmung – Kiro Crew lädt selbst nichts herunter. Hinzugefügte Dokumente erscheinen in einer einzigen Quelle „Automatisch hinzugefügt“, die sich mit einem Klick entfernen lässt.",
+        "auto_register_project_documents": "Projektdokumente automatisch registrieren",
+        "register_the_documents_of_each_project_you_work_i": "Registriert die Dokumente jedes Projekts, an dem du arbeitest, damit dessen Entwurfsdokumente, Spezifikationen und READMEs durchsuchbar werden, ohne den Ordner von Hand hinzuzufügen. Nur Dokumente – niemals Quellcode, Agentenanweisungen oder generierte Dateien.",
+        "auto_add_saved_artifacts": "Gespeicherte Artefakte automatisch hinzufügen",
+        "mirror_documents_you_save_as_artifacts_into_the_l": "Spiegelt Dokumente, die du als Artefakte speicherst, in die Bibliothek, hält sie beim Bearbeiten aktuell und entfernt sie, wenn du das Artefakt löschst.",
+        "failed_to_save_knowledge_setting": "Wissenseinstellung konnte nicht gespeichert werden",
+        "auto_ingest_limit_per_scan": "Auto-Aufnahmegrenze pro Durchlauf",
+        "how_much_an_automatically_registered_source_may_i": "Wie viel eine automatisch registrierte Quelle in einem Durchlauf aufnehmen darf. Jeder Teil eines Dokuments kostet einen Extraktionsaufruf – das begrenzt also die Kosten. Die neuesten Dokumente kommen zuerst, der Rest folgt in späteren Durchläufen. 0 hebt die Grenze auf. Standard: {{count}}."
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

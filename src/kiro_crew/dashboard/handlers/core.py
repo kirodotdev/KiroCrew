@@ -1285,6 +1285,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # require approval regardless — enforced in the generation path).
     "skills.auto_create_from_sessions": {"type": "bool"},
     "skills.approval_required": {"type": "bool"},
+    # Knowledge Library auto-ingest. Chunk budget max mirrors the point past which
+    # a single sweep stops being a trickle; dedup cadence max is ~a day of sweeps.
+    "knowledge.auto_add_documents": {"type": "bool"},
+    "knowledge.auto_register_project_docs": {"type": "bool"},
+    "knowledge.auto_ingest_artifacts": {"type": "bool"},
+    "knowledge.auto_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
+    "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": 288},
     # Computer use — BUDGET KNOBS ONLY. There is deliberately no
     # "computer_use.enabled" key here: the primary enable lives on the keystone
     # ``computer_use.json`` (see config.loader.computer_use_state_path) so the

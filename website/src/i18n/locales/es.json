@@ -8080,7 +8080,17 @@
         "product_manager": "Gerente de producto",
         "somewhat": "Algo técnico",
         "tail_preserve_end_final_summary": "Final (conserva el final / el resumen final)",
-        "ux_designer": "Diseñador UX"
+        "ux_designer": "Diseñador UX",
+        "knowledge_library": "Biblioteca de conocimiento",
+        "auto_add_documents": "Añadir documentos automáticamente",
+        "let_the_agent_add_documents_it_reads_while_workin": "Permite que el agente añada a tu biblioteca de conocimiento los documentos que lee mientras trabaja, para que sigan siendo buscables más adelante. Los lee con sus propias herramientas y con tu aprobación: Kiro Crew no descarga nada por su cuenta. Los documentos añadidos aparecen en una única fuente «Añadidos automáticamente» que puedes eliminar con un clic.",
+        "auto_register_project_documents": "Registrar documentos de proyecto automáticamente",
+        "register_the_documents_of_each_project_you_work_i": "Registra los documentos de cada proyecto en el que trabajas, para que sus documentos de diseño, especificaciones y READMEs sean buscables sin añadir la carpeta a mano. Solo documentos: nunca código fuente, instrucciones para agentes ni archivos generados.",
+        "auto_add_saved_artifacts": "Añadir artefactos guardados automáticamente",
+        "mirror_documents_you_save_as_artifacts_into_the_l": "Refleja en la biblioteca los documentos que guardas como artefactos, mantenlos sincronizados al editarlos y elimínalos cuando borres el artefacto.",
+        "failed_to_save_knowledge_setting": "No se pudo guardar el ajuste de conocimiento",
+        "auto_ingest_limit_per_scan": "Límite de ingesta automática por análisis",
+        "how_much_an_automatically_registered_source_may_i": "Cuánto puede tomar una fuente registrada automáticamente en una sola pasada. Cada fragmento de un documento cuesta una llamada de extracción, así que esto es lo que limita el coste; los documentos más recientes entran primero y el resto llega en pasadas posteriores. 0 elimina el límite. Predeterminado: {{count}}."
       },
       "computerUsePanel": {
         "accessibility": "Accesibilidad",

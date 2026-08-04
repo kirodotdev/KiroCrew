@@ -7906,7 +7906,17 @@
         "product_manager": "产品经理",
         "somewhat": "略懂",
         "tail_preserve_end_final_summary": "尾部（保留结尾 / 最终摘要）",
-        "ux_designer": "UX 设计师"
+        "ux_designer": "UX 设计师",
+        "knowledge_library": "知识库",
+        "auto_add_documents": "自动添加文档",
+        "let_the_agent_add_documents_it_reads_while_workin": "让代理把工作中读到的文档添加到你的知识库，以便日后仍可搜索。代理会在你的批准下用自己的工具读取这些文档——Kiro Crew 本身不会抓取任何内容。已添加的文档会归入一个“自动添加”来源，可一键移除。",
+        "auto_register_project_documents": "自动注册项目文档",
+        "register_the_documents_of_each_project_you_work_i": "自动注册你所参与的每个项目的文档，让其设计文档、规格说明和 README 无需手动添加文件夹即可被搜索。仅限文档——绝不包含源代码、代理指令或生成文件。",
+        "auto_add_saved_artifacts": "自动添加已保存的工件",
+        "mirror_documents_you_save_as_artifacts_into_the_l": "把你保存为工件的文档同步到知识库，随编辑保持同步，并在你删除工件时一并移除。",
+        "failed_to_save_knowledge_setting": "保存知识库设置失败",
+        "auto_ingest_limit_per_scan": "每次扫描的自动摄取上限",
+        "how_much_an_automatically_registered_source_may_i": "自动注册的来源在一次扫描中最多可摄取多少内容。文档的每个片段都要消耗一次抽取调用，因此这是控制成本的关键；最新的文档优先入库，其余的在后续扫描中陆续处理。设为 0 表示不限制。默认 {{count}}。"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",

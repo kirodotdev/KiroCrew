@@ -5796,7 +5796,16 @@
         "which_model_new_sessions_start_with_pick_a_model": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Crews, or pick one inside a session to override it there.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them.",
         "widget_density": "Widget Density",
-        "your_role": "Your Role"
+        "your_role": "Your Role",
+        "knowledge_library": "Knowledge Library",
+        "auto_add_documents": "Auto-Add Documents",
+        "let_the_agent_add_documents_it_reads_while_workin": "Let the agent add documents it reads while working to your knowledge library, so they stay searchable later. It reads them with its own tools under your approval — Kiro Crew fetches nothing itself. Added documents appear in one “Auto-added” source you can remove in a click.",
+        "auto_register_project_documents": "Auto-Register Project Documents",
+        "register_the_documents_of_each_project_you_work_i": "Register the documents of each project you work in, so its design docs, specs and READMEs become searchable without adding the folder by hand. Documents only — never source code, agent instructions or generated files.",
+        "auto_add_saved_artifacts": "Auto-Add Saved Artifacts",
+        "mirror_documents_you_save_as_artifacts_into_the_l": "Mirror documents you save as artifacts into the library, keep them in sync as you edit, and remove them when you delete the artifact.",
+        "auto_ingest_limit_per_scan": "Auto-Ingest Limit Per Scan",
+        "how_much_an_automatically_registered_source_may_i": "How much an automatically-registered source may take in one pass. Each piece of a document costs one extraction call, so this is what bounds the cost; newest documents land first and the rest follow on later passes. 0 removes the bound. Default {{count}}."
       },
       "computerUsePanel": {
         "accessibility": "Accessibility",

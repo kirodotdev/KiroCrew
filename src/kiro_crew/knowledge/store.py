@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import threading
 from collections import defaultdict
 from datetime import datetime
@@ -13,6 +14,8 @@ try:
     import pysqlite3 as sqlite3
 except ImportError:
     import sqlite3
+
+logger = logging.getLogger(__name__)
 
 
 class _NodeView:
@@ -130,6 +133,51 @@ class SimpleDiGraph:
             return iter(list(self._rev.get(nid, {})))
 
 
+# The per-document state tables, each with the status that means "this row owns a
+# live item group". The vocabularies genuinely differ and are NOT interchangeable:
+# a folder file is scan-driven, so it moves pending -> done and can be re-walked,
+# while an aggregate document is push-driven with no scanner to revive it and is
+# either 'active' or 'deduped'. Writing 'done' to an aggregate row hides it from
+# ``find_document_by_hash``, which matches on 'active' -- and an invisible row lets
+# identical content in under a second uri as a duplicate.
+_DOC_STATE_TABLES: tuple[tuple[str, str], ...] = (
+    ("folder_file_state", "done"),
+    ("artifact_item_state", "active"),
+    ("agent_item_state", "active"),
+)
+
+# Which column on each state table holds a hash in the SAME DOMAIN as
+# ``items.content_hash``, for lookups that have to relate a state row to items.
+#
+# Two different quantities are both called a content hash, and they are not
+# interchangeable:
+#
+# * ``folder_file_state.content_hash`` is sha256 over the file's RAW BYTES. It
+#   answers "has this file changed on disk?" and is compared before any
+#   extraction runs -- deriving it from extracted text would force an extraction
+#   pass on every scan, which is the cost the mtime/hash gate exists to avoid.
+#   The pre-ingest duplicate gate is in the same domain for the same reason: it
+#   also runs before extraction.
+# * ``items.content_hash`` is sha256 over the EXTRACTED TEXT.
+#
+# For .md/.txt the two coincide, so a cross-domain comparison appears to work.
+# For anything the reader transforms -- PDF, DOCX, HTML -- they differ and the
+# comparison silently matches nothing, which is how ownership bookkeeping came to
+# be inert for exactly those documents. Folder rows therefore carry the text hash
+# separately, in ``text_hash``; the aggregate tables already store a text hash in
+# ``content_hash`` and need no second column.
+_OWNERSHIP_HASH_COL: dict[str, str] = {
+    "folder_file_state": "COALESCE(text_hash, content_hash)",
+    "artifact_item_state": "content_hash",
+    "agent_item_state": "content_hash",
+}
+# Folder rows COALESCE so a legacy row -- written before ``text_hash`` existed, and
+# deliberately never backfilled -- keeps behaving exactly as it does today: for the
+# plaintext files whose two hashes are equal its ownership lookups still match, which
+# they would stop doing if the new column were consulted alone. A rescan populates
+# ``text_hash`` and the row becomes correct for transformed documents too.
+
+
 class KnowledgeStore:
     def __init__(self, db_path: str):
         self._db_path = db_path
@@ -236,6 +284,15 @@ class KnowledgeStore:
                 PRIMARY KEY (item_id, entity_id)
             );
 
+            -- merged_into_source_id names the SOURCE whose copy of this document
+            -- survived a de-duplication collapse. It is deliberately a source id and
+            -- never an item id: item_ids must keep meaning "the items this row owns",
+            -- because dedup derives a document's hash and embedding from whatever
+            -- item_ids points at, and delete authority follows the same list. A row
+            -- naming another source's items would therefore be enumerated as a second
+            -- document over one physical item set, and collapsing that pair deletes
+            -- the surviving copy. The marker records the relationship instead, so
+            -- deleting the surviving source can clear it and let this row re-ingest.
             CREATE TABLE IF NOT EXISTS source_locations (
                 id TEXT PRIMARY KEY,
                 item_id TEXT NOT NULL REFERENCES items(id),
@@ -243,8 +300,16 @@ class KnowledgeStore:
                 chunk_range TEXT,
                 section_title TEXT,
                 anchor TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                UNIQUE (item_id, source_id)
             );
+
+            -- Every reader filters on item_id, and deletion now asks "does another
+            -- source still hold this item?" on the same key.
+            CREATE INDEX IF NOT EXISTS idx_source_locations_item_id
+                ON source_locations(item_id);
+            CREATE INDEX IF NOT EXISTS idx_source_locations_source_id
+                ON source_locations(source_id);
 
             CREATE TABLE IF NOT EXISTS ingestion_jobs (
                 id TEXT PRIMARY KEY,
@@ -262,11 +327,13 @@ class KnowledgeStore:
                 source_id TEXT NOT NULL REFERENCES sources(id),
                 file_path TEXT NOT NULL,
                 content_hash TEXT,
+                text_hash TEXT,
                 mtime REAL,
                 item_ids TEXT DEFAULT '[]',
                 last_seen TEXT NOT NULL,
                 status TEXT DEFAULT 'pending',
                 error_message TEXT,
+                merged_into_source_id TEXT,
                 PRIMARY KEY (source_id, file_path)
             );
 
@@ -277,6 +344,26 @@ class KnowledgeStore:
                 item_ids TEXT DEFAULT '[]',
                 updated_at TEXT NOT NULL,
                 name TEXT,
+                status TEXT DEFAULT 'active',
+                merged_into_source_id TEXT,
+                PRIMARY KEY (source_id, slug)
+            );
+
+            -- Per-document item-group tracking for the aggregate "Auto-added"
+            -- source the agent writes to, keyed by a stable per-document slug.
+            -- Same shape and role as artifact_item_state: it is what lets one
+            -- aggregate source hold many independently-replaceable documents,
+            -- and what gives de-duplication a per-document unit to act on
+            -- instead of the whole source.
+            CREATE TABLE IF NOT EXISTS agent_item_state (
+                source_id TEXT NOT NULL REFERENCES sources(id),
+                slug TEXT NOT NULL,
+                content_hash TEXT,
+                item_ids TEXT DEFAULT '[]',
+                updated_at TEXT NOT NULL,
+                name TEXT,
+                status TEXT DEFAULT 'active',
+                merged_into_source_id TEXT,
                 PRIMARY KEY (source_id, slug)
             );
 
@@ -317,6 +404,23 @@ class KnowledgeStore:
         # above; IF NOT EXISTS keeps it idempotent for fresh DBs too.
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_items_content_hash ON items(content_hash)")
+        # source_locations predates being an identity table: pre-existing DBs have
+        # neither the (item_id, source_id) uniqueness nor any index. De-duplicate
+        # first so the unique index can be created, then add both lookup indexes.
+        self.db.execute("""
+            DELETE FROM source_locations WHERE id NOT IN (
+                SELECT MIN(id) FROM source_locations GROUP BY item_id, source_id
+            )
+        """)
+        self.db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_source_locations_item_source "
+            "ON source_locations(item_id, source_id)")
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_source_locations_item_id "
+            "ON source_locations(item_id)")
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_source_locations_source_id "
+            "ON source_locations(source_id)")
         job_cols = {r[1] for r in self.db.execute("PRAGMA table_info(ingestion_jobs)").fetchall()}
         if "items_failed" not in job_cols:
             self.db.execute("ALTER TABLE ingestion_jobs ADD COLUMN items_failed INTEGER DEFAULT 0")
@@ -336,11 +440,13 @@ class KnowledgeStore:
                     source_id TEXT NOT NULL REFERENCES sources(id),
                     file_path TEXT NOT NULL,
                     content_hash TEXT,
+                    text_hash TEXT,
                     mtime REAL,
                     item_ids TEXT DEFAULT '[]',
                     last_seen TEXT NOT NULL,
                     status TEXT DEFAULT 'pending',
                     error_message TEXT,
+                    merged_into_source_id TEXT,
                     PRIMARY KEY (source_id, file_path)
                 )
             """)
@@ -350,6 +456,18 @@ class KnowledgeStore:
                 self.db.execute("ALTER TABLE folder_file_state ADD COLUMN status TEXT DEFAULT 'pending'")
             if "error_message" not in ffs_cols:
                 self.db.execute("ALTER TABLE folder_file_state ADD COLUMN error_message TEXT")
+            if "merged_into_source_id" not in ffs_cols:
+                self.db.execute(
+                    "ALTER TABLE folder_file_state ADD COLUMN merged_into_source_id TEXT")
+            # The extracted-text hash, in the same domain as items.content_hash --
+            # see _OWNERSHIP_HASH_COL. Deliberately NOT backfilled: it can only be
+            # derived from a row's own items, and a legacy row that owns nothing has
+            # nothing to derive it from. Left NULL, such a row behaves exactly as it
+            # does today (its ownership lookups match nothing) and is populated the
+            # next time the file is scanned. A backfill that guessed instead would be
+            # the data-loss shape this feature already had to remove once.
+            if "text_hash" not in ffs_cols:
+                self.db.execute("ALTER TABLE folder_file_state ADD COLUMN text_hash TEXT")
         # Migrate: artifact_item_state table -- per-artifact item-group tracking
         # for the aggregate "Artifacts" KB source, keyed by artifact slug.
         if "artifact_item_state" not in tables:
@@ -361,6 +479,7 @@ class KnowledgeStore:
                     item_ids TEXT DEFAULT '[]',
                     updated_at TEXT NOT NULL,
                     name TEXT,
+                    merged_into_source_id TEXT,
                     PRIMARY KEY (source_id, slug)
                 )
             """)
@@ -369,6 +488,37 @@ class KnowledgeStore:
                 "PRAGMA table_info(artifact_item_state)").fetchall()}
             if "name" not in ais_cols:
                 self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN name TEXT")
+            if "status" not in ais_cols:
+                self.db.execute(
+                    "ALTER TABLE artifact_item_state ADD COLUMN status TEXT DEFAULT 'active'")
+            if "merged_into_source_id" not in ais_cols:
+                self.db.execute(
+                    "ALTER TABLE artifact_item_state ADD COLUMN merged_into_source_id TEXT")
+        # Migrate: agent_item_state table -- per-document item-group tracking for
+        # the aggregate "Auto-added" KB source the agent writes to.
+        if "agent_item_state" not in tables:
+            self.db.execute("""
+                CREATE TABLE IF NOT EXISTS agent_item_state (
+                    source_id TEXT NOT NULL REFERENCES sources(id),
+                    slug TEXT NOT NULL,
+                    content_hash TEXT,
+                    item_ids TEXT DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    name TEXT,
+                    status TEXT DEFAULT 'active',
+                    merged_into_source_id TEXT,
+                    PRIMARY KEY (source_id, slug)
+                )
+            """)
+        else:
+            agent_cols = {r[1] for r in self.db.execute(
+                "PRAGMA table_info(agent_item_state)").fetchall()}
+            if "status" not in agent_cols:
+                self.db.execute(
+                    "ALTER TABLE agent_item_state ADD COLUMN status TEXT DEFAULT 'active'")
+            if "merged_into_source_id" not in agent_cols:
+                self.db.execute(
+                    "ALTER TABLE agent_item_state ADD COLUMN merged_into_source_id TEXT")
         # Clean orphan sources (no items), entities (no mentions/relations), and stale relations
         #
         # Folder sources are EXCLUDED: a watched folder with zero discovered
@@ -381,10 +531,16 @@ class KnowledgeStore:
         try:
             orphan_sources_q = (
                 "SELECT id FROM sources WHERE id NOT IN (SELECT DISTINCT source_id FROM items WHERE source_id IS NOT NULL) "
-                "AND source_type NOT IN ('local_folder', 'obsidian_vault') "
+                "AND source_type NOT IN ('local_folder', 'obsidian_vault', 'quip') "
                 "AND id NOT IN (SELECT source_id FROM ingestion_jobs WHERE status IN ('pending', 'processing')) "
                 "AND id NOT IN (SELECT DISTINCT source_id FROM folder_file_state) "
-                "AND id NOT IN (SELECT DISTINCT source_id FROM artifact_item_state)"
+                "AND id NOT IN (SELECT DISTINCT source_id FROM artifact_item_state) "
+                "AND id NOT IN (SELECT DISTINCT source_id FROM agent_item_state) "
+                # A source can hold documents it does not OWN: after a duplicate
+                # collapse it is a location of the surviving copy. Reaping it here
+                # would delete the very rows that record co-ownership, on every
+                # gateway start, and the document would stop being reachable from it.
+                "AND id NOT IN (SELECT DISTINCT source_id FROM source_locations)"
             )
             self.db.execute(f"DELETE FROM source_locations WHERE source_id IN ({orphan_sources_q})")
             self.db.execute(f"DELETE FROM ingestion_jobs WHERE source_id IN ({orphan_sources_q})")
@@ -399,6 +555,31 @@ class KnowledgeStore:
         except Exception:
             self.db.execute("ROLLBACK")
             raise
+
+    def find_doc_by_content_hash(
+        self, content_hash: str, exclude_source_id: str | None = None
+    ) -> dict | None:
+        """The first document already holding this exact content, or ``None``.
+
+        Every chunk of a document carries the document's whole-text
+        ``content_hash``, so a hit means this text is already in the Library.
+        Uses ``idx_items_content_hash``.
+
+        ``exclude_source_id`` skips a source, so re-ingesting a document into the
+        source that already owns it is not mistaken for a duplicate -- that is a
+        content replacement and must proceed.
+        """
+        if not content_hash:
+            return None
+        sql = ("SELECT i.source_id, s.source_type, s.name AS source_name "
+               "FROM items i JOIN sources s ON s.id = i.source_id "
+               "WHERE i.content_hash = ?")
+        params: list[str] = [content_hash]
+        if exclude_source_id:
+            sql += " AND i.source_id != ?"
+            params.append(exclude_source_id)
+        row = self.db.execute(sql + " LIMIT 1", tuple(params)).fetchone()
+        return dict(row) if row else None
 
     def _load_graph(self):
         self.graph.clear()
@@ -505,13 +686,163 @@ class KnowledgeStore:
             raise
         self._load_graph()
 
-    def delete_items_batch(self, item_ids: list[str]):
-        """Delete multiple items in a single transaction with one graph reload."""
+    def _adopt_reassigned_item(self, item_id: str, new_source_id: str) -> None:
+        """Let the new owner's state row know it owns *item_id*.
+
+        Reassignment moves ``items.source_id``, but a state row's ``item_ids`` is the
+        only list its own delete path consults. A recipient that owns an item its row
+        never names cannot delete it: removing that document drops an empty group and
+        the content stays searchable, which is the strand this whole model exists to
+        prevent. So the row that describes this content adopts the item.
+
+        Matched on ``content_hash`` because that is what identifies the document
+        independently of which source holds it. Appends rather than replaces, so a
+        multi-item group (a chunked file) is not truncated to one, and clears any
+        deferral marker: a row that owns an item is no longer deferring to anyone.
+
+        A hash is only an identifier while it picks out ONE row. Two distinct
+        documents in one source may legitimately hold identical text, and writing the
+        item into both would put one physical item in two groups -- then removing
+        either document deletes it and takes the other's indexed content with it. So
+        an ambiguous hash adopts nothing: an un-adopted row leaves a stale claim,
+        which is visible and recoverable, whereas a cross-wired group destroys
+        content on the next delete.
+        """
+        row = self.db.execute(
+            "SELECT content_hash FROM items WHERE id = ?", (item_id,)).fetchone()
+        content_hash = row["content_hash"] if row else None
+        if not content_hash:
+            return
+        matches: list[tuple[str, str, object]] = []
+        for table, healthy in _DOC_STATE_TABLES:
+            hash_col = _OWNERSHIP_HASH_COL[table]
+            for st in self.db.execute(
+                    f"SELECT rowid, item_ids FROM {table} "  # noqa: S608
+                    f"WHERE source_id = ? AND {hash_col} = ?",
+                    (new_source_id, content_hash)).fetchall():
+                matches.append((table, healthy, st))
+        if len(matches) != 1:
+            if matches:
+                logger.warning(
+                    "Not adopting item into source %s: %d documents there share this "
+                    "content, so the hash does not say which one owns it",
+                    new_source_id, len(matches))
+            return
+        table, healthy, st = matches[0]
+        try:
+            ids = json.loads(st["item_ids"] or "[]")
+        except (TypeError, ValueError):
+            ids = []
+        if item_id not in ids:
+            ids.append(item_id)
+            self.db.execute(
+                f"UPDATE {table} SET item_ids = ?, status = ?, "  # noqa: S608
+                "merged_into_source_id = NULL WHERE rowid = ?",
+                (json.dumps(ids), healthy, st["rowid"]))
+
+    def detach_source_location_by_hash(self, source_id: str, content_hash: str) -> int:
+        """Drop this source's CLAIM on a document it no longer has a copy of.
+
+        The counterpart to :meth:`_adopt_reassigned_item`. A source that lost a dedup
+        holds no items for that document -- its state row is 'deduped' with an empty
+        group -- yet it IS still a location of the winner's items, which is what keeps
+        the document reachable if the winner goes away. When the losing copy is
+        genuinely removed (its file deleted from that folder), the claim has to go too,
+        or the source stays a candidate to inherit a document it no longer has and the
+        content resurfaces there as searchable text with no file behind it.
+
+        Identified by ``content_hash`` because that is the only handle such a row has:
+        it owns no item ids, and the winner's ids must never be written into it -- a
+        row naming another source's items becomes a second document over one physical
+        item set, which self-collapses and deletes the survivor.
+
+        Only the location rows are removed. The items belong to the winner and are
+        left untouched. Returns the number of claims dropped.
+
+        Like adoption, this acts only when the hash picks out ONE document here. If a
+        second document in this source holds identical text, the claim is shared and
+        dropping it would strand that other document when the winner goes away. On
+        ambiguity the claim is kept: a stale claim can resurface content that exists
+        elsewhere, which is recoverable, while a released one destroys a document.
+        """
+        if not content_hash:
+            return 0
+        claimants = 0
+        for table, _healthy in _DOC_STATE_TABLES:
+            hash_col = _OWNERSHIP_HASH_COL[table]
+            hit = self.db.execute(
+                f"SELECT COUNT(*) AS n FROM {table} "  # noqa: S608
+                f"WHERE source_id = ? AND {hash_col} = ?",
+                (source_id, content_hash)).fetchone()
+            claimants += int(hit["n"] or 0) if hit else 0
+        if claimants > 1:
+            logger.warning(
+                "Keeping source %s's claim: %d documents there share this content, so "
+                "releasing it could strand one of them", source_id, claimants)
+            return 0
+        cur = self.db.execute(
+            "DELETE FROM source_locations WHERE source_id = ? AND item_id IN "
+            "(SELECT id FROM items WHERE content_hash = ?)",
+            (source_id, content_hash))
+        return cur.rowcount or 0
+
+    def release_stale_claim(self, source_id: str, prev_hash: str | None,
+                            new_hash: str, prev_item_ids: list[str],
+                            prev_text_hash: str | None = None) -> int:
+        """Release a claim made for content this source no longer has.
+
+        A source that lost a dedup owns no items but IS a location of the winner's,
+        and that claim is specific to the content it was made for. When the source's
+        copy is EDITED, the claim becomes a claim on the wrong document: deleting the
+        holder would then hand this source the superseded text, which stays searchable
+        with nothing behind it.
+
+        The rule lives here rather than at each ingest path because all three paths
+        (folder file, artifact, agent document) can be edited and all three would
+        otherwise have to re-derive it. Only fires when the row owned NOTHING -- a row
+        with a live group replaces its own items through the normal delete-and-reingest
+        path -- and only when the hash actually moved. Returns claims dropped.
+
+        Two domains are in play and both are needed. *prev_hash*/*new_hash* decide
+        whether the file CHANGED, which is a question about the bytes on disk. The
+        detach then has to name a document in the ITEM domain, which is what
+        *prev_text_hash* carries for folder rows. Callers whose ``content_hash`` is
+        already a text hash (artifacts, agent documents) pass nothing and the
+        fallback uses *prev_hash* unchanged. A legacy folder row with no text hash
+        also falls back, and matches nothing exactly as it does today.
+        """
+        if prev_item_ids or not prev_hash or prev_hash == new_hash:
+            return 0
+        return self.detach_source_location_by_hash(
+            source_id, prev_text_hash or prev_hash)
+
+    def delete_items_batch(self, item_ids: list[str], owner_source_id: str | None = None):
+        """Delete multiple items in a single transaction with one graph reload.
+
+        Pass *owner_source_id* when the caller means "this SOURCE's copy of these
+        documents is gone" -- a folder file removed from disk, a replaced document, a
+        collapsed duplicate. An item another source also holds is then DETACHED
+        rather than destroyed: ownership moves to a surviving holder and only the
+        calling source's location row is dropped. Without the argument the items are
+        destroyed outright, which is correct only when the caller means the document
+        itself is going.
+        """
         if not item_ids:
             return
         self.db.execute("BEGIN")
         try:
             for item_id in item_ids:
+                if owner_source_id:
+                    others = self.sources_holding_item(
+                        item_id, exclude_source_id=owner_source_id)
+                    if others:
+                        self.reassign_item_source(item_id, others[0])
+                        self._adopt_reassigned_item(item_id, others[0])
+                        self.db.execute(
+                            "DELETE FROM source_locations "
+                            "WHERE item_id = ? AND source_id = ?",
+                            (item_id, owner_source_id))
+                        continue
                 self._delete_item_cascade(item_id)
             self.db.execute("""
                 DELETE FROM entities WHERE id NOT IN (SELECT entity_id FROM mentions)
@@ -609,22 +940,92 @@ class KnowledgeStore:
                     "VALUES (?, ?)",
                     (dismiss_uri, datetime.now().isoformat()),
                 )
-            # Batch FTS cleanup
-            rows = self.db.execute(
-                "SELECT rowid, title, content, tags FROM items WHERE source_id = ?", (source_id,)
-            ).fetchall()
-            for row in rows:
+            # A document reachable from another source SURVIVES this deletion. Its
+            # ownership moves to one of those sources and only this source's location
+            # row is dropped; the item, its text, embedding, FTS row and graph edges
+            # are untouched. Only items this source solely holds are destroyed.
+            owned = [r["id"] for r in self.db.execute(
+                "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+            doomed: list[str] = []
+            for item_id in owned:
+                others = self.sources_holding_item(item_id, exclude_source_id=source_id)
+                if others:
+                    self.reassign_item_source(item_id, others[0])
+                    # Same obligation as the item-level path: a recipient must never
+                    # own an item its own row does not name. The revive loop below
+                    # only reaches rows that DEFERRED to this source, and a row can
+                    # hold a location without ever carrying a marker -- the pre-ingest
+                    # gate writes exactly that shape -- so adoption belongs here too.
+                    self._adopt_reassigned_item(item_id, others[0])
+                else:
+                    doomed.append(item_id)
+
+            # This source stops being a location of everything it held, whether the
+            # item survived under a new owner or is about to be deleted.
+            self.db.execute("DELETE FROM source_locations WHERE source_id = ?", (source_id,))
+
+            if doomed:
+                q = ",".join("?" for _ in doomed)
+                # FTS is external-content, so the old column values must be handed to
+                # the 'delete' command BEFORE the rows go -- and only for the rows going.
+                for row in self.db.execute(
+                        f"SELECT rowid, title, content, tags FROM items WHERE id IN ({q})",  # noqa: S608
+                        doomed).fetchall():
+                    self.db.execute(
+                        "INSERT INTO items_fts (items_fts, rowid, title, content, tags) "
+                        "VALUES ('delete', ?, ?, ?, ?)",
+                        (row["rowid"], row["title"], row["content"], row["tags"]))
                 self.db.execute(
-                    "INSERT INTO items_fts (items_fts, rowid, title, content, tags) VALUES ('delete', ?, ?, ?, ?)",
-                    (row["rowid"], row["title"], row["content"], row["tags"]))
-            # Batch delete dependents
-            self.db.execute("DELETE FROM source_locations WHERE item_id IN (SELECT id FROM items WHERE source_id = ?)", (source_id,))
-            self.db.execute("DELETE FROM mentions WHERE item_id IN (SELECT id FROM items WHERE source_id = ?)", (source_id,))
-            self.db.execute("DELETE FROM entity_relations WHERE source_item_id IN (SELECT id FROM items WHERE source_id = ?)", (source_id,))
-            self.db.execute("DELETE FROM items WHERE source_id = ?", (source_id,))
+                    f"DELETE FROM source_locations WHERE item_id IN ({q})", doomed)  # noqa: S608
+                self.db.execute(f"DELETE FROM mentions WHERE item_id IN ({q})", doomed)  # noqa: S608
+                self.db.execute(
+                    f"DELETE FROM entity_relations WHERE source_item_id IN ({q})", doomed)  # noqa: S608
+                self.db.execute(f"DELETE FROM items WHERE id IN ({q})", doomed)  # noqa: S608
+
+            # Documents that deferred to this source need their marker cleared, or the
+            # collapse outlives its reason and they stay stranded. But HOW they are
+            # revived depends on whether the surviving copy just became theirs: the
+            # reassignment above may have moved it into the very source that deferred
+            # to this one. Marking such a row 'pending' would re-ingest a document the
+            # source already owns and leave it holding two copies.
+            for table, healthy in _DOC_STATE_TABLES:
+                deferred = self.db.execute(
+                    f"SELECT source_id, content_hash, rowid FROM {table} "  # noqa: S608
+                    "WHERE merged_into_source_id = ?", (source_id,)).fetchall()
+                for row in deferred:
+                    adopted: list[str] = []
+                    if row["content_hash"]:
+                        adopted = [r["id"] for r in self.db.execute(
+                            "SELECT id FROM items WHERE source_id = ? AND content_hash = ?",
+                            (row["source_id"], row["content_hash"])).fetchall()]
+                    if adopted:
+                        # The document is present and owned here now: adopt the items
+                        # rather than re-ingesting. Its own items, so no foreign group.
+                        # The status must be this table's own healthy value -- see
+                        # _DOC_STATE_TABLES for why they are not interchangeable.
+                        self.db.execute(
+                            f"UPDATE {table} SET merged_into_source_id = NULL, "  # noqa: S608
+                            "status = ?, item_ids = ? WHERE rowid = ?",
+                            (healthy, json.dumps(adopted), row["rowid"]))
+                    elif table == "folder_file_state":
+                        # Scan-driven: clearing the marker to 'pending' makes the next
+                        # walk re-ingest the file, which is the whole point of reviving.
+                        self.db.execute(
+                            "UPDATE folder_file_state SET merged_into_source_id = NULL, "
+                            "status = 'pending' WHERE rowid = ?", (row["rowid"],))
+                    else:
+                        # Push-driven with no scanner to revive it, and the content is
+                        # genuinely gone -- so the row keeps its 'deduped' status and
+                        # only loses the marker. Promoting it to 'active' while it owns
+                        # nothing would make find_document_by_hash refuse a re-add of
+                        # content the Library does not actually hold.
+                        self.db.execute(
+                            f"UPDATE {table} SET merged_into_source_id = NULL "  # noqa: S608
+                            "WHERE rowid = ?", (row["rowid"],))
             self.db.execute("DELETE FROM ingestion_jobs WHERE source_id = ?", (source_id,))
             self.db.execute("DELETE FROM folder_file_state WHERE source_id = ?", (source_id,))
             self.db.execute("DELETE FROM artifact_item_state WHERE source_id = ?", (source_id,))
+            self.db.execute("DELETE FROM agent_item_state WHERE source_id = ?", (source_id,))
             self.db.execute("DELETE FROM sources WHERE id = ?", (source_id,))
             # Remove orphan entities
             self.db.execute("""
@@ -757,13 +1158,47 @@ class KnowledgeStore:
         self.db.commit()
 
     def add_source_location(self, item_id, source_id, chunk_range=None, section_title=None, anchor=None):
+        """Record that *source_id* holds *item_id*, at an optional position within it.
+
+        ``OR IGNORE`` against ``UNIQUE (item_id, source_id)``: a document reachable
+        from two sources has one row per source, and re-attaching a pair that already
+        exists is a no-op. Attaching a second source is what keeps the item alive when
+        the first is deleted -- see ``sources_holding_item``.
+        """
         lid = str(uuid4())
         now = datetime.now().isoformat()
         self.db.execute(
-            "INSERT INTO source_locations (id, item_id, source_id, chunk_range, section_title, anchor, created_at) "
+            "INSERT OR IGNORE INTO source_locations "
+            "(id, item_id, source_id, chunk_range, section_title, anchor, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (lid, item_id, source_id, chunk_range, section_title, anchor, now))
         self.db.commit()
+
+    def sources_holding_item(self, item_id: str, exclude_source_id: str | None = None) -> list[str]:
+        """Ids of EXISTING sources that hold *item_id*, optionally excluding one.
+
+        The reference count deletion consults: an item is destroyed only when this
+        comes back empty. Joins ``sources`` so a location row left pointing at an
+        already-deleted source cannot keep a dead item alive.
+        """
+        sql = ("SELECT sl.source_id FROM source_locations sl "
+               "JOIN sources s ON s.id = sl.source_id WHERE sl.item_id = ?")
+        params: list[str] = [item_id]
+        if exclude_source_id:
+            sql += " AND sl.source_id != ?"
+            params.append(exclude_source_id)
+        return [r["source_id"] for r in self.db.execute(sql, params).fetchall()]
+
+    def reassign_item_source(self, item_id: str, new_source_id: str) -> None:
+        """Re-point which source OWNS *item_id*.
+
+        ``update_item`` deliberately cannot do this -- ``source_id`` is absent from
+        ``_ITEM_COLUMNS``, so an ordinary update silently drops it. Ownership moves
+        only here, and only when the owning source is being deleted while another
+        source still holds the document.
+        """
+        self.db.execute("UPDATE items SET source_id = ? WHERE id = ?",
+                        (new_source_id, item_id))
 
     def get_neighbors(self, entity_id, depth=1) -> list:
         visited = set()
