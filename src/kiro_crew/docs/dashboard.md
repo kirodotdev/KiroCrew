@@ -128,7 +128,7 @@ Display agent hooks configuration. View pre/post tool hooks and message hooks.
 
 ### Apps
 
-Browse, install, and manage KiroCrew apps. SSE streaming install logs show
+Browse, install, and manage Kiro Crew apps. SSE streaming install logs show
 real-time progress. Apps can be dashboard-hosted, gateway-side, or external.
 
 ### Kiro Usage

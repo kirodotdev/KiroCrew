@@ -1,6 +1,6 @@
 # WeChat (Weixin) integration
 
-Connect KiroCrew to **personal WeChat** (微信) through Tencent's **iLink bot API**.
+Connect Kiro Crew to **personal WeChat** (微信) through Tencent's **iLink bot API**.
 Sign-in is a QR scan from the dashboard; messages arrive over HTTP long-poll, so
 no public endpoint, webhook, or tunnel is required.
 

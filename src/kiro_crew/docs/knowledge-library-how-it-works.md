@@ -149,7 +149,7 @@ The system degrades gracefully — graph + FTS works without any embedding model
 
 | Product | Cross-chunk strategy | Cost model |
 |---------|---------------------|-----------|
-| **KiroCrew** | Shared entity names | 0.4x per chunk (Haiku) |
+| **Kiro Crew** | Shared entity names | 0.4x per chunk (Haiku) |
 | **LightRAG** | Same (shared names) | Varies by model |
 | **Microsoft GraphRAG** | Shared names + community detection | Higher (2-pass) |
 | **Cognee** | Shared names + entity resolution pass | Higher (merge pass) |

@@ -23,6 +23,10 @@
 # and the zero-SHA guard would be triplicated shell that only one of the three would
 # get fixed in.
 #
+# `brand-lint` is a fourth caller and is not an i18n gate. Nothing here is
+# i18n-specific — it resolves "the commit this diff is measured against" for any
+# diff-scoped gate — so the name is historical, not a scope.
+#
 # ## Two callers, two shapes
 #
 #   - **pull_request** — `origin/<base branch>`. A ref name, so it also needs a local

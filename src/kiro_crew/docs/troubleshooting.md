@@ -13,7 +13,7 @@ tools, credentials, gateway status, and vector memory.
 
 ### "agent backend not found"
 
-KiroCrew needs the `kiro-cli` agent backend on your PATH. Install `kiro-cli`
+Kiro Crew needs the `kiro-cli` agent backend on your PATH. Install `kiro-cli`
 and make sure it resolves on your PATH:
 
 ```bash
@@ -53,7 +53,7 @@ kirocrew setup --agent-only
 
 ### Context window filling up
 
-KiroCrew auto-compacts at 90% context usage. If you see frequent compaction:
+Kiro Crew auto-compacts at 90% context usage. If you see frequent compaction:
 - Reduce always-on skills (they consume context every session)
 - Check memory size — large preferences/projects files eat into the budget
 - Use shorter session timeouts to recycle sessions more often
@@ -80,7 +80,7 @@ Common Python lint issues:
 ### Embedding model download failed
 
 The embedding model (~610MB) downloads in the background over plain HTTPS
-from the KiroCrew CDN (sha256-verified) on gateway startup. Failed downloads
+from the Kiro Crew CDN (sha256-verified) on gateway startup. Failed downloads
 retry automatically with exponential backoff (up to 6 attempts), and again on
 every gateway start. If it keeps failing:
 
@@ -97,7 +97,7 @@ every gateway start. If it keeps failing:
   kicks the download in the background and shows progress) — or do nothing;
   it retries automatically on the next gateway start
 - Migrating from an Ollama-era install? The download is usually skipped
-  entirely: KiroCrew finds the identical model in the local Ollama blob
+  entirely: Kiro Crew finds the identical model in the local Ollama blob
   store (`~/.ollama/models`) and copies it (sha256-verified) instead of
   re-downloading
 
@@ -187,7 +187,7 @@ are automatically split into multiple messages instead of truncating.
 The completion event injected into the parent session is a bounded copy of
 the subagent's streamed transcript (`agent.completion_keep` = `"head"` by
 default keeps the **first 3000 characters**). When that cap drops content,
-KiroCrew no longer injects a bare truncated blob: the event carries a
+Kiro Crew no longer injects a bare truncated blob: the event carries a
 **short preview + the full transcript's file path**, and the parent is told
 to read the rest on demand (the `read` tool with offset/limit, `grep`, or the
 `spawn_status` MCP tool) rather than re-running the subagent.

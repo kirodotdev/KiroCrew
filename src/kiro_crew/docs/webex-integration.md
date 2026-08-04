@@ -1,19 +1,19 @@
 # Webex Integration
 
-Chat with your KiroCrew agent from Cisco Webex — on your phone, your laptop,
+Chat with your Kiro Crew agent from Cisco Webex — on your phone, your laptop,
 anywhere. Create a bot on the Webex developer portal, paste one token, and
 you're talking.
 
-Webex needs no public URL and no webhooks: KiroCrew registers a device with
+Webex needs no public URL and no webhooks: Kiro Crew registers a device with
 Webex and receives messages over an outbound WebSocket, so it works from
 behind a firewall or NAT. Replies land as one message per turn, with a live
 status placeholder ("🤔 Thinking…" → "🔧 Running: …") while the agent works.
 
-## The easy way: just ask KiroCrew
+## The easy way: just ask Kiro Crew
 
-You don't have to edit anything by hand. In any KiroCrew session — the
+You don't have to edit anything by hand. In any Kiro Crew session — the
 dashboard, Slack, or the CLI — say something like *"set up the Webex
-channel."* KiroCrew walks you through creating the bot, then writes the token
+channel."* Kiro Crew walks you through creating the bot, then writes the token
 and your email into `~/.kiro/crew/.env` and `config.json` and restarts the
 gateway for you. You just hand it the bot token when it asks.
 

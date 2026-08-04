@@ -35,6 +35,35 @@ jobs:
         # a coupling. --no-history: git-history rewrite is a separate task.
         run: ./scripts/scrub-lint.sh --no-history
 
+  brand-lint:
+    name: Brand Name Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the product name on the lines this change adds
+        # Diff-scoped on purpose. The tree still carries thousands of prose lines
+        # that join the two words, from before the convention, so a whole-tree
+        # gate would fail every PR until one enormous rename lands and charge the
+        # break to whoever pushed next. Added lines are complete for regression —
+        # a line only reaches main through a diff that added it — and the
+        # whole-tree number is still printed as a non-failing report.
+        env:
+          # `base.sha`, not `origin/<base>`: the merge ref this run checks out was
+          # computed against that exact commit, so the diff cannot pick up main
+          # moves that landed after the run started. Same reasoning as the
+          # i18n gates below; see the longer note at their first use.
+          BRAND_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          BRAND_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$BRAND_BASE_REF" 'the brand-name gate')" || exit 1
+          export BRAND_BASE_REF
+          # Self-test first: it plants one probe per rule family, so a typo that
+          # silently disables an exemption fails here instead of shipping green.
+          python3 scripts/check_brand_name.py --test
+          python3 scripts/check_brand_name.py
+
   backend-lint:
     name: Backend Lint & Type Check
     runs-on: ubuntu-latest

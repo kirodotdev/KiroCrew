@@ -1,6 +1,6 @@
 # Agents & Configuration
 
-KiroCrew uses agents for LLM interaction. Each agent is a JSON config that
+Kiro Crew uses agents for LLM interaction. Each agent is a JSON config that
 defines a model, system prompt, tools, and MCP servers. The default agent is
 `kirocrew`, but you can create your own custom agents.
 
@@ -114,6 +114,6 @@ This regenerates `kirocrew.json` from the current defaults + user overrides.
 
 ## Architecture Note
 
-KiroCrew runs each agent against kiro-cli (KiroACP) (see `agent.provider` in
+Kiro Crew runs each agent against kiro-cli (KiroACP) (see `agent.provider` in
 [Configuration](configuration.md)). Each agent session has its own system
 prompt, tools, and MCP servers.

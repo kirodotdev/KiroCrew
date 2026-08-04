@@ -18,7 +18,7 @@ All config changes are audit-logged.
 
 ### Sandbox Modes
 
-KiroCrew supports tiered sandbox levels for agent-backend process isolation:
+Kiro Crew supports tiered sandbox levels for agent-backend process isolation:
 
 | Mode | Behavior |
 |------|----------|
@@ -117,7 +117,7 @@ Set via `kirocrew config set sandbox.mode auto`.
 | `dashboard.restore_window_minutes` | Minutes after restart within which sessions can be restored | `30` |
 | `dashboard.merge_queued_messages` | Concatenate follow-up messages while agent is busy | `false` |
 | `dashboard.mcp_probe_timeout_secs` | Seconds to wait for MCP server handshake during probe (5-120) | `15` |
-| `slack.allowed_users` | Users who can interact with KiroCrew | `[]` |
+| `slack.allowed_users` | Users who can interact with Kiro Crew | `[]` |
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
 | `slack.open_channels` | Channel IDs where all users are authorized | `[]` |
 | `slack.reactions` | Override phase reaction emojis (set a value to `null` to suppress that phase) | `{}` |
@@ -130,7 +130,7 @@ Set via `kirocrew config set sandbox.mode auto`.
 | `memory.history_max_days` | Days to keep history before pruning | `365` |
 | `memory.episodic_max_results` | Max episodic memories injected per session | `8` |
 | `memory.embedding_provider` | Vector embedding backend — always-on, in-process via the bundled llama-cpp-python runtime. Every legacy value (including `"ollama"` and `"none"`) is coerced to `"llama_cpp"`; setting `"none"` no longer disables embeddings. The old `embedding_url` / `embedding_model` / `embedding_runtime` / `embedding_managed` / `embedding_auth` / `embedding_timeout_secs` / `allow_remote_embedding` keys are removed and ignored if present (`embedding_model` in particular is ignored — the model identity comes from the active backend) | `"llama_cpp"` |
-| `memory.embed_model_url` | Override HTTPS URL for the embedding-model GGUF download (mirrored/airgapped hosts). Empty uses the public KiroCrew CDN; the `KIROCREW_EMBED_MODEL_URL` env var wins over both. Downloads are sha256-verified regardless of source | `""` |
+| `memory.embed_model_url` | Override HTTPS URL for the embedding-model GGUF download (mirrored/airgapped hosts). Empty uses the public Kiro Crew CDN; the `KIROCREW_EMBED_MODEL_URL` env var wins over both. Downloads are sha256-verified regardless of source | `""` |
 | `memory.embed_model_path` | Absolute path to a local GGUF embedding model to run **instead of** the bundled Qwen3-Embedding-0.6B. When set, the default model is never downloaded or installed, so a custom model survives a default-model version change. Set `memory.embedding_dim` to the model's output width — a mismatch is detected at load and refuses to publish the model rather than silently returning no embeddings. Changing the model changes the vector space, so stored embeddings are regenerated automatically. A configured-but-unreadable path fails closed (embeddings unavailable, keyword search still works) rather than reverting to the default and re-embedding your corpus behind your back. Editable from the dashboard (Memory → Embedding Model), which validates the path, refuses protected locations, probes the model's width and re-embeds stored vectors in the background — no restart needed. `KIROCREW_EMBED_MODEL_PATH` wins over this, and while that env var is set the dashboard refuses to change the model (a config write could not take effect) | `""` |
 | `memory.embed_model_id` | Optional stable identifier for a custom model's vector space. Defaults to `custom:<filename>:<size>`, which changes when a different model file is used. Set explicitly if you swap between models of identical byte size, which the default derivation cannot distinguish | `""` |
 | `skills.max_triggered` | Maximum skills loaded per message (≥1) | `3` |

@@ -1,6 +1,6 @@
 # Profiling (debug-only)
 
-KiroCrew ships aggregate duration histograms (`kiro_crew.metrics`, off by
+Kiro Crew ships aggregate duration histograms (`kiro_crew.metrics`, off by
 default) and a stall detector that dumps thread stacks when the event loop wedges
 (`kiro_crew.dashboard.loop_watchdog`). Neither attributes time to call paths.
 `kirocrew perf sample` fills that gap: it turns a window of execution into

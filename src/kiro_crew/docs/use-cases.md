@@ -1,12 +1,12 @@
 # Use Cases & Workflows
 
-Real-world workflows from the KiroCrew community. These combine KiroCrew's
+Real-world workflows from the Kiro Crew community. These combine Kiro Crew's
 capabilities — cron jobs, subagents, memory, Slack, and task runner — into
 end-to-end automation.
 
 ## Backlog Crusher
 
-The most powerful workflow: KiroCrew digs through your issue backlog, picks up
+The most powerful workflow: Kiro Crew digs through your issue backlog, picks up
 tasks, implements them, runs tests, opens pull requests, and handles review
 comments — all autonomously. It can push 20+ PRs overnight.
 
@@ -27,14 +27,14 @@ Best paired with `!yolo on` for unattended operation.
 
 ## Repetitive Refactors
 
-Automate repetitive cleanup across a codebase. KiroCrew reads a config or
+Automate repetitive cleanup across a codebase. Kiro Crew reads a config or
 feature-flag list, identifies dead code paths, removes them, and opens pull
 requests.
 
 ## Slack → Issue Pipeline
 
 Monitor a Slack channel for incoming requests and auto-create issues. Your
-coding KiroCrew instance picks them up automatically.
+coding Kiro Crew instance picks them up automatically.
 
 Setup:
 1. Set the channel to `observe` mode: `!channel observe`
@@ -61,12 +61,12 @@ Fan out research across multiple sources simultaneously:
 
 > "Research EC2 pricing changes across all regions"
 
-KiroCrew spawns subagents — one per region or source — and synthesizes the
+Kiro Crew spawns subagents — one per region or source — and synthesizes the
 results into a single summary.
 
 ## Auto-Collect Information
 
-Replace manual information-gathering workflows. Use KiroCrew cron jobs to
+Replace manual information-gathering workflows. Use Kiro Crew cron jobs to
 gather data from your sources and publish to a dashboard or static site.
 
 ## Oncall Automation
@@ -110,6 +110,6 @@ per-agent MCP configuration.
 - **Unattended overnight runs**: Use `!yolo on` + task runner for long
   autonomous sessions. Review the CRs in the morning.
 - **Workspace isolation**: Use `KIROCREW_HOME` and `KIROCREW_PORT` env vars
-  to run multiple KiroCrew instances with separate data.
+  to run multiple Kiro Crew instances with separate data.
 - **Background gateway**: Use a macOS Launch Agent or systemd service to keep
   the gateway running across reboots (see [Getting Started](getting-started.md)).

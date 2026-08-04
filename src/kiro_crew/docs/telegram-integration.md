@@ -1,18 +1,18 @@
 # Telegram Integration
 
-Chat with your KiroCrew agent right from Telegram — on your phone, your laptop,
+Chat with your Kiro Crew agent right from Telegram — on your phone, your laptop,
 anywhere. Create a bot, paste one token, and you're talking. Replies stream back
 live, with tappable option buttons.
 
 Telegram is the quickest channel to set up: just a bot token, no plugins, and it
-works from behind a firewall — KiroCrew reaches out to Telegram, so there's
+works from behind a firewall — Kiro Crew reaches out to Telegram, so there's
 nothing to expose.
 
-## The easy way: just ask KiroCrew
+## The easy way: just ask Kiro Crew
 
-You don't have to edit anything by hand. In any KiroCrew session — the
+You don't have to edit anything by hand. In any Kiro Crew session — the
 dashboard, Slack, or the CLI — say something like *"set up the Telegram
-channel."* KiroCrew walks you through creating the bot, then writes the token
+channel."* Kiro Crew walks you through creating the bot, then writes the token
 and your user ID into `~/.kiro/crew/.env` and `config.json` and restarts the
 gateway for you. You just hand it the bot token when it asks.
 
@@ -45,7 +45,7 @@ log.
 
 ## Who can reach it
 
-> **KiroCrew runs on your machine, with your files and credentials.** So it only
+> **Kiro Crew runs on your machine, with your files and credentials.** So it only
 > talks to people you name — and only in private chats.
 
 - Trusted numeric IDs go in `allowed_user_ids`; an empty list means nobody.

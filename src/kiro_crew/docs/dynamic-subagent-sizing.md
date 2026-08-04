@@ -1,8 +1,8 @@
 # Dynamic Sub-Agent Max Count
 
-KiroCrew sizes the concurrent sub-agent cap **automatically** by default
+Kiro Crew sizes the concurrent sub-agent cap **automatically** by default
 (`agent.max_subagents = 0`): at gateway startup it computes a sensible cap from
-the host's actual memory and CPU, plus a per-agent cost KiroCrew *learns* from
+the host's actual memory and CPU, plus a per-agent cost Kiro Crew *learns* from
 past runs. A fixed number is wrong in both directions — it wastes capacity on a
 large host and over-commits a tiny one — so auto is the default; set an
 integer >= 3 to pin an explicit cap.
@@ -52,14 +52,14 @@ cap      = clamp( min(mem_term, cpu_term), 3, hard_cap )
 
 ## Learned Per-Agent Cost
 
-KiroCrew doesn't hard-code how much an agent costs — it measures it:
+Kiro Crew doesn't hard-code how much an agent costs — it measures it:
 
 - While an agent runs, the reaper loop periodically samples its process-tree
   RSS (memory) and CPU, keeping the **high-water** mark for that run (a single
   reading at exit would miss a mid-run peak that has already declined).
 - At exit, one sample `{agent, mem_gb, cpu_cores, ts}` is appended to
   `~/.kiro/crew/subagents/cost_samples.jsonl`.
-- At the next startup, KiroCrew takes the **p90 of the last N samples per
+- At the next startup, Kiro Crew takes the **p90 of the last N samples per
   agent name** (robust to the occasional outlier run), then the worst case
   across agent types, as the divisor.
 
@@ -105,7 +105,7 @@ may only get useful throughput from a handful before requests start queueing.
 `agent.subagent_auto_max` (default **32**) is an honest ceiling for that
 unmodeled limit. On a big host the hard cap binds; on a small host memory or
 CPU binds below it. If you've confirmed your provider serves more concurrency,
-raise it. KiroCrew does **not** yet measure provider saturation — that's a
+raise it. Kiro Crew does **not** yet measure provider saturation — that's a
 deliberate v1 simplification we may revisit.
 
 ## Configuration

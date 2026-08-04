@@ -1,12 +1,12 @@
 # Microsoft Teams Integration
 
-KiroCrew can run as a Microsoft Teams bot, so you can DM your agent from Teams
+Kiro Crew can run as a Microsoft Teams bot, so you can DM your agent from Teams
 the same way you would from Slack, Telegram, Discord, Webex, or WeCom.
 
 > **This release is DM-only and self-hosted.** You chat with the bot in a **1:1
 > personal chat**. Messages sent in team channels or group chats are refused
 > (fail closed) so tool output is never exposed to unauthorized members.
-> Because Teams uses the Bot Framework model, KiroCrew exposes an **inbound
+> Because Teams uses the Bot Framework model, Kiro Crew exposes an **inbound
 > HTTPS webhook** and you must give your gateway a **public HTTPS URL** (unlike
 > the other channels, which open an outbound connection and need no public
 > URL).
@@ -14,7 +14,7 @@ the same way you would from Slack, Telegram, Discord, Webex, or WeCom.
 ## How it works
 
 Unlike Slack (Socket Mode) or Webex (device WebSocket), the Microsoft Bot
-Framework **pushes** activities to a messaging endpoint you host. KiroCrew:
+Framework **pushes** activities to a messaging endpoint you host. Kiro Crew:
 
 1. Registers a single inbound route on the gateway's existing HTTP server:
    `POST /api/messaging/teams`.
@@ -39,7 +39,7 @@ Framework **pushes** activities to a messaging endpoint you host. KiroCrew:
   pip install "kirocrew[teams]"
   ```
 
-  If the channel is enabled without this extra, KiroCrew logs an actionable
+  If the channel is enabled without this extra, Kiro Crew logs an actionable
   error and skips Teams (the rest of the gateway still starts).
 
 ## 1. Register an Azure Bot
@@ -51,14 +51,14 @@ Framework **pushes** activities to a messaging endpoint you host. KiroCrew:
 3. For a **single-tenant** bot, also note the **Tenant ID**. For a
    **multi-tenant** bot, leave the tenant blank.
 4. Under the bot's **Channels**, add the **Microsoft Teams** channel.
-5. Set the bot's **Messaging endpoint** to your public URL plus the KiroCrew
+5. Set the bot's **Messaging endpoint** to your public URL plus the Kiro Crew
    route:
 
    ```
    https://<your-public-host>/api/messaging/teams
    ```
 
-## 2. Configure KiroCrew
+## 2. Configure Kiro Crew
 
 Provide the credentials via environment variables (preferred) in
 `~/.kiro/crew/.env`:

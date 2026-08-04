@@ -1,8 +1,8 @@
 # Artifact Deploy (deploy-web)
 
-Publish a KiroCrew artifact (HTML / Markdown / widget) to a public HTTPS URL on
+Publish a Kiro Crew artifact (HTML / Markdown / widget) to a public HTTPS URL on
 **your own AWS account** — private S3 + CloudFront + Origin Access Control (OAC).
-KiroCrew stores only your AWS **profile name**; it never sees, stores, or manages
+Kiro Crew stores only your AWS **profile name**; it never sees, stores, or manages
 your credentials.
 
 Artifact Deploy is a built-in app, **opt-in / disabled by default**. Enable it from
@@ -23,7 +23,7 @@ account both work). Setup is once; every later publish is ~30 seconds.
 ### 1.1 Where the profile must live (important)
 
 Artifact Deploy shells out to the `aws` CLI **from the gateway process**. The AWS
-profile must therefore be configured on the **machine running the KiroCrew
+profile must therefore be configured on the **machine running the Kiro Crew
 gateway** (your dev desktop / host), **not** on your laptop if the gateway runs
 elsewhere. Running `aws configure sso` on a different machine does not help.
 
@@ -53,7 +53,7 @@ Fix:
 
 ### 1.3 Authenticate
 
-Pick one (run in the gateway host's terminal — KiroCrew never sees your keys):
+Pick one (run in the gateway host's terminal — Kiro Crew never sees your keys):
 
 ```bash
 aws configure sso                  # recommended: short-lived, auto-refreshing
@@ -77,7 +77,7 @@ On the Artifact Deploy page:
    verification — create/write permissions can't be checked without writing.
 3. Click **Get IAM policy**, then apply the least-privilege policy **yourself**
    to a dedicated role/identity (console or your own `aws iam` command).
-   **KiroCrew never edits your IAM.** The first real deploy is the true test: on
+   **Kiro Crew never edits your IAM.** The first real deploy is the true test: on
    `AccessDenied` it reports the exact missing IAM statement to add, then you
    re-run (deploys are idempotent).
 
@@ -101,16 +101,16 @@ re-deploys to an existing site go live in seconds.
 
 ## 3. Security model
 
-Artifact Deploy is designed to keep KiroCrew **out of credential and account
+Artifact Deploy is designed to keep Kiro Crew **out of credential and account
 management** entirely, and to serve content from a bucket that is never itself
 public.
 
-### 3.1 Credentials never touch KiroCrew
-- KiroCrew stores **only the profile name** (in
+### 3.1 Credentials never touch Kiro Crew
+- Kiro Crew stores **only the profile name** (in
   `~/.kiro/crew/apps/deploy-web/data/config.json`).
 - All AWS calls run through the **`aws` CLI subprocess** with `--profile`
   (never boto3), so credential resolution stays in your OS credential store.
-- KiroCrew **never** writes IAM and **never** creates/manages accounts, users,
+- Kiro Crew **never** writes IAM and **never** creates/manages accounts, users,
   or roles. You apply the generated least-privilege policy yourself (Option A).
 
 ### 3.2 The origin bucket is private
@@ -130,7 +130,7 @@ public.
   Do not publish anything you wouldn't put on the open internet.
 
 ### 3.4 Pre-publish content scan (block-and-warn)
-- Before upload, content runs through KiroCrew's secret/credential regexes plus
+- Before upload, content runs through Kiro Crew's secret/credential regexes plus
   internal-data heuristics (employee aliases, internal `*.example.com` hosts,
   cloud account IDs / ARNs).
 - On a match, publishing is **blocked** and the findings are shown; you must

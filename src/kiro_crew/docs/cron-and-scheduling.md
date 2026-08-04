@@ -1,6 +1,6 @@
 # Cron Jobs & Scheduling
 
-KiroCrew can run tasks on a schedule — recurring checks, daily briefings,
+Kiro Crew can run tasks on a schedule — recurring checks, daily briefings,
 periodic monitoring, or one-shot reminders.
 
 ## Creating Cron Jobs
@@ -13,7 +13,7 @@ Just ask naturally:
 - "Run a status check every 5 minutes"
 - "Send me a briefing tomorrow at 8am"
 
-KiroCrew uses the `cron_add` MCP tool to create the job.
+Kiro Crew uses the `cron_add` MCP tool to create the job.
 
 ### Via Dashboard
 
@@ -53,7 +53,7 @@ cron resume <id>
 ## How It Works
 
 1. The cron timer fires at the scheduled time
-2. KiroCrew creates a fresh LLM session for the job
+2. Kiro Crew creates a fresh LLM session for the job
 3. The agent executes the prompt (with full tool access)
 4. Results are posted to Slack DM and the dashboard
 5. The session is cleaned up
@@ -152,7 +152,7 @@ cron_update(job_id="abc123", skip_dates=["2026-12-25", "2026-12-26"])
 ## Execution Jitter
 
 To avoid traffic spikes from thousands of users' jobs all firing at the same
-instant, KiroCrew adds a small random delay before executing scheduled jobs:
+instant, Kiro Crew adds a small random delay before executing scheduled jobs:
 
 | Schedule frequency | Jitter range |
 |--------------------|-------------|

@@ -1,6 +1,6 @@
-# KiroCrew Documentation
+# Kiro Crew Documentation
 
-KiroCrew is a personal, autonomous AI agent that runs locally on your machine.
+Kiro Crew is a personal, autonomous AI agent that runs locally on your machine.
 It's powered by kiro-cli (KiroACP) and connects to tools over the Model Context
 Protocol (MCP).
 
@@ -47,9 +47,9 @@ agent backend and Slack credentials.
 
 | Feature | Description |
 |---------|-------------|
-| App Kit | Build and distribute apps that run inside KiroCrew (App Store, SDK, manifest) |
+| App Kit | Build and distribute apps that run inside Kiro Crew (App Store, SDK, manifest) |
 | [Web Deploy](deploy-web.md) | Publish artifacts to a public HTTPS URL on your own AWS (private S3 + CloudFront + OAC) |
-| Snapshot & Restore | Portable backup/restore of KiroCrew state for machine migration |
+| Snapshot & Restore | Portable backup/restore of Kiro Crew state for machine migration |
 | Eval Harness | Multi-session evaluation framework for testing agent behavior |
 | Autonudge | Reactive same-session self-nudge for autonomous goal loops |
 | Warm Pool | Pre-warm agent sessions for instant response |

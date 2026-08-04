@@ -1,21 +1,21 @@
 # WeCom Integration
 
-Talk to your KiroCrew agent from WeCom — through a WeCom (企业微信) AI bot. Create
+Talk to your Kiro Crew agent from WeCom — through a WeCom (企业微信) AI bot. Create
 the bot in your WeCom console, drop in two values, and you're chatting. Replies
 stream back live.
 
-> **WeChat vs. WeCom.** KiroCrew connects through **WeCom (企业微信)**, the work
+> **WeChat vs. WeCom.** Kiro Crew connects through **WeCom (企业微信)**, the work
 > edition, using its AI-bot API. It does **not** sign in to a personal WeChat
 > account — people message the bot from inside WeCom.
 
-Like Telegram, the connection is outbound-only: KiroCrew opens a secure
+Like Telegram, the connection is outbound-only: Kiro Crew opens a secure
 WebSocket to WeCom, so there's no callback URL or open port to manage.
 
-## The easy way: just ask KiroCrew
+## The easy way: just ask Kiro Crew
 
-You don't have to edit anything by hand. In any KiroCrew session — the
+You don't have to edit anything by hand. In any Kiro Crew session — the
 dashboard, Slack, or the CLI — say something like *"set up the WeCom channel."*
-KiroCrew tells you where to create the WeCom AI bot, then writes your Bot ID and
+Kiro Crew tells you where to create the WeCom AI bot, then writes your Bot ID and
 Secret into `~/.kiro/crew/.env` and `config.json` and restarts the gateway for
 you. You just paste the two values when it asks.
 
@@ -51,14 +51,14 @@ Message the bot in WeCom and it answers. If it stays quiet, look for
 `WeCom WS connected and subscribed` in the gateway log and confirm your userid
 is allowed.
 
-Those two values — **Bot ID** and **Secret** — are all KiroCrew needs. There's
+Those two values — **Bot ID** and **Secret** — are all Kiro Crew needs. There's
 no corp ID, agent ID, callback URL, or AES key to wire up. Good to know: the
 WeCom bot replies to messages you send it — it can't start a conversation on its
 own, and it has no buttons (so `OPTIONS` arrive as plain text).
 
 ## Who can reach it
 
-> **KiroCrew runs on your machine, with your files and credentials.** So it only
+> **Kiro Crew runs on your machine, with your files and credentials.** So it only
 > talks to the owner and the userids you name.
 
 - Authorized senders: the **owner** (`KIROCREW_OWNER_ID`) plus anyone listed in

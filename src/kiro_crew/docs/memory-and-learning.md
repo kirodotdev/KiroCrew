@@ -1,6 +1,6 @@
 # Memory & Learning
 
-KiroCrew has persistent memory that survives across sessions. It remembers your
+Kiro Crew has persistent memory that survives across sessions. It remembers your
 preferences, project context, daily activity, and corrections you teach it.
 
 ## Memory Types
@@ -26,9 +26,9 @@ Conversation summaries organized by date. Natural decay:
 
 ### Lessons (`lessons.jsonl` or vector store)
 
-Corrections and rules you teach KiroCrew. Two ways to create:
+Corrections and rules you teach Kiro Crew. Two ways to create:
 1. **Explicit**: say "remember to always use pytest" → saved immediately
-2. **Implicit**: correct KiroCrew during conversation → extracted during consolidation
+2. **Implicit**: correct Kiro Crew during conversation → extracted during consolidation
 
 Lessons have two scopes:
 - **Global** (default): shared across all workspaces
@@ -51,7 +51,7 @@ All modes still write session JSONL files (for history/resume). Incognito
 blocks learn_add and consolidation. Temporary additionally blocks memory
 reads — no preferences, history, or lessons are injected into the prompt.
 
-## Teaching KiroCrew
+## Teaching Kiro Crew
 
 Just tell it naturally:
 - "Always use dark mode"
@@ -59,7 +59,7 @@ Just tell it naturally:
 - "Remember that our team uses pytest-asyncio strict mode"
 - "Prefer ruff over flake8 for linting"
 
-KiroCrew saves these via the `learn_add` MCP tool. View them with `learn_list`
+Kiro Crew saves these via the `learn_add` MCP tool. View them with `learn_list`
 or on the dashboard Overview → Lessons tab.
 
 ## Workspaces
@@ -77,7 +77,7 @@ Semantic search over your memory, always on:
   other server to install — the runtime is bundled; no data leaves your machine)
 
 The embedding model (~610MB) downloads automatically in the background the
-first time the gateway starts, over HTTPS from the KiroCrew CDN — failed
+first time the gateway starts, over HTTPS from the Kiro Crew CDN — failed
 downloads retry automatically with backoff, and again on the next gateway
 start; the Memory tab shows download progress. Once downloaded, the model
 loads in the background too, so nothing ever waits on it. While the model is
@@ -87,7 +87,7 @@ semantic search as soon as the model is ready — no restart needed. Requires
 
 ## Consolidation
 
-KiroCrew automatically consolidates conversations into memory:
+Kiro Crew automatically consolidates conversations into memory:
 - **Preferences/projects**: every 30 messages per session
 - **Daily history + lessons**: after 3 hours idle per session
 
@@ -97,4 +97,4 @@ No manual action needed — it happens in the background.
 
 - **Dashboard**: Overview → Memory tab → edit preferences.md or projects.md
 - **CLI**: `kirocrew memory show` / `kirocrew memory edit`
-- **Chat**: ask KiroCrew to update its memory files directly
+- **Chat**: ask Kiro Crew to update its memory files directly

@@ -1,8 +1,8 @@
-# Getting Started with KiroCrew
+# Getting Started with Kiro Crew
 
-## What Is KiroCrew?
+## What Is Kiro Crew?
 
-KiroCrew is an autonomous AI agent layer that runs on top of the kiro-cli
+Kiro Crew is an autonomous AI agent layer that runs on top of the kiro-cli
 (KiroACP) backend. It adds persistent memory, scheduled jobs, background
 subagents, self-learning, and multi-session orchestration. You interact with it
 via Slack DMs or a web dashboard.
@@ -43,8 +43,8 @@ In development, `npm run dev` serves the dashboard with hot reload.
 
 ### Agent backend
 
-KiroCrew runs the kiro-cli (KiroACP) backend, which is required. Install
-kiro-cli and make sure the `kiro-cli` binary is on your `PATH` — KiroCrew
+Kiro Crew runs the kiro-cli (KiroACP) backend, which is required. Install
+kiro-cli and make sure the `kiro-cli` binary is on your `PATH` — Kiro Crew
 resolves it from `PATH` at startup. See [Configuration](configuration.md) for
 backend options.
 
@@ -73,7 +73,7 @@ You need three values from your Slack app:
 
 These are stored in `~/.kiro/crew/.env`.
 
-## Starting KiroCrew
+## Starting Kiro Crew
 
 ### Gateway Mode (Slack + Dashboard)
 
@@ -173,5 +173,5 @@ kirocrew gateway
 ```
 
 This keeps dev data separate from your real `~/.kiro/crew`. Useful for running
-multiple KiroCrew instances simultaneously — each with its own memory, crons,
+multiple Kiro Crew instances simultaneously — each with its own memory, crons,
 and sessions.

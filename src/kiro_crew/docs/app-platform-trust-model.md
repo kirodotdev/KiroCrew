@@ -1,8 +1,8 @@
 # App Platform Trust Model
 
-KiroCrew's app platform loads app Python directly into the gateway process
+Kiro Crew's app platform loads app Python directly into the gateway process
 (`apps/module_loader.py` → `importlib` → `exec_module`). This page documents the
-resulting trust boundary and how KiroCrew makes it explicit.
+resulting trust boundary and how Kiro Crew makes it explicit.
 
 ## What an app can do
 
@@ -21,9 +21,9 @@ by the loaded module. There is currently **no process-level sandbox** around app
 code itself.
 
 > **Installing/enabling an app is therefore equivalent to running that code with
-> the same privileges as KiroCrew itself.** Only enable apps you trust.
+> the same privileges as Kiro Crew itself.** Only enable apps you trust.
 
-## How KiroCrew makes the boundary explicit
+## How Kiro Crew makes the boundary explicit
 
 - **Builtin vs third-party split** — apps shipped inside the package
   (`apps/builtins/`) are trusted like core. Anything loaded from outside that

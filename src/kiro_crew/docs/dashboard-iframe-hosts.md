@@ -13,7 +13,7 @@ fit a new use** — that is the failure mode this document exists to prevent.
 | `WebPreviewPanel.tsx` (the **Browser** tab) | `allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads` | A **URL you trust** — your own dev server, a page you deployed | none |
 | `WidgetFrame.tsx` (`<mcwidget>`, artifacts) | `allow-scripts allow-popups allow-popups-to-escape-sandbox` | **LLM-emitted HTML** | **Defended against.** A malicious emitted `<script>` can `postMessage`, so the host treats inbound messages as hostile |
 | `McpAppFrame.tsx` (the **App** tab) | `allow-scripts allow-forms` | **MCP-server-supplied HTML** (`srcDoc`) | **Required and trusted-by-capability.** SEP-1865 JSON-RPC bridge; the host holds a `callback_secret` |
-| `InstancesViewport.tsx` | (remote KiroCrew instances) | another instance's dashboard | n/a |
+| `InstancesViewport.tsx` | (remote Kiro Crew instances) | another instance's dashboard | n/a |
 
 ## The two axes
 

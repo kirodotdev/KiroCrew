@@ -1,6 +1,6 @@
 # Subagents & Parallel Work
 
-KiroCrew can spawn background subagents to handle tasks in parallel. This is
+Kiro Crew can spawn background subagents to handle tasks in parallel. This is
 useful for fan-out work like reviewing multiple packages, running parallel
 searches, or delegating independent tasks.
 
@@ -13,7 +13,7 @@ Ask naturally:
 - "Search for X, Y, and Z at the same time"
 - "Run this task in the background"
 
-KiroCrew uses the `spawn_run` MCP tool to create subagents.
+Kiro Crew uses the `spawn_run` MCP tool to create subagents.
 
 ### Via Slack
 
@@ -31,10 +31,10 @@ The `spawn_run` tool accepts:
 
 ## How It Works
 
-1. KiroCrew spawns one or more subagent processes
+1. Kiro Crew spawns one or more subagent processes
 2. Each subagent gets its own agent session with full tool access
 3. Results are automatically injected back as `[Subagent completion event]`
-4. KiroCrew synthesizes the results into a final response
+4. Kiro Crew synthesizes the results into a final response
 
 ## Limits
 

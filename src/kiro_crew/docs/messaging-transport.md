@@ -1,6 +1,6 @@
 # Messaging Transport Architecture
 
-Channel-neutral contracts used by KiroCrew's shipped Slack, Discord, Telegram,
+Channel-neutral contracts used by Kiro Crew's shipped Slack, Discord, Telegram,
 Webex, WeCom, Teams, and Weixin integrations. They also let future channels
 such as WhatsApp be added without re-implementing streaming, tool approval,
 session identity, or rendering for each one.

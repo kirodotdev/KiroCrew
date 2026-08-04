@@ -322,10 +322,12 @@ describe('CI supplies a base commit on both paths', () => {
   // passing `github.event.before`, merges would silently go unchecked and the unit
   // tests above would still pass.
   const ci = readFileSync(resolve(process.cwd(), '../.github/workflows/ci.yml'), 'utf-8')
-  const wirings = ci.match(/^\s*I18N_BASE_REF: \$\{\{.*$/gm) || []
+  // Any `*_BASE_REF` wiring, not just the i18n ones: `brand-lint` passes
+  // `BRAND_BASE_REF` through the same resolver and needs the same guarantees.
+  const wirings = ci.match(/^\s*[A-Z0-9_]*BASE_REF: \$\{\{.*$/gm) || []
 
-  it('wires every i18n gate step', () => {
-    expect(wirings).toHaveLength(3)
+  it('wires every diff-scoped gate step', () => {
+    expect(wirings).toHaveLength(4)
   })
 
   it('diffs a PR against the commit its merge ref was built on, not the branch tip', () => {
@@ -347,7 +349,10 @@ describe('CI supplies a base commit on both paths', () => {
   })
 
   it('routes each step through the shared resolver', () => {
-    expect(ci.match(/resolve-i18n-base\.sh/g) || []).toHaveLength(3)
+    // Relative, not a stored total: a step that wires a base ref must also route
+    // through the shared resolver, so the two move together as gates are added
+    // and neither number has to be maintained by hand.
+    expect(ci.match(/resolve-i18n-base\.sh/g) || []).toHaveLength(wirings.length)
   })
 })
 
