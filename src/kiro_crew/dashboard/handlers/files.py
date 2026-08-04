@@ -24,8 +24,10 @@ from aiohttp.multipart import BodyPartReader
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir, data_home
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.hooks import safe_read_prefix
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import (
     BINARY_MIME_ALLOWLIST,
@@ -226,12 +228,17 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
         # Prefer the caller's own slot via X-Session-Key header
         session_key = request.headers.get("X-Session-Key", "").strip()
         active = None
-        if session_key.startswith("dashboard:"):
-            slot_key = session_key.removeprefix("dashboard:")
-            active = state.get_slot(slot_key)
-        elif session_key.startswith("cron:"):
-            slot_key = f"cron-{session_key.removeprefix('cron:')}"
-            active = state.get_slot(slot_key)
+        if session_key.startswith("cron:"):
+            # A cron slot is named cron-<id>, which is not the session key folded.
+            active = state.get_slot(f"cron-{session_key.removeprefix('cron:')}")
+        else:
+            # A channel-born conversation keeps its channel key (slack:<ts>)
+            # while its tab is open, so the slot name comes from the surface
+            # lookup — stripping a "dashboard:" prefix would miss it and drop the
+            # card into whichever tab happened to be active last.
+            slot_key = dashboard_slot_key(session_key)
+            if slot_key:
+                active = state.get_slot(slot_key)
         # An explicitly header-targeted slot receives the file even when empty
         header_targeted = active is not None
         # Fallback: most recently active slot
@@ -549,7 +556,13 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     target_channel = body.get("channel", "")
     channel_from_session_map = False
     session_key = request.headers.get("X-Session-Key", "").strip()
-    if not thread_ts and session_key.startswith("dashboard:") and state.sessions:
+    # A dashboard session carries its Slack link in the session map; a
+    # channel-born one is linked under that same channel key by the Slack
+    # handler, so both resolve their thread from the one lookup. Skipping the
+    # channel case would DM the owner instead of landing the file in the thread
+    # the conversation is happening in.
+    linkable = session_key.startswith("dashboard:") or is_channel_session_key(session_key)
+    if not thread_ts and linkable and state.sessions:
         link_ts, link_ch = state.sessions.get_slack_link(session_key)
         if link_ts and (not target_channel or target_channel == link_ch):
             thread_ts = link_ts

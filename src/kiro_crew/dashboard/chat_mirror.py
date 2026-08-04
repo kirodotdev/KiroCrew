@@ -25,7 +25,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _resolve_mirror_target
 from kiro_crew.dashboard.chat_slack import list_slack_channels
-from kiro_crew.dashboard.chat_utils import _history_key_for
+from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
 from kiro_crew.security import redact_and_truncate
@@ -121,7 +121,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     # governance change between render and click fails closed at the side-effect
     # boundary.
     if not body:
-        session_key = _history_key_for(name)
+        session_key = effective_session_key(slot)
         target = await asyncio.to_thread(_resolve_mirror_target, state, session_key)
         if target is None:
             existing = state.sessions.get_mirror_link(session_key)
@@ -168,7 +168,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
             {"error": f"channel '{channel_type}' cannot mirror (no proactive send)"},
             status=400,
         )
-    session_key = _history_key_for(name)
+    session_key = effective_session_key(slot)
     # Resolving an opaque configured target can itself open a remote
     # conversation (for example, Discord creates a DM channel). Re-enter the
     # shared fail-closed governance ladder before that network side effect,
@@ -290,9 +290,11 @@ async def api_chat_slot_mirror_unlink(request: web.Request) -> web.Response:
 
     Clears the session's outbound mirror binding. Idempotent: unlinking a session
     with no mirror returns ``{ok, was_linked: false}``. Unlike Slack links, a
-    mirror link is only ever set on the history (``dashboard:``-prefixed) key by
-    ``mirror-link`` — it is never copied onto the bare key — so a single clear on
-    that key suffices.
+    mirror link is set on the slot's own session key — the channel key for a
+    conversation that started on a channel, ``dashboard:<slot>`` otherwise — and
+    is never copied onto a second spelling, so a single clear on that key
+    suffices. Legacy bindings written under the pre-unification derived key are
+    reached by ``SessionMap``'s own compat fallback.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info.get("name") or request.match_info.get("slot", "")
@@ -300,7 +302,7 @@ async def api_chat_slot_mirror_unlink(request: web.Request) -> web.Response:
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
 
-    session_key = _history_key_for(name)
+    session_key = effective_session_key(slot)
     cleared = state.sessions.clear_mirror_link(session_key)
     state.push_slots_update()
     sel().log_api_access(

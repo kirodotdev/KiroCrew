@@ -81,6 +81,7 @@ from kiro_crew.cron_script import resolve_script_path, run_command_sandboxed, ru
 from kiro_crew.dashboard import start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.cron_inject import inject_cron_result_to_dashboard
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
@@ -980,11 +981,9 @@ class GatewayOrchestrator:
             # over a request-ID resolver because tool permission IDs are opaque UUIDs,
             # unlike spawn approvals (``spawn:<agent_id>``). Treating a tool request ID
             # as an agent ID loses the dashboard slot and hides the approval prompt.
-            parent_slot = (
-                parent_session_key.removeprefix("dashboard:")
-                if parent_session_key.startswith("dashboard:")
-                else ""
-            )
+            # ``dashboard_slot_key`` answers "which tab shows this conversation?", so a
+            # channel-born session gets its prompt in the tab it is open in too.
+            parent_slot = dashboard_slot_key(parent_session_key)
 
             # NO heuristic fallback. A background caller (cron / taskrunner /
             # autonudge) that supplies neither an authoritative parent session
@@ -3210,8 +3209,12 @@ class GatewayOrchestrator:
         """Build notification meta with slot or slack_link for jump-to-source."""
         if not parent_key:
             return None
-        if parent_key.startswith("dashboard:"):
-            return {"slot": parent_key.removeprefix("dashboard:")}
+        # A jump-to-source slot beats a channel deep link whenever a tab is
+        # open, including for a channel-born conversation whose key is the
+        # channel's own.
+        slot = dashboard_slot_key(parent_key)
+        if slot:
+            return {"slot": slot}
         if ":" in parent_key and not parent_key.startswith(("cron:", "subagent:", "hook:")):
             chan, ts = parent_key.split(":", 1)
             return {
@@ -3230,10 +3233,10 @@ class GatewayOrchestrator:
         if conv_log is None:
             return
         # Lazy import avoids a circular dependency (dashboard.chat_utils → gateway).
-        from kiro_crew.dashboard.chat_utils import _history_key_for
+        from kiro_crew.dashboard.chat_utils import effective_session_key
 
         try:
-            await asyncio.to_thread(conv_log.set_title, _history_key_for(slot.key), slot.title)
+            await asyncio.to_thread(conv_log.set_title, effective_session_key(slot), slot.title)
         except Exception:
             logger.warning(
                 "Heartbeat: failed to persist slot title for %s", slot.key, exc_info=True
@@ -3679,8 +3682,11 @@ class GatewayOrchestrator:
             try:
                 _is_orchestrator = False
                 _slot = None
-                if self.dashboard_state and parent_key.startswith("dashboard:"):
-                    _slot = self.dashboard_state.get_slot(parent_key.removeprefix("dashboard:"))
+                # Stage limits are a property of the tab the orchestrator runs
+                # in, not of where its conversation started.
+                _parent_slot_name = dashboard_slot_key(parent_key)
+                if self.dashboard_state and _parent_slot_name:
+                    _slot = self.dashboard_state.get_slot(_parent_slot_name)
                     _is_orchestrator = (
                         _slot is not None and getattr(_slot, "mode", "") == "orchestrator"
                     )
@@ -3980,14 +3986,17 @@ class GatewayOrchestrator:
                         bp["held_ok_ids"] = []
 
             # ── Route completion back to the originating session ──
-            # Dashboard → dashboard only (no Slack)
-            # Slack → Slack thread + dashboard notification
-            # Cron/no parent → dashboard notification only
+            # Tab open        → that tab (a channel-born tab mirrors on to its channel)
+            # Channel, no tab → channel thread + dashboard notification
+            # Cron/no parent  → dashboard notification only
 
-            if parent_key.startswith("dashboard:") and self.dashboard_state:
-                # Dashboard session — route subagent result through _run_chat
-                # for full streaming, tool call visibility, and proper lifecycle.
-                _slot_name = parent_key.removeprefix("dashboard:")
+            _slot_name = dashboard_slot_key(parent_key)
+            if _slot_name and self.dashboard_state:
+                # Route the result through _run_chat for full streaming, tool
+                # call visibility, and proper lifecycle. A channel-born tab
+                # runs on the channel's own session, so the turn's mirror
+                # carries the reply back to the thread — the raw-injection path
+                # below is for parents with no tab to stream into.
                 _injection_slot = self.dashboard_state.get_slot(_slot_name)
 
                 # Redact LLM-generated output before any external surface
@@ -4545,9 +4554,11 @@ class GatewayOrchestrator:
             falls through to the owner-DM path. ``msg`` is redacted by the
             manager before delivery; re-redact defensively anyway.
             """
-            if not self.dashboard_state or not parent_session.startswith("dashboard:"):
+            # Deliver to whichever tab shows the parent conversation, including a
+            # channel-born one; only a parent with no tab wants the owner DM.
+            slot_name = dashboard_slot_key(parent_session)
+            if not self.dashboard_state or not slot_name:
                 return False
-            slot_name = parent_session.removeprefix("dashboard:")
             slot = self.dashboard_state.get_slot(slot_name)
             if not slot:
                 return False

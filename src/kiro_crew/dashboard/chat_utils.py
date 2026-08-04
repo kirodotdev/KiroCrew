@@ -25,11 +25,14 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
     _ChatSlot,
+    _normalize_slot_key,
     parse_cls_meta,
 )
 from kiro_crew.hooks import safe_read_file
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import SecurityEvent, sel
+from kiro_crew.session_surface import has_dashboard_surface, set_dashboard_surfaced
 from kiro_crew.validation import (
     MAX_TOOL_NAME_LEN,
     THEME_CONSENT_SHA_RE,
@@ -376,12 +379,72 @@ def _validate_tool_name(tool_name: str, *, is_shell: bool = False) -> str:
 
 
 def _history_key_for(slot_key: str) -> str:
-    """Canonical history key for a dashboard chat slot."""
+    """Canonical history key for a dashboard chat slot.
+
+    Takes a SLOT KEY, never a session key: the ``dashboard:`` prefix it adds is
+    unconditional, so feeding it a channel session key yields the nonexistent
+    ``dashboard:slack:<ts>``. Slots whose conversation lives on a channel must
+    go through :func:`effective_session_key` instead.
+    """
     if slot_key.startswith("dashboard:"):
         return slot_key
     while slot_key.startswith("dashboard_"):
         slot_key = slot_key[len("dashboard_"):]
     return f"dashboard:{slot_key}"
+
+
+def dashboard_slot_key(session_key: str) -> str:
+    """The dashboard slot name displaying *session_key*, or ``""`` if none.
+
+    Answers "which tab shows this conversation?" — the question that
+    ``session_key.startswith("dashboard:")`` plus a prefix strip approximates,
+    and gets wrong for a channel-born conversation, whose session key is the
+    channel's own even while its tab is open.
+
+    Use it wherever dashboard behaviour is gated on the user having a tab to
+    receive it: routing a notice, addressing a card, honouring a dashboard-only
+    directive.
+    """
+    if not has_dashboard_surface(session_key):
+        return ""
+    return _normalize_slot_key(session_key)
+
+
+def slot_transcript_key(slot_key: str) -> str:
+    """Transcript key for a slot known only by NAME, with no slot object yet.
+
+    Used by the restore paths, which build slots *from* disk and so cannot ask a
+    slot for its own key. A channel-born slot's name is its transcript's
+    filename stem (``slack_1785370133.085469``), and ``history._safe_key`` folds
+    both that stem and the live ``slack:1785370133.085469`` onto the same
+    ``.jsonl`` — so the stem already addresses the channel transcript and needs
+    no translation.
+
+    This resolves the FILE only. The session key cannot be recovered this way
+    (``_safe_key`` folds every ``:`` to ``_``, so ``discord_a_b_c`` is ambiguous)
+    and is read back from the persisted ``linked_session_key`` instead.
+    """
+    if is_channel_session_key(slot_key):
+        return slot_key
+    return _history_key_for(slot_key)
+
+
+def effective_session_key(slot: _ChatSlot) -> str:
+    """The session key AND transcript key for *slot* — one identity, one file.
+
+    A channel-born slot carries the real channel key (``slack:<ts>``) in
+    ``linked_session_key``, so its turns run on the channel's own session and
+    its transcript IS the channel transcript: ``history._safe_key`` folds
+    ``slack:<ts>`` and the ``slack_<ts>`` filename stem onto the same
+    ``.jsonl``, so one key addresses both the live session and the file the
+    channel side appends to. Everything else derives from the slot key.
+
+    Use this anywhere a slot's conversation is addressed — reading or writing
+    its transcript, resolving its session, mirroring its links. Reserve
+    :func:`_history_key_for` for the cases that genuinely start from a slot key
+    with no slot in hand.
+    """
+    return getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
 
 
 _INCOGNITO_PREFIX = (
@@ -478,7 +541,7 @@ def _installed_theme_persona(slug: str) -> str:
 def _maybe_consolidate(state, slot) -> None:
     """Run memory consolidation unless session is restricted."""
     if state.consolidator and not slot.is_restricted:
-        state.consolidator.maybe_consolidate(_history_key_for(slot.key))
+        state.consolidator.maybe_consolidate(effective_session_key(slot))
     elif state.consolidator and slot.is_restricted:
         sel().log_api_access(
             caller=f"dashboard:{slot.key}", operation="consolidate",
@@ -488,10 +551,16 @@ def _maybe_consolidate(state, slot) -> None:
 
 
 def _sync_dashboard_slots(state: "DashboardState") -> None:
-    """Push current slot keys to SessionManager so orphaned sessions get reaped."""
-    state.sessions.set_active_dashboard_slots(
-        {_history_key_for(k) for k in state._slots}
-    )
+    """Publish the open slots' session keys to SessionManager and the surface registry.
+
+    SessionManager uses the set to reap orphaned sessions; the surface registry
+    lets layers with no dashboard import ask whether a session has an open tab
+    (see :mod:`kiro_crew.session_surface`). A channel-born slot contributes its
+    channel key, which is what both consumers must match against.
+    """
+    keys = {effective_session_key(s) for s in state._slots.values()}
+    state.sessions.set_active_dashboard_slots(keys)
+    set_dashboard_surfaced(keys)
 
 
 def _redact_value(v):  # type: ignore[no-untyped-def]

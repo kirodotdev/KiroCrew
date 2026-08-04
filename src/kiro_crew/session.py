@@ -3320,8 +3320,14 @@ class SessionManager:
     # ── Message queue (Slack thread serialization) ──
 
     def is_busy(self, key: str) -> bool:
-        """True iff a turn is in flight for *key* (its semaphore is held)."""
-        session = self._sessions.get(key)
+        """True iff a turn is in flight for *key* (its semaphore is held).
+
+        Folds *key* like ``enqueue``/``dequeue`` do, so a caller holding the bare
+        Slack ``thread_ts`` resolves to the same session as one holding the
+        canonical ``slack:<ts>``. Without the fold a busy session reads idle to
+        half its callers.
+        """
+        session = self._sessions.get(self._fold_key(key))
         return bool(session and session.semaphore.locked())
 
     def touch(self, key: str) -> bool:
@@ -3468,6 +3474,15 @@ class SessionManager:
     def get_session_for_thread(self, thread_ts: str) -> str | None:
         """Return the session key linked to a Slack thread, or None."""
         return self._session_map.get_session_for_thread(thread_ts)
+
+    def channel_key_for_stem(self, stem: str) -> str:
+        """The real channel session key behind a transcript filename *stem*.
+
+        Lets the dashboard bind a surfaced channel tab to the session the
+        channel itself runs, instead of deriving a key from the filename (the
+        ``:``-to-``_`` fold is not reversible). ``""`` means unknown.
+        """
+        return self._session_map.channel_key_for_stem(stem)
 
     # ── Channel-neutral outbound mirror (generalizes Slack linking) ──
 

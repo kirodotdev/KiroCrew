@@ -114,6 +114,37 @@ describe('ChatSidebar – channel-origin glyph', () => {
     // Negative control: a dashboard session gets no origin glyph at all.
     expect(row('Plain dashboard').querySelector('img')).toBeNull()
   })
+
+  // The glyph's tooltip is the only place the dashboard states the relationship
+  // between this tab and the channel, so it is pinned here. It used to read
+  // "Copied from Slack — replies stay here", which the one-session refactor made
+  // false: the tab IS the conversation, so a reply is delivered to the channel
+  // and a message sent there arrives here. Same wording as the inbound-link chip.
+  it('describes the channel relationship as two-way, not as a copy', () => {
+    renderSidebar()
+    // The glyph is the row's only span carrying both `title` and `aria-label`
+    // (the merged badge is the other, and no fixture is merged) — asserted
+    // rather than assumed, so this cannot silently start reading a different
+    // element's tooltip.
+    const glyphTitle = (title: string) => {
+      const found = row(title).querySelectorAll('span[title][aria-label]')
+      expect(found.length).toBe(1)
+      return found[0].getAttribute('title') ?? ''
+    }
+
+    expect(glyphTitle('From Slack')).toBe(
+      'This session is two-way with Slack: replies are delivered there, and messages sent there arrive here.',
+    )
+    // The DM variant is a whole sentence of its own, not the channel sentence
+    // with an English article fragment interpolated into it.
+    expect(glyphTitle('From a DM')).toBe(
+      'This session is two-way with a direct message: replies are delivered there, and messages sent there arrive here.',
+    )
+    // The retired copy asserted the opposite of what the code now does.
+    expect(glyphTitle('From Discord')).not.toMatch(/copied from|replies stay here/i)
+    // A missing catalog key renders as the raw key rather than throwing.
+    expect(glyphTitle('From Discord')).not.toMatch(/pages\.chatSidebar/)
+  })
 })
 
 describe('hasChannelBrandIcon', () => {

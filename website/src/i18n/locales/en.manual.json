@@ -1867,6 +1867,8 @@
       "last_7_days": "Last 7 Days",
       "dashboard_source": "Dashboard",
       "mirroring_to": "Mirroring to {{label}}",
+      "two_way_with_channel": "This session is two-way with {{channel}}: replies are delivered there, and messages sent there arrive here.",
+      "two_way_with_direct_message": "This session is two-way with a direct message: replies are delivered there, and messages sent there arrive here.",
       "session_source": "Session",
       "new": "New",
       "new_chat": "New chat",

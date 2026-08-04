@@ -196,20 +196,19 @@ def build_dm_session_key(
     return f"{bucket}:gen{gen}" if gen else bucket
 
 
-def dashboard_mirror_key(channel_session_key: str) -> str:
-    """The dashboard-side session key that mirrors a channel conversation.
+def legacy_dashboard_mirror_key(channel_session_key: str) -> str:
+    """The pre-unification key a channel conversation's mirror link was stored under.
 
-    A channel session (e.g. ``telegram:kirocrew:direct:123:gen3``) is surfaced
-    in the dashboard as a slot whose name is sanitized by ``history._safe_key``
-    (``re.sub(r"[^\\w\\-.]", "_", key)`` — every non-word char, not only ``:``);
-    that slot's runtime session key is ``dashboard:<slot>`` (the shape produced
-    by ``dashboard.chat_utils._history_key_for``). A cross-surface mirror link
-    set by an in-channel ``/link`` must be stored on THIS exact key so the
-    dashboard turn loop's ``_deliver_cross_surface_*`` helpers read it back.
-    Using the same ``_safe_key`` sanitizer is required for correctness: a channel
-    key with any non-word char (an agent name with a space, or unicode) would
-    otherwise sanitize differently here than in the slot path and silently
-    mismatch, so the mirror never fires despite ``/link`` reporting success.
+    A channel conversation's dashboard turns now run under the channel session
+    key itself, so that key is where its mirror binding belongs and where the
+    turn path reads it back. Bindings created before that unification live on
+    ``"dashboard:" + history._safe_key(channel_session_key)`` — the runtime key
+    of the derived slot that used to own the conversation.
+
+    Retained for compat only: reads and clears fall back to this spelling
+    (``SessionMap._mirror_key``) so a link a user set earlier still resolves,
+    and the in-channel ``/link`` / ``/unlink`` handlers clear it so a stale row
+    cannot outlive a rebind. Never write a new binding here.
     """
     from kiro_crew.history import _safe_key
 

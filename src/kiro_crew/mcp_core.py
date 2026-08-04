@@ -71,6 +71,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
+from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.subagent import resolve_max_subagents
 from kiro_crew.subagent_persistence import _agent_dir
@@ -5066,11 +5067,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # (chat_runner) broadcasts a NON-BLOCKING question card (no ask_id) to
         # ITS OWN slot and the agent ends its turn; the user's answer arrives as
         # an ordinary next message that resumes the session with full context.
-        # No server-side block, no identity resolved for the effect. Non-dashboard
-        # surfaces still get the [OPTIONS:] hint (a card needs a chat window);
+        # No server-side block, no identity resolved for the effect. A card needs
+        # a chat window, so the gate asks whether one is OPEN rather than where
+        # the session started — a channel-born session with its tab open can
+        # render it. Surfaces without a tab still get the [OPTIONS:] hint;
         # an empty (default-install) key falls through to the directive.
         sk = _resolve_session_key_strict()
-        if sk and not sk.startswith("dashboard:"):
+        if sk and not has_dashboard_surface(sk):
             return (
                 "ask_question only works from a dashboard chat session "
                 f"(current session_key={sk!r}). From other surfaces, end your "

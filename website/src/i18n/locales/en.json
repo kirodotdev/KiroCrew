@@ -4001,8 +4001,6 @@
       "close_session": "Close session",
       "column_filter": "Column filter",
       "column_name_optional": "Column name (optional)",
-      "copied_from_channel": "Copied from {{channel}} — replies stay here",
-      "copied_from_direct_message": "Copied from a direct message — replies stay here",
       "create": "Create…",
       "custom": "Custom",
       "custom_recency_amount": "Custom recency amount",

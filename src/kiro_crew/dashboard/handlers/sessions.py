@@ -897,7 +897,7 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
     first, then the stripped variant.  Also kills the kiro-cli session
     to prevent orphaned processes.
     """
-    from kiro_crew.dashboard.chat import _history_key_for  # circular import  # noqa: F811
+    from kiro_crew.dashboard.state import _normalize_slot_key
 
     slot = state._slots.pop(key, None)
     if not slot:
@@ -910,6 +910,12 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
     if not slot:
         # Reverse: history key has no prefix, but slot was stored with one
         slot = state._slots.pop("dashboard_" + key, None)
+    if not slot:
+        # A channel-born slot's name is the key folded to the filename
+        # charset, which none of the prefix probes above produce. Without
+        # this the slot outlives its deleted history and keeps a kiro-cli
+        # process alive.
+        slot = state._slots.pop(_normalize_slot_key(key), None)
     if slot:
         # A pending ask_question is owned by the slot's running turn, but its
         # future lives in DashboardState rather than on slot.task. History
@@ -932,7 +938,14 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
     # Kill the kiro-cli subprocess to free resources
     if slot:
         try:
-            await state.sessions.destroy(_history_key_for(key))
+            # Destroy the session the slot actually RUNS, not one derived from
+            # the history key. A channel-born slot runs the channel's own
+            # session, so ``_history_key_for`` would name a key no session has:
+            # the provider survives the delete and its next inbound message
+            # recreates the transcript the user just removed.
+            from kiro_crew.dashboard.chat_utils import effective_session_key
+
+            await state.sessions.destroy(effective_session_key(slot))
         except Exception:
             pass
 
@@ -948,13 +961,20 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
 
-    from kiro_crew.dashboard.chat import _history_key_for  # noqa: F811
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.history import _safe_key
 
     protected: set[str] = set()
     for slot in state._slots.values():
-        hk = _history_key_for(slot.key)
+        hk = effective_session_key(slot)
         protected.add(hk)
-        protected.add(hk.replace(":", "_", 1))
+        # ``list_sessions`` reports filename stems, so protect the stem too.
+        # ``_safe_key`` is the function that produced the filename: a
+        # single-colon replace would leave a multi-colon channel key like
+        # ``discord:kirocrew:direct:123`` mapped to a stem that does not exist,
+        # so the open session would fall outside ``protected`` and this bulk
+        # delete would remove a live conversation's transcript.
+        protected.add(_safe_key(hk))
 
     sessions = state.conversation_log.list_sessions()
     count = 0

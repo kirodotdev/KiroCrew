@@ -177,6 +177,10 @@ class TestHandleMessageDeleted:
     def _make_orch():
         orch = MagicMock()
         orch.sessions = MagicMock()
+        # A bare MagicMock returns a truthy Mock for every accessor, so an
+        # unconfigured is_busy would route this message down the mid-turn
+        # steer path and the handler would return before processing it.
+        orch.sessions.is_busy.return_value = False
         orch.sessions.cancel_queued = MagicMock(return_value=False)
         orch._pending_queue = {}
         return orch
@@ -268,6 +272,10 @@ class TestDispatchQueued:
         orch = MagicMock()
         orch.slack = AsyncMock()
         orch.sessions = MagicMock()
+        # A bare MagicMock returns a truthy Mock for every accessor, so an
+        # unconfigured is_busy would route this message down the mid-turn
+        # steer path and the handler would return before processing it.
+        orch.sessions.is_busy.return_value = False
         orch.sessions.is_cancelled = MagicMock(return_value=False)
         orch.sessions.dequeue = MagicMock(return_value=None)
         orch.sessions.clear_queue = MagicMock()
@@ -291,6 +299,10 @@ class TestDispatchQueued:
         orch.slack = AsyncMock()
         orch.slack.remove_reaction = AsyncMock(side_effect=Exception("gone"))
         orch.sessions = MagicMock()
+        # A bare MagicMock returns a truthy Mock for every accessor, so an
+        # unconfigured is_busy would route this message down the mid-turn
+        # steer path and the handler would return before processing it.
+        orch.sessions.is_busy.return_value = False
         orch.sessions.is_cancelled = MagicMock(return_value=False)
         orch.sessions.dequeue = MagicMock(return_value=None)
         orch.sessions.clear_queue = MagicMock()
@@ -318,6 +330,10 @@ def _make_route_orch() -> MagicMock:
     orch.channel_history = MagicMock()
     orch.slack = AsyncMock()
     orch.sessions = MagicMock()
+    # A bare MagicMock returns a truthy Mock for every accessor, so an
+    # unconfigured is_busy would route this message down the mid-turn
+    # steer path and the handler would return before processing it.
+    orch.sessions.is_busy.return_value = False
     orch.sessions.enqueue = MagicMock(return_value=False)
     orch.sessions.dequeue = MagicMock(return_value=None)
     orch.sessions.cancel_queued = MagicMock(return_value=False)

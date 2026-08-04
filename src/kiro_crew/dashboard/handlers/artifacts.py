@@ -59,8 +59,10 @@ from kiro_crew.artifacts import (
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
+from kiro_crew.dashboard.state import _normalize_slot_key
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_with_identity, stat_identity
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.publish_provider import (
     DEFAULT_PROVIDER,
     Capability,
@@ -226,21 +228,30 @@ def _resolve_session_title(state: Any, session_key: str) -> str:
     is now gone, and ``""`` when there is no originating session at all (e.g. a
     non-chat origin or a legacy artifact) — the caller falls back to the origin
     label in that case.
+
+    Two families of session have a chat title. A dashboard-born one is named by
+    its own key. A channel-born one runs under the channel's key
+    (``slack:<ts>``), so ``infer_use_case`` reports its origin rather than
+    ``dashboard`` — it still has a tab, and a title, whenever the dashboard is
+    displaying it. Either family reaches here in two spellings, the full session
+    key from MCP callers and the bare slot name the browser create path stores,
+    and ``_normalize_slot_key`` folds both onto the slot name the slot table is
+    keyed by.
     """
     if not session_key:
         return ""
-    # Only chat (dashboard) sessions have a slot/title. Non-chat origins
-    # (cron / subagent / slack / cli / task-runner) have no chat title — return
-    # "" so the caller falls back to the origin label rather than mislabeling
+    # Every other origin (cron / subagent / cli / task-runner) has no chat
+    # title; "" lets the caller show the origin label instead of mislabeling
     # them "(deleted session)".
-    if infer_use_case(session_key) != "dashboard":
+    channel_born = is_channel_session_key(session_key)
+    if not channel_born and infer_use_case(session_key) != "dashboard":
         return ""
-    # Slots are keyed by the bare name; the frontend/session key may carry a
-    # "dashboard:" prefix.
-    name = session_key.split(":", 1)[1] if session_key.startswith("dashboard:") else session_key
-    slot = state.get_slot(name) if state is not None else None
+    slot = state.get_slot(_normalize_slot_key(session_key)) if state is not None else None
     if slot is None:
-        return _DELETED_SESSION_LABEL
+        # A dashboard session with no slot is gone. A channel session with no
+        # slot merely has no tab open — the conversation still lives on the
+        # channel, so its origin label is the honest answer.
+        return "" if channel_born else _DELETED_SESSION_LABEL
     try:
         return slot.display_title
     except Exception:  # pragma: no cover — never let title resolution break a list

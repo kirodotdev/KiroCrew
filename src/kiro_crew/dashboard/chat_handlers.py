@@ -27,7 +27,7 @@ from kiro_crew.config.loader import (
     default_project_dir,
     resolve_agent_bindings,
 )
-from kiro_crew.dashboard.channel_slots import note_slot_closed
+from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
@@ -49,14 +49,17 @@ from kiro_crew.dashboard.chat_utils import (
     _redact_meta_for_role,
     _remove_queued_by_id,
     _sync_dashboard_slots,
+    effective_session_key,
 )
 from kiro_crew.dashboard.state import (
     _MAX_PENDING_CONTEXT,
     DashboardState,
     _ChatSlot,
     _mark_permission_resolved,
+    _normalize_slot_key,
 )
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import safety_override
@@ -692,7 +695,7 @@ async def _context_snapshot_fields(state: "DashboardState", slot: "_ChatSlot") -
 async def _context_snapshot_fields_inner(
     state: "DashboardState", slot: "_ChatSlot"
 ) -> dict[str, Any]:
-    provider = state.sessions.get_provider(_history_key_for(slot.key))
+    provider = state.sessions.get_provider(effective_session_key(slot))
     if provider is not None:
         return _context_reading(
             provider.context_usage_pct(),
@@ -750,7 +753,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     if limit_raw is None and before is None:
         mem_msgs = list(slot.messages)
         if slot._disk_older_count > 0 and state.conversation_log:
-            history_key = _history_key_for(slot.key)
+            history_key = effective_session_key(slot)
             try:
                 disk_msgs = state.conversation_log.read_messages_chained(history_key)
             except Exception:
@@ -766,7 +769,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         # Legacy pagination path (retained for programmatic callers).
         # Always reads from chained disk history; no in-memory offset math.
         limit = min(int(limit_raw or "200"), 500)
-        history_key = _history_key_for(slot.key)
+        history_key = effective_session_key(slot)
         try:
             all_msgs = (
                 state.conversation_log.read_messages_chained(history_key)
@@ -986,7 +989,7 @@ def _reject_pending_approvals(slot: _ChatSlot) -> None:
             if _mark_permission_resolved(slot.messages, aid, "rejected"):
                 slot._dirty = True
             sel().log_tool_invocation(
-                session_key=_history_key_for(slot.key),
+                session_key=effective_session_key(slot),
                 agent=getattr(slot, "agent", "") or "kirocrew",
                 source="dashboard",
                 tool_name=f"approval_reject:{aid}",
@@ -2496,12 +2499,35 @@ async def api_recent_projects(request: web.Request) -> web.Response:
     return web.json_response({"dirs": dirs})
 
 
+def _resume_session_identity(state: DashboardState, history_key: str) -> str:
+    """The session a transcript runs under, spelled as a slot spells its own.
+
+    Counterpart to :func:`effective_session_key`, for the caller that holds a
+    history key and no slot. A channel-born transcript's session is the
+    channel's own, read from the session map because ``history._safe_key``
+    folds every ``:`` to ``_`` irreversibly — ``discord_a_b_c`` cannot be
+    unfolded by guessing, and a guess would name a session the channel never
+    reads. An unmapped channel key falls back to the dashboard spelling, the
+    same "leave it unbound" outcome the restore path takes.
+    """
+    if is_channel_session_key(history_key) and state.sessions:
+        real_key = state.sessions.channel_key_for_stem(channel_slot_name(history_key))
+        if real_key:
+            return real_key
+    return _history_key_for(history_key)
+
+
 async def api_chat_slot_resume(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/resume — load a history session into a slot."""
     state: DashboardState = request.app["state"]
-    name = request.match_info["slot"]
-    if name.startswith("dashboard_"):
-        name = name.removeprefix("dashboard_")
+    # Fold the requested name with the function that keys the slot table, so
+    # every spelling of one slot resolves to that slot: a caller may hold a
+    # filename stem, a session key (a notification deep link carries the
+    # conversation's own ``slack:<ts>``), or a display-style name. A partial
+    # fold leaves the lookup below missing an open tab and falls through to the
+    # create path, which re-reads the transcript into the slot it should have
+    # returned.
+    name = _normalize_slot_key(request.match_info["slot"])
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
     try:
@@ -2513,11 +2539,18 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # If slot already exists (active session), just return it — no duplicate.
     # Check both by slot name AND by canonical session key to prevent two
     # slots sharing the same kiro-cli process.
-    canonical = _history_key_for(history_key)
+    #
+    # INVARIANT: both sides of this comparison derive identity through the same
+    # rule. A slot answers with ``effective_session_key``, which for a
+    # channel-born tab is the channel's own key — so the requested key resolves
+    # the same way, via the session map. Two rules in play and a channel
+    # transcript matches nothing here: it gets a second tab, so one conversation
+    # shows as two sidebar rows backed by two kiro-cli processes.
+    canonical = _resume_session_identity(state, history_key)
     existing = state._slots.get(name)
     if not existing:
         for slot in state._slots.values():
-            if _history_key_for(slot.key) == canonical:
+            if effective_session_key(slot) == canonical:
                 existing = slot
                 break
     if existing:
@@ -2912,7 +2945,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             # unrelated slot's pending tool. Guard the scan on session identity:
             # only a candidate whose effective session key equals the addressed
             # slot's is a legitimate owner.
-            want_session = slot.linked_session_key or _history_key_for(slot.key)
+            want_session = effective_session_key(slot)
             for s in state._slots.values():
                 cand = s._approval_futures.get(request_id)
                 if not cand or cand.done():

@@ -356,6 +356,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/session_handle.py",
         "platform/defaults.py",
         "platform/interfaces.py",
+        # Comparison-only: applies the redactors to compute a match identity and
+        # discards the result. The two files being merged can hold the same
+        # message with and without redaction, so a raw comparison would keep both
+        # copies — nothing redacted here is ever written or shown.
+        "channel_transcript_migration.py",
         # Internal persistence / indexing (the on-disk or in-memory copy), whose
         # user-visible surface is already covered by a registered sink.
         "dashboard/chat_folders.py",

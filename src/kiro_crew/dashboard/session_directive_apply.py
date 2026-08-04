@@ -15,14 +15,15 @@ transcript / WS / hook surfaces, it does NOT replace the model's tool result.
 That is why the tool bodies phrase their own message to not over-claim an effect
 this consumer applies (and may refuse) after the fact.
 
-IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here. ``sel`` is a genuine cycle
-(``sel`` -> config -> apps -> dashboard, and chat_runner imports this module
-before it imports sel). The rest (autonudge, autonudge_authz, chat_utils,
-security, chat_handlers) are deferred on purpose: they keep this module cheap to
-import from the turn loop's import graph, and they resolve the symbol at CALL
-time so patching the SOURCE module is what tests (and any runtime override)
-actually observe — a module-scope ``from X import name`` would freeze a stale
-binding and silently bypass it.
+IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, with ``session_surface`` the one
+exception: it imports nothing from ``kiro_crew``, so it cannot cycle. ``sel`` is
+a genuine cycle (``sel`` -> config -> apps -> dashboard, and chat_runner imports
+this module before it imports sel). The rest (autonudge, autonudge_authz,
+chat_utils, security, chat_handlers) are deferred on purpose: they keep this
+module cheap to import from the turn loop's import graph, and they resolve the
+symbol at CALL time so patching the SOURCE module is what tests (and any runtime
+override) actually observe — a module-scope ``from X import name`` would freeze a
+stale binding and silently bypass it.
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ import logging
 import os
 import time
 from typing import Any
+
+from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +81,15 @@ async def apply_session_directive(
     """Apply directive *kind* with *args* to *slot*/*session_key*; return a
     confirmation string for the model. Fail-soft: any error is returned as a
     readable message, never raised. Every path emits a SEL audit event."""
-    if kind in _DASHBOARD_ONLY_DIRECTIVES and not session_key.startswith("dashboard:"):
+    if kind in _DASHBOARD_ONLY_DIRECTIVES and not has_dashboard_surface(session_key):
         # These three act on a dashboard chat SLOT (its project/CWD, its
-        # follow-up card, its question card). The HTTP endpoints they replaced
-        # were dashboard-scoped and rejected cron/Slack/sub-agent callers, so
-        # enforce the same boundary HERE — the consumer is the only layer that
-        # knows the authoritative session, and a cron-linked slot flowing
-        # through _run_chat must not have its project silently retargeted.
+        # follow-up card, its question card), so the boundary is whether an open
+        # tab exists to receive the effect — not where the conversation started.
+        # A channel-born session displayed in a tab qualifies; a cron, sub-agent
+        # or otherwise tabless caller does not, and must not silently retarget a
+        # slot's project or address a card nothing will render. The consumer is
+        # the only layer that knows the authoritative session, so the check
+        # belongs HERE.
         _audit(session_key, kind, "denied")
         return (
             f"Error: {kind} only works from a dashboard chat session "
@@ -252,7 +257,7 @@ async def _autonudge_stop(session_key: str, args: dict[str, Any]) -> str:
 
 
 async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
-    from kiro_crew.dashboard.chat_utils import _history_key_for
+    from kiro_crew.dashboard.chat_utils import effective_session_key
     from kiro_crew.security import is_sensitive_path
 
     clear = bool(args.get("clear"))
@@ -261,7 +266,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     if clear or not project:
         slot.project = ""
         if old_project:
-            slot._pending_reset_history_key = _history_key_for(slot.key)
+            slot._pending_reset_history_key = effective_session_key(slot)
         _push(state)
         return "Project cleared. The next message cold-starts with no project scope."
     expanded = os.path.expanduser(project)
@@ -292,7 +297,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
         return f"Error: not a directory: {rp}"
     slot.project = rp
     if rp != old_project:
-        slot._pending_reset_history_key = _history_key_for(slot.key)
+        slot._pending_reset_history_key = effective_session_key(slot)
         try:
             from kiro_crew.dashboard.chat_handlers import _save_recent_project
 

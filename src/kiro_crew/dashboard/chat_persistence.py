@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -17,14 +18,20 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dashboard.channel_slots import slot_closed_since
 from kiro_crew.dashboard.chat_utils import (
-    _history_key_for,
     _normalize_model,
     _redact_meta_for_role,
     _sync_dashboard_slots,
+    effective_session_key,
+    slot_transcript_key,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, _normalize_slot_key
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
-from kiro_crew.history import _archive_lines, update_metadata_off_loop
+from kiro_crew.history import (
+    _archive_lines,
+    transcript_sort_key,
+    update_metadata_off_loop,
+)
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import ARTIFACT_SLUG_RE
 
@@ -356,7 +363,7 @@ def _rehydrate_slot_from_history(
     slot_name = _normalize_slot_key(slot_name)
     if slot_name in state._slots:
         return state._slots[slot_name]
-    history_key = _history_key_for(slot_name)
+    history_key = slot_transcript_key(slot_name)
     # ``_prefetched_*`` let an async caller hoist the two disk reads (this
     # metadata line and the chained message walk further down) into a worker
     # thread and then run the REST of this function on the event loop — see
@@ -460,6 +467,11 @@ def _rehydrate_slot_from_history(
         state._restricted_keys.add(f"dashboard:{slot_name}")
     if meta.get("forked_from") is not None:
         slot.forked_from = meta["forked_from"]
+    if meta.get("linked_session_key"):
+        # Rebind the slot to the session its conversation actually runs on.
+        # Skipped, the slot would answer from a dashboard-only session and the
+        # channel thread would stop seeing its replies.
+        slot.linked_session_key = str(meta["linked_session_key"])
     # Restore the persisted tab_id so cross-restart fork chaining survives.
     # get_or_create_slot (called by our caller) assigns a fresh random uuid to
     # slot._tab_id; if we don't overwrite it here, the next _flush_dirty_slots
@@ -592,7 +604,7 @@ async def rehydrate_slot_from_history_async(
     slot_name = _normalize_slot_key(slot_name)
     if slot_name in state._slots:
         return state._slots[slot_name]
-    history_key = _history_key_for(slot_name)
+    history_key = slot_transcript_key(slot_name)
     conv_log = state.conversation_log
 
     def _read() -> tuple[dict | None, list[dict] | None, dict[str, str] | None]:
@@ -658,6 +670,10 @@ def _restore_recent_sessions_steps(
         elif key.startswith("dashboard_"):
             slot_name = key.removeprefix("dashboard_")
         else:
+            # Channel-born sessions are restored by ``channel_slot_reconciler``,
+            # which reads their transcripts in an executor. This loop runs ON the
+            # event loop between yields, so pulling them in here would put a
+            # large transcript's read in front of the whole gateway at startup.
             continue
         if slot_name in state._slots:
             continue
@@ -734,6 +750,16 @@ def _restore_recent_sessions_steps(
             state._restricted_keys.add(f"dashboard:{slot_name}")
         if meta.get("forked_from") is not None:
             slot.forked_from = meta["forked_from"]
+        if meta.get("linked_session_key"):
+            slot.linked_session_key = str(meta["linked_session_key"])
+        elif is_channel_session_key(key) and state.sessions:
+            # First time this thread is surfaced: bind it to the session the
+            # channel itself runs. Resolved from the session map, never derived
+            # from the filename — the ``:``-to-``_`` fold is not reversible, so
+            # a guess could point the tab at a session the channel never reads.
+            real_key = state.sessions.channel_key_for_stem(key)
+            if real_key:
+                slot.linked_session_key = real_key
         tab_id = meta.get("tab_id")
         if not tab_id:
             tab_id = uuid.uuid4().hex[:12]
@@ -916,6 +942,66 @@ def _build_message_entry(m: dict) -> dict | None:
 # ``_build_message_entry``). A window-region disk line carrying one of these is
 # not a real message and is never treated as a cross-process append to preserve.
 _TRANSIENT_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
+
+
+def _interleave_foreign_lines(
+    window_entries: list[dict],
+    window_lines: list[str],
+    foreign_lines: list[str],
+) -> list[str]:
+    """Merge this save's window with another writer's lines, in time order.
+
+    A bare ``window + foreign`` concatenation preserves both sets but not the
+    conversation: it parks every foreign line after the newest window line. That
+    was harmless while foreign appends were rare end-of-file arrivals (a cron
+    result landing in a dashboard-only transcript). Once a channel tab shares the
+    channel's transcript, foreign lines are ordinary turns of the SAME
+    conversation that genuinely happened BETWEEN the window's turns — a channel
+    reply that arrived before the user's next dashboard message would be filed
+    after it, and the reordered file is what the next turn reads back as context.
+
+    Both sequences are individually already chronological, so this is a two-way
+    merge rather than a re-sort: neither side's internal order can change, and a
+    line with no parseable ``ts`` inherits the previous key from its own sequence
+    so it stays beside the line it was written next to. Exact ties keep the
+    window's line first, making the result deterministic.
+    """
+    if not foreign_lines:
+        return window_lines
+
+    def keyed(entries, lines):
+        out, last = [], (0, 0.0)
+        for entry, line in zip(entries, lines):
+            key = transcript_sort_key(entry.get("ts") or "")
+            if key[0]:  # unparseable — stay adjacent to the previous line
+                key = last
+            last = key
+            out.append((key, line))
+        return out
+
+    parsed_foreign = []
+    for line in foreign_lines:
+        try:
+            parsed_foreign.append(json.loads(line))
+        except (ValueError, TypeError):
+            # Unparseable bytes are still somebody's acknowledged append: keep
+            # them rather than dropping them on the floor.
+            parsed_foreign.append({})
+
+    left = keyed(window_entries, window_lines)
+    right = keyed(parsed_foreign, foreign_lines)
+    merged: list[str] = []
+    i = j = 0
+    while i < len(left) and j < len(right):
+        if right[j][0] < left[i][0]:
+            merged.append(right[j][1])
+            j += 1
+        else:
+            merged.append(left[i][1])
+            i += 1
+    merged.extend(line for _, line in left[i:])
+    merged.extend(line for _, line in right[j:])
+    return merged
 
 
 def _frozen_prefix_and_foreign_appends(
@@ -1248,7 +1334,7 @@ def _save_slot_to_history(
         and not rewrite
     ):
         return
-    history_key = _history_key_for(slot.key)
+    history_key = effective_session_key(slot)
     try:
         # Hold the SAME per-session cross-process lock that ``append`` /
         # ``append_off_loop`` / rotate / rewrite / metadata mutations take, across
@@ -1334,6 +1420,13 @@ def _save_slot_to_history(
                 meta_line["tags"] = list(slot.tags)
             if slot.forked_from is not None:
                 meta_line["forked_from"] = slot.forked_from
+            if slot.linked_session_key:
+                # The slot's conversation lives on another session (a channel
+                # thread, a cron job). Nothing recreates that binding on
+                # restart for a channel slot — no injection re-fires — so
+                # without persisting it the slot rehydrates unbound and
+                # silently reverts to a dashboard-only copy of the thread.
+                meta_line["linked_session_key"] = slot.linked_session_key
             tab_id = getattr(slot, "_tab_id", None) or existing_meta.get("tab_id")
             if tab_id:
                 meta_line["tab_id"] = tab_id
@@ -1379,8 +1472,8 @@ def _save_slot_to_history(
                         history_key,
                         exc_info=True,
                     )
-            payload = (
-                meta_str + frozen_prefix + "".join(window_lines) + "".join(foreign_lines)
+            payload = meta_str + frozen_prefix + "".join(
+                _interleave_foreign_lines(window_entries, window_lines, foreign_lines)
             )
 
             # Rewrite paths (rewind/regenerate/fork) intentionally TRUNCATE the
@@ -1401,7 +1494,31 @@ def _save_slot_to_history(
                         "Failed to archive dropped lines for %s", history_key, exc_info=True
                     )
 
+            _preserve_mtime: float | None = None
+            if closed and slot.linked_session_key:
+                # This slot shares its transcript with a channel, and the
+                # reconciler decides whether a close still stands by comparing
+                # the file's mtime against ``closed_at``: activity newer than the
+                # close means the conversation moved on and the tab comes back.
+                # Writing the close flag IS a write, so it would advance mtime
+                # past ``closed_at`` and make the close outrun itself — the tab
+                # would reopen on the next pass. Restore the pre-close mtime so
+                # only a genuine channel append can outrun the close.
+                try:
+                    _preserve_mtime = path.stat().st_mtime
+                except OSError:
+                    _preserve_mtime = None
+
             atomic_write(path, payload, fsync=True)
+            if _preserve_mtime is not None:
+                try:
+                    os.utime(path, (_preserve_mtime, _preserve_mtime))
+                except OSError:
+                    # Best-effort: a failure only costs a resurfaced tab on the
+                    # next pass, never data.
+                    logger.debug(
+                        "could not restore pre-close mtime for %s", history_key, exc_info=True
+                    )
             # A rewrite (archive-safe) save succeeded → clear the pending-rewrite
             # flag so later saves return to the cheap default path.
             if rewrite:

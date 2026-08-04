@@ -29,7 +29,7 @@ from kiro_crew.constants import OPTIONS_RE_LINE
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.knowledge.store import KnowledgeStore
-from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
+from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink, is_channel_session_key
 from kiro_crew.notifications.bus import (
     NotificationBus,
     NotificationValidationError,
@@ -832,10 +832,7 @@ class _ChatSlot:
         "forked_from",
         "_fork_lock",
         "_tab_id",
-        "_channel_mirror_key",
-        "_channel_mirror_len",
-        "_channel_mirror_mtime",
-        "_channel_mirror_checked",
+        "_channel_window_mtime",
         "_disk_older_count",
         "_disk_window_len",
         "_frozen_prefix_cache",
@@ -1015,14 +1012,10 @@ class _ChatSlot:
         self.forked_from: str | None = None  # parent slot key if this is a fork
         self._fork_lock: asyncio.Lock = asyncio.Lock()  # serialises concurrent forks on this slot
         self._tab_id: str = ""  # permanent tab identity for cross-restart session chaining
-        # Channel-slot mirroring (see channel_slots.py). While a surfaced
-        # channel slot has NO dashboard-authored turns, the reconciler keeps
-        # copying new channel messages into it so the tab stays current. The
-        # first non-mirror append forks the conversation and stops the mirror.
-        self._channel_mirror_key: str = ""  # channel session key mirrored into this slot
-        self._channel_mirror_len: int = 0  # len(messages) after the last mirror action
-        self._channel_mirror_mtime: float = 0.0  # channel `modified` at the last sync
-        self._channel_mirror_checked: bool = False  # one-time rebind check done
+        # Transcript mtime the in-memory window was last brought up to date
+        # against. Only meaningful for a slot bound to a channel session, whose
+        # transcript the channel also writes to (see channel_slots).
+        self._channel_window_mtime: float = 0.0
         self._disk_older_count: int = (
             0  # count of disk messages OLDER than in-memory window (stable, set at restore/resume)
         )
@@ -1874,13 +1867,22 @@ class DashboardState:
         """Register the dashboard's compaction callback on the session manager."""
 
         async def _on_compacted(key: str, pct: float, *, success: bool) -> None:
-            if not key.startswith("dashboard:"):
-                # A Slack or Discord session has no slot to append to, so the
-                # notice used to be dropped and the user saw summarized history
-                # with no explanation. Route it to its own conversation instead.
+            from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+            slot_key = dashboard_slot_key(key)
+            if slot_key:
+                # A channel-born session with an open tab is readable on BOTH
+                # surfaces, and the user may be looking at either one, so both
+                # get the notice: silently summarized history is the confusing
+                # outcome this notice exists to prevent.
+                if is_channel_session_key(key):
+                    await self._notify_channel_compaction(key, pct, success=success)
+            else:
+                # No tab to append to, so the notice would be dropped and the
+                # user would see summarized history with no explanation. Route
+                # it to its own conversation instead.
                 await self._notify_channel_compaction(key, pct, success=success)
                 return
-            slot_key = key[len("dashboard:") :]
             slot = self.get_slot(slot_key)
             if slot is None:
                 return
@@ -1938,9 +1940,14 @@ class DashboardState:
         """
 
         async def _on_recycled(key: str, *, reason: str) -> None:
-            if not key.startswith("dashboard:"):
+            from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+            # A channel-born session's key is the channel's own even while its
+            # tab is open, so ask which tab displays it rather than reading the
+            # key's prefix — otherwise that tab resets with no explanation.
+            slot_key = dashboard_slot_key(key)
+            if not slot_key:
                 return
-            slot_key = key[len("dashboard:") :]
             slot = self.get_slot(slot_key)
             if slot is None:
                 return
@@ -2702,18 +2709,30 @@ class DashboardState:
                 old_slot._slack_thread_ts = ""
                 old_slot._slack_channel = ""
             if self.sessions:
-                from kiro_crew.dashboard.chat import _history_key_for
+                from kiro_crew.dashboard.chat_utils import (
+                    _history_key_for,
+                    effective_session_key,
+                )
 
-                self.sessions.set_slack_link(_history_key_for(old_owner), "", "")
+                # The previous owner's slot may already be gone; fall back to
+                # deriving its key from the name in that case.
+                old_key = (
+                    effective_session_key(old_slot)
+                    if old_slot
+                    else _history_key_for(old_owner)
+                )
+                self.sessions.set_slack_link(old_key, "", "")
         slot._slack_linked = True
         slot._slack_channel = channel_id
         slot._slack_thread_ts = thread_ts
         self._slack_to_slot[thread_ts] = slot_name
         # Persist so link survives gateway restarts
         if self.sessions:
-            from kiro_crew.dashboard.chat import _history_key_for
+            from kiro_crew.dashboard.chat_utils import effective_session_key
 
-            self.sessions.set_slack_link(_history_key_for(slot_name), thread_ts, channel_id)
+            self.sessions.set_slack_link(
+                effective_session_key(slot), thread_ts, channel_id
+            )
         self.push_slots_update()
 
     def get_or_create_slot(
@@ -2726,8 +2745,17 @@ class DashboardState:
         memory_mode: str | None = None,
         ephemeral: bool | None = None,
         app: str = "",
+        linked_session_key: str = "",
     ) -> _ChatSlot:
-        """Return existing slot or create a new one."""
+        """Return existing slot or create a new one.
+
+        *linked_session_key* binds a new slot to the session its conversation
+        actually runs on (a channel thread, a cron job). It must be supplied
+        here rather than assigned afterwards: the Slack-link hydration below
+        reads the persisted link off the slot's effective session key, so a
+        binding applied later would hydrate against the wrong key and leave a
+        channel-born tab looking unlinked.
+        """
         requested_name = ""
         if name:
             # Slot keys flow into the session key (``dashboard:{slot.key}``)
@@ -2785,11 +2813,29 @@ class DashboardState:
         # write their namespaced origin id through the legacy channel field;
         # those are projected separately via ``links`` and must never make the
         # destructive Slack actions appear.
+        if linked_session_key:
+            slot.linked_session_key = linked_session_key
+        elif self.sessions:
+            # No caller-supplied binding, but a channel-stem name means this slot
+            # displays a conversation that runs on the channel's own session.
+            # Resolving it HERE rather than in each caller is what makes the
+            # binding correct by construction: the History resume path builds the
+            # slot without one, and an unbound channel tab silently answers from a
+            # dashboard-only session whose replies never reach the thread.
+            #
+            # Only ever adopts a key the session map actually holds, so a slot
+            # whose name merely looks channel-shaped stays unbound.
+            from kiro_crew.messaging.link import is_channel_session_key
+
+            if is_channel_session_key(name):
+                resolved = self.sessions.channel_key_for_stem(name)
+                if resolved:
+                    slot.linked_session_key = resolved
         try:
             if self.sessions:
-                from kiro_crew.dashboard.chat import _history_key_for
+                from kiro_crew.dashboard.chat_utils import effective_session_key
 
-                _ts, _ch = self.sessions.get_slack_link(_history_key_for(name))
+                _ts, _ch = self.sessions.get_slack_link(effective_session_key(slot))
                 slot._slack_linked = _is_genuine_slack_link(_ts, _ch)
                 if slot._slack_linked:
                     namespaced = _split_namespaced_channel_id(_ch)
@@ -3118,9 +3164,9 @@ class DashboardState:
     def _slot_links(self, slot: _ChatSlot) -> tuple[list[dict[str, Any]], bool, str, str]:
         """Build the redacted channel-neutral link projection for one slot."""
         # circular import: chat imports state at module scope.
-        from kiro_crew.dashboard.chat import _history_key_for
+        from kiro_crew.dashboard.chat_utils import effective_session_key
 
-        session_key = _history_key_for(slot.key)
+        session_key = effective_session_key(slot)
         mirror: ChannelLink | None = None
         persisted_ts: str | None = None
         persisted_channel: str | None = None

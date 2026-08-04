@@ -110,8 +110,17 @@ function plannedIcon() {
   return createElement(Clock, { className: 'lucide-inline' })
 }
 
-/** Strip the `dashboard_` prefix so a live slot and its history key compare equal. */
-function normalizeKey(key: string): string {
+/** Strip the `dashboard_` prefix so a live slot and its history key compare equal.
+ *
+ * Exported for test: the Older-group dedupe below hinges on it, and the two key
+ * spaces it reconciles are not symmetric. An ordinary dashboard session is
+ * `chat-1-1` live and `dashboard_chat-1-1` in the session index, so the prefix
+ * must come off. A channel-born session is `slack_<ts>` on BOTH sides (the
+ * backend mints the slot key from the channel key, and the history layer folds
+ * `:` to `_` to the same string), so it must pass through untouched — stripping
+ * or rewriting it would make the two sides unequal and the conversation would
+ * render twice, once live and once as a faded archive row. */
+export function normalizeKey(key: string): string {
   return key.startsWith('dashboard_') ? key.slice('dashboard_'.length) : key
 }
 

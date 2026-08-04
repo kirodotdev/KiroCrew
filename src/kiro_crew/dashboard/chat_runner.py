@@ -60,7 +60,6 @@ from kiro_crew.dashboard.chat_utils import (
     _dequeue_next_message,
     _dequeue_next_system_message,
     _extract_bash_command,
-    _history_key_for,
     _maybe_consolidate,
     _maybe_inject_persona,
     _normalize_model,
@@ -69,6 +68,7 @@ from kiro_crew.dashboard.chat_utils import (
     _redact_tool_field,
     _remove_queued_by_id,
     _validate_tool_name,
+    effective_session_key,
     is_system_injection,
 )
 from kiro_crew.dashboard.handlers import (
@@ -2295,7 +2295,7 @@ async def _run_chat(
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
 
-    session_key = getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
+    session_key = effective_session_key(slot)
     sessions = getattr(state, "sessions", None)
 
     # Inherit Slack link: if this dashboard session mirrors a Slack thread,
@@ -3062,7 +3062,7 @@ async def _run_chat(
                     _last_stop_soft = True
                 break
             if not _last_stop_soft:
-                history_key = _history_key_for(slot.key)
+                history_key = effective_session_key(slot)
                 disk_count = 0
                 if state.conversation_log:
                     disk_count = len(state.conversation_log.read_messages(history_key))
@@ -3519,7 +3519,7 @@ async def _run_chat(
                     # the CANONICAL producing session on the spool. Pass it for
                     # the binding check or every real render is refused as a
                     # bare-vs-prefixed mismatch (silent no-render).
-                    producing_session_key=slot.linked_session_key or _history_key_for(slot.key),
+                    producing_session_key=effective_session_key(slot),
                 )
                 # Session directive: a stateless session-bound tool
                 # (monitor_start / monitor_update / autonudge_stop / set_project

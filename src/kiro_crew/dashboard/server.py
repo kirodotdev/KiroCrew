@@ -27,6 +27,7 @@ from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_ap
 from kiro_crew.autonudge import get_instance as _autonudge_get
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
 from kiro_crew.browser.setup import migrate_owned_playwright_registration
+from kiro_crew.channel_transcript_migration import migrate_channel_transcripts
 from kiro_crew.config import config_dir
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import env_flag_enabled
@@ -1150,6 +1151,27 @@ def _write_secret_file(secret_path: Path, secret: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _claimed_dashboard_slots(state: DashboardState) -> frozenset[str]:
+    """Slot names the persisted session map holds a ``dashboard:`` session for.
+
+    Read off the live map so the transcript migration can tell a real dashboard
+    session from an orphan of a same-named channel session. Blocking (reads the
+    map file), so callers on the event loop must offload it.
+    """
+    try:
+        sessions = getattr(state, "sessions", None)
+        smap = getattr(sessions, "_session_map", None)
+        data = getattr(smap, "_data", None)
+        if not isinstance(data, dict):
+            return frozenset()
+        return frozenset(
+            k[len("dashboard:"):] for k in data if k.startswith("dashboard:")
+        )
+    except Exception:
+        logger.debug("could not read claimed dashboard slots", exc_info=True)
+        return frozenset()
 
 
 def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
@@ -3003,6 +3025,28 @@ async def start_dashboard(
     # intermediate states no client renders. Reseeding happens inside the block too
     # — it must complete before the single broadcast so clients never see slots
     # under a counter that could still re-mint a colliding index.
+    # Converge any leftover copy transcripts BEFORE the restores read them. A
+    # channel conversation used to get a second transcript under a derived
+    # dashboard key; on an install carrying one, its dashboard-authored turns
+    # exist nowhere else, so they must be merged into the channel transcript
+    # before a slot is built from it. Idempotent, so it is a cheap no-op on
+    # every subsequent boot. Off-loop: it takes the per-session cross-process
+    # flock, which must never block the event loop.
+    try:
+        # Slot names the session map claims as real dashboard sessions, so a
+        # dashboard session that merely happens to be named like a channel
+        # stem is never mistaken for an orphan of it.
+        _claimed = await asyncio.to_thread(_claimed_dashboard_slots, state)
+        merged = await asyncio.to_thread(
+            migrate_channel_transcripts, dashboard_slots=_claimed
+        )
+        if merged:
+            logger.info("Merged %d leftover channel transcript copies", merged)
+    except Exception:
+        # A failed migration leaves the orphan in place rather than losing
+        # messages, so starting up without it is safe.
+        logger.warning("channel transcript migration failed", exc_info=True)
+
     with state.suspend_slots_push():
         await chat.restore_open_slots_async(state)
         restored = await chat.restore_recent_sessions_async(

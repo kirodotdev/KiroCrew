@@ -36,6 +36,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.skills import SkillsLoader
 
 if TYPE_CHECKING:
@@ -1340,10 +1341,10 @@ class ContextBuilder:
             verbosity_block = ""
         prompt = prompt.replace("{{VERBOSITY_BLOCK}}", verbosity_block)
 
-        is_dashboard = session_key and (
-            session_key.startswith("dashboard:") or session_key.startswith("dashboard_")
-        )
-        if not is_dashboard:
+        # Widgets and artifacts need a chat window to render in, which is a
+        # property of where the session is DISPLAYED, not where it started: a
+        # Slack-born conversation with its dashboard tab open can render both.
+        if not has_dashboard_surface(session_key or ""):
             return prompt.replace("{{WIDGET_BLOCK}}", "")
 
         density = getattr(cfg.dashboard, "widget_density", "more")
@@ -2200,14 +2201,13 @@ class ContextBuilder:
                 'in the user\'s voice as an instruction to you — "Merge it now", not '
                 '"I\'ll merge it".)'
             )
-            # Dashboard-only, situational nudges for tools that may otherwise
-            # never surface with MCP Tool Search. Gated here because both tools
-            # reject Slack/cron/subagent contexts (they have no card surface).
+            # Situational nudges for tools that may otherwise never surface with
+            # MCP Tool Search. Gated on having a dashboard tab open, because
+            # both tools need a card surface to render into — which a
+            # channel-born session has whenever its tab is open.
             # ask_question is a MID-turn blocking decision; [OPTIONS:] remains
             # the cheaper END-turn choice mechanism on every interactive surface.
-            if session_key and (
-                session_key.startswith("dashboard:") or session_key.startswith("dashboard_")
-            ):
+            if has_dashboard_surface(session_key or ""):
                 parts.append(
                     "\n\n(If you need the user's answer to a blocking question BEFORE "
                     "you can continue the current turn, use the ask_question tool — it "

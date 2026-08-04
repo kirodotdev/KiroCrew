@@ -574,9 +574,57 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
     return removed
 
 
+def transcript_sort_key(ts: str) -> tuple[int, float]:
+    """Sort key for a transcript timestamp: ``(bucket, epoch_seconds)``.
+
+    Shared by every path that has to put two independently written streams of
+    transcript lines into one chronological order.
+
+    Timestamps in one transcript are not written in one format. The dashboard
+    path stores offset-aware values; the channel path stores
+    ``datetime.now().isoformat()``, which is local and naive. Comparing those as
+    STRINGS orders them by their text, so on any host that is not UTC a naive
+    ``10:00:00`` sorts before an aware ``09:30:00+00:00`` that actually happened
+    later — and this merge deletes the source file afterwards, so the wrong order
+    is what survives.
+
+    Naive values are interpreted as local time, matching the writer that
+    produced them. ``bucket`` keeps unparseable values (bucket 1) after every
+    real instant instead of letting a fallback epoch interleave them into the
+    middle of the conversation.
+    """
+    try:
+        parsed = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return (1, 0.0)
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return (0, parsed.timestamp())
+
+
 def _safe_key(key: str) -> str:
     """Convert a session key (e.g. Slack thread_ts) to a safe filename."""
     return re.sub(r"[^\w\-.]", "_", key)
+
+
+def _redact_at_write_boundary(role: str, content: str) -> str:
+    """Redact model-authored *content* on its way into a transcript.
+
+    One transcript, one redaction rule. A conversation's dashboard tab and its
+    channel thread persist to the same file through different code paths, so the
+    rule has to live where the bytes are written rather than in either caller.
+
+    The gate is ``role != "user"``, matching the dashboard's own write-back
+    boundary: text the user typed is stored verbatim, and everything the model or
+    the system produced is scrubbed of credentials and exfiltration URLs.
+    Idempotent, so a caller that already redacted loses nothing by passing
+    through here.
+    """
+    if role == "user":
+        return content
+    content, _ = redact_exfiltration_urls(content)
+    content, _ = redact_credentials(content)
+    return content
 
 
 #: Default upper bound on the number of distinct session keys held in the
@@ -1087,7 +1135,7 @@ class ConversationLog:
 
             msg: dict = {
                 "role": role,
-                "content": content,
+                "content": _redact_at_write_boundary(role, content),
                 "ts": datetime.now().isoformat(),
             }
             if tools:
@@ -1144,8 +1192,13 @@ class ConversationLog:
         """
         with self._locked(key):
             if self._path(key).exists():
+                # Compare against the form ``append`` actually stores: the
+                # write boundary redacts non-user content, so matching on the
+                # raw text would never recognise an already-persisted message
+                # that contained a credential and would append it twice.
+                persisted = _redact_at_write_boundary(role, content)
                 for m in self._read_messages(key):
-                    if m.get("role") == role and m.get("content") == content:
+                    if m.get("role") == role and m.get("content") == persisted:
                         return False
             # Reentrant: ``append`` re-enters ``_locked`` for the same key on
             # this thread (RLock + refcounted flock), so the write stays inside

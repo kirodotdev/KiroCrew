@@ -17,6 +17,7 @@ import json
 import re
 from typing import Any, Callable, Optional
 
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -95,16 +96,16 @@ def _summarize(snapshot: dict) -> str:
 def _slot_key_from_session(session_key: str) -> str:
     """Map an originating session_key to the dashboard slot key it came from.
 
-    Chat-launched runs carry session_key ``dashboard:<slotKey>`` (the slot's
-    history key — see ``_history_key_for``). The live slot is stored under the bare
-    ``<slotKey>``, so strip the ``dashboard:``/``dashboard_`` prefix to find it.
+    A chat-launched run carries the session key of the chat that launched it,
+    which for a channel-born tab is the channel's own key — so the slot name
+    comes from the live tab rather than from stripping a ``dashboard:`` prefix
+    such a key never had.
+
+    A key that names no tab (a cron/legacy session, an already-bare slot key) is
+    returned as-is: the caller looks it up and routes to the ``workflow-<id>``
+    fallback slot on a miss.
     """
-    sk = session_key
-    if sk.startswith("dashboard:"):
-        sk = sk[len("dashboard:"):]
-    while sk.startswith("dashboard_"):
-        sk = sk[len("dashboard_"):]
-    return sk
+    return dashboard_slot_key(session_key) or session_key
 
 
 def inject_workflow_result(

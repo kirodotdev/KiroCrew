@@ -8,33 +8,25 @@ in the sidebar's collapsed **History** pane, where the user had to search for
 one and resume it by hand.
 
 This module reconciles recent channel sessions INTO slots so they show up in
-the active chat list, seeded with the conversation so far and ready to continue.
+the active chat list, ready to continue.
 
 Design notes:
 
-* **One history key, no split.** The slot is an ordinary dashboard slot whose
-  key is derived from the channel session key
-  (``slack:1785370133.085469`` -> ``slack_1785370133.085469``), so everything
-  about it — turn persistence, replay, the ``closed`` flag, and both restore
-  paths — uses the single ``dashboard:<slot.key>`` history key.
+* **One session, one transcript, two surfaces.** The slot's key is derived from
+  the channel session key (``slack:1785370133.085469`` ->
+  ``slack_1785370133.085469``) so the sidebar reads provenance straight off it,
+  but the slot is BOUND to the channel session via ``linked_session_key``. That
+  binding is what makes the tab the conversation rather than a picture of it:
+  turns run on the channel's own session (one ``kiro-cli`` process, one
+  ``Semaphore``), and because ``history._safe_key`` folds ``slack:<ts>`` and the
+  ``slack_<ts>`` filename stem onto the same file, the slot's transcript IS the
+  channel transcript. A reply typed in the tab reaches the thread; a message
+  sent in the thread appears in the tab.
 
-  It deliberately does NOT set ``linked_session_key`` to the channel key.
-  ``_save_slot_to_history`` is hard-wired to ``_history_key_for(slot.key)``,
-  so binding the RUN path to the channel key while the SAVE path kept writing
-  ``dashboard:<slot.key>`` would split one conversation across two transcripts:
-  a dashboard reply would be invisible to the slot's own replay, and a tab the
-  user closed would have its ``closed`` flag written to a key the reconciler
-  never reads — so it would reopen on the next pass. Continuity with the live
-  channel session is not worth that; picking the conversation up with its full
-  history (which this does) is the point.
-* **Mirror until forked.** A surfaced slot the user has NOT written to from the
-  dashboard is a pure mirror of the channel transcript, and the no-split
-  rationale above does not yet apply — so the reconciler keeps appending new
-  channel turns into it, keeping the tab current instead of freezing it at
-  surface time. The first dashboard-authored turn forks the conversation and
-  disarms the mirror permanently; from then on the two transcripts diverge
-  exactly as the previous note describes. Fork detection is fail-safe: ANY
-  window change the mirror did not make itself disarms it.
+  The binding is persisted to the transcript's metadata line, because nothing
+  else recreates it: a cron slot is re-bound by its next injection, but a
+  channel slot has no such trigger, so without persistence a gateway restart
+  would silently downgrade the tab to a disconnected copy.
 * **Recency-bounded.** Only sessions modified within the dashboard's configured
   ``restore_window_minutes`` become slots, so a long DM history does not turn
   into hundreds of tabs. Pinned and foldered sessions are exempt from the
@@ -44,11 +36,14 @@ Design notes:
   pass — otherwise closing the tab would be undone 30 seconds later. But a
   close is a statement about the conversation *as it stood*: channel-side
   activity strictly newer than the close (the person kept talking on Discord
-  after the tab was dismissed) re-surfaces it, and the stale ``closed`` flags
-  are cleared so every restore path agrees the tab is open again. When the
-  close instant is unknown (legacy flag with no ``closed_at`` stamp and no
-  readable file mtime), the close stands — fail toward the user's explicit
-  dismissal.
+  after the tab was dismissed) re-surfaces it, and the stale ``closed`` flag is
+  cleared so every restore path agrees the tab is open again. When the close
+  instant is unknown (legacy flag with no ``closed_at`` stamp and no readable
+  file mtime), the close stands — fail toward the user's explicit dismissal.
+
+  Closing a tab drops the surface, not the conversation: the channel session
+  keeps running and the next message from either side resumes it with full
+  history.
 * **Ephemeral stays ephemeral.** ``incognito``/``temporary`` channel threads are
   skipped: the user asked for a conversation that leaves no trace, and a
   durable sidebar tab contradicts that.
@@ -62,10 +57,8 @@ import asyncio
 import logging
 import time
 import weakref
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.dashboard.state import _normalize_slot_key
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -97,30 +90,18 @@ _CHANNEL_LABELS: dict[str, str] = {
     "unified": "Direct message",
 }
 
-#: Messages hydrated into a newly surfaced slot. Matches the cron inject path.
-_HYDRATE_LIMIT = 50
-
-
-class _Transcript(NamedTuple):
-    """A pending slot's seed transcript plus its on-disk line accounting.
-
-    ``disk_older`` + ``disk_window`` always sum to the length of the slot's own
-    history file; the merged ``messages`` may be longer because it also carries
-    channel-side turns that file never held.
-    """
-
-    messages: list[dict[str, Any]]
-    disk_older: int
-    disk_window: int
-    #: True when the slot's own on-disk lines are all copies of channel turns —
-    #: the precondition for arming the mirror (see :func:`is_pure_mirror`).
-    pure_mirror: bool = True
+#: In-memory window for a newly surfaced slot. Deliberately the same bound the
+#: dashboard's own ``restore_recent_sessions`` uses, so a channel tab and a
+#: dashboard tab of equal length hold equal amounts of history — the tab is the
+#: conversation, so it must not be shorter than one restored from the sidebar.
+#: Older lines stay on disk as the frozen prefix and are reachable through the
+#: slot-detail endpoint's pagination.
+_RESTORE_WINDOW = 500
 
 
 def channel_label(session_key: str) -> str:
-    """Return the display label for *session_key*'s channel (``"Slack"``, …)."""
-    ns = channel_namespace_of(session_key)
-    return _CHANNEL_LABELS.get(ns, ns.capitalize() if ns else "Channel")
+    """Human-facing label for the channel *session_key* came from."""
+    return _CHANNEL_LABELS.get(channel_namespace_of(session_key), "Channel")
 
 
 def channel_slot_name(session_key: str) -> str:
@@ -129,94 +110,25 @@ def channel_slot_name(session_key: str) -> str:
     Deterministic and idempotent — the same channel session always maps to the
     same slot, which is what makes repeat reconcile passes no-ops and lets the
     key itself carry the conversation's provenance.
+
+    This is a slot NAME, not a session key: it is the channel key folded to the
+    filename charset, and the fold is not reversible. Never turn it back into a
+    session key by guessing where the colons were — read the binding off the
+    slot (``linked_session_key``) or ask
+    :meth:`~kiro_crew.session.SessionManager.channel_key_for_stem`.
     """
     return _normalize_slot_key(session_key)
 
 
-def slot_history_key(session_key: str) -> str:
-    """Return the history key the surfaced slot persists under.
+def _redact_assistant(content: str) -> str:
+    """Apply the transcript read boundary's redaction to assistant content.
 
-    This is the ONLY key the slot reads or writes: turn persistence, replay, the
-    ``closed`` flag, and both restore paths all agree on it.
+    Same rule and same order as the dashboard's own restore path — one
+    transcript cannot have two redaction policies.
     """
-    return _history_key_for(channel_slot_name(session_key))
-
-
-def _redact(text: str) -> str:
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
-    return text
-
-
-def _mirror_identity(msg: dict[str, Any]) -> tuple[str, str, str]:
-    """Cross-file match identity for one transcript message.
-
-    Slot copies of channel turns are stored REDACTED (``surface_channel_session``
-    redacts on seed), while the channel file holds the raw text — comparing raw
-    identities would mis-classify every redacted turn as dashboard-authored.
-    Redacting both sides makes the comparison stable regardless of which side a
-    message is read from (the redactors are idempotent on their own output, and
-    redacting an already-redacted slot line is a no-op either way).
-    """
-    return (
-        str(msg.get("role", "")),
-        _redact(str(msg.get("content", ""))),
-        str(msg.get("ts", "")),
-    )
-
-
-def is_pure_mirror(
-    slot_messages: list[dict[str, Any]],
-    channel_messages: list[dict[str, Any]],
-) -> bool:
-    """True when *slot_messages* holds nothing the channel transcript lacks.
-
-    A pure-mirror slot is one the user has never written to from the dashboard:
-    every turn it carries is a copy of a channel turn. Only such a slot may be
-    kept in sync by :func:`mirror_new_messages` — the moment the slot holds a
-    dashboard-authored turn the conversation has forked, and appending further
-    channel turns would interleave two diverged transcripts.
-
-    Pure and side-effect free so the fork rule is directly testable.
-    """
-    channel = {_mirror_identity(m) for m in channel_messages}
-    return all(_mirror_identity(m) in channel for m in slot_messages)
-
-
-def mirror_new_messages(
-    slot_messages: list[dict[str, Any]],
-    channel_messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Channel turns a pure-mirror slot is missing, in append order.
-
-    Only turns at or after the slot's newest ordered timestamp are candidates:
-    the seed window is a capped TAIL of the transcript (:func:`hydrate_window`),
-    so turns older than the window were deliberately not seeded and must not be
-    appended after newer ones — that would scramble the visible order. Turns
-    whose timestamp cannot be parsed to an instant are skipped for the same
-    reason: they cannot be placed. Empty-content lines are dropped to match the
-    seed, and duplicates are dropped on the redaction-stable identity.
-
-    Pure and side-effect free so the ordering rules are directly testable.
-    """
-    have = {_mirror_identity(m) for m in slot_messages}
-    threshold = max(
-        (k for m in slot_messages if (k := _ts_sort_key(m))[0] == 0),
-        default=None,
-    )
-    out: list[dict[str, Any]] = []
-    for m in channel_messages:
-        if not m.get("content"):
-            continue
-        key = _ts_sort_key(m)
-        if key[0] != 0:
-            continue
-        if threshold is not None and key < threshold:
-            continue
-        if _mirror_identity(m) in have:
-            continue
-        out.append(m)
-    return sorted(out, key=_ts_sort_key)
+    content, _ = redact_exfiltration_urls(content)
+    content, _ = redact_credentials(content)
+    return content
 
 
 def _close_time(meta: dict[str, Any], file_mtime: float | None) -> float | None:
@@ -239,7 +151,6 @@ def _close_time(meta: dict[str, Any], file_mtime: float | None) -> float | None:
 def _close_stands(
     session: dict[str, Any],
     meta: dict[str, Any],
-    slot_meta: dict[str, Any],
     mtimes: dict[str, float],
 ) -> bool:
     """True when the user's dismissal of this conversation is still in force.
@@ -247,22 +158,19 @@ def _close_stands(
     A close is not permanent: channel-side activity strictly newer than the
     close means the conversation came back to life after the user dismissed
     it, so it re-qualifies for surfacing. The comparison is against the
-    session listing's ``modified`` (the channel file's last write). Every
-    closed side must be outdated by that activity — an unknown close instant
-    on either side keeps the close standing, failing toward the user's
-    explicit action.
+    session listing's ``modified`` (the channel file's last write). An unknown
+    close instant keeps the close standing, failing toward the user's explicit
+    action.
+
+    Only one flag to weigh: the tab and the channel share one transcript, so a
+    close is recorded once.
     """
-    key = session.get("key", "")
-    closes: list[float | None] = []
-    if meta.get("closed"):
-        closes.append(_close_time(meta, mtimes.get(key)))
-    if slot_meta.get("closed"):
-        slot_key = slot_history_key(key)
-        closes.append(_close_time(slot_meta, mtimes.get(slot_key)))
-    if not closes:
+    if not meta.get("closed"):
         return False
-    modified = float(session.get("modified", 0) or 0)
-    return any(ct is None or modified <= ct for ct in closes)
+    closed_at = _close_time(meta, mtimes.get(session.get("key", "")))
+    if closed_at is None:
+        return True
+    return float(session.get("modified", 0) or 0) <= closed_at
 
 
 def eligible_channel_sessions(
@@ -274,16 +182,12 @@ def eligible_channel_sessions(
 ) -> list[dict[str, Any]]:
     """Filter a ``list_sessions()`` result down to channel sessions to surface.
 
-    *metadata* maps session key -> ``get_metadata()`` result, and must contain an
-    entry for BOTH the channel key and its ``dashboard:``-prefixed slot key (see
-    :func:`slot_history_key`) — closing a tab writes ``closed`` to the slot key,
-    so reading only the channel key would let a closed tab reopen on the next
-    pass. *mtimes* maps the same keys to their session-file mtimes, the fallback
-    close instant for a ``closed`` flag with no ``closed_at`` stamp (see
-    :func:`_close_stands`); with it absent, every close stands. *cutoff* is a
-    unix timestamp; sessions older than it are dropped unless pinned or
-    foldered. ``None`` disables the recency filter (mirrors
-    ``restore_window_minutes=0``).
+    *metadata* maps session key -> ``get_metadata()`` result. *mtimes* maps the
+    same keys to their session-file mtimes, the fallback close instant for a
+    ``closed`` flag with no ``closed_at`` stamp (see :func:`_close_stands`);
+    with it absent, every close stands. *cutoff* is a unix timestamp; sessions
+    older than it are dropped unless pinned or foldered. ``None`` disables the
+    recency filter (mirrors ``restore_window_minutes=0``).
 
     Pure and side-effect free so the eligibility rules are directly testable.
     """
@@ -293,133 +197,22 @@ def eligible_channel_sessions(
         if not key or not is_channel_session_key(key):
             continue
         meta = metadata.get(key) or {}
-        slot_meta = metadata.get(slot_history_key(key)) or {}
         # A close only stands until the channel outruns it: activity newer
         # than the close re-qualifies the session (and the reconciler then
-        # clears the stale flags — see reconcile_channel_slots).
-        if _close_stands(s, meta, slot_meta, mtimes or {}):
+        # clears the stale flag — see reconcile_channel_slots).
+        if _close_stands(s, meta, mtimes or {}):
             continue
         modes = (
             str(meta.get("memory_mode", "")).lower(),
-            str(slot_meta.get("memory_mode", "")).lower(),
             str(s.get("memory_mode", "")).lower(),
         )
         if any(m in _EPHEMERAL_MEMORY_MODES for m in modes):
             continue
-        exempt = (
-            bool(meta.get("pinned"))
-            or bool(meta.get("folder_id"))
-            or bool(slot_meta.get("pinned"))
-            or bool(slot_meta.get("folder_id"))
-        )
+        exempt = bool(meta.get("pinned")) or bool(meta.get("folder_id"))
         if not exempt and cutoff is not None and float(s.get("modified", 0) or 0) < cutoff:
             continue
         out.append(s)
     return out
-
-
-def _identity(msg: dict[str, Any]) -> tuple[str, str, str]:
-    """Match/dedupe identity for one transcript message.
-
-    Used both to drop the channel turns already copied into the slot and to
-    locate a slot's on-disk lines inside the hydrate window.
-    """
-    return (
-        str(msg.get("role", "")),
-        str(msg.get("content", "")),
-        str(msg.get("ts", "")),
-    )
-
-
-def _ts_sort_key(msg: dict[str, Any]) -> tuple[int, float, str]:
-    """Chronological sort key for one transcript message.
-
-    The two sides of a merge are written by different code paths and nothing
-    makes them agree on timezone: the dashboard writes an ISO-8601 UTC string,
-    while a channel turn can land as a naive local-time one. Comparing those
-    lexicographically interleaves them wrongly by the host's UTC offset on any
-    machine that is not on UTC, so parse to an absolute instant first.
-
-    Buckets keep the fallbacks out of the ordered region: ``0`` parseable
-    (ordered by epoch seconds), ``1`` present but unparseable (lexicographic),
-    ``2`` absent (stable-sorted last, preserving relative order).
-    """
-    raw = str(msg.get("ts", "") or "")
-    if not raw:
-        return (2, 0.0, "")
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return (1, 0.0, raw)
-    if parsed.tzinfo is None:
-        # Naive means host-local — that is what a writer using datetime.now()
-        # emits. Reading it as UTC would shift the turn by the host's offset.
-        parsed = parsed.astimezone()
-    return (0, parsed.timestamp(), "")
-
-
-def merge_transcripts(
-    slot_messages: list[dict[str, Any]],
-    channel_messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Merge a slot's own transcript with its channel transcript, by timestamp.
-
-    Neither side is a superset of the other. The slot transcript holds any
-    dashboard replies; the channel transcript holds anything the user said on
-    the channel AFTER the conversation was first surfaced. Re-surfacing (e.g.
-    after a restart with ``restore_sessions`` off) must seed the tab with both.
-
-    Ordering is by the ``ts`` field, normalized to an absolute instant by
-    :func:`_ts_sort_key` so a naive local-time channel turn cannot interleave
-    wrongly with a UTC dashboard turn. Duplicates — the channel turns already
-    copied into the slot — are dropped on :func:`_identity`.
-    """
-    seen: set[tuple[str, str, str]] = set()
-    merged: list[dict[str, Any]] = []
-    for m in list(slot_messages) + list(channel_messages):
-        ident = _identity(m)
-        if ident in seen:
-            continue
-        seen.add(ident)
-        merged.append(m)
-    return sorted(merged, key=_ts_sort_key)
-
-
-def hydrate_window(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The tail of *messages* a newly surfaced slot is actually seeded with.
-
-    One function so the seeding loop and the frozen-prefix arithmetic that has
-    to agree with it cannot drift: empty-content lines are dropped first (they
-    are never appended), then the tail is capped at :data:`_HYDRATE_LIMIT`.
-    """
-    return [m for m in messages if m.get("content")][-_HYDRATE_LIMIT:]
-
-
-def frozen_prefix_len(
-    slot_messages: list[dict[str, Any]],
-    window: list[dict[str, Any]],
-) -> int:
-    """Count the slot's on-disk lines that *window* does not re-serialize.
-
-    ``_save_slot_to_history`` models a session file as **frozen prefix + live
-    window**: it copies the first ``slot._disk_older_count`` on-disk lines
-    verbatim, then writes ``serialize(window)`` after them. Seeding a slot with
-    only the tail of a long transcript while leaving that count at ``0`` tells
-    the next save the file has no prefix, so the older lines are re-emitted
-    after newer ones — the transcript loses chronological order.
-
-    The boundary is positional: every slot line before the first one the window
-    carries. Because the window is the chronological tail of the merge, every
-    later slot line is in it too, so nothing between the boundary and the end
-    of the file is stranded.
-    """
-    if not slot_messages:
-        return 0
-    carried = {_identity(m) for m in window}
-    for i, msg in enumerate(slot_messages):
-        if _identity(msg) in carried:
-            return i
-    return len(slot_messages)
 
 
 def surface_channel_session(
@@ -428,40 +221,50 @@ def surface_channel_session(
     meta: dict[str, Any],
     messages: list[dict[str, Any]],
     *,
-    disk_older: int = 0,
-    disk_window: int = 0,
-    mirror: bool = False,
+    session_key: str = "",
 ) -> "_ChatSlot | None":
     """Create the dashboard slot for one channel session.
 
     Returns the slot when this call newly surfaced it, else ``None`` (already
     present — the common steady-state case).
 
-    *messages* is the merged transcript to seed the slot with, read by the caller
-    so the disk IO stays off the event loop. *disk_older* and *disk_window* are
-    that caller's split of the slot's OWN on-disk lines into the frozen prefix
-    the window does not carry and the region it re-serializes — see
-    :func:`frozen_prefix_len` for why a save needs both.
+    *messages* is the channel transcript to seed the slot's window with, read by
+    the caller so the disk IO stays off the event loop.
 
-    *mirror* arms mirror-until-forked on the new slot: the reconciler keeps
-    appending new channel turns into it until the first dashboard-authored turn
-    forks the conversation. Pass it only when the slot's own on-disk transcript
-    is a pure mirror (:func:`is_pure_mirror`) — arming it on a forked slot would
-    interleave two diverged transcripts.
+    *session_key* is the conversation's REAL session key (``slack:<ts>``), which
+    the slot is bound to. ``session_info["key"]`` cannot supply it:
+    ``list_sessions()`` reports filename stems, where every ``:`` has been
+    folded to ``_``. When the caller could not resolve it the slot is still
+    surfaced but left unbound, so it shows the history without claiming to be
+    two-way — a wrong key would route the user's replies to a session the
+    channel never reads.
     """
-    session_key = session_info.get("key", "")
-    if not session_key or not is_channel_session_key(session_key):
+    stem = session_info.get("key", "")
+    if not stem or not is_channel_session_key(stem):
         return None
 
     # The slot key is derived from the channel session key, deterministically and
     # idempotently, so it IS the record of where the conversation started — the
     # sidebar reads provenance straight off it, and every restore path preserves
     # it for free because the key is the slot's identity.
-    slot_name = channel_slot_name(session_key)
+    slot_name = channel_slot_name(stem)
     if slot_name in state._slots:
         return None
+    if session_key and not is_channel_session_key(session_key):
+        logger.warning(
+            "channel surface: refusing to bind %s to non-channel key %r", stem, session_key
+        )
+        session_key = ""
+    if not session_key:
+        logger.info(
+            "channel surface: %s has no mapped session key; surfacing unbound", stem
+        )
     try:
-        slot = state.get_or_create_slot(name=slot_name, agent=meta.get("agent", "") or "")
+        slot = state.get_or_create_slot(
+            name=slot_name,
+            agent=meta.get("agent", "") or "",
+            linked_session_key=session_key,
+        )
     except ValueError:
         # A slot with this name exists under a conflicting memory_mode. Leave it
         # alone rather than fighting over the key.
@@ -469,7 +272,7 @@ def surface_channel_session(
         return None
 
     raw_title = session_info.get("title") or meta.get("title") or ""
-    slot.title = _redact(raw_title) if raw_title else channel_label(session_key)
+    slot.title = _redact_assistant(raw_title) if raw_title else channel_label(stem)
     slot._titled = bool(raw_title)
     if meta.get("created_at"):
         slot.created_at = meta["created_at"]
@@ -484,112 +287,168 @@ def surface_channel_session(
     if meta.get("pinned"):
         slot.pinned = True
 
-    for msg in hydrate_window(messages):
-        role = msg.get("role", "assistant")
-        content = _redact(msg.get("content", ""))
-        slot.append(
-            role,
-            content,
-            f"msg msg-{'a' if role != 'user' else 'u'}",
-            ts=msg.get("ts", ""),
-            broadcast=False,
-        )
-    slot.drain()
-    slot._resumed_count = len(slot.messages)
-    # The session file is frozen prefix + live window. Only the slot's OWN
-    # on-disk lines count toward either: the merged window also carries
-    # channel-side turns that were never in this file, and crediting those as
-    # persisted would let a trim fold unwritten turns into the frozen prefix.
-    slot._disk_older_count = disk_older
-    slot._disk_window_len = disk_window
-    # Not dirty: a surfaced conversation the user never touches costs no write.
-    # The first real dashboard turn is what persists it under the slot key.
-    slot._dirty = False
-    if mirror:
-        # Arm mirror-until-forked. The rebind question is settled by
-        # construction (this call just seeded the slot from the transcripts),
-        # so mark the check done too.
-        slot._channel_mirror_key = session_key
-        slot._channel_mirror_len = len(slot.messages)
-        slot._channel_mirror_mtime = float(session_info.get("modified", 0) or 0)
-        slot._channel_mirror_checked = True
+    # Same shape as restore_recent_sessions: window the tail, count the rest as
+    # the frozen prefix a save never rewrites, and redact assistant content at
+    # the read boundary.
+    _rebuild_window(slot, messages)
+    # The window corresponds to the file as of this listing, so the refresh pass
+    # has nothing to do until the channel writes again.
+    slot._channel_window_mtime = float(session_info.get("modified", 0) or 0)
     logger.info(
-        "Surfaced %s session %s as slot %s", channel_label(session_key), session_key, slot_name
+        "Surfaced %s session %s as slot %s", channel_label(stem), session_key or stem, slot_name
     )
     return slot
 
 
-def _apply_mirror(
-    slot: "_ChatSlot",
-    session_info: dict[str, Any],
-    channel_messages: list[dict[str, Any]],
-) -> int:
-    """Append the channel turns a pure-mirror *slot* is missing. Returns count.
+def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
+    """Replace *slot*'s in-memory window with the tail of *messages*.
 
-    Runs on the event loop (slot mutation). The appended turns are treated
-    exactly like seeded ones: content is redacted, ``_resumed_count`` counts
-    them as history rather than novel dashboard turns, and the dirty flag is
-    preserved — mirroring alone never persists the slot, matching the seed's
-    "a conversation the user never touches costs no write" rule. When the
-    conversation does get picked up on the dashboard, the ordinary save
-    re-serializes the whole window and the mirrored turns persist with it.
+    The one place that decides what a bound slot's window IS: the last
+    :data:`_RESTORE_WINDOW` lines of its transcript, with everything older
+    counted as the frozen prefix a save never rewrites. Shared by the initial
+    surface and by rotation recovery so the two can never disagree about the
+    accounting.
+
+    Callers must hold an idle, non-dirty slot — the window is discarded, so
+    anything in it that is not yet on disk would be lost.
     """
-    new = mirror_new_messages(slot.messages, channel_messages)
-    dirty_was = slot._dirty
-    had_reader = slot._has_reader
-    for m in new:
-        role = m.get("role", "assistant")
+    slot.messages.clear()
+    slot._pending.clear()
+    slot._disk_older_count = max(0, len(messages) - _RESTORE_WINDOW)
+    for msg in messages[-_RESTORE_WINDOW:]:
+        role = msg.get("role", "assistant")
+        cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        content = msg.get("content", "")
+        if role != "user":
+            content = _redact_assistant(content)
         slot.append(
             role,
-            _redact(m.get("content", "")),
-            f"msg msg-{'a' if role != 'user' else 'u'}",
-            ts=m.get("ts", ""),
-            # broadcast=False for the same reason as the seed: these are
-            # copies of channel history, not dashboard-originated turns. An
-            # attached stream reader still receives them via the pending
-            # queue; everyone else gets the sidebar refresh from
-            # push_slots_update.
+            content,
+            cls,
+            ts=msg.get("ts", ""),
             broadcast=False,
+            meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
         )
-    if new and not had_reader:
-        # No live stream is consuming the pending queue — drop the copies so
-        # they cannot pile up across passes (the seed drains for the same
-        # reason). With a reader attached the queue is being consumed; leave
-        # it so the open tab shows the new turns live.
-        slot.drain()
-    slot._dirty = dirty_was
-    slot._resumed_count += len(new)
-    slot._channel_mirror_len = len(slot.messages)
-    slot._channel_mirror_mtime = float(session_info.get("modified", 0) or 0)
-    return len(new)
+    slot.drain()
+    slot._resumed_count = len(slot.messages)
+    slot._disk_window_len = len(slot.messages)
+    # Every line came from the file a save would write back.
+    slot._dirty = False
 
 
-def _mirror_intact(slot: "_ChatSlot") -> bool:
-    """True while *slot*'s window shows no sign of a non-mirror mutation.
+def _window_matches_disk(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> bool:
+    """True when *slot*'s window is still the transcript slice it claims to be.
 
-    Two invariants hold on a slot only the mirror has touched:
+    The counters say the window is ``messages[_disk_older_count:][:len(window)]``.
+    Rotation breaks that without necessarily changing the file's LENGTH — it
+    archives the head, and new turns can bring the count back to where it was —
+    so the offsets shift while the arithmetic still adds up. Comparing content is
+    what actually detects it.
 
-    - ``len(messages) == _channel_mirror_len`` — the mirror recorded the length
-      after its last action, so any append since then is someone else's.
-    - ``_resumed_count == len(messages)`` — seed and mirror both count their
-      turns as resumed history. A plain append leaves ``_resumed_count`` behind,
-      and regenerate/rewind reset it to 0 — so a NET-ZERO edit (regenerate
-      replaces a message without changing the count) still breaks this
-      invariant even though the length check alone would miss it.
-
-    Either signal disarms; degrading to the frozen-copy behaviour is always
-    safe, mirroring into a diverged transcript never is.
+    Matched on ``(role, ts, content)``: the window's ``cls`` and ``meta`` are
+    presentation state that a persisted line need not carry, and content is
+    comparable because the write boundary already redacted non-user text before
+    it reached disk.
     """
-    return (
-        len(slot.messages) == slot._channel_mirror_len
-        and slot._resumed_count == len(slot.messages)
-    )
+    older = slot._disk_older_count
+    window = slot.messages
+    if older + len(window) > len(messages):
+        return False
+    expected = messages[older:older + len(window)]
+    for mem, disk in zip(window, expected):
+        if (
+            mem.get("role") != disk.get("role")
+            or mem.get("ts", "") != disk.get("ts", "")
+            or mem.get("content", "") != disk.get("content", "")
+        ):
+            return False
+    return True
 
 
-#: Per-state serialization of reconcile passes. The periodic loop and the
-#: dispatcher's immediate `surface_dispatcher_session` can otherwise overlap,
-#: and a pass acting on a pre-overlap metadata snapshot could clear a `closed`
-#: flag the user wrote mid-race. Weak keys so a replaced DashboardState does
+def refresh_channel_window(
+    slot: "_ChatSlot", messages: list[dict[str, Any]], mtime: float
+) -> int:
+    """Bring a bound slot's in-memory window up to date with its transcript.
+
+    The tab and the channel write one file, but the tab's window is a snapshot
+    of its tail. A turn the CHANNEL writes after the tab opened lands on disk
+    with nothing to put it in the window, so the tab would show a conversation
+    that has moved on without it.
+
+    Returns the number of messages appended. The slot represents exactly
+    ``_disk_older_count + len(slot.messages)`` lines of the file, so anything
+    beyond that is new; the messages come from the very file a save would write
+    back, which is why the window counters advance rather than the slot being
+    marked dirty.
+
+    Callers MUST NOT call this for a slot with a turn in flight or unflushed
+    edits — see :func:`_window_refresh_is_safe`.
+    """
+    represented = slot._disk_older_count + len(slot.messages)
+    if not _window_matches_disk(slot, messages):
+        # The transcript rotated: ``ConversationLog`` caps file size and archives
+        # the head, so the lines the slot's counters point at are no longer the
+        # lines at those offsets. A length test alone would miss the case where
+        # rotation archived the head and new turns brought the file back to the
+        # same length — the counters still add up while every offset has shifted.
+        # Left alone the window holds pre-rotation content, and a save writes the
+        # window back, so turns rotation just archived reappear in the active
+        # transcript. Rebuild from the file as it stands.
+        #
+        # Safe because a refresh only runs on an idle, non-dirty slot: the window
+        # is a copy of the file's tail and holds nothing the file does not, so
+        # replacing it cannot lose a message. Lines rotation moved to the archive
+        # stay reachable through ``read_messages_chained``'s ``tab_id`` walk.
+        logger.info(
+            "channel window: transcript for %s no longer aligns (%d lines on disk, "
+            "%d accounted); rebuilding window",
+            slot.key,
+            len(messages),
+            represented,
+        )
+        _rebuild_window(slot, messages)
+        slot._channel_window_mtime = mtime
+        return 0
+    fresh = messages[represented:]
+    if not fresh:
+        slot._channel_window_mtime = mtime
+        return 0
+    for msg in fresh:
+        role = msg.get("role", "assistant")
+        cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        content = msg.get("content", "")
+        if role != "user":
+            content = _redact_assistant(content)
+        slot.append(
+            role,
+            content,
+            cls,
+            ts=msg.get("ts", ""),
+            meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
+        )
+    slot.drain()
+    slot._resumed_count = len(slot.messages)
+    slot._disk_window_len = len(slot.messages)
+    # Everything appended came from the file itself, so there is nothing to
+    # write back.
+    slot._dirty = False
+    slot._channel_window_mtime = mtime
+    return len(fresh)
+
+
+def _window_refresh_is_safe(slot: "_ChatSlot") -> bool:
+    """True when *slot*'s window can be reconciled against disk right now.
+
+    A turn in flight, or an unflushed edit, means the window holds messages the
+    file does not yet have. The line accounting a refresh relies on would then
+    mistake those for missing history and duplicate them, so defer instead —
+    the next pass retries once the turn has landed.
+    """
+    return bool(slot.linked_session_key) and not slot.running and not slot._dirty
+
+
+#: Per-state reconcile lock. Keyed weakly so a discarded state is collectable —
+#: a WeakKeyDictionary lets the lock die with the state it guards rather than
 #: not pin its lock.
 _RECONCILE_LOCKS: "weakref.WeakKeyDictionary[Any, asyncio.Lock]" = weakref.WeakKeyDictionary()
 
@@ -628,6 +487,10 @@ def note_slot_closed(state: "DashboardState", slot_name: str) -> float:
     re-stamping at save time: the close save runs only after the handler's
     awaits (task cancellation, file lock), and channel activity landing in that
     window would otherwise compare as OLDER than the close and stay hidden.
+
+    Keyed by the slot name exactly as it sits in ``state._slots``, which is what
+    :func:`_tombstone_blocks` reconstructs with :func:`channel_slot_name`. The
+    two derivations must stay identical or the guard silently stops matching.
     """
     closes = _RECENT_CLOSES.get(state)
     if closes is None:
@@ -689,7 +552,7 @@ def _reconcile_lock(state: "DashboardState") -> asyncio.Lock:
 
 
 async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) -> int:
-    """One reconcile pass. Returns the number of slots surfaced or re-bound.
+    """One reconcile pass. Returns the number of slots surfaced.
 
     Safe to call on the event loop: every filesystem read is offloaded, and only
     the in-memory slot mutations run on the loop (so ``state._slots`` is never
@@ -721,26 +584,26 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
     def _load_meta() -> tuple[dict[str, dict[str, Any]], dict[str, float]]:
         out: dict[str, dict[str, Any]] = {}
         mt: dict[str, float] = {}
-        # Both the channel key and the slot key: the slot key is where a closed
-        # tab records `closed`, and skipping it would resurface it every pass.
-        # File mtimes ride along as the fallback close instant for legacy
-        # `closed` flags that predate the `closed_at` stamp.
+        # One key per session: the tab and the channel share one transcript, so
+        # `closed` is written once and read once. File mtimes ride along as the
+        # fallback close instant for legacy `closed` flags that predate the
+        # `closed_at` stamp.
         mtime_of = getattr(log, "mtime_of", None)
         for s in candidates:
-            for key in (s.get("key", ""), slot_history_key(s.get("key", ""))):
-                if not key or key in out:
-                    continue
+            key = s.get("key", "")
+            if not key or key in out:
+                continue
+            try:
+                out[key] = log.get_metadata(key)
+            except Exception:
+                out[key] = {}
+            if mtime_of is not None:
                 try:
-                    out[key] = log.get_metadata(key)
+                    stamp = mtime_of(key)
                 except Exception:
-                    out[key] = {}
-                if mtime_of is not None:
-                    try:
-                        stamp = mtime_of(key)
-                    except Exception:
-                        stamp = None
-                    if stamp is not None:
-                        mt[key] = stamp
+                    stamp = None
+                if stamp is not None:
+                    mt[key] = stamp
         return out, mt
 
     # Instant the metadata snapshot below is taken. The stale-flag clear later
@@ -754,88 +617,37 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
     )
     # Skip transcript reads for sessions that already own a slot — the steady state.
     pending = [s for s in eligible if channel_slot_name(s.get("key", "")) not in state._slots]
-    # Existing slots that may need a mirror sync. Everything here is a cheap
-    # in-memory check; the transcript read only happens for slots that are
-    # armed AND stale, or restored slots awaiting their one-time rebind check.
-    mirror_pending: list[dict[str, Any]] = []
+    # Already-surfaced tabs whose shared transcript has grown since their window
+    # was built: the channel wrote a turn straight to the file, and the tab has
+    # nothing that would put it in the window. Gated on the file's mtime so the
+    # steady state stays a metadata-only scan.
+    refreshable: list[dict[str, Any]] = []
     for s in eligible:
         key = s.get("key", "")
         slot = state._slots.get(channel_slot_name(key))
-        if slot is None:
+        if slot is None or not _window_refresh_is_safe(slot):
             continue
-        if slot._channel_mirror_key == key:
-            if not _mirror_intact(slot):
-                # A non-mirror mutation happened — an append (the user picked
-                # the conversation up on the dashboard) or an in-place edit
-                # like regenerate. Forked: stop mirroring for good. Fail-safe:
-                # ANY untracked window change (including a trim) disarms,
-                # degrading to the old frozen-copy behaviour rather than
-                # risking an interleave.
-                slot._channel_mirror_key = ""
-                continue
-            if float(s.get("modified", 0) or 0) <= slot._channel_mirror_mtime:
-                continue  # channel file unchanged since the last sync
-            mirror_pending.append(s)
-        elif not slot._channel_mirror_checked:
-            # Restored after a restart — the restore path knows nothing about
-            # mirroring, so settle it once here. Only when the whole file is in
-            # the window can purity be judged from memory; a longer file may
-            # hide dashboard-authored turns in the frozen prefix, so fail safe.
-            if slot._disk_older_count > 0:
-                slot._channel_mirror_checked = True
-                continue
-            mirror_pending.append(s)
-    if not pending and not mirror_pending:
+        if float(s.get("modified", 0) or 0) > slot._channel_window_mtime:
+            refreshable.append(s)
+    if not pending and not refreshable:
         return 0
 
-    def _load_messages() -> dict[str, _Transcript]:
-        out: dict[str, _Transcript] = {}
-        for s in pending:
-            key = s.get("key", "")
-            try:
-                slot_msgs = log.read_messages(slot_history_key(key))
-            except Exception:
-                slot_msgs = []
-            chan_ok = True
-            try:
-                chan_msgs = log.read_messages(key)
-            except Exception:
-                chan_msgs = []
-                chan_ok = False
-            merged = merge_transcripts(slot_msgs, chan_msgs)
-            # Split the slot's own on-disk lines here, in the executor, while
-            # both sides are still separable — after the merge they are not.
-            older = frozen_prefix_len(slot_msgs, hydrate_window(merged))
-            out[key] = _Transcript(
-                merged,
-                older,
-                max(0, len(slot_msgs) - older),
-                # A failed channel read proves nothing about purity — do not
-                # arm the mirror on it. The slot surfaces without a mirror and
-                # unchecked, so the rebind path re-judges it on a later pass.
-                chan_ok and is_pure_mirror(slot_msgs, chan_msgs),
-            )
-        return out
-
-    def _load_mirror_transcripts() -> dict[str, list[dict[str, Any]]]:
+    def _load_messages() -> dict[str, list[dict[str, Any]]]:
         out: dict[str, list[dict[str, Any]]] = {}
-        for s in mirror_pending:
+        for s in pending + refreshable:
             key = s.get("key", "")
+            if key in out:
+                continue
             try:
                 out[key] = log.read_messages(key)
             except Exception:
-                # Omit the key entirely: an empty transcript would look like a
-                # successful sync and advance the watermark having copied
-                # nothing, permanently skipping these messages if the channel
-                # file never changes again. Absent key = untouched state,
-                # retried on the next pass.
-                logger.debug("channel mirror: read failed for %s", key, exc_info=True)
+                # Omit the key rather than storing an empty list: a failed read
+                # must not look like "the file is empty" and advance a watermark
+                # past turns it never saw.
+                logger.debug("channel reconcile: read failed for %s", key, exc_info=True)
         return out
 
-    transcripts = await loop.run_in_executor(None, _load_messages) if pending else {}
-    mirror_transcripts = (
-        await loop.run_in_executor(None, _load_mirror_transcripts) if mirror_pending else {}
-    )
+    transcripts = await loop.run_in_executor(None, _load_messages)
 
     # Clear stale closed flags BEFORE the slots become visible. Running the
     # clear after surfacing leaves a race: the slot broadcast lands, the user
@@ -850,7 +662,6 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
         s.get("key", "")
         for s in pending
         if (metadata.get(s.get("key", "")) or {}).get("closed")
-        or (metadata.get(slot_history_key(s.get("key", ""))) or {}).get("closed")
     ]
     if reactivated:
 
@@ -859,22 +670,21 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
             if clear is None:
                 return
             for k in reactivated:
-                for kk in (k, slot_history_key(k)):
-                    try:
-                        # Compare-and-clear under the store's own lock: only a
-                        # flag whose close instant predates this pass's
-                        # metadata snapshot is dropped. A `closed` written
-                        # after the snapshot — the user dismissing a tab while
-                        # this pass ran, or a writer in another process — is
-                        # left standing, so no stale snapshot can erase a
-                        # fresh dismissal.
-                        clear(kk, only_if_closed_before=snapshot_time)
-                    except Exception:
-                        # Best-effort: the flag staying behind only costs a
-                        # redundant activity comparison on the next pass.
-                        logger.warning(
-                            "channel reconcile: failed to clear closed on %s", kk, exc_info=True
-                        )
+                try:
+                    # Compare-and-clear under the store's own lock: only a
+                    # flag whose close instant predates this pass's
+                    # metadata snapshot is dropped. A `closed` written
+                    # after the snapshot — the user dismissing a tab while
+                    # this pass ran, or a writer in another process — is
+                    # left standing, so no stale snapshot can erase a
+                    # fresh dismissal.
+                    clear(k, only_if_closed_before=snapshot_time)
+                except Exception:
+                    # Best-effort: the flag staying behind only costs a
+                    # redundant activity comparison on the next pass.
+                    logger.warning(
+                        "channel reconcile: failed to clear closed on %s", k, exc_info=True
+                    )
 
         # Off the loop: clear_closed takes the cross-process file lock.
         await loop.run_in_executor(None, _clear_stale_closed)
@@ -897,50 +707,56 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
         if _tombstone_blocks(state, s):
             logger.debug("channel reconcile: %s closed by tombstone, skipping", key)
             continue
-        transcript = transcripts.get(key) or _Transcript([], 0, 0)
+        if key not in transcripts:
+            # The read failed in the executor. ``_load_messages`` omits the key
+            # rather than storing ``[]`` exactly so this is distinguishable from
+            # a genuinely empty transcript — surfacing an empty window here would
+            # give the slot a zero frozen-prefix count, and the next dashboard
+            # reply would write its turns ahead of the history still on disk.
+            # Leave it for the next pass.
+            logger.debug("channel reconcile: %s transcript unread, deferring", key)
+            continue
         try:
             if surface_channel_session(
                 state,
                 s,
                 metadata.get(key) or {},
-                transcript.messages,
-                disk_older=transcript.disk_older,
-                disk_window=transcript.disk_window,
-                mirror=transcript.pure_mirror,
+                transcripts[key],
+                session_key=state.sessions.channel_key_for_stem(key) if state.sessions else "",
             ):
                 surfaced += 1
         except Exception:
             logger.warning("channel reconcile: failed to surface %s", key, exc_info=True)
 
-    mirrored = 0
-    for s in mirror_pending:
+    refreshed = 0
+    for s in refreshable:
         key = s.get("key", "")
         slot = state._slots.get(channel_slot_name(key))
-        if slot is None:
+        msgs = transcripts.get(key)
+        if slot is None or msgs is None:
+            # Slot closed during this pass, or the read failed — leave the
+            # watermark alone so the next pass retries.
             continue
-        chan_msgs = mirror_transcripts.get(key)
-        if chan_msgs is None:
-            # Read failed in the executor — leave the slot untouched (not
-            # checked, watermark not advanced) so the next pass retries.
+        # Re-check after the awaits: a turn may have started on either surface
+        # while the executor read was in flight, and its unflushed messages
+        # would break the line accounting.
+        if not _window_refresh_is_safe(slot):
             continue
         try:
-            if not slot._channel_mirror_checked:
-                # One-time rebind after restore: arm only when nothing in the
-                # window is dashboard-authored. Either way the question is
-                # settled — never re-read this transcript on later passes.
-                slot._channel_mirror_checked = True
-                if not is_pure_mirror(slot.messages, chan_msgs):
-                    continue
-                slot._channel_mirror_key = key
-                slot._channel_mirror_len = len(slot.messages)
-            elif not _mirror_intact(slot):
-                # Forked between the eligibility check and the executor read.
-                slot._channel_mirror_key = ""
-                continue
-            mirrored += _apply_mirror(slot, s, chan_msgs)
+            refreshed += refresh_channel_window(slot, msgs, float(s.get("modified", 0) or 0))
         except Exception:
-            logger.warning("channel reconcile: failed to mirror %s", key, exc_info=True)
-    if surfaced or mirrored:
+            logger.warning("channel reconcile: failed to refresh %s", key, exc_info=True)
+
+    if surfaced or refreshed:
+        if surfaced:
+            # Publish the new tab to the dashboard-surface registry BEFORE the
+            # broadcast. Every gate that asks "does this session have a tab?"
+            # reads that registry, so a surfaced-but-unpublished slot silently
+            # loses widgets, question cards, approval prompts and tab-directed
+            # routing until some unrelated slot change happens to republish.
+            from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots
+
+            _sync_dashboard_slots(state)
         state.push_slots_update()
     return surfaced
 
