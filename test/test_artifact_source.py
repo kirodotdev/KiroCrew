@@ -296,7 +296,7 @@ class TestClassifySourceProjectWalk:
         # the KiroCrew development layout itself.
         wt = tmp_path / "kirocrew-wt-feature"
         wt.mkdir()
-        (wt / ".git").write_text("gitdir: /workplace/nrb/KiroCrew/.git/worktrees/feature\n")
+        (wt / ".git").write_text("gitdir: /mnt/projects/KiroCrew/.git/worktrees/feature\n")
         target = _file(wt / "src" / "mod.md")
         assert classify_source(target) == (LINK, str(wt))
 
