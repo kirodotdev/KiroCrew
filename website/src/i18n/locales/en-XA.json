@@ -4322,7 +4322,8 @@
       "restarting": "[Ŕèşţàŕţìñğ... ············]"
     },
     "voiceDictationPanel": {
-      "esc_to_stop_enter_to_send": "[Èşç ţø şţøþ, Èñţèŕ ţø şèñð ··················]",
+      "esc_to_cancel_click_mic_to_finish": "[Èşç ţø çàñçèĺ, çĺìçķ ţĥè ɱìç ţø ƒìñìşĥ ···················]",
+      "esc_to_cancel_enter_to_send": "[Èşç ţø çàñçèĺ, Èñţèŕ ţø şèñð ····················]",
       "listening": "[Ĺìşţèñìñğ ··············]"
     },
     "voiceDisabledModal": {

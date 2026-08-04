@@ -4652,7 +4652,8 @@
       "update_ready": "Обновление готово"
     },
     "voiceDictationPanel": {
-      "esc_to_stop_enter_to_send": "Esc — стоп, Enter — отправить",
+      "esc_to_cancel_click_mic_to_finish": "Esc — отмена, нажмите микрофон, чтобы закончить",
+      "esc_to_cancel_enter_to_send": "Esc — отмена, Enter — отправить",
       "listening": "Слушаю"
     },
     "voiceDisabledModal": {

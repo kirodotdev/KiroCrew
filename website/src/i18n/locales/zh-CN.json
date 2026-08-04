@@ -4475,7 +4475,8 @@
       "update_ready": "更新已就绪"
     },
     "voiceDictationPanel": {
-      "esc_to_stop_enter_to_send": "Esc 停止，Enter 发送",
+      "esc_to_cancel_click_mic_to_finish": "Esc 取消，点击麦克风完成",
+      "esc_to_cancel_enter_to_send": "Esc 取消，Enter 发送",
       "listening": "正在聆听"
     },
     "voiceDisabledModal": {

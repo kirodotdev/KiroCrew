@@ -418,6 +418,15 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           }}
           title={nameFor(id)}
           src={srcFor(id)}
+          // The embedded pane is the SAME SPA on the tunnel's loopback port, so
+          // it is a CROSS-ORIGIN iframe (same host, different port). Browsers
+          // disable the microphone in cross-origin frames unless the parent
+          // delegates it via Permissions-Policy, so getUserMedia in the remote
+          // dashboard rejects with NotAllowedError ("permission denied") without
+          // this. Local (top-level) use is unaffected. Loopback-only, and the
+          // pane already runs our own token-authed SPA, so delegating the mic
+          // here grants nothing a same-origin top-level load wouldn't already.
+          allow="microphone"
           onLoad={() => postModelTo(id)}
           className="absolute inset-0 w-full h-full border-0"
           style={{ display: id === activeId ? 'block' : 'none' }}

@@ -3470,7 +3470,8 @@
       "update_ready": "Update ready"
     },
     "voiceDictationPanel": {
-      "esc_to_stop_enter_to_send": "Esc to stop, Enter to send",
+      "esc_to_cancel_click_mic_to_finish": "Esc to cancel, click the mic to finish",
+      "esc_to_cancel_enter_to_send": "Esc to cancel, Enter to send",
       "listening": "Listening"
     },
     "voiceDisabledModal": {

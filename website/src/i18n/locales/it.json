@@ -4593,7 +4593,8 @@
       "update_ready": "Aggiornamento pronto"
     },
     "voiceDictationPanel": {
-      "esc_to_stop_enter_to_send": "Esc per fermare, Invio per inviare",
+      "esc_to_cancel_click_mic_to_finish": "Esc per annullare, clicca sul microfono per terminare",
+      "esc_to_cancel_enter_to_send": "Esc per annullare, Invio per inviare",
       "listening": "In ascolto"
     },
     "voiceDisabledModal": {

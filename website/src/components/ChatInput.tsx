@@ -263,6 +263,8 @@ interface ChatInputProps {
   voiceDeviceSwitchIsLive?: boolean
   voiceTranscribing?: boolean
   onVoiceToggle?: () => void
+  /** Cancel (discard) an in-progress dictation without transcribing — Esc. */
+  onVoiceCancel?: () => void
   /** Pre-warm the mic on pointer-down so recording starts instantly on click. */
   onVoicePrewarm?: () => void
   /** Mic error (null = none), live input level [0,1], active device label, and error-dismiss. */
@@ -272,6 +274,9 @@ interface ChatInputProps {
   onClearVoiceError?: () => void
   /** Show the animated dictation panel while recording (stt.dictation_panel). */
   voiceDictationPanel?: boolean
+  /** True for streaming STT — the dictation panel's hint says "Enter to send"
+   *  (live transcript in composer); batch says "click the mic to finish". */
+  voiceStreaming?: boolean
   /** Per-frame audio features driving the dictation panel's shader. */
   voiceSampleRef?: { current: AudioSample }
   /** Latest partial hypothesis, rendered muted in the dictation panel. */
@@ -459,11 +464,13 @@ function ChatInput({
   voiceDeviceSwitchIsLive = false,
   voiceTranscribing = false,
   onVoiceToggle,
+  onVoiceCancel,
   onVoicePrewarm,
   voiceError = null,
   voiceLevel = 0,
   voiceDeviceLabel = '',
   voiceDictationPanel = false,
+  voiceStreaming = false,
   voiceSampleRef,
   voicePartial = '',
   onClearVoiceError,
@@ -733,19 +740,23 @@ function ChatInput({
       ? `${base}\nDetached HEAD at ${projectBranch}`
       : `${base}\nBranch: ${projectBranch}`
   }, [project, projectBranch, projectDetached])
-  // Keep the (visually collapsed) textarea focused while dictating, so the
-  // panel's "Enter to send" hint routes through the composer's normal submit
-  // path instead of needing a duplicated send handler.
+  // Focus the composer when the dictation panel is up (as before) OR while a
+  // batch transcript is landing (voiceTranscribing), so Enter sends and typing
+  // edits the result. Deliberately NOT keyed on bare voiceRecording: focusing
+  // during a STREAMING recording would invite mid-dictation typing that the
+  // next partial rebuilds away — the panel (showDictation) already handles the
+  // visible streaming case, where the user watches rather than types.
   useEffect(() => {
-    if (showDictation) inputRef.current?.focus()
-  }, [showDictation])
+    if (showDictation || voiceTranscribing) inputRef.current?.focus()
+  }, [showDictation, voiceTranscribing])
 
-  // Escape stops dictation, from ANYWHERE. Deliberately a document-level
-  // listener rather than the textarea's onKeyDown: starting a recording means
-  // clicking the mic button, so focus sits on that button and a textarea-scoped
-  // handler never fires — the panel would advertise "Esc to stop" and do
-  // nothing. Keeps the transcript: this stops capture, it does not discard what
-  // was already transcribed.
+  // Escape CANCELS dictation (discards the audio), from ANYWHERE. Deliberately a
+  // document-level listener rather than the textarea's onKeyDown: starting a
+  // recording means clicking the mic button, so focus sits on that button and a
+  // textarea-scoped handler never fires — the panel would advertise "Esc to
+  // cancel" and do nothing. This DISCARDS: nothing is transcribed or inserted,
+  // so an abandoned dictation is thrown away. Clicking the mic remains the
+  // commit path (stop + transcribe).
   //
   // BUBBLE phase, not capture, and it yields three ways. Capture phase runs
   // before every descendant, so an open menu/popover/selector (this composer
@@ -769,18 +780,19 @@ function ChatInput({
   // defaultPrevented, so a snip started during recording would otherwise be
   // cancelled by the same keypress that stopped the recording.
   useEffect(() => {
-    if (!voiceRecording || !onVoiceToggle) return
+    const cancel = onVoiceCancel || onVoiceToggle
+    if (!voiceRecording || !cancel) return
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.isComposing || e.defaultPrevented) return
       if (slashMenuOpenRef.current || filePickerOpenRef.current || skillPickerOpenRef.current) return
       if (document.querySelector('[role="dialog"]')) return
       e.preventDefault()
       e.stopPropagation()
-      onVoiceToggle()
+      cancel()
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [voiceRecording, onVoiceToggle])
+  }, [voiceRecording, onVoiceCancel, onVoiceToggle])
 
   const ctxWrapRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -875,9 +887,16 @@ function ChatInput({
   const steerActive = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer && busySendMode === 'steer'
   const fireComposer = useCallback(() => {
     if (disabled) return
+    // A batch dictation is still transcribing: block the send so the pending
+    // transcript isn't left behind. Otherwise Enter/Send fires the current draft
+    // BEFORE the transcript lands, orphaning the dictation into the emptied
+    // composer. The transcript appends within ~1-2s, after which a normal Enter
+    // sends the complete text. Covers both Enter (handleKeyDown) and the Send
+    // button, since both route through here.
+    if (voiceTranscribing) return
     if (steerActive && onSteer) onSteer()
     else onSend()
-  }, [disabled, steerActive, onSteer, onSend])
+  }, [disabled, voiceTranscribing, steerActive, onSteer, onSend])
   const sendFollowUp = useCallback((text?: string) => {
     if (!disabled) onFollowUpSend?.(text)
   }, [disabled, onFollowUpSend])
@@ -2221,7 +2240,7 @@ function ChatInput({
         <FilePreviewStrip files={pendingFiles} resizedInfo={resizedInfo} onRemove={onRemoveFile} />
 
         {showDictation ? (
-          <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} />
+          <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} />
         ) : (
           <VoiceStatusBar recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} error={voiceError} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} />
         )}
