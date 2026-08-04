@@ -10,6 +10,7 @@ that cannot be reached from Linux.
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import struct
 import tempfile
@@ -639,7 +640,11 @@ def test_macos_check_matches_a_socket_we_connected_to_ourselves(
 
     from kiro_crew.mcp_gateway import transport
 
-    sock = Path(tempfile.mkdtemp(dir="/tmp")) / "gw.sock"
+    # Removed at the end: `mkdtemp` registers no finalizer, so this otherwise left a
+    # directory in /tmp for good. /tmp (not tmp_path) because an AF_UNIX sun_path is
+    # capped at 104 bytes on macOS and a tmp_path under xdist exceeds it.
+    sock_base = Path(tempfile.mkdtemp(dir="/tmp"))
+    sock = sock_base / "gw.sock"
     transport.prepare_dir(sock)
     outcome: list[PeerCredResult] = []
     done = asyncio.Event()
@@ -661,5 +666,8 @@ def test_macos_check_matches_a_socket_we_connected_to_ourselves(
             server.close()
             await server.wait_closed()
 
-    asyncio.run(run())
-    assert outcome == [PeerCredResult.MATCH]
+    try:
+        asyncio.run(run())
+        assert outcome == [PeerCredResult.MATCH]
+    finally:
+        shutil.rmtree(sock_base, ignore_errors=True)

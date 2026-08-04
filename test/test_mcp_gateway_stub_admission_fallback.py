@@ -40,7 +40,6 @@ Linux-and-Windows-only -- which is the failure mode the glob exists to avoid.
 from __future__ import annotations
 
 import asyncio
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -70,15 +69,15 @@ def _register_payload() -> dict[str, Any]:
     return {"type": "register", "stub_uuid": "admission-fallback-probe"}
 
 
-async def _serve(handler: Any) -> tuple[Any, Path]:
-    sock = Path(tempfile.mkdtemp(dir=_endpoint_dir())) / "gw.sock"
+async def _serve(handler: Any, sock_dir: Path) -> tuple[Any, Path]:
+    sock = sock_dir / "gw.sock"
     transport.prepare_dir(sock)
     server = await transport.serve(sock, handler, limit=1 << 16)
     return server, sock
 
 
 @pytest.mark.asyncio
-async def test_handshake_requests_fallback_when_admission_closes_the_connection() -> None:
+async def test_handshake_requests_fallback_when_admission_closes_the_connection(short_sock_dir) -> None:
     """The exact shape of a principal-check refusal: closed before any reply."""
     accepted = asyncio.Event()
 
@@ -88,7 +87,7 @@ async def test_handshake_requests_fallback_when_admission_closes_the_connection(
         accepted.set()
         writer.close()
 
-    server, sock = await _serve(on_connect)
+    server, sock = await _serve(on_connect, short_sock_dir)
     try:
         with pytest.raises(stub.FallbackRequestedError) as excinfo:
             await asyncio.wait_for(
@@ -113,7 +112,7 @@ async def test_handshake_requests_fallback_when_admission_closes_the_connection(
 
 
 @pytest.mark.asyncio
-async def test_handshake_requests_fallback_on_an_explicit_rejection() -> None:
+async def test_handshake_requests_fallback_on_an_explicit_rejection(short_sock_dir) -> None:
     """A ``rejected`` reply degrades too, and carries the daemon's reason through.
 
     Distinct from the close above: this is the path where gatewayd got far enough
@@ -129,7 +128,7 @@ async def test_handshake_requests_fallback_on_an_explicit_rejection() -> None:
     def _spawn(reader: Any, writer: Any) -> None:
         asyncio.get_running_loop().create_task(on_connect(reader, writer))
 
-    server, sock = await _serve(_spawn)
+    server, sock = await _serve(_spawn, short_sock_dir)
     try:
         with pytest.raises(stub.FallbackRequestedError) as excinfo:
             await asyncio.wait_for(
@@ -143,14 +142,14 @@ async def test_handshake_requests_fallback_on_an_explicit_rejection() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handshake_requests_fallback_when_no_endpoint_exists() -> None:
+async def test_handshake_requests_fallback_when_no_endpoint_exists(short_sock_dir) -> None:
     """Daemon absent entirely -- the baseline degrade case.
 
     Included so the three refusal shapes gatewayd can present (never there,
     closed at admission, answered with a rejection) are pinned together rather
     than one of them being covered by accident.
     """
-    missing = Path(tempfile.mkdtemp(dir=_endpoint_dir())) / "absent.sock"
+    missing = short_sock_dir / "absent.sock"
     with pytest.raises(stub.FallbackRequestedError) as excinfo:
         await stub.handshake(str(missing), _register_payload())
     assert "connect failed" in excinfo.value.reason

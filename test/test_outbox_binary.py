@@ -34,11 +34,21 @@ def outbox(tmp_path):
     # Use /tmp as a stable base — macOS tmp_path contains high-entropy directory
     # IDs that trigger the bare-secret heuristic in redact_credentials(), causing
     # api_outbox_notify to reject the path with 400 before any test logic runs.
+    #
+    # Removed on teardown: `mkdtemp` registers no finalizer, so each test otherwise
+    # left a directory in /tmp forever. Same fixture as
+    # test_outbox_notify_broadcast.py.
+    import shutil
     import tempfile
-    odir = Path(tempfile.mkdtemp(dir="/tmp")) / "outbox"
+
+    base = Path(tempfile.mkdtemp(dir="/tmp"))
+    odir = base / "outbox"
     odir.mkdir()
-    with patch("kiro_crew.config.loader.outbox_dir", return_value=odir):
-        yield odir
+    try:
+        with patch("kiro_crew.config.loader.outbox_dir", return_value=odir):
+            yield odir
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 class TestOutboxNotifyBinary:

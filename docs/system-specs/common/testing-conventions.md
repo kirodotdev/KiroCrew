@@ -221,11 +221,13 @@ hour earlier is not a baseline.
    `monkeypatch` the interval to `0`: the branch still executes, only the waiting
    goes. Confirm first that no test asserts on the interval itself.
 
-Measured on this suite: `test_computer_use_snapshot_macos.py` 143.9s → 2.0s (pattern 3),
-`test_md_notebook.py` 78.5s → 37.0s and `test_worktree_create.py` 61.3s → 40.6s
-(pattern 2). Applying all three across ~16 files took the full suite from 281s to 130s
-wall on one host, and most of that came from the *shared* fixes, which is why the
-conftest audit is item 1.
+Measured on this suite, each file run serially with `-n0 --no-cov` back to back on one
+host (state the regime whenever you quote a number, because these do not compare across
+regimes): `test_computer_use_snapshot_macos.py` 142.0s to 1.5s (pattern 3),
+`test_md_notebook.py` 54.2s to 27.1s and `test_worktree_create.py` 20.7s to 15.8s
+(pattern 2). Applying all three across ~16 files took the full suite from 281s to 116s
+wall, and most of that came from the *shared* fixes, which is why the conftest audit is
+item 1.
 
 A fourth, adjacent pattern: **a patch target that misses.** Both this and § Patch the
 defining module, not a re-export are the same one rule, *patch the namespace whose
