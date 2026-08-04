@@ -2577,6 +2577,40 @@ class TestFlushSegment:
         asyncio.run(_run())
         assert called is False, f"{mode} session must not register widget artifacts"
 
+    def test_flush_segment_broadcasts_artifact_update_after_registration(
+        self, tmp_path, monkeypatch
+    ):
+        """Auto-registered widgets must broadcast artifact_update so the
+        frontend's in-session Artifacts tab refreshes without waiting for
+        the react-query staleness window.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.push_artifact_update = MagicMock()
+        slot = state.get_or_create_slot("s1")
+
+        async def _fake_register(text, message_ts, session_key):
+            return ["abc123", "def456"]
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.register_widgets_off_loop", _fake_register
+        )
+
+        from kiro_crew.dashboard.chat import _flush_segment
+
+        async def _run():
+            _flush_segment(state, slot, '<mcwidget title="W">body</mcwidget>')
+            await asyncio.sleep(0)
+            for t in list(state._background_tasks):
+                await t
+
+        asyncio.run(_run())
+
+        assert state.push_artifact_update.call_count == 2
+        state.push_artifact_update.assert_any_call("abc123", 1)
+        state.push_artifact_update.assert_any_call("def456", 1)
+
 
 class TestRunChatSegmentFlush:
     """Tests for segment flush behavior in _run_chat()."""

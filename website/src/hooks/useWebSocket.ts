@@ -516,6 +516,12 @@ export function useWebSocket() {
                 queryClient.invalidateQueries({ queryKey: ['artifact-comments', slug] })
               }
               queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+              // Session-scoped queries use different key prefixes that the
+              // broad ['artifacts'] invalidation does not reach. Invalidate
+              // them so the in-session Artifacts tab picks up auto-registered
+              // widgets immediately after the backend broadcasts.
+              queryClient.invalidateQueries({ queryKey: ['session-artifact-records'] })
+              queryClient.invalidateQueries({ queryKey: ['session-artifacts'] })
             }
             break
           }
