@@ -90,8 +90,18 @@ async def maybe_start_weixin(orch: "GatewayOrchestrator") -> "WeixinClient | Non
         if orch.dashboard_state is not None:
             orch.dashboard_state.register_channel_transport(transport)
             # Surface live connection state to GET /api/weixin/config.
-            orch.dashboard_state.weixin_connected = True
-            orch.dashboard_state.weixin_connect_error = ""
+            state = orch.dashboard_state
+            state.weixin_connected = True
+            state.weixin_connect_error = ""
+
+            # Keep the badge truthful across the channel's lifetime: an
+            # unexpected poll-loop death flips it off with the reason instead
+            # of reporting the startup outcome forever.
+            def _on_state(connected: bool, error: str) -> None:
+                state.weixin_connected = connected
+                state.weixin_connect_error = error[:120]
+
+            transport.on_state_change = _on_state
         logger.info("Weixin channel started (transport path, iLink long-polling).")
         return client
     except Exception as exc:
