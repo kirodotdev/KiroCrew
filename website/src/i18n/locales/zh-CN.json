@@ -7654,7 +7654,16 @@
         "yolo_duration_next_activation_note": "Applies the next time you turn auto-approve on.",
         "failed_to_save_yolo_duration": "Could not save the duration.",
         "yolo_active_until_restart": "Auto-approve is on and stays on until KiroCrew restarts.",
-        "yolo_active_expires_at": "Auto-approve is on until {{time}}."
+        "yolo_active_expires_at": "Auto-approve is on until {{time}}.",
+        "third_party_apps_section": "第三方应用",
+        "third_party_apps_state_unknown": "读取失败",
+        "third_party_apps_unavailable": "读取不到当前设置，因此这里无法显示也无法修改。如果它原本是开启的，第三方应用仍被允许运行 —— 请刷新页面重试。",
+        "third_party_apps_title": "允许第三方应用运行自己的代码",
+        "third_party_apps_desc": "非 KiroCrew 自带的应用，在你允许之前不能运行自己的代码。保持关闭时，这类应用可以安装，但会拒绝启动。",
+        "third_party_apps_tip": "适用于所有非 KiroCrew 内置的应用。内置应用不受影响，无论此开关状态如何都照常工作。",
+        "third_party_apps_on_warning": "这会信任所有第三方应用，包括你以后才安装的，而不只是你正要启动那一个。受信任应用与 KiroCrew 拥有同等访问权限：你的文件、你保存的凭据，以及网络。",
+        "third_party_apps_scope_note": "在下一次加载应用代码时生效。重新关闭后，KiroCrew 不再放行这些代码；已在运行的应用会持续到被关闭或 KiroCrew 重启。",
+        "third_party_apps_save_failed": "无法保存该设置。"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "取消",
