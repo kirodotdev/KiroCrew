@@ -460,7 +460,7 @@ export default function AgentImportFlow({
   const stageContent = (() => {
     if (scanQuery.isPending) {
       return (
-        <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
+        <div className="flex flex-1 flex-col items-center justify-center text-center">
           <Loader2 className="lucide-inline animate-spin text-accent" />
           <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
             {i18nT('components.agentImportFlow.scanning_for_agent_setup')}
@@ -471,7 +471,7 @@ export default function AgentImportFlow({
     }
     if (scanQuery.isError) {
       return (
-        <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
+        <div className="flex flex-1 flex-col items-center justify-center text-center">
           <AlertTriangle className="lucide-inline text-danger" />
           <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
             {i18nT('components.agentImportFlow.we_could_not_scan_agent_setup')}
@@ -487,7 +487,7 @@ export default function AgentImportFlow({
     }
     if (sources.length === 0) {
       return (
-        <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
+        <div className="flex flex-1 flex-col items-center justify-center text-center">
           <FileSearch className="lucide-inline text-muted" />
           <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
             {i18nT('components.agentImportFlow.no_supported_setup_found')}
