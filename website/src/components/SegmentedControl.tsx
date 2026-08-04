@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import { ChevronDown } from 'lucide-react'
 
 export interface Segment<T extends string = string> {
@@ -31,6 +31,13 @@ type Mode = 'full' | 'compact' | 'dropdown'
 
 export default function SegmentedControl<T extends string = string>({ segments, value, onChange, layoutId = 'segment', collapse = true }: SegmentedControlProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null)
+  // The label below animates its WIDTH while clipping overflow, so until it
+  // settles the text is genuinely cut off. Anything measuring layout in that
+  // window — a reader with reduced motion, or the render gate, which launches
+  // with the preference set for exactly this reason — sees truncated labels that
+  // are not truncated once the spring lands. framer-motion does not consult the
+  // preference on its own, which is why the honouring is explicit here.
+  const reduceMotion = useReducedMotion()
   const [mode, setMode] = useState<Mode>('full')
   const [dropdownOpen, setDropdownOpen] = useState(false)
 
@@ -127,7 +134,9 @@ export default function SegmentedControl<T extends string = string>({ segments, 
                 <motion.div
                   layoutId={`${layoutId}-indicator`}
                   className="absolute inset-0 bg-card rounded-md shadow-sm border border-border"
-                  transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                  transition={reduceMotion
+                    ? { duration: 0 }
+                    : { type: 'spring', stiffness: 500, damping: 35 }}
                 />
               )}
               {s.icon && <span className="relative z-[1]">{s.icon}</span>}
@@ -135,10 +144,12 @@ export default function SegmentedControl<T extends string = string>({ segments, 
                 {(mode === 'full' || isActive) && (
                   <motion.span
                     key={`label-${s.key}`}
-                    initial={{ width: 0 }}
+                    initial={reduceMotion ? false : { width: 0 }}
                     animate={{ width: 'auto' }}
-                    exit={{ width: 0 }}
-                    transition={{ type: 'spring', bounce: 0, duration: 0.2 }}
+                    exit={reduceMotion ? { width: 'auto' } : { width: 0 }}
+                    transition={reduceMotion
+                      ? { duration: 0 }
+                      : { type: 'spring', bounce: 0, duration: 0.2 }}
                     className="relative z-[1] overflow-hidden whitespace-nowrap"
                   >
                     {s.label}

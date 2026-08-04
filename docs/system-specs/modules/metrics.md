@@ -303,6 +303,27 @@ startups multiplies the startup count by the number of phases and sums several
 unrelated latency distributions into one set of buckets, which renders as a
 spurious multi-modal "distribution".
 
+**Failures are reported as counts, not as success rates.** Both outcome
+instruments are fail-closed — `AcpClient.ensure_ready` and
+`AcpSessionProvider._start_kiro_runtime` each default their outcome to `error`
+and overwrite it with `ready` only on the success path, and `_turn_outcome` maps
+a real `stop_reason` — so a zero here is a measurement rather than an instrument
+that cannot report bad news. What a *rate* over these populations cannot do is
+survive rounding: a window of ~1400 startups makes one failed startup 99.93%,
+which renders as a flawless `100%`. A rate had no reachable value between
+"perfect" and a problem big enough to clear half a percent, and it saturated in
+the direction that hides failure. A count has no such ceiling, so the page shows
+the absolute number of non-`ready` startups and of non-`ok` turns. Where a rate
+is still shown (turn fault rate, which answers a different question — faults per
+unit of work), a non-zero value below the rounding threshold renders as `<1%`
+and never in the success colour.
+
+Both figures count *everything* outside the success value rather than naming the
+failure values. Enumerating them (`error` + `timeout`) silently excluded any
+third outcome — `auth_required`, and the `unknown` that shards predating the
+attribute aggregate under — which put the displayed count and the rate beside it
+on two different populations.
+
 **`context` block.** The response also carries per-turn context-window
 occupancy — `{turns, p50_pct, p90_pct, max_pct, sessions[]}` — sourced from the
 per-turn token row store below, NOT from the OTEL shards: occupancy is a
@@ -410,6 +431,18 @@ comparing one turn against another (the whole point of the breakdown) wants an
 exact unit rather than an approximate one. `phase` separates the one-off
 session-start injection from the much smaller per-turn one so a reader never
 pools the two populations.
+**Non-finite floats are rejected at the single write chokepoint.**
+`_write_token_record` dumps with `allow_nan=False` and, only on the resulting
+`ValueError`, rewrites non-finite floats to `0.0` — so the common path pays no
+per-turn scan. The guard lives there rather than per field because provider
+floats (`cost_usd`, `credits`) reach the record unvalidated and a float is
+exactly what a bad one looks like, so a type check cannot catch it. Without it,
+`json.dumps` writes the bare tokens `NaN` / `Infinity`, which are **not** valid
+JSON while `json.loads` still accepts them: one such row travels silently into a
+`web.json_response` body no browser can parse, taking down every panel that
+reads the store instead of losing one turn's numbers. `cost_breakdown`
+additionally skips non-finite rows on read, because shards written before this
+guard can already contain them.
 
 **Read side.** `usage.context_occupancy(days)` aggregates these rows into
 per-turn occupancy percentiles plus a per-session peak ranking (own
@@ -456,13 +489,50 @@ label → size, aggregated — is what could belong on a metric; this per-sessio
 half is the drill-down. Without these readers the fields were write-only:
 recorded on every turn, read by nothing.
 
+`usage.cost_breakdown(days)` is the second reader, same cache contract, serving
+the `cost` block of the same endpoint. It answers "where did the credits go"
+from fields the row store already carries — no new instrumentation:
+
+| sub-block | derivation |
+|-----------|-----------|
+| totals | `credits` summed over the window, plus the preceding window of equal length and the delta between them |
+| `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show |
+| `by_channel` | same shape, keyed by `telemetry_channel_of(slot)` |
+| `context_bands` | mean credits per turn bucketed by absolute `context_used`, which is what makes the cost/context relationship legible (a turn at 900k costs ~4.7x one at 100k) |
+| `conversations` | top spenders with peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction |
+
+**Channel comes from the slot key, not from `surface`.** `surface` cannot
+separate transports: `chat_runner` stamps `surface="dashboard"` for every turn
+that flows through it regardless of where the message arrived from, so a
+Telegram turn is booked as dashboard spend (observable in the row store as a
+`telegram_*` slot carrying `surface="dashboard"`). The slot key is assigned by
+the transport that created the session and is therefore the only field that
+distinguishes them.
+
+**The growth slope is fitted per segment, never across the window.** Occupancy
+is a sawtooth: a compaction drops it back toward empty, and 7 of the 8
+top-spending conversations measured carry one to four such drops. A secant from
+the first turn to the last therefore crosses discontinuities and is dragged down
+by every reset, understating the live rate by ~47x on real data — one 104-turn
+conversation projected 795 turns of headroom while its current segment climbed
+at 4%/turn, i.e. ~17 turns from compaction. Erring toward "plenty of room" is
+the damaging direction for a figure whose only purpose is a warning, so the
+slope is fitted on the stretch since the last fall larger than
+`_COMPACTION_DROP_PCT` (sub-threshold drift is ordinary jitter in what counts
+toward `context_used`, not a compaction). Growth and the projection are
+**withheld** unless that CURRENT segment holds `_COST_MIN_GROWTH_TURNS` points —
+a long conversation freshly past a compaction knows nothing about its new
+trajectory, and withholding is the honest answer rather than extrapolating from
+two or three points.
+
 Tests: `test/test_usage.py` (`TestReadContextTokens`,
 `TestBuildTokenRecordContextFields`, `TestBuildTokenRecordCtxBlocks`,
-`TestPersistTokenRecord*`), `test/metrics/test_context_occupancy.py` (occupancy
-aggregation, skips, latest-turn wins), `test/metrics/test_context_blocks.py`
-(`split_blocks` closure + per-marker correctness + reply-format collapse), and
-`test/metrics/test_context_trace.py` (the per-turn trace reader and the
-`context-trace` endpoint).
+`TestPersistTokenRecord*`), `test/metrics/test_context_occupancy.py`
+(aggregation, skips, latest-turn wins), `test/metrics/test_cost_breakdown.py`
+(channel attribution incl. the bare dashboard slot form, no-truncation,
+prior-window deltas, band bucketing, post-compaction slope, growth
+withholding, non-finite rejection) and `test/metrics/test_telemetry_titles.py`
+(title redaction + cache purity), plus the `context-trace` endpoint.
 
 ## Circular-import rule
 

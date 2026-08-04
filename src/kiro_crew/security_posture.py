@@ -177,6 +177,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacting it would overwrite the user's own file with markers.",
     ),
     (
+        "Telemetry spend ranking",
+        "dashboard/handlers/telemetry.py",
+        "Session titles attached to the conversations-by-spend rows of "
+        "/api/telemetry/startup. `display_title` is model-authored, and this is a "
+        "SECOND egress path for it alongside the slot snapshot — a title set "
+        "through `api_chat_slot_resume` reaches the slot unredacted, so nothing "
+        "upstream of this handler has scanned it.",
+    ),
+    (
         "OpenAI-compatible API",
         "dashboard/openai_compat.py",
         "Streamed and non-streamed completions served to third-party clients.",

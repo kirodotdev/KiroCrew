@@ -105,6 +105,13 @@ _TELEMETRY_EXACT_KEYS: dict[str, str] = {
     "_hb": "heartbeat",
 }
 
+#: A bare dashboard chat-slot key (``chat-12-1785445181``). The token row store
+#: persists ``_ChatSlot.key``, which carries no namespace prefix, so the prefix
+#: table above cannot see it — without this rule every dashboard turn read back
+#: from that store classifies as ``other``. Anchored and digit-bound so an
+#: arbitrary key that merely starts with "chat" is not absorbed.
+_TELEMETRY_CHAT_SLOT_RE = re.compile(r"^chat-\d+-\d+$")
+
 #: Every value :func:`telemetry_channel_of` can return. Metric attributes must
 #: draw from a closed set — an unbounded label (a raw session key) would mint one
 #: time series per conversation and blow up the metric store.
@@ -139,6 +146,8 @@ def telemetry_channel_of(key: str | None) -> str:
     for prefix, label in _TELEMETRY_LOCAL_PREFIXES:
         if key.startswith((f"{prefix}:", f"{prefix}_")):
             return label
+    if _TELEMETRY_CHAT_SLOT_RE.match(key):
+        return "dashboard"
     return "other"
 
 
