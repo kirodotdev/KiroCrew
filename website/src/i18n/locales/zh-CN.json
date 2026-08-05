@@ -90,7 +90,6 @@
     "star_us": "给我们加星",
     "report_issue": "反馈问题",
     "star_kirocrew_on_github": "在 GitHub 上为 Kiro Crew 加星",
-    "report_an_issue_on_github": "在 GitHub 上反馈问题",
     "click_to_collapse_readouts": "点击折叠状态读数",
     "click_to_expand_readouts": "点击展开状态读数",
     "gateway_offline_reconnecting": "网关离线 — 正在重连",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "正在拉取最新变更",
     "rebuilding_package": "正在重新构建包",
     "restarting_server": "正在重启服务器",
-    "syncing_workspace": "正在同步工作区"
+    "syncing_workspace": "正在同步工作区",
+    "report_a_problem_with_diagnostics": "反馈问题 — 收集日志和崩溃报告，并移除密钥"
   },
   "appSdk": {
     "chatEmbed": {
@@ -3383,7 +3383,6 @@
       "retrying": "重试中…"
     },
     "chatInput": {
-      "message_placeholder": "给 {{bot}} 发消息… (/command · @file · $skill)",
       "add_files_options": "添加文件与选项",
       "allow_once": "允许一次",
       "apply_a_ready_made_set_of_instructions": "套用现成的指令集",
@@ -3394,6 +3393,7 @@
       "command": "命令",
       "context_usage": "上下文用量",
       "context_window": "上下文窗口",
+      "continue_interrupted_turn": "继续被中断的回答",
       "could_not_submit_that_decision_see_the_console_f": "无法提交此决定 — 详见控制台。",
       "drag_to_resize_double_click_to_reset": "拖动调整大小（双击重置）",
       "file": "文件",
@@ -3408,6 +3408,7 @@
       "let_the_agent_read_one_of_your_files": "让代理读取你的某个文件",
       "let_the_agent_use_the_browser": "允许智能体使用浏览器",
       "message_input": "消息输入",
+      "message_placeholder": "给 {{bot}} 发消息… (/command · @file · $skill)",
       "model": "模型",
       "optimize_prompt": "优化提示词",
       "optimize_prompt_busy_optimizing_another_chat": "优化提示词 — 正在优化另一个聊天",
@@ -3415,6 +3416,8 @@
       "optimizing_prompt": "正在优化提示词…",
       "plan_pre_filled_add_context_then_send": "计划已预填 — 补充上下文后发送",
       "project": "项目",
+      "queue": "排队",
+      "queue_desc": "在当前轮次结束后运行",
       "queue_message": "排队消息",
       "queue_run_after_the_current_turn_finishes_enter": "排队 — 当前轮次结束后运行 (Enter)",
       "quick_actions_like_clearing_the_chat_or_checking": "清空聊天、查看用量等快捷操作",
@@ -3437,6 +3440,7 @@
       "skill": "技能",
       "slash_commands": "斜杠命令",
       "steer": "引导",
+      "steer_desc": "立即注入正在运行的轮次",
       "steer_inject_into_the_running_turn_enter": "引导 — 注入正在运行的轮次 (Enter)",
       "stop_generation": "停止生成",
       "stop_recording": "停止录音",
@@ -3451,13 +3455,11 @@
       "transcribing": "转写中…",
       "transcribing_please_wait": "正在转写，请稍候…",
       "trust_reads": "信任读取",
+      "turn_interrupted_press_continue": "上一轮被中断 — 点 ▶ 继续，或直接输入新消息",
       "upload_file": "上传文件",
       "use_a_skill": "使用技能",
       "used": "已用",
-      "voice_input": "语音输入",
-      "queue": "排队",
-      "queue_desc": "在当前轮次结束后运行",
-      "steer_desc": "立即注入正在运行的轮次"
+      "voice_input": "语音输入"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -5027,6 +5029,25 @@
     },
     "errorNotice": {
       "dismiss": "忽略"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "反馈问题",
+      "what_happened": "发生了什么？",
+      "note_placeholder": "例如：更新后每条消息都失败，报“process exited (rc=None)”。",
+      "include_recent_logs": "包含最近日志",
+      "include_logs_hint": "网关与 kiro-cli 日志。关闭后仅发送崩溃报告。",
+      "redaction_notice": "Bearer 令牌、会话 cookie 和 AWS 密钥会在生成 zip 前自动移除。",
+      "collect_failed": "无法收集诊断信息",
+      "cancel": "取消",
+      "create_report": "生成报告",
+      "collecting": "正在收集……",
+      "done": "完成",
+      "diagnostics_ready": "诊断信息已就绪 — 已在 {{files}} 个文件中脱敏 {{redactions}} 处密钥。",
+      "saved_to": "保存至",
+      "show_in_finder": "在 Finder 中显示",
+      "download_zip": "下载 zip",
+      "open_github_issue": "新建 GitHub issue",
+      "prefill_hint": "打开后会自动填好详情 — 再把 zip 拖进去即可。"
     }
   },
   "hooks": {
@@ -6060,11 +6081,13 @@
       "recoveryCard": {
         "backend_error_continuing": "后端错误 · 正在自动继续",
         "cancelled_continuing": "已取消 · 继续中",
+        "continued_by_you": "按你的要求继续",
         "empty_output_continuing": "输出为空 · 正在自动继续",
         "n_patterns": "{{count}} 条规则",
         "n_tool_calls_blocked": "{{count}} 个工具调用被阻止",
         "no_response_returned": "未返回响应",
         "recovered_continuing": "已恢复 · 继续中",
+        "resuming_the_interrupted_turn": "正在从中断处继续",
         "safety_policy_continuing": "安全策略 · 正在自动继续",
         "tool_call_blocked": "工具调用被阻止",
         "tool_stopped_responding": "工具停止响应",
@@ -6216,6 +6239,10 @@
         "aria_show_details": "展开工具详情：{{label}}",
         "opened_in_the_side_panel": "已在侧边栏中打开",
         "blocked_by_security_policy": "已被安全策略阻止"
+      },
+      "errorCard": {
+        "continue": "继续",
+        "continue_hint": "从中断处继续。已经写入磁盘的改动都还在。"
       }
     },
     "chatPage": {
@@ -8887,6 +8914,11 @@
         "token_description": "同一设置页面上 Bot ID 旁显示的 Secret。",
         "token_label": "企业微信机器人密钥",
         "token_placeholder": "粘贴企业微信机器人密钥"
+      },
+      "reportProblemCard": {
+        "support": "支持",
+        "blurb": "遇到问题？发送一份诊断报告给我们 — 日志会先移除密钥。",
+        "report_a_problem": "反馈问题"
       }
     },
     "settingsPage": {

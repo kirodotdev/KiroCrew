@@ -1125,6 +1125,58 @@ export const selectComposerBusy = (state: RootState, slot: string | null): boole
   return !!(dashSlot?.subagents_running || dashSlot?.orchestrating)
 }
 
+/** Roles the interruption scan walks past: they are not the conversation's floor.
+ *  Mirrors `_is_interrupted` in `src/kiro_crew/dashboard/chat_handlers.py`, which
+ *  likewise only reads `user` / `assistant` / `error` rows. Keep the two in sync —
+ *  this predicate decides whether to OFFER Continue, that one authorizes it. */
+const CONTINUE_SCAN_SKIP = new Set(['queued', 'tool_call', 'tool_result', 'inject', 'subagent', 'permission', 'nudge'])
+
+/**
+ * True when the active slot's last turn ended without the assistant handing the
+ * floor back, so Continue is worth offering.
+ *
+ * Two interruption shapes, one predicate:
+ *  - the last conversational row is the USER's — nothing came back at all, which
+ *    is exactly what a gateway restart mid-turn (an app update) leaves behind;
+ *  - it is the ASSISTANT's but an `error` row follows it — the turn streamed
+ *    partway and then died, otherwise shape-identical to a clean completion.
+ *
+ * Computed locally on purpose: `messages`, `slotRunning`, `slotStopping` and the
+ * queue are all already in this store, so no server field is needed to decide
+ * what to SHOW. The server re-checks under the slot lock when the button is
+ * actually pressed — this view is a lagging WS snapshot, so it cannot be the
+ * authority for dispatching a turn.
+ *
+ * An empty transcript returns false, which keeps a brand-new chat's send button
+ * disabled exactly as it is today.
+ */
+export const selectContinuable = (state: RootState): boolean => {
+  const c = state.chat
+  if (c.slotRunning || c.slotStopping || c.pendingTurnSlot) return false
+  // An autopilot plan reads `running` False BETWEEN stages while still mid-plan,
+  // so `running` alone would offer Continue on a slot the server refuses with
+  // `slot_orchestrating`. Mirrors the same guard in `api_chat_slot_continue`.
+  const dashSlot = state.dashboard.slots.find((sl) => sl.key === c.activeSlot)
+  if (dashSlot?.orchestrating || dashSlot?.subagents_running) return false
+  const msgs = c.messages
+  if (!msgs.length) return false
+  let sawTrailingError = false
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    // A pending queued message means the backend is about to run the thread on
+    // its own — offering Continue would double-fire the turn.
+    if (m.role === 'queued') return false
+    if (m.role === 'error') { sawTrailingError = true; continue }
+    if (CONTINUE_SCAN_SKIP.has(m.role)) continue
+    if ((m.role === 'user' || m.role === 'assistant') && m.content) {
+      // Compaction notices are assistant-role system messages, not the floor.
+      if (m.role === 'assistant' && (m.meta as { kind?: string } | undefined)?.kind === 'compaction') continue
+      return m.role === 'user' ? true : sawTrailingError
+    }
+  }
+  return false
+}
+
 const chatSlice = createSlice({
   name: 'chat',
   initialState,

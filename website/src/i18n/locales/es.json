@@ -90,7 +90,6 @@
     "star_us": "Danos una estrella",
     "report_issue": "Reportar problema",
     "star_kirocrew_on_github": "Dale una estrella a Kiro Crew en GitHub",
-    "report_an_issue_on_github": "Informar de un problema en GitHub",
     "click_to_collapse_readouts": "clic para contraer los indicadores",
     "click_to_expand_readouts": "clic para expandir los indicadores",
     "gateway_offline_reconnecting": "Gateway sin conexión — reconectando",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "Descargando los últimos cambios",
     "rebuilding_package": "Recompilando el paquete",
     "restarting_server": "Reiniciando el servidor",
-    "syncing_workspace": "Sincronizando el espacio de trabajo"
+    "syncing_workspace": "Sincronizando el espacio de trabajo",
+    "report_a_problem_with_diagnostics": "Reportar un problema — recopila registros e informes de fallos, con los secretos eliminados"
   },
   "appSdk": {
     "chatEmbed": {
@@ -3477,7 +3477,6 @@
       "retrying": "Reintentando…"
     },
     "chatInput": {
-      "message_placeholder": "Enviar mensaje a {{bot}}… (/command · @file · $skill)",
       "add_files_options": "Añadir archivos y opciones",
       "allow_once": "Permitir una vez",
       "apply_a_ready_made_set_of_instructions": "Aplicar un conjunto de instrucciones ya preparado",
@@ -3488,6 +3487,7 @@
       "command": "Comando",
       "context_usage": "Uso del contexto",
       "context_window": "Ventana de contexto",
+      "continue_interrupted_turn": "Continuar el turno interrumpido",
       "could_not_submit_that_decision_see_the_console_f": "No se pudo enviar esa decisión — consulta la consola para ver los detalles.",
       "drag_to_resize_double_click_to_reset": "Arrastra para redimensionar (doble clic para restablecer)",
       "file": "Archivo",
@@ -3502,6 +3502,7 @@
       "let_the_agent_read_one_of_your_files": "Permite que el agente lea uno de tus archivos",
       "let_the_agent_use_the_browser": "Permitir que el agente use el navegador",
       "message_input": "Campo de mensaje",
+      "message_placeholder": "Enviar mensaje a {{bot}}… (/command · @file · $skill)",
       "model": "Modelo",
       "optimize_prompt": "Optimizar el prompt",
       "optimize_prompt_busy_optimizing_another_chat": "Optimizar el prompt — ocupado optimizando otro chat",
@@ -3509,6 +3510,8 @@
       "optimizing_prompt": "Optimizando el prompt…",
       "plan_pre_filled_add_context_then_send": "Plan precargado — añade contexto y pulsa Enviar",
       "project": "Proyecto",
+      "queue": "Poner en cola",
+      "queue_desc": "Se ejecuta cuando termine el turno actual",
       "queue_message": "Poner el mensaje en cola",
       "queue_run_after_the_current_turn_finishes_enter": "Poner en cola — se ejecuta cuando termine el turno actual (Enter)",
       "quick_actions_like_clearing_the_chat_or_checking": "Acciones rápidas como vaciar el chat o consultar el uso",
@@ -3531,6 +3534,7 @@
       "skill": "Skill",
       "slash_commands": "Comandos de barra",
       "steer": "Redirigir",
+      "steer_desc": "Se inyecta en el turno en curso de inmediato",
       "steer_inject_into_the_running_turn_enter": "Redirigir — inyectar en el turno en curso (Enter)",
       "stop_generation": "Detener la generación",
       "stop_recording": "Detener la grabación",
@@ -3545,13 +3549,11 @@
       "transcribing": "Transcribiendo…",
       "transcribing_please_wait": "Transcribiendo, espera un momento…",
       "trust_reads": "Confiar en las lecturas",
+      "turn_interrupted_press_continue": "El último turno se interrumpió: pulsa ▶ para continuar o simplemente escribe",
       "upload_file": "Subir archivo",
       "use_a_skill": "Usar una skill",
       "used": "Usado",
-      "voice_input": "Entrada de voz",
-      "queue": "Poner en cola",
-      "queue_desc": "Se ejecuta cuando termine el turno actual",
-      "steer_desc": "Se inyecta en el turno en curso de inmediato"
+      "voice_input": "Entrada de voz"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -5147,6 +5149,25 @@
     },
     "errorNotice": {
       "dismiss": "Descartar"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "Reportar un problema",
+      "what_happened": "¿Qué ha pasado?",
+      "note_placeholder": "p. ej. Todos los mensajes fallan con \"process exited (rc=None)\" después de actualizar.",
+      "include_recent_logs": "Incluir los registros recientes",
+      "include_logs_hint": "Registros del Gateway y de kiro-cli. Desactívalo para enviar solo los informes de fallos.",
+      "redaction_notice": "Los tokens Bearer, las cookies de sesión y las claves de AWS se eliminan automáticamente antes de crear el zip.",
+      "collect_failed": "No se pudieron recopilar los diagnósticos",
+      "cancel": "Cancelar",
+      "create_report": "Crear informe",
+      "collecting": "Recopilando…",
+      "done": "Listo",
+      "diagnostics_ready": "Diagnósticos listos — {{redactions}} secreto(s) eliminado(s) en {{files}} archivo(s).",
+      "saved_to": "Guardado en",
+      "show_in_finder": "Mostrar en Finder",
+      "download_zip": "Descargar zip",
+      "open_github_issue": "Abrir incidencia en GitHub",
+      "prefill_hint": "Al abrir la incidencia se rellenan los detalles automáticamente — después arrastra el zip dentro."
     }
   },
   "hooks": {
@@ -6206,11 +6227,13 @@
       "recoveryCard": {
         "backend_error_continuing": "error del backend · continuando automáticamente",
         "cancelled_continuing": "cancelado · continuando",
+        "continued_by_you": "Continuado a petición tuya",
         "empty_output_continuing": "salida vacía · continuando automáticamente",
         "n_patterns": "{{count}} patrones",
         "n_tool_calls_blocked": "{{count}} llamadas de herramienta bloqueadas",
         "no_response_returned": "Sin respuesta",
         "recovered_continuing": "recuperado · continuando",
+        "resuming_the_interrupted_turn": "reanudando el turno interrumpido",
         "safety_policy_continuing": "política de seguridad · continuando automáticamente",
         "tool_call_blocked": "Llamada de herramienta bloqueada",
         "tool_stopped_responding": "La herramienta dejó de responder",
@@ -6364,6 +6387,10 @@
         "aria_show_details": "Mostrar los detalles de la herramienta: {{label}}",
         "opened_in_the_side_panel": "Abierto en el panel lateral",
         "blocked_by_security_policy": "Bloqueado por política de seguridad"
+      },
+      "errorCard": {
+        "continue": "Continuar",
+        "continue_hint": "Reanudar donde se detuvo. El trabajo ya escrito en disco no se altera."
       }
     },
     "chatPage": {
@@ -9061,6 +9088,11 @@
         "token_description": "El Secret que se muestra junto al Bot ID en la misma página de ajustes.",
         "token_label": "Secret del bot de WeCom",
         "token_placeholder": "Pega el secret del bot de WeCom"
+      },
+      "reportProblemCard": {
+        "support": "Soporte",
+        "blurb": "¿Algo no funciona? Envíanos un informe de diagnóstico — antes se eliminan los secretos de los registros.",
+        "report_a_problem": "Reportar un problema"
       }
     },
     "settingsPage": {

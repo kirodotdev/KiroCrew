@@ -9,6 +9,7 @@ import { useAppSelector } from '../../store'
 import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowser'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import SegmentedControl from '../../components/SegmentedControl'
+import ReportProblemCard from './ReportProblemCard'
 import { api, ApiError } from '../../api/client'
 import { sanitize } from '../../api/helpers'
 
@@ -737,6 +738,8 @@ export function AboutPanel() {
           </div>
         </div>
       )}
+
+      <ReportProblemCard />
     </>
   )
 }

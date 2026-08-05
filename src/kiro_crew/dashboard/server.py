@@ -2164,6 +2164,9 @@ async def start_dashboard(
     app.router.add_get("/api/chat/slots/{slot}", chat.api_chat_slot_detail)
     app.router.add_post("/api/chat/slots/{slot}/stop", chat.api_chat_slot_stop)
     app.router.add_post("/api/chat/slots/{slot}/interrupt", chat.api_chat_slot_interrupt)
+    # Deliberately NOT /resume — that path is already taken by "open a history
+    # session into a tab" (api_chat_slot_resume) and means something else.
+    app.router.add_post("/api/chat/slots/{slot}/continue", chat.api_chat_slot_continue)
     app.router.add_delete(
         "/api/chat/slots/{slot}/queue/{queue_id}", chat.api_chat_slot_queue_cancel
     )
@@ -2321,6 +2324,12 @@ async def start_dashboard(
     app.router.add_get("/api/outbox", handlers.api_outbox_list)
     app.router.add_get("/api/outbox/{filename}", handlers.api_outbox_download)
     app.router.add_post("/api/screenshot", handlers.api_screenshot)
+
+    # Diagnostics / "Report a Problem" (redacted support bundle)
+    app.router.add_post("/api/diagnostics/collect", handlers.api_diagnostics_collect)
+    app.router.add_get(
+        "/api/diagnostics/download/{filename}", handlers.api_diagnostics_download
+    )
 
     # Portability (export/import config+memory as zip)
     app.router.add_get("/api/portability/export", handlers.api_portability_export)

@@ -302,6 +302,16 @@ interface ChatInputProps {
   showContextPct?: boolean
   isRunning?: boolean
   onStop?: () => void
+  /**
+   * True when the slot's last turn ended without a reply, so an EMPTY composer
+   * offers to pick it back up instead of showing a dead send button. Together
+   * with `onContinue` this turns the composer's one permanently-disabled state
+   * into the recovery affordance — no new control, no new row.
+   */
+  continuable?: boolean
+  onContinue?: () => void
+  /** True while a continue request is in flight. */
+  continuing?: boolean
   isQueued?: boolean
   stopState?: 'idle' | 'soft_pending' | 'killing'
   approvalMode?: string
@@ -497,6 +507,9 @@ function ChatInput({
   showContextPct,
   isRunning = false,
   onStop,
+  continuable = false,
+  onContinue,
+  continuing = false,
   isQueued = false,
   stopState,
   approvalMode,
@@ -959,6 +972,14 @@ function ChatInput({
   const isMobile = useIsMobile()
   const ime = useImeGuard()
   const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
+  // An icon swap alone announces nothing: the user would not learn that the last
+  // turn died, nor that the button in the usual send position now means something
+  // else. The empty-state placeholder is dead space too, so it carries the
+  // explanation — and it names typing as the other way out, so the morph never
+  // feels like a trap.
+  const continuePlaceholder = continuable && onContinue
+    ? i18nT('components.chatInput.turn_interrupted_press_continue')
+    : ''
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [filePickerOpen, setFilePickerOpen] = useState(false)
   const [fileQuery, setFileQuery] = useState('')
@@ -2309,7 +2330,7 @@ function ChatInput({
           aria-label={i18nT('components.chatInput.message_input')}
           className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
-          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : resolvedPlaceholder}
+          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || resolvedPlaceholder}
           readOnly={optimizing}
           rows={1}
           value={value}
@@ -2611,6 +2632,28 @@ function ChatInput({
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
               </button>
               {/* 'primary' is a stable theming hook (button.primary) — see website/docs/theming-contract.md */}
+              {/*
+                Sixth state of this button. The first five are send / stop /
+                queue / steer / disabled; this one claims the ONE state that was
+                previously dead weight — an empty composer on a slot whose last
+                turn was cut short. Pressing it resumes the turn instead of
+                sending nothing. The moment the user types a character the arrow
+                and the send action come back, so the control never carries two
+                meanings at once.
+              */}
+              {continuable && onContinue && !value.trim() && !pendingFiles.length ? (
+                <button
+                  className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                  onClick={onContinue}
+                  disabled={continuing || disabled || optimizing || !connected}
+                  aria-label={i18nT('components.chatInput.continue_interrupted_turn')}
+                  title={i18nT('components.chatInput.continue_interrupted_turn')}
+                  data-testid="composer-continue"
+                  {...offlineProps(connected, 'continue', i18nT('components.chatInput.continue_interrupted_turn'))}
+                >
+                  {continuing ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                </button>
+              ) : (
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
@@ -2620,6 +2663,7 @@ function ChatInput({
               >
                 <ArrowUp size={18} />
               </button>
+              )}
             </>)}
           </div>
         </div>

@@ -36,9 +36,15 @@ from kiro_crew.dashboard.chat_persistence import (
     get_reasoning_effort_values,
     save_slot_off_loop,
 )
-from kiro_crew.dashboard.chat_runner import _context_usage_payload, _run_chat
+from kiro_crew.dashboard.chat_runner import (
+    _context_usage_payload,
+    _run_chat,
+    _start_next_queued_turn,
+)
 from kiro_crew.dashboard.chat_title import _maybe_auto_title
 from kiro_crew.dashboard.chat_utils import (
+    _MANUAL_RESUME_MSG,
+    SYNTHETIC_RECOVERY_KIND,
     _build_stream_chunk,
     _edit_queued_by_id,
     _emit_agent_assignment,
@@ -52,6 +58,7 @@ from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
     effective_session_key,
 )
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import (
     _MAX_PENDING_CONTEXT,
     DashboardState,
@@ -1347,6 +1354,130 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
         metadata={"slot": name, "force": False},
     )
     return web.json_response({"ok": True})
+
+
+async def api_chat_slot_continue(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/continue — pick a turn back up after it was cut short.
+
+    Runs the same synthetic-continuation machinery the runner already uses for
+    its own post-transient recovery: queue the continuation at the head, then let
+    ``_start_next_queued_turn`` land it as an ``inject`` row and dispatch the
+    turn. No bespoke dispatch path, and the row folds into the existing recovery
+    card instead of printing machine prose as a user bubble.
+
+    The frontend decides whether to OFFER this (it has the transcript, `running`
+    and the queue locally, so it needs no server field for that). This endpoint
+    re-checks under ``slot._lock`` because the client's view is a WS snapshot and
+    therefore lagging: a press landing in the instant a turn starts, or a second
+    browser tab acting on a stale cache, would otherwise dispatch a duplicate
+    turn against one slot — real tokens, real tool calls, real repo writes. Every
+    other dispatch route guards the same way (see ``api_chat_slot_regenerate``).
+    """
+    blocked = await reject_if_kiro_unverified(request)
+    if blocked is not None:
+        return blocked
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # App ownership check (App Kit §5.2): deny-by-default for app tokens, mirroring
+    # api_chat. Without it an app token holding /api/chat could resume ANY
+    # interrupted slot — including a dashboard user's — and that is not a read: it
+    # dispatches an agent turn that runs tools and writes to the repo. Same
+    # indistinguishable 404 as the send path, so the response cannot be used to
+    # probe which foreign slots exist.
+    request_app = request.get("app", "")
+    if request_app and request_app != slot._app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat_continue",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot.key}",
+            error=(
+                "app cannot access unscoped slots" if not slot._app
+                else "app does not own this slot"
+            ),
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    async with slot._lock:
+        if slot.running:
+            return web.json_response(
+                {"error": "slot is running", "code": "slot_running"}, status=409
+            )
+        if slot._in_stage_execution:
+            # An autopilot plan reads `running` False BETWEEN stages while it is
+            # still mid-plan, so `running` alone would let a Continue dispatch
+            # concurrently with the next stage — two turns interleaving tool calls
+            # and repository writes on one slot.
+            return web.json_response(
+                {"error": "slot is orchestrating", "code": "slot_orchestrating"}, status=409
+            )
+        if slot._stopping or slot._stop_state != "idle":
+            return web.json_response(
+                {"error": "a stop is in progress", "code": "slot_stopping"}, status=409
+            )
+        if slot.queue_depth:
+            # The runner is about to pick the thread back up on its own; adding a
+            # continuation would double-fire.
+            return web.json_response(
+                {"error": "queued messages pending", "code": "slot_queue_pending"}, status=409
+            )
+        if any(not f.done() for f in slot._approval_futures.values()):
+            return web.json_response(
+                {"error": "approval pending", "code": "slot_approval_pending"}, status=409
+            )
+        if not _is_interrupted(slot):
+            return web.json_response(
+                {"error": "nothing to continue", "code": "slot_not_interrupted"}, status=409
+            )
+
+        slot.queue_insert(0, _MANUAL_RESUME_MSG, kind=SYNTHETIC_RECOVERY_KIND)
+
+    sel().log_tool_invocation(
+        session_key=_history_key_for(name),
+        agent=getattr(slot, "agent", "") or "kirocrew",
+        source="dashboard",
+        tool_name="dashboard_continue",
+        tool_kind="command",
+        outcome="ok",
+        metadata={"slot": name},
+    )
+    started = await _start_next_queued_turn(state, slot)
+    if not started:
+        # Lost a race for the queue entry (a concurrent dequeue consumed it).
+        # The turn is running either way, so this is not an error for the caller.
+        logger.info("continue: queue entry consumed by a concurrent dequeue (slot %s)", name)
+    state.push_slots_update()
+    return web.json_response({"ok": True, "slot": slot.key})
+
+
+def _is_interrupted(slot: _ChatSlot) -> bool:
+    """True when the transcript shows a turn that ended without a reply.
+
+    Two shapes: the last conversational row is the USER's (nothing came back at
+    all — a gateway restart mid-turn leaves exactly this), or it is the
+    ASSISTANT's but an error row follows it (the turn streamed partway then died,
+    which is otherwise shape-identical to a clean completion).
+
+    Deliberately does not distinguish "produced some output" from "produced
+    none": ``_MANUAL_RESUME_MSG`` is worded to hold in both cases, so the
+    distinction would buy a branch and nothing else.
+    """
+    saw_trailing_error = False
+    for m in reversed(slot.messages):
+        role = m.get("role")
+        meta = m.get("meta") or {}
+        if role == "assistant" and meta.get("kind") == "compaction":
+            continue
+        if role in ("user", "assistant") and m.get("content"):
+            return True if role == "user" else saw_trailing_error
+        if role == "error":
+            saw_trailing_error = True
+    return False
 
 
 async def api_chat_slot_interrupt(request: web.Request) -> web.Response:

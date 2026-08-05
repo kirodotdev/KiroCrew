@@ -1342,6 +1342,8 @@ export const api = {
   resolveNavLinks: (links: { url: string; context: string }[]) => post('/api/chat/nav/resolve-links', { links }).then(j) as Promise<{ summaries: string[] }>,
   renameSlot: (slot: string, title: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/title', { title }).then(j),
   regenerateSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/regenerate').then(j),
+  /** Pick an interrupted turn back up. NOT `/resume` — that path opens a history session into a tab. */
+  continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),
   switchVariant: (slot: string, index: number) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/switch-variant', { index }).then(j),
   editResend: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/edit-resend', { ts, content }).then(j),
   rewind: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/rewind', { ts, content }).then(j),
@@ -1454,6 +1456,17 @@ export const api = {
     if (r.copy) copyToClipboard(r.copy)
     return r
   }),
+  collectDiagnostics: (body: { note: string; include_logs: boolean }) =>
+    post('/api/diagnostics/collect', body).then(j) as Promise<{
+      zip_path: string
+      filename: string
+      included: string[]
+      skipped: string[]
+      redaction_summary: Record<string, number>
+      total_redactions: number
+      github_issue_url: string
+      download_url: string
+    }>,
   refineTaskInput: (input: string) => post('/api/taskrunner/refine', { input }).then(j),
   refineStatus: () => fetch('/api/taskrunner/refine').then(j),
   refineCancel: () => post('/api/taskrunner/refine/cancel').then(j),

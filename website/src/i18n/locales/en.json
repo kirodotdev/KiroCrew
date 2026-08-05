@@ -2955,6 +2955,7 @@
       "command": "Command",
       "context_usage": "Context usage",
       "context_window": "Context window",
+      "continue_interrupted_turn": "Continue the interrupted turn",
       "drag_to_resize_double_click_to_reset": "Drag to resize (double-click to reset)",
       "file": "File",
       "force_kill_discards_in_progress_work_and_queued": "Force kill — discards in-progress work and queued messages",
@@ -2992,6 +2993,7 @@
       "taking_longer_than_expected": "taking longer than expected",
       "total": "Total",
       "trust_reads": "Trust reads",
+      "turn_interrupted_press_continue": "Last turn was interrupted — press ▶ to continue, or just type",
       "upload_file": "Upload file",
       "use_a_skill": "Use a skill",
       "used": "Used"
@@ -4632,11 +4634,13 @@
       "recoveryCard": {
         "backend_error_continuing": "backend error · continuing automatically",
         "cancelled_continuing": "cancelled · continuing",
+        "continued_by_you": "Continued at your request",
         "empty_output_continuing": "empty output · continuing automatically",
         "n_patterns": "{{count}} patterns",
         "n_tool_calls_blocked": "{{count}} tool calls blocked",
         "no_response_returned": "No response returned",
         "recovered_continuing": "recovered · continuing",
+        "resuming_the_interrupted_turn": "resuming the interrupted turn",
         "safety_policy_continuing": "safety policy · continuing automatically",
         "tool_call_blocked": "Tool call blocked",
         "tool_stopped_responding": "Tool stopped responding",
@@ -4736,7 +4740,11 @@
         "could_not_load_snapshot": "Could not load snapshot:",
         "events": "events"
       },
-      "toolCallLine": {}
+      "toolCallLine": {},
+      "errorCard": {
+        "continue": "Continue",
+        "continue_hint": "Resume from where it stopped. Work already written to disk is untouched."
+      }
     },
     "chatPage": {
       "agent_list": "Agent list",

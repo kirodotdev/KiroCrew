@@ -520,6 +520,15 @@ POSTTOKEN_RECOVERY_PREFIX = "[Interrupted turn — automatic recovery]"
 # Prefix on the runner-injected nudge that breaks a repeated empty-generation
 # pattern (the model returned no output twice). Body: _EMPTY_AUTO_CONTINUE_MSG.
 EMPTY_RESPONSE_RECOVERY_PREFIX = "[Empty response — automatic recovery]"
+# Prefix on the continuation injected when the USER pressed Continue on an
+# interrupted turn. Body: _MANUAL_RESUME_MSG in chat_utils. Named into the
+# *_RECOVERY_PREFIX family because test_recovery_card_prefixes.py keys the
+# cross-language drift guard on that suffix — a marker outside the family is
+# invisible to it, and the card would silently render machine prose as a bubble.
+# The VALUE is what carries the user-facing meaning, and it deliberately does NOT
+# say "automatic recovery" like the five above: a person pressed the button, and
+# the card must not claim the system recovered by itself.
+MANUAL_RESUME_RECOVERY_PREFIX = "[Continue — requested by the user]"
 
 
 def should_queue_refusal_recovery(

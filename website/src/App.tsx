@@ -95,6 +95,7 @@ import { useAgents } from './hooks/useAgents'
 import ShortcutsModal from './components/ShortcutsModal'
 import CommandPalette from './components/CommandPalette'
 import Modal from './components/Modal'
+import ReportProblemModal from './components/ReportProblemModal'
 
 import { i18nT } from './i18n/t'
 import { appPageLabel } from './components/appstore/appManifest'
@@ -1464,6 +1465,9 @@ export default function App() {
   useNativeNotification(botName, avatar)
 
   const [updateError, setUpdateError] = useState('')
+  // Nav-rail "Report issue" → the shared diagnostics flow. Held at shell level
+  // (not in the rail) so the modal is not unmounted when the rail collapses.
+  const [reportProblemOpen, setReportProblemOpen] = useState(false)
 
   const handleUpdate = useCallback(async () => {
     setShowChangelog(false)
@@ -1842,6 +1846,9 @@ export default function App() {
           <NotificationsBellButton />
         </div>
       </header>
+
+      {/* Report a Problem — mounted by the nav rail's "Report issue" link. */}
+      <ReportProblemModal open={reportProblemOpen} onClose={() => setReportProblemOpen(false)} />
 
       {/* Update error modal */}
       {updateError && (
@@ -2319,7 +2326,16 @@ export default function App() {
                   <div className="rail-community-links flex items-center gap-[5px] flex-1 min-w-0 ml-1.5 text-[12px]">
                     <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" title={i18nT('app.star_kirocrew_on_github')} aria-label={i18nT('app.star_kirocrew_on_github')} className="shrink-0 rounded text-muted hover:text-text transition-colors">{i18nT('app.star_us')}</a>
                     <span aria-hidden="true" className="shrink-0 opacity-40">·</span>
-                    <a href="https://github.com/kirodotdev/KiroCrew/issues" target="_blank" rel="noopener noreferrer" title={i18nT('app.report_an_issue_on_github')} aria-label={i18nT('app.report_an_issue_on_github')} className="min-w-0 overflow-hidden text-ellipsis rounded text-muted hover:text-text transition-colors">{i18nT('app.report_issue')}</a>
+                    {/* "Report issue" opens the SAME diagnostics flow as Settings ›
+                        About › Support rather than linking to the bare issue list.
+                        A user who reaches for this link is reporting a failure, and
+                        an empty issue form loses exactly what triage needs (logs +
+                        crash reports); the collector scrubs secrets, zips them, and
+                        still ends at a pre-filled GitHub issue, so the old
+                        destination is reachable WITH evidence attached. A <button>
+                        (not an <a>) because it no longer navigates — styled to match
+                        its sibling link so the row's width budget above is unchanged. */}
+                    <button type="button" onClick={() => setReportProblemOpen(true)} title={i18nT('app.report_a_problem_with_diagnostics')} aria-label={i18nT('app.report_a_problem_with_diagnostics')} className="min-w-0 overflow-hidden text-ellipsis rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-0 p-0 text-[12px]">{i18nT('app.report_issue')}</button>
                   </div>
                   <a href="https://kiro.dev/discord/" target="_blank" rel="noopener noreferrer" title={i18nT('app.discord_community')} aria-label={i18nT('app.kiro_discord_community')} className="flex items-center justify-center ml-1 w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><DiscordIcon size={15} /></a>
                 </div>

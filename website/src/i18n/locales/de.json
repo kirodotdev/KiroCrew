@@ -90,7 +90,6 @@
     "star_us": "Stern geben",
     "report_issue": "Problem melden",
     "star_kirocrew_on_github": "Kiro Crew auf GitHub einen Stern geben",
-    "report_an_issue_on_github": "Ein Problem auf GitHub melden",
     "click_to_collapse_readouts": "klicken zum Einklappen der Messwerte",
     "click_to_expand_readouts": "klicken zum Aufklappen der Messwerte",
     "gateway_offline_reconnecting": "Gateway offline — wird neu verbunden",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "Neueste Änderungen werden abgerufen",
     "rebuilding_package": "Paket wird neu gebaut",
     "restarting_server": "Server wird neu gestartet",
-    "syncing_workspace": "Workspace wird synchronisiert"
+    "syncing_workspace": "Workspace wird synchronisiert",
+    "report_a_problem_with_diagnostics": "Problem melden — erfasst Protokolle und Absturzberichte, Geheimnisse entfernt"
   },
   "appSdk": {
     "chatEmbed": {
@@ -3430,7 +3430,6 @@
       "retrying": "Wird wiederholt..."
     },
     "chatInput": {
-      "message_placeholder": "Nachricht an {{bot}}… (/command · @file · $skill)",
       "add_files_options": "Dateien & Optionen hinzufügen",
       "allow_once": "Einmal erlauben",
       "apply_a_ready_made_set_of_instructions": "Vorgefertigten Anweisungssatz anwenden",
@@ -3441,6 +3440,7 @@
       "command": "Befehl",
       "context_usage": "Kontextnutzung",
       "context_window": "Kontextfenster",
+      "continue_interrupted_turn": "Unterbrochenen Durchlauf fortsetzen",
       "could_not_submit_that_decision_see_the_console_f": "Entscheidung konnte nicht übermittelt werden — Details in der Konsole.",
       "drag_to_resize_double_click_to_reset": "Ziehen zum Ändern der Größe (Doppelklick zum Zurücksetzen)",
       "file": "Datei",
@@ -3455,6 +3455,7 @@
       "let_the_agent_read_one_of_your_files": "Dem Agenten erlauben, eine Ihrer Dateien zu lesen",
       "let_the_agent_use_the_browser": "Dem Agenten die Browser-Nutzung erlauben",
       "message_input": "Nachrichteneingabe",
+      "message_placeholder": "Nachricht an {{bot}}… (/command · @file · $skill)",
       "model": "Modell",
       "optimize_prompt": "Prompt optimieren",
       "optimize_prompt_busy_optimizing_another_chat": "Prompt optimieren — anderer Chat wird gerade optimiert",
@@ -3462,6 +3463,8 @@
       "optimizing_prompt": "Prompt wird optimiert…",
       "plan_pre_filled_add_context_then_send": "Plan vorbefüllt — Kontext hinzufügen und dann senden",
       "project": "Projekt",
+      "queue": "Warteschlange",
+      "queue_desc": "Wird nach Abschluss des aktuellen Zugs ausgeführt",
       "queue_message": "Nachricht in die Warteschlange stellen",
       "queue_run_after_the_current_turn_finishes_enter": "In die Warteschlange — nach Ende des aktuellen Zugs ausführen (Enter)",
       "quick_actions_like_clearing_the_chat_or_checking": "Schnellaktionen wie das Leeren des Chats oder das Prüfen des Verbrauchs",
@@ -3484,6 +3487,7 @@
       "skill": "Skill",
       "slash_commands": "Slash-Befehle",
       "steer": "Steuern",
+      "steer_desc": "Wird sofort in den laufenden Zug eingesteuert",
       "steer_inject_into_the_running_turn_enter": "Steuern — in den laufenden Zug einspeisen (Enter)",
       "stop_generation": "Erzeugung stoppen",
       "stop_recording": "Aufnahme beenden",
@@ -3498,13 +3502,11 @@
       "transcribing": "Wird transkribiert…",
       "transcribing_please_wait": "Wird transkribiert, bitte warten…",
       "trust_reads": "Lesevorgängen vertrauen",
+      "turn_interrupted_press_continue": "Letzter Durchlauf wurde unterbrochen – ▶ drücken, um fortzusetzen, oder einfach tippen",
       "upload_file": "Datei hochladen",
       "use_a_skill": "Einen Skill verwenden",
       "used": "Verbraucht",
-      "voice_input": "Spracheingabe",
-      "queue": "Warteschlange",
-      "queue_desc": "Wird nach Abschluss des aktuellen Zugs ausgeführt",
-      "steer_desc": "Wird sofort in den laufenden Zug eingesteuert"
+      "voice_input": "Spracheingabe"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -5087,6 +5089,25 @@
     },
     "errorNotice": {
       "dismiss": "Schließen"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "Problem melden",
+      "what_happened": "Was ist passiert?",
+      "note_placeholder": "z. B. Nach dem Update schlägt jede Nachricht mit „process exited (rc=None)“ fehl.",
+      "include_recent_logs": "Aktuelle Protokolle einbeziehen",
+      "include_logs_hint": "Protokolle von Gateway und kiro-cli. Ausschalten, um nur Absturzberichte zu senden.",
+      "redaction_notice": "Bearer-Tokens, Sitzungs-Cookies und AWS-Schlüssel werden automatisch entfernt, bevor die ZIP-Datei erstellt wird.",
+      "collect_failed": "Diagnosedaten konnten nicht erfasst werden",
+      "cancel": "Abbrechen",
+      "create_report": "Bericht erstellen",
+      "collecting": "Wird erfasst…",
+      "done": "Fertig",
+      "diagnostics_ready": "Diagnose bereit — {{redactions}} Geheimnis(se) in {{files}} Datei(en) redigiert.",
+      "saved_to": "Gespeichert unter",
+      "show_in_finder": "Im Finder anzeigen",
+      "download_zip": "ZIP herunterladen",
+      "open_github_issue": "GitHub-Issue öffnen",
+      "prefill_hint": "Beim Öffnen des Issues werden die Details vorbefüllt — ziehen Sie dann die ZIP-Datei hinein."
     }
   },
   "hooks": {
@@ -6133,11 +6154,13 @@
       "recoveryCard": {
         "backend_error_continuing": "Backend-Fehler · wird automatisch fortgesetzt",
         "cancelled_continuing": "abgebrochen · wird fortgesetzt",
+        "continued_by_you": "Auf Ihre Anfrage fortgesetzt",
         "empty_output_continuing": "leere Ausgabe · wird automatisch fortgesetzt",
         "n_patterns": "{{count}} Muster",
         "n_tool_calls_blocked": "{{count}} Werkzeugaufrufe blockiert",
         "no_response_returned": "Keine Antwort",
         "recovered_continuing": "wiederhergestellt · wird fortgesetzt",
+        "resuming_the_interrupted_turn": "unterbrochener Durchlauf wird fortgesetzt",
         "safety_policy_continuing": "Sicherheitsrichtlinie · wird automatisch fortgesetzt",
         "tool_call_blocked": "Werkzeugaufruf blockiert",
         "tool_stopped_responding": "Werkzeug antwortet nicht mehr",
@@ -6290,6 +6313,10 @@
         "aria_show_details": "Details für Werkzeug {{label}} anzeigen",
         "opened_in_the_side_panel": "Im Seitenbereich geöffnet",
         "blocked_by_security_policy": "Durch Sicherheitsrichtlinie blockiert"
+      },
+      "errorCard": {
+        "continue": "Fortsetzen",
+        "continue_hint": "Ab der Unterbrechung fortsetzen. Bereits auf die Festplatte geschriebene Arbeit bleibt unberührt."
       }
     },
     "chatPage": {
@@ -8974,6 +9001,11 @@
         "token_description": "Das Secret, das neben der Bot ID auf derselben Einstellungsseite angezeigt wird.",
         "token_label": "WeCom-Bot-Secret",
         "token_placeholder": "WeCom-Bot-Secret einfügen"
+      },
+      "reportProblemCard": {
+        "support": "Support",
+        "blurb": "Etwas funktioniert nicht? Senden Sie uns einen Diagnosebericht — Protokolle werden zuvor von Geheimnissen befreit.",
+        "report_a_problem": "Problem melden"
       }
     },
     "settingsPage": {

@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 
 from kiro_crew import __version__ as _mc_version
-from kiro_crew import platform_compat
+from kiro_crew import diagnostics, platform_compat
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.agent import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
@@ -461,7 +461,7 @@ def _doctor_model_url_reachable(issues: list[str]) -> None:
         print("               keep retrying with backoff on every gateway boot.")
 
 
-def _doctor(platform_boot_error: "Exception | None" = None) -> None:
+def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
     ``platform_boot_error`` carries a :class:`PlatformCompositionError` from
@@ -473,6 +473,34 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
 
     print("Kiro Crew Doctor 👻\n")
     issues: list[str] = []
+
+    # ── Diagnostics bundle (--bundle) ──
+    # Short-circuit: collect logs + crash reports into a redacted zip and print
+    # the local path plus a pre-filled GitHub issue URL, then exit. Shares the
+    # exact collector the dashboard "Report a Problem" button uses.
+    if bundle:
+        print("Collecting diagnostics bundle (secrets are redacted)...\n")
+        # The collector touches the filesystem in several places that can fail for
+        # ordinary reasons — an unwritable data home, a plain FILE sitting where
+        # `diagnostics/` should be, a full disk. Letting OSError escape prints a
+        # traceback at the one moment the user is already trying to report a
+        # failure, so fail with a readable message and a nonzero status instead.
+        try:
+            result = diagnostics.collect_bundle()
+        except OSError as exc:
+            print(f"  ❌ could not write the diagnostics bundle: {exc}")
+            print("     Check that ~/.kiro/crew is writable and has free space.")
+            sys.exit(1)
+        print(f"  ✅ bundle: {result.zip_path}")
+        print(
+            f"     {len(result.included)} file(s) · "
+            f"{result.total_redactions} secret(s) redacted"
+        )
+        if result.skipped:
+            print(f"     skipped (not found): {', '.join(result.skipped)}")
+        print("\n  Open a pre-filled GitHub issue (then drag the zip in):")
+        print(f"  {result.github_issue_url}")
+        return
 
     # ── Platform edition ──
     # Report the composed profile, and surface a boot-composition failure as a

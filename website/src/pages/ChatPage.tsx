@@ -17,6 +17,7 @@ import {
   appendMessage, resumeFromHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
   selectComposerBusy,
+  selectContinuable,
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
   setActiveSlot, truncateAfterIndex, replaceMessages,
@@ -161,6 +162,7 @@ import Clickable from '../components/Clickable'
 import StopEventCard from './chat/StopEventCard'
 import NudgeCard, { nudgeMatchesLoop } from './chat/NudgeCard'
 import RecoveryCard, { parseRecoveryMessage } from './chat/RecoveryCard'
+import { ErrorCard } from './chat/ErrorCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
@@ -3812,6 +3814,44 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     })
   }, [activeSlot, regenerating, slotRunning, messages, lastTextIdx, dispatch])
 
+  // ---- Continue an interrupted turn ------------------------------------------
+  // A turn can end without the assistant handing the floor back: the connection
+  // dropped, the gateway restarted during an app update, or the runner's own
+  // recovery ladder gave up. The transcript is left either with an unanswered
+  // user message or with a trailing error card, and until now the only way
+  // forward was to retype the prompt.
+  const continuable = useAppSelector(selectContinuable)
+  const [continuing, setContinuing] = useState(false)
+  useEffect(() => { setContinuing(false) }, [activeSlot])
+  // The turn taking over is the success signal; clear the spinner then.
+  useEffect(() => { if (continuing && slotRunning) setContinuing(false) }, [continuing, slotRunning])
+  // Backstop: a request that neither starts a turn nor rejects must not strand
+  // the button in a disabled state. Mirrors the regenerate safety timeout.
+  useEffect(() => {
+    if (!continuing) return
+    const t = setTimeout(() => { setContinuing(false) }, 30_000)
+    return () => clearTimeout(t)
+  }, [continuing])
+  const handleContinue = useCallback(() => {
+    if (!activeSlot || continuing || !continuable) return
+    setContinuing(true)
+    // No optimistic transcript mutation: the backend appends the continuation as
+    // an `inject` row and the WS `slots` update flips `running`, so the UI
+    // converges from the server. Nothing to roll back on failure.
+    api.continueSlot(activeSlot).catch((e: unknown) => {
+      // eslint-disable-next-line no-console -- surface continue failures for debugging
+      console.warn('continue failed', e)
+      setContinuing(false)
+    })
+  }, [activeSlot, continuing, continuable])
+  // Index of the newest error row. Only that one gets the action: an error
+  // further up the transcript belongs to a turn that has already been
+  // superseded, and offering to "continue" it would resume the wrong thing.
+  const lastErrorIdx = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'error') return i
+    return -1
+  }, [messages])
+
   const [flyingQuote, setFlyingQuote] = useState<{ text: string; from: DOMRect } | null>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
 
@@ -4394,7 +4434,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const recovery = parseRecoveryMessage(m.content)
       if (recovery) return <RecoveryCard key={key} parsed={recovery} disclosureKey={key} />
     }
-    if (m.role === 'error') return <div key={key} className="bg-danger-subtle text-danger text-[13px] px-3 py-2 rounded-md border border-danger/15 self-center animate-scale-in">{m.content}</div>
+    if (m.role === 'error') return (
+      <ErrorCard
+        key={key}
+        content={m.content}
+        onContinue={continuable && i === lastErrorIdx ? handleContinue : undefined}
+        continuing={continuing}
+      />
+    )
     if (m.role === 'notice') return <div key={key} className="bg-card text-muted text-[13px] px-3 py-2 rounded-md border border-border self-center animate-scale-in">{m.content}</div>
     if (m.role === 'permission') return null
     if (m.role === 'mcp_oauth') {
@@ -5218,6 +5265,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(currentSlot?.model || resolvedModel || 'auto')}
               showContextPct={chatConfig.showContextPct}
               isRunning={composerBusy}
+              continuable={continuable}
+              onContinue={handleContinue}
+              continuing={continuing}
               onStop={() => {
                 const slot = activeSlot
                 if (!slot) return
