@@ -199,6 +199,13 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
 
 ## Troubleshooting
 
+- **Desktop gateway recovery refuses to force-stop the port** - the Electron
+  launcher uses `netstat -ano` to identify the listener, PowerShell
+  (`Get-CimInstance`) with a WMIC fallback to read its command line, and
+  `taskkill /F /PID` only after confirming a Kiro Crew executable or
+  `python -m kiro_crew` process. Localized listener-state text is ignored.
+  SSH forwards and unrelated processes are never terminated, and a failed or
+  timed-out `netstat` probe is treated as unknown rather than as a free port.
 - **`ModuleNotFoundError: No module named 'fcntl'`** — you installed a
   branch/commit that predates the Windows port. `fcntl` is a Unix-only Python
   stdlib module; it cannot be pip-installed on Windows. Update to a build that

@@ -24,12 +24,26 @@ const {
   shouldOfferRelocation,
   describeLocation,
 } = require("./bundle-location");
-const { stopGatewayGracefully: _stopGatewayGracefully, forceStopPort, classifyPortOwner } = require("./gateway-stop");
+const {
+  stopGatewayGracefully: _stopGatewayGracefully,
+  forceStopPort,
+  classifyPortOwner,
+  isKirocrewCommand,
+} = require("./gateway-stop");
+const {
+  windowsGatewayExecutablePath,
+  windowsListenPids,
+  windowsProcessCommand,
+  windowsTaskkill,
+} = require("./windows-port");
 const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = require("./gateway-wait");
 const { describeSandboxProfileNeed } = require("./sandbox-profile");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { createLivenessMonitor } = require("./gateway-liveness");
-const { chooseRecoveryStrategy } = require("./gateway-recovery");
+const {
+  chooseRecoveryStrategy,
+  unrecoverableGatewayDialog,
+} = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("./instance-guard");
@@ -293,11 +307,29 @@ function quitOtherApp(appName) {
 // Function declarations are hoisted, so the helpers defined further down this
 // file are available here.
 //
-// On Windows there is no lsof/ps, so classifyPortOwner returns "unknown" and
-// the caller reuses the port rather than force-killing an owner it cannot
-// identify. A Windows-native netstat/taskkill owner probe is a follow-up
-// (tracked separately) — it needs runtime verification on real Windows.
+function isTrustedWindowsGatewayCommand(command) {
+  const gatewayBin = findKirocrewBin(
+    fs,
+    os,
+    path,
+    process.resourcesPath,
+    __dirname
+  );
+  const executablePath = windowsGatewayExecutablePath(gatewayBin);
+  return isKirocrewCommand(command, {
+    trustedExecutablePaths: executablePath ? [executablePath] : [],
+  });
+}
+
 function probeGatewayPortOwner(port) {
+  if (IS_WIN) {
+    return classifyPortOwner(port, {
+      getListenPids: windowsListenPids,
+      getCommand: windowsProcessCommand,
+      isKirocrew: isTrustedWindowsGatewayCommand,
+      log: glog,
+    });
+  }
   return classifyPortOwner(port, {
     getListenPids: _lsofListenPids,
     getCommand: _psCommand,
@@ -1584,7 +1616,14 @@ function fadeLoadingScreen(wc, timeoutMs = 8000) {
  * @returns {Promise<'retry'|'force-retry'|'reveal'|'quit'>}
  */
 function showGatewayErrorDialog(parentWin, opts) {
-  const { title, message, logTail, logPath, portConflict } = opts;
+  const {
+    title,
+    message,
+    logTail,
+    logPath,
+    portConflict,
+    showQuitButton = true,
+  } = opts;
   return new Promise((resolve) => {
     const dark = nativeTheme.shouldUseDarkColors;
     const hasParent = parentWin && !parentWin.isDestroyed();
@@ -1602,8 +1641,8 @@ function showGatewayErrorDialog(parentWin, opts) {
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     // The primary action depends on whether the port is held: a plain retry
     // can't clear a port conflict, so offer force-stop instead.
-    const primaryAction = portConflict ? "force-retry" : "retry";
-    const primaryLabel = portConflict ? "Force-stop &amp; Retry" : "Retry";
+    const primaryAction = opts.primaryAction || (portConflict ? "force-retry" : "retry");
+    const primaryLabel = opts.primaryLabel || (portConflict ? "Force-stop & Retry" : "Retry");
     const fg = dark ? "#e2e8f0" : "#1e293b";
     const muted = dark ? "#94a3b8" : "#64748b";
     const html = `<!DOCTYPE html><html><head><style>
@@ -1629,9 +1668,9 @@ function showGatewayErrorDialog(parentWin, opts) {
       <div class="pathline">${esc(logPath)}</div>
       <pre class="log">${esc(logTail || "(launch log is empty)")}</pre>
       <div class="row">
-        <button class="ok" onclick="act('${primaryAction}')">${primaryLabel}</button>
+        <button class="ok" onclick="act('${primaryAction}')">${esc(primaryLabel)}</button>
         <button class="cancel" onclick="act('reveal')">Reveal Log</button>
-        <button class="cancel" onclick="act('quit')">Quit</button>
+        ${showQuitButton ? '<button class="cancel" onclick="act(\'quit\')">Quit</button>' : ""}
       </div>
       <script>
         function act(a){ document.title = 'mc-action:' + a; window.close(); }
@@ -1710,6 +1749,19 @@ function _psPpid(pid) {
  * @returns {Promise<{killed:number, freed:boolean, survivors:number[]}>}
  */
 function forceStopGatewayPort(port) {
+  if (IS_WIN) {
+    return forceStopPort(port, {
+      getListenPids: windowsListenPids,
+      getCommand: windowsProcessCommand,
+      kill: (pid) => windowsTaskkill(pid, {
+        isTrustedCommand: isTrustedWindowsGatewayCommand,
+      }),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      isKirocrew: isTrustedWindowsGatewayCommand,
+      failClosedOnProbeError: true,
+      log: glog,
+    });
+  }
   return forceStopPort(port, {
     getListenPids: _lsofListenPids,
     getCommand: _psCommand,
@@ -1782,7 +1834,8 @@ async function recoverWedgedGateway(win) {
   gatewayProcess = null;
   let freed = true;
   let foreignHolder = false;
-  try { ({ freed, foreignHolder } = await forceStopGatewayPort(PORT)); }
+  let probeFailed = false;
+  try { ({ freed, foreignHolder, probeFailed = false } = await forceStopGatewayPort(PORT)); }
   catch (e) {
     // We couldn't even probe the port (lsof failed to exec). Don't silently
     // assume freed — let the respawn's bind be the arbiter, but say so loudly.
@@ -1794,8 +1847,10 @@ async function recoverWedgedGateway(win) {
   // recovered — show the honest error path so the user learns a restart (or
   // freeing the other app) is required.
   if (!freed) {
-    glog(`liveness: port still held after force-stop (${foreignHolder ? "foreign holder" : "unkillable wedge"}); surfacing restart-required`);
-    return showUnrecoverableGatewayError(win, PORT);
+    const reason = probeFailed ? "probe failed"
+      : (foreignHolder ? "foreign holder" : "unkillable wedge");
+    glog(`liveness: port not confirmed free after force-stop (${reason}); surfacing restart-required`);
+    return showUnrecoverableGatewayError(win, PORT, { probeFailed });
   }
   gatewayStartFailure = null; // re-arm so waitForGateway doesn't fail-fast on the kill we just did
   await startGateway(); // spawn a fresh child before re-waiting
@@ -1838,19 +1893,18 @@ async function reconnectExternalGateway(win) {
  * No respawn can succeed until the OS reaps it, which only a restart guarantees.
  * Tell the user plainly instead of looping a doomed retry.
  */
-async function showUnrecoverableGatewayError(win, port) {
+async function showUnrecoverableGatewayError(win, port, { probeFailed = false } = {}) {
   if (!win || win.isDestroyed()) return;
   let logTail = "";
   try { logTail = tailLines(fs.readFileSync(gatewayLogPath(), "utf8"), 60); } catch { /* no log yet */ }
   const action = await showGatewayErrorDialog(win, {
-    title: `Kiro Crew — backend stuck on port ${port}`,
-    message: `The Kiro Crew backend is wedged and cannot be stopped — it is in an `
-      + `uninterruptible state and is still holding port ${port}, so it can't be `
-      + `force-stopped or restarted in place. Restart your computer to clear it. `
-      + `(This is a known backend hang; see the launch log below for the cause.)`,
+    ...unrecoverableGatewayDialog({
+      port,
+      probeFailed,
+      isPrimaryWindow: win === mainWindow,
+    }),
     logTail,
     logPath: gatewayLogPath(),
-    portConflict: false, // hide "Force-stop & Retry" — it cannot work here
     port,
   });
   if (win.isDestroyed()) return;
@@ -1963,14 +2017,15 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
       }
       if (action === "force-retry") {
         let freed = true;
-        try { ({ freed } = await forceStopGatewayPort(PORT)); }
+        let probeFailed = false;
+        try { ({ freed, probeFailed = false } = await forceStopGatewayPort(PORT)); }
         catch (e) { glog(`force-stop: port probe failed (${e && e.message}); letting retry's bind confirm`); }
         if (win.isDestroyed()) return;
         if (!freed) {
           // The port is still held — by an unkillable wedge or a foreign app.
           // Either way a retry would just re-hit "address already in use", so
           // tell the user a restart is required rather than looping the failure.
-          return showUnrecoverableGatewayError(win, PORT);
+          return showUnrecoverableGatewayError(win, PORT, { probeFailed });
         }
       }
       if (action === "retry" || action === "force-retry") {

@@ -40,4 +40,41 @@ function chooseRecoveryStrategy({ weSpawnedGateway }) {
   return weSpawnedGateway ? "respawn" : "reconnect";
 }
 
-module.exports = { chooseRecoveryStrategy };
+/**
+ * Build the terminal recovery dialog without loading Electron.
+ *
+ * @param {object} o
+ * @param {number|string} o.port
+ * @param {boolean} [o.probeFailed]
+ * @param {boolean} [o.isPrimaryWindow]
+ * @returns {{
+ *   title:string, message:string, portConflict:false,
+ *   primaryAction:"quit", primaryLabel:string, showQuitButton:false
+ * }}
+ */
+function unrecoverableGatewayDialog({
+  port,
+  probeFailed = false,
+  isPrimaryWindow = false,
+}) {
+  return {
+    title: probeFailed
+      ? `Kiro Crew: can't verify what's using port ${port}`
+      : `Kiro Crew: backend stuck on port ${port}`,
+    message: probeFailed
+      ? `Kiro Crew could not verify which process owns port ${port}, so it did not `
+        + `risk terminating an unrelated process or starting a second gateway. `
+        + `Quit and reopen Kiro Crew to try again. If the port is still blocked, `
+        + `restart your computer.`
+      : `The Kiro Crew backend is wedged and cannot be stopped. It is in an `
+        + `uninterruptible state and is still holding port ${port}, so it can't be `
+        + `force-stopped or restarted in place. Restart your computer to clear it. `
+        + `(This is a known backend hang; see the launch log below for the cause.)`,
+    portConflict: false,
+    primaryAction: "quit",
+    primaryLabel: isPrimaryWindow ? "Quit Kiro Crew" : "Close",
+    showQuitButton: false,
+  };
+}
+
+module.exports = { chooseRecoveryStrategy, unrecoverableGatewayDialog };
