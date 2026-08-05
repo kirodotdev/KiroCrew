@@ -26,14 +26,12 @@ function TerminalTitle({ sessionId }: { sessionId: string }) {
   return <>{live || i18nT('components.bottomTerminalPanel.terminal')}</>
 }
 
-/** A terminal tab chip — mirrors the activity-bar SidePanel TabChip design */
+/** A terminal tab chip — matches the activity-bar SidePanel TabChip design:
+ *  h-7 rounded-md, active = bg-border + text-accent, inactive = muted. */
 function TabChip({ tab, active, onSelect, onClose, onTransfer, canTransfer }: {
   tab: TermTab; active: boolean; onSelect: () => void; onClose: () => void
   onTransfer: () => void; canTransfer: boolean
 }) {
-  const transferCls = canTransfer
-    ? `pi-morph shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`
-    : 'shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full bg-transparent border-none text-muted opacity-30 cursor-not-allowed'
   return (
     <div
       role="tab"
@@ -44,19 +42,19 @@ function TabChip({ tab, active, onSelect, onClose, onTransfer, canTransfer }: {
       // activates them natively instead of also selecting the tab.
       onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect() } }}
       onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onClose() } }}
-      className={`group relative flex items-center gap-1.5 h-8 pl-3 pr-1.5 rounded-full cursor-pointer shrink-0 max-w-[240px] select-none border transition-colors ${
-        active ? 'bg-bg-elevated border-border text-text-strong shadow-sm' : 'bg-transparent border-transparent text-muted hover:text-text hover:bg-bg-hover'
+      className={`group relative flex items-center gap-1 h-7 pl-2 pr-1 rounded-md cursor-pointer shrink-0 max-w-[240px] select-none transition-colors ${
+        active ? 'bg-border text-accent' : 'text-muted hover:text-text hover:bg-bg-elevated'
       }`}
     >
-      <span className="shrink-0 opacity-80"><TerminalSquare size={13} /></span>
-      <span className="min-w-0 text-[12.5px] truncate text-left">
+      <span className="shrink-0"><TerminalSquare size={16} /></span>
+      <span className="min-w-0 text-[12px] truncate text-left">
         <TerminalTitle sessionId={tab.id} />
       </span>
       <div className="flex items-center gap-0.5 shrink-0">
         <button
           onClick={(e) => { e.stopPropagation(); if (canTransfer) onTransfer() }}
           disabled={!canTransfer}
-          className={transferCls}
+          className={`pi-morph shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer ${canTransfer ? `text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}` : 'text-muted opacity-30 cursor-not-allowed'}`}
           title={canTransfer ? i18nT('components.bottomTerminalPanel.move_to_side_panel') : i18nT('components.bottomTerminalPanel.open_a_chat_page_to_move_this_terminal_there')}
           aria-label={i18nT('components.bottomTerminalPanel.move_to_side_panel')}
         >
@@ -171,8 +169,9 @@ export default function BottomTerminalPanel() {
             <div className={`absolute inset-x-0 top-0 h-[2px] transition-colors duration-200 ${dragging ? 'bg-accent' : 'bg-transparent group-hover/drag:bg-accent'}`} />
           </div>
           {/* Tab strip — same aesthetics as the activity-bar strip; drag chips
-              horizontally to reorder (framer Reorder). */}
-          <div className="flex items-center gap-1.5 h-9 shrink-0 pl-2 pr-1.5">
+              horizontally to reorder (framer Reorder). bg-bg-elevated matches
+              the SidePanel strip background. */}
+          <div className="flex items-center gap-1.5 h-9 shrink-0 pl-2 pr-1.5 bg-bg-elevated">
             <Reorder.Group
               axis="x"
               values={tabs}
