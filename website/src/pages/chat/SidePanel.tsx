@@ -19,7 +19,9 @@ import { adoptTab as adoptBottomTerminal } from '../../hooks/useBottomTerminal'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
 import { PINNED_VIEWS, useAllAppTabs } from '../../hooks/usePanelTabs'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
-import { useListboxKeyboard } from '../../hooks/useListboxKeyboard'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem
+} from '../../components/ui/dropdown-menu'
 import { safeSetItem } from '../../utils/safeStorage'
 import { useAppSelector } from '../../store'
 import { selectSlotSubagents, selectSlotToolLog } from '../../store/chatSlice'
@@ -313,31 +315,10 @@ export default function SidePanel({
     if (t?.kind !== 'terminal' || !t.sessionId) return
     if (adoptBottomTerminal(t.sessionId, t.cwd)) closeTab(id)
   }, [tabs, closeTab])
-  const [menuOpen, setMenuOpen] = useState(false)
   // Diff view preferences — persisted; 'mc-diff-split' is shared with the
   // file view's git-diff toggle so split/unified is one app-wide preference.
   const [diffLineNumbers, setDiffLineNumbers] = usePersistedBool('mc-diff-linenums', false)
   const [diffSideBySide, setDiffSideBySide] = usePersistedBool('mc-diff-split', true)
-  const menuRef = useRef<HTMLDivElement>(null)
-  // Keyboard operability for the + menu (WAI-ARIA menu pattern): roving focus
-  // across the items on open, ArrowUp/Down + Home/End, Escape/Tab closes and
-  // returns focus to the trigger. Shared hook with StyledSelect/AgentSelector.
-  const menuTriggerRef = useRef<HTMLButtonElement>(null)
-  const menuListRef = useRef<HTMLDivElement>(null)
-  const menuNoInputRef = useRef<HTMLElement>(null)
-  const closeMenuToTrigger = useCallback(() => {
-    setMenuOpen(false)
-    menuTriggerRef.current?.focus()
-  }, [])
-  const { onListKeyDown: onMenuKeyDown } = useListboxKeyboard({
-    open: menuOpen,
-    dropdownRef: menuListRef,
-    inputRef: menuNoInputRef,
-    hasFilterInput: false,
-    filteredCount: menuItems.length,
-    onEnterSingleMatch: () => {},
-    closeToTrigger: closeMenuToTrigger,
-  })
 
   // Resizable width (the actbar grid column is auto-sized, so the panel owns
   // its own width).
@@ -387,13 +368,6 @@ export default function SidePanel({
     },
     onEnd: () => { setResizing(false); safeSetItem(WIDTH_KEY, String(widthRef.current)) },
   })
-
-  useEffect(() => {
-    if (!menuOpen) return
-    const onDown = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false) }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [menuOpen])
 
   return (
     <div className="shrink-0 min-h-0 mt-0 mb-2 flex flex-col bg-bg overflow-hidden relative border-l border-t border-b border-border rounded-l-xl" style={{ width: effectiveWidth, maxWidth: '100vw' }}>
@@ -458,42 +432,34 @@ export default function SidePanel({
             </Reorder.Item>
           ))}
         </Reorder.Group>
-        {/* + menu */}
-        <div className="relative shrink-0" ref={menuRef}>
-          <button
-            ref={menuTriggerRef}
-            className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer"
-            onClick={() => setMenuOpen(v => !v)}
-            title={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
-            aria-label={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-          >
-            <Plus size={15} />
-          </button>
-          {menuOpen && (
-            <div
-              ref={menuListRef}
-              role="menu"
-              onKeyDown={onMenuKeyDown}
-              className="absolute top-9 right-0 z-50 min-w-[200px] py-1.5 rounded-xl bg-bg-elevated border border-border shadow-lg animate-rise"
+        {/* + menu — the shared shadcn/Radix dropdown, so this strip gets the
+            same pill hover, portalled positioning, focus trap/restore, roving
+            arrow-key focus and Escape handling as every other menu in the app
+            (previously hand-rolled with an outside-click listener and
+            useListboxKeyboard). */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="flex items-center justify-center w-7 h-7 shrink-0 rounded-md text-muted hover:text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover data-[state=open]:text-text transition-colors bg-transparent border-none cursor-pointer"
+              title={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
+              aria-label={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
             >
-              {menuItems.map(item => (
-                <button
-                  key={item.kind}
-                  role="menuitem"
-                  data-option
-                  tabIndex={-1}
-                  className="flex items-center gap-2.5 w-full px-3 py-2 text-[13px] text-text hover:bg-bg-hover focus:bg-bg-hover focus:outline-none transition-colors bg-transparent border-none cursor-pointer text-left"
-                  onClick={() => { openMenuItem(item.kind); closeMenuToTrigger() }}
-                >
-                  <span className="text-muted shrink-0">{item.icon}</span>
-                  <span className="flex-1">{i18nT(NEW_MENU_LABEL_KEY[item.kind])}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+              <Plus size={15} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
+            {menuItems.map(item => (
+              <DropdownMenuItem
+                key={item.kind}
+                className="gap-2.5 py-2"
+                onSelect={() => openMenuItem(item.kind)}
+              >
+                <span className="text-muted shrink-0">{item.icon}</span>
+                <span className="flex-1">{i18nT(NEW_MENU_LABEL_KEY[item.kind])}</span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Body — render every doc/terminal tab mounted (hidden when inactive) so
