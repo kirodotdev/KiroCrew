@@ -4,7 +4,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_SOURCE="$SCRIPT_DIR/../frontend/public/apps/demo-app"
+APP_SOURCE="$SCRIPT_DIR/../website/public/apps/demo-app"
 APP_DEST="${KIROCREW_HOME:-$HOME/.kiro/crew}/apps/demo-app"
 
 if [ -d "$APP_DEST" ]; then
