@@ -6457,6 +6457,18 @@
       "verdict_tap_noop": "এটি ছিল দ্রুত চাপ — “{{mode}}” মোডে কিছুই হত না। কী-টি আরও বেশি সময় চেপে ধরুন।",
       "verdict_toggle": "শনাক্ত হয়েছে — সত্যিকারের কথাবার্তায় এই চাপ রেকর্ডিং শুরু করত এবং পরের চাপ থামাত।",
       "verdict_wrong_key": "ওটি ছিল {{got}}, উপরে বেছে নেওয়া {{want}} নয়। এই কীবোর্ডে সেটি না থাকলে “{{field}}”-এ অন্য একটি বেছে নিন।"
+    },
+    "gitPanel": {
+      "changes": "পরিবর্তন",
+      "clean": "পরিষ্কার",
+      "commits": "কমিট",
+      "empty_state": "দেখানোর মতো কোনো পরিবর্তন বা কমিট নেই।",
+      "just_now": "এইমাত্র",
+      "loading": "লোড হচ্ছে...",
+      "no_project": "এই সেশনের জন্য কোনো প্রজেক্ট ফোল্ডার সেট করা নেই।",
+      "refresh": "রিফ্রেশ",
+      "title": "Git",
+      "uncommitted": "{{count}}টি আনকমিটেড"
     }
   },
   "hooks": {
@@ -6515,7 +6527,8 @@
       "logs": "লগ",
       "side": "সাইড",
       "subagents": "সাবএজেন্ট",
-      "workflows": "ওয়ার্কফ্লো"
+      "workflows": "ওয়ার্কফ্লো",
+      "git": "Git"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "সব স্লট ভর্তি",
@@ -7599,7 +7612,9 @@
         "switch_to_split_view": "স্প্লিট ভিউতে যাও",
         "switch_to_unified_view": "ইউনিফায়েড ভিউতে যাও",
         "this_app_render_is_no_longer_available": "এই অ্যাপ রেন্ডার আর উপলব্ধ নেই। এটি দেখতে টুলটি আবার চালান।",
-        "turn_diff": "টার্ন ডিফ"
+        "turn_diff": "টার্ন ডিফ",
+        "menu_git": "Git",
+        "menu_git_desc": "ব্রাঞ্চ, পরিবর্তন এবং সাম্প্রতিক কমিট"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "থামানো ব্যর্থ, সেশন রিসেট হয়েছে",

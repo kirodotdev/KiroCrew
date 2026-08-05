@@ -6544,6 +6544,18 @@
       "verdict_tap_noop": "Ese fue un toque rápido: en el modo «{{mode}}» no pasaría nada. Mantén la tecla más tiempo.",
       "verdict_toggle": "Reconocida: en un chat real esta pulsación empezaría a grabar y la siguiente lo pararía.",
       "verdict_wrong_key": "Esa era {{got}}, no la {{want}} que elegiste arriba. Si este teclado no la tiene, elige otra en «{{field}}»."
+    },
+    "gitPanel": {
+      "changes": "Cambios",
+      "clean": "limpio",
+      "commits": "Commits",
+      "empty_state": "No hay cambios ni commits que mostrar.",
+      "just_now": "ahora mismo",
+      "loading": "cargando...",
+      "no_project": "No hay carpeta de proyecto configurada para esta sesión.",
+      "refresh": "Actualizar",
+      "title": "Git",
+      "uncommitted": "{{count}} sin confirmar"
     }
   },
   "hooks": {
@@ -6602,7 +6614,8 @@
       "logs": "Registros",
       "side": "Lateral",
       "subagents": "Subagentes",
-      "workflows": "Flujos de trabajo"
+      "workflows": "Flujos de trabajo",
+      "git": "Git"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Todos los slots están ocupados",
@@ -7700,7 +7713,9 @@
         "switch_to_split_view": "Cambiar a la vista dividida",
         "switch_to_unified_view": "Cambiar a la vista unificada",
         "this_app_render_is_no_longer_available": "Esta representación de la app ya no está disponible. Ejecuta la herramienta de nuevo para verla.",
-        "turn_diff": "Diff del turno"
+        "turn_diff": "Diff del turno",
+        "menu_git": "Git",
+        "menu_git_desc": "Rama, cambios y commits recientes"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "No se pudo detener, sesión restablecida",

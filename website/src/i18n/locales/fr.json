@@ -6544,6 +6544,18 @@
       "verdict_tap_noop": "C’était un appui bref — en mode « {{mode}} », rien ne se passerait. Maintenez la touche plus longtemps.",
       "verdict_toggle": "Reconnue — dans une vraie conversation, cet appui lancerait l’enregistrement et le suivant l’arrêterait.",
       "verdict_wrong_key": "C’était {{got}}, pas la touche {{want}} choisie ci-dessus. Si ce clavier n’en a pas, choisissez-en une autre sous « {{field}} »."
+    },
+    "gitPanel": {
+      "changes": "Modifications",
+      "clean": "propre",
+      "commits": "Commits",
+      "empty_state": "Aucune modification ni commit à afficher.",
+      "just_now": "à l'instant",
+      "loading": "chargement...",
+      "no_project": "Aucun dossier de projet défini pour cette session.",
+      "refresh": "Actualiser",
+      "title": "Git",
+      "uncommitted": "{{count}} non validé(s)"
     }
   },
   "hooks": {
@@ -6602,7 +6614,8 @@
       "logs": "Journaux",
       "side": "Annexe",
       "subagents": "Sous-agents",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "git": "Git"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Tous les emplacements sont occupés",
@@ -7700,7 +7713,9 @@
         "switch_to_split_view": "Passer en vue divisée",
         "switch_to_unified_view": "Passer en vue unifiée",
         "this_app_render_is_no_longer_available": "Ce rendu d'application n'est plus disponible. Exécutez à nouveau l'outil pour l'afficher.",
-        "turn_diff": "Diff du tour"
+        "turn_diff": "Diff du tour",
+        "menu_git": "Git",
+        "menu_git_desc": "Branche, modifications et commits récents"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Échec de l'arrêt, session réinitialisée",

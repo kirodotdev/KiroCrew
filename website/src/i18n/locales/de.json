@@ -6457,6 +6457,18 @@
       "verdict_tap_noop": "Das war ein kurzes Tippen — im Modus „{{mode}}“ würde nichts passieren. Halte die Taste länger.",
       "verdict_toggle": "Erkannt — in einem echten Chat würde dieser Druck die Aufnahme starten und der nächste sie beenden.",
       "verdict_wrong_key": "Das war {{got}}, nicht die oben gewählte Taste {{want}}. Hat diese Tastatur sie nicht, wähle unter „{{field}}“ eine andere."
+    },
+    "gitPanel": {
+      "changes": "Änderungen",
+      "clean": "sauber",
+      "commits": "Commits",
+      "empty_state": "Keine Änderungen oder Commits vorhanden.",
+      "just_now": "gerade eben",
+      "loading": "wird geladen...",
+      "no_project": "Kein Projektordner für diese Sitzung festgelegt.",
+      "refresh": "Aktualisieren",
+      "title": "Git",
+      "uncommitted": "{{count}} nicht committet"
     }
   },
   "hooks": {
@@ -6515,7 +6527,8 @@
       "logs": "Protokolle",
       "side": "Nebenchat",
       "subagents": "Subagenten",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "git": "Git"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Alle Slots sind belegt",
@@ -7599,7 +7612,9 @@
         "switch_to_split_view": "Zur geteilten Ansicht wechseln",
         "switch_to_unified_view": "Zur einheitlichen Ansicht wechseln",
         "this_app_render_is_no_longer_available": "Diese App-Darstellung ist nicht mehr verfügbar. Führen Sie das Tool erneut aus, um sie anzuzeigen.",
-        "turn_diff": "Zug-Diff"
+        "turn_diff": "Zug-Diff",
+        "menu_git": "Git",
+        "menu_git_desc": "Branch, Änderungen und letzte Commits"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Stoppen fehlgeschlagen, Sitzung zurückgesetzt",

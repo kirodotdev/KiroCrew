@@ -6370,6 +6370,18 @@
       "verdict_tap_noop": "짧게 누르셨습니다. ‘{{mode}}’ 모드에서는 아무 일도 일어나지 않습니다. 키를 더 길게 누르세요.",
       "verdict_toggle": "인식되었습니다. 실제 대화에서는 이 입력으로 녹음이 시작되고, 다음에 누르면 중지됩니다.",
       "verdict_wrong_key": "{{got}} 이(가) 입력되었습니다. 위에서 선택한 {{want}} 이(가) 아닙니다. 사용 중인 키보드에 해당 키가 없다면 ‘{{field}}’에서 다른 키를 선택하세요."
+    },
+    "gitPanel": {
+      "changes": "변경 사항",
+      "clean": "깨끗함",
+      "commits": "커밋",
+      "empty_state": "표시할 변경 사항이나 커밋이 없습니다.",
+      "just_now": "방금 전",
+      "loading": "로드 중…",
+      "no_project": "이 세션에 설정된 프로젝트 폴더가 없습니다.",
+      "refresh": "새로 고침",
+      "title": "Git",
+      "uncommitted": "커밋되지 않음 {{count}}개"
     }
   },
   "hooks": {
@@ -6428,7 +6440,8 @@
       "logs": "로그",
       "side": "사이드",
       "subagents": "서브에이전트",
-      "workflows": "워크플로"
+      "workflows": "워크플로",
+      "git": "Git"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "모든 슬롯이 사용 중입니다",
@@ -7498,7 +7511,9 @@
         "switch_to_split_view": "분할 보기로 전환",
         "switch_to_unified_view": "통합 보기로 전환",
         "this_app_render_is_no_longer_available": "이 앱 렌더링은 더 이상 사용할 수 없습니다. 도구를 다시 실행해 확인하세요.",
-        "turn_diff": "턴 차이"
+        "turn_diff": "턴 차이",
+        "menu_git": "Git",
+        "menu_git_desc": "브랜치·변경 사항·최근 커밋"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "중지에 실패하여 세션을 초기화했습니다",

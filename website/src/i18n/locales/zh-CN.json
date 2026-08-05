@@ -6370,6 +6370,18 @@
       "verdict_tap_noop": "这是一次快速点按 —— 在“{{mode}}”模式下不会发生任何事。请按住久一点。",
       "verdict_toggle": "识别正确 —— 在真实对话里，这次按下会开始录音，下一次按下会停止。",
       "verdict_wrong_key": "刚才那个是 {{got}}，不是你在上面选的 {{want}}。如果这块键盘没有那颗键，就在“{{field}}”里换一个。"
+    },
+    "gitPanel": {
+      "changes": "更改",
+      "clean": "干净",
+      "commits": "提交",
+      "empty_state": "没有可显示的更改或提交。",
+      "just_now": "刚刚",
+      "loading": "加载中…",
+      "no_project": "此会话未设置项目文件夹。",
+      "refresh": "刷新",
+      "title": "Git",
+      "uncommitted": "{{count}} 个未提交"
     }
   },
   "hooks": {
@@ -6428,7 +6440,8 @@
       "logs": "日志",
       "side": "旁支",
       "subagents": "子代理",
-      "workflows": "工作流"
+      "workflows": "工作流",
+      "git": "Git"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "所有槽位都已占用",
@@ -7498,7 +7511,9 @@
         "switch_to_split_view": "切换到并排视图",
         "switch_to_unified_view": "切换到统一视图",
         "this_app_render_is_no_longer_available": "此应用渲染已不可用。请重新运行工具以查看。",
-        "turn_diff": "本轮差异"
+        "turn_diff": "本轮差异",
+        "menu_git": "Git",
+        "menu_git_desc": "分支、更改和最近的提交"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "停止失败，会话已重置",

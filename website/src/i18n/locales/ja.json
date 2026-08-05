@@ -6370,6 +6370,18 @@
       "verdict_tap_noop": "短く押しました。「{{mode}}」モードでは何も起こりません。もう少し長く押してください。",
       "verdict_toggle": "認識しました。実際のチャットではこの操作で録音が始まり、次に押すと停止します。",
       "verdict_wrong_key": "押されたのは {{got}} で、上で選んだ {{want}} ではありません。お使いのキーボードにそのキーがない場合は、「{{field}}」で別のキーを選んでください。"
+    },
+    "gitPanel": {
+      "changes": "変更",
+      "clean": "クリーン",
+      "commits": "コミット",
+      "empty_state": "表示する変更やコミットはありません。",
+      "just_now": "たった今",
+      "loading": "読み込み中…",
+      "no_project": "このセッションにはプロジェクトフォルダーが設定されていません。",
+      "refresh": "更新",
+      "title": "Git",
+      "uncommitted": "{{count}} 件の未コミット"
     }
   },
   "hooks": {
@@ -6428,7 +6440,8 @@
       "logs": "ログ",
       "side": "サイド",
       "subagents": "サブエージェント",
-      "workflows": "ワークフロー"
+      "workflows": "ワークフロー",
+      "git": "Git"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "すべてのスロットが使用中です",
@@ -7498,7 +7511,9 @@
         "switch_to_split_view": "分割表示に切り替え",
         "switch_to_unified_view": "統合表示に切り替え",
         "this_app_render_is_no_longer_available": "このアプリの表示は利用できなくなりました。もう一度ツールを実行して表示してください。",
-        "turn_diff": "ターンの差分"
+        "turn_diff": "ターンの差分",
+        "menu_git": "Git",
+        "menu_git_desc": "ブランチ、変更、最近のコミット"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "停止に失敗したため、セッションをリセットしました",

@@ -6544,6 +6544,18 @@
       "verdict_tap_noop": "Esse foi um toque rápido — no modo “{{mode}}” nada aconteceria. Segure a tecla por mais tempo.",
       "verdict_toggle": "Reconhecida — em uma conversa real este toque começaria a gravar e o próximo pararia.",
       "verdict_wrong_key": "Essa foi {{got}}, não a {{want}} que você escolheu acima. Se este teclado não a tem, escolha outra em “{{field}}”."
+    },
+    "gitPanel": {
+      "changes": "Alterações",
+      "clean": "limpo",
+      "commits": "Commits",
+      "empty_state": "Nenhuma alteração ou commit para exibir.",
+      "just_now": "agora mesmo",
+      "loading": "carregando...",
+      "no_project": "Nenhuma pasta de projeto definida para esta sessão.",
+      "refresh": "Atualizar",
+      "title": "Git",
+      "uncommitted": "{{count}} sem commit"
     }
   },
   "hooks": {
@@ -6602,7 +6614,8 @@
       "logs": "Logs",
       "side": "Lateral",
       "subagents": "Subagentes",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "git": "Git"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Todos os slots estão ocupados",
@@ -7700,7 +7713,9 @@
         "switch_to_split_view": "Alternar para a visualização dividida",
         "switch_to_unified_view": "Alternar para a visualização unificada",
         "this_app_render_is_no_longer_available": "Esta renderização do app não está mais disponível. Execute a ferramenta novamente para vê-la.",
-        "turn_diff": "Diff do turno"
+        "turn_diff": "Diff do turno",
+        "menu_git": "Git",
+        "menu_git_desc": "Branch, alterações e commits recentes"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Falha ao parar, sessão redefinida",

@@ -6457,6 +6457,18 @@
       "verdict_tap_noop": "यह छोटा दबाव था — “{{mode}}” मोड में कुछ नहीं होता। कुंजी को अधिक देर दबाए रखें।",
       "verdict_toggle": "पहचानी गई — असली बातचीत में यह दबाव रिकॉर्डिंग शुरू करता और अगला दबाव उसे रोक देता।",
       "verdict_wrong_key": "वह {{got}} थी, ऊपर चुनी गई {{want}} नहीं। यदि इस कीबोर्ड में वह नहीं है, तो “{{field}}” में दूसरी चुनें।"
+    },
+    "gitPanel": {
+      "changes": "परिवर्तन",
+      "clean": "साफ़",
+      "commits": "कमिट",
+      "empty_state": "दिखाने के लिए कोई परिवर्तन या कमिट नहीं।",
+      "just_now": "अभी-अभी",
+      "loading": "लोड हो रहा है...",
+      "no_project": "इस सत्र के लिए कोई प्रोजेक्ट फ़ोल्डर सेट नहीं है।",
+      "refresh": "रिफ़्रेश करें",
+      "title": "Git",
+      "uncommitted": "{{count}} अनकमिटेड"
     }
   },
   "hooks": {
@@ -6515,7 +6527,8 @@
       "logs": "लॉग",
       "side": "साइड",
       "subagents": "सब-एजेंट",
-      "workflows": "वर्कफ़्लो"
+      "workflows": "वर्कफ़्लो",
+      "git": "Git"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "सभी स्लॉट भरे हुए हैं",
@@ -7599,7 +7612,9 @@
         "switch_to_split_view": "स्प्लिट व्यू पर स्विच करें",
         "switch_to_unified_view": "यूनिफ़ाइड व्यू पर स्विच करें",
         "this_app_render_is_no_longer_available": "यह ऐप रेंडर अब उपलब्ध नहीं है। इसे देखने के लिए टूल फिर से चलाएँ।",
-        "turn_diff": "टर्न डिफ़"
+        "turn_diff": "टर्न डिफ़",
+        "menu_git": "Git",
+        "menu_git_desc": "ब्रांच, परिवर्तन और हाल के कमिट"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "रोकना विफल, सत्र रीसेट",

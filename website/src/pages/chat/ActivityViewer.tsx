@@ -28,6 +28,7 @@ import { runBelongsToSlot } from '../../apps/workflows/runModel'
 
 import { ContextBreakdownTab } from '../ContextBreakdownPanel'
 import { i18nT } from '../../i18n/t'
+import GitPanel from '../../components/GitPanel'
 import { fmtDateFields } from '../../i18n/format'
 const STATUS = {
   pending: <Lock size={12} className="text-muted" />,
@@ -1173,7 +1174,7 @@ function ArtifactListRow({ row, busy, onOpen, onSave }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFolderOpen, onArtifactOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFolderOpen, onArtifactOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange, projectDir }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   files?: TouchedFile[]; onFileOpen?: (path: string) => void; onFolderOpen?: (p: string) => void; onArtifactOpen?: (slug: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
@@ -1196,7 +1197,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   onPreviewPathChange?: (path: string | null) => void
   /** When set, render ONLY this view and hide the internal SegmentedControl.
    *  Used by SidePanel, which owns the top-level tab strip. */
-  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'context' | 'files' | 'artifacts' | 'side' | 'workflows'
+  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'context' | 'files' | 'artifacts' | 'side' | 'workflows' | 'git'
 }) {
   const dispatch = useAppDispatch()
   const [, setSelected] = useState(0)
@@ -1362,7 +1363,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         <div className="px-3 py-2 shrink-0 flex justify-center">
           <SegmentedControl
             segments={TABS}
-            value={effectiveTab === 'context' ? tab : effectiveTab}
+            value={effectiveTab === 'context' || effectiveTab === 'git' ? tab : effectiveTab}
             onChange={t => { setTab(t); explicitTab.current = true; dispatch(openActivityToTab(t)) }}
             layoutId="activity-tab"
           />
@@ -1383,6 +1384,19 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           ) : (
             <div className="text-muted text-[13px] pt-8 px-6 text-center">
               {i18nT('pages.chat.activityViewer.no_pull_requests_yet')}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Git (project working tree + history) view */}
+      {effectiveTab === ('git' as string) && (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {projectDir ? (
+            <GitPanel projectDir={projectDir} onFileOpen={onFileOpen} onClose={onToggle} />
+          ) : (
+            <div className="text-muted text-[13px] pt-8 px-6 text-center">
+              {i18nT('components.gitPanel.no_project')}
             </div>
           )}
         </div>

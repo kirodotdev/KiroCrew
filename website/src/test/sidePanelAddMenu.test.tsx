@@ -138,7 +138,7 @@ describe('newMenuSections', () => {
 
   it('groups by session output, workspaces, then diagnostics', () => {
     expect(kinds({ devMode: true, terminalEnabled: true })).toEqual([
-      ['issues', 'subagents', 'workflows'],
+      ['issues', 'subagents', 'workflows', 'git'],
       ['side', 'browser'],
       ['logs', 'context'],
     ])
@@ -157,12 +157,12 @@ describe('newMenuSections', () => {
     }
     // Both gates closed: diagnostics gone outright — two groups, not three with a hole.
     expect(kinds({ devMode: false, terminalEnabled: false })).toEqual([
-      ['issues', 'subagents', 'workflows'],
+      ['issues', 'subagents', 'workflows', 'git'],
       ['side', 'browser'],
     ])
     // Terminal enabled doesn't change menu (terminal moved to app-wide panel).
     expect(kinds({ devMode: false, terminalEnabled: true })).toEqual([
-      ['issues', 'subagents', 'workflows'],
+      ['issues', 'subagents', 'workflows', 'git'],
       ['side', 'browser'],
     ])
   })
