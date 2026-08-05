@@ -1595,7 +1595,7 @@ async def search_for_context(request: web.Request) -> web.Response:
     max_tokens = cfg.get("knowledge", {}).get("fetch_max_tokens", KNOWLEDGE_FETCH_MAX_TOKENS)
 
     try:
-        limit = int(request.query.get("limit", top_n))
+        limit = min(100, max(1, int(request.query.get("limit", top_n))))
     except ValueError:
         limit = top_n
 

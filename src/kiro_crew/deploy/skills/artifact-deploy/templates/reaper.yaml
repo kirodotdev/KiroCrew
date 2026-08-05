@@ -212,6 +212,7 @@ Resources:
     Type: AWS::SNS::Topic
     Condition: HasAlarmEmail
     Properties:
+      KmsMasterKeyId: alias/aws/sns  # wokeignore:rule=master
       Subscription:
         - Endpoint: !Ref AlarmEmail
           Protocol: email

@@ -1876,7 +1876,7 @@ class VectorMemoryStore:
 
         _flush_backfills()
 
-        slug = hashlib.md5(rule.encode()).hexdigest()[:12]
+        slug = hashlib.md5(rule.encode(), usedforsecurity=False).hexdigest()[:12]
         key = f"lesson.{slug}"
         value = rule if not negative else f"{rule} — NOT: {negative}"
         confidence = 1.0 if source == "user_explicit" else 0.9

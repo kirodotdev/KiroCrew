@@ -91,7 +91,7 @@ class WebexDispatcher:
         email = inbound.person_email
         room_id = inbound.room_id
         text = inbound.text
-        logger.info("Webex inbound from %s: %d chars", email, len(text or ""))
+        logger.info("Webex inbound from %s: %d chars", email[:3] + "***" if email else "?", len(text or ""))
 
         # ── Command intercept (no LLM session needed) ──
         cmd = parse_command(text)

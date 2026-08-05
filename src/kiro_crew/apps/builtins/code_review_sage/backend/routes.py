@@ -369,7 +369,8 @@ async def _handle_repo_prs(request: web.Request) -> web.Response:
     except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
         return web.json_response({"error": f"invalid repo url: {e}"}, status=400)
     except Exception as e:  # gh not authed / network / repo not found
-        return web.json_response({"error": str(e)}, status=502)
+        logger.warning("repo PR list failed: %s", e, exc_info=True)
+        return web.json_response({"error": "upstream service error"}, status=502)
     index = await asyncio.to_thread(results.read_reviewed)
     out = []
     for pr in prs:
@@ -415,7 +416,8 @@ async def _handle_review_repo(request: web.Request) -> web.Response:
     except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
         return web.json_response({"error": f"invalid repo url: {e}"}, status=400)
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=502)
+        logger.warning("repo review-repo failed: %s", e, exc_info=True)
+        return web.json_response({"error": "upstream service error"}, status=502)
 
     index = await asyncio.to_thread(results.read_reviewed)
     changes: list[str] = []

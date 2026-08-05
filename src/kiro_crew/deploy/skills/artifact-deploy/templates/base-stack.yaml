@@ -176,6 +176,17 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          # Deny non-HTTPS access (SAX-05 / CWE-319).
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt LogBucket.Arn
+              - !Sub '${LogBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
           # S3 server access log delivery for OriginBucket (SAX-05).
           - Sid: S3ServerAccessLogsWrite
             Effect: Allow
@@ -315,6 +326,17 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          # Deny non-HTTPS access (SAX-05 / CWE-319).
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt OriginBucket.Arn
+              - !Sub '${OriginBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
           - Sid: AllowCloudFrontOAC
             Effect: Allow
             Principal:

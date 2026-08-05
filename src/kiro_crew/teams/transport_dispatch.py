@@ -92,7 +92,7 @@ class TeamsDispatcher:
         conversation_id = inbound.conversation_id
         service_url = inbound.service_url
         text = inbound.text
-        logger.info("Teams inbound from %s: %d chars", email, len(text or ""))
+        logger.info("Teams inbound from %s: %d chars", email[:3] + "***" if email else "?", len(text or ""))
 
         # ── Command intercept (no LLM session needed) ──
         cmd = parse_command(text)

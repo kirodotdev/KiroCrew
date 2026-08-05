@@ -237,6 +237,15 @@ def create_private_bucket(bucket: str, region: str, profile: str) -> None:
          f"TagSet=[{{Key={TAG_MANAGED},Value=true}}]"],
         profile, action="s3:PutBucketTagging",
     )
+    # SAX-06 / CWE-778: enable S3 server access logging for auditing.
+    # Same-bucket with a prefix is AWS-supported: S3 suppresses access-log records
+    # for log-delivery writes themselves, preventing infinite recursion.
+    _checked(
+        ["s3api", "put-bucket-logging", "--bucket", bucket,
+         "--bucket-logging-status",
+         f'{{"LoggingEnabled":{{"TargetBucket":"{bucket}","TargetPrefix":"s3-access/"}}}}'],
+        profile, action="s3:PutBucketLogging",
+    )
 
 
 def _oac_name_prefix(site_id: str) -> str:
