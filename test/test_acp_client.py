@@ -6429,11 +6429,19 @@ class TestFormatAcpError:
         assert _format_acp_error("boom") == "Prompt error: boom"
 
     def test_unknown_dict_preserves_raw(self):
+        """An unrecognised shape must lose no information.
+
+        The fallback now leads with the provider's own text rather than a repr
+        of the JSON-RPC dict, but both fields still have to survive: the
+        provider detail AND the non-boilerplate JSON-RPC message, which for
+        codes other than -32603 is the only summary the error carries.
+        """
         err = {"code": -32000, "message": "Something else", "data": "weird"}
         out = _format_acp_error(err)
-        assert out.startswith("Prompt error: ")
         assert "Something else" in out
         assert "weird" in out
+        # No dict repr: punctuation soup is not a user-facing error message.
+        assert "Prompt error: {" not in out
 
     def test_model_not_available_rewrite(self):
         # With NO advertised list the caller cannot know whether this is an
@@ -6598,8 +6606,10 @@ class TestFormatAcpError:
         }
         out = _format_acp_error(err)
         assert "AKIAIOSFODNN7EXAMPLE" not in out
-        # Fallback prefix is preserved so operators can recognize the shape.
-        assert "Prompt error:" in out
+        # The scrubbed placeholder proves redaction ran on this path.
+        assert "REDACTED" in out
+        # The surrounding provider text still reaches the user.
+        assert "leak:" in out
 
     def test_exfiltration_url_in_unknown_dict_fallback_is_redacted(self):
         """The fallback path echoes raw dict — exfil URLs must also be scrubbed.
@@ -6735,7 +6745,7 @@ class TestFormatAcpError:
         canonical JSON-RPC message 'Internal error' must NOT be misclassified
         as transient. The transient branch keys off the provider `data` field
         only (never the generic `message`), so a deterministic failure like a
-        ValidationException preserves the raw dict and the real cause survives.
+        ValidationException surfaces its real cause instead.
         """
         err = {
             "code": -32603,
@@ -6744,8 +6754,11 @@ class TestFormatAcpError:
         }
         out = _format_acp_error(err)
         assert "transient error" not in out.lower()
-        # Unknown-shape fallback preserved for the most common error code.
-        assert "Prompt error: {" in out
+        # The real cause is shown verbatim — stronger than the old assertion,
+        # which only required a dict repr containing it somewhere.
+        assert "ValidationException: input contains an unsupported field 'foo'" in out
+        # The -32603 boilerplate message is dropped as noise next to that.
+        assert "Internal error" not in out
 
     def test_bare_500_token_is_not_treated_as_5xx(self):
         """A standalone numeric (e.g. a token-limit value) must not match the
@@ -6760,7 +6773,7 @@ class TestFormatAcpError:
         }
         out = _format_acp_error(err)
         assert "transient error" not in out.lower()
-        assert "Prompt error: {" in out
+        assert "max_tokens 500 exceeds the model limit of 200000" in out
 
     def test_http_500_status_context_still_classifies_transient(self):
         """An HTTP/status-anchored 50x token IS a genuine transient signal."""
@@ -6798,7 +6811,7 @@ class TestFormatAcpError:
         }
         out = _format_acp_error(err)
         assert "transient error" not in out.lower()
-        assert "Prompt error: {" in out
+        assert "ValidationException: input contains an unsupported field 'foo'" in out
 
 
 class TestIsTransientRawError:

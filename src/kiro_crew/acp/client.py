@@ -758,7 +758,27 @@ _RE_5XX_NAMED = re.compile(
     r"|DispatchFailure|ConnectionReset(?:Error)?)\b"
 )
 _RE_5XX_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:50[0234]|529)\b", re.IGNORECASE)
-_RE_5XX_HINT = re.compile(r"(please try again|response stream)", re.IGNORECASE)
+# Genuine retry hint only. "response stream" USED TO BE matched here, which made
+# this branch a catch-all: kiro-cli wraps EVERY mid-stream provider failure as
+# "Encountered an error in the response stream: <real cause>", so the wrapper
+# prefix alone — present on quota exhaustion, validation errors, anything —
+# classified the error as a momentary 5xx, told the user to retry, and DISCARDED
+# the real cause. A monthly-usage-limit rejection surfaced as "The model backend
+# hit a transient error (HTTP 5xx)" and burned the retry ladder. The wrapper is
+# a transport envelope, not a signal about the failure inside it; classification
+# now reads the inner detail (see _provider_detail).
+_RE_5XX_HINT = re.compile(r"(please try again)", re.IGNORECASE)
+# Account/plan capacity is EXHAUSTED — terminal. Distinct from a throttle: a
+# throttle clears in seconds and a retry is the right move, whereas a spent
+# monthly allowance does not come back until it resets, so retrying only adds
+# latency before the same rejection. Checked BEFORE the throttle branch because
+# some limit messages also carry rate-limit-ish wording.
+_RE_USAGE_LIMIT = re.compile(
+    r"\b(?:monthly|daily|weekly)\s+(?:usage\s+)?limit\b"
+    r"|\busage\s+limit\s+has\s+been\s+reached\b"
+    r"|\b(?:MonthlyLimitError|FreeTierLimitExceeded)\b",
+    re.IGNORECASE,
+)
 # kiro-cli's generic wrapper for a backend generation failure that died BEFORE
 # the response stream was established (so no request_id, no error class, and
 # none of the tokens above). Observed a case where data was exactly "Kiro
@@ -770,6 +790,29 @@ _RE_5XX_HINT = re.compile(r"(please try again|response stream)", re.IGNORECASE)
 # boilerplate, and scoping to `data` keeps a stray echo in `message` from
 # flipping an otherwise-terminal error.
 _RE_GENERATE_FAILED = re.compile(r"failed to generate a response", re.IGNORECASE)
+
+# kiro-cli's envelope for a failure that happened mid-stream. The text after the
+# colon is the provider's own message — the same words the CLI prints in a
+# terminal — so it is what a user needs to see.
+_RE_STREAM_ENVELOPE = re.compile(
+    r"^\s*Encountered an error in the response stream:\s*", re.IGNORECASE
+)
+# Trailing "(request_id: ...)" is stripped from the detail because every branch
+# re-appends it via req_id_suffix; leaving it would print the id twice.
+_RE_TRAILING_REQ_ID = re.compile(r"\s*\(request_id:\s*[0-9a-fA-F-]+\)\s*$")
+
+
+def _provider_detail(data: str) -> str:
+    """The provider's own error text, unwrapped from kiro-cli's stream envelope.
+
+    Returns "" when *data* carries nothing worth showing. Used by the
+    unknown-shape fallback so an unrecognised provider failure surfaces its real
+    message (CLI parity) instead of a ``repr`` of the JSON-RPC dict. Recognised
+    failure modes keep their curated guidance and do not call this.
+    """
+    detail = _RE_STREAM_ENVELOPE.sub("", str(data or "")).strip()
+    detail = _RE_TRAILING_REQ_ID.sub("", detail).strip()
+    return detail
 
 
 def _model_is_unentitled(data: str, available_models: Sequence[str] | None) -> str | None:
@@ -818,9 +861,9 @@ def _is_transient_raw_error(
     user-facing string — so the retry decision is independent of message
     wording. :class:`AcpError` carries this verdict (``.transient``) to the
     retry layer (``llm_helpers``, ``chat_runner``). Precedence mirrors
-    :func:`_format_acp_error`: unentitled-model(terminal) → model-unavailable →
-    throttle → auth(terminal) → generic 5xx / pre-stream generation failure →
-    unknown(terminal).
+    :func:`_format_acp_error`: unentitled-model(terminal) →
+    usage-limit(terminal) → model-unavailable → throttle → auth(terminal) →
+    generic 5xx / pre-stream generation failure → unknown(terminal).
 
     *available_models* is this account's advertised set when the caller knows
     it. It only ever makes the verdict MORE conservative: a model the account
@@ -835,6 +878,10 @@ def _is_transient_raw_error(
     if _model_is_unentitled(data, available_models):
         # Terminal: the account is not entitled to this model, so every retry
         # spends latency to reproduce the same rejection.
+        return False
+    if _RE_USAGE_LIMIT.search(haystack):
+        # Terminal: the allowance is spent until it resets. Ahead of the throttle
+        # check so limit wording that also reads as rate-limiting stays terminal.
         return False
     if _RE_MODEL_UNAVAILABLE.search(data):
         return True
@@ -955,6 +1002,22 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
         # Bedrock model alias resolved to a version that is currently
         # unavailable (capacity throttle, region rollout in progress,
         # deprecated, etc.).
+        elif _RE_USAGE_LIMIT.search(haystack):
+            # Plan allowance exhausted. Quote the provider's own sentence rather
+            # than paraphrasing it: it is the authoritative statement of WHICH
+            # limit was hit, and the CLI shows exactly this, so the dashboard
+            # matching it means the two surfaces cannot tell different stories.
+            _limit_detail = _provider_detail(data)
+            # The provider sentence has no trailing period, so add one before
+            # appending guidance or the two run together as one sentence.
+            if _limit_detail and _limit_detail[-1] not in ".!?":
+                _limit_detail += "."
+            formatted = (
+                f"{_limit_detail} Retrying will not help until the limit resets. "
+                f"Check your plan's usage allowance, or switch to a model or "
+                f"account tier with remaining capacity."
+                f"{req_id_suffix}"
+            )
         elif _RE_MODEL_UNAVAILABLE.search(data):
             model = str(_RE_MODEL_UNAVAILABLE.search(data).group(1))  # type: ignore[union-attr]
             formatted = (
@@ -1037,9 +1100,30 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
                 "and try again — if it persists, send `!restart` to reset the session."
             )
         else:
-            # Unknown shape — preserve the raw dict so we don't lose
-            # information.  Redaction below scrubs any embedded secrets.
-            formatted = f"Prompt error: {error}"
+            # Unrecognised failure mode. Show the PROVIDER'S OWN message when
+            # there is one — it is the true error, and the same words the CLI
+            # prints, so the two surfaces agree. This is the path every provider
+            # failure without a curated branch above now takes; previously such
+            # errors were swallowed by an over-broad 5xx match and reported as a
+            # momentary blip, so the real cause never reached the user at all.
+            #
+            # Falls back to the raw dict only when there is no usable detail
+            # (empty/odd data), so a genuinely opaque shape still loses nothing.
+            # Redaction below scrubs any embedded secrets either way.
+            _detail = _provider_detail(data)
+            if _detail:
+                # Keep the JSON-RPC `message` too when it carries signal. For
+                # -32603 it is the fixed boilerplate "Internal error" (pure
+                # noise next to the provider text), but other codes use it as
+                # the actual summary, and dropping it there would lose the only
+                # description the error has.
+                _summary = "" if message.strip().lower() == "internal error" else message.strip()
+                if _summary and _summary.lower() not in _detail.lower():
+                    formatted = f"{_summary}: {_detail}{req_id_suffix}"
+                else:
+                    formatted = f"{_detail}{req_id_suffix}"
+            else:
+                formatted = f"Prompt error: {error}"
     else:
         formatted = f"Prompt error: {error}"
 
