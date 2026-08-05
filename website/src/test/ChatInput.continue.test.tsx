@@ -7,10 +7,12 @@ import ChatInput from '../components/ChatInput'
 /**
  * Sixth state of the composer's primary button. The first five are send / stop /
  * queue / steer / disabled; this one claims the one state that was previously
- * dead weight — an empty composer on a slot whose last turn was cut short.
+ * dead weight — an empty composer on an idle slot that already holds a
+ * conversation.
  *
- * The invariant these tests defend: the control never carries two meanings at
- * once. Empty + resumable = Continue; anything typed = Send.
+ * Two invariants these tests defend: the control never carries two meanings at
+ * once (empty = Continue, anything typed = Send), and its copy never asserts an
+ * interruption the transcript did not show (`continueIsRecovery`).
  */
 const defaultProps = {
   value: '',
@@ -69,12 +71,30 @@ describe('ChatInput continue affordance', () => {
 
   it('explains the state in the placeholder, since an icon swap announces nothing', () => {
     renderWithProviders(<ChatInput {...defaultProps} continuable onContinue={vi.fn()} />)
+    expect(screen.getByPlaceholderText(/carry on/i)).toBeInTheDocument()
+  })
+
+  it('names the interruption only when the transcript actually showed one', () => {
+    // The copy split: Continue is offered on any idle slot, so the default
+    // wording must not assert a breakage. A force-quit leaves no evidence, and
+    // claiming "interrupted" there would be a guess dressed as a fact.
+    renderWithProviders(
+      <ChatInput {...defaultProps} continuable continueIsRecovery onContinue={vi.fn()} />,
+    )
     expect(screen.getByPlaceholderText(/interrupted/i)).toBeInTheDocument()
+    expect(screen.getByLabelText('Continue the interrupted turn')).toBeInTheDocument()
+  })
+
+  it('uses neutral wording when nothing proves an interruption', () => {
+    renderWithProviders(<ChatInput {...defaultProps} continuable onContinue={vi.fn()} />)
+    expect(screen.queryByPlaceholderText(/interrupted/i)).toBeNull()
+    expect(screen.getByLabelText('Carry on from here')).toBeInTheDocument()
   })
 
   it('keeps the ordinary placeholder when the turn is not resumable', () => {
     renderWithProviders(<ChatInput {...defaultProps} />)
     expect(screen.queryByPlaceholderText(/interrupted/i)).toBeNull()
+    expect(screen.queryByPlaceholderText(/carry on/i)).toBeNull()
   })
 
   it('does not offer Continue without a handler, even when flagged resumable', () => {

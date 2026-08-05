@@ -43,6 +43,7 @@ from kiro_crew.dashboard.chat_runner import (
 )
 from kiro_crew.dashboard.chat_title import _maybe_auto_title
 from kiro_crew.dashboard.chat_utils import (
+    _MANUAL_CONTINUE_MSG,
     _MANUAL_RESUME_MSG,
     SYNTHETIC_RECOVERY_KIND,
     _build_stream_chunk,
@@ -1357,7 +1358,14 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
 
 
 async def api_chat_slot_continue(request: web.Request) -> web.Response:
-    """POST /api/chat/slots/{slot}/continue — pick a turn back up after it was cut short.
+    """POST /api/chat/slots/{slot}/continue — hand the thread back to the agent.
+
+    Two callers, one mechanism: picking up a turn that was cut short, and asking
+    a slot that finished cleanly to carry on. They are one endpoint because they
+    are indistinguishable from the transcript — a force-quit runs no ``finally``,
+    so a killed turn leaves no error row behind and reads exactly like a
+    completed one. ``_has_conversation`` authorizes; ``_is_interrupted`` only
+    chooses which of the two continuation bodies the model receives.
 
     Runs the same synthetic-continuation machinery the runner already uses for
     its own post-transient recovery: queue the continuation at the head, then let
@@ -1430,12 +1438,74 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "approval pending", "code": "slot_approval_pending"}, status=409
             )
-        if not _is_interrupted(slot):
+        # Background sub-agents are still running (or waiting to start) for this
+        # slot. `slot.running` is False here — the parent turn ENDS while its
+        # children keep going — so nothing above catches this, and the widened
+        # gate below makes it the common shape rather than the rare one (before
+        # this endpoint accepted a settled transcript, a parent that finished
+        # cleanly after `spawn_run` was refused only incidentally, by
+        # `_is_interrupted`).
+        #
+        # It has to be refused HERE rather than left to the queue: a synthetic
+        # recovery entry satisfies `is_system_injection_item`, so
+        # `_dequeue_next_system_message` drains it straight through the
+        # `hold_users` gate that exists to stop exactly this (chat_runner) — the
+        # hold only holds plain USER messages. A parent turn would start and
+        # interleave tool calls and repository writes with its own children's
+        # completion injections. `api_chat` queues instead of dispatching for the
+        # same reason; Continue has nowhere to queue to, so it refuses.
+        #
+        # Two things this must NOT get wrong, both of which look like a working
+        # guard right up until they lose a file write:
+        #
+        # * `effective_session_key`, never `f"dashboard:{slot.key}"`. A slot born
+        #   on a channel carries the channel key (`slack:<ts>`) and its children
+        #   register under THAT, so the dashboard-prefixed form silently matches
+        #   nothing — `_history_key_for`'s own docstring says as much.
+        # * QUEUED children count. A spawn that hit the concurrency/stagger gate
+        #   is deliberately absent from `_agents` (see `SubagentInfo.queued`), so
+        #   `running_agents_for` cannot see it, yet it WILL start on its own and
+        #   write concurrently with the turn this endpoint would dispatch.
+        # * IN-FLIGHT RESULT DELIVERY counts too. The last child can finish —
+        #   emptying both probes — while its `[Subagent completion event]`
+        #   injection is still landing. Starting a turn in that window interleaves
+        #   with the injection and corrupts transcript order. This is why the
+        #   runner's own synthesis gate pairs the two conditions at BOTH its call
+        #   sites (`chat_runner.py:2273` and `:2305`): `running_agents_for(...)`
+        #   alone is not "no children are touching this slot".
+        subs = getattr(state, "subagents", None)
+        if subs is not None:
+            child_key = effective_session_key(slot)
+            running = subs.running_agents_for(child_key)
+            # Fail closed on None: that is the probe FAILING, not a slot with no
+            # children, and mistaking the two dispatches the interleaved turn this
+            # guard exists to prevent. Mirrors the stage gate in chat_orchestrator.
+            queued = 0
+            if running is not None:
+                try:
+                    queued = subs._queued_depth(child_key)
+                except Exception:
+                    # An unreadable queue is unknown children, not zero children.
+                    logger.debug("continue: queued-depth probe failed", exc_info=True)
+                    queued = 1
+            inflight = getattr(slot, "_subagent_deliveries_inflight", 0)
+            if running is None or running or queued or inflight:
+                return web.json_response(
+                    {"error": "sub-agents are running", "code": "slot_subagents_running"},
+                    status=409,
+                )
+        if not _has_conversation(slot):
             return web.json_response(
-                {"error": "nothing to continue", "code": "slot_not_interrupted"}, status=409
+                {"error": "nothing to continue", "code": "slot_empty"}, status=409
             )
 
-        slot.queue_insert(0, _MANUAL_RESUME_MSG, kind=SYNTHETIC_RECOVERY_KIND)
+        # _is_interrupted no longer AUTHORIZES the continue — it only picks which
+        # body to inject. Both are true statements about their own case, and
+        # getting this wrong is not cosmetic: telling a model that finished
+        # cleanly that it was "interrupted before it finished" sends it looking
+        # for half-done work that does not exist.
+        resume = _MANUAL_RESUME_MSG if _is_interrupted(slot) else _MANUAL_CONTINUE_MSG
+        slot.queue_insert(0, resume, kind=SYNTHETIC_RECOVERY_KIND)
 
     sel().log_tool_invocation(
         session_key=_history_key_for(name),
@@ -1455,6 +1525,30 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "slot": slot.key})
 
 
+def _has_conversation(slot: _ChatSlot) -> bool:
+    """True when the transcript holds a real turn to continue FROM.
+
+    The authorization check behind Continue. It is deliberately weak — anything
+    a person could look at and say "carry on with that" qualifies — because a
+    hard-killed gateway writes no error row, so an interrupted turn is often
+    shape-identical to a completed one and no predicate can separate them. The
+    button is therefore offered on any idle slot with a transcript, and this
+    guard only refuses the one case with nothing to reason about at all: an empty
+    slot (or one holding only scaffolding rows such as a compaction notice),
+    where a continuation would reach the model with no conversation under it.
+
+    Rows are walked with the same skip rules as ``_is_interrupted`` so the two
+    cannot disagree about what counts as the conversation's floor.
+    """
+    for m in slot.messages:
+        meta = m.get("meta") or {}
+        if m.get("role") == "assistant" and meta.get("kind") == "compaction":
+            continue
+        if m.get("role") in ("user", "assistant") and m.get("content"):
+            return True
+    return False
+
+
 def _is_interrupted(slot: _ChatSlot) -> bool:
     """True when the transcript shows a turn that ended without a reply.
 
@@ -1462,6 +1556,13 @@ def _is_interrupted(slot: _ChatSlot) -> bool:
     all — a gateway restart mid-turn leaves exactly this), or it is the
     ASSISTANT's but an error row follows it (the turn streamed partway then died,
     which is otherwise shape-identical to a clean completion).
+
+    No longer a gate — ``_has_conversation`` authorizes Continue and this only
+    selects the wording injected for the model (``_MANUAL_RESUME_MSG`` vs
+    ``_MANUAL_CONTINUE_MSG``). A False result therefore means "as far as the
+    transcript shows, the last turn finished", NOT "there is nothing to do":
+    a force-quit or force-exit runs no ``finally``, so the error row that would
+    have proved the interruption was never written.
 
     Deliberately does not distinguish "produced some output" from "produced
     none": ``_MANUAL_RESUME_MSG`` is worded to hold in both cases, so the

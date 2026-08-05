@@ -7,21 +7,28 @@
  * stubbed, so the error card, the composer button morph and the placeholder are
  * exercised exactly as they run in production.
  *
- * A turn can end WITHOUT the assistant handing the floor back, and the two shapes
- * look nothing alike in the transcript:
+ * A turn can end WITHOUT the assistant handing the floor back — and the killer
+ * case leaves NO trace at all. A force-quit calls os._exit(0), skipping every
+ * finally block, so no error row is written and the transcript is byte-identical
+ * to a clean completion. Continue is therefore offered on any idle slot holding a
+ * conversation, and only the COPY distinguishes a visible breakage:
  *
- *   silent   the gateway restarted during an app update, so the turn's task died
- *            with the process and NOTHING was ever appended. The transcript just
- *            stops on the user's message and the UI said nothing at all.
- *   errored  the connection dropped mid-stream, so an error row landed. Its copy
- *            already read "please retry" — with nothing to click.
+ *   silent      the gateway restarted mid-turn, so nothing was ever appended. The
+ *               transcript just stops on the user's message.
+ *   errored     the connection dropped mid-stream, so an error row landed.
+ *   settled     the turn finished — or was force-quit, which looks the same.
+ *               Continue is still offered, with neutral wording.
+ *   superseded  the newest error is mid-transcript and a later turn completed.
  *
  * Frames:
- *   01-silent-before    stopped on a user row, composer send button dead (main)
- *   02-silent-after     same transcript, send button is now Continue + placeholder
- *   03-errored-before   actionless red error div (main)
- *   04-errored-after    error card with a Continue action
- *   05-typed-reverts    typing restores Send, so the button never means two things
+ *   01-silent-before                    stopped on a user row, send button dead (main)
+ *   02-silent-after                     send button is now Continue + placeholder
+ *   03-errored-before                   actionless red error div (main)
+ *   04-errored-after                    error card with a Continue action
+ *   05-typed-reverts                    typing restores Send — never two meanings
+ *   06-settled-offers-continue          clean tail, Continue offered, neutral copy
+ *   07-errored-after-light              light-theme parity
+ *   08-superseded-error-no-card-action  composer offers; the stale card does not
  *
  * The `-before` frames are produced by passing `--before`, which withholds the
  * fixtures' interrupted shape; run the same script on origin/main for a true
@@ -86,11 +93,35 @@ const errored = {
   ],
 }
 
-/** A settled conversation: nothing to continue, so no affordance appears. */
+/** A settled conversation. Continue is STILL offered — the whole point of the
+ *  loosened predicate: a force-quit leaves a transcript shaped exactly like this
+ *  one, so refusing here is what left a killed turn with no way back. The copy
+ *  goes neutral because nothing here proves a breakage. */
 const settled = {
   ...errored,
   total: 2,
   messages: errored.messages.slice(0, 2),
+}
+
+/** Newest error row is MID-transcript and a later turn completed. The composer
+ *  stays continuable, but the stale error card must NOT grow a Continue button:
+ *  it would sit on the failed turn and act on the newer request. */
+const superseded = {
+  running: false,
+  has_more: false,
+  total: 4,
+  queue: [],
+  project: PROJECT,
+  messages: [
+    { role: 'user', ts: now() - 1800, content: 'Wire the diagnostics collector into the /logs page.' },
+    { role: 'error', ts: now() - 1700, content: '⟳ Connection lost — please retry.', cls: 'msg msg-err' },
+    { role: 'user', ts: now() - 900, content: 'Never mind that — just add the redaction test first.' },
+    {
+      role: 'assistant',
+      ts: now() - 60,
+      content: 'Added `test_redaction_bypass` and it fails against the pre-fix collector, so the case is really covered.',
+    },
+  ],
 }
 
 const scene = { detail: silent, theme: 'dark' }
@@ -189,9 +220,13 @@ async function main() {
   await page.waitForTimeout(400)
   await band('05-typed-reverts')
 
-  // ---- settled conversation: no affordance anywhere -------------------------
+  // ---- settled conversation: Continue is offered, with neutral copy ---------
   await load(settled)
-  await band('06-settled-no-affordance')
+  await band('06-settled-offers-continue')
+
+  // ---- superseded error: composer offers, the stale card does NOT ----------
+  await load(superseded)
+  await band('08-superseded-error-no-card-action')
 
   // ---- light theme parity on the busiest frame -----------------------------
   await load(errored, 'light')

@@ -1125,21 +1125,30 @@ export const selectComposerBusy = (state: RootState, slot: string | null): boole
   return !!(dashSlot?.subagents_running || dashSlot?.orchestrating)
 }
 
-/** Roles the interruption scan walks past: they are not the conversation's floor.
- *  Mirrors `_is_interrupted` in `src/kiro_crew/dashboard/chat_handlers.py`, which
- *  likewise only reads `user` / `assistant` / `error` rows. Keep the two in sync —
- *  this predicate decides whether to OFFER Continue, that one authorizes it. */
+/** Roles the continue scans walk past: they are not the conversation's floor.
+ *  Mirrors `_is_interrupted` / `_has_conversation` in
+ *  `src/kiro_crew/dashboard/chat_handlers.py`, which likewise only read
+ *  `user` / `assistant` / `error` rows. Keep them in sync — these predicates
+ *  decide whether to OFFER Continue and what to call it, those decide whether to
+ *  authorize it and what to tell the model. */
 const CONTINUE_SCAN_SKIP = new Set(['queued', 'tool_call', 'tool_result', 'inject', 'subagent', 'permission', 'nudge'])
 
 /**
- * True when the active slot's last turn ended without the assistant handing the
- * floor back, so Continue is worth offering.
+ * True when the active slot can be handed back to the agent — i.e. Continue is
+ * worth offering on an empty composer.
  *
- * Two interruption shapes, one predicate:
- *  - the last conversational row is the USER's — nothing came back at all, which
- *    is exactly what a gateway restart mid-turn (an app update) leaves behind;
- *  - it is the ASSISTANT's but an `error` row follows it — the turn streamed
- *    partway and then died, otherwise shape-identical to a clean completion.
+ * The rule is simply "the slot is idle and has a conversation under it". It is
+ * NOT limited to turns that visibly died, because a transcript cannot reliably
+ * show that they did: a force-quit or force-exit runs no cleanup, so no error
+ * row is ever written and a killed turn reads exactly like a finished one (see
+ * ``_has_conversation`` in `src/kiro_crew/dashboard/chat_handlers.py`, which
+ * authorizes the press under the slot lock). Offering it on every idle slot
+ * covers those invisible interruptions, and doubles as a plain "keep going"
+ * nudge — the one thing an empty composer's dead send button could never do.
+ *
+ * Everything that makes a continuation UNSAFE still returns false: a live turn,
+ * a stop in flight, an optimistic local turn, a mid-plan autopilot slot, a
+ * running subagent, or a queued message the runner is about to pick up itself.
  *
  * Computed locally on purpose: `messages`, `slotRunning`, `slotStopping` and the
  * queue are all already in this store, so no server field is needed to decide
@@ -1160,16 +1169,45 @@ export const selectContinuable = (state: RootState): boolean => {
   if (dashSlot?.orchestrating || dashSlot?.subagents_running) return false
   const msgs = c.messages
   if (!msgs.length) return false
-  let sawTrailingError = false
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     // A pending queued message means the backend is about to run the thread on
     // its own — offering Continue would double-fire the turn.
     if (m.role === 'queued') return false
-    if (m.role === 'error') { sawTrailingError = true; continue }
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
       // Compaction notices are assistant-role system messages, not the floor.
+      if (m.role === 'assistant' && (m.meta as { kind?: string } | undefined)?.kind === 'compaction') continue
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * True when the transcript SHOWS the last turn ending without the assistant
+ * handing the floor back — the user's row is last, or an `error` row trails the
+ * assistant's.
+ *
+ * Copy only. `selectContinuable` decides whether the button appears; this
+ * decides what it says, so a slot that was visibly cut short can name that
+ * ("the last turn was interrupted") while a slot that finished gets the neutral
+ * "keep going" wording. Mirrors `_is_interrupted` in
+ * `src/kiro_crew/dashboard/chat_handlers.py`, which makes the same split to pick
+ * the continuation body handed to the model — the two must agree, or the button
+ * promises one thing and the agent is told another.
+ *
+ * A false result means "nothing in the transcript proves an interruption", never
+ * "the turn definitely finished": the force-quit case leaves no evidence.
+ */
+export const selectTurnInterrupted = (state: RootState): boolean => {
+  const msgs = state.chat.messages
+  let sawTrailingError = false
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m.role === 'error') { sawTrailingError = true; continue }
+    if (CONTINUE_SCAN_SKIP.has(m.role)) continue
+    if ((m.role === 'user' || m.role === 'assistant') && m.content) {
       if (m.role === 'assistant' && (m.meta as { kind?: string } | undefined)?.kind === 'compaction') continue
       return m.role === 'user' ? true : sawTrailingError
     }

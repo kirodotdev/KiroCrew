@@ -2956,6 +2956,7 @@
       "context_usage": "Context usage",
       "context_window": "Context window",
       "continue_interrupted_turn": "Continue the interrupted turn",
+      "continue_thread": "Carry on from here",
       "drag_to_resize_double_click_to_reset": "Drag to resize (double-click to reset)",
       "file": "File",
       "force_kill_discards_in_progress_work_and_queued": "Force kill — discards in-progress work and queued messages",
@@ -2994,6 +2995,7 @@
       "total": "Total",
       "trust_reads": "Trust reads",
       "turn_interrupted_press_continue": "Last turn was interrupted — press ▶ to continue, or just type",
+      "press_continue_to_carry_on": "Press ▶ to carry on, or just type a new message",
       "upload_file": "Upload file",
       "use_a_skill": "Use a skill",
       "used": "Used"

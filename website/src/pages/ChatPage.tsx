@@ -18,6 +18,7 @@ import {
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
   selectComposerBusy,
   selectContinuable,
+  selectTurnInterrupted,
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
   setActiveSlot, truncateAfterIndex, replaceMessages,
@@ -3811,13 +3812,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     })
   }, [activeSlot, regenerating, slotRunning, messages, lastTextIdx, dispatch])
 
-  // ---- Continue an interrupted turn ------------------------------------------
+  // ---- Continue the thread ---------------------------------------------------
   // A turn can end without the assistant handing the floor back: the connection
-  // dropped, the gateway restarted during an app update, or the runner's own
-  // recovery ladder gave up. The transcript is left either with an unanswered
-  // user message or with a trailing error card, and until now the only way
-  // forward was to retype the prompt.
+  // dropped, the gateway restarted during an app update, the app was force-quit,
+  // or the runner's own recovery ladder gave up. Some of those leave evidence (an
+  // unanswered user row, a trailing error card) and some leave none at all — a
+  // force-quit runs no cleanup, so its transcript is indistinguishable from a
+  // clean finish. Continue is therefore offered on any idle slot with a
+  // conversation, and `interrupted` only decides how the button describes itself.
+  //
+  // The two COMPOSE at the ErrorCard; neither alone is right. `continuable` is the
+  // availability half (running, stopping, pending turn, autopilot, subagents,
+  // queue) and `interrupted` is the placement half — `i === lastErrorIdx` means
+  // "newest error row", never "the transcript ends badly", so on
+  // `[user, error, user, assistant]` availability alone would put a Continue
+  // button on a superseded failure card that acts on a LATER request. Dropping
+  // `continuable` instead is the mirror-image bug: `selectTurnInterrupted` carries
+  // none of the busy checks, so a card would offer a Continue that `handleContinue`
+  // early-returns on — a dead control in the one place recovery is promised.
   const continuable = useAppSelector(selectContinuable)
+  const interrupted = useAppSelector(selectTurnInterrupted)
   const [continuing, setContinuing] = useState(false)
   useEffect(() => { setContinuing(false) }, [activeSlot])
   // The turn taking over is the success signal; clear the spinner then.
@@ -4435,7 +4449,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       <ErrorCard
         key={key}
         content={m.content}
-        onContinue={continuable && i === lastErrorIdx ? handleContinue : undefined}
+        onContinue={continuable && interrupted && i === lastErrorIdx ? handleContinue : undefined}
         continuing={continuing}
       />
     )
@@ -5259,6 +5273,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               showContextPct={chatConfig.showContextPct}
               isRunning={composerBusy}
               continuable={continuable}
+              continueIsRecovery={interrupted}
               onContinue={handleContinue}
               continuing={continuing}
               onStop={() => {

@@ -300,12 +300,20 @@ interface ChatInputProps {
   isRunning?: boolean
   onStop?: () => void
   /**
-   * True when the slot's last turn ended without a reply, so an EMPTY composer
-   * offers to pick it back up instead of showing a dead send button. Together
-   * with `onContinue` this turns the composer's one permanently-disabled state
-   * into the recovery affordance — no new control, no new row.
+   * True when an EMPTY composer can hand the thread back to the agent, so the
+   * dead send button becomes a Continue control instead. Offered on any idle
+   * slot with a conversation — a force-quit leaves no trace of the turn it
+   * killed, so restricting this to visibly-broken transcripts would miss exactly
+   * the case that needs it most.
    */
   continuable?: boolean
+  /**
+   * True when the transcript SHOWS the last turn ending badly (unanswered user
+   * row, or a trailing error). Copy only: it picks between "the last turn was
+   * interrupted" and the neutral "keep going" wording, so the button never
+   * asserts a breakage it cannot see.
+   */
+  continueIsRecovery?: boolean
   onContinue?: () => void
   /** True while a continue request is in flight. */
   continuing?: boolean
@@ -504,6 +512,7 @@ function ChatInput({
   isRunning = false,
   onStop,
   continuable = false,
+  continueIsRecovery = false,
   onContinue,
   continuing = false,
   isQueued = false,
@@ -968,14 +977,23 @@ function ChatInput({
   const isMobile = useIsMobile()
   const ime = useImeGuard()
   const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
-  // An icon swap alone announces nothing: the user would not learn that the last
-  // turn died, nor that the button in the usual send position now means something
-  // else. The empty-state placeholder is dead space too, so it carries the
-  // explanation — and it names typing as the other way out, so the morph never
-  // feels like a trap.
+  // An icon swap alone announces nothing: the user would not learn that the
+  // button in the usual send position now means something else. The empty-state
+  // placeholder is dead space too, so it carries the explanation — and it names
+  // typing as the other way out, so the morph never feels like a trap.
+  //
+  // Two wordings, because Continue now covers two situations. Only claim an
+  // interruption when the transcript actually shows one: after a force-quit it
+  // shows nothing, and after a clean turn nothing broke at all, so the honest
+  // offer there is "carry on", not a false report of a failure.
   const continuePlaceholder = continuable && onContinue
-    ? i18nT('components.chatInput.turn_interrupted_press_continue')
+    ? i18nT(continueIsRecovery
+      ? 'components.chatInput.turn_interrupted_press_continue'
+      : 'components.chatInput.press_continue_to_carry_on')
     : ''
+  const continueLabel = i18nT(continueIsRecovery
+    ? 'components.chatInput.continue_interrupted_turn'
+    : 'components.chatInput.continue_thread')
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [filePickerOpen, setFilePickerOpen] = useState(false)
   const [fileQuery, setFileQuery] = useState('')
@@ -2631,21 +2649,21 @@ function ChatInput({
               {/*
                 Sixth state of this button. The first five are send / stop /
                 queue / steer / disabled; this one claims the ONE state that was
-                previously dead weight — an empty composer on a slot whose last
-                turn was cut short. Pressing it resumes the turn instead of
-                sending nothing. The moment the user types a character the arrow
-                and the send action come back, so the control never carries two
-                meanings at once.
+                previously dead weight — an empty composer on an idle slot that
+                already holds a conversation. Pressing it hands the thread back
+                to the agent instead of sending nothing. The moment the user
+                types a character the arrow and the send action come back, so the
+                control never carries two meanings at once.
               */}
               {continuable && onContinue && !value.trim() && !pendingFiles.length ? (
                 <button
                   className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                   onClick={onContinue}
                   disabled={continuing || disabled || optimizing || !connected}
-                  aria-label={i18nT('components.chatInput.continue_interrupted_turn')}
-                  title={i18nT('components.chatInput.continue_interrupted_turn')}
+                  aria-label={continueLabel}
+                  title={continueLabel}
                   data-testid="composer-continue"
-                  {...offlineProps(connected, 'continue', i18nT('components.chatInput.continue_interrupted_turn'))}
+                  {...offlineProps(connected, 'continue', continueLabel)}
                 >
                   {continuing ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
                 </button>

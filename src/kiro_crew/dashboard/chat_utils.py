@@ -723,6 +723,26 @@ _MANUAL_RESUME_MSG = (
     "assume any particular progress was made — if nothing was done yet, simply "
     "start the request now."
 )
+# Injected when the user presses Continue on a slot whose last turn ended
+# NORMALLY. Continue is offered on any idle slot with a transcript (a killed
+# gateway writes no error row, so an interrupted turn can be shape-identical to
+# a clean one — see ``_is_interrupted``), which means the button must also have
+# something true to say when nothing was actually cut short. Sharing
+# ``MANUAL_RESUME_RECOVERY_PREFIX`` is deliberate: to the user the two are one
+# button, so they must fold into the same RecoveryCard.
+#
+# The closing sentence is load-bearing. Without an explicit licence to say "this
+# is done", a model handed a bare "keep going" on a finished thread invents
+# follow-up work to justify the turn.
+_MANUAL_CONTINUE_MSG = (
+    f"{MANUAL_RESUME_RECOVERY_PREFIX}\n"
+    "The user pressed Continue without typing a new instruction. Look at the "
+    "conversation above and carry on with their most recent request: take the "
+    "next step that was still outstanding, or finish anything left half-done. "
+    "Do NOT re-run steps or tools that already completed successfully. If the "
+    "request is genuinely complete, say so in one line instead of inventing "
+    "further work."
+)
 
 
 def is_system_injection(content: str) -> bool:
