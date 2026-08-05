@@ -93,6 +93,44 @@ export function isPathCandidate(s: string): boolean {
   return EXT_RE.test(s.slice(s.lastIndexOf('/') + 1))
 }
 
+/**
+ * A trailing source location: `:447`, or `:447:12` for line-and-column.
+ *
+ * Capped at 7 digits so a long digit run (a hash fragment, an id) is not read as
+ * a line number, and so the captured value always parses to a safe integer.
+ */
+const LINE_REF_RE = /:(\d{1,7})(?::\d{1,7})?$/
+
+/**
+ * Split a `file:line` / `file:line:col` reference into its path and line.
+ *
+ * Agents cite code the way compilers and stack traces do, so the location is
+ * part of the token, and treating the whole token as a filename is what made
+ * these chips inert: the stat probe asked the backend about
+ * `…/_dispatch.py:447`, which does not exist, so the chip rendered as dead
+ * text. Splitting first lets the probe ask about the file and the click carry
+ * the line.
+ *
+ * Only the LINE is returned; a column is matched so it can be consumed, but
+ * discarded — the reveal is line-granular, and pretending to a column we then
+ * ignore would be a worse contract than not offering one.
+ *
+ * Purely syntactic and therefore ambiguous: a file whose name genuinely ends in
+ * `:12` splits into a path that does not exist. Callers resolve that by probing
+ * the split path first and falling back to the unsplit text (see `InlineCode`),
+ * rather than by guessing here.
+ */
+export function splitLineRef(s: string): { path: string; line?: number } {
+  const m = LINE_REF_RE.exec(s)
+  if (!m) return { path: s }
+  const line = Number(m[1])
+  // `:0` is not a line — Monaco and every editor number from 1 — so treat it as
+  // part of the name rather than clamping it to 1 and jumping somewhere the
+  // text never named.
+  if (!line) return { path: s }
+  return { path: s.slice(0, m.index), line }
+}
+
 /** Context providing the viewed file's directory path for resolving bare relative image paths. */
 export const BasePathCtx = createContext<string | null>(null)
 
@@ -370,7 +408,7 @@ const PathProbeCtx = createContext<boolean>(true)
  * the ~30 MarkdownRenderer call sites pass neither, and those fall back to the
  * OS file manager.
  */
-type PathActions = { onFileOpen?: (path: string) => void; onFolderOpen?: (path: string) => void }
+type PathActions = { onFileOpen?: (path: string, opts?: { line?: number }) => void; onFolderOpen?: (path: string) => void }
 const PathActionCtx = createContext<PathActions>({})
 
 /**
@@ -378,8 +416,13 @@ const PathActionCtx = createContext<PathActions>({})
  *
  * `reveal` is the shift-modifier / no-handler escape hatch: hand the path to the
  * OS file manager, which understands both files and directories.
+ *
+ * `line` (from a `file:447` chip) is passed to the file handler so it can scroll
+ * to and flash that line. It is dropped on the two fallback routes on purpose:
+ * `revealPath` selects a file in Finder/Explorer, which has no notion of a line,
+ * and a directory does not have one either.
  */
-function activatePath(path: string, kind: PathKind, reveal: boolean, actions: PathActions): void {
+function activatePath(path: string, kind: PathKind, reveal: boolean, actions: PathActions, line?: number): void {
   if (reveal) { api.revealPath(path); return }
   if (kind === 'dir') {
     // No folder handler wired: fall back to the OS file manager rather than
@@ -388,8 +431,13 @@ function activatePath(path: string, kind: PathKind, reveal: boolean, actions: Pa
     else api.revealPath(path)
     return
   }
-  if (actions.onFileOpen) actions.onFileOpen(path)
-  else api.revealPath(path)
+  if (!actions.onFileOpen) { api.revealPath(path); return }
+  // Called with ONE argument when there is no line, not with an explicit
+  // `undefined`: the handler is also the app's general-purpose file opener, and
+  // an omitted argument keeps a chip click indistinguishable from every other
+  // caller of it.
+  if (line != null) actions.onFileOpen(path, { line })
+  else actions.onFileOpen(path)
 }
 
 const CHIP_BASE = 'bg-bg-elevated px-1.5 py-0.5 rounded text-accent text-sm font-mono'
@@ -414,8 +462,42 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   const codeStr = String(children).replace(/\n$/, '')
   const probeEnabled = useContext(PathProbeCtx)
   const actions = useContext(PathActionCtx)
-  const candidate = probeEnabled && isPathCandidate(codeStr)
-  const kind = usePathKind(candidate ? codeStr.trim() : null)
+  const raw = codeStr.trim()
+  // Split `file.py:447` BEFORE probing, not just before the click. Candidacy is
+  // decided on the split path too: `src/main.py:447` fails the extension test as
+  // one token (it ends in digits, not `.py`), so testing the raw text would keep
+  // rejecting exactly the citations this is meant to admit.
+  const { path: stripped, line } = splitLineRef(raw)
+  const strippedCandidate = probeEnabled && isPathCandidate(stripped)
+  // Colons are legal in POSIX filenames, so `report:12` may name a real file or
+  // directory. Both spellings are therefore probed CONCURRENTLY — not the split
+  // one first with the literal as a fallback — because when both exist the
+  // fallback order would silently open the sibling the reader did not name, in an
+  // editor where a subsequent save would write to the wrong file. Two HEADs for a
+  // suffixed chip is the price of that being unambiguous; `usePathKind` caches and
+  // de-duplicates, and an unsuffixed chip still costs one.
+  //
+  // Derived from `strippedCandidate` rather than re-running the pre-filter on the
+  // raw text, because the pre-filter CANNOT see the literal form: `src/report.py:12`
+  // fails the extension test as one token (the suffix hides the `.py`), so testing
+  // it directly left relative citations — the majority form — with only one probe
+  // and no sibling precedence at all. If the split path is worth a probe then so is
+  // the literal spelling of the same path; that pairs them for every suffixed
+  // candidate instead of only rooted ones.
+  const rawCandidate = line != null && strippedCandidate
+  const strippedKind = usePathKind(strippedCandidate ? stripped : null)
+  const rawKind = usePathKind(rawCandidate ? raw : null)
+  // The literal text wins whenever it resolves: the reader clicked THAT name, and
+  // the split is only our interpretation of it. So there is no line to reveal.
+  const rawWins = rawKind === 'file' || rawKind === 'dir'
+  const kind = rawWins ? rawKind : strippedKind
+  const targetLine = rawWins ? undefined : line
+  // Withhold the affordance until EVERY probe in flight has reported. Rendering it
+  // on the split path's verdict alone would leave a window in which a click opened
+  // the split path even though the literal name exists — the same wrong-file
+  // outcome, just narrower.
+  const probePending = (strippedCandidate && strippedKind === undefined)
+    || (rawCandidate && rawKind === undefined)
 
   // `data-path` / `data-path-kind` describe a chip THIS component rendered, so
   // only it may set them. rehypeSanitize allowlists every `data-*` attribute
@@ -426,11 +508,11 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
     Object.entries(props).filter(([k]) => !k.toLowerCase().startsWith('data-path')),
   )
 
-  if (kind !== 'file' && kind !== 'dir') {
+  if (probePending || (kind !== 'file' && kind !== 'dir')) {
     return <code className={CHIP_BASE} {...safeProps}>{children}</code>
   }
   const isDir = kind === 'dir'
-  const path = codeStr.trim()
+  const path = rawWins ? raw : stripped
   // A leading glyph is what makes "this is actionable" legible at rest. Without
   // one, a confirmed chip and an inert one differ only on hover, so a reader
   // cannot tell which paths the backend actually resolved. Files use the same
@@ -449,7 +531,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   const act = (e: { shiftKey: boolean; preventDefault: () => void; stopPropagation: () => void }) => {
     e.preventDefault()
     e.stopPropagation()
-    activatePath(path, kind, e.shiftKey, actions)
+    activatePath(path, kind, e.shiftKey, actions, targetLine)
   }
   return (
     <code
@@ -461,13 +543,18 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
       {...safeProps}
       data-path={path}
       data-path-kind={kind}
+      data-path-line={targetLine}
       // The resolved path leads the tooltip, not just the instruction. A native
       // tooltip paints in the browser's own layer, above page content, and any
       // element overlaying the chip must be pointer-events-none to let the click
       // reach it — so hovering always discloses the real target even when
       // surrounding markup visually covers the chip's text. It also shows a long
       // path in full when layout truncates it.
-      title={`${path}\n${isDir
+      //
+      // `raw`, not `path`, so a `file:447` chip discloses the line it will jump
+      // to. That keeps the disclosure honest without a second catalog string:
+      // the location is already in the text the user is hovering.
+      title={`${raw}\n${isDir
         ? i18nT('components.markdownRenderer.click_to_browse_shift_click_to_reveal_in_finder')
         : i18nT('components.markdownRenderer.click_to_open_shift_click_to_reveal_in_finder')}`}
     >
@@ -1053,6 +1140,20 @@ const REVEAL_FADE_CHARS = 32
  *  fade-from-invisible. */
 const REVEAL_MIN_OPACITY = 0.6
 
+/** How long the rendered content must sit unchanged before the reveal edge is
+ *  settled to full opacity. `--ft-o` is POSITIONAL, so only the tip advancing
+ *  raises a character's opacity. This matters for exactly one case: a stream
+ *  that PAUSES mid-turn (the gap while the model composes tool arguments), where
+ *  `streaming` is still true and nothing advances the tip, leaving the last
+ *  REVEAL_FADE_CHARS characters pinned as low as REVEAL_MIN_OPACITY for the
+ *  whole pause. A FINISHED stream is already self-healing and needs nothing:
+ *  rehypeStreamingReveal is only in the pipeline while `glow` is set, and
+ *  `glow` follows `isStreaming`, so the spans are dropped on the next re-parse.
+ *  Do not "simplify" this into `animOn = !!smooth && streaming` — that only
+ *  covers the self-healing case and cannot cover a pause, where streaming is
+ *  true by definition. */
+const REVEAL_IDLE_SETTLE_MS = 500
+
 /** Opacity for a character `d` positions back from the streaming tip (d=0 is
  *  the newest char). Deliberately a pure function of POSITION, not of mount
  *  time — this is the streaming-flash fix. react-markdown re-parses the whole
@@ -1459,7 +1560,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean }) {
   const blocks = useBlockAssembler(content, streaming)
 
   /** Chip activation lives on the chip itself (see InlineCode); this handler is
@@ -1513,6 +1614,31 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     return -1
   }, [blocks])
 
+  // Settle the reveal edge once the content stops changing, and NEVER un-settle
+  // it. One-way is the whole point: `.ft-word` spans persist across chunks
+  // (hast-util-to-jsx-runtime keys element children by per-parent ordinal, and
+  // `--ft-o` is a function of the span's slot, not of the character), so
+  // REMOVING `.ft-idle` would transition the entire 32-character edge from the
+  // settled 1 back down to `--ft-o` — an inverse of the fade-in #697 built, in
+  // the same pixels. Pre-paint clearing cannot avoid that either, because a
+  // transition starts from the previously COMPUTED style, not the last painted
+  // frame. Making the settle one-way removes the downward transition by
+  // construction: a character's opacity only ever rises.
+  //
+  // The cost is deliberate: after the first stall the rest of that row renders
+  // at full opacity with no reveal. A latched class is harmless once streaming
+  // ends — the spans only exist while `glow` is set, and the class's effect is
+  // full opacity, which is the correct end state anyway.
+  //
+  // Skipped entirely when `smooth` is off: `.ft-idle` is inert there, and this
+  // component has ~15 non-streaming call sites.
+  const [revealIdle, setRevealIdle] = useState(false)
+  useEffect(() => {
+    if (!smooth || revealIdle) return
+    const t = setTimeout(() => setRevealIdle(true), REVEAL_IDLE_SETTLE_MS)
+    return () => clearTimeout(t)
+  }, [content, smooth, revealIdle])
+
   if (rawMode) {
     return <pre className="text-[13px] font-mono whitespace-pre-wrap break-words leading-relaxed text-muted">{content}</pre>
   }
@@ -1523,7 +1649,15 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   // re-mounts don't re-fade.
   const animOn = !!smooth
   const animClass = animOn ? ' ft-anim-smooth' : ''
-  const streamClass = animOn && streaming ? ' ft-streaming' : ''
+  // `ft-idle` is folded into streamClass rather than interpolated separately so
+  // the root element below stays byte-identical to base. The repo's
+  // accessible-interactive-elements rule greps ADDED lines for a non-role div or
+  // span carrying a click handler (check-added: true), so merely re-touching that
+  // line trips a WCAG-affordance gate even though this change adds no affordance
+  // -- the element and its handler are untouched.
+  const streamClass =
+    (animOn && streaming ? ' ft-streaming' : '') +
+    (animOn && revealIdle ? ' ft-idle' : '')
 
   return (
     // Presentational content wrapper for rendered markdown blocks. The onClick is

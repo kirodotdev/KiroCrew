@@ -172,3 +172,67 @@ class TestScreenshotDir:
         assert "tempfile.gettempdir()" in src
         # And the deprecated hardcoded fallback is no longer present.
         assert 'os.environ.get("TMPDIR", "/tmp")' not in src
+
+
+class TestResolvePlaywrightCmd:
+    """Regression: on Windows npx is ``npx.CMD``. The resolver must return the
+    RESOLVED path (not the bare name, which CreateProcess cannot spawn), and
+    run_proxy must still inject the @playwright/mcp arg for a ``.CMD`` launcher.
+    """
+
+    def test_returns_resolved_npx_path_not_bare_name(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_PLAYWRIGHT_CMD", raising=False)
+
+        def fake_which(name, **kw):
+            # Standalone binaries absent; only npx resolves, as npx.CMD.
+            return r"C:\node\npx.CMD" if name == "npx" else None
+
+        monkeypatch.setattr(proxy.shutil, "which", fake_which)
+        resolved = proxy._resolve_playwright_cmd()
+        assert resolved == r"C:\node\npx.CMD"
+        # The bug returned the bare "npx"; the fix returns the full path.
+        assert resolved != "npx"
+
+    def test_run_proxy_injects_playwright_arg_for_cmd_launcher(self, monkeypatch):
+        # The extension-insensitive basename check must still add @playwright/mcp
+        # when the resolved launcher is npx.CMD, else a bare interactive npx runs.
+        # Build the path with the HOST separator: the product parses it with the
+        # host os.path, so a hardcoded C:\...\npx.CMD would not parse on Linux CI.
+        import os as _os
+
+        launcher = _os.path.join("node-bin", "npx.CMD")
+        monkeypatch.setattr(proxy, "_resolve_playwright_cmd", lambda: launcher)
+        captured = {}
+
+        class _FakeProc:
+            returncode = 0
+
+            def __init__(self, cmd, **kw):
+                captured["cmd"] = cmd
+                self.stdin = None
+                self.stdout = None
+
+            def wait(self, timeout=None):
+                return 0
+
+        monkeypatch.setattr(proxy.subprocess, "Popen", _FakeProc)
+        # No-op the stdin forwarder thread and end the relay loop immediately so
+        # run_proxy returns right after building + spawning the command.
+        monkeypatch.setattr(proxy.threading, "Thread", lambda *a, **k: _NoopThread())
+        monkeypatch.setattr(proxy, "_read_message", lambda *a, **k: None)
+
+        try:
+            proxy.run_proxy([])
+        except SystemExit:
+            pass
+
+        assert captured["cmd"][0] == launcher
+        assert captured["cmd"][1] == "@playwright/mcp"
+
+
+class _NoopThread:
+    def start(self):
+        pass
+
+    def join(self, timeout=None):
+        pass

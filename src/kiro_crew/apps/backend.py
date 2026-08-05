@@ -724,6 +724,19 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         # checkout. minimal_env() strips it; backends need it to locate the
         # gateway's source checkout (e.g. dev-fleet worktree discovery).
         _platform_extra["KIROCREW_PROJECT_DIR"] = os.environ["KIROCREW_PROJECT_DIR"]
+    if os.environ.get("KIROCREW_EDITION_DIR"):
+        # Platform var, same class as the above: whether this gateway is an
+        # EDITION composition root. A backend that stages frontend build output
+        # into the served static/dist must know, because a rebuild it drives
+        # cannot recompose the edition (the build env deliberately withholds the
+        # edition opt-in) and staging a stock SPA would silently replace the
+        # edition dashboard with upstream's. minimal_env() strips it, so without
+        # this the backend cannot tell an edition install from a stock one and
+        # any such guard reads as "stock" everywhere. A path, not a secret; the
+        # opt-in (KIROCREW_ALLOW_EDITION) is deliberately NOT propagated, so a
+        # backend can detect an edition but never manufacture consent to compile
+        # one.
+        _platform_extra["KIROCREW_EDITION_DIR"] = os.environ["KIROCREW_EDITION_DIR"]
     for _k, _v in os.environ.items():
         # Operator-declared trusted-binary overrides (unit-file owned):
         # backends resolve credential-bearing tools through these instead of

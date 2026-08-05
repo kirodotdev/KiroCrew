@@ -125,6 +125,9 @@ describe('App routing', () => {
       expect(api.updateThemeConfig).toHaveBeenCalledWith({
         onboarded: true,
         import_onboarded: true,
+        // A finished legacy first run implies the disclosure is behind the user.
+        // Persisted server-side so the gateway's first-heartbeat gate can see it.
+        privacy_acked: true,
       })
       expect(localStorage.getItem('mc-import-onboarded')).toBe('1')
     })
@@ -192,6 +195,14 @@ describe('App routing', () => {
 
       expect(await screen.findByText('Pick your look')).toBeInTheDocument()
       expect(localStorage.getItem('mc-privacy-acked')).toBe('1')
+      // Persisted SERVER-side too, not just locally: the gateway withholds the
+      // very first heartbeat until `dashboard.privacy_acked` is true, and it
+      // cannot read localStorage. A local-only mark would leave the beacon
+      // permanently silent on an install whose user did pass this chapter.
+      const { api: clientApi } = await import('../api/client')
+      await waitFor(() => {
+        expect(clientApi.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true })
+      })
     })
 
     it('"Skip all" from the Customize chapter ends first run without re-showing Privacy', async () => {
@@ -348,14 +359,39 @@ describe('App routing', () => {
     expect(screen.getByText('Settings')).toBeInTheDocument()
     // The App Store now rides the Apps section header as an accent link.
     expect(screen.getByText('Explore')).toBeInTheDocument()
-    // The bottom-pinned community row: two stacked GitHub links under one mark,
-    // plus the icon-only Discord link. The kiro.dev link was removed.
+    // The bottom-pinned community row: the GitHub mark fronts a "Star us" link
+    // plus a "Report issue" BUTTON (it opens the diagnostics flow rather than
+    // navigating to the issue list), and the icon-only Discord link. The
+    // kiro.dev link was removed.
     expect(screen.getByText('Star us')).toBeInTheDocument()
     expect(screen.getByText('Report issue')).toBeInTheDocument()
     expect(screen.getByLabelText('Star Kiro Crew on GitHub')).toBeInTheDocument()
-    expect(screen.getByLabelText('Report an issue on GitHub')).toBeInTheDocument()
+    expect(
+      screen.getByLabelText(
+        'Report a problem — collects logs and crash reports, secrets removed',
+      ),
+    ).toBeInTheDocument()
+    // The old bare link to the issue list is gone — reporting now goes through
+    // the collector so triage gets logs instead of an empty issue form.
+    expect(screen.queryByLabelText('Report an issue on GitHub')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Kiro Discord community')).toBeInTheDocument()
     expect(screen.queryByLabelText('Kiro website (kiro.dev)')).not.toBeInTheDocument()
+  })
+
+  it('rail "Report issue" opens the diagnostics Report a Problem modal', async () => {
+    // The rail entry used to be an <a> to /issues, which lost exactly what
+    // triage needs. It must now mount the same shared modal as
+    // Settings › About › Support.
+    renderWithProviders(<App />, { route: '/chat' })
+    const trigger = screen.getByLabelText(
+      'Report a problem — collects logs and crash reports, secrets removed',
+    )
+    expect(trigger.tagName).toBe('BUTTON')
+    expect(trigger).not.toHaveAttribute('href')
+
+    fireEvent.click(trigger)
+    expect(await screen.findByText('What happened?')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /create report/i })).toBeInTheDocument()
   })
 
   it('renders the registry-derived Artifacts and Knowledge nav items', () => {
@@ -748,14 +784,6 @@ describe('App routing', () => {
 })
 
 describe('TopbarMetrics widget', () => {
-  beforeEach(() => {
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-  })
-
-  afterEach(() => {
-    localStorage.removeItem('mc-privacy-notice-v1')
-  })
-
   it('shows only the Activity toggle button when metricsOpen is not set', () => {
     localStorage.removeItem('mc-topbar-metrics')
     renderWithProviders(<App />, { route: '/chat' })

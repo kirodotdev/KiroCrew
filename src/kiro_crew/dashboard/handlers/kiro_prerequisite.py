@@ -169,6 +169,14 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "sandbox_unavailable": False,
             "sandbox_failure_kind": "",
             "sandbox_detail": "",
+            # Redacted for the same reason as the block above, and kept present
+            # for the same shape-stability reason: only the owner can act on a
+            # missing spec (the repair is an owner-gated POST). A non-owner on an
+            # established install still gets the app -- the gate returns children
+            # on ``initial_setup_complete`` before it consults these keys -- so
+            # withholding them costs them nothing.
+            "missing_agent_specs": [],
+            "agent_spec_repair_error": "",
             "operation": {
                 "kind": "",
                 "status": "idle",
@@ -205,3 +213,31 @@ async def api_kiro_prerequisite_login(request: web.Request) -> web.Response:
     except PrerequisiteBusyError as exc:
         return web.json_response({"error": str(exc)}, status=409)
     return web.json_response({**snapshot, "setup_allowed": True}, status=202)
+
+
+async def api_kiro_prerequisite_repair_specs(request: web.Request) -> web.Response:
+    """POST /api/kiro-prerequisite/repair-specs — rewrite the managed agent specs.
+
+    A POST rather than a flag on the status GET, because the write must be
+    origin-checked and audited: ``csrf_middleware`` skips ``check_origin`` for
+    ``{GET, HEAD, OPTIONS}`` and ``sel_audit_middleware`` logs only
+    ``{POST, PUT, DELETE, PATCH}``, so hanging this off the status read would make
+    a spec rewrite cross-site triggerable and invisible to the audit log.
+
+    Returns 200 with the post-repair snapshot (unlike install/login's 202) because
+    the repair runs to completion within the request — it is one bounded file
+    write, not a long-lived background operation with progress to poll.
+    """
+
+    denied = await _dashboard_owner_only(request)
+    if denied is not None:
+        return denied
+    try:
+        snapshot = await _service(request).repair_agent_specs(_caller(request))
+    except PrerequisiteBusyError as exc:
+        # Coded, per the error-code contract: the dashboard renders `error`
+        # verbatim into a localized UI, so `code` is what a caller can act on.
+        return web.json_response(
+            {"error": str(exc), "code": "kiro_setup_busy"}, status=409
+        )
+    return web.json_response({**snapshot, "setup_allowed": True})

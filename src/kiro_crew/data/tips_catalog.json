@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-04T17:06:03.571642+00:00",
+  "generated_at": "2026-08-04T21:49:53.608854+00:00",
   "entries": [
     {
       "feature": "Agents & Configuration",
@@ -41,7 +41,7 @@
       "title": "Discord Integration",
       "summary": "Talk to your agent from Discord DMs and explicitly approved server threads. The channel connects outbound over Discord's Gateway WebSocket, so it works behind NAT and firewalls with no webhook, public address, or inbound port.",
       "doc": "discord-integration.md",
-      "mtime": 1785702592.0
+      "mtime": 1785474761.0
     },
     {
       "feature": "Dynamic Sub-Agent Max Count",
@@ -58,13 +58,6 @@
       "mtime": 1785856770.0
     },
     {
-      "feature": "Getting Started with Kiro Crew",
-      "title": "Getting Started with Kiro Crew",
-      "summary": "Kiro Crew is an autonomous AI agent layer that runs on your own machine on top of the kiro-cli (KiroACP) backend.",
-      "doc": "getting-started.md",
-      "mtime": 1785861404.0
-    },
-    {
       "feature": "Knowledge Library \u2014 How the Graph Works",
       "title": "Knowledge Library \u2014 How the Graph Works",
       "summary": "The Knowledge Library builds a graph from documents without embeddings. It uses LLM extraction to identify entities and their relationships, then connects them through shared entity names across chunks.",
@@ -76,7 +69,7 @@
       "title": "MCP Apps",
       "summary": "Kiro Crew renders **MCP Apps** natively: when an MCP tool returns a `ui://` resource alongside its text, the dashboard mounts that resource as a live, interactive component in the chat instead of showing you a wall of JSON.",
       "doc": "mcp-apps.md",
-      "mtime": 1785863161.0
+      "mtime": 1785871324.0
     },
     {
       "feature": "Memory & Learning",
@@ -90,7 +83,7 @@
       "title": "Research Lab",
       "summary": "Research Lab (the `auto-research` builtin app) runs autonomous, multi-cycle campaigns: you define a research question, a **grill tree** interactively clarifies scope and sub-questions, then the system investigates cycle-by-cycle until it satisfies a success criterion or exhausts its cycle budget.",
       "doc": "research-lab.md",
-      "mtime": 1785702592.0
+      "mtime": 1785365928.0
     },
     {
       "feature": "Skills",
@@ -125,7 +118,7 @@
       "title": "Task Runner",
       "summary": "The task runner executes multi-step autonomous tasks from spec files. It's useful for complex workflows that need structured execution with progress tracking.",
       "doc": "task-runner.md",
-      "mtime": 1785702592.0
+      "mtime": 1785365928.0
     },
     {
       "feature": "Microsoft Teams Integration",

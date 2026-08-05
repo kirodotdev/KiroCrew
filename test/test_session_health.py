@@ -46,6 +46,40 @@ def test_detects_prompt_stuck(tmp_path: Path) -> None:
     assert result["chat-9-1776732990"]["reason"] == "prompt_stuck"
 
 
+def test_detects_prompt_stuck_from_formatted_message(tmp_path: Path) -> None:
+    """The current log shape: class name present, backend text absent.
+
+    Regression guard. chat_runner's message now comes from _format_acp_error,
+    which rewrites "prompt already in progress" into user-facing prose. With
+    only the legacy text pattern this line matched nothing and the stall went
+    undetected, so the UI kept showing the slot as working. The class-name
+    pattern is what carries the signal, and it cannot drift when the copy does.
+    """
+    log = tmp_path / "gateway.log"
+    _write_log(log, [""])  # touch to get mtime
+    ts = _ts_from_file(log)
+    _write_log(log, [
+        f"{ts} WARNING kiro_crew.dashboard.chat: ACP error in slot chat-7-1776999111: "
+        "[AcpPromptBusy] I'm still processing a previous request. Please wait a "
+        "moment and try again.",
+    ])
+    result = session_health.compute_session_health(log_path=log, now=log.stat().st_mtime)
+    assert result["chat-7-1776999111"]["reason"] == "prompt_stuck"
+
+
+def test_other_acp_error_classes_are_not_prompt_stuck(tmp_path: Path) -> None:
+    """The class-name pattern must not over-match sibling AcpError subclasses."""
+    log = tmp_path / "gateway.log"
+    _write_log(log, [""])  # touch to get mtime
+    ts = _ts_from_file(log)
+    _write_log(log, [
+        f"{ts} WARNING kiro_crew.dashboard.chat: ACP error in slot chat-8-1776999222: "
+        "[AcpError] Bedrock is throttling requests.",
+    ])
+    result = session_health.compute_session_health(log_path=log, now=log.stat().st_mtime)
+    assert result == {}
+
+
 def test_ignores_internal_background_sessions(tmp_path: Path) -> None:
     log = tmp_path / "gateway.log"
     _write_log(log, [""])  # touch to get mtime

@@ -2662,12 +2662,16 @@ async def _run_app_build(
     build_cmds: list[list[str]] = []
 
     if (build_dir / "package.json").is_file():
-        if shutil.which("npm"):
-            build_cmds.append(["npm", "install"])
+        # Resolve to a full path, mirroring the pip branch below: on Windows npm
+        # is ``npm.CMD``, which shutil.which finds but CreateProcess cannot spawn
+        # by the bare name "npm".
+        npm = shutil.which("npm")
+        if npm:
+            build_cmds.append([npm, "install"])
             try:
                 pkg = json.loads((build_dir / "package.json").read_text("utf-8"))
                 if (pkg.get("scripts") or {}).get("build"):
-                    build_cmds.append(["npm", "run", "build"])
+                    build_cmds.append([npm, "run", "build"])
             except (json.JSONDecodeError, OSError):
                 pass
         else:

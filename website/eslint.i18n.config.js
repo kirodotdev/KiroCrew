@@ -131,6 +131,8 @@ export default [
       // Key glyphs / key-cap names only (⌘ ⇧ ⌥ / Ctrl Win Alt) — a machine
       // grammar the OS parses, not translatable copy. Same rationale as above.
       'src/apps/mochi/src/shared/shortcut.ts',
+      // CSS text injected through <style>; a stylesheet is not translatable copy.
+      'src/apps/spec-builder/inlineStyles.ts',
     ],
     linterOptions: {
       // Every `eslint-disable` comment in this codebase targets the MAIN config's
@@ -254,6 +256,22 @@ export default [
               // a shape UI copy takes — copy has spaces and capitals, which is what keeps
               // `['Save changes', 'Delete item']` reported.
               '^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$',
+              // A `mc:`-NAMESPACED BROWSER-STORAGE KEY, e.g.
+              // `mc:notif:activeKinds:v2`, `mc:notif:seenChannels`. The dashboard
+              // namespaces every localStorage key it owns under `mc:`, and such
+              // keys live at module level under an ALL-CAPS name, so
+              // `i18n-strict` looks inside them. None of the identifier patterns
+              // above reach them: the camelCase one forbids colons, and the
+              // Tailwind/class shape forbids the interior capital that
+              // `activeKinds` has.
+              //
+              // Deliberately anchored on the app's own prefix rather than a
+              // generic "has a colon" shape: UI copy never begins `mc:`, and the
+              // char class forbids spaces, so prose cannot match even when it
+              // contains a colon. Naming the shape here also retires the same
+              // debt on the keys that predate this entry, instead of leaving each
+              // one to a per-file ceiling that hides it.
+              '^mc:[A-Za-z0-9:._-]+$',
               '^[\\w.-]+/[\\w./-]*$',
               // EVERY PATTERN IN THIS FILE IS MATCHED FULL-STRING, so a prefix
               // pattern MUST spell out its own tail. `eslint-plugin-i18next` compiles
@@ -280,6 +298,21 @@ export default [
               // slash-prefixed string (`'/Delete'`) is exempt.
               '^https?://\\S*$',
               '^[.~]?/\\S*$',
+              // A GATEWAY WIRE MARKER, e.g. `[Tool refusal — automatic recovery]` or
+              // `[Continue — requested by the user]`. These are matched with
+              // `startsWith` against gateway-authored transcript rows and must stay
+              // BYTE-IDENTICAL to the Python constants in
+              // `src/kiro_crew/dashboard/state.py`; the matched prefix is then SLICED
+              // OFF, so no character of it ever reaches the screen — the card's visible
+              // copy comes from `i18nT()`. Translating one would silently stop every
+              // recovery card from rendering in that locale, which is the failure this
+              // exemption exists to prevent: without it the gate pushes a contributor
+              // toward "fixing" a wire value by translating it.
+              //
+              // Narrow by SHAPE, not by file: bracket-delimited end to end, and it must
+              // carry a spaced em dash. UI copy is neither bracketed nor em-dash-joined,
+              // and the bracketed CSS attribute selector covered above has no em dash.
+              '^\\[[A-Za-z][A-Za-z0-9 ]* — [A-Za-z0-9 ]+\\]$',
               // NOTE ON SHAPE: the plugin wraps every pattern as `^<pattern>$`
               // (`generateFullMatchRegExp`), so a pattern must describe the WHOLE
               // string. A prefix-only pattern like `^data:` becomes `^^data:$` and can
@@ -605,6 +638,31 @@ export default [
   // `object-properties: next` exclusion above refuses. See the module's own header.
   {
     files: ['src/apps/issue-radar/lib/wireValues.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // A GLSL-ONLY module: two shader programs (`VERT`, `FRAG`) as template literals,
+  // plus CSS custom-property token names and Tailwind classes. The component
+  // renders exactly one `<canvas aria-hidden="true">` and no text node, so it has
+  // no path to user-visible copy at all.
+  //
+  // A `words.exclude` shape rule was tried first and cannot do this job: WebGL2
+  // makes `#version 300 es` the mandatory first line, so `'#version [\\s\\S]*$'`
+  // looks like a precise, self-anchoring shape — but upstream validates a template
+  // literal QUASI BY QUASI (`no-literal-string.js` -> `TemplateLiteral`), and this
+  // shader interpolates its loop bounds (`uColors[${MAX_COLORS}]`,
+  // `i < ${MAX_STRANDS}`). Only the first chunk carries the version pragma; every
+  // chunk after an interpolation starts mid-program, so the pattern exempts the
+  // first and reports the second. Widening it to "C-like punctuation" would exempt
+  // any prose carrying braces and semicolons.
+  //
+  // Scoped to this one file for the same reason as `styles.ts` above: a shape rule
+  // cannot express "GLSL, but only in this module". Keep this module shader-only —
+  // any copy later added here belongs in the catalog, not behind this exemption.
+  {
+    files: ['src/components/Strands.tsx'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

@@ -32,7 +32,6 @@
     "star_us": "Star us",
     "report_issue": "Report issue",
     "star_kirocrew_on_github": "Star Kiro Crew on GitHub",
-    "report_an_issue_on_github": "Report an issue on GitHub",
     "click_to_collapse_readouts": "click to collapse readouts",
     "click_to_expand_readouts": "click to expand readouts",
     "gateway_offline_reconnecting": "Gateway offline — reconnecting",
@@ -43,7 +42,8 @@
     "pulling_latest_changes": "Pulling latest changes",
     "rebuilding_package": "Rebuilding package",
     "restarting_server": "Restarting server",
-    "syncing_workspace": "Syncing workspace"
+    "syncing_workspace": "Syncing workspace",
+    "report_a_problem_with_diagnostics": "Report a problem — collects logs and crash reports, secrets removed"
   },
   "appSdk": {
     "chatEmbed": {
@@ -863,17 +863,24 @@
       "failed_to_load_history": "Failed to load history"
     },
     "kiroPrerequisiteGate": {
+      "agent_specs_missing": "Agent specs missing",
       "another_sandbox_already_confines_kiro_crew_so_it": "Another sandbox already confines Kiro Crew, so its own sandbox cannot nest inside it. This host's sandbox is not broken.",
+      "if_you_are_diagnosing_this_from_a_terminal_kiro": "If you are diagnosing this from a terminal, note that kiro-cli diagnostic reports nothing until the Kiro CLI app itself is running — launch it with kiro-cli launch first. That refusal is not the cause of this.",
       "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI is installed but could not be verified",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI is installed. Finish signing in to continue.",
+      "kiro_crew_installs_the_agent_specs_kiro_cli_load": "Kiro Crew installs the agent specs Kiro CLI loads before it can answer anything.",
       "kiro_crew_isolates_the_agent_in_an_os_level_sand": "Kiro Crew isolates the agent in an OS-level sandbox before it runs anything.",
+      "kiro_crew_s_agent_specs_are_not_installed": "Kiro Crew's agent specs are not installed",
+      "kiro_crew_writes_its_own_agent_specs_where_kiro": "Kiro Crew writes its own agent specs where Kiro CLI reads them. Without them Kiro CLI cannot resolve the agent, so every message fails. Check again rewrites the specs and reports what went wrong.",
       "kiro_setup_could_not_start": "Kiro setup could not start.",
+      "missing": "Missing",
       "required": "Required",
       "sandbox_unavailable": "Sandbox unavailable",
       "technical_detail": "Technical detail",
       "the_check_hit_a_temporary_limit_and_was_not_cach": "The check hit a temporary resource limit. Try again — do not disable the sandbox.",
       "the_gateway_returned_an_unexpected_error": "The gateway returned an unexpected error.",
       "the_gateway_returned_no_prerequisite_status": "The gateway returned no prerequisite status.",
+      "the_repair_attempt_failed": "The repair attempt failed",
       "this_host_provides_no_os_level_sandbox_so_kiro_c": "This host provides no OS-level sandbox, so Kiro Crew cannot isolate the agent. It refuses to run the agent unsandboxed rather than expose your credentials.",
       "waiting": "Waiting"
     },
@@ -984,6 +991,7 @@
         "kind_heartbeat": "Heartbeat",
         "kind_hooks": "Hooks",
         "kind_notification": "Notification",
+        "kind_skills": "Skills",
         "kind_subagent": "Subagent",
         "kind_task_runner": "Task Runner",
         "kind_tasks": "Tasks",
@@ -997,7 +1005,8 @@
         "no_categories_selected_click_a_category_above": "No categories selected — click a category above",
         "select_all_categories": "Select all categories",
         "show_less": "Show less",
-        "try_a_different_search": "Try a different search"
+        "try_a_different_search": "Try a different search",
+        "toggle_kind": "Toggle {{kind}}"
       }
     },
     "onboardingFlow": {
@@ -1341,6 +1350,33 @@
       "switching_drops_audio": "Switching while recording drops about 0.2s of audio.",
       "system_default": "System default",
       "unnamed_input": "Unnamed input"
+    },
+    "askAgent": {
+      "ask_the_agent": "Ask the agent",
+      "open_a_chat_with_this_error_s_context_attached": "Open a chat with this error's full context attached",
+      "prompt_lead": "This error just came up in the Kiro Crew dashboard. Diagnose the root cause and fix it."
+    },
+    "errorNotice": {
+      "dismiss": "Dismiss"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "Report a Problem",
+      "what_happened": "What happened?",
+      "note_placeholder": "e.g. Every message fails with “process exited (rc=None)” after updating.",
+      "include_recent_logs": "Include recent logs",
+      "include_logs_hint": "Gateway + kiro-cli logs. Turn off to send crash reports only.",
+      "redaction_notice": "Bearer tokens, session cookies, and AWS keys are automatically removed before the zip is created.",
+      "collect_failed": "Failed to collect diagnostics",
+      "cancel": "Cancel",
+      "create_report": "Create report",
+      "collecting": "Collecting…",
+      "done": "Done",
+      "diagnostics_ready": "Diagnostics ready — {{redactions}} secret(s) redacted across {{files}} file(s).",
+      "saved_to": "Saved to",
+      "show_in_finder": "Show in Finder",
+      "download_zip": "Download zip",
+      "open_github_issue": "Open GitHub issue",
+      "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it."
     }
   },
   "hooks": {
@@ -1799,6 +1835,8 @@
         "switch_to_unified_view": "Switch to unified view"
       },
       "subagentProgressBar": {
+        "collapse_agent_list": "Collapse subagent list",
+        "expand_agent_list": "Expand subagent list",
         "retry_failed_count": "Retry failed ({{count}})",
         "stop_all_running_subagents": "Stop all running subagents",
         "stop_running_subagent": "Stop running subagent"
@@ -1833,6 +1871,7 @@
         "aria_awaiting_approval": "Awaiting approval for tool: {{label}}",
         "aria_hide_details": "Hide details for tool: {{label}}",
         "aria_show_details": "Show details for tool: {{label}}",
+        "blocked_by_security_policy": "Blocked by security policy",
         "opened_in_the_side_panel": "Opened in the side panel"
       }
     },
@@ -2214,6 +2253,7 @@
         "skills_tip": "On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from Kiro Crew, kiro-cli (~/.kiro/skills), and AIM packages.",
         "auto_generated_skill_candidates_awaiting_your_ap": "Auto-generated skill candidates awaiting your approval. Click Review to inspect the SKILL.md and any bundled script before approving. Approve makes the skill live (and marks scripts executable); dismiss discards it. Nothing goes live until you approve it.",
         "hide": "Hide",
+        "linked_candidate_no_longer_pending": "That skill candidate is no longer awaiting review. It was approved or dismissed.",
         "on_demand_skills_loaded_when_the_agent_determine": "On-demand skills loaded when the agent determines they're relevant.",
         "proposed_change": "Proposed change",
         "review": "Review",
@@ -2443,7 +2483,13 @@
         "update_failed": "Update failed",
         "update_noun": "update",
         "update_now": "Update now",
-        "view_full_changelog": "▸ View Full Changelog"
+        "view_full_changelog": "▸ View Full Changelog",
+        "channel_help_show": "▸ What's the difference between Stable and Insider?",
+        "channel_help_hide": "▾ Hide",
+        "channel_explainer_stable": "Tested releases only. Fewer updates, and fewer surprises.",
+        "channel_explainer_insider": "Early builds, released days to weeks before Stable. New features arrive here first, and so do new bugs.",
+        "channel_explainer_switch_note": "You can switch back at any time. Either way, the other channel's current version arrives as a normal update — you choose when to install it.",
+        "prerelease_report_prompt": "Thanks for running early builds. They're less tested than Stable, so things do break — when something looks wrong, please <report>report it on GitHub</report> so it gets fixed before it reaches everyone."
       },
       "computerUsePanel": {
         "could_not_save_computer_use_settings": "Could not save computer-use settings.",
@@ -2550,7 +2596,8 @@
         "product_manager": "Product Manager",
         "somewhat": "Somewhat",
         "tail_preserve_end_final_summary": "Tail (preserve end / final summary)",
-        "ux_designer": "UX Designer"
+        "ux_designer": "UX Designer",
+        "failed_to_save_knowledge_setting": "Failed to save knowledge setting"
       },
       "displayPanel": {
         "create_theme": "Create Theme",
@@ -2739,8 +2786,9 @@
         "pulls_python_3_11_slim_for_docker_based_transcri": "Pulls python:3.11-slim for Docker-based transcription (AL2).",
         "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper installed but ffmpeg is missing — voice transcription needs ffmpeg.",
         "endpointing": "Auto-submit when I finish speaking",
-        "endpointing_desc": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming (Transcribe) only.",
+        "endpointing_desc": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming providers only.",
         "provider_mlx": "Whisper MLX (local — Apple Silicon only)",
+        "provider_apple": "Apple Speech (on-device — macOS 26+)",
         "provider_transcribe": "Transcribe (AWS)",
         "provider_whisper": "Whisper (local)",
         "step_checking": "Finding Python…",
@@ -2852,6 +2900,11 @@
         "preset_custom": "Custom",
         "record_prompt": "Press keys…",
         "custom_hint": "Use at least one modifier key."
+      },
+      "reportProblemCard": {
+        "support": "Support",
+        "blurb": "Something not working? Send us a diagnostics report — logs are scrubbed of secrets first.",
+        "report_a_problem": "Report a Problem"
       }
     },
     "systemPage": {
@@ -2892,12 +2945,7 @@
       "status_disabled": "Disabled",
       "status_unknown": "Unknown"
     },
-    "telemetryPanel": {
-      "first_use_spawn_of_an_mcp_server_backend": "First-use spawn of an MCP server backend",
-      "on_demand_read_of_a_skill_body_from_disk": "On-demand read of a skill body from disk",
-      "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "Sessions reusing a warm MCP backend vs a cold spawn",
-      "time_to_hand_a_pooled_mcp_backend_to_a_session": "Time to hand a pooled MCP backend to a session"
-    },
+    "telemetryPanel": {},
     "worldsPage": {
       "hide_controls": "Hide controls",
       "show_controls": "Show controls"
@@ -2954,7 +3002,7 @@
           "label": "System"
         },
         "telemetry": {
-          "description": "Session startup latency (p50/p90) and MCP/skill acceleration metrics",
+          "description": "Credit spend, context cost, and session startup latency",
           "label": "Telemetry"
         }
       }
@@ -2967,19 +3015,22 @@
     "controlsTitle": "Telemetry controls",
     "dataNeverSentBody": "Prompts, responses, files, credentials, hostnames, usernames, or your operating system. Your IP is not stored.",
     "dataNeverSentTitle": "Never sent",
-    "details": "Privacy details",
     "envOverrideNote": "The heartbeat is off because {{envVar}} is set in this environment. Unset it to manage telemetry here.",
     "localDataBody": "Usage and context records. Performance metrics are off by default.",
     "localDataTitle": "Stays on your device",
-    "notSendingNote": "No heartbeat is being sent right now: {{reason}}.",
+    "notSendingAlreadySentToday": "Today's heartbeat has already been sent.",
+    "notSendingAwaitingAck": "Nothing has been sent yet. The first heartbeat waits until you've seen this page.",
+    "notSendingCi": "Paused: this looks like a continuous-integration machine.",
+    "notSendingGeneric": "No heartbeat is being sent right now.",
+    "notSendingNoEndpoint": "No heartbeat is being sent: no endpoint is configured.",
+    "notSendingNonDefaultHome": "Paused: this instance uses a non-default data directory.",
+    "notSendingUnreadableHome": "No heartbeat is being sent: the data directory could not be read.",
     "overlayOverrideNote": "A telemetry.beacon_enabled entry in config.local.json overrides this setting. Remove it there to manage telemetry here.",
     "governanceOverrideNote": "Your administrator's security policy turns this off. It can't be changed here.",
     "installReceiptBody": "After a successful install or update from Kiro Crew's official catalog, one anonymous receipt is sent. External registries, local apps, and self-registered apps are never reported.",
     "installReceiptFields": "Official app slug · per-app anonymous token (not linkable across apps) · fresh/update flag · Kiro Crew version",
     "installReceiptTitle": "Official app install receipts",
     "payloadFields": "Random installation ID · app version · Python minor version · install channel · first-run flag",
-    "noticeBody": "Kiro Crew sends one anonymous ping a day and a per-app receipt after official app installs or updates. Never your prompts, files, or credentials.",
-    "noticeTitle": "Privacy at a glance",
     "settingsDescription": "Telemetry, local data, and privacy controls",
     "settingsLabel": "Privacy",
     "shellMacOSLinuxLabel": "macOS / Linux",

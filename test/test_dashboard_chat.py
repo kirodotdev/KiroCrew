@@ -11731,6 +11731,44 @@ class TestSlotModelLiveSwitch:
         provider.change_effort.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_unavailable_model_is_4xx_and_keeps_the_session(self, tmp_path):
+        """An entitlement refusal must NOT take the reset fallback.
+
+        Design Review on #1596: the generic ``except Exception`` here treats
+        every set_model failure as "the call didn't land" and recovers with a
+        reset. For a model the account cannot use that recovery is wrong twice
+        over — it destroys the live conversation AND cold-starts on a different
+        model, while the handler still answers ok:True. The slot must also keep
+        its previous model, or the picker asserts a model that was refused.
+        """
+        from kiro_crew.acp.client import AcpModelUnavailable
+
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider()
+        provider.client.set_model = AsyncMock(
+            side_effect=AcpModelUnavailable("claude-opus-4.8", ["gpt-5.6-sol"])
+        )
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="gpt-5.6-sol")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "claude-opus-4.8"}
+            )
+            body = await resp.json()
+
+        assert resp.status == 400
+        assert "not available on your account" in body["error"]
+        # Names what the account CAN use.
+        assert "gpt-5.6-sol" in body["error"]
+        # The conversation survives — no reset fallback.
+        state.sessions.reset.assert_not_awaited()
+        # And the slot still reports the model that is actually running.
+        assert state._slots["a"].model == "gpt-5.6-sol"
+
 
 class TestSlotModelSwitchContextBroadcast:
     """POST /api/chat/slots/{slot}/model — one ``context_usage`` event per

@@ -35,6 +35,7 @@
   "apps.papyrus.workspace.word_count",
   "apps.pptxMaker.libraryPanel.layouts",
   "apps.pptxMaker.pptxMakerPage.slide_count",
+  "apps.specBuilder.components.specDetail.pending_comment",
   "apps.workflows.workflowRunTree.agent",
   "components.appstore.categoryRail.app",
   "components.appstore.installedAppCard.agent",
@@ -85,6 +86,8 @@
   "pages.overview.skillsTab.agent",
   "pages.schedulePage.scheduled_job",
   "pages.schedulePage.this_permanently_removes_the_selected_job",
+  "pages.telemetryPanel.startups_recorded",
+  "pages.telemetryPanel.turn_faults",
   "pages.telemetryPanel.turns_measured",
   "pages.worldsPage.agent",
   "pages.worldsPage.slot"

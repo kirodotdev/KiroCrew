@@ -15,6 +15,7 @@ import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.bridges import (
     RegistrationResult,
     _deregister_agents,
@@ -309,9 +310,10 @@ class TestSkillRegistration:
         assert len(registered) == 1
         assert "test-app/my-skill" in registered
 
-        # Verify symlink exists under ~/.kirocrew/skills/test-app/my-skill
+        # A link exists under ~/.kiro/crew/skills/test-app/my-skill: a symlink on
+        # POSIX, a directory junction on non-admin Windows (both resolve through).
         skill_link = app_env["home"] / "skills" / "test-app" / "my-skill"
-        assert skill_link.is_symlink()
+        assert platform_compat.is_link_or_junction(skill_link)
         assert (skill_link / "SKILL.md").is_file()
 
     def test_deregister_skills(self, tmp_path, app_env):

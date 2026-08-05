@@ -177,6 +177,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacting it would overwrite the user's own file with markers.",
     ),
     (
+        "Telemetry spend ranking",
+        "dashboard/handlers/telemetry.py",
+        "Session titles attached to the conversations-by-spend rows of "
+        "/api/telemetry/startup. `display_title` is model-authored, and this is a "
+        "SECOND egress path for it alongside the slot snapshot — a title set "
+        "through `api_chat_slot_resume` reaches the slot unredacted, so nothing "
+        "upstream of this handler has scanned it.",
+    ),
+    (
         "OpenAI-compatible API",
         "dashboard/openai_compat.py",
         "Streamed and non-streamed completions served to third-party clients.",
@@ -414,6 +423,17 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "colleague, or a ticket, the investigation record — so its provider titles "
         "and model-authored diagnosis are redacted at the write, not at a read.",
     ),
+    (
+        "Diagnostics support bundle",
+        "diagnostics.py",
+        "The redacted zip built by `kirocrew doctor --bundle` and Settings › About › "
+        "Report a Problem, plus the pre-filled GitHub issue URL it returns. The most "
+        "external boundary in this list: the artifact exists to be attached to a "
+        "PUBLIC issue, and its members are raw gateway/kiro-cli logs and crash "
+        "reports. Every text member and the user-typed note run the credential and "
+        "exfiltration-URL scanners plus a sensitive-header pass before anything is "
+        "written into the archive.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -485,6 +505,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/workflows.py",
         "dashboard/handlers_project.py",
         "knowledge/agent_fetch.py",
+        "knowledge/agent_source.py",
         "knowledge/artifact_ingest.py",
         "knowledge/ingestion.py",
         "mcp_core.py",
@@ -526,6 +547,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "kiro_prerequisite.py",
         "instances/ssh_tunnel_manager.py",
         "instances/token_mint.py",
+        "instances/ssm_token_mint.py",
         "publish_sync.py",
         "cli_commands.py",
         # Slack sub-surfaces whose posted output is covered by the two Slack rows.
@@ -609,6 +631,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/papyrus/backend/tectonic.py",
         "apps/builtins/pptx_maker/backend/decks.py",
         "apps/builtins/pptx_maker/backend/routes.py",
+        "apps/builtins/spec_builder/backend/routes.py",
         "apps/builtins/workflows/server.py",
         # Bundled dev-skill script: prints CI/review findings to a
         # developer terminal, not an agent-output egress path.

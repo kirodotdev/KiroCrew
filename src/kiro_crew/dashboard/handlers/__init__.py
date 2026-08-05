@@ -108,6 +108,12 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_lessons_delete,
 )
 
+# ── Diagnostics / Report a Problem (handlers/diagnostics.py) ──
+from kiro_crew.dashboard.handlers.diagnostics import (  # noqa: E402, F401
+    api_diagnostics_collect,
+    api_diagnostics_download,
+)
+
 # ── Files & Workspaces (extracted to handlers/files.py) ──
 from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     _validate_dashboard_path,
@@ -155,6 +161,7 @@ from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.kiro_prerequisite import (  # noqa: E402, F401
     api_kiro_prerequisite_install,
     api_kiro_prerequisite_login,
+    api_kiro_prerequisite_repair_specs,
     api_kiro_prerequisite_status,
 )
 from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
@@ -249,6 +256,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_spawn_delete,
     api_spawn_list,
     api_spawn_lost,
+    api_spawn_mark_collected,
     api_spawn_release,
     api_spawn_retry,
     api_spawn_status,

@@ -41,6 +41,8 @@ if [[ "${1:-}" == "--test" ]]; then
     'aim-invocation|# test marker: aim mcp install some-server'
     'aim-dep-contract|TYPE = "aim.mcp"'
     'aim-home-tree|P = "~/.aim/skills"'
+    'arcc-tool|# test marker: search_arcc(query="x")'
+    'arcc-server|# test marker: arcc-governance mcp server'
   )
   for probe in "${PROBES[@]}"; do
     probe_label="${probe%%|*}"
@@ -102,12 +104,35 @@ AIM_PATTERN='\baim (mcp|skills|agents|install|uninstall)\b|\baim\.(mcp|skills|ag
 
 INTERNAL_PATTERN="$INTERNAL_PATTERN|$AIM_PATTERN"
 
+# The internal governance service (ARCC) needs word boundaries plus the two
+# identifier shapes its tool/server names use: ``search_arcc`` (suffix) and
+# ``arcc_governance`` (prefix). A bare substring would match the base64 in npm
+# lockfile ``integrity`` hashes (``...JkARCCf7rqK...``, a real hit in
+# website/electron/package-lock.json) and English words like "marcciano".
+ARCC_PATTERN='\barcc\b|_arcc\b|\barcc_'
+
+INTERNAL_PATTERN="$INTERNAL_PATTERN|$ARCC_PATTERN"
+
 matches=$(grep -rniE "$INTERNAL_PATTERN" \
   src/ website/src/ website/docs/ docs/ skills/ scripts/ config/ packaging/ \
   ./*.md \
   --include='*.py' --include='*.ts' --include='*.tsx' --include='*.md' --include='*.json' \
   --include='*.sh' --include='*.yaml' --include='*.yml' --include='*.css' \
   2>/dev/null || true)
+
+# ARCC also gets a SECOND, narrower pass that additionally covers ``test/``,
+# which check 1 never scans. Every arcc reference that shipped publicly — MCP
+# fixture names, ``search_arcc`` autoApprove entries, a guidance citation in a
+# docstring — lived in the test tree, so leaving it unscanned is what let them
+# through. The full INTERNAL_PATTERN cannot be pointed at ``test/``: it hits 291
+# lines across 29 files (CR-ids, brazil-build strings and internal hostnames that
+# are legitimate parser/deny-rule FIXTURES there), and a gate nobody can keep
+# green is how check 2 became vacuous. ARCC has no such legitimate use: the
+# service is unreachable from a public install, so any occurrence is a leak.
+arcc_test_matches=$(grep -rniE "$ARCC_PATTERN" test/ \
+  --include='*.py' --include='*.md' --include='*.json' 2>/dev/null || true)
+matches=$(printf '%s\n%s\n' "$matches" "$arcc_test_matches")
+matches=$(echo "$matches" | grep -v '^$' || true)
 
 # Filter out allowlisted paths
 if [[ -f "$ALLOWLIST" ]]; then

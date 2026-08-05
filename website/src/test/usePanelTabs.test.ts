@@ -4,7 +4,7 @@
  * replace-in-place opens, patch-without-focus, neighbor refocus on close,
  * and reordering.
  */
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
 
@@ -231,6 +231,63 @@ describe('usePanelTabs — per-slot isolation', () => {
     expect(result.current.activeTab).toMatchObject({
       id: 'file:/README.md', diffMode: false,
     })
+  })
+
+  /* ── `file.py:447` reveal targets ──────────────────────────────────────
+   * A chip carrying a line puts it on the tab, where the panel picks it up.
+   * The nonce and the non-persistence are the two contracts worth pinning:
+   * without the nonce a repeat click is a no-op, and with persistence the jump
+   * re-fires on every reload at a line the file may have outgrown. */
+  it('openFile carries a line as a nonce\'d reveal target', () => {
+    const { result } = renderHook(() => usePanelTabs())
+    act(() => result.current.openFile('/a.py', 'x', null, { line: 447 }))
+    expect(result.current.activeTab?.revealLine).toMatchObject({ line: 447 })
+    expect(typeof result.current.activeTab?.revealLine?.nonce).toBe('number')
+  })
+
+  it('re-opening the same file at the same line issues a NEW nonce', () => {
+    // Re-clicking a chip after scrolling away must jump again; a bare `line`
+    // would be === to the previous value and re-trigger nothing.
+    const { result } = renderHook(() => usePanelTabs())
+    act(() => result.current.openFile('/a.py', 'x', null, { line: 447 }))
+    const first = result.current.activeTab?.revealLine?.nonce
+    act(() => result.current.openFile('/a.py', 'x', null, { line: 447 }))
+    const second = result.current.activeTab?.revealLine?.nonce
+    expect(result.current.tabs).toHaveLength(1)
+    expect(second).not.toBe(first)
+  })
+
+  it('a plain open CLEARS a previous reveal target instead of inheriting it', () => {
+    // upsert merges with a spread, so an omitted key would leave the old line in
+    // place and a later plain click would jump somewhere unasked-for.
+    const { result } = renderHook(() => usePanelTabs())
+    act(() => result.current.openFile('/a.py', 'x', null, { line: 447 }))
+    act(() => result.current.openFile('/a.py', 'x'))
+    expect(result.current.activeTab?.revealLine).toBeUndefined()
+  })
+
+  it('never writes a reveal target to localStorage', () => {
+    // A slot switch keeps the bucket in memory (same as tab `content` does), so
+    // the boundary that matters is the RELOAD: a persisted line would re-fire
+    // the jump days later at a line the file may have long since outgrown.
+    // Belt-and-braces with the panel consuming the target on use — a tab opened
+    // while the panel is collapsed never mounts an editor, so nothing consumes
+    // it and only this strip stops it surviving.
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => usePanelTabs('chat-a'))
+      act(() => result.current.openFile('/a.py', 'x', 'chat-a', { line: 447 }))
+      expect(result.current.activeTab?.revealLine).toMatchObject({ line: 447 })
+      // Writes are debounced, so nothing has hit storage yet.
+      act(() => { vi.advanceTimersByTime(500) })
+      const persisted = localStorage.getItem('mc-panel-tabs:chat-a')
+      expect(persisted).not.toBeNull()
+      expect(persisted).not.toContain('revealLine')
+      // The tab reference itself still persists — only the one-shot jump is dropped.
+      expect(persisted).toContain('file:/a.py')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('operations only touch the active slot\'s bucket (closeAll in B leaves A intact)', () => {

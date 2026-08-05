@@ -15,6 +15,7 @@ import Clickable from '../Clickable'
 import HeroCapsule from './HeroCapsule'
 import { categoryFor } from './categories'
 import { sourceLabel, isVerified, type RegistryApp } from './types'
+import { appDisplayName, appDescription } from './appManifest'
 import { needsDesktopApp } from '../../lib/electron'
 
 import { i18nT } from '../../i18n/t'
@@ -30,7 +31,7 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
 
   return (
     <Clickable
-      aria-label={`View details for ${app.displayName}`}
+      aria-label={i18nT('components.appstore.appListRow.view_details_for', { name: appDisplayName(app) })}
       className="flex items-center gap-3.5 px-3.5 py-3 border border-border rounded-xl bg-card mb-2 cursor-pointer hover:border-border-strong transition-colors focus-ring"
       onClick={onOpen}
     >
@@ -38,7 +39,7 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
       <HeroCapsule name={app.name} art={app} icon={app.icon} iconUrl={app.iconUrl} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 text-[14px] font-semibold text-text-strong">
-          <span className="truncate">{app.displayName}</span>
+          <span className="truncate">{appDisplayName(app)}</span>
           {isVerified(app) && (
             <BadgeCheck size={14} className="text-accent shrink-0" aria-label={i18nT('components.appstore.appListRow.verified_publisher')}>
               <title>{i18nT('components.appstore.appListRow.verified_publisher_first_party')}</title>
@@ -46,7 +47,7 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
           )}
         </div>
         <div className="text-[12px] text-muted truncate">{app.author} · {categoryFor(app.tags)} · {sourceLabel(app)}</div>
-        <div className="text-[12.5px] text-muted truncate">{app.description}</div>
+        <div className="text-[12.5px] text-muted truncate" title={appDescription(app)}>{appDescription(app)}</div>
       </div>
       {/* Actions: stop propagation so nested controls keep their own
           click/keyboard activation instead of triggering the row. */}

@@ -11,6 +11,7 @@ import { PostureDisclosureRow, CODE_BASE as POSTURE_CODE_BASE } from './PostureD
 
 import { i18nT } from '../../i18n/t'
 import { fmtList, fmtTimeNumeric } from '../../i18n/format'
+import ErrorNotice from '../../components/ErrorNotice'
 /* ── Security feature registry ──
  *
  * Qualitative layer descriptions ONLY. Every control whose posture is a COUNT
@@ -346,7 +347,9 @@ function AddDenyInput({ onAdd, busy }: { onAdd: (pattern: string) => void; busy:
           {i18nT('pages.settings.securityPanel.add')}
         </Btn>
       </div>
-      {error && <div className="text-[12px] text-danger mt-1.5">{error}</div>}
+      {/* Invalid-regex feedback on the input the user is still typing — a form
+          hint, not a failure to diagnose, so no agent hand-off. */}
+      <ErrorNotice message={error} className="mt-1.5" />
     </div>
   )
 }

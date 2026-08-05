@@ -27,5 +27,5 @@ export const MDNB_CSS = `
 .mdnb-vault-trigger:hover{background:var(--bg-hover)}
 .mdnb-vault-trigger:hover span{color:var(--text)}
 .mdnb-collapse{color:var(--muted)}
-.mdnb-collapse:hover{color:var(--text)}
+.mdnb-collapse:hover{color:var(--text);background:var(--bg-hover)}
 `

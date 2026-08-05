@@ -35,7 +35,7 @@ from typing import Any, AsyncIterator, Callable, Optional
 
 from aiohttp import web
 
-from kiro_crew import hooks, security
+from kiro_crew import hooks, platform_compat, security
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.apps.builtins.md_notebook import notes as notes_mod
 from kiro_crew.apps.proxy_auth import verify_proxy_request
@@ -523,9 +523,11 @@ async def trash_dir_path(vault: dict[str, Any]) -> Path:
 
     So any symlink is refused, escaping or not. `lstat` via `is_symlink()` is the
     only test that can see it — `exists()` and `is_dir()` both follow the link.
+    On Windows the same redirection is possible via a directory JUNCTION, which
+    `is_symlink()` does NOT report, so `is_link_or_junction` is used to catch both.
     """
     trash_dir = await vault_mutation_path(vault, git_ops.TRASH_DIR)
-    if await asyncio.to_thread(trash_dir.is_symlink):
+    if await asyncio.to_thread(platform_compat.is_link_or_junction, trash_dir):
         raise ApiError(
             f"this vault's {git_ops.TRASH_DIR} is a symlink — refusing to use it, "
             "because a trashed note would be written somewhere the app does not "
@@ -1179,7 +1181,9 @@ async def api_note_save(request: web.Request) -> web.Response:
     # follow the link and overwrite the target. Reject a final-component symlink
     # outright; a note is a real file, never an alias to another path.
     abs_path = await vault_mutation_path(vault, rel)
-    if await asyncio.to_thread(os.path.islink, abs_path):
+    # islink OR (Windows) junction — a junction is a directory reparse point that
+    # islink() misses, so check both to keep the guard from being POSIX-only.
+    if await asyncio.to_thread(platform_compat.is_link_or_junction, abs_path):
         raise ApiError("cannot save through a symlink", 400, code="note_is_symlink")
     base_mtime = body.get("baseMtime")
     # Serialize the check-and-write for this note so two concurrent saves can't

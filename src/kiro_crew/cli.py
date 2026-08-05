@@ -791,7 +791,12 @@ Examples:
     chat_parser.add_argument("--agent", help="Agent to use (default: from config)")
 
     # doctor
-    sub.add_parser("doctor", help="Verify Kiro Crew setup")
+    _doctor_parser = sub.add_parser("doctor", help="Verify Kiro Crew setup")
+    _doctor_parser.add_argument(
+        "--bundle",
+        action="store_true",
+        help="Collect logs + crash reports into a redacted diagnostics zip",
+    )
 
     # gateway
     gw_parser = sub.add_parser("gateway", help="Start the Kiro Crew server (dashboard + Slack)")
@@ -1956,7 +1961,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             clean=getattr(args, "clean", False),
         )
     elif args.command == "doctor":
-        _doctor(platform_boot_error=_platform_boot_error)
+        _doctor(platform_boot_error=_platform_boot_error, bundle=getattr(args, "bundle", False))
     elif args.command == "manifest":
         _manifest(
             alias=getattr(args, "alias", None),

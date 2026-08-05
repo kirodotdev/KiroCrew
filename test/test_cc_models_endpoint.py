@@ -1,9 +1,12 @@
 """Tests for the claude_code model list assembled by /api/models.
 
-The dropdown leads with the KiroCrew-curated set (Opus 4.8 1M/200k, Opus 4.7,
-Sonnet 4.6, Haiku 4.5) so users always see clean, current defaults ahead of
-whatever the adapter advertises (its set can be stale — Opus 4.1, Sonnet 4.5);
-adapter extras are appended de-duped, plus the configured default.
+The dropdown is scoped to what the account can actually use: the backend's
+advertised set is authoritative when present and the static registry is filtered
+down to it, so a free-tier account is not offered flagship models it cannot run.
+When nothing is advertised (no session yet) the registry is shown unfiltered,
+since an empty advertised set cannot be told apart from "entitled to nothing".
+"auto" always leads and is never filtered -- it is the configured-default
+sentinel, not a served model.
 """
 
 from __future__ import annotations
@@ -84,19 +87,49 @@ class TestAdvertisedCcModels:
 
 class TestCcModelsMerge:
     def test_registry_set_always_present_even_without_session(self):
-        # No live provider → the full canonical registry set leads the list,
-        # using canonical keys (the wire values) ordered default-first.
+        # No live provider → nothing is advertised, so entitlement is UNKNOWN and
+        # the full canonical registry is shown unfiltered. An empty advertised set
+        # cannot be distinguished from "this account gets nothing", and an empty
+        # picker on a cold dashboard is worse than a superset.
         out = _cc_models(_request_with_providers({}))
         names = [m["model_name"] for m in out]
         assert "opus-4.8-1m" in names
         assert "opus-4.8" in names
-        assert names[: len(_REGISTRY_NAMES)] == _REGISTRY_NAMES
-        assert names[0] == "opus-4.8-1m"
+        assert set(_REGISTRY_NAMES) <= set(names)
+        # "auto" leads, not the registry's default-flagged flagship. The flag used
+        # to sort a specific paid model to the top and present it as the default.
+        assert names[0] == "auto"
 
-    def test_registry_leads_then_adapter_extras_appended(self):
-        # Adapter advertises a stale set (Opus 4.1, Sonnet 4.5) the registry does
-        # not list. Registry leads; unknown adapter extras pass through and are
-        # appended after, never displacing the canonical defaults.
+    def test_advertised_set_filters_the_registry(self):
+        """The advertised set is authoritative: unentitled registry rows go away.
+
+        This is the free-tier case. Previously the registry led unconditionally and
+        the adapter could only ADD, so an account served two models was still
+        offered the full flagship list and only found out at prompt time.
+        """
+        prov = _FakeProvider(
+            [{"modelId": "global.anthropic.claude-sonnet-4-6[1m]", "name": "Sonnet 4.6"}]
+        )
+        out = _cc_models(_request_with_providers({"s": prov}))
+        names = [m["model_name"] for m in out]
+        assert names[0] == "auto"
+        assert "sonnet-4.6-1m" in names
+        # The flagship is in the registry but was NOT advertised → filtered out.
+        assert "opus-4.8-1m" not in names
+        assert "opus-4.8" not in names
+
+    def test_registry_display_name_wins_for_survivors(self):
+        """Filtering keeps the registry's cleaner display name, not the adapter's."""
+        prov = _FakeProvider(
+            [{"modelId": "global.anthropic.claude-sonnet-4-6[1m]", "name": "sonnet-4-6-v1-ugly"}]
+        )
+        out = _cc_models(_request_with_providers({"s": prov}))
+        row = next(m for m in out if m["model_name"] == "sonnet-4.6-1m")
+        assert row["display_name"] == "Sonnet 4.6 (1M context)"
+
+    def test_unknown_advertised_models_still_pass_through(self):
+        # Forward-compat: a model the registry does not list is still offered when
+        # the backend advertises it, otherwise a newly-served model is unreachable.
         prov = _FakeProvider(
             [
                 {"modelId": "claude-opus-4-1", "name": "Opus 4.1", "description": ""},
@@ -105,10 +138,35 @@ class TestCcModelsMerge:
         )
         out = _cc_models(_request_with_providers({"s": prov}))
         names = [m["model_name"] for m in out]
-        assert names[: len(_REGISTRY_NAMES)] == _REGISTRY_NAMES
         assert "claude-opus-4-1" in names
         assert "claude-sonnet-4-5" in names
-        assert names.index("claude-opus-4-1") >= len(_REGISTRY_NAMES)
+        # And the unentitled registry flagship is gone.
+        assert "opus-4.8-1m" not in names
+        # "auto" still leads and is never filtered by entitlement -- it is the
+        # configured-default sentinel, not a model the backend serves.
+        assert names[0] == "auto"
+
+    def test_configured_default_is_not_resurrected_when_unentitled(self):
+        """A stale config pick must not outlive the entitlement.
+
+        Force-including it would reintroduce exactly the unusable option the
+        filter removes.
+        """
+        prov = _FakeProvider(
+            [{"modelId": "global.anthropic.claude-sonnet-4-6[1m]", "name": "Sonnet 4.6"}]
+        )
+        out = _cc_models(_request_with_providers({"s": prov}), configured_default="opus-4.8-1m")
+        names = [m["model_name"] for m in out]
+        assert "opus-4.8-1m" not in names
+        assert names[0] == "auto"
+
+    def test_configured_default_still_included_when_nothing_advertised(self):
+        # Entitlement unknown → trust the operator's config rather than dropping
+        # their selected model from the picker.
+        out = _cc_models(_request_with_providers({}), configured_default="some-custom-model")
+        names = [m["model_name"] for m in out]
+        assert "some-custom-model" in names
+        assert names[0] == "auto"  # still after nothing, before everything else
 
     def test_no_duplicate_when_adapter_lists_known_model(self):
         # The adapter advertises provider ids that ARE in the registry; mapped

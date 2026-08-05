@@ -17,6 +17,7 @@ import {
   appendMessage, resumeFromHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
   selectComposerBusy,
+  selectContinuable,
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
   setActiveSlot, truncateAfterIndex, replaceMessages,
@@ -59,6 +60,7 @@ const SCROLL_AFTER_RENDER_MS = 100
 // applier); re-exported here for this page's historical importers.
 export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
+import { consumeChatHandoff, subscribeChatHandoff } from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
 import { usePanelTabs, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -112,7 +114,7 @@ import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl
 import { fileLandingSlot } from '../utils/uploadRouting'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
 import { toSlug } from '../utils/shareUrl'
-import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
+import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview, promptImages, promptBody, pinHandoffY, pinPushTravel, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
@@ -159,6 +161,7 @@ import Clickable from '../components/Clickable'
 import StopEventCard from './chat/StopEventCard'
 import NudgeCard, { nudgeMatchesLoop } from './chat/NudgeCard'
 import RecoveryCard, { parseRecoveryMessage } from './chat/RecoveryCard'
+import { ErrorCard } from './chat/ErrorCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
@@ -1051,6 +1054,47 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return () => clearTimeout(t)
   }, [prefillHint])
 
+  // Drain the error hand-off channel ("Ask the agent" on an error surface).
+  // sessionStorage rather than Redux because the root ErrorBoundary's button has
+  // to work after a hard reload, when the store it would have dispatched to is
+  // gone. Feeding pendingInput keeps a single downstream prefill path.
+  //
+  // Two triggers: on mount (arriving from another route, or a full reload) and on
+  // the subscription (an error surface inside chat hands off with no route
+  // change, so nothing remounts).
+  useEffect(() => {
+    if (embedded) return
+    // Wait for a slot before consuming. The channel is SINGLE-USE, and on the
+    // hard-nav path (the root ErrorBoundary reloads the page) this effect runs
+    // with activeSlot still null: the pending-input consumer then cannot persist
+    // the prompt as a draft, and the slot-restore that follows overwrites the
+    // composer — losing the prompt for good. The 60s hand-off TTL covers the wait,
+    // and this effect re-runs once the slot appears.
+    if (!activeSlot) return
+    const drain = () => {
+      const prompt = consumeChatHandoff()
+      if (!prompt) return
+      // APPEND when the composer already holds unsent text — same hazard, and
+      // same helper, as `followupAddToSession` below: the pending-input consumer
+      // replaces the draft AND persists it, so a plain set would silently
+      // destroy whatever the user was mid-way through typing. This is reachable
+      // precisely because the subscription fires with no route change, while
+      // error surfaces INSIDE chat (a failed PR action, a message that failed to
+      // render) hand off from under a composer in use.
+      // Merge against the text that actually belongs to `activeSlot`. On the
+      // hard-nav path the composer may not have adopted this slot's stored draft
+      // yet — `composerSlotRef` lags `activeSlot` — and merging against an empty
+      // composer would make the pending-input consumer persist the prompt OVER
+      // the stored draft. When they agree, the live composer value is the truth.
+      const base = composerSlotRef.current === activeSlot
+        ? inputRef.current
+        : drafts.current[activeSlot] ?? ''
+      dispatch(setPendingInput(mergeIntoDraft(base, prompt)))
+    }
+    drain()
+    return subscribeChatHandoff(drain)
+  }, [dispatch, embedded, activeSlot])
+
   // Consume pendingInput from Redux (e.g. from "Chat" button on Projects page)
   useEffect(() => {
     if (pendingInput) {
@@ -1347,6 +1391,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // never be transcribed.
   const [voiceSetupOpen, setVoiceSetupOpen] = useState(false)
   const frozenInputRef = useRef<string | null>(null)
+  // Caret snapshot taken alongside frozenInputRef, so a streaming partial (and
+  // the final that replaces it) keeps inserting at the same spot. The batch
+  // path leaves both null and reads the LIVE composer caret instead.
+  const frozenCaretRef = useRef<{ start: number; end: number } | null>(null)
+  // Live composer caret, kept current by ChatInput (onSelect / click / typing).
+  // Dictation splices the transcript in HERE instead of always appending at end.
+  const voiceCaretRef = useRef<{ start: number; end: number } | null>(null)
+  // Caret offset ChatInput should restore after a dictation-driven value update
+  // lands (set by the splice below, consumed + cleared inside ChatInput).
+  const voicePendingCaretRef = useRef<number | null>(null)
   // Drops late-arriving partials/finals for the CURRENT slot after a send.
   // `stop()` is async (up to 5s for backend close) — without this guard, a
   // delayed onFinal would repopulate the composer with text the user already
@@ -1371,6 +1425,33 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // the live composer; a background slot gets it appended to its persisted draft
   // (recoverable, shown on return) instead of leaking into the active session or
   // being dropped. Mirrors handleOptimizeResult's cross-slot routing.
+  // Splice a dictation transcript into `base` at the caret (frozen snapshot
+  // when streaming, else the live caret), returning the new value and the caret
+  // offset to restore. Falls back to appending when no caret is known (e.g. the
+  // composer was never focused).
+  const spliceDictation = useCallback((base: string, text: string): { value: string; caret: number } => {
+    const caret = frozenCaretRef.current ?? voiceCaretRef.current
+    // An empty transcript (e.g. a silent streaming partial) must NOT mutate the
+    // draft: splicing "" across a selection would delete the selected range.
+    // Leave the base untouched and collapse the caret to the insertion point.
+    if (!text) return { value: base, caret: caret ? Math.min(caret.start, base.length) : base.length }
+    if (!caret) {
+      const value = base ? (base.endsWith(' ') ? base + text : base + ' ' + text) : text
+      return { value, caret: value.length }
+    }
+    const start = Math.min(caret.start, base.length)
+    const end = Math.min(caret.end, base.length)
+    const before = base.slice(0, start)
+    const after = base.slice(end)
+    // Leading space only when joining onto a non-space char, so mid-sentence
+    // dictation doesn't glue onto the preceding word.
+    // Leading/trailing space uses whitespace-class checks (not only ' ') so a
+    // caret beside a newline or tab doesn't get an unwanted literal space.
+    const lead = before && !/\s$/.test(before) && !/^\s/.test(text) ? ' ' : ''
+    const trail = after && !/^\s/.test(after) && !/\s$/.test(text) ? ' ' : ''
+    const insert = lead + text
+    return { value: before + insert + trail + after, caret: before.length + insert.length }
+  }, [])
   const applyVoiceText = useCallback((text: string, sessionId: string | null) => {
     // Disarmed after a send (streaming) — the transcript was already sent, so
     // drop it for EVERY route. Checked FIRST (before the cross-slot branch) so a
@@ -1404,13 +1485,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       saveDrafts()
       return
     }
-    // Foreground: streaming seeds frozenInputRef in onPartial (the pre-dictation
-    // snapshot); the batch path never fires onPartial so it's null — fall back
-    // to the live composer text so the transcript APPENDS to what the user typed
-    // instead of overwriting it.
-    setInput(append(frozenInputRef.current ?? inputRef.current ?? ''))
+    // Foreground: streaming seeds frozenInputRef/frozenCaretRef in onPartial
+    // (the pre-dictation snapshot); the batch path never fires onPartial so both
+    // are null — fall back to the live composer text + caret so the transcript
+    // inserts at the cursor instead of overwriting (or blindly appending to)
+    // what the user typed.
+    const spliced = spliceDictation(frozenInputRef.current ?? inputRef.current ?? '', text)
+    // Only arm the caret restore when the value actually changes. If a streaming
+    // final equals the last partial, setInput is a no-op and the restore effect
+    // (keyed on `value`) never fires — leaving a stale pending caret that would
+    // hijack the user's NEXT edit.
+    if (spliced.value !== inputRef.current) {
+      setInput(spliced.value)
+      voicePendingCaretRef.current = spliced.caret
+    }
     frozenInputRef.current = null
-  }, [saveDrafts])
+    frozenCaretRef.current = null
+  }, [saveDrafts, spliceDictation])
   const voice = useVoiceInput(
     applyVoiceText,
     {
@@ -1423,12 +1514,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // half-word into the wrong session.
         if (sessionId && sessionId !== activeSlotRef.current) return
         if (sttDisarmedRef.current) return
-        // Snapshot BEFORE setInput so the updater stays pure (no ref
-        // mutation inside a function React may invoke twice).
-        if (frozenInputRef.current === null) frozenInputRef.current = inputRef.current
-        const base = frozenInputRef.current
-        setInput(base ? (base.endsWith(' ') ? base + text : base + ' ' + text) : text)
-      }, []),
+        // Snapshot the pre-dictation text AND caret on the first partial
+        // (before setInput, so the updater stays pure — no ref mutation inside a
+        // function React may invoke twice) so every later partial and the final
+        // insert at the same spot, replacing the growing hypothesis.
+        if (frozenInputRef.current === null) {
+          frozenInputRef.current = inputRef.current
+          frozenCaretRef.current = voiceCaretRef.current
+        }
+        const spliced = spliceDictation(frozenInputRef.current ?? '', text)
+        if (spliced.value !== inputRef.current) {
+          setInput(spliced.value)
+          voicePendingCaretRef.current = spliced.caret
+        }
+      }, [spliceDictation]),
       // Semantic endpointing (stt.endpointing) judged the utterance complete:
       // auto-submit. The composer already holds the streamed transcript via
       // onPartial, and send() reads inputRef.current + stops the live capture
@@ -1481,6 +1580,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // finals — otherwise onPartial sees a non-null ref, skips
       // re-snapshotting, and text typed between sessions is dropped.
       frozenInputRef.current = null
+      frozenCaretRef.current = null
     } else if (streamEnabledRef.current) {
       // Manual stop of a STREAMING recording: streamStop() drains the socket
       // asynchronously and a final can still arrive. The dictated text is
@@ -1553,6 +1653,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // are preserved rather than clobbered by a stale snapshot.
   useEffect(() => {
     frozenInputRef.current = null
+    frozenCaretRef.current = null
+    // Drop the previous slot's caret so dictating in a freshly switched-to slot
+    // (without touching its composer) appends to that slot's draft instead of
+    // inserting at the old slot's offset.
+    voiceCaretRef.current = null
     // Streaming ONLY: disarm so a delayed streaming final arriving after this
     // switch is dropped instead of appended. Its live partial was already
     // flushed into the outgoing slot's draft, so appending the full final on
@@ -1919,7 +2024,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The `ok` flag gates whether the file is recorded in history — 404s and
   // other HTTP failures show a placeholder in the panel but should NOT
   // pollute the history list with files that don't exist on disk.
-  const handleFileOpen = useCallback(async (filePath: string, opts?: { replaceId?: string }) => {
+  const handleFileOpen = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number }) => {
     // One editor per path: if this file is already open INLINE in the Files tab,
     // route back to that inline editor (focus the Files view) instead of
     // spawning a competing document tab — two live editors for one on-disk file
@@ -3286,11 +3391,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!activeSlot) return
     // APPEND when the composer already holds unsent text: the pending-input path
     // replaces the draft and persists it, so a plain set would silently destroy
-    // whatever the user was mid-way through typing.
-    // `inputRef` is the live composer value; a blank line separates the two
-    // because a handoff prompt is multi-line prose, not a word to concatenate.
-    const draft = inputRef.current ?? ''
-    dispatch(setPendingInput(draft.trim() ? `${draft.replace(/\s+$/, '')}\n\n${item.prompt}` : item.prompt))
+    // whatever the user was mid-way through typing. `inputRef` is the live
+    // composer value; `mergeIntoDraft` is shared with the error → agent hand-off
+    // drain so the two paths cannot drift.
+    dispatch(setPendingInput(mergeIntoDraft(inputRef.current, item.prompt)))
     // Clear by the RENDERED card's ts, as the worktree action does: a newer card
     // for this slot can land between render and click, and an unqualified clear
     // would delete suggestions the user never saw.
@@ -3706,6 +3810,44 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setRegenerating(false)
     })
   }, [activeSlot, regenerating, slotRunning, messages, lastTextIdx, dispatch])
+
+  // ---- Continue an interrupted turn ------------------------------------------
+  // A turn can end without the assistant handing the floor back: the connection
+  // dropped, the gateway restarted during an app update, or the runner's own
+  // recovery ladder gave up. The transcript is left either with an unanswered
+  // user message or with a trailing error card, and until now the only way
+  // forward was to retype the prompt.
+  const continuable = useAppSelector(selectContinuable)
+  const [continuing, setContinuing] = useState(false)
+  useEffect(() => { setContinuing(false) }, [activeSlot])
+  // The turn taking over is the success signal; clear the spinner then.
+  useEffect(() => { if (continuing && slotRunning) setContinuing(false) }, [continuing, slotRunning])
+  // Backstop: a request that neither starts a turn nor rejects must not strand
+  // the button in a disabled state. Mirrors the regenerate safety timeout.
+  useEffect(() => {
+    if (!continuing) return
+    const t = setTimeout(() => { setContinuing(false) }, 30_000)
+    return () => clearTimeout(t)
+  }, [continuing])
+  const handleContinue = useCallback(() => {
+    if (!activeSlot || continuing || !continuable) return
+    setContinuing(true)
+    // No optimistic transcript mutation: the backend appends the continuation as
+    // an `inject` row and the WS `slots` update flips `running`, so the UI
+    // converges from the server. Nothing to roll back on failure.
+    api.continueSlot(activeSlot).catch((e: unknown) => {
+      // eslint-disable-next-line no-console -- surface continue failures for debugging
+      console.warn('continue failed', e)
+      setContinuing(false)
+    })
+  }, [activeSlot, continuing, continuable])
+  // Index of the newest error row. Only that one gets the action: an error
+  // further up the transcript belongs to a turn that has already been
+  // superseded, and offering to "continue" it would resume the wrong thing.
+  const lastErrorIdx = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'error') return i
+    return -1
+  }, [messages])
 
   const [flyingQuote, setFlyingQuote] = useState<{ text: string; from: DOMRect } | null>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
@@ -4289,7 +4431,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const recovery = parseRecoveryMessage(m.content)
       if (recovery) return <RecoveryCard key={key} parsed={recovery} disclosureKey={key} />
     }
-    if (m.role === 'error') return <div key={key} className="bg-danger-subtle text-danger text-[13px] px-3 py-2 rounded-md border border-danger/15 self-center animate-scale-in">{m.content}</div>
+    if (m.role === 'error') return (
+      <ErrorCard
+        key={key}
+        content={m.content}
+        onContinue={continuable && i === lastErrorIdx ? handleContinue : undefined}
+        continuing={continuing}
+      />
+    )
     if (m.role === 'notice') return <div key={key} className="bg-card text-muted text-[13px] px-3 py-2 rounded-md border border-border self-center animate-scale-in">{m.content}</div>
     if (m.role === 'permission') return null
     if (m.role === 'mcp_oauth') {
@@ -4784,6 +4933,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 flex: 1,
                 paddingBottom: 8,
                 overflowY: 'auto',
+                // overflow-x must be pinned, not left to default `visible`: with
+                // overflowY `auto`, CSS forces the `visible` axis to compute to
+                // `auto`, so one over-wide child (a long path, a wide code block,
+                // a widget) gives the whole list a draggable horizontal scrollbar
+                // above the composer. The conversation never pans sideways —
+                // wide children scroll within themselves.
+                overflowX: 'hidden',
                 // Reserve a stable scrollbar gutter so the 6px scrollbar always
                 // occupies the same right-edge column the title overlay is inset
                 // from (see the right-1.5 inset above) — keeps the thumb visible
@@ -5083,6 +5239,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               voiceStreaming={voice.streamEnabled}
               voiceSampleRef={voice.sampleRef}
               voicePartial={voiceOwned ? voice.partial : ''}
+              voiceCaretRef={voiceCaretRef}
+              voicePendingCaretRef={voicePendingCaretRef}
               onVoiceToggle={voiceInputSupported ? toggleVoice : undefined}
               onVoiceCancel={voiceInputSupported ? cancelVoice : undefined}
               onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
@@ -5100,6 +5258,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(currentSlot?.model || resolvedModel || 'auto')}
               showContextPct={chatConfig.showContextPct}
               isRunning={composerBusy}
+              continuable={continuable}
+              onContinue={handleContinue}
+              continuing={continuing}
               onStop={() => {
                 const slot = activeSlot
                 if (!slot) return

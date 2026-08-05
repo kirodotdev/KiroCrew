@@ -41,6 +41,7 @@ export const BUILTIN_COMPONENT_REGISTRY: Record<string, LazyComponent> = {
   '/projects': lazy(() => import('../pages/ProjectsPage')),
   '/md-notebook': lazy(() => import('./md-notebook/MdNotebookPage')),
   '/mochi': lazy(() => import('./mochi/MochiPage')),
+  '/spec-builder': lazy(() => import('./spec-builder/SpecBuilderPage')),
 }
 
 /**

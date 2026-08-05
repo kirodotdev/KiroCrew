@@ -664,20 +664,49 @@ def _advertised_cc_models(request: web.Request) -> list[dict]:
 
 
 def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]:
-    """Assemble the CC model dropdown: canonical registry first, then adapter extras.
+    """Assemble the CC model dropdown, scoped to what the account can actually use.
 
-    Merge order (deduped by model_name, first wins):
-      1. The canonical model registry (model_registry.display_list) — canonical
-         versioned+capability keys (opus-4.8-1m, …) with registry display names,
-         shown FIRST so users always see clean, current defaults. These are the
-         wire values; the backend translates them to provider ids at the factory.
-      2. The live backend's advertised models NOT already covered — appended,
-         de-duped, so nothing the adapter offers is hidden (its set can be stale).
-    The configured default is force-included so the active model is always
-    selectable even if neither source lists it.
+    The live backend's advertised set is AUTHORITATIVE when present. It is the
+    only source that reflects entitlement: claude-agent-acp captures it at session
+    init from what the signed-in account is actually served. The registry is a
+    static catalog of everything KiroCrew knows how to name, so a free-tier user
+    used to be offered the full flagship list and only discovered the truth when a
+    prompt failed.
+
+    So when anything is advertised, registry rows are FILTERED DOWN to it (keeping
+    the registry's cleaner display names for the survivors), and advertised models
+    the registry does not list are appended for forward-compat.
+
+    When NOTHING is advertised the registry is shown unfiltered. That is not a
+    fallback to the old behaviour by preference -- an empty advertised set means
+    "no session has initialized yet", which is indistinguishable from "this account
+    gets nothing", and showing an empty picker on a cold dashboard would be worse
+    than showing a superset.
+
+    ``auto`` is always present and always FIRST. It is the configured default
+    (``config.agent.model``) and a sentinel rather than a real model, so it is
+    never filtered by entitlement. It leads the list because the registry's own
+    ``default: true`` flag sorts the current flagship to the top, which presented
+    a specific paid model as the default in the picker.
     """
     advertised = _advertised_cc_models(request)
     registry_rows = model_registry.display_list("claude_code")
+
+    if advertised:
+        advertised_keys = {
+            _normalize_model_key(e.get("model_name", ""))
+            for e in advertised
+            if _normalize_model_key(e.get("model_name", ""))
+        }
+        # Keep registry rows only when the backend also advertises them; "auto" is
+        # a sentinel, not an entitlement, so it survives regardless.
+        registry_rows = [
+            e
+            for e in registry_rows
+            if _normalize_model_key(e.get("model_name", "")) in advertised_keys
+            or _normalize_model_key(e.get("model_name", "")) == "auto"
+        ]
+
     merged: list[dict] = []
     seen: set[str] = set()
     for entry in (*registry_rows, *advertised):
@@ -687,6 +716,14 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
             continue
         seen.add(key)
         merged.append(entry)
+    # "auto" leads. It may be absent entirely if a future registry drops the row,
+    # so synthesize it rather than assuming the filter above preserved one.
+    merged = [e for e in merged if _normalize_model_key(e.get("model_name", "")) == "auto"] + [
+        e for e in merged if _normalize_model_key(e.get("model_name", "")) != "auto"
+    ]
+    if not any(_normalize_model_key(e.get("model_name", "")) == "auto" for e in merged):
+        merged.insert(0, {"model_name": "auto", "display_name": "Auto", "description": ""})
+        seen.add("auto")
     # Guarantee the configured default is present (e.g. a custom cc_model the
     # backend doesn't advertise) so the selected model never vanishes. Resolve it
     # to its canonical key first (it may be stored as a provider id or alias) so a
@@ -702,9 +739,20 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
         # the first/selected dropdown option. The "auto" registry row already
         # covers this case.
         key = _normalize_model_key(canonical_default)
-        if key and key not in seen:
+        # Only resurrect the configured default when entitlement cannot contradict
+        # it: either nothing was advertised (unknown, so trust config) or it WAS
+        # advertised but the registry lacked a row. Force-including a model the
+        # backend did not advertise would reintroduce exactly the unusable option
+        # this filter removes -- a stale config pick outliving the entitlement.
+        may_include = not advertised or key in {
+            _normalize_model_key(e.get("model_name", "")) for e in advertised
+        }
+        if key and key not in seen and may_include:
+            # After "auto", never before it: "auto" is the configured default in
+            # the general case and leads the list.
             merged.insert(
-                0,
+                1 if merged and _normalize_model_key(merged[0].get("model_name", "")) == "auto"
+                else 0,
                 {
                     "model_name": canonical_default,
                     "display_name": canonical_default,

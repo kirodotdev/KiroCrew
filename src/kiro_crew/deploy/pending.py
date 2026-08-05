@@ -18,8 +18,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import flock_compat as fcntl
 from kiro_crew.config.paths import config_dir
+from kiro_crew.platform_compat import file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -87,18 +87,17 @@ def add_pending(params: dict[str, Any]) -> dict[str, Any]:
     }
     lock_path = _store_path().with_suffix(".lock")
     _store_path().parent.mkdir(parents=True, exist_ok=True)
-    fd = open(lock_path, "w")
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        entries = _prune_expired(_load_raw())
-        entries.append(entry)
-        # Cap at _MAX_PENDING, drop oldest
-        if len(entries) > _MAX_PENDING:
-            entries = entries[-_MAX_PENDING:]
-        _save_raw(entries)
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        fd.close()
+    # required=True: a deploy store that cannot obtain cross-process exclusion
+    # must fail loudly rather than risk a double-deploy / lost write. flock_compat
+    # is a Windows no-op, so this uses platform_compat's real msvcrt lock.
+    with open(lock_path, "w") as fd:
+        with file_lock(fd.fileno(), exclusive=True, required=True):
+            entries = _prune_expired(_load_raw())
+            entries.append(entry)
+            # Cap at _MAX_PENDING, drop oldest
+            if len(entries) > _MAX_PENDING:
+                entries = entries[-_MAX_PENDING:]
+            _save_raw(entries)
     return entry
 
 
@@ -120,17 +119,13 @@ def remove_pending(entry_id: str) -> bool:
     """Remove an entry (confirm or dismiss). Returns True if found."""
     lock_path = _store_path().with_suffix(".lock")
     _store_path().parent.mkdir(parents=True, exist_ok=True)
-    fd = open(lock_path, "w")
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        entries = _prune_expired(_load_raw())
-        before = len(entries)
-        entries = [e for e in entries if e.get("id") != entry_id]
-        _save_raw(entries)
-        return len(entries) < before
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        fd.close()
+    with open(lock_path, "w") as fd:
+        with file_lock(fd.fileno(), exclusive=True, required=True):
+            entries = _prune_expired(_load_raw())
+            before = len(entries)
+            entries = [e for e in entries if e.get("id") != entry_id]
+            _save_raw(entries)
+            return len(entries) < before
 
 
 def claim_pending(entry_id: str) -> dict[str, Any] | None:
@@ -142,20 +137,16 @@ def claim_pending(entry_id: str) -> dict[str, Any] | None:
     """
     lock_path = _store_path().with_suffix(".lock")
     _store_path().parent.mkdir(parents=True, exist_ok=True)
-    fd = open(lock_path, "w")
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        entries = _prune_expired(_load_raw())
-        claimed = None
-        remaining = []
-        for e in entries:
-            if e.get("id") == entry_id and claimed is None:
-                claimed = e
-            else:
-                remaining.append(e)
-        if claimed is not None:
-            _save_raw(remaining)
-        return claimed
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        fd.close()
+    with open(lock_path, "w") as fd:
+        with file_lock(fd.fileno(), exclusive=True, required=True):
+            entries = _prune_expired(_load_raw())
+            claimed = None
+            remaining = []
+            for e in entries:
+                if e.get("id") == entry_id and claimed is None:
+                    claimed = e
+                else:
+                    remaining.append(e)
+            if claimed is not None:
+                _save_raw(remaining)
+            return claimed

@@ -790,7 +790,12 @@ class AgentConfig:
             "RuntimeError if no sandbox backend is available and mode is not 'off', "
             "preventing unsandboxed execution entirely (fail-closed). This is "
             "distinct from sandbox_allow_no_isolation which only controls warning "
-            "severity — this field controls whether execution proceeds at all.",
+            "severity — this field controls whether execution proceeds at all. "
+            "The default is platform-independent: on a host with no backend (any "
+            "Windows host, a Linux kernel refusing user namespaces) `kirocrew "
+            "setup` OFFERS this opt-in interactively and writes it only on an "
+            "explicit yes, so unconfined execution stays operator-declared and is "
+            "never enabled implicitly by the platform.",
         ),
     )
     apps_allow_third_party: bool = field(
@@ -1445,26 +1450,69 @@ class KnowledgeConfig:
             "0 keeps the workers warm indefinitely.",
         ),
     )
-    auto_ingest_doc_links: bool = field(
-        default=False,
+    auto_add_documents: bool = field(
+        default=True,
         metadata=_meta(
-            "Auto-Ingest Doc Links",
-            "Automatically ingest documents referenced by links pasted into chat "
-            "whose host is in the doc-ingest allowlist. Off by default. An edition "
-            "that supplies a doc-link scanner (via the dashboard on_user_message "
-            "seam) uses this + the host allowlist below; inert in the public build "
-            "unless a link scanner is wired.",
+            "Auto-Add Documents",
+            "Let the agent add documents it comes across during normal work to the "
+            "Knowledge Library, so they become searchable later. The agent reads the "
+            "document with its own tools, under your approval, and hands over the "
+            "text -- Kiro Crew fetches nothing itself, so the doc-ingest host "
+            "allowlist below does not apply. Added documents appear in a single "
+            "aggregate 'Auto-added' source you can remove in one click. On by "
+            "default. Renamed from auto_ingest_doc_links, which is still accepted.",
+        ),
+    )
+    auto_register_project_docs: bool = field(
+        default=True,
+        metadata=_meta(
+            "Auto-Register Project Documents",
+            "Register the documents of each project you work in as a Knowledge "
+            "source automatically, so a project's design docs, specs and READMEs "
+            "become searchable without adding the folder by hand. Only documents "
+            "are taken (.md/.pdf/.docx/.org above a small size floor, excluding "
+            "agent instructions, generated files and repository boilerplate) -- "
+            "never source code. No confirmation step: the document filter and the "
+            "per-sweep chunk budget below bound the cost, and deleting the source "
+            "keeps it deleted. On by default.",
+        ),
+    )
+    auto_ingest_chunk_budget: int = field(
+        default=150,
+        metadata=_meta(
+            "Auto-Ingest Chunk Budget",
+            "Chunks an automatically-registered source may ingest per watcher "
+            "sweep. Each chunk costs one LLM extraction call, so this is what "
+            "actually bounds the cost of auto-registration -- file filters bound "
+            "pollution, not spend. Newest documents land first and the rest "
+            "trickle in on later sweeps, so a new project never arrives as a "
+            "burst. 0 removes the bound. Folders you add by hand are never "
+            "budgeted: you asked for the whole folder.",
+        ),
+    )
+    dedup_every_n_sweeps: int = field(
+        default=12,
+        metadata=_meta(
+            "De-duplicate Every N Sweeps",
+            "Run a full duplicate-collapsing pass every Nth watcher sweep. The "
+            "per-write gate refuses a byte-identical document, but only a full "
+            "pass catches a near-duplicate (the same document edited slightly "
+            "between two sources) or duplicates that already existed. At the "
+            "default 300s sweep interval, 12 is roughly hourly. 0 disables it.",
         ),
     )
     doc_ingest_hosts: list[str] = field(
         default_factory=list,
         metadata=_meta(
             "Doc-Ingest Host Allowlist",
-            "Exact hostnames whose links may be auto-ingested when "
-            "auto_ingest_doc_links is on. Empty = ingest nothing (SSRF-safe "
-            "deny-by-default): a link is only fetched if its host is an exact "
-            "member of this list. Prevents a pasted link to an internal metadata "
-            "endpoint or arbitrary host from being fetched.",
+            "Exact hostnames whose links may be fetched by KIROCREW ITSELF and "
+            "ingested, for an edition that wires a server-side doc-link scanner. "
+            "Empty = fetch nothing (SSRF-safe deny-by-default). This governs only "
+            "that server-fetch path -- it does NOT gate 'Auto-Add Documents' "
+            "above, where the agent has already fetched the content under its own "
+            "approval and Kiro Crew fetches nothing. Applying it there would make "
+            "the feature ingest nothing on a default config while its toggle "
+            "reads on.",
         ),
     )
     auto_discover_folder: bool = field(
@@ -1491,6 +1539,20 @@ class KnowledgeConfig:
             "it always exists, which would defeat discovery.",
         ),
     )
+
+
+def _read_auto_add_documents(knowledge_data: dict) -> bool:
+    """Read the auto-add-documents toggle, honouring the older spelling.
+
+    Accepts the older ``auto_ingest_doc_links`` spelling so an existing config's
+    value carries over instead of silently reverting to the default on upgrade.
+    Canonical spelling is ``auto_add_documents``, which is what ``save()`` writes,
+    so a save/load round-trip settles on it.
+    """
+    for key in ("auto_add_documents", "auto_ingest_doc_links"):
+        if key in knowledge_data:
+            return bool(knowledge_data.get(key))
+    return True
 
 
 @dataclass
@@ -1864,6 +1926,17 @@ class DashboardConfig:
         metadata=_meta(
             "Import Onboarded",
             "Whether the user has completed or skipped foreign-agent import onboarding.",
+        ),
+    )
+    privacy_acked: bool = field(
+        default=False,
+        metadata=_meta(
+            "Privacy Acknowledged",
+            "Whether the user has seen the mandatory first-run Privacy chapter, which "
+            "discloses the anonymous heartbeat and offers the opt-out. Server-backed "
+            "rather than browser-local because the gateway gates the very FIRST "
+            "heartbeat on it: until this is true the user has not yet been shown the "
+            "opt-out, and a ping sent before the offer makes the offer meaningless.",
         ),
     )
     user_role: str = field(
@@ -2616,7 +2689,7 @@ class ChannelConfig:
         )
 
 
-_VALID_STT_PROVIDERS = ("whisper", "mlx", "transcribe")
+_VALID_STT_PROVIDERS = ("whisper", "mlx", "apple", "transcribe")
 _VALID_CHANNEL_PREFIXES = ("C", "D", "G")
 
 
@@ -2872,7 +2945,10 @@ class SttConfig:
         default=False,
         metadata=_meta(
             "Streaming",
-            "Stream partial transcripts live to the dashboard input (transcribe provider only).",
+            "Stream partial transcripts live to the dashboard input. Supported by the "
+            "streaming providers only: `transcribe` (AWS, cloud) and `apple` "
+            "(on-device, macOS 26+). The whisper/mlx CLIs have no partial-result "
+            "channel.",
         ),
     )
     endpointing: bool = field(
@@ -2881,7 +2957,8 @@ class SttConfig:
             "Semantic endpointing",
             "While streaming dictation, run a fast background model on each stable "
             "transcript segment to detect when you have finished a complete request, "
-            "then auto-submit. Transcribe streaming only; off by default.",
+            "then auto-submit. Streaming providers only (transcribe, apple); "
+            "off by default.",
         ),
     )
     dictation_panel: bool = field(
@@ -4507,7 +4584,13 @@ class KiroCrewConfig:
                     knowledge_data.get("pool_idle_ttl_secs", 300),
                     300,
                 ),
-                auto_ingest_doc_links=bool(knowledge_data.get("auto_ingest_doc_links", False)),
+                auto_add_documents=_read_auto_add_documents(knowledge_data),
+                auto_register_project_docs=bool(
+                    knowledge_data.get("auto_register_project_docs", True)),
+                auto_ingest_chunk_budget=_safe_nonnegative_int(
+                    knowledge_data.get("auto_ingest_chunk_budget", 150), 150),
+                dedup_every_n_sweeps=_safe_nonnegative_int(
+                    knowledge_data.get("dedup_every_n_sweeps", 12), 12),
                 doc_ingest_hosts=[
                     str(h)
                     for h in knowledge_data.get("doc_ingest_hosts", [])
@@ -4676,6 +4759,14 @@ class KiroCrewConfig:
                 onboarded=bool(dashboard_data.get("onboarded", False)),
                 import_onboarded=_safe_bool(
                     dashboard_data.get("import_onboarded"),
+                    _safe_bool(dashboard_data.get("onboarded"), False),
+                ),
+                # Falls back to `onboarded`: a user who finished first run before
+                # this chapter existed has already reached the product, and
+                # re-gating their heartbeat on a screen they will never be shown
+                # would suppress it forever.
+                privacy_acked=_safe_bool(
+                    dashboard_data.get("privacy_acked"),
                     _safe_bool(dashboard_data.get("onboarded"), False),
                 ),
                 user_role=str(dashboard_data.get("user_role", "")),

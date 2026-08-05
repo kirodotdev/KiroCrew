@@ -87,7 +87,7 @@ TaskRun = Project
 
 _MAX_REPLAN = MAX_REPLAN
 _MAX_TOTAL_TASKS = MAX_TOTAL_TASKS
-_MAX_PARALLEL_TASKS = 3  # max tasks executing concurrently in a parallel group
+_MAX_PARALLEL_TASKS = 3  # ctor fallback default when compute_max_subagents fails; live cap is self._max_parallel_steps
 _MAX_CONCURRENT_TASKS = 3  # max simultaneous task runs
 _SESSION_PREFIX = SESSION_PREFIX
 _STALL_TIMEOUT = STALL_TIMEOUT
@@ -693,26 +693,31 @@ class TaskRunner:
                 await self._notify(
                     "\u26a1 Parallel group", f"Running {len(resolved)} tasks: {titles}", run=run
                 )
-                # Batch large groups to avoid resource exhaustion
+                # Bound concurrency with a semaphore sized by the configurable
+                # `taskrunner.max_parallel_steps` knob (self._max_parallel_steps),
+                # not a hardcoded batch size. All ready tasks are dispatched at once
+                # and the semaphore caps how many run simultaneously, so a slow task
+                # no longer stalls a whole fixed-size batch. The knob is the single
+                # place to lift concurrency (capped by compute_max_subagents ceiling).
                 results: list[bool | BaseException] = []
-                try:
-                    for batch_start in range(0, len(resolved), self._max_parallel_steps):
-                        batch = resolved[batch_start : batch_start + self._max_parallel_steps]
-                        batch_results = await asyncio.gather(
-                            *(
-                                self._execute_single_task(
-                                    run,
-                                    t,
-                                    history_key,
-                                    session_key=f"{_SESSION_PREFIX}:{run.task_id}:task{t.index}",
-                                )
-                                for t in batch
-                            ),
-                            return_exceptions=True,
+                sem = asyncio.Semaphore(self._max_parallel_steps)
+
+                async def _run_bounded(t: Task) -> bool:
+                    async with sem:
+                        return await self._execute_single_task(
+                            run,
+                            t,
+                            history_key,
+                            session_key=f"{_SESSION_PREFIX}:{run.task_id}:task{t.index}",
                         )
-                        results.extend(batch_results)
+
+                try:
+                    results = await asyncio.gather(  # type: ignore[assignment]
+                        *(_run_bounded(t) for t in resolved),
+                        return_exceptions=True,
+                    )
                 finally:
-                    # Reset sessions even if CancelledError interrupts the batch loop
+                    # Reset sessions even if CancelledError interrupts the gather
                     for t in resolved:
                         try:
                             await asyncio.shield(

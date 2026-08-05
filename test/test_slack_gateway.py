@@ -2645,7 +2645,7 @@ class TestAutoApplyUpdateVenvPath:
                 proc.communicate = AsyncMock(return_value=(b"", b""))
                 proc.returncode = 0
             else:
-                # AIM installs, arcc update
+                # extension installs, provider update
                 proc.returncode = 0
             proc.wait = AsyncMock(return_value=proc.returncode)
             if not hasattr(proc, 'communicate'):

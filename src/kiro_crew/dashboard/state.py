@@ -520,6 +520,15 @@ POSTTOKEN_RECOVERY_PREFIX = "[Interrupted turn — automatic recovery]"
 # Prefix on the runner-injected nudge that breaks a repeated empty-generation
 # pattern (the model returned no output twice). Body: _EMPTY_AUTO_CONTINUE_MSG.
 EMPTY_RESPONSE_RECOVERY_PREFIX = "[Empty response — automatic recovery]"
+# Prefix on the continuation injected when the USER pressed Continue on an
+# interrupted turn. Body: _MANUAL_RESUME_MSG in chat_utils. Named into the
+# *_RECOVERY_PREFIX family because test_recovery_card_prefixes.py keys the
+# cross-language drift guard on that suffix — a marker outside the family is
+# invisible to it, and the card would silently render machine prose as a bubble.
+# The VALUE is what carries the user-facing meaning, and it deliberately does NOT
+# say "automatic recovery" like the five above: a person pressed the button, and
+# the card must not claim the system recovered by itself.
+MANUAL_RESUME_RECOVERY_PREFIX = "[Continue — requested by the user]"
 
 
 def should_queue_refusal_recovery(
@@ -816,6 +825,7 @@ class _ChatSlot:
         "_pending_synthesis",
         "_synthesis_inflight",
         "_subagent_deliveries_inflight",
+        "_subagents_inline_collected",
         "_recovery_retrigger_count",
         "_prompt_busy_retries",
         "_acp_pipe_death_retries",
@@ -981,6 +991,10 @@ class _ChatSlot:
         # fire-gate requires this to be 0 so a concurrently-finishing sibling
         # can't let an earlier turn fire synthesis before its result lands.
         self._subagent_deliveries_inflight: int = 0
+        # IDs of sub-agents whose results were already delivered inline via the
+        # blocking spawn_sub_agents MCP tool.  _subagent_done skips injection
+        # for these to prevent a duplicate turn that clobbers [OPTIONS:] buttons.
+        self._subagents_inline_collected: set[str] = set()
         self._recovery_retrigger_count: int = 0
         self._prompt_busy_retries: int = 0
         self._acp_pipe_death_retries: int = 0
@@ -1200,6 +1214,7 @@ class _ChatSlot:
         ts: str = "",
         *,
         broadcast: bool = True,
+        broadcast_user: bool = False,
         meta: dict | None = None,
     ) -> None:
         msg: dict[str, Any] = {
@@ -1217,11 +1232,18 @@ class _ChatSlot:
         self._pending.append(msg)
         self.event.set()
         # Broadcast via global SSE when no HTTP stream reader is active
-        # Skip: chunk (too noisy), done (internal), user (frontend adds optimistically)
+        # Skip: chunk (too noisy), done (internal). A "user" row is skipped by
+        # DEFAULT because the composer that submitted it already rendered it
+        # optimistically -- but that is only true of a message typed in this
+        # dashboard. A row replayed from a CHANNEL transcript was typed in
+        # Slack, so nothing rendered it here; those callers pass
+        # ``broadcast_user=True`` or the message stays invisible until a full
+        # transcript reload, arriving AFTER the reply it came before.
         if (
             broadcast
             and self._on_message
-            and role not in ("chunk", "done", "user")
+            and role not in ("chunk", "done")
+            and (role != "user" or broadcast_user)
             and not self._has_reader
         ):
             self._on_message(self.key, msg)  # type: ignore[operator]
@@ -2505,7 +2527,16 @@ class DashboardState:
         except Exception:
             logger.debug("Failed to persist open_slots.json", exc_info=True)
 
-    def notify(self, kind: str, title: str, body: str, *, meta: dict | None = None) -> None:
+    def notify(
+        self,
+        kind: str,
+        title: str,
+        body: str,
+        *,
+        meta: dict | None = None,
+        url: str | None = None,
+        actions: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Push a notification to ALL connected SSE clients and persist to disk.
 
         Legacy adapter over the notification bus (see
@@ -2513,9 +2544,22 @@ class DashboardState:
         schema-v2 payload (source="system", channel="system.<kind>") and pushes
         it through :class:`NotificationBus`, which validates and hands the
         enriched note back to :meth:`_deliver_note`.
+
+        ``url`` (a dashboard-internal path that renders the detail panel's Open
+        button) and ``actions`` (up to four labelled navigation capsules on the
+        feed row) must be passed HERE, not inside ``meta``: the bus's meta merge
+        skips both names so ``meta`` cannot smuggle an unvalidated deep link,
+        so a ``meta={"url": ...}`` caller produces a note with no navigation at
+        all. Both are validated by the payload; an invalid one -- wrong type or
+        an off-dashboard path -- is dropped with a warning, so the never-raises
+        contract is preserved. That holds only because
+        :meth:`NotificationPayload.validate` turns BOTH bad values and bad types
+        into :class:`NotificationValidationError`; the payload build is inside
+        the guarded block so a future field that validates on construction
+        cannot reopen the hole either.
         """
-        payload = payload_from_legacy(kind, title, body, meta)
         try:
+            payload = payload_from_legacy(kind, title, body, meta, url=url, actions=actions)
             self.notification_bus.push(payload)
         except NotificationValidationError:
             # Legacy callers never validated inputs; keep the old
@@ -2920,6 +2964,36 @@ class DashboardState:
                     namespaced = _split_namespaced_channel_id(_ch)
                     slot._slack_channel = namespaced[1] if namespaced else (_ch or "")
                     slot._slack_thread_ts = _ts or ""
+                    # Rebuild the thread -> slot index too, not just the fields:
+                    # inbound replies resolve through the index, so restoring
+                    # the fields alone leaves a mirrored session delivering to
+                    # Slack but not back to its tab after a restart.
+                    #
+                    # Index ONLY a genuine mirror-OUT. A channel-born session's
+                    # ``slack_thread_ts`` is a SELF-reference -- the thread the
+                    # session lives IN, not one it mirrors TO -- and indexing
+                    # that would make every inbound Slack message resolve to a
+                    # "linked" slot and run through the dashboard chat runner
+                    # instead of the Slack transport, silently changing the
+                    # execution engine and approval semantics of all Slack
+                    # traffic.
+                    #
+                    # Both tests are load-bearing and neither is a name
+                    # heuristic. A channel slot whose stem RESOLVED is caught by
+                    # ``linked_session_key``; one whose stem did NOT resolve
+                    # (leaving that field empty) is caught by comparing the link
+                    # against the slot's own filename stem, because a channel
+                    # slot is named for the very thread it lives in. A dashboard
+                    # slot that merely happens to be named ``slack_...`` matches
+                    # neither test and is still indexed.
+                    from kiro_crew.history import _safe_key
+                    from kiro_crew.messaging.link import canonical_key
+
+                    _self_ref = False
+                    if _ts:
+                        _self_ref = _safe_key(canonical_key(_ts)) == name
+                    if _ts and not slot.linked_session_key and not _self_ref:
+                        self._slack_to_slot[_ts] = name
         except Exception:
             pass
         self._slots[name] = slot
@@ -2994,11 +3068,19 @@ class DashboardState:
         #    other way would be a cycle.
         #
         # What makes that safe: live tool meta is redacted at source (_tool_meta),
-        # and no DISK-LOADED message is ever appended with broadcast=True — both
-        # restore loops pass broadcast=False. That invariant is what lets the load
-        # path skip meta redaction, and it is pinned by
+        # and a DISK-LOADED message reaches this path only when the caller opts
+        # in per-role. Both restore loops pass broadcast=False, and the ONE
+        # exception is refresh_channel_window, which replays a channel
+        # transcript's tail and passes broadcast_user=True so a message typed in
+        # Slack renders at all (nothing rendered it optimistically here). That
+        # exception cannot carry unredacted meta: ConversationLog.append writes
+        # only role/content/ts/source_thread/source_user for such a row -- no
+        # meta dict -- so the arm below never fires for it, and the row's
+        # content is human-typed, which is deliberately raw at every other
+        # boundary too. The invariant is pinned by
         # test_rehydrate_does_not_broadcast_replayed_messages and
-        # test_restore_recent_sessions_does_not_broadcast_either. Do not relax it.
+        # test_restore_recent_sessions_does_not_broadcast_either. Do not relax
+        # it further without re-checking that meta is still absent.
         direct_meta = msg.get("meta")
         if direct_meta and isinstance(direct_meta, dict):
             payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}

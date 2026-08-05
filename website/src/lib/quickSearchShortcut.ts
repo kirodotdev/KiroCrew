@@ -6,14 +6,15 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
  *
  * Historically the palette was hard-wired to two gestures in `useCommandPalette`:
  * double-Shift (the IntelliJ "Search Everywhere" gesture) and ⌘K / Ctrl+K. This
- * module makes the *primary* gesture user-selectable while keeping the shipped
- * default byte-for-byte, so an existing user who never opens Settings sees no
- * change.
+ * module makes the *primary* gesture user-selectable.
  *
  * Three presets, mutually exclusive:
- *  - **`double-shift`** (default): two bare Shift keydowns open the palette.
- *  - **`mod-k`**: ⌘K (macOS) / Ctrl+K (Windows/Linux) toggles it; double-Shift
- *    is disabled.
+ *  - **`mod-k`** (default): ⌘K (macOS) / Ctrl+K (Windows/Linux) toggles the
+ *    palette; double-Shift is disabled.
+ *  - **`double-shift`** (opt-in): two bare Shift keydowns open the palette. This
+ *    was the shipped default until remote-desktop sessions (RDP/ICA/PCoIP) were
+ *    found to synthesise spurious repeat Shift events and open the palette on
+ *    their own, so it is now opt-in — only users who select it are exposed.
  *  - **`custom`**: a user-recorded chord toggles it; double-Shift is disabled.
  *
  * `⌘K` / `Ctrl+K` stays available as a built-in alias in every mode EXCEPT
@@ -64,8 +65,8 @@ export interface QuickSearchConfig {
   custom?: QuickSearchChord
 }
 
-/** Backward-compatible default: the original double-Shift gesture. */
-export const DEFAULT_QUICK_SEARCH_CONFIG: QuickSearchConfig = { mode: 'double-shift' }
+/** Default for fresh installs: ⌘K/Ctrl+K (mod-k). Double-Shift is opt-in via Settings. */
+export const DEFAULT_QUICK_SEARCH_CONFIG: QuickSearchConfig = { mode: 'mod-k' }
 
 /**
  * A custom chord must carry at least one command/option modifier (`mod` or

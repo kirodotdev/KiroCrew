@@ -14,7 +14,13 @@ from typing import Any
 from urllib.parse import parse_qsl, urlparse
 
 from kiro_crew import mcp_apps_render, model_registry, session_directive
-from kiro_crew.acp.client import AcpAuthRequired, AcpError, AcpProcessDied, _is_safe_oauth_url
+from kiro_crew.acp.client import (
+    AcpAuthRequired,
+    AcpError,
+    AcpProcessDied,
+    AcpPromptBusy,
+    _is_safe_oauth_url,
+)
 from kiro_crew.acp.types import (
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
@@ -32,7 +38,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.autonudge import get_instance
 from kiro_crew.config.loader import (
     KiroCrewConfig,
-    config_dir,
+    data_home,
     normalize_agent_model,
     resolve_agent_bindings,
 )
@@ -2005,7 +2011,7 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
             body = "Usage: `/goal <objective>` or `/goal --max N <objective>`."
         else:
             _slug = re.sub(r"[^A-Za-z0-9._-]", "_", slot.key)
-            _sentinel = str(config_dir() / "goal-stop" / f"{_slug}.stop")
+            _sentinel = str(data_home() / "goal-stop" / f"{_slug}.stop")
             Path(_sentinel).unlink(missing_ok=True)
             _nudge = (
                 f"Goal: {_objective}\n"
@@ -5326,7 +5332,14 @@ async def _run_chat(
             # but still surface feedback so the nested turn doesn't fail silently.
             slot.append("error", "⟳ Session busy — please retry.", "msg msg-err")
     except AcpError as exc:
-        logger.warning("ACP error in slot %s: %s", slot.key, exc)
+        # The exception CLASS is logged alongside the message because the
+        # session-health scanner keys its prompt_stuck signal off this line, and
+        # the message text is no longer a reliable carrier: _format_acp_error
+        # rewrites the backend's "prompt already in progress" into user-facing
+        # prose. The class name is the structural classification rendered into
+        # text, so a scanner never has to pattern-match wording that a copy
+        # edit (or translation) can move. See session_health._PATTERNS.
+        logger.warning("ACP error in slot %s: [%s] %s", slot.key, type(exc).__name__, exc)
         _msg = str(exc)
         # Retry-eligible transients:
         #   - "already in progress": prompt busy (kiro-cli side)
@@ -5334,8 +5347,17 @@ async def _run_chat(
         # For both: reset the session and re-queue the message so auto-nudges
         # (and dashboard messages) get executed on a fresh provider instead of
         # surfacing a bare ❌ error card with no work done.
+        # Prompt-busy is matched STRUCTURALLY (the AcpPromptBusy subclass) with
+        # the string as a fallback. _format_acp_error rewrites the backend's
+        # "prompt already in progress" into friendly prose that no longer
+        # contains the marker, so a string-only check silently loses the
+        # reset-and-requeue path for every producer that formats before raising.
+        # The fallback still covers history-restored / unformatted messages.
         _retry_eligible = (
-            "already in progress" in _msg or "process exited" in _msg or "not running" in _msg
+            isinstance(exc, AcpPromptBusy)
+            or "already in progress" in _msg
+            or "process exited" in _msg
+            or "not running" in _msg
         )
         if _retry_eligible:
             logger.info(

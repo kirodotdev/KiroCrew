@@ -119,10 +119,14 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
         if not thread_ts:
             return web.json_response({"error": "failed to create thread"}, status=500)
 
-    state.sessions.set_slack_link(session_key, thread_ts, target_channel)
-    slot._slack_linked = True
-    slot._slack_channel = target_channel
-    slot._slack_thread_ts = thread_ts
+    # Route through the ONE canonical link writer. ``link_slack`` sets the same
+    # three slot fields and persists via ``set_slack_link``, but it ALSO
+    # registers the thread -> slot reverse index that inbound Slack replies
+    # resolve through, and releases the thread from any slot that held it
+    # before. Hand-assigning the fields here duplicated everything except that
+    # index, so a reply in the mirrored thread routed and persisted correctly
+    # while nothing ever told the open tab it had arrived.
+    state.link_slack(slot.key, thread_ts, target_channel)
 
     # Post last 5 messages as context — only when we created a NEW thread.
     # Linking to an existing thread (challenge-and-redirect) would duplicate

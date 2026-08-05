@@ -144,7 +144,7 @@ of things that are NOT stop conditions:
 
 - Test failures, build errors, lint errors → fix them, that's the job
 - "I don't know how" → read code, grep, check logs, try a smaller probe,
-  add a research card to the board, ask an ARCC / skill for context
+  add a research card to the board, read a skill for context
 - A card seems blocked → split it, unblock dependencies, or mark the
   blocker explicit and pick a different card
 - A tool returned an error → read the error, correct the invocation, retry

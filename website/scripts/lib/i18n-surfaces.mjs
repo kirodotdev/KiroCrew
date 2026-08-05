@@ -46,7 +46,16 @@ export const SURFACES = [
   { id: 'capabilities-skills', url: '/capabilities?tab=skills' },
   { id: 'projects', url: '/projects' },
   { id: 'knowledge', url: '/knowledge' },
-  { id: 'artifacts', url: '/artifacts' },
+  // `settle: 400` is load-bearing, not padding. `SegmentedControl` animates its label
+  // from `initial={{ width: 0 }}` to `animate={{ width: 'auto' }}` on a spring
+  // (`stiffness: 500, damping: 35`, SegmentedControl.tsx:130-140), and the scanner
+  // compares `scrollWidth` against `clientWidth`. Sample that mid-spring and the label
+  // is still narrower than its settled width, so the ratio spikes past the expansion
+  // budget and `layout/over-budget-truncation` fires on `[Ğàĺĺèŕý ···········]` — the
+  // long-documented "nondeterministic artifacts.layout" flake, which is not noise but a
+  // race against an animation. The default 250ms is not enough for this spring; the
+  // other surfaces carrying post-paint motion already use 400.
+  { id: 'artifacts', url: '/artifacts', settle: 400 },
   { id: 'apps', url: '/apps' },
   // The POPULATED app-detail body: description, the Features list, the tag chips,
   // the permission rows and the install/enable controls. `/apps` above only shows

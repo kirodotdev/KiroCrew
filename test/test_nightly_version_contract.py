@@ -45,15 +45,9 @@ INT32_MAX = 2_147_483_647
 
 # Worst-case stamp components. The TIME is deliberately the 06:00 cron's value:
 # HHMMSS=060000 is the case that makes a bare numeric identifier invalid SemVer
-# (leading zero), which electron-builder rejects outright. The desktop stamp
-# uses the COMPACT date (YYDDD, 2-digit year + zero-padded day-of-year); its
-# worst case is the widest value (year 99, day 366).
+# (leading zero), which electron-builder rejects outright.
 _WORST_CASE_DATE = "29991231"
 _WORST_CASE_TIME = "060000"
-_WORST_CASE_YYDOY = "99366"
-# NuGet / Squirrel reject a prerelease ("special version") part over this many
-# characters, which is what broke the old 23-char "nightly.<YYYYMMDD>t<HHMMSS>".
-NUGET_SPECIAL_VERSION_MAX = 20
 
 
 def _workflow_text() -> str:
@@ -71,36 +65,13 @@ def _rendered_nightly_version() -> str:
     assert match, "nightly.yml no longer emits a version= output in the expected shape"
     suffix = match.group(1)
     rendered = (
-        suffix.replace("${STAMP_YYDOY}", _WORST_CASE_YYDOY)
-        .replace("${STAMP_DATE}", _WORST_CASE_DATE)
+        suffix.replace("${STAMP_DATE}", _WORST_CASE_DATE)
         .replace("${STAMP_TIME}", _WORST_CASE_TIME)
         .replace("${STAMP_FULL}", _WORST_CASE_DATE + _WORST_CASE_TIME)
         .replace("${STAMP}", _WORST_CASE_DATE + _WORST_CASE_TIME)
     )
     assert "$" not in rendered, f"unresolved shell variable in rendered stamp: {rendered!r}"
     return "0.1.0" + rendered
-
-
-def test_prerelease_fits_nuget_special_version_cap() -> None:
-    """NuGet rejects a prerelease part longer than 20 characters.
-
-    HISTORICAL, still enforced. The Squirrel.Windows target bundled with
-    electron-builder-squirrel-windows 26.x failed releasify with "The special
-    version part cannot exceed 20 characters": the old
-    "nightly.<YYYYMMDD>t<HHMMSS>" was 23 chars and broke every Windows nightly,
-    and the compact "nightly.<YYDDD>t<HHMMSS>" is exactly 20. The target is now
-    NSIS, which imposes no such cap, so the bound is no longer live -- but the
-    assertion is kept as a regression guard: lengthening the stamp buys nothing,
-    and a future NuGet-based target (msi, appx) would re-impose it silently."""
-    version = _rendered_nightly_version()
-    _, _, prerelease = version.partition("-")
-    assert prerelease, f"nightly version carries no prerelease part: {version!r}"
-    assert len(prerelease) <= NUGET_SPECIAL_VERSION_MAX, (
-        f"prerelease part {prerelease!r} is {len(prerelease)} chars, over the "
-        f"NuGet/Squirrel {NUGET_SPECIAL_VERSION_MAX}-char cap; `Update.com "
-        "--releasify` fails with 'The special version part cannot exceed 20 "
-        "characters.' and the Windows desktop leg dies."
-    )
 
 
 def test_digit_runs_fit_int32_after_identifier_concatenation() -> None:
@@ -158,15 +129,30 @@ def test_nightly_channel_prefix_is_preserved() -> None:
 
 
 def test_stamp_keeps_seconds_precision() -> None:
-    """Two nightlies in the same minute must not collide on immutable keys.
+    """Same-minute re-dispatch must not collide, and the date stays 8 digits.
 
-    The compact desktop stamp is <date>t<HHMMSS>: a unique date identifier plus
-    six digits of time. What matters is that the time component carries full
-    SECONDS (HHMMSS, 6 digits), so a same-minute re-dispatch differs; the date
-    half no longer needs to be the full 8-digit YYYYMMDD (it is YYDDD, 5 digits)
-    to keep that guarantee."""
+    Two separate properties, deliberately not conflated:
+
+    * UNIQUENESS is carried by the SECONDS component alone. sign-and-notarize.yml
+      keys pre-signed/signed/notarized/desktop objects on ${VERSION} with an
+      If-None-Match never-republish check, so what stops a same-minute
+      re-dispatch reusing a key is HHMMSS being full seconds -- and that held
+      for the 11-digit YYDDD form too.
+    * The 14-digit total pins the DATE WIDTH: the desktop stamp keeps the full
+      8-digit YYYYMMDD so it stays legible and matches the digits the wheel's
+      .dev<YYYYMMDDHHMMSS> carries for the same run. That is a shape pin, not a
+      uniqueness guard -- a future target that re-imposed a length cap could
+      shorten the date without breaking uniqueness."""
     version = _rendered_nightly_version()
     _, _, prerelease = version.partition("-")
+    digits = "".join(re.findall(r"\d", prerelease))
+    assert len(digits) >= 14, (
+        f"{version!r} carries {len(digits)} stamp digits; the desktop stamp is "
+        "pinned to the full 8-digit YYYYMMDD + HHMMSS (14) so it stays legible "
+        "and shares its digits with the wheel's .dev<N>. Shortening the DATE "
+        "does not break uniqueness (the seconds assertion below owns that), so "
+        "if a Windows target re-imposes a length cap, change this pin knowingly"
+    )
     # The time is the last digit run after the "t" separator.
     time_part = prerelease.rsplit("t", 1)[-1]
     time_digits = "".join(re.findall(r"\d", time_part))
@@ -184,16 +170,9 @@ def test_stamp_orders_chronologically() -> None:
     assert match
     suffix = match.group(1)
 
-    from datetime import datetime
-
     def render(date: str, time: str) -> str:
-        # Derive the compact YYDDD the workflow computes with `date -u +%y%j`,
-        # so the ordering assertion tracks the real stamp shape.
-        dt = datetime.strptime(date, "%Y%m%d")
-        yydoy = dt.strftime("%y%j")
         return (
-            suffix.replace("${STAMP_YYDOY}", yydoy)
-            .replace("${STAMP_DATE}", date)
+            suffix.replace("${STAMP_DATE}", date)
             .replace("${STAMP_TIME}", time)
             .replace("${STAMP_FULL}", date + time)
             .replace("${STAMP}", date + time)

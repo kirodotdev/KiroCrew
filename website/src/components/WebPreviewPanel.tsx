@@ -199,30 +199,50 @@ function isLoopbackHost(h: string): boolean {
 }
 
 /**
- * Isolate a loopback preview URL onto a hostname DISTINCT from the dashboard's.
+ * Normalize a loopback preview URL's host so it is both reachable under the
+ * dashboard CSP and cookie-isolated from the dashboard. Two rewrites, in order:
  *
- * Cookies are scoped by host but NOT by port, so an iframe pointed at
- * `http://localhost:5173` while the dashboard is served from the same host
- * (`localhost`, `127.0.0.1`, or a `*.localhost` alias like `kirocrew.localhost`)
- * would send the dashboard's host-scoped auth cookie to the previewed dev server
- * (which could read/replay it). When the preview host matches the dashboard host
- * and both are loopback, swap it to a guaranteed-distinct loopback host
- * (`127.0.0.1`, or `localhost` when the dashboard already IS `127.0.0.1`) — a
- * different host string, so no dashboard cookie is ever sent to the framed
- * server. Non-loopback hosts and already-distinct hosts are returned unchanged.
+ * 1. **IPv6 loopback → IPv4.** The dashboard CSP admits loopback preview origins
+ *    (see `server.py` `_LOOPBACK_FRAME_SRC`), but a bracketed IPv6 literal with a
+ *    wildcard port — `http://[::1]:*` — is INVALID CSP grammar, so Chromium drops
+ *    the whole source and can never admit it. The panel's no-cors liveness probe
+ *    to `[::1]` is therefore refused and a perfectly healthy dev server shows as
+ *    "Preview server not reachable" (while it opens fine in the OS browser, whose
+ *    top-level navigation is not bound by the dashboard CSP). `127.0.0.1` is the
+ *    same loopback and IS admitted, so canonicalize `[::1]`/`::1` to it. This runs
+ *    independent of the dashboard host — even when it is unknown — because the CSP
+ *    gap has nothing to do with cookie isolation.
+ *
+ * 2. **Cookie isolation.** Cookies are scoped by host but NOT by port, so an
+ *    iframe pointed at `http://localhost:5173` while the dashboard is served from
+ *    the same host (`localhost`, `127.0.0.1`, or a `*.localhost` alias like
+ *    `kirocrew.localhost`) would send the dashboard's host-scoped auth cookie to
+ *    the previewed dev server (which could read/replay it). When the preview host
+ *    matches the dashboard host and both are loopback, swap it to a
+ *    guaranteed-distinct loopback host (`127.0.0.1`, or `localhost` when the
+ *    dashboard already IS `127.0.0.1`) — a different host string, so no dashboard
+ *    cookie is ever sent to the framed server.
+ *
+ * Non-loopback hosts and already-distinct hosts skip the isolation swap.
  * `dashboardHost` defaults to the current document host (overridable for tests).
  */
 export function isolatePreviewHost(url: string, dashboardHost?: string): string {
+  let u: URL
+  try { u = new URL(url) } catch { return url }
+  // (1) IPv6 loopback canonicalization — unconditional (the CSP gap is
+  // orthogonal to the dashboard host, so it must fire even when host is unknown).
+  // A parsed URL exposes an IPv6 host in bracketed form (`[::1]`); guard the bare
+  // form too, defensively.
+  if (u.hostname === '[::1]' || u.hostname === '::1') u.hostname = '127.0.0.1'
+  // (2) Cookie isolation — needs to know the dashboard host to compare against.
   let host = dashboardHost
   if (host == null) {
     try { host = typeof window !== 'undefined' ? window.location.hostname : '' } catch { host = '' }
   }
-  if (!host) return url
-  let u: URL
-  try { u = new URL(url) } catch { return url }
+  if (!host) return u.toString()
   const h = u.hostname
-  if (!isLoopbackHost(h)) return url        // real host / tunnel — leave it
-  if (h !== host) return url                // already a distinct host → isolated
+  if (!isLoopbackHost(h)) return u.toString()  // real host / tunnel — leave it
+  if (h !== host) return u.toString()          // already a distinct host → isolated
   u.hostname = h === '127.0.0.1' ? 'localhost' : '127.0.0.1'
   return u.toString()
 }

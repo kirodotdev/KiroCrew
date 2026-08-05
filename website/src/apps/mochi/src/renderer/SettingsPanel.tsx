@@ -689,6 +689,28 @@ const MOOD_COLORS: Record<string, string> = {
   neutral: '#a1a1aa',
 }
 
+/**
+ * Map a discover-tools failure CODE to a translated message.
+ *
+ * The backend's `code` is the contract; its English `error` prose is for logs.
+ * Anything unrecognised (including a synthetic `http_405` / `network`) falls back
+ * to one generic translated line, so no locale ever sees a raw code or HTTP status.
+ */
+const MCP_ERROR_KEYS = {
+  server_disabled: 'apps.mochi.settingsPanel.mcp_error_disabled',
+  probe_in_progress: 'apps.mochi.settingsPanel.mcp_error_in_progress',
+  server_not_found: 'apps.mochi.settingsPanel.mcp_error_not_found',
+  probe_failed: 'apps.mochi.settingsPanel.mcp_error_probe_failed',
+} as const
+
+const MCP_ERROR_KEY_FALLBACK = 'apps.mochi.settingsPanel.mcp_error_generic'
+
+function mcpErrorText(code: string): string {
+  const key =
+    (MCP_ERROR_KEYS as Record<string, string>)[code] ?? MCP_ERROR_KEY_FALLBACK
+  return i18nT(key)
+}
+
 function moodColor(mood: string): string {
   return MOOD_COLORS[mood] ?? 'var(--accent)'
 }
@@ -891,7 +913,7 @@ const McpSection: React.FC<{
   const [loading, setLoading] = React.useState(true)
   const [expanded, setExpanded] = React.useState<string | null>(null)
   const [activeTab, setActiveTab] = React.useState<Record<string, 'chat' | 'bg'>>({})
-  const [toolsMap, setToolsMap] = React.useState<Record<string, { tools: Array<{ name: string; description?: string }>; fromCache: boolean }>>({})
+  const [toolsMap, setToolsMap] = React.useState<Record<string, { tools: Array<{ name: string; description?: string }>; fromCache: boolean; errorCode?: string }>>({})
   const [refreshing, setRefreshing] = React.useState<string | null>(null)
   const [stagedConfigs, setStagedConfigs] = React.useState<Record<string, { agents: ('chat' | 'bg')[]; autoApprove: string[]; disabledTools: string[] }>>({})
 
@@ -951,7 +973,20 @@ const McpSection: React.FC<{
     setRefreshing(serverName)
     try {
       const result = await api?.discoverMcpTools?.(serverName)
-      if (result) setToolsMap(prev => ({ ...prev, [serverName]: result }))
+      if (result) {
+        setToolsMap(prev => {
+          const previous = prev[serverName]
+          // On failure MERGE onto the previous entry: a transient blip used to
+          // return null, which `if (result)` skipped, so the last good tool list
+          // stayed on screen. Replacing it with the empty list would make a
+          // network hiccup wipe the chip groups a user is mid-way through
+          // configuring -- the error message must ADD to the view, not clear it.
+          if (result.errorCode && previous) {
+            return { ...prev, [serverName]: { ...previous, errorCode: result.errorCode } }
+          }
+          return { ...prev, [serverName]: result }
+        })
+      }
     } catch { /* ignore */ }
     setRefreshing(null)
   }
@@ -1021,6 +1056,19 @@ const McpSection: React.FC<{
             opacity: refreshing === s.name ? 0.5 : 1,
           }}>{refreshing === s.name ? i18nT('apps.mochi.settingsPanel.mcp_refreshing') : i18nT('apps.mochi.settingsPanel.mcp_refresh_tools')}</button>
           {toolData?.fromCache && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{i18nT('apps.mochi.settingsPanel.mcp_from_cache')}</span>}
+          {/* A failed discover used to be indistinguishable from a server with no
+              tools, which is how a 405 on this button went unnoticed. The live
+              region is mounted UNCONDITIONALLY and its text swapped: a
+              role="status" node that appears together with its content is not
+              announced by many screen-reader/browser pairs, which would leave AT
+              users with exactly the silence this fix set out to break. */}
+          <span
+            role="status"
+            aria-live="polite"
+            style={{ fontSize: 11, color: 'var(--danger, #e5484d)' }}
+          >
+            {toolData?.errorCode ? mcpErrorText(toolData.errorCode) : ''}
+          </span>
         </div>
         {/* Tool lists */}
         {!toolData && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>{i18nT('apps.mochi.settingsPanel.mcp_no_tools')}</div>}

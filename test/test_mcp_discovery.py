@@ -1285,6 +1285,130 @@ class TestProbeRemote:
         assert result.status == "error"
 
 
+class TestProbeServerConsentGate:
+    """``probe_server`` itself refuses a consent-disabled server.
+
+    Probing is what RUNS the server, so the refusal has to live in the function
+    every entry point funnels through — not in each caller's pre-filter, which
+    only holds until a new call site forgets it.
+    """
+
+    def setup_method(self) -> None:
+        _probe_cache.clear()
+
+    def teardown_method(self) -> None:
+        _probe_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_disabled_stdio_server_is_never_spawned(self) -> None:
+        """No subprocess for a disabled stdio server, even with a resolvable command.
+
+        ``shutil.which`` is stubbed so the probe cannot bail out early on
+        "command not found" — that would make this test pass for the wrong
+        reason, without ever proving the consent check ran.
+        """
+        server = McpServerInfo(name="held", command="true", disabled=True)
+
+        with (
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/bin/true"),
+            patch(
+                "kiro_crew.mcp_discovery.create_subprocess_limited",
+                new_callable=AsyncMock,
+            ) as mock_spawn,
+        ):
+            result = await probe_server(server)
+
+        mock_spawn.assert_not_awaited()
+        assert result.status == "disabled"
+        assert result.error == ""
+
+    @pytest.mark.asyncio
+    async def test_disabled_remote_server_is_never_connected(self) -> None:
+        """A disabled remote server opens no connection.
+
+        The refusal sits ahead of the local/remote dispatch: probing a remote
+        server reaches out over the network, which is equally not-consented.
+        """
+        server = McpServerInfo(name="held-remote", url="https://example.com/mcp", disabled=True)
+
+        with patch("kiro_crew.mcp_discovery._probe_remote", new_callable=AsyncMock) as mock_remote:
+            result = await probe_server(server)
+
+        mock_remote.assert_not_awaited()
+        assert result.status == "disabled"
+
+    @pytest.mark.asyncio
+    async def test_truthy_non_bool_disabled_still_withholds_spawn(self) -> None:
+        """A non-bool ``disabled`` fails CLOSED.
+
+        ``McpServerInfo`` is hand-built by callers (``cli_doctor`` does exactly
+        that) and the flag can originate in unvalidated config JSON, so the
+        check is truthiness rather than ``is True``.
+        """
+        server = McpServerInfo(name="held-str", command="true")
+        server.disabled = "yes"  # type: ignore[assignment]
+
+        with (
+            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/bin/true"),
+            patch(
+                "kiro_crew.mcp_discovery.create_subprocess_limited",
+                new_callable=AsyncMock,
+            ) as mock_spawn,
+        ):
+            result = await probe_server(server)
+
+        mock_spawn.assert_not_awaited()
+        assert result.status == "disabled"
+
+    @pytest.mark.asyncio
+    async def test_refusal_does_not_clobber_cached_tools(self) -> None:
+        """The refusal must not write to the shared probe cache.
+
+        Guards a specific future refactor rather than the missing guard: adding
+        a well-meaning ``_cache_probe(server)`` to the refusal path to "record
+        the disabled state". The cache is keyed by name and read by
+        ``GET /api/mcp`` through ``_get_cached``, so an empty "disabled" entry
+        would erase the tool list a real probe recorded before the user
+        disabled the server. Verified by adding that call and watching this
+        fail — it does NOT fail merely from removing the guard, because the
+        probe's early error returns skip ``_cache_probe`` anyway.
+        """
+        probed = McpServerInfo(
+            name="was-ok", command="true", status="ok", tools=["alpha", "beta"]
+        )
+        _cache_probe(probed)
+
+        disabled = McpServerInfo(name="was-ok", command="true", disabled=True)
+        with patch("kiro_crew.mcp_discovery.shutil.which", return_value="/bin/true"):
+            await probe_server(disabled)
+
+        status, tools, _ = _get_cached("was-ok")
+        assert status == "ok"
+        assert tools == ["alpha", "beta"]
+
+    @pytest.mark.asyncio
+    async def test_refusal_preserves_last_known_tools_and_clears_stale_error(self) -> None:
+        """``tools`` survives the refusal; a stale probe ``error`` does not.
+
+        ``list_servers`` merges cached status/tools/error onto every row, so a
+        disabled row can arrive carrying both — and a leftover failure message
+        is not the reason this call returned.
+        """
+        server = McpServerInfo(
+            name="held-with-history",
+            command="true",
+            tools=["alpha"],
+            error="timeout",
+            disabled=True,
+        )
+
+        result = await probe_server(server)
+
+        assert result.status == "disabled"
+        assert result.tools == ["alpha"]
+        assert result.error == ""
+
+
 class TestProbeServerProcessCleanup:
     """Tests for the finally block that tears down the probed subprocess."""
 
@@ -1952,6 +2076,47 @@ class TestProbeServerStderrCapture:
         # The literal secret must not appear verbatim in the error field.
         assert "AKIAIOSFODNN7EXAMPLEXXX" not in (result.error or "")
 
+    @pytest.mark.asyncio
+    async def test_long_probe_error_keeps_remedy_sentence(self, monkeypatch) -> None:
+        """A long spawn exception must not be chopped mid-sentence.
+
+        SandboxUnavailableError ends with the remedy naming
+        agent.sandbox_allow_unsandboxed_exec; the old 200-char cap discarded
+        it, so a Windows user saw '...Probe detail: not Linux. I' and no fix.
+        """
+        from kiro_crew.mcp_discovery import _PROBE_ERROR_MAX_CHARS, probe_server
+
+        # A credential early in the message must be REDACTED (not merely
+        # truncated away): raising the cap must not widen a disclosure hole.
+        long_msg = (
+            "Sandbox backend unavailable, token=AKIAIOSFODNN7EXAMPLEXXX. "
+            "Probe detail: not Linux. "
+            + ("x" * 300)
+            + " set agent.sandbox_allow_unsandboxed_exec=true in ~/.kiro/crew/config.json"
+        )
+        assert len(long_msg) > 200  # the old cap would have chopped this
+
+        server = McpServerInfo(name="srv", command="srv")
+
+        # Resolve the command, then fail at the sandbox chokepoint with the long
+        # message — the real path a Windows host takes with no sandbox backend.
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery.shutil.which", lambda *a, **k: "/usr/bin/srv"
+        )
+
+        def boom(*_a: object, **_k: object) -> object:
+            raise RuntimeError(long_msg)
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", boom)
+        result = await probe_server(server)
+
+        assert result.status == "error"
+        # The remedy sentence at the tail survives the (larger) cap.
+        assert "sandbox_allow_unsandboxed_exec=true" in (result.error or "")
+        assert len(result.error or "") <= _PROBE_ERROR_MAX_CHARS
+        # The credential is redacted before it reaches server.error.
+        assert "AKIAIOSFODNN7EXAMPLEXXX" not in (result.error or "")
+
 
 class TestProbeStdioMalformedResponse:
     """Stdio probe must not crash on non-spec JSON-RPC response shapes.
@@ -2351,3 +2516,150 @@ class TestProbeGroupReap:
         else:
             platform_compat.kill_pid(gc_pid, platform_compat.SIGKILL)  # cleanup
             pytest.fail("grandchild survived probe teardown — process-group reap regressed")
+
+
+class TestDisabledIsCrossScope:
+    """``McpServerInfo.disabled`` must reflect a ``disabled: true`` in ANY scope.
+
+    ``/api/mcp/toggle`` writes the flag into the Kiro-global ``mcp.json``, but the
+    merge only marked rows introduced from the Kiro Crew scope. A server also
+    present in the agent config was therefore introduced first with
+    ``disabled = False`` and stayed probeable after the user switched it off —
+    and now that ``probe_server`` keys its refusal on this flag, under-reporting
+    it is the whole bypass.
+    """
+
+    def setup_method(self) -> None:
+        _clear_cache()
+
+    @staticmethod
+    def _env(tmp_path, monkeypatch, *, agent_spec, global_spec):
+        """Agent config introduces the row; Kiro-global mcp.json disables it."""
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "defaults.json").write_text(
+            json.dumps({"mcpServers": {"srv": agent_spec}}), encoding="utf-8"
+        )
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        kiro_mcp = tmp_path / "kiro-mcp.json"
+        kiro_mcp.write_text(
+            json.dumps({"mcpServers": {"srv": global_spec}}), encoding="utf-8"
+        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (kiro_mcp,))
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery._MCP_SOURCES", ((kiro_mcp, SCOPE_KIRO_GLOBAL),)
+        )
+
+    def test_kiro_global_disable_marks_an_agent_introduced_row(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        self._env(
+            tmp_path,
+            monkeypatch,
+            agent_spec={"command": "node"},
+            global_spec={"command": "node", "disabled": True},
+        )
+        rows = {s.name: s for s in list_servers()}
+        assert "srv" in rows, "the row must still be listed so it can be re-enabled"
+        assert rows["srv"].disabled is True
+
+    def test_enabled_everywhere_stays_enabled(self, tmp_path, monkeypatch) -> None:
+        """Guard against the fix over-reaching into a false positive."""
+        self._env(
+            tmp_path,
+            monkeypatch,
+            agent_spec={"command": "node"},
+            global_spec={"command": "node"},
+        )
+        rows = {s.name: s for s in list_servers()}
+        assert rows["srv"].disabled is False
+
+    @pytest.mark.asyncio
+    async def test_probe_server_refuses_a_cross_scope_disabled_row(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """End-to-end: the populated flag reaches the chokepoint and withholds
+        the spawn. Without the cross-scope fix the row arrives enabled and
+        ``probe_server`` would run the command."""
+        self._env(
+            tmp_path,
+            monkeypatch,
+            agent_spec={"command": "node"},
+            global_spec={"command": "node", "disabled": True},
+        )
+        spawned = []
+
+        async def _no_spawn(*a, **k):
+            spawned.append(a)
+            raise AssertionError("a disabled server must never be spawned")
+
+        # Patch the actual spawn primitive (the stdio path is inline in
+        # probe_server, not a helper), so this asserts on the real side effect
+        # consent gates rather than on a stand-in.
+        monkeypatch.setattr("kiro_crew.mcp_discovery.create_subprocess_limited", _no_spawn)
+        row = next(s for s in list_servers() if s.name == "srv")
+        out = await probe_server(row)
+        assert out.status == "disabled"
+        assert spawned == []
+
+    def test_raw_scoped_key_disable_marks_the_canonical_row(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Row names are CANONICALIZED (step 3b): ``npm:@playwright/mcp`` is
+        reported as ``playwright-mcp``. Scope dicts stay keyed by the raw name,
+        so matching before canonicalization misses a raw-keyed disable whenever
+        the agent config retained the canonical row — the row would arrive
+        enabled and probe_server would spawn it."""
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "defaults.json").write_text(
+            json.dumps({"mcpServers": {"playwright-mcp": {"command": "npx"}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        kiro_mcp = tmp_path / "kiro-mcp.json"
+        kiro_mcp.write_text(
+            json.dumps(
+                {"mcpServers": {"npm:@playwright/mcp": {"command": "npx", "disabled": True}}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (kiro_mcp,))
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery._MCP_SOURCES", ((kiro_mcp, SCOPE_KIRO_GLOBAL),)
+        )
+        rows = {s.name: s for s in list_servers()}
+        assert "playwright-mcp" in rows
+        assert rows["playwright-mcp"].disabled is True
+
+
+class TestWindowsTeardownOffLoop:
+    """The Windows probe teardown must not run ``taskkill`` on the event loop.
+
+    ``platform_compat.kill_process_tree`` shells out to ``taskkill /T /F`` via a
+    blocking ``subprocess.run`` on Windows. Awaited inline that stalls the loop
+    once per failed probe, and ``probe_all`` fans out across every configured
+    server -- so several unreachable servers serialize that many process spawns
+    onto the loop and the dashboard health check starts dropping.
+
+    Asserted against the SHIPPED SOURCE rather than by simulating a Windows run:
+    the branch is unreachable on this platform (``IS_WINDOWS`` is False), so a
+    behavioural test here would pass no matter what the code did.
+    """
+
+    def test_kill_process_tree_is_offloaded(self) -> None:
+        import inspect
+
+        from kiro_crew import mcp_discovery
+
+        src = inspect.getsource(mcp_discovery.probe_server)
+        assert "kill_process_tree" in src, "teardown moved -- retarget this guard"
+        # Every kill_process_tree call in the probe path must be wrapped.
+        for line in src.splitlines():
+            if "kill_process_tree" in line and not line.strip().startswith("#"):
+                assert "to_thread" in line or "platform_compat.kill_process_tree," in line, (
+                    f"kill_process_tree called on the loop: {line.strip()}"
+                )
+        assert "asyncio.to_thread(" in src

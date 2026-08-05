@@ -14,6 +14,7 @@ import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { installApiTransport } from './apiTransport'
 import { queryClient } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
+import { recordError, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -636,12 +637,34 @@ export const friendlyErrText = (status: number, body: string): string => {
   return body
 }
 
+/**
+ * Build the ApiError AND journal it.
+ *
+ * `j`/`jNullable` are the single chokepoint every dashboard API failure passes
+ * through, which makes this the one place that can capture the full context
+ * (status, path, backend `code`, raw body) before call sites collapse it to
+ * `e.message`. `utils/errorReport` then lets a shared error banner recover that
+ * context from the message alone — see AskAgentButton / ErrorNotice.
+ */
+const apiFailure = (r: Response, errText: string): ApiError => {
+  const message = friendlyErrText(r.status, errText) || `HTTP ${r.status}`
+  recordError({
+    source: 'api',
+    message,
+    status: r.status,
+    code: parseErrorCode(errText),
+    endpoint: requestPath(r.url),
+    detail: errText,
+  })
+  return new ApiError(r.status, message, errText)
+}
+
 const j = async (r: Response) => {
   checkSessionExpired(r)
   if (r.ok) removeAuthBanner()
   if (!r.ok) {
     const errText = await r.text()
-    throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`, errText)
+    throw apiFailure(r, errText)
   }
   return r.json()
 }
@@ -656,7 +679,7 @@ const jNullable = async (r: Response) => {
   if (r.status === 204) return null
   if (!r.ok) {
     const errText = await r.text()
-    throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`, errText)
+    throw apiFailure(r, errText)
   }
   return r.json()
 }
@@ -733,7 +756,14 @@ export interface InstanceTunnelStatus {
   connected_at?: number
   token_ttl_remaining?: number
   diagnosis?: {
-    code: 'ok' | 'not_connected' | 'ssh_unreachable' | 'remote_down' | 'tunnel_down' | 'unknown'
+    code:
+      | 'ok'
+      | 'not_connected'
+      | 'ssh_unreachable'
+      | 'ssm_unreachable'
+      | 'remote_down'
+      | 'tunnel_down'
+      | 'unknown'
     ok: boolean
     reason: string
     probes: { name: string; ok: boolean }[]
@@ -755,16 +785,33 @@ export interface InstanceView {
   local_port: number
   ttl: string
   remote_bin: string
+  /** Transport used to reach the instance. Older records default to 'ssh'. */
+  connection_method: 'ssh' | 'ssm'
+  /** SSM-only: EC2 instance id (i-...) or SSM managed-instance id (mi-...). */
+  ssm_target: string
+  /** SSM-only: named AWS profile ('' = default credential chain). */
+  aws_profile: string
+  /** SSM-only: AWS region ('' = profile/environment default). */
+  aws_region: string
+  ssm_run_as: string
   was_connected: boolean
   status: InstanceTunnelStatus
 }
 
 export interface AddInstanceBody {
   name: string
-  ssh_host: string
+  /** Required when connection_method is 'ssh' (the default). */
+  ssh_host?: string
   remote_port?: number
   ttl?: string
   remote_bin?: string
+  /** Transport to reach the instance. Defaults to 'ssh' when omitted. */
+  connection_method?: 'ssh' | 'ssm'
+  /** Required when connection_method is 'ssm': i-... / mi-... instance id. */
+  ssm_target?: string
+  aws_profile?: string
+  aws_region?: string
+  ssm_run_as?: string
   id?: string
 }
 
@@ -810,6 +857,19 @@ export interface KiroPrerequisiteStatus {
   sandbox_failure_kind: string
   /** Technical probe reason, e.g. 'unshare(CLONE_NEWNS) failed with errno 1 (EPERM)'. */
   sandbox_detail: string
+  /**
+   * Kiro Crew's own agent spec files missing from the kiro-cli agents directory.
+   * Non-empty means kiro-cli will answer every session/set_mode with
+   * "Mode '<name>' not found", so `ready` is forced false and `repair_required`
+   * true — a viable binary and a good `whoami` are NOT sufficient on their own.
+   */
+  missing_agent_specs: string[]
+  /**
+   * Failure text from the repair the Check again button attempts when specs are
+   * missing. Empty when none was attempted or it succeeded. Shown verbatim and
+   * untranslated: it names the failing install step.
+   */
+  agent_spec_repair_error: string
   operation: KiroPrerequisiteOperation
 }
 
@@ -891,6 +951,11 @@ export const api = {
     post('/api/kiro-prerequisite/install').then(j) as Promise<KiroPrerequisiteStatus>,
   loginKiroPrerequisite: () =>
     post('/api/kiro-prerequisite/login').then(j) as Promise<KiroPrerequisiteStatus>,
+  // A POST, not a flag on the status GET: the gateway's CSRF check and its SEL
+  // audit are both method-scoped, so a spec rewrite reached from a GET would be
+  // cross-site triggerable and would leave no audit record.
+  repairKiroPrerequisiteSpecs: () =>
+    post('/api/kiro-prerequisite/repair-specs').then(j) as Promise<KiroPrerequisiteStatus>,
   onboardingImportScan: () =>
     get('/api/onboarding/import/scan').then(j) as Promise<AgentImportScanResponse>,
   onboardingImportApply: (body: AgentImportApplyRequest) =>
@@ -1249,6 +1314,8 @@ export const api = {
   resolveNavLinks: (links: { url: string; context: string }[]) => post('/api/chat/nav/resolve-links', { links }).then(j) as Promise<{ summaries: string[] }>,
   renameSlot: (slot: string, title: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/title', { title }).then(j),
   regenerateSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/regenerate').then(j),
+  /** Pick an interrupted turn back up. NOT `/resume` — that path opens a history session into a tab. */
+  continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),
   switchVariant: (slot: string, index: number) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/switch-variant', { index }).then(j),
   editResend: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/edit-resend', { ts, content }).then(j),
   rewind: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/rewind', { ts, content }).then(j),
@@ -1361,6 +1428,17 @@ export const api = {
     if (r.copy) copyToClipboard(r.copy)
     return r
   }),
+  collectDiagnostics: (body: { note: string; include_logs: boolean }) =>
+    post('/api/diagnostics/collect', body).then(j) as Promise<{
+      zip_path: string
+      filename: string
+      included: string[]
+      skipped: string[]
+      redaction_summary: Record<string, number>
+      total_redactions: number
+      github_issue_url: string
+      download_url: string
+    }>,
   refineTaskInput: (input: string) => post('/api/taskrunner/refine', { input }).then(j),
   refineStatus: () => fetch('/api/taskrunner/refine').then(j),
   refineCancel: () => post('/api/taskrunner/refine/cancel').then(j),
@@ -1455,6 +1533,8 @@ export const api = {
     language?: string
     onboarded?: boolean
     import_onboarded?: boolean
+    /** Gates the gateway's first heartbeat; see `beacon.telemetry_permitted`. */
+    privacy_acked?: boolean
   }) =>
     put('/api/config/theme', body).then(j),
   // Voice

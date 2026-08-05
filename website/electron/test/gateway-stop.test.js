@@ -81,6 +81,30 @@ test("postShutdown returns false when no secret file exists", async () => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+test("postShutdown tries each candidate secret — a stale first secret does not block the live one", async () => {
+  // Migration edge: a partially-copied canonical secret is stale, but the
+  // gateway is authenticated by the legacy one. postShutdown must POST both.
+  const { server, port } = await startServer({ secret: "live-legacy", status: 200 });
+  try {
+    const ok = await postShutdown({
+      backendUrl: `http://127.0.0.1:${port}`,
+      secrets: ["stale-canonical", "live-legacy"],
+    });
+    assert.strictEqual(ok, true);
+  } finally { server.close(); }
+});
+
+test("postShutdown returns false only after every candidate secret is rejected", async () => {
+  const { server, port } = await startServer({ secret: "the-real-one", status: 200 });
+  try {
+    const ok = await postShutdown({
+      backendUrl: `http://127.0.0.1:${port}`,
+      secrets: ["nope-1", "nope-2"],
+    });
+    assert.strictEqual(ok, false);
+  } finally { server.close(); }
+});
+
 test("stopGatewayGracefully: happy path — endpoint exits process, no signal needed", async () => {
   const home = tmpHomeWithSecret("s3cr3t");
   const proc = spawnDummy({ ignoreSigterm: true }); // proves SIGTERM was NOT used
@@ -350,4 +374,13 @@ test("classifyPortOwner and forceStopPort share one KiroCrew matcher", async () 
   assert.ok(KIROCREW_PROC_RE.test("python -m kiro_crew gateway"));
   assert.ok(KIROCREW_PROC_RE.test("/Applications/KiroCrew.app/.../kirocrew"));
   assert.ok(!KIROCREW_PROC_RE.test("ssh -NL 5476:localhost:5476 host"));
+  // The matcher keys on the executable/module TOKEN, not a path substring:
+  // an unrelated process merely living under a `kirocrew` home dir is foreign.
+  assert.ok(!KIROCREW_PROC_RE.test("C:\\Users\\kirocrew\\OtherApp\\server.exe --port 5476"));
+  assert.ok(!KIROCREW_PROC_RE.test("/home/kirocrew/some-other-server --port 5476"));
+  assert.ok(!KIROCREW_PROC_RE.test("C:\\Users\\kirocrew\\python.exe -m http.server 5476"));
+  // …but the real Windows executable / backend / module invocation still match.
+  assert.ok(KIROCREW_PROC_RE.test("C:\\Program Files\\KiroCrew\\kirocrew.exe"));
+  assert.ok(KIROCREW_PROC_RE.test("C:\\Program Files\\KiroCrew\\kirocrew-backend.exe --gateway"));
+  assert.ok(KIROCREW_PROC_RE.test("C:\\Python\\python.exe -m kiro_crew gateway"));
 });

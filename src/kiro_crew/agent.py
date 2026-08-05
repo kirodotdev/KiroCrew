@@ -44,6 +44,9 @@ from kiro_crew.agent_files import (
 from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_AGENT_FILENAME
 from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
+from kiro_crew.agent_files import (
+    REQUIRED_KIRO_AGENT_FILES,
+)
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
 from kiro_crew.browser.setup import converge_playwright_servers
 from kiro_crew.config import config_dir
@@ -118,6 +121,39 @@ def kiro_agents_dir_path() -> Path:
     has set it; otherwise resolves live via :func:`kiro_agents_dir`.
     """
     return KIRO_AGENTS_DIR if KIRO_AGENTS_DIR is not None else kiro_agents_dir()
+
+
+def missing_required_agent_specs() -> list[str]:
+    """Return the :data:`REQUIRED_KIRO_AGENT_FILES` absent from the agents dir.
+
+    A post-install verification, not a duplicate of the install: an empty result
+    is the only proof that ``rebuild_agent_config`` actually left usable specs on
+    disk. Raising is NOT enough on its own, because two non-raising paths also
+    end with no spec written:
+
+    * ``rebuild_agent_config`` mkdirs the agents directory as its first act, so a
+      failure anywhere after that leaves a created-but-EMPTY directory — which
+      reads as "installed" to anything that only checks the directory.
+    * it also RETURNS EARLY when :func:`_decline_shared_agent_home` refuses to
+      rewrite a shared agent home. Correct on a machine that already has specs
+      (it protects the real install's MCP servers); fatal on one that does not,
+      where there is nothing to fall back to.
+
+    Checking the filesystem covers both, plus a spec deleted after install. The
+    cost of NOT checking is that the first symptom is kiro-cli answering every
+    ``session/set_mode`` with "Mode '<name>' not found" — one failed turn at a
+    time, with nothing pointing at the install as the cause.
+    """
+    if _decline_shared_agent_home(audit=False) is not None:
+        # This instance is not allowed to own these specs (a pod, or a gateway
+        # booted from a linked git worktree), so their absence is not a defect it
+        # can repair. Reporting them would put an unrepairable install behind a
+        # full-screen gate whose only remedy declines every time. ``audit=False``
+        # keeps this read out of the SEL log -- the audit records write DECISIONS,
+        # and a status poll is not one.
+        return []
+    agents_dir = kiro_agents_dir_path()
+    return [name for name in REQUIRED_KIRO_AGENT_FILES if not (agents_dir / name).is_file()]
 
 
 # AGENT_FILENAME imported from agent_files (single source of truth).
@@ -1791,7 +1827,7 @@ def migrate_agent_specs() -> int:
     return cleaned
 
 
-def _decline_shared_agent_home() -> Path | None:
+def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     """Return the spec path to report, WITHOUT writing, when this instance must
     not own the shared agent home; ``None`` when writing is safe.
 
@@ -1877,43 +1913,45 @@ def _decline_shared_agent_home() -> Path | None:
         # is recorded -- the two private-target returns above are not decisions
         # about a shared resource, so auditing them would add volume without
         # adding traceability.
+        if audit:
+            sel().log_api_access(
+                caller="system",
+                operation="agent_home_write",
+                outcome="allowed",
+                source="rebuild_agent_config",
+                resources=str(target),
+            )
+        return None  # an ordinary install writing its own shared home
+
+    if audit:
+        logger.warning(
+            "Refusing to rewrite the shared agent home %s from an ephemeral instance "
+            "(checkout %s, data home %s): it would repoint the real install's MCP "
+            "servers at this instance's venv and data home, and break them outright "
+            "when it is torn down. This instance will use the existing specs instead. "
+            "Deliberately no remedy is suggested here: redirecting the agent home via "
+            "KIRO_HOME also relocates kiro-cli's session storage, which Kiro Crew still "
+            "reads from the host path -- see kiro_home()'s scope caveat.",
+            target,
+            Path(__file__).resolve().parents[2],
+            own_home or "default",
+        )
+        # This is a permission decision on a shared, security-relevant resource (the
+        # specs carry every managed MCP server's command + env), so it belongs in the
+        # audit trail and not only in the log: a silent refusal is indistinguishable
+        # from a write that simply did not happen when reconstructing what an
+        # ephemeral instance did to the host.
         sel().log_api_access(
             caller="system",
             operation="agent_home_write",
-            outcome="allowed",
+            outcome="denied",
             source="rebuild_agent_config",
             resources=str(target),
+            error=(
+                f"ephemeral instance (checkout {Path(__file__).resolve().parents[2]}, "
+                f"data home {own_home or 'default'}) refused write to shared agent home"
+            ),
         )
-        return None  # an ordinary install writing its own shared home
-
-    logger.warning(
-        "Refusing to rewrite the shared agent home %s from an ephemeral instance "
-        "(checkout %s, data home %s): it would repoint the real install's MCP "
-        "servers at this instance's venv and data home, and break them outright "
-        "when it is torn down. This instance will use the existing specs instead. "
-        "Deliberately no remedy is suggested here: redirecting the agent home via "
-        "KIRO_HOME also relocates kiro-cli's session storage, which KiroCrew still "
-        "reads from the host path -- see kiro_home()'s scope caveat.",
-        target,
-        Path(__file__).resolve().parents[2],
-        own_home or "default",
-    )
-    # This is a permission decision on a shared, security-relevant resource (the
-    # specs carry every managed MCP server's command + env), so it belongs in the
-    # audit trail and not only in the log: a silent refusal is indistinguishable
-    # from a write that simply did not happen when reconstructing what an
-    # ephemeral instance did to the host.
-    sel().log_api_access(
-        caller="system",
-        operation="agent_home_write",
-        outcome="denied",
-        source="rebuild_agent_config",
-        resources=str(target),
-        error=(
-            f"ephemeral instance (checkout {Path(__file__).resolve().parents[2]}, "
-            f"data home {own_home or 'default'}) refused write to shared agent home"
-        ),
-    )
     return kiro_agents_dir_path() / AGENT_FILENAME
 
 
@@ -2633,6 +2671,48 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
 
 # Backward-compat alias — callers may still use the old name.
 install_agent = rebuild_agent_config
+
+
+def ensure_agent_materialized(agent: str | None) -> bool:
+    """Self-heal: guarantee the managed default agent config exists on disk.
+
+    kiro-cli discovers its selectable *modes* at process startup by scanning
+    ``~/.kiro/agents/*.json``. A session that spawns ``kiro chat --agent <name>``
+    and then issues ``session/set_mode {modeId: <name>}`` therefore needs the
+    backing file present BEFORE spawn, or kiro-cli answers
+    ``-32603 "Mode '<name>' not found"`` on every turn (the crash this closes).
+    Normally ``kirocrew setup --agent-only`` writes it, but a source checkout /
+    dev launch that skips setup leaves it absent — this makes the runtime
+    self-sufficient regardless.
+
+    Only the managed default (``AGENT_FILENAME`` → ``kirocrew.json``) is
+    regenerable here, via :func:`rebuild_agent_config`. App/custom agents are
+    owned by their own subsystems, so a missing one is reported (``False``) and
+    left to the caller's graceful set_mode fallback rather than being guessed at.
+
+    Returns ``True`` when the managed default file is present (already, or after
+    a regenerate); ``False`` when *agent* is non-managed or regeneration failed.
+    Best-effort — never raises, so it can sit on the spawn hot path.
+    """
+    try:
+        managed = Path(AGENT_FILENAME).stem
+        if not agent or agent != managed:
+            return False
+        agent_file = kiro_agents_dir_path() / AGENT_FILENAME
+        if agent_file.exists():
+            return True
+        logger.warning(
+            "Managed agent config %s missing — regenerating before spawn "
+            "(self-heal for kiro-cli 'Mode not found')",
+            agent_file,
+        )
+        rebuild_agent_config()
+        return agent_file.exists()
+    except Exception:
+        logger.warning(
+            "ensure_agent_materialized failed for agent %r", agent, exc_info=True
+        )
+        return False
 
 
 def _install_aim_capabilities() -> None:

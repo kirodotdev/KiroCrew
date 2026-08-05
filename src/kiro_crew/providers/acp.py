@@ -16,6 +16,8 @@ from kiro_crew.acp.client import (
     AcpAuthRequired,
     AcpClient,
     AcpError,
+    advertised_model_ids,
+    model_is_unusable,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -34,6 +36,7 @@ from kiro_crew.effort import (
     model_supports_effort,
     resolve_effort_for_model,
 )
+from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.providers.base import (
     CancelOutcome,
     LLMEvent,
@@ -337,25 +340,39 @@ class AcpProvider(LLMProvider):
         """
         t0 = time.monotonic()
         phases: dict[str, float] = {}
+        # Capture the session key BEFORE the impl runs: on the success path it
+        # replaces self._client with an AcpSessionProvider whose _session_key
+        # starts empty, so reading it at emit time would file every successful
+        # cold start under channel=unknown — exactly the case being measured.
+        meta: dict[str, object] = {"session_key": getattr(self._client, "_session_key", None)}
         outcome = "error"
         try:
-            await self._start_kiro_runtime_impl(phases)
+            await self._start_kiro_runtime_impl(phases, meta)
             outcome = "ready"
         except AcpAuthRequired:
             outcome = "auth_required"
             raise
         finally:
-            self._emit_kiro_startup_metric(t0, phases, outcome)
+            self._emit_kiro_startup_metric(t0, phases, outcome, meta)
 
-    def _emit_kiro_startup_metric(self, t0: float, phases: dict[str, float], outcome: str) -> None:
+    def _emit_kiro_startup_metric(
+        self,
+        t0: float,
+        phases: dict[str, float],
+        outcome: str,
+        meta: dict[str, object] | None = None,
+    ) -> None:
         """Emit the kiro cold-start histogram (total + per-phase). Best-effort.
 
-        ``spawned=True`` is unconditional and correct: ``_start_kiro_runtime_impl``
-        always constructs and spawns a fresh ``AcpRuntime``, so every point from
-        this path is a cold start (the warm fast-path returns before reaching
-        here). Without the attribute the Telemetry aggregator — which splits
-        cold from warm on exactly this key — filed all kiro startups as warm and
-        reported cold as permanently empty.
+        Every point from this path is a cold start: ``_start_kiro_runtime_impl``
+        always constructs and spawns a fresh ``AcpRuntime``, and the warm
+        fast-path returns before reaching here. The Telemetry aggregator splits
+        cold from warm on ``spawned``, so it is emitted unconditionally true.
+
+        ``channel`` records WHICH conversation source paid the cost and
+        ``resumed`` which construction path ran (``session/load`` vs
+        ``session/new``) — without them a duration cannot be attributed to a
+        surface or a path, which is the whole diagnostic question for TTFT.
         """
         try:
             # circular import: importing get_recorder at module top would form a
@@ -365,29 +382,44 @@ class AcpProvider(LLMProvider):
             # import chain.
             from kiro_crew.metrics.provider import get_recorder
 
+            # The key comes from meta, captured before startup replaced
+            # self._client (see _start_kiro_runtime); the live client is only a
+            # fallback for callers that emit without seeding meta.
+            _meta = meta or {}
+            session_key = _meta.get("session_key") or getattr(
+                getattr(self, "_client", None), "_session_key", None
+            )
+            channel = telemetry_channel_of(session_key if isinstance(session_key, str) else None)
+            base_attrs: dict[str, str | int | bool | float] = {
+                "backend": "kiro",
+                "outcome": outcome,
+                "spawned": True,
+                "channel": channel,
+                "resumed": bool(_meta.get("resumed", False)),
+            }
             rec = get_recorder()
             total_ms = (time.monotonic() - t0) * 1000.0
             rec.histogram(
                 "kirocrew.session.startup.duration",
                 total_ms,
                 unit="ms",
-                attrs={
-                    "backend": "kiro",
-                    "phase": "total",
-                    "outcome": outcome,
-                    "spawned": True,
-                },
+                attrs={**base_attrs, "phase": "total"},
             )
             for phase, ms in phases.items():
                 rec.histogram(
                     "kirocrew.session.startup.duration",
                     ms,
                     unit="ms",
+                    attrs={**base_attrs, "phase": phase},
+                )
+            resume_outcome = _meta.get("resume_outcome")
+            if resume_outcome:
+                rec.counter(
+                    "kirocrew.session.resume.outcome",
+                    1,
                     attrs={
-                        "backend": "kiro",
-                        "phase": phase,
-                        "outcome": outcome,
-                        "spawned": True,
+                        "outcome": str(resume_outcome),
+                        "channel": channel,
                     },
                 )
         except Exception:  # never let telemetry break session startup
@@ -472,7 +504,9 @@ class AcpProvider(LLMProvider):
         )
         return None
 
-    async def _start_kiro_runtime_impl(self, phases: dict[str, float]) -> None:
+    async def _start_kiro_runtime_impl(
+        self, phases: dict[str, float], meta: dict[str, object]
+    ) -> None:
         """Spawn an AcpRuntime and replace self._client with AcpSessionProvider.
 
         After this, self._client is an AcpSessionProvider that implements the
@@ -538,8 +572,10 @@ class AcpProvider(LLMProvider):
             # session/new first) so it fully mirrors AcpClient and avoids the
             # double-context 'refusal' failure mode.
             # session/new is where kiro loads the full MCP toolset + system prompt
-            # (the dominant cold-start cost) — time it as its own phase.
-            _t_sess = time.monotonic()
+            # (the dominant cold-start cost) — time it as its own phase. The
+            # resume attempt is timed separately as ``session_load``: the two are
+            # different protocol calls with different costs, and folding them into
+            # one phase hid the resume cost that dominates a rebuilt session.
             handle = None
             resumed = False
             if resume_sid:
@@ -552,18 +588,28 @@ class AcpProvider(LLMProvider):
                     # regardless of WHY the resume failed (SIGKILL'd holder,
                     # crash, OOM, drain timeout) — it never depends on the dead
                     # holder cooperating.
-                    handle = await self._load_session_with_retry(
-                        runtime,
-                        str(session_file),
-                        resume_sid,
-                        work_dir,
-                        agent,
-                    )
+                    _t_load = time.monotonic()
+                    try:
+                        handle = await self._load_session_with_retry(
+                            runtime,
+                            str(session_file),
+                            resume_sid,
+                            work_dir,
+                            agent,
+                        )
+                    finally:
+                        phases["session_load"] = (time.monotonic() - _t_load) * 1000.0
                     resumed = handle is not None
+                    meta["resume_outcome"] = "loaded" if resumed else "fallback_replay"
                     if handle is None:
                         self._history_replay_needed = True
                 else:
                     logger.info("Session file missing for %s, skipping load", resume_sid)
+                    meta["resume_outcome"] = "no_session_file"
+            meta["resumed"] = resumed
+
+            _t_sess = time.monotonic()
+            _ran_session_new = handle is None
 
             if handle is None:
                 # ── Fix B: respawn if runtime died during resume attempt ──
@@ -604,24 +650,47 @@ class AcpProvider(LLMProvider):
                     if runtime.saw_not_logged_in():
                         raise AcpAuthRequired(_NOT_LOGGED_IN_MESSAGE) from exc
                     raise
-            # session/new (or session/load) + MCP-toolset/system-prompt load done.
-            phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
+            # session/new + MCP-toolset/system-prompt load done. Only recorded
+            # when create_session actually ran: a successful resume skips that
+            # block entirely, and reporting a near-zero session_new for it would
+            # understate the phase's real distribution.
+            if _ran_session_new:
+                phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
 
             # Apply the configured model override (mirrors AcpClient handshake).
             # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
             if configured_model and configured_model != DEFAULT_MODEL:
-                _t_model = time.monotonic()
-                try:
-                    await handle.set_model(configured_model)
-                    logger.info("Kiro runtime model set: %s", configured_model)
-                except Exception:
+                # Withhold a model this account cannot run rather than sending
+                # it. session/new has already reported what is on offer, and
+                # this model was NOT picked for this turn — it comes from the
+                # agent spec, the config default, or a slot value persisted
+                # before entitlements were known. Sending it anyway is what put
+                # a raw "-32603 ... model is not available" in the transcript on
+                # every turn: kiro-cli ACCEPTS the id here (so the except below
+                # never fires) and only the service rejects it, mid-prompt.
+                # Leaving it unset keeps the session on the backend's own
+                # default, so the turn succeeds.
+                _advertised = advertised_model_ids(handle.available_models)
+                if model_is_unusable(configured_model, _advertised):
                     logger.warning(
-                        "Failed to set model %s on kiro runtime session",
+                        "Configured model %s is not available to this account; "
+                        "leaving the session on the backend default (advertised: %s)",
                         configured_model,
-                        exc_info=True,
+                        ", ".join(_advertised),
                     )
-                finally:
-                    phases["set_model"] = (time.monotonic() - _t_model) * 1000.0
+                else:
+                    _t_model = time.monotonic()
+                    try:
+                        await handle.set_model(configured_model)
+                        logger.info("Kiro runtime model set: %s", configured_model)
+                    except Exception:
+                        logger.warning(
+                            "Failed to set model %s on kiro runtime session",
+                            configured_model,
+                            exc_info=True,
+                        )
+                    finally:
+                        phases["set_model"] = (time.monotonic() - _t_model) * 1000.0
 
             # Replace the placeholder AcpClient with the real AcpSessionProvider
             provider = AcpSessionProvider(handle, runtime, owns_runtime=True)

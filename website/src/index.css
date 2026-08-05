@@ -1197,6 +1197,18 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 @keyframes ft-fade{from{opacity:0}to{opacity:1}}
 .ft-word{white-space:pre-wrap;opacity:1}
 .ft-anim-smooth .ft-word{opacity:var(--ft-o,1);transition:opacity .25s linear}
+/* Reveal-edge settle. `--ft-o` above is positional, so a stream that pauses
+   mid-turn or has finished leaves its last REVEAL_FADE_CHARS characters pinned
+   below full opacity with nothing to advance the tip. MarkdownRenderer adds
+   `.ft-idle` after REVEAL_IDLE_SETTLE_MS of unchanged content; this overrides
+   the edge to 1 and the transition on the rule above animates that settle. The
+   reduced-motion block below still wins on `transition` (not redeclared here),
+   so that path snaps instead of animating. */
+.ft-anim-smooth.ft-idle .ft-word{opacity:1}
+/* NOTE: `.ft-anim-smooth.ft-idle .ft-word` above is (0,3,0) and out-specifies
+   this block's (0,2,0) on `opacity`. Harmless today -- both declare 1, and the
+   settle rule does not redeclare `transition`, so `transition:none` still wins
+   here. If you ever change the opacity below, change the settle rule too. */
 @media (prefers-reduced-motion:reduce){
   .ft-anim-smooth .ft-word{opacity:1;transition:none}
 }
@@ -1421,6 +1433,13 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 /* Fullscreen: AppKit hides the traffic lights, so the clearance inset drops
    and the branding sits flush left again (back to the header's own pl-5). */
 .mac-electron.mac-fullscreen header.topbar-glass{padding-left:1.25rem}
+
+/* ── Frameless Electron window (Windows) ──
+   titleBarOverlay places native caption controls (min/max/close) in a 138px
+   overlay strip at the top-right of the window. Inset the header's right side
+   so interactive elements (bell, settings, actions) stay clear of the overlay.
+   Keep 138px in sync with WIN_CAPTION_OVERLAY_WIDTH in src/lib/electron.ts. */
+.win-electron header.topbar-glass{padding-right:142px}
 /* Embedded remote pane (option B): the pane is a separate document loaded in an
    iframe, so its SPA can't see Electron — `isMacElectron` is false inside it and
    the `.mac-electron` rule never applies. The parent relays whether it is a
@@ -1566,6 +1585,22 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 }
 ::highlight(mc-find-current) {
   background-color: var(--search-highlight-current);
+}
+
+/* Line reveal — a `path/to/file.py:447` chip in the transcript opens the file in
+   the side panel and flashes line 447. Monaco decoration classes (not the CSS
+   Custom Highlight API), so unlike ::highlight() these DO honor box properties,
+   which is what allows the gutter bar. --accent-subtle is theme-defined for all
+   palettes and is the same wash flashCommentRow uses, so the two "here is what
+   you clicked" signals read as one idea. Cleared after ~2.8s by the panel; the
+   transition means the clear reads as a fade rather than a pop. */
+.mc-line-reveal {
+  background-color: var(--accent-subtle, rgba(99, 102, 241, 0.25));
+  transition: background-color 0.3s ease;
+}
+.mc-line-reveal-gutter {
+  border-left: 2px solid var(--accent);
+  margin-left: 3px;
 }
 
 /* Anchored-comment highlights on the markdown / text artifact body are drawn

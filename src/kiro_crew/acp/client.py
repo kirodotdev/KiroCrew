@@ -31,13 +31,14 @@ import time
 from collections import deque
 from contextlib import aclosing
 from pathlib import Path
-from typing import Any, AsyncGenerator, AsyncIterator
+from typing import Any, AsyncGenerator, AsyncIterator, Sequence
 
 from kiro_crew import model_registry, platform_compat
 from kiro_crew.acp._dispatch import (
     _kiro_mcp_server_name,
     _kiro_tool_name,
     extract_tool_purpose,
+    parse_session_modes,
     parse_usage_update,
 )
 from kiro_crew.acp.liveness import VERDICT_UNKNOWN, VERDICT_WORKING, LivenessOracle
@@ -96,6 +97,7 @@ from kiro_crew.acp.types import (
     JsonRpcRequest,
     TurnUsage,
 )
+from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
@@ -684,6 +686,32 @@ class AcpAuthRequired(AcpError):  # noqa: N818
     """
 
 
+class AcpModelUnavailable(AcpError):  # noqa: N818
+    """An explicitly requested model is not available to this account.
+
+    A DISTINCT type because the semantics differ from every other ``set_model``
+    failure. The generic ones ("the call didn't land") are legitimately handled
+    by tearing the session down and cold-starting. This one means "the request
+    itself is invalid, and no amount of restarting changes that" — falling back
+    to a reset would destroy a live conversation and then quietly land on a
+    different model, reporting success. Callers must surface it (4xx / user
+    error), not recover from it.
+
+    Non-retryable: ``transient`` is fixed False, since no retry earns an
+    entitlement.
+    """
+
+    def __init__(self, model_id: str, advertised: Sequence[str] | None = None) -> None:
+        self.model_id = model_id
+        self.advertised = list(advertised or [])
+        usable = ", ".join(self.advertised) if self.advertised else "none advertised"
+        super().__init__(
+            f"The model {model_id!r} is not available on your account. "
+            f"Available models: {usable}.",
+            transient=False,
+        )
+
+
 class AcpPromptBusy(AcpError):  # noqa: N818
     """A prompt is already in progress on this session.
 
@@ -744,7 +772,44 @@ _RE_5XX_HINT = re.compile(r"(please try again|response stream)", re.IGNORECASE)
 _RE_GENERATE_FAILED = re.compile(r"failed to generate a response", re.IGNORECASE)
 
 
-def _is_transient_raw_error(error: object) -> bool:
+def _model_is_unentitled(data: str, available_models: Sequence[str] | None) -> str | None:
+    """Return the rejected model name iff the account is not entitled to it.
+
+    Upstream reports entitlement failures and transient capacity failures with
+    the SAME string ("The model 'X' is not available"), so the string alone
+    cannot tell them apart. The advertised model list can: it is captured at
+    session init from what this account is actually served, so a rejected model
+    that is absent from it was never on offer -- an entitlement problem no retry
+    can fix. A rejected model that IS advertised really is a transient
+    capacity/rollout blip.
+
+    Returns None when the model is advertised, when nothing was rejected, or
+    when *available_models* is None/empty (entitlement unknowable -- treat as
+    transient rather than telling a user their plan lacks a model on no
+    evidence).
+
+    Both :func:`_format_acp_error` and :func:`_is_transient_raw_error` route
+    through this single helper so the user-facing wording and the retry verdict
+    cannot drift apart -- see the drift warning above.
+    """
+    match = _RE_MODEL_UNAVAILABLE.search(data)
+    if not match:
+        return None
+    if not available_models:
+        return None
+    rejected = match.group(1)
+    # Compare case-insensitively on the bare id: the rejection echoes back the
+    # id that was sent, but casing has no meaning in these ids and an
+    # entitled-but-differently-cased match must not be reported as unentitled.
+    advertised = {m.strip().lower() for m in available_models if m and m.strip()}
+    if rejected.strip().lower() in advertised:
+        return None
+    return rejected
+
+
+def _is_transient_raw_error(
+    error: object, available_models: Sequence[str] | None = None
+) -> bool:
     """True iff a raw ACP JSON-RPC ``error`` is a retryable transient backend
     failure (Bedrock 5xx / throttle / model-unavailable rollout) rather than an
     auth/validation/unknown error that a retry cannot fix.
@@ -753,13 +818,24 @@ def _is_transient_raw_error(error: object) -> bool:
     user-facing string — so the retry decision is independent of message
     wording. :class:`AcpError` carries this verdict (``.transient``) to the
     retry layer (``llm_helpers``, ``chat_runner``). Precedence mirrors
-    :func:`_format_acp_error`: model-unavailable → throttle → auth(terminal) →
-    generic 5xx / pre-stream generation failure → unknown(terminal)."""
+    :func:`_format_acp_error`: unentitled-model(terminal) → model-unavailable →
+    throttle → auth(terminal) → generic 5xx / pre-stream generation failure →
+    unknown(terminal).
+
+    *available_models* is this account's advertised set when the caller knows
+    it. It only ever makes the verdict MORE conservative: a model the account
+    was never offered is terminal instead of being retried to no purpose. Omit
+    it and behaviour is unchanged from before this parameter existed.
+    """
     if not isinstance(error, dict):
         return False
     data = str(error.get("data", "") or "")
     message = str(error.get("message", "") or "")
     haystack = f"{data} {message}"
+    if _model_is_unentitled(data, available_models):
+        # Terminal: the account is not entitled to this model, so every retry
+        # spends latency to reproduce the same rejection.
+        return False
     if _RE_MODEL_UNAVAILABLE.search(data):
         return True
     if _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):
@@ -775,7 +851,60 @@ def _is_transient_raw_error(error: object) -> bool:
     )
 
 
-def _format_acp_error(error: object) -> str:
+def advertised_model_ids(entries: object) -> list[str]:
+    """Model ids out of an ``availableModels``-shaped list, defensively.
+
+    The advertised list is remote input reshaped by several backends, so this
+    tolerates anything that is not a list of ``{"modelId": ...}`` dicts and
+    returns what it can. Shared by the three call sites that pre-flight a model
+    so none of them re-derives the shape — and so a surprising payload degrades
+    to "entitlement unknown" (empty list -> :func:`model_is_unusable` allows the
+    send) instead of raising inside session startup.
+    """
+    if not isinstance(entries, (list, tuple)):
+        return []
+    ids: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("modelId") or entry.get("value") or ""
+        if isinstance(model_id, str) and model_id.strip():
+            ids.append(model_id)
+    return ids
+
+
+def model_is_unusable(model_id: str, advertised: Sequence[str] | None) -> bool:
+    """True when *advertised* is known and excludes *model_id*.
+
+    The counterpart to :func:`_model_is_unentitled`, moved BEFORE the wire: that
+    one explains a rejection after the fact, this one declines to send a model
+    the backend already told us the account cannot run. Deliberately ONE shared
+    predicate rather than a copy per call site — the same reason #1550 made the
+    formatter and the retry classifier share a discriminator: two spellings of
+    "can this account use it" would eventually disagree.
+
+    Returns False — allow the send — whenever entitlement is unknowable: an
+    empty/None advertised set (no session yet, or a backend that omits
+    ``models``) must not be read as "nothing is allowed", which would withhold
+    every model on a backend that simply does not advertise.
+
+    Only meaningful where the advertised ids share a namespace with *model_id*,
+    and callers gate on that. kiro-cli's advertised ids are exactly the ids
+    ``session/set_model`` accepts, so an id absent from the list is genuinely
+    unusable. The claude backend advertises BARE ids (``claude-opus-4-8[1m]``)
+    while the configured model is the prefixed provider id
+    (``global.anthropic.claude-opus-4-8[1m]``), so comparing those two
+    namespaces would call every legitimate model unusable; that backend
+    announces its own substitutions through the ``session/new`` advisory
+    instead (see ``_new_session_following_substitution``).
+    """
+    if not advertised:
+        return False
+    wanted = model_id.strip().lower()
+    return wanted not in {m.strip().lower() for m in advertised if m and m.strip()}
+
+
+def _format_acp_error(error: object, available_models: Sequence[str] | None = None) -> str:
     """Format a JSON-RPC error from the ACP backend into actionable user text.
 
     The ACP backend (kiro-cli or claude-agent-acp) surfaces upstream Bedrock
@@ -805,18 +934,35 @@ def _format_acp_error(error: object) -> str:
         req_id_match = re.search(r"request_id:\s*([0-9a-fA-F-]+)", data)
         req_id_suffix = f" (request_id: {req_id_match.group(1)})" if req_id_match else ""
 
+        # Entitlement failure: this account was never offered the model, so the
+        # capacity/rollout advice below would be actively misleading (there is
+        # nothing to wait for). Checked FIRST because upstream uses the same
+        # string for both cases.
+        unentitled = _model_is_unentitled(data, available_models)
+        if unentitled:
+            usable = [m.strip() for m in (available_models or []) if m and m.strip()]
+            # Cap the list: an account with many models would otherwise bury the
+            # message, and the picker shows the full set anyway.
+            shown = ", ".join(usable[:8])
+            more = f" (+{len(usable) - 8} more)" if len(usable) > 8 else ""
+            formatted = (
+                f"Your account does not have access to model '{unentitled}'. "
+                f"Available to you: {shown}{more}. Pick one in the model picker, "
+                f"or set agent.model to 'auto' to let the backend choose a model "
+                f"your plan includes. Retrying will not help."
+                f"{req_id_suffix}"
+            )
         # Bedrock model alias resolved to a version that is currently
         # unavailable (capacity throttle, region rollout in progress,
         # deprecated, etc.).
-        model_match = _RE_MODEL_UNAVAILABLE.search(data)
-        if model_match:
-            model = model_match.group(1)
+        elif _RE_MODEL_UNAVAILABLE.search(data):
+            model = str(_RE_MODEL_UNAVAILABLE.search(data).group(1))  # type: ignore[union-attr]
             formatted = (
-                f"Model '{model}' is unavailable on Bedrock right now (capacity "
-                f"throttle or region rollout). Try: (1) pick a different alias in "
-                f"the model picker, (2) edit ~/.claude/settings.json 'model' field "
-                f"to a different version (e.g. claude-opus-4-6-v1), or (3) wait a "
-                f"minute and retry."
+                f"Model '{model}' is unavailable on the backend right now "
+                f"(capacity throttle or region rollout). Try: (1) pick a "
+                f"different model in the model picker, (2) set agent.model to "
+                f"'auto' in ~/.kiro/crew/config.json, or (3) wait a minute and "
+                f"retry."
                 f"{req_id_suffix}"
             )
         elif _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):
@@ -920,21 +1066,25 @@ def _format_acp_error(error: object) -> str:
 _PROMPT_BUSY_RE = re.compile(r"already in progress", re.IGNORECASE)
 
 
-def _raise_acp_error(error: object) -> None:
+def _raise_acp_error(error: object, available_models: Sequence[str] | None = None) -> None:
     """Format and raise the appropriate AcpError subclass for *error*.
 
     Delegates formatting to ``_format_acp_error`` and raises either
     ``AcpPromptBusy`` (when the backend reports a concurrent in-flight prompt)
     or the generic ``AcpError`` for all other cases.
+
+    *available_models* is passed to BOTH the formatter and the transient
+    classifier so a model-rejection's wording and its retry verdict are decided
+    from the same evidence.
     """
-    formatted = _format_acp_error(error)
+    formatted = _format_acp_error(error, available_models)
     # Detect prompt-busy from the raw error (before formatting rewrites it)
     raw_data = ""
     if isinstance(error, dict):
         raw_data = f"{error.get('data', '')} {error.get('message', '')}"
     if _PROMPT_BUSY_RE.search(raw_data):
         raise AcpPromptBusy(formatted)
-    raise AcpError(formatted, transient=_is_transient_raw_error(error))
+    raise AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
 
 
 # Matches claude-agent-acp policy-substitution advisories:
@@ -1342,6 +1492,16 @@ class AcpClient:
         # offers rather than a hardcoded guess. Each entry: {modelId, name,
         # description}.
         self._available_models: list[dict[str, str]] = []
+        # Mode ids the backend advertised at session init (session/new|load
+        # `modes.availableModes`). Empty when the backend omits `modes` (older
+        # kiro-cli / offline fake) — the set_mode guard treats empty as "attempt"
+        # for backward compatibility. Populated by _store_session_config.
+        self._available_mode_ids: list[str] = []
+        # Whether the backend advertised a `modes` list at all (even an empty
+        # one). Distinguishes "unknown, attempt for backward compat" (False)
+        # from "advertised zero/some modes, honor the list" (True) so an
+        # explicitly-empty availableModes fails closed rather than attempting.
+        self._modes_advertised: bool = False
         # Model kiro-cli/claude-agent-acp actually resolved to (may differ
         # from self._model when that's the "auto" sentinel). Used to look up
         # the context window when usage_update isn't sent (see _track_metadata).
@@ -1524,6 +1684,23 @@ class AcpClient:
         """Switch model on a running session (used by warm pool post-claim)."""
         if not self._session_id:
             raise AcpError("Cannot set model before session is initialized")
+        # Unlike the spawn path, this is an explicit request for THIS model, so
+        # a silent downgrade would report success while running something else.
+        # Refuse before the wire and name what the account can use.
+        # AcpModelUnavailable (not a bare AcpError) so callers can tell "invalid
+        # request" from "the call didn't land": the generic failure is recovered
+        # by resetting the session, which for THIS case would destroy a live
+        # conversation and then land on a different model anyway.
+        #
+        # Callers passing an INHERITED value (warm-pool post-claim re-apply of a
+        # persisted slot model) must pre-check with model_is_unusable and skip
+        # instead of calling into here — otherwise the same stale setting that is
+        # quietly withheld on a cold start would raise and kill a warm claim,
+        # making the outcome depend on whether a pooled process happened to exist.
+        if not self._is_claude and self._model_is_unusable(model_id):
+            _rejected_log, _ = redact_exfiltration_urls(str(model_id))
+            _rejected_log, _ = redact_credentials(_rejected_log)
+            raise AcpModelUnavailable(_rejected_log, self._advertised_model_ids())
         if self._is_claude:
             await self.set_config_option("model", model_id)
         else:
@@ -1587,6 +1764,79 @@ class AcpClient:
         """Models advertised by the backend at session init (may be empty)."""
         return list(self._available_models)
 
+    def _advertised_model_ids(self) -> list[str]:
+        """Advertised model ids, for the model-rejection error path.
+
+        Empty when the backend advertised nothing (no session yet, or a backend
+        that omits ``models``), which the error path reads as "entitlement
+        unknown" and leaves the existing transient/capacity handling alone.
+        """
+        ids = []
+        for entry in self._available_models:
+            model_id = entry.get("modelId") if isinstance(entry, dict) else None
+            if isinstance(model_id, str) and model_id.strip():
+                ids.append(model_id)
+        return ids
+
+    def _model_is_unusable(self, model_id: str) -> bool:
+        """Whether this session's advertised set excludes *model_id*.
+
+        Thin bind of :func:`model_is_unusable` to the set captured at
+        ``session/new`` / ``session/load``, so this client and the
+        ``providers.acp`` live path share one definition of entitlement.
+        """
+        return model_is_unusable(model_id, self._advertised_model_ids())
+
+    async def _apply_startup_model(self) -> None:
+        """Apply the configured model to a freshly initialized session.
+
+        Split out of ``_init_session`` step 5 so the withhold decision is
+        reachable without standing up a whole session.
+
+        The model here was NOT chosen for this turn: it arrives from the agent
+        spec, the config default, or a slot value persisted before the account's
+        entitlements were known. So when the backend has already told us the
+        account cannot run it, withholding beats failing — the user did not pick
+        this model and cannot be expected to know why every turn dies. The
+        session simply stays on the backend's own default, which ``session/new``
+        already applied and reported as ``currentModelId``.
+
+        Note this fixes the WIRE, not the stored setting: the persisted config /
+        slot value is untouched, so a picker reading it still shows the model
+        that was withheld. Healing the stored value is a separate change.
+
+        An EXPLICIT switch is handled the opposite way in :meth:`set_model`:
+        there the user asked for that exact model, and quietly running another
+        one would be a lie.
+        """
+        if not self._model or self._model == DEFAULT_MODEL:
+            logger.info("ACP model: %s (from agent config)", self._model or "auto")
+            return
+        if not self._is_claude and self._model_is_unusable(self._model):
+            _withheld_log, _ = redact_exfiltration_urls(str(self._model))
+            _withheld_log, _ = redact_credentials(_withheld_log)
+            logger.warning(
+                "ACP model %s is not available to this account; staying on the "
+                "backend default %s (advertised: %s)",
+                _withheld_log,
+                self._resolved_model_id or DEFAULT_MODEL,
+                ", ".join(self._advertised_model_ids()),
+            )
+            # Record the session as running the default rather than the value we
+            # declined: the "!= DEFAULT_MODEL" test above is also what the
+            # warm-pool re-apply path reads (session_provider), so leaving the
+            # unusable id here would re-offer it on every claim.
+            self._model = DEFAULT_MODEL
+            return
+        if self._is_claude:
+            await self.set_config_option("model", self._model)
+        else:
+            await self._send_request(
+                METHOD_SET_MODEL,
+                {"sessionId": self._session_id, "modelId": self._model},
+            )
+        logger.info("ACP model: %s", self._model)
+
     async def set_config_option(self, config_id: str, value: str) -> None:
         """Set a session config option (e.g. effort level) via session/set_config_option."""
         if not self._session_id:
@@ -1613,6 +1863,14 @@ class AcpClient:
             self._acp_config_options = config_options
             logger.debug("ACP config options loaded: %d entries", len(config_options))
             self._sync_effort_levels()
+        # Capture advertised mode ids + whether a modes list was advertised at
+        # all, so step 4's set_mode can fail closed against a requested agent the
+        # backend never loaded (would fault with "Mode '<agent>' not found").
+        # Assigned unconditionally so a re-init that omits `modes` clears any
+        # stale state rather than guarding on it.
+        self._available_mode_ids, _current_mode, self._modes_advertised = (
+            parse_session_modes(resp)
+        )
 
     def _handle_config_option_update(self, msg: JsonRpcMessage) -> None:
         """Process a config_option_update session notification.
@@ -1734,6 +1992,14 @@ class AcpClient:
                 raise AcpError(str(exc)) from exc
             if not kiro_bin:
                 raise AcpError(f"{KIRO_CLI_BIN} not found in PATH")
+            # Self-heal (B): ensure the managed default agent file exists before
+            # this --agent spawn, so kiro-cli registers the mode and step 4's
+            # set_mode succeeds instead of faulting "Mode not found". Best-effort,
+            # off the loop; non-managed agents fall through to the step-4 guard.
+            try:
+                await asyncio.to_thread(ensure_agent_materialized, self._agent)
+            except Exception:
+                logger.warning("pre-spawn agent materialization failed", exc_info=True)
             argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
 
         # OS-level sandbox: wrap the command to hide sensitive paths.
@@ -2315,25 +2581,32 @@ class AcpClient:
                 self._jsonl_pos = 0
 
         # 4. Activate agent via set_mode (claude-agent-acp does not support set_mode — skip).
+        #    Guard (A): fire only when the backend advertised this agent, or
+        #    advertised no modes at all (older kiro-cli / fake → attempt,
+        #    backward-compatible). If modes ARE advertised but this agent is
+        #    absent, its ~/.kiro/agents/<agent>.json didn't load — FAIL CLOSED
+        #    with an actionable error rather than silently running kiro-cli's
+        #    default (broader) mode, which for a restricted agent is a privilege
+        #    escalation. Self-heal (B, in _spawn) regenerates the managed default
+        #    so the common case never reaches this branch.
         if not self._is_claude:
-            await self._send_request(
-                METHOD_SET_MODE,
-                {"sessionId": self._session_id, "modeId": self._agent},
-            )
-            logger.info("ACP agent activated: %s", self._agent)
+            if not self._modes_advertised or self._agent in self._available_mode_ids:
+                await self._send_request(
+                    METHOD_SET_MODE,
+                    {"sessionId": self._session_id, "modeId": self._agent},
+                )
+                logger.info("ACP agent activated: %s", self._agent)
+            else:
+                raise AcpError(
+                    f"Agent mode {self._agent!r} is not available on this session "
+                    f"(advertised modes: {self._available_mode_ids or 'none'}); its "
+                    f"~/.kiro/agents/{self._agent}.json is likely missing. Refusing "
+                    f"to run the backend default mode in its place. Run "
+                    f"`kirocrew setup --agent-only` to materialize the agent config."
+                )
 
         # 5. Set model — override if KiroCrew config specifies non-default.
-        if self._model and self._model != DEFAULT_MODEL:
-            if self._is_claude:
-                await self.set_config_option("model", self._model)
-            else:
-                await self._send_request(
-                    METHOD_SET_MODEL,
-                    {"sessionId": self._session_id, "modelId": self._model},
-                )
-            logger.info("ACP model: %s", self._model)
-        else:
-            logger.info("ACP model: %s (from agent config)", self._model or "auto")
+        await self._apply_startup_model()
 
         # Drain MCP server init notifications
         await self._drain_notifications()
@@ -3056,7 +3329,7 @@ class AcpClient:
                     self._turn_done.set()
                     return
                 if action == "error":
-                    _raise_acp_error(msg.error)
+                    _raise_acp_error(msg.error, self._advertised_model_ids())
                 if action == "permission":
                     await self._handle_permission(msg)
                 elif action == "server_request_unknown":
@@ -3183,7 +3456,7 @@ class AcpClient:
                 )
                 return
             if action == "error":
-                _raise_acp_error(msg.error)
+                _raise_acp_error(msg.error, self._advertised_model_ids())
             if action == "permission":
                 yield self._build_permission_event(msg)
             elif action == "server_request_unknown":
@@ -3687,7 +3960,7 @@ class AcpClient:
                 self._turn_done.set()
                 return "".join(output)
             if action == "error":
-                _raise_acp_error(msg.error)
+                _raise_acp_error(msg.error, self._advertised_model_ids())
             if action == "permission":
                 await self._handle_permission(msg)
             elif action == "server_request_unknown":

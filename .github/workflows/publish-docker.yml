@@ -311,12 +311,13 @@ jobs:
           fi
           echo "::notice::Version tag already existed — channel alias NOT moved (re-runs must never roll a channel backward). If this re-run was repairing an interrupted first publish and the alias is stale, move it manually: docker buildx imagetools create -t ${IMAGE}:${CHANNEL} ${IMAGE}@${DIGEST}"
 
-      # Public distribution is an explicit release-policy switch. GHCR
-      # creates packages private, which is the required posture for now.
-      # When public distribution is approved, callers flip
-      # require_public_access and this gate prevents a release from
-      # advertising an image that anonymous users cannot pull.
-      # Canonical repo only: forks legitimately keep private packages.
+      # Public distribution is an explicit release-policy switch. GHCR creates
+      # every new package PRIVATE and never inherits visibility from the linked
+      # repository, so a public repo does not imply a pullable image. Both
+      # canonical callers set require_public_access, which makes this gate the
+      # thing that stops a release from advertising an image anonymous users
+      # cannot pull. The input still defaults to false so forks — which
+      # legitimately keep private packages — are unaffected.
       - name: Verify anonymous pull (package visibility)
         if: github.repository_owner == 'kirodotdev' && inputs.require_public_access
         run: |
@@ -324,7 +325,7 @@ jobs:
           IMAGE="${{ steps.image.outputs.name }}"
           docker logout ghcr.io
           if ! docker buildx imagetools inspect "${IMAGE}:${VERSION}" > /dev/null 2>&1; then
-            echo "::error::Anonymous pull of ${IMAGE}:${VERSION} FAILED. On the first-ever publish GHCR creates the package PRIVATE — a repo admin must open ghcr.io package settings for 'kirocrew', change visibility to Public (one-time). No rebuild is needed: the image and alias are already published; visibility is the only gate."
+            echo "::error::Anonymous pull of ${IMAGE}:${VERSION} FAILED — the GHCR package is not public. Open the package settings for 'kirocrew' (Danger Zone → Change visibility → Public); GHCR creates packages private and does NOT inherit visibility from the repo, so this is expected on a first-ever publish and otherwise means visibility regressed. No rebuild is needed: the image and alias are already published; visibility is the only gate. Note the flip is one-way — a package made public cannot be made private again."
             exit 1
           fi
           echo "Anonymous pull OK — package is public."

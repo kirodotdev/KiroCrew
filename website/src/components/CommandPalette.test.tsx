@@ -10,7 +10,7 @@ const wrapper = ({ children }: { children: ReactNode }) => (
 
 /**
  * Tests for the Search Everywhere palette:
- *  - {@link useCommandPalette} global trigger (⌘K / Ctrl+K + double-Shift), and
+ *  - {@link useCommandPalette} global trigger (⌘K / Ctrl+K, with opt-in double-Shift), and
  *  - the {@link CommandPalette} modal's open render, Tab tab-scoping, Enter
  *    activation, and close paths (Escape wiring + close button + row click).
  *
@@ -206,6 +206,7 @@ afterEach(() => {
   // localStorage is file-scoped, not per-test: a chat-config write (e.g. the
   // simplifiedToolNames toggle test) would otherwise persist into siblings.
   localStorage.removeItem('mc-chat-config')
+  localStorage.removeItem(QUICK_SEARCH_SHORTCUT_KEY)
   queryClient.clear()
 })
 
@@ -231,7 +232,8 @@ describe('useCommandPalette — global trigger', () => {
     expect(result.current.open).toBe(true)
   })
 
-  it('double-Shift (two bare Shift keydowns) opens the palette', () => {
+  it('double-Shift (two bare Shift keydowns) opens when opted in', () => {
+    localStorage.setItem(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify({ mode: 'double-shift' }))
     const { result } = renderHook(() => useCommandPalette())
     act(() => {
       fireEvent.keyDown(window, { key: 'Shift' })
@@ -241,6 +243,7 @@ describe('useCommandPalette — global trigger', () => {
   })
 
   it('two Shifts spaced BEYOND the double-tap window do not open (accidental tap)', () => {
+    localStorage.setItem(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify({ mode: 'double-shift' }))
     const nowSpy = vi.spyOn(Date, 'now')
     try {
       const { result } = renderHook(() => useCommandPalette())
@@ -268,6 +271,7 @@ describe('useCommandPalette — global trigger', () => {
   })
 
   it('a key pressed between the two Shifts cancels the gesture', () => {
+    localStorage.setItem(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify({ mode: 'double-shift' }))
     const { result } = renderHook(() => useCommandPalette())
     act(() => {
       fireEvent.keyDown(window, { key: 'Shift' })
@@ -292,6 +296,7 @@ describe('useCommandPalette — Enable shortcuts toggle', () => {
   afterEach(() => localStorage.removeItem(SHORTCUTS_ENABLED_KEY))
 
   it('double-Shift does NOT open the palette when shortcuts are disabled', () => {
+    localStorage.setItem(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify({ mode: 'double-shift' }))
     localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
     const { result } = renderHook(() => useCommandPalette())
     act(() => {
@@ -318,6 +323,7 @@ describe('useCommandPalette — Enable shortcuts toggle', () => {
   })
 
   it('re-enabling restores double-Shift (no stale first tap carries over)', () => {
+    localStorage.setItem(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify({ mode: 'double-shift' }))
     localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
     const { result } = renderHook(() => useCommandPalette())
     // A Shift arrives while disabled (must not seed a pending first tap)…
@@ -343,19 +349,30 @@ describe('useCommandPalette — configurable activation', () => {
     localStorage.removeItem(SHORTCUTS_ENABLED_KEY)
   })
 
-  it('default (unconfigured) preserves BOTH double-Shift and the ⌘K alias', () => {
-    // Backward compatibility: with nothing stored, the shipped behavior stands.
+  it('default (unconfigured) does NOT open on double-Shift but ⌘K works', () => {
+    // Fresh install: default is mod-k, so double-Shift is inactive.
     const a = renderHook(() => useCommandPalette())
     act(() => {
       fireEvent.keyDown(window, { key: 'Shift' })
       fireEvent.keyDown(window, { key: 'Shift' })
     })
-    expect(a.result.current.open).toBe(true)
+    expect(a.result.current.open).toBe(false)
     a.unmount()
 
     const b = renderHook(() => useCommandPalette())
     act(() => { fireEvent.keyDown(window, { key: 'k', metaKey: true }) })
     expect(b.result.current.open).toBe(true)
+  })
+
+  it('explicit double-shift opt-in preserves the gesture for existing users', () => {
+    // An existing user who selected double-shift in Settings has it stored.
+    localStorage.setItem(QUICK_SEARCH_SHORTCUT_KEY, JSON.stringify({ mode: 'double-shift' }))
+    const { result } = renderHook(() => useCommandPalette())
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Shift' })
+      fireEvent.keyDown(window, { key: 'Shift' })
+    })
+    expect(result.current.open).toBe(true)
   })
 
   it('mod-k mode: ⌘K/Ctrl+K toggles, but double-Shift no longer opens', () => {

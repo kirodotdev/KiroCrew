@@ -17,12 +17,16 @@
  */
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+// MarkdownPanel's overflow menu reaches for useNavigate (open-as-artifact), so
+// the reveal scene needs a router in scope even though nothing here navigates.
+import { MemoryRouter } from 'react-router-dom'
 
 // Initialise i18next exactly as main.tsx does. Importing the module only DEFINES
 // initI18n — without calling it, every label in the frame is blank, which
 // silently produces screenshots that misrepresent the real UI.
 import { initI18n } from '../src/i18n'
 import MarkdownRenderer from '../src/components/MarkdownRenderer'
+import MarkdownPanel from '../src/components/MarkdownPanel'
 import FolderPanel from '../src/pages/chat/FolderPanel'
 import { api } from '../src/api/client'
 import '../src/index.css'
@@ -36,7 +40,10 @@ document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-li
 /** Paths the fake backend reports as directories / files; everything else 404s
  *  as missing, mirroring the real endpoint's three outcomes. */
 const DIRS = new Set(['/Users/diwm/.kiro/crew/workspace/KiroCrew', '/Users/diwm/.kiro/crew'])
-const FILES = new Set(['/Users/diwm/.kiro/crew/workspace/KiroCrew/README.md'])
+const FILES = new Set([
+  '/Users/diwm/.kiro/crew/workspace/KiroCrew/README.md',
+  '/Users/diwm/.kiro/crew/workspace/KiroCrew/src/kiro_crew/acp/_dispatch.py',
+])
 
 const realFetch = globalThis.fetch.bind(globalThis)
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -71,6 +78,11 @@ api.browseFiles = (async (p?: string) => ({
   ],
 })) as typeof api.browseFiles
 
+// The reveal scene mounts the real MarkdownPanel, which asks whether this path is
+// already tracked as an artifact. Answer "no" rather than let it hit the dev
+// server and render an error state over the editor we are trying to photograph.
+api.artifacts = (async () => ({ artifacts: [] })) as unknown as typeof api.artifacts
+
 /** The exact message from the bug report: two directory chips and a git ref. */
 const TRANSCRIPT = [
   'The worktree is a linked worktree of `/Users/diwm/.kiro/crew/workspace/KiroCrew`.',
@@ -82,7 +94,53 @@ const TRANSCRIPT = [
   'A path that is gone: `/Users/diwm/.kiro/crew/deleted-notes.md`.',
 ].join('\n')
 
+/**
+ * Cited source locations — the shape an agent produces when pointing at code.
+ *
+ * Every one of these was inert before, because the probe was handed the whole
+ * token: the backend was asked about a path ending in `:447`, which never
+ * exists. The bare `:493` must STAY inert, since no file is named.
+ */
+const CITED = [
+  'Kiro Crew resolves `purpose` in two places:',
+  '',
+  '- `/Users/diwm/.kiro/crew/workspace/KiroCrew/src/kiro_crew/acp/_dispatch.py:447` — the guard',
+  '- same file `:493` — no file is named here, so it stays plain text',
+  '- `/Users/diwm/.kiro/crew/workspace/KiroCrew/src/kiro_crew/acp/_dispatch.py:504:12` — line and column',
+  '- gone: `/Users/diwm/.kiro/crew/workspace/KiroCrew/src/kiro_crew/acp/missing.py:12`',
+].join('\n')
+
+/**
+ * Synthetic source for the reveal scene, long enough that line 447 is well off
+ * the first screen — otherwise the screenshot could not tell a working scroll
+ * from no scroll at all. Line 447 is labelled so the evidence is self-checking.
+ */
+const PY_SOURCE = Array.from({ length: 700 }, (_, i) => {
+  const n = i + 1
+  if (n === 447) return '    return _redact(purpose)  # <-- line 447, the cited guard'
+  return `    step_${n} = compute(${n})`
+}).join('\n')
+
 function Scene() {
+  if (scene === 'reveal') {
+    // The other half of the feature: the panel a `file.py:447` chip opens must
+    // land ON 447 and flash it. Mounted with the REAL panel and a real Monaco so
+    // the decoration classes are proven against the theme tokens — a mocked
+    // editor would screenshot the mock, not the highlight.
+    return (
+      <div data-capture-root style={{ width: 720, height: 420 }} className="bg-bg">
+        <MarkdownPanel
+          embedded
+          filePath="/Users/diwm/.kiro/crew/workspace/KiroCrew/src/kiro_crew/acp/_dispatch.py"
+          content={PY_SOURCE}
+          onContentChange={() => {}}
+          onSave={async () => {}}
+          onClose={() => {}}
+          revealLine={{ line: 447, nonce: 1 }}
+        />
+      </div>
+    )
+  }
   if (scene === 'folder') {
     return (
       <div data-capture-root style={{ width: 420, height: 340 }} className="bg-bg">
@@ -96,7 +154,7 @@ function Scene() {
   }
   return (
     <div data-capture-root className="bg-bg p-5" style={{ width: 720 }}>
-      <MarkdownRenderer content={TRANSCRIPT} />
+      <MarkdownRenderer content={scene === 'cited' ? CITED : TRANSCRIPT} />
     </div>
   )
 }
@@ -106,7 +164,9 @@ const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 initI18n('en')
 
 createRoot(document.getElementById('root')!).render(
-  <QueryClientProvider client={qc}>
-    <Scene />
-  </QueryClientProvider>,
+  <MemoryRouter>
+    <QueryClientProvider client={qc}>
+      <Scene />
+    </QueryClientProvider>
+  </MemoryRouter>,
 )

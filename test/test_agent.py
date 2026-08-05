@@ -318,22 +318,22 @@ class TestInstallAgent:
         cfg_dir = _bundled_defaults(tmp_path)
         mcps = {
             **_DEFAULT_MANAGED_MCPS,
-            "arcc-governance": {
-                "command": "/usr/bin/arcc",
+            "playwright-mcp": {
+                "command": "/usr/bin/playwright-mcp",
                 "args": ["mcp", "start"],
-                "autoApprove": ["search_arcc"],
+                "autoApprove": ["browser_navigate"],
             },
         }
         path = _run_install(tmp_path, cfg_dir, managed_mcps=mcps)
         config = json.loads(path.read_text(encoding="utf-8"))
-        assert config["mcpServers"]["arcc-governance"]["autoApprove"] == ["search_arcc"]
+        assert config["mcpServers"]["playwright-mcp"]["autoApprove"] == ["browser_navigate"]
 
     def test_new_managed_server_seeds_auto_approve_on_refresh(self, tmp_path: Path):
         """When a managed server is new to an existing config, autoApprove is seeded."""
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
         kiro_dir.mkdir(exist_ok=True)
-        # Existing config has kirocrew-cron/core but NOT arcc-governance
+        # Existing config has kirocrew-cron/core but NOT playwright-mcp
         existing = {
             "model": "claude-user-custom",
             "tools": [],
@@ -349,30 +349,30 @@ class TestInstallAgent:
 
         mcps = {
             **_DEFAULT_MANAGED_MCPS,
-            "arcc-governance": {
-                "command": "/usr/bin/arcc",
+            "playwright-mcp": {
+                "command": "/usr/bin/playwright-mcp",
                 "args": ["mcp", "start"],
-                "autoApprove": ["search_arcc"],
+                "autoApprove": ["browser_navigate"],
             },
         }
         path = _run_install(tmp_path, cfg_dir, managed_mcps=mcps)
         config = json.loads(path.read_text(encoding="utf-8"))
-        # arcc-governance is genuinely new → autoApprove should be seeded
-        assert config["mcpServers"]["arcc-governance"]["autoApprove"] == ["search_arcc"]
+        # playwright-mcp is genuinely new → autoApprove should be seeded
+        assert config["mcpServers"]["playwright-mcp"]["autoApprove"] == ["browser_navigate"]
 
     def test_user_removed_auto_approve_not_re_added(self, tmp_path: Path):
         """If user deliberately removed autoApprove, refresh must not re-add it."""
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
         kiro_dir.mkdir(exist_ok=True)
-        # Existing config has arcc-governance but user removed autoApprove
+        # Existing config has playwright-mcp but user removed autoApprove
         existing = {
             "model": "claude-user-custom",
             "tools": [],
             "allowedTools": [],
             "mcpServers": {
-                "arcc-governance": {
-                    "command": "/old/arcc",
+                "playwright-mcp": {
+                    "command": "/old/playwright-mcp",
                     "args": ["mcp", "start"],
                 },
             },
@@ -383,17 +383,17 @@ class TestInstallAgent:
 
         mcps = {
             **_DEFAULT_MANAGED_MCPS,
-            "arcc-governance": {
-                "command": "/usr/bin/arcc",
+            "playwright-mcp": {
+                "command": "/usr/bin/playwright-mcp",
                 "args": ["mcp", "start"],
-                "autoApprove": ["search_arcc"],
+                "autoApprove": ["browser_navigate"],
             },
         }
         path = _run_install(tmp_path, cfg_dir, managed_mcps=mcps)
         config = json.loads(path.read_text(encoding="utf-8"))
         # command/args refreshed, but autoApprove NOT re-added
-        assert config["mcpServers"]["arcc-governance"]["command"] == "/usr/bin/arcc"
-        assert "autoApprove" not in config["mcpServers"]["arcc-governance"]
+        assert config["mcpServers"]["playwright-mcp"]["command"] == "/usr/bin/playwright-mcp"
+        assert "autoApprove" not in config["mcpServers"]["playwright-mcp"]
 
     def test_clean_flag_ignores_existing(self, tmp_path: Path):
         """clean=True → regenerates from defaults even if file exists."""
@@ -3567,3 +3567,66 @@ class TestRefreshDynamicFieldsSyncsConfigModel:
         with patch("kiro_crew.agent._mc_config_path", return_value=mc):
             _refresh_dynamic_fields(config)
         assert config["model"] == "claude-sonnet-4.6"
+
+
+# ── ensure_agent_materialized (self-heal for kiro-cli "Mode not found") ──
+
+
+def test_ensure_agent_materialized_noop_for_non_managed_agent(tmp_path, monkeypatch):
+    """A non-managed (app/custom) agent can't be regenerated here → returns
+    False and never touches rebuild_agent_config."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: tmp_path)
+    rebuild = unittest.mock.MagicMock()
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+
+    assert agent_mod.ensure_agent_materialized("some-app-agent") is False
+    rebuild.assert_not_called()
+
+
+def test_ensure_agent_materialized_present_is_noop(tmp_path, monkeypatch):
+    """Managed default already on disk → True, no regeneration."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: tmp_path)
+    (tmp_path / agent_mod.AGENT_FILENAME).write_text("{}", encoding="utf-8")
+    rebuild = unittest.mock.MagicMock()
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+
+    managed = Path(agent_mod.AGENT_FILENAME).stem
+    assert agent_mod.ensure_agent_materialized(managed) is True
+    rebuild.assert_not_called()
+
+
+def test_ensure_agent_materialized_regenerates_when_missing(tmp_path, monkeypatch):
+    """Managed default missing → rebuild_agent_config is invoked and the file
+    is materialized (the reporter's fresh-checkout case)."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: tmp_path)
+
+    def _fake_rebuild(*_a, **_k):
+        path = tmp_path / agent_mod.AGENT_FILENAME
+        path.write_text("{}", encoding="utf-8")
+        return path
+
+    rebuild = unittest.mock.MagicMock(side_effect=_fake_rebuild)
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+
+    managed = Path(agent_mod.AGENT_FILENAME).stem
+    assert agent_mod.ensure_agent_materialized(managed) is True
+    rebuild.assert_called_once()
+
+
+def test_ensure_agent_materialized_swallows_errors(tmp_path, monkeypatch):
+    """Best-effort: a rebuild failure never propagates (it sits on the spawn
+    hot path) — returns False instead."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: tmp_path)
+    rebuild = unittest.mock.MagicMock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+
+    managed = Path(agent_mod.AGENT_FILENAME).stem
+    assert agent_mod.ensure_agent_materialized(managed) is False

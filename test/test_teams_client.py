@@ -145,6 +145,40 @@ class TestInboundWebhook:
         assert seen == []
 
     @pytest.mark.asyncio
+    async def test_invalid_token_401_is_audited(self) -> None:
+        # Regression (CWE-778 / SEC-E9FBAC19): a failed inbound-token attempt on
+        # this external, cookie-auth-exempt surface MUST emit a structured SEL
+        # audit line so the denial is visible to security monitoring.
+        from unittest import mock
+
+        c = _client_with_validator(accept=False)
+        with mock.patch("kiro_crew.teams.client.sel") as m_sel:
+            resp = await c.on_activity(
+                _FakeRequest({"Authorization": "Bearer bad"}, _msg_activity())
+            )
+        assert resp.status == 401
+        m_sel.return_value.log_api_access.assert_called_once()
+        kwargs = m_sel.return_value.log_api_access.call_args.kwargs
+        assert kwargs["source"] == "teams"
+        assert kwargs["operation"] == "teams_client.on_activity"
+        assert kwargs["outcome"] == "denied_invalid_token"
+
+    @pytest.mark.asyncio
+    async def test_401_survives_audit_sink_failure(self) -> None:
+        # The 401 denial is the security decision and MUST stand even if the
+        # audit sink raises (e.g. a corrupt SEL key) -- a sink failure must not
+        # surface as a 500 that masks the denial.
+        from unittest import mock
+
+        c = _client_with_validator(accept=False)
+        with mock.patch("kiro_crew.teams.client.sel") as m_sel:
+            m_sel.return_value.log_api_access.side_effect = RuntimeError("corrupt SEL key")
+            resp = await c.on_activity(
+                _FakeRequest({"Authorization": "Bearer bad"}, _msg_activity())
+            )
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
     async def test_valid_message_fast_ack_and_dispatch(self) -> None:
         c = _client_with_validator(accept=True)
         gate = asyncio.Event()

@@ -32,10 +32,29 @@ export const SHELL_COMMANDS = [
   command: string
 }>
 
+/** The backend's stable suppression discriminants, mapped to catalog keys.
+ *
+ * The panel renders THIS, never the sibling `reason` string: that field is
+ * untranslated operator prose ("already sent today (2026-08-04)"), and
+ * interpolating it into a UI that ships in 10 languages leaks a developer
+ * diagnostic onto the user's screen. `reason` stays in the payload for bug
+ * reports and logs.
+ */
+const NOT_SENDING_KEY = {
+  already_sent_today: 'privacyDisclosure.notSendingAlreadySentToday',
+  awaiting_privacy_ack: 'privacyDisclosure.notSendingAwaitingAck',
+  ci: 'privacyDisclosure.notSendingCi',
+  non_default_home: 'privacyDisclosure.notSendingNonDefaultHome',
+  no_endpoint: 'privacyDisclosure.notSendingNoEndpoint',
+  unreadable_home: 'privacyDisclosure.notSendingUnreadableHome',
+} as const
+
 export interface BeaconStatus {
   enabled?: boolean
   would_send?: boolean
   reason?: string
+  /** Stable discriminant for why nothing is being sent; see `NOT_SENDING_KEY`. */
+  reason_code?: string
   endpoint_configured?: boolean
   env_override?: boolean
   env_var?: string
@@ -147,7 +166,10 @@ export function TelemetryToggle() {
       )}
       {!pinned && shadowed && (
         <p className="text-[12px] text-muted mt-1">
-          {i18nT('privacyDisclosure.notSendingNote', { reason: statusQ.data?.reason ?? '' })}
+          {i18nT(
+            NOT_SENDING_KEY[statusQ.data?.reason_code as keyof typeof NOT_SENDING_KEY]
+            ?? 'privacyDisclosure.notSendingGeneric',
+          )}
         </p>
       )}
     </div>
@@ -184,7 +206,7 @@ function DisclosureSection({
  * `payloadFields` must stay an exhaustive list of what `beacon.payload()`
  * actually sends. It is the transparency commitment, so a field added to the
  * wire without a line here would make this text a false statement — the
- * `PrivacyNotice.test.tsx` field-count assertion is what keeps them in step.
+ * `PrivacyPanel.test.tsx` field-count assertion is what keeps them in step.
  */
 export function PrivacyDisclosureSections() {
   return (

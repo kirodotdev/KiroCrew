@@ -280,11 +280,62 @@ describe('PrivacyPanel', () => {
       ...ON,
       would_send: false,
       reason: 'non-default KIROCREW_HOME (dev home / pod / preview)',
+      reason_code: 'non_default_home',
     })
     renderWithProviders(<PrivacyPanel />)
 
     expect(
-      await screen.findByText(/No heartbeat is being sent right now/),
-    ).toHaveTextContent('non-default KIROCREW_HOME')
+      await screen.findByText(/non-default data directory/),
+    ).toBeInTheDocument()
+  })
+
+  it('renders the translated code, never the raw backend reason', async () => {
+    // `reason` is untranslated operator prose. Interpolating it would put a
+    // developer diagnostic ("already sent today (2026-08-04)") on screen in all
+    // 10 languages, so the panel must render the catalog string for the code.
+    beaconStatus.mockResolvedValue({
+      ...ON,
+      would_send: false,
+      reason: 'already sent today (2026-08-04)',
+      reason_code: 'already_sent_today',
+    })
+    renderWithProviders(<PrivacyPanel />)
+
+    expect(
+      await screen.findByText("Today's heartbeat has already been sent."),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/2026-08-04/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/already sent today \(/)).not.toBeInTheDocument()
+  })
+
+  it('falls back to a generic note for an unrecognized reason code', async () => {
+    // A backend that adds a suppression before the catalog has its key must not
+    // render a raw dotted i18n key into the UI.
+    beaconStatus.mockResolvedValue({
+      ...ON,
+      would_send: false,
+      reason: 'some future suppression',
+      reason_code: 'not_a_known_code',
+    })
+    renderWithProviders(<PrivacyPanel />)
+
+    expect(
+      await screen.findByText('No heartbeat is being sent right now.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/privacyDisclosure\./)).not.toBeInTheDocument()
+  })
+
+  it('shows the first-run gate note before the disclosure is acknowledged', async () => {
+    // The gateway withholds the very first heartbeat until the user has seen the
+    // opt-out; the panel says so rather than looking inertly "on but silent".
+    beaconStatus.mockResolvedValue({
+      ...ON,
+      would_send: false,
+      reason: 'the first-run privacy disclosure has not been shown yet',
+      reason_code: 'awaiting_privacy_ack',
+    })
+    renderWithProviders(<PrivacyPanel />)
+
+    expect(await screen.findByText(/Nothing has been sent yet/)).toBeInTheDocument()
   })
 })

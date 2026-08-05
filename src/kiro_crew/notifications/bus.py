@@ -41,6 +41,10 @@ SYSTEM_CHANNELS: dict[str, str] = {
     "system.approval": "critical",
     "system.subagent": "passive",
     "system.taskrunner": _DEFAULT_PRIORITY,
+    # A staged skill candidate is invisible until a human approves it, so the
+    # note is the ONLY surface that says it exists -- but it blocks no agent
+    # turn, so it is default, not critical.
+    "system.skills": _DEFAULT_PRIORITY,
 }
 
 # Fallback channel for legacy kinds that have no dedicated system channel
@@ -161,6 +165,14 @@ class NotificationPayload:
         ):
             raise NotificationValidationError("ttl must be a positive integer")
         if self.actions is not None:
+            # isinstance BEFORE len(): a non-list (e.g. `42`) would raise
+            # TypeError out of len() rather than NotificationValidationError,
+            # and the legacy `notify()` adapter only catches the latter -- so a
+            # wrong-typed argument would escape as an uncaught crash from a
+            # function whose contract is that it never raises. `ttl` above
+            # already guards its type this way; these two were the gap.
+            if not isinstance(self.actions, list):
+                raise NotificationValidationError("actions must be a list")
             if len(self.actions) > _MAX_ACTIONS:
                 raise NotificationValidationError(
                     f"at most {_MAX_ACTIONS} actions per notification"
@@ -219,11 +231,22 @@ class NotificationPayload:
                         )
                     _validate_internal_url(action_url, field="action url")
         if self.url is not None:
+            # Same reason as `actions` above: a non-string reaches
+            # `_validate_internal_url`'s `.startswith()` and raises
+            # AttributeError, which is not the error type callers catch.
+            if not isinstance(self.url, str):
+                raise NotificationValidationError("url must be a dashboard-internal path")
             _validate_internal_url(self.url, field="url")
 
 
 def payload_from_legacy(
-    kind: str, title: str, body: str, meta: dict[str, Any] | None = None
+    kind: str,
+    title: str,
+    body: str,
+    meta: dict[str, Any] | None = None,
+    *,
+    url: str | None = None,
+    actions: list[dict[str, Any]] | None = None,
 ) -> NotificationPayload:
     """Build a v2 payload from the legacy ``notify(kind, ...)`` call shape.
 
@@ -232,6 +255,17 @@ def payload_from_legacy(
     titles/bodies are truncated, an empty title gets a placeholder, and the
     original ``kind`` is preserved verbatim even when it has no dedicated
     system channel (the frontend filters on ``note.kind``).
+
+    ``url``/``actions`` are the ONLY way a legacy caller can produce a
+    navigable note. They are deliberately keyword arguments on the schema
+    fields rather than ``meta`` keys: ``_RESERVED_NOTE_KEYS`` drops those two
+    names during the meta merge (so meta cannot smuggle an unvalidated deep
+    link), which means a ``meta={"url": ...}`` caller silently shipped a note
+    with no Open button and no action capsule. Routing them here puts them
+    through :meth:`NotificationPayload.validate` instead, so they are
+    path-validated rather than discarded. Unlike the title/body repairs above
+    these do NOT repair: an invalid deep link raises, because a button that
+    navigates somewhere unintended is worse than no button.
     """
     channel = f"system.{kind}"
     if channel not in SYSTEM_CHANNELS:
@@ -254,6 +288,8 @@ def payload_from_legacy(
         title=title,
         body=body,
         kind=kind,
+        url=url,
+        actions=actions,
         meta=dict(meta) if meta else {},
     )
 

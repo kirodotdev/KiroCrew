@@ -9,6 +9,7 @@ BUILTIN_NAMES: list[str] = [
     "papyrus",
     "mochi",
     "pptx_maker",
+    "spec_builder",
 ]
 
 # Deploy-web lives in the core deploy module, not as a separate builtin.

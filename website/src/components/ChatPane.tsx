@@ -276,7 +276,13 @@ export default function ChatPane({
         </div>
 
         {/* stable theming hook 'chat-container' — see website/docs/theming-contract.md */}
-        <div className="chat-container flex-1 overflow-y-auto py-3 min-h-0">
+        {/* overflow-x-hidden: `overflow-y-auto` alone leaves overflow-x at
+            `visible`, which CSS then forces to compute to `auto` — so any single
+            over-wide child (a long unbroken path, a wide code block, a widget)
+            gives the WHOLE message list a draggable horizontal scrollbar that
+            sits right above the composer. The conversation should never pan
+            sideways; wide children scroll within themselves. */}
+        <div className="chat-container flex-1 overflow-y-auto overflow-x-hidden py-3 min-h-0">
           {messages.length === 0 && !running && (
             <div className="text-center text-muted text-[13px] py-8">{i18nT('components.chatPane.session_ready_type_a_message_to_start')}</div>
           )}

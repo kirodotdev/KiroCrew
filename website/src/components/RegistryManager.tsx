@@ -18,6 +18,7 @@ import { recordEvent } from '../rum'
 
 import { i18nT } from '../i18n/t'
 import { fmtTimeNumeric } from '../i18n/format'
+import ErrorNotice from './ErrorNotice'
 type Registry = { name: string; repo: string; branch: string }
 
 // Shell metacharacters / whitespace that must never appear in a repo value.
@@ -158,14 +159,9 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         <InfoTip text={i18nT('components.registryManager.org_owned_app_catalogs_hosted_in_git_repositorie')} />
       </CardTitle>
 
-      {error && (
-        <div className="mb-3 bg-danger/10 border border-danger/20 rounded-lg p-2.5 flex items-center gap-2 animate-rise">
-          <span className="text-danger text-[13px] flex-1">{error}</span>
-          <Clickable className="text-danger/60 hover:text-danger" onClick={() => setError('')} aria-label={i18nT('components.registryManager.dismiss_error')}>
-            <X size={14} />
-          </Clickable>
-        </div>
-      )}
+      {/* No hand-off: the notice sits beside unsaved form input, and the button
+          navigates away — which would discard what the user typed. */}
+      <ErrorNotice message={error} onDismiss={() => setError('')} className="mb-3 animate-rise" />
 
       {trustNotice.length > 0 && (
         <div className="mb-3 bg-accent/10 border border-accent/20 rounded-lg p-2.5 flex items-start gap-2 animate-rise">

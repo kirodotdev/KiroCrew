@@ -14,9 +14,16 @@ from kiro_crew.deploy import profiles as profiles_mod
 
 @pytest.fixture(autouse=True)
 def _isolate_config(tmp_path: Path, monkeypatch):
+    # Patch config_dir on all deploy submodules so paths resolve under tmp_path.
+    import kiro_crew.deploy as _deploy_pkg
+    from kiro_crew.deploy import pending as _pending_mod
+    from kiro_crew.deploy import profiles as _profiles_mod
+
+    monkeypatch.setattr(handlers, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(_profiles_mod, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(_pending_mod, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(_deploy_pkg, "config_dir", lambda: tmp_path)
     cfg = tmp_path / "config.json"
-    monkeypatch.setattr(handlers, "CONFIG_PATH", cfg)
-    monkeypatch.setattr(handlers, "DATA_DIR", tmp_path)
     return cfg
 
 
@@ -726,12 +733,10 @@ def test_do_deploy_local_dir_stages_public_dir(monkeypatch, tmp_path):
     api.mkdir()
     (api / "index.py").write_text("def handler(event, ctx): pass")
 
-    # Set up profile
-    monkeypatch.setattr(handlers, "CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr(handlers, "DATA_DIR", tmp_path)
+    # Set up profile (autouse fixture already patches config_dir -> tmp_path)
     handlers._save_config("test-profile", "us-west-2")
 
-    # Monkeypatch config_dir so staging goes under tmp_path
+    # Monkeypatch config_dir so staging goes under a separate dir
     fake_cfg = tmp_path / "fakecfg"
     fake_cfg.mkdir()
     monkeypatch.setattr(handlers, "config_dir", lambda: fake_cfg)

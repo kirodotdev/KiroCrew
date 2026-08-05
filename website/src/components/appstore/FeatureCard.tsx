@@ -11,6 +11,7 @@ import { gradientFor } from './gradient'
 import { categoryFor } from './categories'
 import { useHeroArt } from './useHeroArt'
 import type { RegistryApp } from './types'
+import { appDisplayName, appDescription } from './appManifest'
 import { needsDesktopApp } from '../../lib/electron'
 
 import { i18nT } from '../../i18n/t'
@@ -26,7 +27,7 @@ export default function FeatureCard({ app, onOpen, onGet, onEnable, busy }: {
 
   return (
     <Clickable
-      aria-label={`View details for ${app.displayName}`}
+      aria-label={i18nT('components.appstore.featureCard.view_details_for', { name: appDisplayName(app) })}
       className="grid grid-cols-[140px_1fr] sm:grid-cols-[235px_1fr] border border-border rounded-2xl overflow-hidden bg-card cursor-pointer hover:border-border-strong transition-colors group focus-ring"
       onClick={onOpen}
     >
@@ -50,8 +51,8 @@ export default function FeatureCard({ app, onOpen, onGet, onEnable, busy }: {
         )}
       </div>
       <div className="px-[18px] py-4 flex flex-col gap-1 justify-center min-w-0">
-        <span className="text-[15px] font-bold text-text-strong truncate">{app.displayName}</span>
-        <p className="text-[12.5px] text-muted line-clamp-2">{app.description}</p>
+        <span className="text-[15px] font-bold text-text-strong truncate">{appDisplayName(app)}</span>
+        <p className="text-[12.5px] text-muted line-clamp-2" title={appDescription(app)}>{appDescription(app)}</p>
         <div
           className="flex items-center justify-between mt-1.5"
           onClick={e => e.stopPropagation()}

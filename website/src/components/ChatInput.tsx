@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, Play, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import { Toggle } from './ui'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -281,6 +281,11 @@ interface ChatInputProps {
   voiceSampleRef?: { current: AudioSample }
   /** Latest partial hypothesis, rendered muted in the dictation panel. */
   voicePartial?: string
+  /** Live composer caret, updated by ChatInput so ChatPage's dictation handler
+   *  can splice the transcript in at the cursor instead of appending. */
+  voiceCaretRef?: React.MutableRefObject<{ start: number; end: number } | null>
+  /** Caret offset to restore after a dictation-driven value update lands. */
+  voicePendingCaretRef?: React.MutableRefObject<number | null>
   /** Chat-level controls in input bar */
   agentName?: string
   agentSource?: string
@@ -294,6 +299,16 @@ interface ChatInputProps {
   showContextPct?: boolean
   isRunning?: boolean
   onStop?: () => void
+  /**
+   * True when the slot's last turn ended without a reply, so an EMPTY composer
+   * offers to pick it back up instead of showing a dead send button. Together
+   * with `onContinue` this turns the composer's one permanently-disabled state
+   * into the recovery affordance — no new control, no new row.
+   */
+  continuable?: boolean
+  onContinue?: () => void
+  /** True while a continue request is in flight. */
+  continuing?: boolean
   isQueued?: boolean
   stopState?: 'idle' | 'soft_pending' | 'killing'
   approvalMode?: string
@@ -473,6 +488,8 @@ function ChatInput({
   voiceStreaming = false,
   voiceSampleRef,
   voicePartial = '',
+  voiceCaretRef,
+  voicePendingCaretRef,
   onClearVoiceError,
   agentName,
   agentSource,
@@ -486,6 +503,9 @@ function ChatInput({
   showContextPct,
   isRunning = false,
   onStop,
+  continuable = false,
+  onContinue,
+  continuing = false,
   isQueued = false,
   stopState,
   approvalMode,
@@ -693,6 +713,50 @@ function ChatInput({
   const approvalBtnClass = 'inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border text-text text-[12px] cursor-pointer font-body hover:bg-[color-mix(in_srgb,var(--warn)_25%,transparent)] hover:text-text hover:border-border-strong transition-colors disabled:opacity-50'
 
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // Publish the live caret so ChatPage's dictation handler can splice a
+  // transcript in at the cursor instead of appending. Written on every caret
+  // move (typing, click, selection); the value persists through blur (clicking
+  // the mic button), which is exactly when a batch transcript needs it.
+  const recordCaret = useCallback(() => {
+    const ta = inputRef.current
+    if (ta && voiceCaretRef) voiceCaretRef.current = { start: ta.selectionStart ?? 0, end: ta.selectionEnd ?? 0 }
+  }, [voiceCaretRef])
+  // Restore the caret after a dictation transcript lands in `value`. The update
+  // arrives via the parent (onChange → ChatPage setInput → value prop), so the
+  // parent can't set the DOM selection itself. rAF mirrors applyPickedToken:
+  // wait for the controlled value to commit before moving the caret. Cheap on
+  // ordinary edits — it no-ops unless a dictation splice armed a pending caret.
+  useLayoutEffect(() => {
+    const pendingRef = voicePendingCaretRef
+    const pos = pendingRef?.current
+    if (!pendingRef || pos == null) {
+      // No dictation restore pending: keep voiceCaretRef in sync with the live
+      // selection, but ONLY once it has been established by a real interaction.
+      // Guard on an already-non-null ref so an untouched textarea holding an
+      // existing draft doesn't publish offset 0 here (which would make the next
+      // batch transcript prepend at 0 instead of using the append fallback that
+      // a null ref provides).
+      const el = inputRef.current
+      if (el && voiceCaretRef && voiceCaretRef.current) voiceCaretRef.current = { start: el.selectionStart ?? 0, end: el.selectionEnd ?? 0 }
+      return
+    }
+    pendingRef.current = null
+    const raf = requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (!el) return
+      const p = Math.min(pos, el.value.length)
+      // Restore the caret WITHOUT taking focus: a batch transcript can land while
+      // the user is focused in another field/session, and stealing focus would
+      // corrupt their typing there. setSelectionRange works on an unfocused
+      // element, so the caret is correct the moment the composer is (re)focused.
+      el.setSelectionRange(p, p)
+      if (voiceCaretRef) voiceCaretRef.current = { start: p, end: p }
+    })
+    // Cancel the frame if the slot switches (autoFocusKey) or value changes
+    // again before it fires — otherwise the callback would stamp this slot's
+    // caret onto whatever composer is mounted next.
+    return () => cancelAnimationFrame(raf)
+  }, [value, voicePendingCaretRef, voiceCaretRef, autoFocusKey])
   // Dictation-panel gate. Three independent conditions must hold: the setting
   // is on, the browser has WebGL2, and the OS is not asking for reduced motion
   // (the hook covers the latter two). A mic error always falls through to
@@ -904,6 +968,14 @@ function ChatInput({
   const isMobile = useIsMobile()
   const ime = useImeGuard()
   const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
+  // An icon swap alone announces nothing: the user would not learn that the last
+  // turn died, nor that the button in the usual send position now means something
+  // else. The empty-state placeholder is dead space too, so it carries the
+  // explanation — and it names typing as the other way out, so the morph never
+  // feels like a trap.
+  const continuePlaceholder = continuable && onContinue
+    ? i18nT('components.chatInput.turn_interrupted_press_continue')
+    : ''
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [filePickerOpen, setFilePickerOpen] = useState(false)
   const [fileQuery, setFileQuery] = useState('')
@@ -1828,6 +1900,7 @@ function ChatInput({
    *  Covers drag-select that ends mid-token, touch/long-press handles on mobile,
    *  and any other non-keyboard way selection could split a token. */
   const handleSelectSnap = useCallback(() => {
+    recordCaret()
     if (!pasteBlocks.length) return
     const ta = inputRef.current
     if (!ta) return
@@ -1851,7 +1924,7 @@ function ChatInput({
     if (newSs === ss && newSe === se) return
     const dir = ta.selectionDirection || 'forward'
     ta.setSelectionRange(Math.min(newSs, newSe), Math.max(newSs, newSe), dir as 'forward' | 'backward' | 'none')
-  }, [pasteBlocks])
+  }, [pasteBlocks, recordCaret])
 
   /** Prune paste blocks whose token was deleted from the textarea. */
   useEffect(() => {
@@ -2253,7 +2326,7 @@ function ChatInput({
           aria-label={i18nT('components.chatInput.message_input')}
           className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
-          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : resolvedPlaceholder}
+          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || resolvedPlaceholder}
           readOnly={optimizing}
           rows={1}
           value={value}
@@ -2276,6 +2349,7 @@ function ChatInput({
             const skillQ = fileQ === null ? matchSkillToken(before) : null
             if (skillQ !== null) { setSkillPickerOpen(true); setSkillQuery(skillQ) }
             else { setSkillPickerOpen(false); setSkillQuery('') }
+            recordCaret()
           }}
           onKeyDown={handleKeyDown}
           {...ime.composition}
@@ -2554,6 +2628,28 @@ function ChatInput({
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
               </button>
               {/* 'primary' is a stable theming hook (button.primary) — see website/docs/theming-contract.md */}
+              {/*
+                Sixth state of this button. The first five are send / stop /
+                queue / steer / disabled; this one claims the ONE state that was
+                previously dead weight — an empty composer on a slot whose last
+                turn was cut short. Pressing it resumes the turn instead of
+                sending nothing. The moment the user types a character the arrow
+                and the send action come back, so the control never carries two
+                meanings at once.
+              */}
+              {continuable && onContinue && !value.trim() && !pendingFiles.length ? (
+                <button
+                  className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                  onClick={onContinue}
+                  disabled={continuing || disabled || optimizing || !connected}
+                  aria-label={i18nT('components.chatInput.continue_interrupted_turn')}
+                  title={i18nT('components.chatInput.continue_interrupted_turn')}
+                  data-testid="composer-continue"
+                  {...offlineProps(connected, 'continue', i18nT('components.chatInput.continue_interrupted_turn'))}
+                >
+                  {continuing ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                </button>
+              ) : (
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
@@ -2563,6 +2659,7 @@ function ChatInput({
               >
                 <ArrowUp size={18} />
               </button>
+              )}
             </>)}
           </div>
         </div>

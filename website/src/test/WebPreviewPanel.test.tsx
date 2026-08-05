@@ -60,6 +60,20 @@ describe('isolatePreviewHost', () => {
   it('is a no-op when the dashboard host is unknown', () => {
     expect(isolatePreviewHost('http://localhost:5173/', '')).toBe('http://localhost:5173/')
   })
+  it('canonicalizes an IPv6 loopback ([::1]) preview host to 127.0.0.1 (CSP cannot admit [::1]:*)', () => {
+    // The dashboard CSP structurally cannot admit `http://[::1]:*`, so the
+    // liveness probe to [::1] is refused and a healthy server shows unreachable.
+    expect(isolatePreviewHost('http://[::1]:8765/', 'localhost')).toBe('http://127.0.0.1:8765/')
+    expect(isolatePreviewHost('http://[::1]:8765/app?x=1#h', 'localhost'))
+      .toBe('http://127.0.0.1:8765/app?x=1#h')
+  })
+  it('canonicalizes [::1] even when the dashboard host is unknown (CSP gap is host-independent)', () => {
+    expect(isolatePreviewHost('http://[::1]:8765/', '')).toBe('http://127.0.0.1:8765/')
+  })
+  it('canonicalizes [::1] then still cookie-isolates against a 127.0.0.1 dashboard', () => {
+    // [::1] → 127.0.0.1, which now equals the dashboard host → isolate to localhost.
+    expect(isolatePreviewHost('http://[::1]:8765/', '127.0.0.1')).toBe('http://localhost:8765/')
+  })
 })
 
 

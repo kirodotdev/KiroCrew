@@ -749,11 +749,13 @@ export interface ThemeContextValue {
   /**
    * Has the user seen the mandatory first-run Privacy chapter?
    *
-   * Browser-local on purpose, unlike `onboarded` / `importOnboarded`: it only
-   * ever gates a screen INSIDE first run, and a finished first run (`onboarded`,
-   * which IS server-backed) implies it — so a second machine never re-shows the
-   * chapter to someone who already completed onboarding, and no config field is
-   * needed to say so.
+   * Server-backed like `onboarded` / `importOnboarded`, because the GATEWAY reads
+   * it: the boot-time heartbeat withholds its first send until this is true, and
+   * the gateway cannot see localStorage. A browser-local-only flag would leave
+   * the beacon waiting forever on a signal that never reaches it.
+   *
+   * localStorage stays as the render cache so first run does not flash the
+   * chapter while the boot fetch is in flight.
    */
   privacyAcked: boolean
   themeBootReady: boolean
@@ -893,6 +895,7 @@ function useThemeState(): ThemeContextValue {
       color?: string
       onboarded?: boolean
       import_onboarded?: boolean
+      privacy_acked?: boolean
     }) => api.updateThemeConfig(body),
   })
 
@@ -931,7 +934,7 @@ function useThemeState(): ThemeContextValue {
         setPrivacyAcked(true)
         safeSetItem('mc-privacy-acked', '1')
         persistTheme(
-          { onboarded: true, import_onboarded: true },
+          { onboarded: true, import_onboarded: true, privacy_acked: true },
           {
             onSuccess: () => {
               safeSetItem('mc-import-onboarded', '1')
@@ -951,6 +954,13 @@ function useThemeState(): ThemeContextValue {
           } else {
             localStorage.removeItem('mc-onboarded')
           }
+        }
+        // Server value wins so a second machine does not re-show a chapter this
+        // user already passed. Only ever set forward from the server: clearing it
+        // locally would re-open the chapter mid-session on a stale read.
+        if (bootData.privacy_acked === true) {
+          setPrivacyAcked(true)
+          safeSetItem('mc-privacy-acked', '1')
         }
         if (typeof bootData.import_onboarded === 'boolean') {
           setImportOnboarded(bootData.import_onboarded)
@@ -982,6 +992,16 @@ function useThemeState(): ThemeContextValue {
     }).electronAPI
     bridge?.setThemeMode?.(mode)
   }, [mode])
+
+  // Sync the Windows titleBarOverlay colors whenever the resolved dark/light
+  // mode changes. The overlay strip must match the dashboard chrome at all
+  // times; sending on `resolved` (not `mode`) handles Auto switching correctly.
+  useEffect(() => {
+    const bridge = (window as unknown as {
+      electronAPI?: { setTitleBarOverlayTheme?: (mode: string) => void }
+    }).electronAPI
+    bridge?.setTitleBarOverlayTheme?.(resolved)
+  }, [resolved])
 
   // Report the resolved accent to the Electron shell (if present) so the NEXT
   // launch's boot splash (loading.html) paints in the user's chosen colour.
@@ -1199,10 +1219,14 @@ function useThemeState(): ThemeContextValue {
     setImportOnboarded(true)
   }, [])
 
+  // Persisted server-side as well as locally: the gateway gates the first
+  // heartbeat on `dashboard.privacy_acked`, so a local-only mark would leave the
+  // beacon permanently withheld on an install whose user did pass the chapter.
   const markPrivacyAcked = useCallback(() => {
     safeSetItem('mc-privacy-acked', '1')
     setPrivacyAcked(true)
-  }, [])
+    persistTheme({ privacy_acked: true })
+  }, [persistTheme])
 
   return {
     theme: resolved,

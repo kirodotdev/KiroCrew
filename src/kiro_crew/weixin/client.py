@@ -303,13 +303,20 @@ class WeixinClient:
 
     # -- receive / send --------------------------------------------------------
     async def get_updates(self, sync_buf: str) -> Dict[str, Any]:
-        """Long-poll for new messages; returns {ret, msgs, get_updates_buf}."""
+        """Long-poll for new messages; returns {ret, msgs, get_updates_buf}.
+
+        A client-side deadline expiry is returned as an empty result with
+        ``_timed_out`` set instead of being silently equated with a healthy
+        empty poll: the server normally answers well inside the deadline, so
+        hitting it at all means zero server contact — the poll loop counts
+        consecutive occurrences to make a black-holed network visible.
+        """
         try:
             return await self._post(
                 EP_GET_UPDATES, {"get_updates_buf": sync_buf}, timeout_ms=LONG_POLL_TIMEOUT_MS
             )
         except asyncio.TimeoutError:
-            return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}
+            return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf, "_timed_out": True}
 
     async def send_message(self, *, to: str, text: str, context_token: Optional[str], client_id: str) -> Dict[str, Any]:
         """Send one text message. Raises :class:`WeixinSendError` if iLink rejects it.

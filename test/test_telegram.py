@@ -256,6 +256,12 @@ class FakeSessions:
     def clear_mirror_link(self, key: str) -> bool:
         return self.mirror_links.pop(key, None) is not None
 
+    def clear_mirror_links_at(self, link: Any) -> list[str]:
+        cleared = [key for key, candidate in self.mirror_links.items() if candidate == link]
+        for key in cleared:
+            self.mirror_links.pop(key, None)
+        return cleared
+
     def enqueue(self, key: str, ts: str, text: str, *, force: bool = False, **kw: Any) -> bool:
         if force or self._busy:
             self.queued.append((ts, text, kw))
@@ -2215,6 +2221,19 @@ class TestLinkCommand:
         assert sess.mirror_links == {}
         assert any("Unlinked" in t for t, _ in cli.sent)
 
+    def test_forum_unlink_sweeps_the_topic_scoped_location(self) -> None:
+        # /link and /unlink must construct the SAME topic-scoped location, and
+        # the sweep must not leak across Topics: a General-scoped (threadless)
+        # binding in the same supergroup survives an unlink inside a Topic.
+        d, cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
+        route = ("forum", "-1001234567890:5")
+        asyncio.run(d._handle_link(route, -1001234567890))
+        general = ChannelLink("telegram", channel_id="-1001234567890", thread_id=None)
+        sess.mirror_links["dashboard:chat-9"] = general
+        asyncio.run(d._handle_unlink(route, -1001234567890))
+        assert sess.mirror_links == {"dashboard:chat-9": general}
+        assert any("Unlinked" in t for t, _ in cli.sent)
+
     def test_unlink_clears_existing(self) -> None:
         d, cli, sess = _dispatcher({7})
         asyncio.run(d._handle_link(("direct", "7"), 7))
@@ -2225,6 +2244,27 @@ class TestLinkCommand:
     def test_unlink_when_not_linked(self) -> None:
         d, cli, sess = _dispatcher({7})
         asyncio.run(d._handle_unlink(("direct", "7"), 7))
+        assert any("wasn't linked" in t for t, _ in cli.sent)
+
+    def test_unlink_clears_binding_stranded_under_foreign_spelling(self) -> None:
+        # The stale-mirror regression: a binding whose key spelling no longer
+        # derives from the current session key (rotated DM generation, or a
+        # dashboard session mirroring into this chat) still occupies the
+        # location. Unlink must clear it by location value.
+        d, cli, sess = _dispatcher({7})
+        sess.mirror_links["dashboard:chat-9"] = ChannelLink("telegram", channel_id="7")
+        asyncio.run(d._handle_unlink(("direct", "7"), 7))
+        assert sess.mirror_links == {}
+        assert any("Unlinked" in t for t, _ in cli.sent)
+
+    def test_unlink_leaves_other_locations_alone(self) -> None:
+        # Exact-match sweep: a mirror into a DIFFERENT chat survives, and the
+        # reply stays truthful when nothing points at this conversation.
+        d, cli, sess = _dispatcher({7})
+        other = ChannelLink("telegram", channel_id="8")
+        sess.mirror_links["dashboard:chat-9"] = other
+        asyncio.run(d._handle_unlink(("direct", "7"), 7))
+        assert sess.mirror_links == {"dashboard:chat-9": other}
         assert any("wasn't linked" in t for t, _ in cli.sent)
 
 

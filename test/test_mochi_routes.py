@@ -1207,3 +1207,373 @@ class TestQueueFilenameHasOneDefinition:
             if py.name != owner and literal in py.read_text(encoding="utf-8")
         ]
         assert offenders == [], f"{offenders} redefine the queue filename instead of importing it"
+
+
+class TestMcpToolsRoute:
+    """GET /api/apps/mochi/mcp-tools/{name} — the settings panel's discover action.
+
+    The panel used to call core's ``/api/mcp/servers/{name}``, which only has
+    PUT/DELETE registered, so every discover took a 405 and both the api helper
+    and the click handler swallowed it.
+    """
+
+    @staticmethod
+    def _server(name="srv", disabled=False, tools=()):
+        from kiro_crew.mcp_discovery import McpServerInfo
+
+        s = McpServerInfo(name=name, command="node")
+        s.tools = list(tools)
+        s.disabled = disabled
+        return s
+
+    def _patch(self, monkeypatch, servers, probe=None, scopes=None):
+        # Patch the names bound INTO routes, not mcp_discovery's own attributes:
+        # routes imports them at module scope, so rebinding the source module
+        # would leave these handlers holding the real functions and the test
+        # would silently exercise a live probe.
+        from kiro_crew.apps.builtins.mochi.backend import routes as r
+
+        monkeypatch.setattr(r, "list_servers", lambda: list(servers))
+        if probe is not None:
+            monkeypatch.setattr(r, "probe_server", probe)
+        # The effective-disabled check scans every MCP scope on disk. Stub it so
+        # the suite never depends on the developer's own mcp.json (and never
+        # reads it): ``scopes`` is {scope: {name: spec}}, same shape as
+        # mcp_discovery._load_mcp_json_by_source.
+        monkeypatch.setattr(
+            r, "_mcp_scope_specs_strict", lambda: [dict(m) for m in (scopes or {}).values()]
+        )
+
+    @pytest.mark.asyncio
+    async def test_route_is_registered_for_get(self):
+        """Guards the actual defect: the path existed but not for this method."""
+        from aiohttp import web
+
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        app = web.Application()
+        routes.register_routes(app)
+        registered = {
+            (res.method, str(res.resource.canonical))
+            for res in app.router.routes()
+            if res.resource is not None
+        }
+        assert ("POST", "/api/apps/mochi/mcp-tools/{name}") in registered
+
+    @pytest.mark.asyncio
+    async def test_returns_tools_as_objects(self, monkeypatch):
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        srv = self._server(tools=["alpha", "beta"])
+
+        async def _probe(server):
+            server.status = "ok"
+            return server
+
+        self._patch(monkeypatch, [srv], _probe)
+        req = make_mocked_request("POST", "/api/apps/mochi/mcp-tools/srv", match_info={"name": "srv"})
+        resp = await routes._handle_mcp_tools_probe(req)
+        assert resp.status == 200
+        body = json.loads(resp.text)
+        assert body["tools"] == [{"name": "alpha"}, {"name": "beta"}]
+        assert body["cached"] is False
+
+    @pytest.mark.asyncio
+    async def test_non_string_tool_names_are_dropped(self, monkeypatch):
+        """A server answering a non-string ``name`` must not reach the panel.
+
+        Both extraction paths in ``mcp_discovery`` bind the name on truthiness
+        alone (``isinstance(t, dict) and (name := t.get("name", ""))``), so a
+        server returning ``{"name": {"x": 1}}`` puts a dict in ``server.tools``.
+        The panel renders each name as a React child and a non-primitive child
+        throws, blanking the settings tree — so this boundary narrows the shape
+        instead of trusting upstream.
+        """
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        srv = self._server(tools=[{"x": 1}, "alpha", ["a"], "", 7, None, "beta"])
+
+        async def _probe(server):
+            server.status = "ok"
+            return server
+
+        self._patch(monkeypatch, [srv], _probe)
+        req = make_mocked_request("POST", "/api/apps/mochi/mcp-tools/srv", match_info={"name": "srv"})
+        resp = await routes._handle_mcp_tools_probe(req)
+        assert resp.status == 200
+        body = json.loads(resp.text)
+        assert body["tools"] == [{"name": "alpha"}, {"name": "beta"}]
+        for entry in body["tools"]:
+            assert isinstance(entry["name"], str) and entry["name"]
+
+    @pytest.mark.asyncio
+    async def test_probe_error_prose_is_not_returned(self, monkeypatch):
+        """A server's own error text can carry a credential and this response
+        reaches the dashboard, so the prose must not be on the wire at all."""
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        srv = self._server()
+
+        async def _probe(server):
+            server.status = "error"
+            server.error = "connect failed: https://example.test?token=SECRETVALUE"
+            return server
+
+        self._patch(monkeypatch, [srv], _probe)
+        req = make_mocked_request("POST", "/api/apps/mochi/mcp-tools/srv", match_info={"name": "srv"})
+        resp = await routes._handle_mcp_tools_probe(req)
+        assert resp.status == 200
+        assert "SECRETVALUE" not in resp.text
+        body = json.loads(resp.text)
+        assert "error" not in body, "error prose must not be returned"
+        assert body["status"] == "error", "status is how the panel learns the probe failed"
+
+    @pytest.mark.asyncio
+    async def test_unknown_server_is_404(self, monkeypatch):
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        self._patch(monkeypatch, [self._server(name="other")])
+        req = make_mocked_request("POST", "/api/apps/mochi/mcp-tools/srv", match_info={"name": "srv"})
+        resp = await routes._handle_mcp_tools_probe(req)
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_disabled_server_is_never_probed(self, monkeypatch):
+        """Probing SPAWNS the server. ``probe_all`` filters consent-disabled rows
+        before calling ``probe_server``; ``probe_server`` does not enforce it, so
+        this per-server entry point must, or it bypasses the consent gate."""
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        called = []
+
+        async def _probe(server):
+            called.append(server.name)
+            return server
+
+        self._patch(monkeypatch, [self._server(disabled=True)], _probe)
+        req = make_mocked_request("POST", "/api/apps/mochi/mcp-tools/srv", match_info={"name": "srv"})
+        resp = await routes._handle_mcp_tools_probe(req)
+        assert resp.status == 409
+        assert json.loads(resp.text)["code"] == "server_disabled"
+        assert called == [], "a disabled server must not be spawned"
+
+    @pytest.mark.asyncio
+    async def test_toggle_disabled_in_kiro_global_scope_is_never_probed(self, monkeypatch):
+        """The bypass GPT caught: /api/mcp/toggle writes ``disabled: true`` into
+        the KIRO-GLOBAL mcp.json, but ``list_servers`` only sets
+        ``McpServerInfo.disabled`` from the Kiro Crew scope. A row introduced by a
+        retained agent entry therefore arrives with ``disabled = False`` even
+        though the user switched the server off in the dashboard, so a check that
+        reads only the row would spawn it. Row says enabled, scope says disabled
+        -> must refuse.
+        """
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        called = []
+
+        async def _probe(server):
+            called.append(server.name)
+            return server
+
+        self._patch(
+            monkeypatch,
+            [self._server(disabled=False)],
+            _probe,
+            scopes={"kiroGlobal": {"srv": {"command": "node", "disabled": True}}},
+        )
+        req = make_mocked_request(
+            "POST", "/api/apps/mochi/mcp-tools/srv", match_info={"name": "srv"}
+        )
+        resp = await routes._handle_mcp_tools_probe(req)
+        assert resp.status == 409
+        assert json.loads(resp.text)["code"] == "server_disabled"
+        assert called == [], "a server disabled in any scope must not be spawned"
+
+    @pytest.mark.asyncio
+    async def test_scope_scan_failure_fails_closed(self, monkeypatch):
+        """A scan that raises must refuse the probe, not fall through to it."""
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        called = []
+
+        async def _probe(server):
+            called.append(server.name)
+            return server
+
+        self._patch(monkeypatch, [self._server(disabled=False)], _probe)
+
+        def _boom():
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(routes, "_mcp_scope_specs_strict", _boom)
+        req = make_mocked_request(
+            "POST", "/api/apps/mochi/mcp-tools/srv", match_info={"name": "srv"}
+        )
+        resp = await routes._handle_mcp_tools_probe(req)
+        assert resp.status == 409
+        assert called == [], "a failed consent scan must not spawn the server"
+
+    @pytest.mark.asyncio
+    async def test_raw_scoped_key_disable_blocks_the_canonical_row(self, monkeypatch):
+        """Second bypass GPT caught: ``list_servers`` CANONICALIZES row names, so
+        a server configured as ``npm:@playwright/mcp`` is reported as
+        ``playwright-mcp``. The scope dict is still keyed by the RAW name, so an
+        exact lookup finds no ``disabled: true`` — and the canonical row can be
+        retained from the agent config, which is what makes it probeable.
+        """
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        called = []
+
+        async def _probe(server):
+            called.append(server.name)
+            return server
+
+        self._patch(
+            monkeypatch,
+            [self._server(name="playwright-mcp", disabled=False)],
+            _probe,
+            scopes={
+                "kiroGlobal": {
+                    "npm:@playwright/mcp": {"command": "npx", "disabled": True}
+                }
+            },
+        )
+        req = make_mocked_request(
+            "POST",
+            "/api/apps/mochi/mcp-tools/playwright-mcp",
+            match_info={"name": "playwright-mcp"},
+        )
+        resp = await routes._handle_mcp_tools_probe(req)
+        assert resp.status == 409
+        assert json.loads(resp.text)["code"] == "server_disabled"
+        assert called == [], "a raw-keyed disable must block the canonical row"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_scope_refuses_instead_of_probing(self, monkeypatch, tmp_path):
+        """An unusable scope means the consent state is UNKNOWN, not absent.
+
+        ``mcp_discovery._load_mcp_json_by_source`` logs and skips a file it
+        cannot parse, so a scope holding the ``disabled: true`` simply vanishes
+        and the row looks enabled — the fail-OPEN GPT caught. This drives the
+        real reader against a malformed file on disk (no stub) to prove the
+        propagate-and-refuse path, rather than asserting on a mocked raise.
+        """
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        called = []
+
+        async def _probe(server):
+            called.append(server.name)
+            return server
+
+        bad = tmp_path / "broken-mcp.json"
+        bad.write_text("{ this is not json", encoding="utf-8")
+        monkeypatch.setattr(
+            routes.mcp_discovery, "_mcp_json_paths", lambda: (bad,)
+        )
+        monkeypatch.setattr(
+            routes.mcp_discovery, "_extra_scope_sources", lambda: []
+        )
+        from kiro_crew.apps.builtins.mochi.backend import routes as r
+
+        monkeypatch.setattr(r, "list_servers", lambda: [self._server(disabled=False)])
+        monkeypatch.setattr(r, "probe_server", _probe)
+
+        req = make_mocked_request(
+            "POST", "/api/apps/mochi/mcp-tools/srv", match_info={"name": "srv"}
+        )
+        resp = await routes._handle_mcp_tools_probe(req)
+        assert resp.status == 409
+        assert called == [], "an unreadable scope must not fall through to a probe"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "doc",
+        ['{"mcpServers": []}', '{"mcpServers": "nope"}', "[]", '"a string"'],
+        ids=["servers-list", "servers-string", "doc-list", "doc-string"],
+    )
+    async def test_malformed_scope_shape_refuses_instead_of_probing(
+        self, monkeypatch, tmp_path, doc
+    ):
+        """Parseable-but-wrong SHAPE is unreadable too.
+
+        The earlier fix propagated read/parse errors but still SKIPPED a scope
+        whose shape was wrong, so ``{"mcpServers": []}`` dropped a scope that may
+        hold the ``disabled: true`` and the consent check went back to
+        fail-OPEN — the same defect one layer down.
+        """
+        from kiro_crew.apps.builtins.mochi.backend import routes as r
+
+        called = []
+
+        async def _probe(server):
+            called.append(server.name)
+            return server
+
+        bad = tmp_path / "shape-mcp.json"
+        bad.write_text(doc, encoding="utf-8")
+        monkeypatch.setattr(r.mcp_discovery, "_mcp_json_paths", lambda: (bad,))
+        monkeypatch.setattr(r.mcp_discovery, "_extra_scope_sources", lambda: [])
+        monkeypatch.setattr(r, "list_servers", lambda: [self._server(disabled=False)])
+        monkeypatch.setattr(r, "probe_server", _probe)
+
+        req = make_mocked_request(
+            "POST", "/api/apps/mochi/mcp-tools/srv", match_info={"name": "srv"}
+        )
+        resp = await r._handle_mcp_tools_probe(req)
+        assert resp.status == 409
+        assert called == [], f"malformed scope {doc!r} must not fall through to a probe"
+
+    def test_absent_mcp_servers_key_is_legitimately_empty(self, monkeypatch, tmp_path):
+        """Guard the fix against over-reaching: a config with NO ``mcpServers``
+        key is a valid empty scope, not a malformed one, and must not raise."""
+        from kiro_crew.apps.builtins.mochi.backend import routes as r
+
+        ok = tmp_path / "empty-mcp.json"
+        ok.write_text('{"someOtherKey": 1}', encoding="utf-8")
+        monkeypatch.setattr(r.mcp_discovery, "_mcp_json_paths", lambda: (ok,))
+        monkeypatch.setattr(r.mcp_discovery, "_extra_scope_sources", lambda: [])
+        assert r._mcp_scope_specs_strict() == []
+
+    @pytest.mark.asyncio
+    async def test_blank_name_is_400(self, monkeypatch):
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        self._patch(monkeypatch, [])
+        req = make_mocked_request("POST", "/api/apps/mochi/mcp-tools/ ", match_info={"name": "  "})
+        resp = await routes._handle_mcp_tools_probe(req)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_concurrent_probe_is_rejected(self, monkeypatch):
+        """Click-spam must not spawn one process per click."""
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        async def _probe(server):
+            return server
+
+        self._patch(monkeypatch, [self._server()], _probe)
+        routes._mcp_probe_inflight.add("srv")
+        try:
+            req = make_mocked_request(
+                "POST", "/api/apps/mochi/mcp-tools/srv", match_info={"name": "srv"}
+            )
+            resp = await routes._handle_mcp_tools_probe(req)
+        finally:
+            routes._mcp_probe_inflight.discard("srv")
+        assert resp.status == 409
+        assert json.loads(resp.text)["code"] == "probe_in_progress"
+
+    @pytest.mark.asyncio
+    async def test_inflight_cleared_when_probe_raises(self, monkeypatch):
+        from kiro_crew.apps.builtins.mochi.backend import routes
+
+        async def _probe(server):
+            raise RuntimeError("boom")
+
+        self._patch(monkeypatch, [self._server()], _probe)
+        req = make_mocked_request("POST", "/api/apps/mochi/mcp-tools/srv", match_info={"name": "srv"})
+        with pytest.raises(RuntimeError):
+            await routes._handle_mcp_tools_probe(req)
+        assert "srv" not in routes._mcp_probe_inflight

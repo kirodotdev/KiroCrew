@@ -2576,9 +2576,9 @@ async def _handle_resume_choice(
 
         # Post last 5 messages as context
         try:
-            from kiro_crew.config.loader import config_dir
+            from kiro_crew.config.loader import data_home
 
-            sess_dir = config_dir() / "sessions"
+            sess_dir = data_home() / "sessions"
             stem = session_key.split(":", 1)[-1] if ":" in session_key else session_key
             jsonl = sess_dir / f"{stem}.jsonl"
             if not jsonl.exists() and not stem.startswith("dashboard_"):

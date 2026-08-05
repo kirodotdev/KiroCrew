@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
-import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock } from 'lucide-react'
+import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent, sseSubagentDone } from '../../store/chatSlice'
 import { api } from '../../api/client'
@@ -13,6 +13,12 @@ const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
  *  first, the healthy remainder collapses into a summary row. Bounds chip DOM
  *  at 60-100 concurrent agents without a virtualization dependency. */
 const CHIP_MAX_ROWS = 8
+
+/** localStorage key persisting the user's collapse choice for the wave chip.
+ *  Default is expanded (matches the long-standing behaviour); the toggle only
+ *  adds the ability to shrink the chip to its one-line header when a big wave
+ *  would otherwise push the composer down. Choice survives across sessions. */
+const COLLAPSE_KEY = 'mc.subagentChip.collapsed'
 
 /** Minimal shape of the `/api/spawn` list response consumed for reconciliation. */
 interface SpawnListAgent {
@@ -82,6 +88,20 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     activeListRef.current.forEach(a => { if (a.status === 'running' || a.status === 'tool') stopAgent(a.id) })
   }, [stopAgent])
   const [retrying, setRetrying] = useState(false)
+  // Collapse the agent list to the one-line header. Default expanded; the
+  // choice is remembered across sessions via localStorage so a user who
+  // prefers the quiet header keeps it. Counts + Stop all stay in the header
+  // either way, so a wave can always be stopped without expanding.
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(COLLAPSE_KEY) === '1' } catch { return false }
+  })
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed(c => {
+      const next = !c
+      try { localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0') } catch { /* private mode / quota — keep in-memory only */ }
+      return next
+    })
+  }, [])
   const retryFailed = useCallback(() => {
     setRetrying(true)
     Promise.allSettled(failedIds.map(id => api.spawnRetry(id))).finally(() => setRetrying(false))
@@ -125,6 +145,16 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             translated UI. Mono is re-applied below on the parts that earn it:
             the tree glyphs, the elapsed/tool counter and the tool command. */}
         <div className="flex items-center gap-2 px-3 py-1.5 text-[13px]">
+          <button
+            type="button"
+            onClick={toggleCollapsed}
+            className="shrink-0 flex items-center text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded-sm"
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? i18nT('pages.chat.subagentProgressBar.expand_agent_list') : i18nT('pages.chat.subagentProgressBar.collapse_agent_list')}
+            title={collapsed ? i18nT('pages.chat.subagentProgressBar.expand_agent_list') : i18nT('pages.chat.subagentProgressBar.collapse_agent_list')}
+          >
+            <ChevronRight size={14} className="transition-transform" style={{ transform: collapsed ? 'none' : 'rotate(90deg)' }} />
+          </button>
           <Bot size={14} className="text-accent shrink-0" />
           {/* Histogram header: whole-wave counts so mid-wave failures stay visible */}
           <span className="text-text-strong font-medium flex items-center gap-2 min-w-0" data-testid="subagent-histogram">
@@ -157,7 +187,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             )}
           </span>
         </div>
-        <div className="px-3 pb-2 space-y-0.5">
+        <div className={`px-3 pb-2 space-y-0.5${collapsed ? ' hidden' : ''}`}>
           {visibleList.map((a, i) => {
             const isLast = i === visibleList.length - 1 && hiddenCount === 0
             const taskPreview = sanitizeLlmOutput((a.task || '').slice(0, 80)) + ((a.task || '').length > 80 ? '…' : '')

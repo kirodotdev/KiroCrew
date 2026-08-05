@@ -11,6 +11,7 @@ import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 /**
  * Option labels are FUNCTIONS, not module-level arrays.
  *
@@ -73,6 +74,11 @@ const COMPLETION_KEEP_CHARS_MIN = 0
 // Mirrors RESULT_FILE_MAX_BYTES on the backend (handlers/core.py _EDITABLE_CONFIG).
 const COMPLETION_KEEP_CHARS_MAX = 512000
 const COMPLETION_KEEP_CHARS_DEFAULT = 3000
+
+const CHUNK_BUDGET_MIN = 0
+// Mirrors the bound in the backend allowlist (handlers/core.py _EDITABLE_CONFIG).
+const CHUNK_BUDGET_MAX = 10000
+const CHUNK_BUDGET_DEFAULT = 150
 
 export function ChatPanel() {
   const qc = useQueryClient()
@@ -139,6 +145,12 @@ export function ChatPanel() {
       completion_keep_chars?: number
     }
     dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string }
+    knowledge?: {
+      auto_add_documents?: boolean
+      auto_register_project_docs?: boolean
+      auto_ingest_artifacts?: boolean
+      auto_ingest_chunk_budget?: number
+    }
   }>({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
@@ -220,6 +232,30 @@ export function ChatPanel() {
     },
   })
 
+  const [localChunkBudget, setLocalChunkBudget] = useState('')
+  const chunkBudgetInitRef = useRef(false)
+  useEffect(() => {
+    if (mcQ.data && !chunkBudgetInitRef.current) {
+      chunkBudgetInitRef.current = true
+      setLocalChunkBudget(
+        String(mcQ.data.knowledge?.auto_ingest_chunk_budget ?? CHUNK_BUDGET_DEFAULT)
+      )
+    }
+  }, [mcQ.data])
+
+  const knowledgeMut = useMutation({
+    mutationFn: ({ path, value }: { path: string; value: boolean | number }) =>
+      api.patchConfig(path, value),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => {
+      setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_knowledge_setting'))
+      setLocalChunkBudget(
+        String(mcCfg?.knowledge?.auto_ingest_chunk_budget ?? CHUNK_BUDGET_DEFAULT)
+      )
+    },
+  })
+  const knowledgeDisabled = !mcQ.isSuccess || knowledgeMut.isPending
+
   const keepModeMut = useMutation({
     mutationFn: (v: CompletionKeepMode) => api.patchConfig('agent.completion_keep', v),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
@@ -281,12 +317,7 @@ export function ChatPanel() {
 
   return (
     <>
-      {saveError && (
-        <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-center justify-between animate-rise">
-          <span className="text-[13px] text-danger">{saveError}</span>
-          <button className="text-[13px] text-danger hover:text-text cursor-pointer bg-transparent border-none" onClick={() => setSaveError('')}>{i18nT('pages.settings.chatPanel.dismiss')}</button>
-        </div>
-      )}
+      <ErrorNotice message={saveError} onDismiss={() => setSaveError('')} className="mb-4 animate-rise" />
       {dashQ.isError && (
         <div className="mb-4 text-[13px] text-danger">
           {i18nT('pages.settings.chatPanel.failed_to_load_dashboard_config')}{' '}
@@ -449,6 +480,60 @@ export function ChatPanel() {
                 .catch(() => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_auto_compact_threshold')))
             }
             disabled={!mcQ.isSuccess}
+          />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={i18nT('pages.settings.chatPanel.knowledge_library')}>
+        <SettingsCard>
+          <SettingsToggle
+            label={i18nT('pages.settings.chatPanel.auto_add_documents')}
+            description={i18nT('pages.settings.chatPanel.let_the_agent_add_documents_it_reads_while_workin')}
+            checked={mcCfg?.knowledge?.auto_add_documents ?? true}
+            onChange={v => knowledgeMut.mutate({ path: 'knowledge.auto_add_documents', value: v })}
+            disabled={knowledgeDisabled}
+          />
+          <SettingsToggle
+            label={i18nT('pages.settings.chatPanel.auto_register_project_documents')}
+            description={i18nT('pages.settings.chatPanel.register_the_documents_of_each_project_you_work_i')}
+            checked={mcCfg?.knowledge?.auto_register_project_docs ?? true}
+            onChange={v =>
+              knowledgeMut.mutate({ path: 'knowledge.auto_register_project_docs', value: v })
+            }
+            disabled={knowledgeDisabled}
+          />
+          <SettingsToggle
+            label={i18nT('pages.settings.chatPanel.auto_add_saved_artifacts')}
+            description={i18nT('pages.settings.chatPanel.mirror_documents_you_save_as_artifacts_into_the_l')}
+            checked={mcCfg?.knowledge?.auto_ingest_artifacts ?? true}
+            onChange={v =>
+              knowledgeMut.mutate({ path: 'knowledge.auto_ingest_artifacts', value: v })
+            }
+            disabled={knowledgeDisabled}
+          />
+          <SettingsInput
+            label={i18nT('pages.settings.chatPanel.auto_ingest_limit_per_scan')}
+            aria-label={i18nT('pages.settings.chatPanel.auto_ingest_limit_per_scan')}
+            hint={i18nT('pages.settings.chatPanel.how_much_an_automatically_registered_source_may_i', {
+              count: CHUNK_BUDGET_DEFAULT,
+            })}
+            type="number"
+            value={localChunkBudget}
+            min={CHUNK_BUDGET_MIN}
+            max={CHUNK_BUDGET_MAX}
+            step={50}
+            onChange={setLocalChunkBudget}
+            onBlur={() => {
+              const n = parseInt(localChunkBudget, 10)
+              if (isNaN(n) || n < CHUNK_BUDGET_MIN || n > CHUNK_BUDGET_MAX) {
+                setLocalChunkBudget(
+                  String(mcCfg?.knowledge?.auto_ingest_chunk_budget ?? CHUNK_BUDGET_DEFAULT)
+                )
+                return
+              }
+              knowledgeMut.mutate({ path: 'knowledge.auto_ingest_chunk_budget', value: n })
+            }}
+            disabled={knowledgeDisabled}
           />
         </SettingsCard>
       </SettingsSection>

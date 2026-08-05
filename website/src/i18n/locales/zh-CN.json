@@ -90,7 +90,6 @@
     "star_us": "给我们加星",
     "report_issue": "反馈问题",
     "star_kirocrew_on_github": "在 GitHub 上为 Kiro Crew 加星",
-    "report_an_issue_on_github": "在 GitHub 上反馈问题",
     "click_to_collapse_readouts": "点击折叠状态读数",
     "click_to_expand_readouts": "点击展开状态读数",
     "gateway_offline_reconnecting": "网关离线 — 正在重连",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "正在拉取最新变更",
     "rebuilding_package": "正在重新构建包",
     "restarting_server": "正在重启服务器",
-    "syncing_workspace": "正在同步工作区"
+    "syncing_workspace": "正在同步工作区",
+    "report_a_problem_with_diagnostics": "反馈问题 — 收集日志和崩溃报告，并移除密钥"
   },
   "appSdk": {
     "chatEmbed": {
@@ -114,6 +114,9 @@
       "send_message": "发送消息",
       "session_ready_type_a_message_to_start": "会话已就绪。输入消息即可开始。",
       "streaming": "流式输出中"
+    },
+    "chatMessageList": {
+      "open_path": "打开 {{path}}"
     }
   },
   "apps": {
@@ -227,6 +230,19 @@
         "wait_local": "正在扫描代码中的路由…",
         "wait_repo": "正在克隆仓库并列出其中的路由…",
         "wait_url": "正在加载页面并跟踪其中的链接…"
+      },
+      "manifest": {
+        "description": "在找同事之前先自己做一轮设计评审。给它一张截图、一整套多屏流程、一个 Figma 文件、一个 git 仓库，或者一个已经在跑的 URL，它会找出候选界面，让你选择要看哪些，然后像资深设计师那样反馈：整体印象、哪些地方做得好、哪些值得收紧，每条都对应一条具名的设计准则。多屏流程还会得到单屏看不出的跨屏发现 — 控件不一致、缺少进度、无法返回、走进死路。它会先把代码和 Figma 渲染出来再判断，绝不评论自己没真正看到的画面；对于到不了的界面，它会直说，而不是猜。",
+        "display_name": "设计评审",
+        "highlight_1": "接受截图、Figma 链接、git 仓库、本地文件夹或运行中的 URL — 开始之前先告诉你它找到了什么",
+        "highlight_2": "在渲染后的页面上实测对比度和点击目标尺寸，而不是从图片上估算",
+        "highlight_3": "多屏流程会做跨屏检查：控件一致性、进度提示、返回路径、重复索取、死路",
+        "highlight_4": "每条发现都点明背后的设计准则（Nielsen 1-10、WCAG、Gestalt、Fitts），并按 NN/g 1-4 级标注严重程度",
+        "highlight_5": "选中报告里的任意一行，就地追问",
+        "highlight_6": "会告诉你哪些没看到，而不是去评论空白或被遮挡的界面",
+        "highlight_7": "对评审对象零接触：不安装项目依赖、不运行项目脚本、不启动开发服务器、也不修改任何文件",
+        "highlight_8": "截图用无头浏览器完成：首次使用时下载一次，缓存在主目录里，绝不放进项目",
+        "page_label": "设计评审"
       }
     },
     "autoResearch": {
@@ -396,6 +412,18 @@
         "state_stalled": "已停滞",
         "state_stopped": "已停止",
         "state_working": "进行中"
+      },
+      "manifest": {
+        "description": "运行多轮研究任务，你离开之后它仍会继续。给它一个问题，它会拆成一棵更细的子问题树，派代理逐个调查，并把发现实时推送到页面。研究任务会自行推进，直到问题有了答案或它发现进展停滞；完成的报告可以存入知识库，也可以导出为可分享的工件。",
+        "display_name": "研究实验室",
+        "highlight_1": "先把宽泛的问题展开成范围明确的子问题树，然后才动用代理",
+        "highlight_2": "在你两次查看之间，研究任务照常推进，发现实时推送",
+        "highlight_3": "会察觉研究任务不再有进展，而不是无限循环下去",
+        "highlight_4": "有人值守模式在需要决策时会暂停向你提问；无人值守则一路跑完",
+        "highlight_5": "研究任务进行中也能追加问题，无需从头开始",
+        "highlight_6": "在仪表板上启动、暂停和恢复任意研究任务",
+        "highlight_7": "把完成的报告导出到知识库，或导出为可分享的工件",
+        "page_label": "研究实验室"
       }
     },
     "codeReviewSage": {
@@ -471,6 +499,16 @@
         "phase_failed": "失败",
         "phase_gating": "设计门禁中…",
         "phase_queued": "已排队"
+      },
+      "manifest": {
+        "description": "深度审查 GitHub 拉取请求，告诉你哪些改动真正值得关注。每个改动过的文件都在各自独立的代理会话里审查，按影响范围加权，最后按优先级汇总成一份 Focus Report。发现会暂存为 GitHub 草稿审查，在你提交之前不会公开；审查者还会从已上线的修复和过往审查评论里，不断学习仓库真正的标准。",
+        "display_name": "Code Review Sage",
+        "highlight_1": "Focus Report 按影响范围给改动排序，风险高的文件先读",
+        "highlight_2": "每个改动一个独立的代理会话，发现不会在文件之间串扰",
+        "highlight_3": "以 PENDING（草稿）状态发布 GitHub 审查 — 提交的人始终是你",
+        "highlight_4": "按仓库分别学习已上线的修复、审查评论和设计讨论",
+        "highlight_5": "审查 GitHub 拉取请求；需要网关主机上有已认证的 `gh` CLI",
+        "page_label": "Code Review Sage"
       }
     },
     "fileExplorer": {
@@ -517,6 +555,17 @@
       },
       "treeNode": {
         "loading": "加载中…"
+      },
+      "manifest": {
+        "description": "不用离开仪表板，就能浏览和阅读运行 Kiro Crew 那台机器上的文件。多个文件在标签页里同时打开，沿目录树浏览时每个文件旁边都显示 git 状态，可以在整个文件夹里搜字符串，markdown 也是渲染后阅读而不是看源码。它按设计就是只读的：只打开和搜索文件，从不编辑、移动或删除，可访问范围仅限主目录以及 /tmp 和 /opt。",
+        "display_name": "文件",
+        "highlight_1": "只读：只打开和搜索文件，从不写入、移动或删除",
+        "highlight_2": "多个文件在标签页里同时打开，带语法高亮",
+        "highlight_3": "Markdown 文件渲染为排版后的文本，而不是原始源码",
+        "highlight_4": "目录树在每个文件旁直接显示 git 状态",
+        "highlight_5": "跨目录搜索，给出行级匹配和上下文预览",
+        "highlight_6": "可访问路径仅限主目录、/tmp 和 /opt — 指向外部的符号链接会被拒绝",
+        "page_label": "文件"
       }
     },
     "issueRadar": {
@@ -1127,6 +1176,20 @@
           "last_update": "最后更新",
           "number": "编号"
         }
+      },
+      "manifest": {
+        "description": "一个记得住事的 issue 分类助手。浏览、筛选并分类 GitHub 和 GitLab 的 issue，用 AI 建议标签，为每个 issue 留调查笔记 — 发现都记在本地账本里，同一件事不会被重复调查。",
+        "display_name": "Issue Radar",
+        "highlight_1": "为 issue 和拉取请求生成 AI 摘要与建议标签，每条都附上理由",
+        "highlight_2": "每个 issue 的调查笔记都存在本地账本里，同一件事不会被重复调查",
+        "highlight_3": "在页面内直接处理拉取请求：批准、要求修改、评论、合并、关闭或重开，以及取消或重跑 CI — 可以逐个操作，也可以批量操作",
+        "highlight_4": "合并绝不绕过任何门禁：必需的评审和检查由托管平台强制执行，全部通过后自动合并会自行把改动落地",
+        "highlight_5": "批准或合并都锁定在你看到的那个提交上，因此评审途中新推上来的改动会被拒绝，而不是在你没看见时就通过",
+        "highlight_6": "任何写操作都需要仓库的 triage 或 push 权限；只读连接只能给建议",
+        "highlight_7": "列出你最近贡献过的仓库，连接一个只需点一下",
+        "highlight_8": "在本地缓存 issue、标签和成员，按需刷新",
+        "highlight_9": "支持 GitHub；需要网关主机上有已认证的 `gh` CLI",
+        "page_label": "Issue Radar"
       }
     },
     "meetings": {
@@ -1308,6 +1371,16 @@
         "chat": "对话",
         "html": "图示",
         "markdown": "笔记"
+      },
+      "manifest": {
+        "description": "AI 会议助手。实时转录会议，边开边整理结构化笔记和图示，提取行动项，并让你在提交之前先过一遍。",
+        "display_name": "会议",
+        "highlight_1": "用 Kiro Crew 自带的语音转文字做实时转录 — 不需要额外守护进程，也不需要你现有之外的云账号",
+        "highlight_2": "一组代理并行处理会议：结构化笔记、HTML/Mermaid 图示，以及行动项清单",
+        "highlight_3": "用领域词典把反复出现的语音转文字错误纠正一次，之后每场会议都能认对",
+        "highlight_4": "在提交任何内容之前先审阅提取出的行动项 — 噪音归档，其余提交",
+        "highlight_5": "任务和日历提供方可插拔：内置本地任务账本和 iCalendar（.ics）读取器，组织也可以注册自己的实现",
+        "page_label": "会议"
       }
     },
     "papyrus": {
@@ -1403,6 +1476,18 @@
         "session_title": "Papyrus：{{name}}",
         "warning_count_other": "{{count}} 个警告",
         "word_count_other": "{{count}} 个词"
+      },
+      "manifest": {
+        "description": "带实时 PDF 预览和 AI 合著者的 LaTeX 论文编辑器。在分栏编辑器里写作，按 Cmd+S（Windows 和 Linux 上是 Ctrl+S）用 pdflatex 或 tectonic 编译，渲染好的 PDF 就在源码旁边。编译错误会解析成可点击的列表，点一下跳到出错的那一行。可以从任意 git 远端克隆已有论文，然后在工具栏里提交和推送。合著者面板是一个限定在这篇论文范围内的真实 Kiro Crew 会话，代理可以读写你的 LaTeX，你则看着 PDF 实时更新。",
+        "display_name": "Papyrus",
+        "highlight_1": "分栏 LaTeX 编辑器，旁边是实时 PDF 预览",
+        "highlight_2": "保存即编译（Cmd+S，Windows 和 Linux 上为 Ctrl+S），走 pdflatex 或 tectonic，bibtex 的多轮编译也帮你跑完",
+        "highlight_3": "没装 TeX？一键把校验过的 Tectonic 编译器装进 Papyrus 自己的文件夹",
+        "highlight_4": "编译器的错误和警告会解析成可点击的列表，点一下跳到对应行",
+        "highlight_5": "AI 合著者聊天限定在这篇论文范围内 — 它读写你正在看的 LaTeX",
+        "highlight_6": "从任意 git 远端克隆论文，然后在工具栏里提交、拉取和推送",
+        "highlight_7": "从不带 shell escape 运行编译器，因此恶意 .tex 文件无法执行命令",
+        "page_label": "Papyrus"
       }
     },
     "pptxMaker": {
@@ -1499,6 +1584,17 @@
       },
       "slidePreview": {
         "preview_unavailable": "预览不可用"
+      },
+      "manifest": {
+        "description": "在聊天里描述你想要的演示文稿，拿回一个真正的 .pptx。代理会先访谈你，写出简报、大纲和美术方向，然后排版每一张幻灯片并生成文件 — 每份产出都会在对话旁边的实时预览里出现。幻灯片在构建过程中以动画 SVG 呈现，于是你能看着演示文稿成形，而不是干等下载。可复用的样式和 .pptx 模板，让同一份内容能做出三种不同的样子。",
+        "display_name": "PPTX Maker",
+        "highlight_1": "聊着聊着就得到一个完成的 .pptx — 规格模式会仔细规划，速成模式把 URL 或粘贴的文字直接变成幻灯片",
+        "highlight_2": "每份产出都有实时预览：简报、大纲、美术方向，然后是排版过程中以动画 SVG 呈现的幻灯片",
+        "highlight_3": "样式决定视觉调性，.pptx 模板决定结构，于是同一份演示文稿可以换皮而不用重写内容",
+        "highlight_4": "导入自己的 HTML 样式或现有 .pptx 模板，代理会遵循其中的配色、字体和版式",
+        "highlight_5": "不离开仪表板就能打开成品文件或定位到它所在的文件夹",
+        "highlight_6": "封装公开的 spec-driven-presentation-maker 引擎，按 sha256 锁定的版本拉取；无需手动安装任何东西",
+        "page_label": "PPTX Maker"
       }
     },
     "workflows": {
@@ -1549,6 +1645,16 @@
         "run_detail": "运行详情",
         "select_a_run_to_see_its_phases_agents_and_result": "选择一次运行以查看其阶段、代理和结果。",
         "unknown": "未知"
+      },
+      "manifest": {
+        "description": "编写、运行并观察动态工作流：一些 Python 脚本，通常由代理根据你用自然语言写的目标生成，按顺序的阶段驱动多个 Kiro Crew 代理。脚本在任何东西开始运行之前，会先对照沙箱化的工作流命令集做检查，于是错误在不执行的情况下就能暴露出来；随后页面会随运行进展流式显示每个阶段和每次代理事件。应用自带可直接运行的示例，可以从它们开始。",
+        "display_name": "工作流",
+        "highlight_1": "运行之前先校验工作流 — 错误会在什么都没执行的情况下暴露出来",
+        "highlight_2": "实时观察运行，一个阶段接一个阶段，带每个代理的进度事件",
+        "highlight_3": "脚本只能用沙箱化的工作流 API，而不是任意 Python",
+        "highlight_4": "通常由自然语言目标自动生成，之后还能手工修改",
+        "highlight_5": "自带可直接运行的示例，方便上手",
+        "page_label": "工作流"
       }
     },
     "crewCompanion": {
@@ -1625,6 +1731,16 @@
         "repeat_hours": "每 {{n}} 小时",
         "repeat_days": "每 {{n}} 天",
         "repeat_daily": "每天"
+      },
+      "manifest": {
+        "description": "Kiro Crew 的桌面伙伴，帮你把一天过得有节奏。它会提醒你休息，记住你用自然语言设的提醒，在你需要放松时带你做一段简短呼吸练习。会话完成、失败或需要你确认时，它也会告诉你。",
+        "display_name": "Crew Companion",
+        "highlight_1": "轻声提醒你休息 — 喝水、伸展、远眺 — 间隔由你设定",
+        "highlight_2": "用自然语言设置提醒，比如“20 分钟后喝水”",
+        "highlight_3": "需要放松时做一段简短的呼吸练习",
+        "highlight_4": "会话完成、失败或需要你确认时会告诉你",
+        "highlight_5": "浮在桌面上，形象可随时更换",
+        "page_label": "Crew Companion"
       }
     },
     "mdNotebook": {
@@ -1783,6 +1899,19 @@
         "empty": "还没有从此保险库删除过任何内容，因此没有 .trash 文件夹。",
         "unsupported": "此系统不支持打开文件夹。",
         "failed": "无法打开文件夹：{{message}}"
+      },
+      "manifest": {
+        "description": "把 markdown 笔记本放在 git 仓库里，笔记因此有版本、可迁移，任何编辑器都读得懂。指向一个 GitHub 仓库，它会克隆一份工作副本；也可以挂上你已有的文件夹 — 包括现成的 Obsidian 仓库 — 它会就地接管那份检出，不再复制第二份。笔记以排版后的文本呈现，点一下就能就地编辑，[[wikilinks]] 把它们连起来，每篇笔记都会显示哪些笔记指向自己。同步一步完成提交、拉取和推送；遇到合并冲突会如实报告 — 列出冲突的笔记并中止合并 — 而不是覆盖任何内容。",
+        "display_name": "笔记",
+        "highlight_1": "笔记就是 git 仓库里的纯 markdown — 没有锁定，Obsidian 或任何编辑器都能读",
+        "highlight_2": "把 GitHub 仓库克隆为笔记仓库，或者直接挂上你已有的文件夹，不做复制",
+        "highlight_3": "点击任意渲染后的块即可就地编辑；Enter 新建一个块，Tab 缩进列表",
+        "highlight_4": "笔记之间用 [[Wikilinks]] 互联，反向链接列表会显示哪些笔记指向你正在读的这篇",
+        "highlight_5": "标题和正文全文搜索，另有文件夹视图和平铺视图，六种排序方式",
+        "highlight_6": "一步同步完成提交、拉取和推送；合并冲突会列出冲突的笔记，不覆盖任何内容",
+        "highlight_7": "如果文件在你打开后已在磁盘上改动，保存会被拒绝，别处做的修改绝不会被冲掉",
+        "highlight_8": "可以选择把笔记仓库索引进知识库，让代理能搜索你的笔记",
+        "page_label": "笔记"
       }
     },
     "mochi": {
@@ -2120,6 +2249,11 @@
         "mcp_desc": "这些是 Kiro Crew 里已安装的 MCP 服务器。{{name}} 只能调用在这里添加过的——点 Add 授予，点 Remove 收回。内置服务器始终可用，不可移除。",
         "mcp_disabled": "已禁用",
         "mcp_empty": "还没有配置任何 MCP 服务器。先在 Kiro Crew 设置 → MCP 里添加，然后重新打开本面板。",
+        "mcp_error_disabled": "此服务器已禁用。请先在 Kiro Crew 设置 → MCP 中启用它。",
+        "mcp_error_generic": "无法加载工具，请重试。",
+        "mcp_error_in_progress": "正在发现工具，请稍候。",
+        "mcp_error_not_found": "此服务器已不在配置中。",
+        "mcp_error_probe_failed": "此服务器未响应。请在 Kiro Crew 设置 → MCP 中检查它的命令。",
         "mcp_from_cache": "（缓存 — 可能已过期）",
         "mcp_loading": "正在加载服务器…",
         "mcp_needs_approval": "需要审批",
@@ -2341,6 +2475,67 @@
           "spawn": "代理",
           "system": "系统"
         }
+      },
+      "manifest": {
+        "description": "一个住在你屏幕上的桌面伙伴。Mochi 在自己的面板里聊天，替你盯着网页和信息源，按你的日程规划一天。它记得你们相处的点滴，只在确实有变化时才拍你肩膀。",
+        "display_name": "Mochi",
+        "highlight_1": "浮在桌面上的宠物窗口 — 透明、可穿透点击、始终陪着你",
+        "highlight_2": "监视列表带可靠性保证：到点调度、失败退避、至少一次通知",
+        "highlight_3": "自行规划和重排任务队列；确定性的动作和情绪不消耗任何令牌",
+        "highlight_4": "记得你们的关系 — 连续天数、最忙的日子、里程碑只庆祝一次",
+        "highlight_5": "天生安静：通知会合并，静音模式会先扣住，开会时不打扰",
+        "highlight_6": "自主内核完全在进程内 — 没有第二个应用，也没有额外运行时",
+        "page_label": "Mochi"
+      }
+    },
+    "agentWorlds": {
+      "manifest": {
+        "description": "把正在运行的代理变成动态像素画场景里的角色，一眼就能看出 Kiro Crew 有多忙。每个活跃代理都是一个精灵图，随着工作开始和结束做出反应；场景主题从经典办公室到巫师塔或水下实验室。弹出为独立窗口，就能在工作时把它放在第二块屏幕上。",
+        "display_name": "Agent Worlds",
+        "highlight_1": "实时查看哪些代理正在运行，以角色而非列表呈现",
+        "highlight_2": "主题场景包括 Office、Panda Den、Neural Net、Wizard Tower 和 Deep Lab",
+        "highlight_3": "弹出为独立窗口放到第二台显示器上；场景选择保持同步",
+        "highlight_4": "记住你选择的场景，下次打开时沿用",
+        "highlight_5": "纯粹是可视化 — 从不改变代理的行为",
+        "page_label": "Worlds"
+      }
+    },
+    "channels": {
+      "manifest": {
+        "description": "一个共享房间，多个代理在这里一起解决问题，而不是单个代理独自干。你给每个代理分配角色，它们把进展发到频道里，公开回应彼此的 @提及 — 代理之间没有私聊，因此整段交流始终可读，而任何改变状态的操作仍由你批准。代理会一直留在频道里，直到被解散或超时。",
+        "display_name": "频道",
+        "highlight_1": "多个分配了角色的代理在同一份共享、可读的记录中协作",
+        "highlight_2": "代理之间没有私聊 — 每一次交流都发生在频道里",
+        "highlight_3": "任何改变状态的操作，最终都由你批准",
+        "highlight_4": "代理会一直留在频道里，直到被解散或超时",
+        "highlight_5": "在应用商店网格中隐藏；用 `kirocrew app enable channels` 启用",
+        "page_label": "频道"
+      }
+    },
+    "devFleet": {
+      "manifest": {
+        "description": "开发 Kiro Crew 本身用的控制面板。列出每个功能工作树及其拉取请求状态、提交数和磁盘用量，还能把其中任意一个拉起为 Pod。Pod 是一套完整预览实例，占用独立端口和独立数据目录，于是你可以点开未做完的改动，而不影响正在运行的网关。周边杂活它也一并处理 — 拉取 main 并重新构建、给分支变基、流式查看 Pod 日志，以及清理工作已合并的工作树。",
+        "display_name": "开发机群",
+        "highlight_1": "把任意工作树拉起为独立 Pod，占用自己的端口和数据目录，正在运行的网关毫不受影响",
+        "highlight_2": "机群视图显示每个分支的 PR 状态、提交数和磁盘用量",
+        "highlight_3": "在仪表板里同步（拉取 main 并重新构建）或给分支变基",
+        "highlight_4": "“Prune merged”不会删除仍有未提交或未跟踪改动的工作树，而是拒绝操作",
+        "highlight_5": "在界面上流式查看 Pod 日志，并签发 Pod 访问令牌",
+        "highlight_6": "给开发 Kiro Crew 本身的人用 — 日常使用并不需要它",
+        "highlight_7": "Pod 可以跑在 Linux（systemd --user）和 macOS（launchd）上 — 但 macOS 上的 Pod 没有强制的内存/CPU 上限；Make Live 仍然只支持 Linux；机群视图、PR 状态、同步、变基和清理在任何平台都可用",
+        "page_label": "开发机群"
+      }
+    },
+    "projects": {
+      "manifest": {
+        "description": "把多步骤的活儿交出去，让它无人值守地跑到完成。用自然语言描述工作、粘贴写好的规格，或者上传 YAML 文件，然后可以先生成计划审查步骤，也可以直接开跑。每次运行都有自己的页面，逐步显示进度，你随时可以暂停、恢复、重试或停止。",
+        "display_name": "任务运行器",
+        "highlight_1": "三种入口：用自然语言描述工作、粘贴规格，或上传 YAML",
+        "highlight_2": "先生成计划、审查步骤，再决定是否真的运行",
+        "highlight_3": "运行无人值守地执行，进度逐步显示在这次运行自己的页面上",
+        "highlight_4": "随时暂停、恢复、重试或停止一次运行",
+        "highlight_5": "保留历次运行及其结果的记录",
+        "page_label": "任务运行器"
       }
     },
     "opsMissionControl": {
@@ -2711,6 +2906,177 @@
         "verification_not_checkable_label": "sent, not confirmed",
         "verification_not_checkable_meaning": "The {{verb}} was accepted, but this app cannot observe whether it took effect — an acknowledgement leaves an alert firing by design, so the alarm's state says nothing either way.",
         "verification_pending_meaning_at": "The {{verb}} returned success, which only means the provider accepted the request. The next heartbeat after {{when}} re-reads the signal to find out whether it took effect."
+      },
+      "manifest": {
+        "display_name": "运维指挥中心",
+        "description": "一个自主的运维一线响应者。它盯着你的告警、呼叫和监控项，谁在报警就接手谁，带着真实上下文去调查，并给出修复建议 — 学到的东西都记在本地账本里，于是同一个故障第二次出现时比第一次更快解决。",
+        "page_label": "指挥中心",
+        "highlight_1": "告警一触发就在一个心跳内接手，在任何人需要去看之前就开始调查",
+        "highlight_2": "知识账本带置信度和信任级别 — 同一个故障再次出现时，直接用已经掌握的结论解决",
+        "highlight_3": "实时看板既在仪表板里，也是可回复的 Slack 话题，于是频道就是仪表板",
+        "highlight_4": "可连接 AWS CloudWatch、PagerDuty、Datadog、GitHub Issues，或任何能 POST 签名 JSON 的系统 — 包括 Alertmanager 格式的请求体，每条告警各自展开为一个事件",
+        "highlight_5": "默认只读 — 写操作按信号模式逐个显式开启，每一次都有审计记录",
+        "highlight_6": "感知轮值：值班时自动化档位自行开启，不值班时自行关闭"
+      }
+    },
+    "specBuilder": {
+      "api": {
+        "something_went_wrong": "出了点问题（{{status}}）",
+        "phase_new": "刚开始",
+        "phase_requirements": "需求",
+        "phase_design": "设计",
+        "phase_tasks": "方案就绪",
+        "phase_building": "构建中",
+        "phase_ready": "就绪"
+      },
+      "components": {
+        "chatColumn": {
+          "reply_to_the_spec_agent": "回复 Spec 代理…"
+        },
+        "columnSplitter": {
+          "drag_or_use_to_resize": "拖动或使用 ← → 调整大小"
+        },
+        "docView": {
+          "add_comment": "添加评论",
+          "comment": "评论",
+          "comment_on_the_selected_passage": "对所选段落发表评论",
+          "discard_this_comment": "放弃此评论",
+          "document_file_name": "{{name}}.md",
+          "nothing_here_yet": "这里还没有内容。",
+          "your_feedback_on_the_passage_in": "你对 {{document}} 中所选段落的反馈",
+          "your_feedback_on_this_passage_enter_adds_it_to_t": "你对这段内容的反馈…（按 Enter 加入队列）",
+          "empty_requirements": "尚未写下任何需求——在对话中描述你想要的内容，代理会起草这份文档。",
+          "empty_design": "还没有设计。当你在对话中通过需求后，技术设计就会出现在这里。",
+          "empty_tasks": "还没有任务清单。你通过设计之后，排好顺序的任务清单会出现在这里。"
+        },
+        "newSpecView": {
+          "describe_what_you_want_to_do": "描述你想做的事",
+          "e_g_add_login_with_google_so_users_don_t_need_pa": "例如“添加 Google 登录，这样用户不需要密码”或“导出按钮在处理大文件时崩溃”",
+          "fresh_worktree_option_pick_a_project_folder_abov": "全新工作树选项：在上方选择一个项目文件夹——如果它是 git 仓库，我可以在专用工作树中规划并构建。",
+          "keeps_your_main_checkout_untouched_branch": "保持你的主检出不受影响：我会在仓库旁边的独立文件夹中创建分支 {{branch}}，并在那里规划和构建。",
+          "let_s_plan_something": "来规划一下",
+          "never_mind": "取消",
+          "settings": "设置",
+          "start_the_conversation": "开始对话 →",
+          "starting": "正在开始…",
+          "tell_me_what_you_have_in_mind_i_ll_ask_a_few_cla": "告诉我你的想法。我会在聊天中问几个澄清问题，写出一份可供你审阅的方案，等你准备好后再动手构建。",
+          "this_folder_isn_t_a_git_repository_so_i_ll_work": "该文件夹不是 git 仓库，因此我会直接在其中工作。选择一个 git 仓库即可获得全新工作树的选项。",
+          "what_do_you_want_to_do": "你想做什么？",
+          "what_kind_of_work_is_it": "这属于哪类工作？",
+          "which_project_is_this_for": "这是为哪个项目做的？",
+          "work_in_a_fresh_worktree": "在全新工作树中工作",
+          "your_plan_is_saved_as_plain_markdown_inside_your": "你的方案以纯 markdown 形式保存在项目内（.kiro/specs），因此也可配合 Kiro IDE 和 CLI 使用。你可以更改 spec 的存放位置：",
+          "type_feature_title": "构建新东西",
+          "type_feature_blurb": "完整方案：需求、技术设计和任务清单。",
+          "type_bug_title": "修复 bug",
+          "type_bug_blurb": "排查问题，找出根本原因，并规划修复方案。",
+          "type_quick_title": "快速方案",
+          "type_quick_blurb": "跳过正式流程——只要一个目标和一份任务清单。"
+        },
+        "projectPicker": {
+          "browse": "浏览",
+          "change": "更改",
+          "choose_a_project_folder": "选择项目文件夹…",
+          "choose_a_project_folder_aria": "选择项目文件夹",
+          "go_to_parent_folder": "转到上级文件夹",
+          "hide_path_input": "隐藏路径输入框",
+          "home_you_projects_my_app": "/home/you/projects/my-app",
+          "loading": "正在加载…",
+          "no_subfolders_here_use_use_this_folder_above_to": "此处没有子文件夹——请使用上方的“使用此文件夹”来选择当前文件夹。",
+          "open_folder": "打开文件夹 {{name}}",
+          "project_folder_change": "项目文件夹：{{path}} — 更改",
+          "project_folder_path": "项目文件夹路径",
+          "recent_projects": "最近的项目",
+          "type_a_path_instead": "改为输入路径",
+          "up": "向上",
+          "use_recent_project": "使用最近的项目 {{path}}",
+          "use_this_folder": "使用此文件夹",
+          "use_this_folder_path": "使用此文件夹：{{path}}"
+        },
+        "settingsModal": {
+          "cancel": "取消",
+          "empty_keep_specs_with_each_project_recommended": "留空 = 将 spec 保存在各自的项目中（推荐）",
+          "leave_this_empty_to_keep_specs_inside_each_proje": "留空即可将 spec 保存在每个项目内部（代码旁的 .kiro/specs 文件夹，这是 Kiro 的标准做法）。或者设置一个文件夹路径，把所有 spec 集中存放。",
+          "save": "保存",
+          "saving": "正在保存…",
+          "settings": "设置",
+          "spec_storage_folder_path": "spec 存放文件夹路径",
+          "where_should_specs_be_saved": "spec 应保存在哪里？"
+        },
+        "shimmer": {
+          "loading_specs": "正在加载 spec…",
+          "loading_the_conversation": "正在加载对话…",
+          "writing_this_document": "正在撰写此文档…"
+        },
+        "specDetail": {
+          "an_agent_will_work_through_the_task_list": "代理将逐项完成任务清单",
+          "clear": "清空",
+          "close_esc": "关闭（Esc）",
+          "close_review_view": "关闭审阅视图",
+          "document_file_name": "{{name}}.md",
+          "drag_or_use_to_resize": "拖动或使用 ← → 调整大小",
+          "expand_document_for_review": "展开文档以便审阅",
+          "expand_for_review_esc_to_close": "展开以便审阅（按 Esc 关闭）",
+          "pause": "暂停",
+          "pausing": "正在暂停…",
+          "pending_comment_other": "{{count}} 条待处理评论",
+          "remove_comment_on": "移除对 {{document}} 的评论",
+          "resize_document_panel": "调整文档面板大小",
+          "review_document": "审阅 {{document}}",
+          "send_all_to_agent": "全部发送给代理",
+          "sending": "正在发送…",
+          "start_building": "开始构建",
+          "starting": "正在启动…",
+          "tells_the_agent_this_phase_is_approved_and_to_mo": "告知代理此阶段已通过、可以继续——与在聊天中输入相同",
+          "working": "正在处理…",
+          "tab_requirements": "需求",
+          "tab_design": "设计",
+          "tab_tasks": "任务",
+          "advance_to_design": "通过 → 设计",
+          "advance_to_tasks": "通过 → 任务"
+        },
+        "specRail": {
+          "agent_working": "代理工作中",
+          "an_agent_is_working": "有代理正在工作",
+          "filter_specs": "筛选 spec",
+          "filter_specs_by_name": "按名称筛选 spec",
+          "new_spec": "新建 spec",
+          "plan_ready": "方案就绪",
+          "settings": "设置",
+          "show_spec_list": "显示 spec 列表",
+          "show_specs": "显示 spec",
+          "spec_builder": "Spec Builder",
+          "spec_builder_settings": "Spec Builder 设置",
+          "specs": "SPEC",
+          "v": "v"
+        },
+        "specStatePanel": {
+          "answer_with": "“{{title}}”应如何回答？",
+          "decision_title": "决定 — {{title}}",
+          "options_for": "{{title}} 的选项",
+          "recommended": "推荐",
+          "template": "模板",
+          "tool_calls": "工具调用",
+          "turns": "轮次",
+          "worktree": "工作树"
+        },
+        "workspace": {
+          "describe_what_you_want_to_build_answer_a_few_que": "描述你想构建的内容，回答几个问题，然后获得一份经过审阅的方案——需求、设计和任务——供代理执行。",
+          "pick_a_spec_to_continue_where_you_left_off": "选择一个 spec，从上次中断处继续",
+          "plan_your_next_feature_with_a_spec": "用 spec 规划你的下一个功能",
+          "resize_spec_list": "调整 spec 列表大小",
+          "start_your_first_spec": "创建你的第一个 spec"
+        }
+      },
+      "specBuilderPage": {
+        "dismiss_error": "关闭错误提示",
+        "spec_builder": "Spec Builder",
+        "talk_through_an_idea_review_the_plan_then_let_an": "聊清一个想法，审阅方案，然后让代理去实现。"
+      },
+      "manifest": {
+        "display_name": "Spec Builder",
+        "description": "在 Kiro Crew 内进行 spec 驱动开发：借助内嵌代理把一个功能想法变成需求 → 设计 → 任务，在应用内审阅 markdown，然后把已通过的方案交给一个自主执行会话去完成。",
+        "page_label": "Spec Builder"
       }
     }
   },
@@ -2847,7 +3213,8 @@
         "verified_publisher": "已验证发布者",
         "verified_publisher_first_party": "已验证发布者（第一方）",
         "desktop_app": "桌面端",
-        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 Kiro Crew 桌面端才能使用。"
+        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 Kiro Crew 桌面端才能使用。",
+        "view_details_for": "查看 {{name}} 的详情"
       },
       "categoryRail": {
         "add_source": "添加来源",
@@ -2862,7 +3229,8 @@
         "get": "获取",
         "installed": "已安装",
         "desktop_app": "桌面端",
-        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 Kiro Crew 桌面端才能使用。"
+        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 Kiro Crew 桌面端才能使用。",
+        "view_details_for": "查看 {{name}} 的详情"
       },
       "featuredSpotlight": {
         "enable": "启用",
@@ -2871,7 +3239,8 @@
         "installed": "已安装",
         "v": "v",
         "verified_publisher": "已验证发布者",
-        "verified_publisher_first_party": "已验证发布者（第一方）"
+        "verified_publisher_first_party": "已验证发布者（第一方）",
+        "view_details_for": "查看 {{name}} 的详情"
       },
       "installedAppCard": {
         "agent_other": "{{count}} 个代理",
@@ -3014,7 +3383,6 @@
       "retrying": "重试中…"
     },
     "chatInput": {
-      "message_placeholder": "给 {{bot}} 发消息… (/command · @file · $skill)",
       "add_files_options": "添加文件与选项",
       "allow_once": "允许一次",
       "apply_a_ready_made_set_of_instructions": "套用现成的指令集",
@@ -3025,6 +3393,7 @@
       "command": "命令",
       "context_usage": "上下文用量",
       "context_window": "上下文窗口",
+      "continue_interrupted_turn": "继续被中断的回答",
       "could_not_submit_that_decision_see_the_console_f": "无法提交此决定 — 详见控制台。",
       "drag_to_resize_double_click_to_reset": "拖动调整大小（双击重置）",
       "file": "文件",
@@ -3039,6 +3408,7 @@
       "let_the_agent_read_one_of_your_files": "让代理读取你的某个文件",
       "let_the_agent_use_the_browser": "允许智能体使用浏览器",
       "message_input": "消息输入",
+      "message_placeholder": "给 {{bot}} 发消息… (/command · @file · $skill)",
       "model": "模型",
       "optimize_prompt": "优化提示词",
       "optimize_prompt_busy_optimizing_another_chat": "优化提示词 — 正在优化另一个聊天",
@@ -3046,6 +3416,8 @@
       "optimizing_prompt": "正在优化提示词…",
       "plan_pre_filled_add_context_then_send": "计划已预填 — 补充上下文后发送",
       "project": "项目",
+      "queue": "排队",
+      "queue_desc": "在当前轮次结束后运行",
       "queue_message": "排队消息",
       "queue_run_after_the_current_turn_finishes_enter": "排队 — 当前轮次结束后运行 (Enter)",
       "quick_actions_like_clearing_the_chat_or_checking": "清空聊天、查看用量等快捷操作",
@@ -3068,6 +3440,7 @@
       "skill": "技能",
       "slash_commands": "斜杠命令",
       "steer": "引导",
+      "steer_desc": "立即注入正在运行的轮次",
       "steer_inject_into_the_running_turn_enter": "引导 — 注入正在运行的轮次 (Enter)",
       "stop_generation": "停止生成",
       "stop_recording": "停止录音",
@@ -3082,13 +3455,11 @@
       "transcribing": "转写中…",
       "transcribing_please_wait": "正在转写，请稍候…",
       "trust_reads": "信任读取",
+      "turn_interrupted_press_continue": "上一轮被中断 — 点 ▶ 继续，或直接输入新消息",
       "upload_file": "上传文件",
       "use_a_skill": "使用技能",
       "used": "已用",
-      "voice_input": "语音输入",
-      "queue": "排队",
-      "queue_desc": "在当前轮次结束后运行",
-      "steer_desc": "立即注入正在运行的轮次"
+      "voice_input": "语音输入"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -3552,6 +3923,7 @@
       "s_elapsed": "秒已过"
     },
     "kiroPrerequisiteGate": {
+      "agent_specs_missing": "缺少代理规范",
       "another_sandbox_already_confines_kiro_crew_so_it": "Kiro Crew 已被另一个沙箱限制，因此它自己的沙箱无法嵌套其中。此主机的沙箱并没有问题。",
       "ask_the_kiro_crew_owner_to_install_kiro_cli_and": "请让 Kiro Crew 的所有者在此网关上安装 Kiro CLI 并登录。网关就绪后，\n          此仪表板会立即为你打开。",
       "automatic_installation_is_unavailable_here_insta": "此处无法自动安装。请在网关主机上按照官方指南安装\n                Kiro CLI，然后选择“重新检查”。",
@@ -3562,6 +3934,7 @@
       "gateway": "网关",
       "gateway_host": "网关主机",
       "gateway_setup_required": "需要设置网关",
+      "if_you_are_diagnosing_this_from_a_terminal_kiro": "如果你正在通过终端诊断此问题，请注意：在 Kiro CLI 应用本身运行之前，kiro-cli diagnostic 不会报告任何内容 — 请先使用 kiro-cli launch 启动它。该拒绝并非此问题的原因。",
       "install_kiro_cli": "安装 Kiro CLI",
       "install_kiro_cli_sign_in_once_and_kiro_crew_will": "安装 Kiro CLI，登录一次，剩下的交给 Kiro Crew。",
       "installation_guide": "安装指南",
@@ -3570,9 +3943,13 @@
       "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI 已安装，但无法验证",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI 已安装。完成登录即可继续。",
       "kiro_crew_downloads_the_official_kiro_installer": "Kiro Crew 通过 HTTPS 下载官方 Kiro 安装程序。只有在你点击下方按钮后\n                  才会开始安装。",
+      "kiro_crew_installs_the_agent_specs_kiro_cli_load": "Kiro CLI 必须先加载代理规范才能作出任何回答，这些规范由 Kiro Crew 安装。",
       "kiro_crew_isolates_the_agent_in_an_os_level_sand": "在运行任何内容之前，Kiro Crew 会将代理隔离在操作系统级沙箱中。",
+      "kiro_crew_s_agent_specs_are_not_installed": "Kiro Crew 的代理规范尚未安装",
       "kiro_crew_uses_kiro_cli_as_its_agent_engine_comp": "Kiro Crew 使用 Kiro CLI 作为代理引擎。请在",
+      "kiro_crew_writes_its_own_agent_specs_where_kiro": "Kiro Crew 会把自己的代理规范写入 Kiro CLI 读取它们的位置。缺少这些规范时，Kiro CLI 无法解析代理，因此每条消息都会失败。“重新检查”会重写这些规范并报告出错原因。",
       "kiro_setup_could_not_start": "Kiro 安装设置无法启动。",
+      "missing": "缺少",
       "open_kiro_sign_in_page": "打开 Kiro 登录页面",
       "or_run_in_terminal": "或在终端中运行：",
       "refresh": "刷新",
@@ -3592,6 +3969,7 @@
       "the_gateway_owner_needs_to_finish_setup": "需要网关所有者完成设置。",
       "the_gateway_returned_an_unexpected_error": "网关返回了意外错误。",
       "the_gateway_returned_no_prerequisite_status": "网关未返回任何前置条件状态。",
+      "the_repair_attempt_failed": "修复尝试失败",
       "then_the_dashboard_will_open_automatically": "上完成这两个步骤，然后\n              仪表板会自动打开。",
       "this_host_provides_no_os_level_sandbox_so_kiro_c": "此主机不提供操作系统级沙箱，因此 Kiro Crew 无法隔离代理。它宁可拒绝在无沙箱的情况下运行代理，也不会暴露你的凭据。",
       "try_again": "重试",
@@ -3837,6 +4215,7 @@
         "kind_heartbeat": "心跳",
         "kind_hooks": "钩子",
         "kind_notification": "通知",
+        "kind_skills": "技能",
         "kind_subagent": "子代理",
         "kind_task_runner": "任务运行器",
         "kind_tasks": "任务",
@@ -3882,6 +4261,7 @@
         "no_notifications": "暂无通知",
         "reject": "拒绝",
         "search": "搜索…",
+        "toggle_kind": "切换{{kind}}",
         "select_all_categories": "全选分类",
         "show_less": "收起",
         "try_a_different_search": "换个搜索词试试"
@@ -4096,7 +4476,6 @@
       "become_installable_and_run_setup_with_gateway_pr": "的应用将可安装，并以网关权限运行安装程序。",
       "branch": "分支",
       "cancel": "取消",
-      "dismiss_error": "忽略错误",
       "dismiss_trust_notice": "忽略信任提示",
       "display_name": "显示名称",
       "e_g_identity_services": "例如 Identity Services",
@@ -4642,6 +5021,33 @@
       "clear_filter": "清除筛选",
       "no_matches_for": "没有匹配",
       "no_noun_match": "没有匹配的{{noun}}"
+    },
+    "askAgent": {
+      "ask_the_agent": "询问代理",
+      "open_a_chat_with_this_error_s_context_attached": "打开聊天，并附上该错误的完整上下文",
+      "prompt_lead": "Kiro Crew 仪表板刚刚出现了这个错误。请定位根本原因并修复。"
+    },
+    "errorNotice": {
+      "dismiss": "忽略"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "反馈问题",
+      "what_happened": "发生了什么？",
+      "note_placeholder": "例如：更新后每条消息都失败，报“process exited (rc=None)”。",
+      "include_recent_logs": "包含最近日志",
+      "include_logs_hint": "网关与 kiro-cli 日志。关闭后仅发送崩溃报告。",
+      "redaction_notice": "Bearer 令牌、会话 cookie 和 AWS 密钥会在生成 zip 前自动移除。",
+      "collect_failed": "无法收集诊断信息",
+      "cancel": "取消",
+      "create_report": "生成报告",
+      "collecting": "正在收集……",
+      "done": "完成",
+      "diagnostics_ready": "诊断信息已就绪 — 已在 {{files}} 个文件中脱敏 {{redactions}} 处密钥。",
+      "saved_to": "保存至",
+      "show_in_finder": "在 Finder 中显示",
+      "download_zip": "下载 zip",
+      "open_github_issue": "新建 GitHub issue",
+      "prefill_hint": "打开后会自动填好详情 — 再把 zip 拖进去即可。"
     }
   },
   "hooks": {
@@ -4944,7 +5350,6 @@
       "dependencies": "依赖：",
       "discover": "发现",
       "discover_install_and_manage_agentic_apps": "发现、安装并管理智能体应用",
-      "dismiss_error": "忽略错误",
       "dismiss_message": "忽略消息",
       "failed_to_load_apps": "加载应用失败",
       "failed_to_load_registry": "加载注册表失败",
@@ -5676,11 +6081,13 @@
       "recoveryCard": {
         "backend_error_continuing": "后端错误 · 正在自动继续",
         "cancelled_continuing": "已取消 · 继续中",
+        "continued_by_you": "按你的要求继续",
         "empty_output_continuing": "输出为空 · 正在自动继续",
         "n_patterns": "{{count}} 条规则",
         "n_tool_calls_blocked": "{{count}} 个工具调用被阻止",
         "no_response_returned": "未返回响应",
         "recovered_continuing": "已恢复 · 继续中",
+        "resuming_the_interrupted_turn": "正在从中断处继续",
         "safety_policy_continuing": "安全策略 · 正在自动继续",
         "tool_call_blocked": "工具调用被阻止",
         "tool_stopped_responding": "工具停止响应",
@@ -5752,6 +6159,8 @@
         "stopping_in_progress": "正在停止"
       },
       "subagentProgressBar": {
+        "collapse_agent_list": "折叠子代理列表",
+        "expand_agent_list": "展开子代理列表",
         "backend_hiccup_retrying": "后端异常 — 正在重试…",
         "more_running_normally": "个仍在正常运行…",
         "no_activity": "— 无活动",
@@ -5828,7 +6237,12 @@
         "aria_awaiting_approval": "等待批准工具：{{label}}",
         "aria_hide_details": "隐藏工具详情：{{label}}",
         "aria_show_details": "展开工具详情：{{label}}",
-        "opened_in_the_side_panel": "已在侧边栏中打开"
+        "opened_in_the_side_panel": "已在侧边栏中打开",
+        "blocked_by_security_policy": "已被安全策略阻止"
+      },
+      "errorCard": {
+        "continue": "继续",
+        "continue_hint": "从中断处继续。已经写入磁盘的改动都还在。"
       }
     },
     "chatPage": {
@@ -7066,6 +7480,7 @@
         "skills_tip": "按需加载的技能，当代理判断相关时才加载。带有 auto 标记的技能会始终注入每个会话。技能来自 Kiro Crew、kiro-cli 和 AIM 包。",
         "auto_generated_skill_candidates_awaiting_your_ap": "自动生成的技能候选，等待你批准。点击“审查”可在批准前检查 SKILL.md 和随附脚本。批准会让技能生效（并将脚本标记为可执行）；忽略则将其丢弃。在你批准之前不会有任何内容生效。",
         "hide": "隐藏",
+        "linked_candidate_no_longer_pending": "该技能候选项已不在待审队列中，它已被批准或忽略。",
         "on_demand_skills_loaded_when_the_agent_determine": "按需技能，在代理判断相关时加载。",
         "proposed_change": "建议的更改",
         "review": "审查",
@@ -7516,7 +7931,6 @@
         "download_the_latest_version": "下载最新版本",
         "downloaded_and_verified_the_app_restarts_to_fini": "已下载并校验。应用将重启以完成安装；你也可以稍后退出，退出时会自动安装。",
         "downloading": "正在下载…",
-        "insider_gets_prerelease_builds_early_switching_o": "Insider 可提前获得预发布版本。切换后，另一通道的当前版本会作为普通更新提供。",
         "install_failed": "无法安装更新",
         "installing_quiet_note": "正在安装——Kiro Crew 会安静一两分钟，然后自动重启。",
         "is_available": "可用。",
@@ -7555,7 +7969,13 @@
         "update_failed": "更新失败",
         "update_noun": "更新",
         "update_now": "立即更新",
-        "view_full_changelog": "▸ 查看完整更新日志"
+        "view_full_changelog": "▸ 查看完整更新日志",
+        "channel_help_show": "▸ Stable 和 Insider 有什么区别？",
+        "channel_help_hide": "▾ 收起",
+        "channel_explainer_stable": "只提供经过测试的正式版本，更新更少，意外也更少。",
+        "channel_explainer_insider": "早期版本，比 Stable 提前几天到几周发布。新功能先到这里，新问题也一样。",
+        "channel_explainer_switch_note": "你随时可以切换回来。无论切到哪一边，另一通道的当前版本都会作为普通更新送达，由你决定何时安装。",
+        "prerelease_report_prompt": "感谢你试用早期版本。它们的测试不如 Stable 充分，出问题是常事——发现异常时，请<report>到 GitHub 提交问题</report>，让它在影响所有人之前得到修复。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "允许的用户 ID",
@@ -7642,7 +8062,6 @@
         "default_reasoning_effort": "默认推理强度",
         "default_to_autopilot_mode": "默认使用自动驾驶模式",
         "describe_your_role": "描述你的角色",
-        "dismiss": "忽略",
         "display_time_on_each_message": "在每条消息上显示时间",
         "display_usage_percentage_next_to_the_context_pro": "在上下文进度条旁显示使用百分比",
         "e_g_solutions_architect_sre_founder": "例如：解决方案架构师、SRE、创始人",
@@ -7738,7 +8157,17 @@
         "product_manager": "产品经理",
         "somewhat": "略懂",
         "tail_preserve_end_final_summary": "尾部（保留结尾 / 最终摘要）",
-        "ux_designer": "UX 设计师"
+        "ux_designer": "UX 设计师",
+        "knowledge_library": "知识库",
+        "auto_add_documents": "自动添加文档",
+        "let_the_agent_add_documents_it_reads_while_workin": "让代理把工作中读到的文档添加到你的知识库，以便日后仍可搜索。代理会在你的批准下用自己的工具读取这些文档——Kiro Crew 本身不会抓取任何内容。已添加的文档会归入一个“自动添加”来源，可一键移除。",
+        "auto_register_project_documents": "自动注册项目文档",
+        "register_the_documents_of_each_project_you_work_i": "自动注册你所参与的每个项目的文档，让其设计文档、规格说明和 README 无需手动添加文件夹即可被搜索。仅限文档——绝不包含源代码、代理指令或生成文件。",
+        "auto_add_saved_artifacts": "自动添加已保存的工件",
+        "mirror_documents_you_save_as_artifacts_into_the_l": "把你保存为工件的文档同步到知识库，随编辑保持同步，并在你删除工件时一并移除。",
+        "failed_to_save_knowledge_setting": "保存知识库设置失败",
+        "auto_ingest_limit_per_scan": "每次扫描的自动摄取上限",
+        "how_much_an_automatically_registered_source_may_i": "自动注册的来源在一次扫描中最多可摄取多少内容。文档的每个片段都要消耗一次抽取调用，因此这是控制成本的关键；最新的文档优先入库，其余的在后续扫描中陆续处理。设为 0 表示不限制。默认 {{count}}。"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",
@@ -7841,7 +8270,7 @@
         "dismiss_diagnosis": "忽略诊断",
         "dismiss_error": "忽略错误",
         "distinct": "不同的",
-        "enable_it_to_let_this_gateway_open_ssh_tunnels_t": "启用后可让此网关向你的远程 Crew 打开 SSH 隧道，并从顶部标签栏\n          在它们之间切换。",
+        "enable_it_to_let_this_gateway_open_ssh_tunnels_t": "启用后可让此网关向你的远程 Crew 打开隧道（SSH 或 AWS SSM），并从顶部标签栏\n          在它们之间切换。",
         "enabled": "已启用",
         "enabled_but_not_active_yet_restart_the_gateway": "已启用，但尚未生效。请重启网关（",
         "equivalent_cli": "等效 CLI：",
@@ -7872,10 +8301,10 @@
         "remote_port": "远程端口",
         "retry": "重试",
         "ssh_host_alias": "SSH 主机 / 别名",
-        "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "网关在连接时会打开 SSH 隧道并签发一个短期令牌。\n        本地转发端口与远程端口保持一致，因此每个已连接的远程 Crew\n        必须使用不同的远程端口。",
+        "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "网关在连接时会打开隧道（SSH 或 AWS SSM）并签发一个短期令牌。\n        本地转发端口与远程端口保持一致，因此每个已连接的远程 Crew\n        必须使用不同的远程端口。",
         "then": "然后",
         "to_fully_tear_down_any_tunnels_still_running_fro": "以彻底关闭此前仍在运行的隧道。",
-        "to_start_the_ssh_tunnel_manager_and_activate_ins": "以启动 SSH 隧道管理器并激活远程 Crew 切换。",
+        "to_start_the_ssh_tunnel_manager_and_activate_ins": "以启动隧道管理器并启用远程 Crew 切换。",
         "token_ttl": "令牌 TTL",
         "ttl": "· ttl",
         "up_to": "最多",
@@ -7897,7 +8326,19 @@
         "failed_to_load_remote_crews": "加载远程 Crew 失败",
         "remove_failed": "移除 {{id}} 失败：{{error}}",
         "unknown_error": "未知错误",
-        "update_setting_failed": "更新设置失败：{{error}}"
+        "update_setting_failed": "更新设置失败：{{error}}",
+        "connection_method": "连接方式",
+        "ssh_tunnel": "SSH 隧道",
+        "aws_ssm_session_manager": "AWS SSM Session Manager",
+        "tunnels_via_aws_ssm_start_session_no_inbound_ssh": "通过 aws ssm start-session 建立隧道 —— 无需入站 SSH 端口或密钥。需要 AWS CLI、session-manager-plugin 以及 ssm:StartSession 权限。",
+        "opens_ssh_n_l_to_the_host_requires_non_interacti": "对主机执行 ssh -N -L。需要非交互式 SSH 访问（密钥已加入 ssh-agent）。",
+        "ssm_target_instance_id": "SSM 目标（实例 id）",
+        "ec2_instance_id_i_or_ssm_managed_instance_id_mi": "EC2 实例 id（i-…）或 SSM 托管实例 id（mi-…）。",
+        "aws_profile": "AWS 配置文件",
+        "aws_region": "AWS 区域",
+        "default_credential_chain": "默认凭证链",
+        "remote_user": "远程用户",
+        "the_user_the_remote_gateway_runs_as_sudo_u_for_s": "远程网关运行所用的用户 —— SSM 命令通过 sudo -u 执行。Ubuntu AMI 请使用 ubuntu。"
       },
       "mcpPoolableServers": {
         "blocked": "已阻止",
@@ -8203,7 +8644,6 @@
         "bcp_47_language_code_for_speech_recognition": "语音识别的 BCP-47 语言代码",
         "default": "默认",
         "dictation_panel": "听写面板",
-        "dismiss_error": "忽略错误",
         "enabled": "已启用",
         "input_device_used_to_capture_your_voice": "用于采集语音的输入设备",
         "install_mlx_whisper": "安装 MLX Whisper",
@@ -8221,12 +8661,12 @@
         "runtime": "运行时",
         "show_an_animated_panel_while_recording_instead_of": "录音时显示动画面板，而非窄状态栏。浏览器不支持 WebGL2 或系统要求减弱动态效果时，会回退到状态栏。",
         "status": "状态",
-        "stream_live_partial_transcripts_into_the_input_b": "说话时将实时的部分转写结果流式输入到输入框（仅 Transcribe）",
+        "stream_live_partial_transcripts_into_the_input_b": "边说边把实时的部分转写流式送入输入框。支持 Transcribe（AWS）与 Apple 语音（设备端）。",
         "streaming": "流式",
         "then_click_install_below": "然后点击下方的安装。",
         "transcribe_voice_into_the_message_box_when_you_c": "点击麦克风时将语音转写到消息框",
         "us_east_1": "us-east-1",
-        "whisper_and_mlx_run_locally_transcribe_calls_aws": "Whisper 与 MLX 在本地运行；Transcribe 调用 AWS",
+        "whisper_and_mlx_run_locally_transcribe_calls_aws": "Whisper、MLX 与 Apple 语音在本机运行；Transcribe 调用 AWS",
         "whisper_model_running_on_apple_mlx_metal_gpu_dow": "运行在 Apple MLX（Metal GPU）上的 Whisper 模型。首次使用时下载。",
         "docker": "Docker",
         "failed_to_save_stt_config": "保存 STT 配置失败",
@@ -8237,8 +8677,9 @@
         "pulls_python_3_11_slim_for_docker_based_transcri": "拉取 python:3.11-slim 用于基于 Docker 的转写（AL2）。",
         "whisper_installed_but_ffmpeg_is_missing_voice_tr": "已安装 Whisper，但缺少 ffmpeg — 语音转写需要 ffmpeg。",
         "endpointing": "说完后自动发送",
-        "endpointing_desc": "使用快速模型判断你是否已说完一个完整的请求，然后自动发送。仅适用于流式（Transcribe）。",
+        "endpointing_desc": "用一个快速模型判断你是否已说完一个完整请求，然后自动发送。仅流式 provider 可用。",
         "provider_mlx": "Whisper MLX（本地 — 仅 Apple Silicon）",
+        "provider_apple": "Apple 语音（设备端 — 需 macOS 26 及以上）",
         "provider_transcribe": "Transcribe（AWS）",
         "provider_whisper": "Whisper（本地）",
         "step_checking": "正在查找 Python…",
@@ -8335,7 +8776,6 @@
         "aws_region_for_polly_api": "Amazon Polly API 使用的 AWS 区域",
         "aws_region_polly": "AWS 区域（Amazon Polly）",
         "default": "默认",
-        "dismiss": "忽略",
         "engine": "引擎",
         "failed_to_load_voice_config": "加载语音配置失败。",
         "path_to_the_piper_executable_leave_blank_to_auto": "Piper 可执行文件的路径。留空则自动在 PATH 或 ~/piper-venv/bin/piper 中检测",
@@ -8474,6 +8914,11 @@
         "token_description": "同一设置页面上 Bot ID 旁显示的 Secret。",
         "token_label": "企业微信机器人密钥",
         "token_placeholder": "粘贴企业微信机器人密钥"
+      },
+      "reportProblemCard": {
+        "support": "支持",
+        "blurb": "遇到问题？发送一份诊断报告给我们 — 日志会先移除密钥。",
+        "report_a_problem": "反馈问题"
       }
     },
     "settingsPage": {
@@ -8567,59 +9012,70 @@
       "title": "上下文构成"
     },
     "telemetryPanel": {
-      "acceleration_internals": "加速内部信息",
       "agent_turn_latency_fault_rate_populate_after_the": "代理轮次延迟与故障率将在后续轮次完成后显示。",
-      "cold_spawn": "冷启动",
+      "by_channel": "按来源",
+      "by_model": "按模型",
       "cold_start_p50": "冷启动（p50）",
       "cold_start_p90": "冷启动（p90）",
+      "context_growth_forecast": "每轮 +{{rate}}% · 约 {{turns}} 轮到 90%",
       "context_window": "上下文窗口",
+      "conversation_col": "会话",
+      "conversations_by_spend": "按花费排列的会话",
+      "conversations_caption": "共 {{count}} 个会话中花费最高的 · 标题可跳转",
+      "cost_by_context_size": "成本与上下文大小",
+      "cost_new": "上期无花费",
+      "credits": "额度",
+      "credits_col": "额度",
+      "credits_per_turn": "每轮",
+      "credits_this_period": "最近 {{days}} 天",
       "d": "d ·",
       "days": "天。",
       "enable_with": "启用方式",
       "error": "错误",
       "fault_rate": "故障率",
-      "first_use_spawn_of_an_mcp_server_backend": "首次使用时启动 MCP 服务器后端",
-      "hit": "% 命中",
-      "hit_2": "命中 ·",
-      "hottest_sessions_by_peak_occupancy": "按上下文峰值占用率排序的会话 · 达到 90% 时触发压缩",
+      "growth_col": "增长",
       "internal_phase_breakdown": "内部阶段拆解 · spawn_init = 进程启动，session_new = 会话握手，set_model = 选择模型 · 属于一次启动的组成部分，而非多次启动",
       "key_metrics": "关键指标",
       "loading_telemetry": "正在加载遥测数据…",
-      "loads": "次加载",
       "local_only_no_egress": "· 仅本地，无外发",
-      "mcp_backend_acquire": "MCP 后端获取",
-      "mcp_cold_load_first_use": "MCP 冷加载（首次使用）",
+      "mean_credits_by_occupancy": "按已用上下文分档的每轮平均额度",
       "measured_from_token_records": "基于最近 {{days}} 天的本地每轮次用量记录统计 · 与遥测开关无关，始终记录",
       "metrics_stay_local": "。指标仅保留在本地（",
-      "n": "· n=",
-      "no_acquisitions_yet": "尚无获取记录",
-      "no_data_yet": "暂无数据",
       "no_telemetry_recorded_yet_in_the_last": "最近尚未记录任何遥测数据：",
       "nothing_leaves_this_machine": "）— 不会离开这台机器。",
       "occupancy_p50": "占用率（p50）",
       "occupancy_p90": "占用率（p90）",
       "ok": "正常",
-      "on_demand_read_of_a_skill_body_from_disk": "按需从磁盘读取技能正文",
       "overall_mean": "总体均值",
+      "p50_p90_with_sample_count": "上方为 p50 · p90 {{p90}} · n {{count}}",
+      "peak_ctx_col": "上下文峰值",
       "peak_occupancy": "峰值占用率",
-      "ready_rate": "就绪率",
+      "per_turn_col": "每轮",
+      "priciest_turn": "最贵的一轮",
+      "sample_count": "n={{count}}",
       "session_startup": "会话启动",
-      "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "复用热 MCP 后端与冷启动的会话对比",
       "shard_s_source": "个分片 · 来源",
+      "share_col": "占比",
       "showing_partial_window": "显示 {{total}} 个样本中的 {{shown}} 个（窗口内直方图边界已变化）",
-      "skill_load": "技能加载",
+      "span_col": "跨度",
+      "startup_by_channel": "各渠道启动耗时 · unknown = 未记录来源",
+      "startup_faults": "启动故障",
       "startup_latency_distribution_from_otel_histogram": "启动延迟分布 · 来自 OTEL 直方图分桶",
+      "startups_recorded_other": "已统计 {{n}} 次启动",
       "telemetry_enabled_true": "telemetry.enabled = true",
       "telemetry_is_off": "遥测已关闭",
       "throughput": "吞吐量",
-      "time_to_hand_a_pooled_mcp_backend_to_a_session": "把池中 MCP 后端交给会话所需的时间",
       "timeout": "超时",
+      "turn_faults_other": "{{turns}} 轮中 {{n}} 次故障",
       "turn_latency_p50": "轮次延迟（p50）",
-      "turns_measured_other": "已统计 {{count}} 个轮次",
-      "typ_p90": "典型 · p90",
-      "warm_pool_efficiency": "预热池效率",
+      "turns_col": "轮次",
+      "turns_measured_other": "已统计 {{n}} 个轮次",
+      "untitled_conversation_on": "未命名 · {{date}}",
+      "vs_last_col": "环比",
+      "vs_previous_period": "对比上一周期",
       "warm_start_p50": "热启动（p50）",
-      "window_last": "窗口：最近"
+      "was_value": "此前 {{value}}",
+      "window_last": "OTEL 部分 · 窗口：最近"
     },
     "worldsPage": {
       "active": "个活动，",
@@ -8646,7 +9102,6 @@
     "controlsTitle": "遥测控制",
     "dataNeverSentBody": "提示词、回复、文件、凭证、主机名、用户名，或你的操作系统。不存储你的 IP。",
     "dataNeverSentTitle": "绝不发送",
-    "details": "隐私详情",
     "envOverrideNote": "心跳已关闭，因为当前环境中设置了 {{envVar}}。取消该变量后即可在此处管理遥测。",
     "governanceOverrideNote": "你的管理员的安全策略已将其关闭，无法在此处更改。",
     "installReceiptBody": "从 Kiro Crew 官方目录成功安装或更新后，会发送一条匿名回执。外部注册表、本地应用和自行注册的应用绝不会被报告。",
@@ -8654,9 +9109,13 @@
     "installReceiptTitle": "官方应用安装回执",
     "localDataBody": "使用记录和上下文记录。性能指标默认关闭。",
     "localDataTitle": "保留在你的设备上",
-    "notSendingNote": "当前没有发送心跳：{{reason}}。",
-    "noticeBody": "Kiro Crew 每天发送一次匿名 ping，并在安装或更新官方应用后发送每个应用独立的回执。绝不发送你的提示词、文件或凭证。",
-    "noticeTitle": "隐私概览",
+    "notSendingAlreadySentToday": "今天的心跳已经发送过了。",
+    "notSendingAwaitingAck": "尚未发送任何内容。首次心跳会等到你看过本页面后再发送。",
+    "notSendingCi": "已暂停：这看起来是一台持续集成机器。",
+    "notSendingGeneric": "当前没有发送心跳。",
+    "notSendingNoEndpoint": "没有发送心跳：尚未配置端点。",
+    "notSendingNonDefaultHome": "已暂停：此实例使用了非默认的数据目录。",
+    "notSendingUnreadableHome": "没有发送心跳：无法读取数据目录。",
     "overlayOverrideNote": "config.local.json 中的 telemetry.beacon_enabled 条目会覆盖此设置。请在该文件中移除它，以便在此处管理遥测。",
     "payloadFields": "随机安装 ID · 应用版本 · Python 次版本号 · 安装渠道 · 首次运行标记",
     "settingsDescription": "遥测、本地数据和隐私控制",

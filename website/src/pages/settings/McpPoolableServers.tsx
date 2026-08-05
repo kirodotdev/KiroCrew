@@ -6,6 +6,7 @@ import { Toggle } from '../../components/ui'
 import { api, type McpPoolableServer } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 type GatewayStatus = { enabled: boolean; running: boolean; ping_ok: boolean }
 
 /**
@@ -124,7 +125,7 @@ export function McpPoolableServers() {
           </div>
         )}
 
-        {error && <div className="text-[12px] text-danger mt-2">{error}</div>}
+        <ErrorNotice message={error} className="mt-2" askAgent />
       </SettingsCard>
     </SettingsSection>
   )

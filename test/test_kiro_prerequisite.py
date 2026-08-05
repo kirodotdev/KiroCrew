@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,6 +25,7 @@ from chat_test_helpers import _make_state
 from kiro_crew import _process_group_supervisor as supervisor
 from kiro_crew import kiro_prerequisite as prerequisite_module
 from kiro_crew import platform_compat
+from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_create
 from kiro_crew.dashboard.chat_regenerate import (
     api_chat_slot_edit_resend,
@@ -34,6 +36,7 @@ from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.handlers.kiro_prerequisite import (
     api_kiro_prerequisite_install,
     api_kiro_prerequisite_login,
+    api_kiro_prerequisite_repair_specs,
     api_kiro_prerequisite_status,
 )
 from kiro_crew.dashboard.kiro_readiness import kiro_session_ready
@@ -43,6 +46,8 @@ from kiro_crew.kiro_prerequisite import (
     OFFICIAL_WINDOWS_INSTALL_URL,
     KiroPrerequisiteService,
     OperationStatus,
+    PrerequisiteBusyError,
+    PrerequisiteStatus,
     ProcessResult,
     _installer_proxy,
     _run_process,
@@ -53,6 +58,29 @@ from kiro_crew.kiro_prerequisite import (
     official_installer_command,
     validate_installer_script,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_agent_specs(tmp_path_factory, monkeypatch):
+    """Point the agents dir at a POPULATED tmp dir for every test in this module.
+
+    Readiness folds agent-spec presence into ``ready``: a missing spec means
+    kiro-cli cannot resolve the agent, so the install is not ready. Those specs
+    live in a MACHINE-WIDE directory that no ``KIROCREW_HOME`` override isolates,
+    so an unpinned probe test reads the developer's real ``~/.kiro/agents`` and its
+    verdict follows host state rather than the code under test. This pin removes
+    that confound.
+
+    Tests that exercise the missing-spec behaviour re-patch the same hook inside
+    the test body, which runs after this fixture and therefore wins.
+    """
+    from kiro_crew import agent as agent_module
+    from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
+
+    agents = tmp_path_factory.mktemp("kiro-agents")
+    for name in REQUIRED_KIRO_AGENT_FILES:
+        (agents / name).write_text('{"name": "probe-fixture"}', encoding="utf-8")
+    monkeypatch.setattr(agent_module, "KIRO_AGENTS_DIR", agents)
 
 
 def _make_executable(path: Path) -> None:
@@ -3779,6 +3807,10 @@ class TestKiroPrerequisiteHandlers:
             "/api/kiro-prerequisite/login",
             api_kiro_prerequisite_login,
         )
+        app.router.add_post(
+            "/api/kiro-prerequisite/repair-specs",
+            api_kiro_prerequisite_repair_specs,
+        )
         return app
 
     @pytest.mark.asyncio
@@ -4312,12 +4344,19 @@ class TestKiroPrerequisiteHandlers:
             assert body["initial_setup_complete"] is True
             assert body["setup_allowed"] is False
             assert body["platform"] == "gateway"
+            # Present but empty: the payload shape must not vary by caller, and
+            # only the owner can act on a missing spec.
+            assert body["missing_agent_specs"] == []
+            assert body["agent_spec_repair_error"] == ""
             assert body["operation"]["detail"] == ""
             assert body["operation"]["url"] == ""
 
+            # The repair route is a mutation on the agent home, so it carries the
+            # same owner gate as install/login.
             for method, path in (
                 ("post", "/api/kiro-prerequisite/install"),
                 ("post", "/api/kiro-prerequisite/login"),
+                ("post", "/api/kiro-prerequisite/repair-specs"),
             ):
                 response = await getattr(client, method)(path)
                 assert response.status == 403
@@ -4549,3 +4588,537 @@ class TestSandboxUnavailableErrorIsTyped:
         assert isinstance(exc, RuntimeError)
         assert exc.kind == "no_backend"
         assert exc.detail == "EPERM at NEWNS"
+
+
+class TestAgentSpecsNarrowReadiness:
+    """A viable binary + a good ``whoami`` are NOT sufficient for readiness.
+
+    Kiro Crew's own agent specs (``~/.kiro/agents/kirocrew*.json``) were not an
+    input to ``ready`` at all, so an install whose spec write failed reported
+    ready while kiro-cli answered every ``session/set_mode`` with
+    ``Mode '<name>' not found`` — the gate affirmatively told the user setup was
+    complete on an install that could not run one turn. That is the customer
+    report these tests pin.
+
+    The status is set directly rather than probed: the probe's two subprocesses
+    are irrelevant here (both of its inputs are already true in the scenario),
+    and ``snapshot()`` without ``force`` reads the latch, so the overlay is what
+    is under test.
+    """
+
+    @staticmethod
+    def _service(tmp_path: Path) -> KiroPrerequisiteService:
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        service._status = PrerequisiteStatus(
+            platform="Linux",
+            installed=True,
+            authenticated=True,
+            ready=True,
+            initial_setup_complete=True,
+        )
+        service._has_probed = True
+        return service
+
+    @staticmethod
+    def _agents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, specs: bool) -> Path:
+        """Point the agents dir at a tmp path, optionally fully populated."""
+        from kiro_crew import agent as agent_module
+        from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
+
+        agents = tmp_path / "agents"
+        agents.mkdir(parents=True, exist_ok=True)
+        if specs:
+            for name in REQUIRED_KIRO_AGENT_FILES:
+                (agents / name).write_text('{"name": "x"}', encoding="utf-8")
+        monkeypatch.setattr(agent_module, "KIRO_AGENTS_DIR", agents)
+        return agents
+
+    @pytest.mark.asyncio
+    async def test_missing_specs_make_a_ready_install_not_ready(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
+
+        self._agents_dir(tmp_path, monkeypatch, specs=False)
+
+        status = await self._service(tmp_path).snapshot()
+
+        assert status["missing_agent_specs"] == list(REQUIRED_KIRO_AGENT_FILES)
+        assert status["ready"] is False
+        assert status["repair_required"] is True
+        # Untouched: the binary IS installed and the user IS signed in. Reporting
+        # either as false would send them to re-install or re-login for a
+        # condition neither one causes.
+        assert status["installed"] is True
+        assert status["authenticated"] is True
+
+    @pytest.mark.asyncio
+    async def test_present_specs_leave_readiness_alone(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._agents_dir(tmp_path, monkeypatch, specs=True)
+
+        status = await self._service(tmp_path).snapshot()
+
+        assert status["missing_agent_specs"] == []
+        assert status["ready"] is True
+        assert status["repair_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_overlay_only_narrows_never_grants(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._agents_dir(tmp_path, monkeypatch, specs=True)
+        service = self._service(tmp_path)
+        service._status = replace(service._status, authenticated=False, ready=False)
+
+        status = await service.snapshot()
+
+        # Specs on disk say nothing about auth — present specs must not promote a
+        # signed-out install to ready. The second assertion is what makes this
+        # revert-verified: only the overlay populates that key, so a reverted
+        # feature fails here instead of passing on the constructor's own False.
+        assert status["ready"] is False
+        assert status["missing_agent_specs"] == []
+
+    @pytest.mark.asyncio
+    async def test_unreadable_agents_dir_does_not_block_a_working_install(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed CHECK is not evidence of a missing spec."""
+        from kiro_crew import agent as agent_module
+
+        def _boom() -> list[str]:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(agent_module, "missing_required_agent_specs", _boom)
+
+        status = await self._service(tmp_path).snapshot()
+
+        assert status["ready"] is True
+        assert status["missing_agent_specs"] == []
+
+    @pytest.mark.asyncio
+    async def test_an_instance_that_may_not_write_the_specs_reports_none(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A pod or worktree gateway must never be gated on specs it cannot write.
+
+        ``_decline_shared_agent_home`` refuses the write for an ephemeral instance
+        by design, and the overlay reads the AMBIENT machine-wide agents dir. On a
+        host whose ``~/.kiro/agents`` is empty that combination would report
+        ``ready=False`` permanently, put the whole dashboard behind the
+        missing-spec screen, and offer a repair that declines every time -- turning
+        "chat is broken" into "the product is unreachable" for exactly the
+        instances an operator uses to diagnose.
+        """
+        from kiro_crew import agent as agent_module
+
+        self._agents_dir(tmp_path, monkeypatch, specs=False)
+        monkeypatch.setattr(
+            agent_module,
+            "_decline_shared_agent_home",
+            lambda *, audit=True: tmp_path / "agents" / AGENT_FILENAME,
+        )
+
+        status = await self._service(tmp_path).snapshot()
+
+        assert status["missing_agent_specs"] == []
+        assert status["ready"] is True
+        assert status["repair_required"] is False
+
+    def test_the_decline_check_is_audit_free_when_read(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The status read must not write SEL records.
+
+        ``_decline_shared_agent_home`` audits both its grant and its refusal
+        because they are permission decisions about a WRITE. A polled status read
+        is not one, and emitting a record every 30 seconds per client would bury
+        the real decisions.
+        """
+        from kiro_crew import agent as agent_module
+
+        events: list[str] = []
+
+        class _Recorder:
+            def log_api_access(self, **kwargs: Any) -> None:
+                events.append(str(kwargs.get("outcome")))
+
+        monkeypatch.setattr(agent_module, "sel", lambda: _Recorder())
+        agent_module._decline_shared_agent_home(audit=False)
+
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_assume_ready_bypasses_the_overlay(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``assume_ready`` is the deliberate host-reality bypass.
+
+        Test-mode gateways, fixtures and the offline E2E suite run on homes with
+        no managed specs; applying the overlay there would put every one of them
+        behind a repair gate.
+        """
+        self._agents_dir(tmp_path, monkeypatch, specs=False)
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+            assume_ready=True,
+        )
+
+        status = await service.snapshot()
+
+        assert status["ready"] is True
+        assert status["missing_agent_specs"] == []
+
+    @pytest.mark.asyncio
+    async def test_session_ready_is_not_narrowed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The overlay is dashboard-facing only, by design.
+
+        ``session_ready()`` gates poll-driven spawn sites, and turn-starting paths
+        deliberately do not block on it — they let the turn carry the failure,
+        which now arrives as an actionable missing-spec message. Narrowing it here
+        would re-introduce the stale-latch lockout that design removed.
+        """
+        self._agents_dir(tmp_path, monkeypatch, specs=False)
+        service = self._service(tmp_path)
+
+        assert (await service.snapshot())["ready"] is False
+        assert await service.session_ready() is True
+
+
+class TestAgentSpecRepairIsAPostNotAGet:
+    """The repair must never be reachable from the status GET.
+
+    ``/api/kiro-prerequisite`` is an ``add_get``, and BOTH dashboard barriers are
+    method-scoped: ``csrf_middleware`` skips ``check_origin`` for
+    ``{GET, HEAD, OPTIONS}`` and ``sel_audit_middleware`` logs only
+    ``{POST, PUT, DELETE, PATCH}``. A spec rewrite hung off that GET would be
+    cross-site triggerable (a ``SameSite=Lax`` cookie rides a top-level cross-site
+    GET) and would leave no SEL record, so it lives on its own POST route.
+    """
+
+    @staticmethod
+    def _service(tmp_path: Path) -> KiroPrerequisiteService:
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        service._status = PrerequisiteStatus(
+            platform="Linux",
+            installed=True,
+            authenticated=True,
+            ready=True,
+            initial_setup_complete=True,
+        )
+        service._has_probed = True
+
+        async def _no_probe(*, force: bool = False) -> PrerequisiteStatus:
+            del force
+            return service._status
+
+        service._probe = _no_probe  # type: ignore[method-assign]
+        return service
+
+    @staticmethod
+    def _agents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        from kiro_crew import agent as agent_module
+
+        agents = tmp_path / "agents"
+        agents.mkdir(exist_ok=True)
+        monkeypatch.setattr(agent_module, "KIRO_AGENTS_DIR", agents)
+        return agents
+
+    @pytest.mark.asyncio
+    async def test_forced_status_read_never_writes(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Even ``?refresh=1`` is a pure read — this is the regression guard."""
+        from kiro_crew import agent as agent_module
+
+        self._agents_dir(tmp_path, monkeypatch)
+        calls: list[int] = []
+        monkeypatch.setattr(
+            agent_module, "rebuild_agent_config", lambda: calls.append(1)
+        )
+
+        status = await self._service(tmp_path).snapshot(force=True)
+
+        assert calls == []
+        # Still fully REPORTED — the read half of the feature is unaffected.
+        assert status["missing_agent_specs"] != []
+        assert status["ready"] is False
+
+    def test_repair_route_accepts_only_POST(self) -> None:
+        """Asserted over the ROUTE TABLE, not the module text.
+
+        A source-text match proves nothing about what was registered and breaks on
+        any reflow. What matters is the method the router will accept: GET is the
+        one method csrf_middleware and sel_audit_middleware both skip.
+        """
+        from kiro_crew.dashboard.handlers.kiro_prerequisite import (
+            api_kiro_prerequisite_repair_specs,
+        )
+
+        app = web.Application()
+        app.router.add_post(
+            "/api/kiro-prerequisite/repair-specs",
+            api_kiro_prerequisite_repair_specs,
+        )
+        methods = {
+            route.method
+            for route in app.router.routes()
+            if getattr(route.resource, "canonical", "")
+            == "/api/kiro-prerequisite/repair-specs"
+        }
+
+        assert methods == {"POST"}, methods
+
+
+class TestAgentSpecRepair:
+    """``repair_agent_specs`` — the POST handler's service call."""
+
+    _service = staticmethod(TestAgentSpecRepairIsAPostNotAGet._service)
+    _agents_dir = staticmethod(TestAgentSpecRepairIsAPostNotAGet._agents_dir)
+
+    @pytest.mark.asyncio
+    async def test_writes_the_specs_and_returns_ready(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew import agent as agent_module
+        from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
+
+        agents = self._agents_dir(tmp_path, monkeypatch)
+        calls: list[int] = []
+
+        def _rebuild() -> Path:
+            calls.append(1)
+            for name in REQUIRED_KIRO_AGENT_FILES:
+                (agents / name).write_text('{"name": "x"}', encoding="utf-8")
+            return agents / REQUIRED_KIRO_AGENT_FILES[0]
+
+        monkeypatch.setattr(agent_module, "rebuild_agent_config", _rebuild)
+
+        status = await self._service(tmp_path).repair_agent_specs("owner")
+
+        assert calls == [1]
+        # The response IS the post-repair snapshot, so one request fixes and
+        # reports rather than making the user press the button twice.
+        assert status["missing_agent_specs"] == []
+        assert status["ready"] is True
+        assert status["agent_spec_repair_error"] == ""
+
+    @pytest.mark.asyncio
+    async def test_failed_repair_reports_a_sanitized_exception(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The swallowed boot exception is what made the original undiagnosable.
+
+        Sanitized like every other dashboard-facing string here: the rebuild's call
+        graph merges ``mcpServers[*].env``, so raw exception text can carry a
+        credential.
+        """
+        from kiro_crew import agent as agent_module
+
+        self._agents_dir(tmp_path, monkeypatch)
+
+        def _rebuild() -> Path:
+            raise FileNotFoundError("no shipped defaults.json")
+
+        monkeypatch.setattr(agent_module, "rebuild_agent_config", _rebuild)
+
+        status = await self._service(tmp_path).repair_agent_specs("owner")
+
+        assert "FileNotFoundError: no shipped defaults.json" in (
+            status["agent_spec_repair_error"]
+        )
+        assert status["ready"] is False
+
+    @pytest.mark.asyncio
+    async def test_credential_shaped_exception_text_is_redacted(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew import agent as agent_module
+
+        self._agents_dir(tmp_path, monkeypatch)
+        # Assembled at runtime so the literal never sits in the file for scrub-lint.
+        secret = "ghp_" + "A" * 36
+
+        def _rebuild() -> Path:
+            raise RuntimeError(f"bad env GITHUB_TOKEN={secret}")
+
+        monkeypatch.setattr(agent_module, "rebuild_agent_config", _rebuild)
+
+        status = await self._service(tmp_path).repair_agent_specs("owner")
+
+        assert secret not in status["agent_spec_repair_error"]
+
+    @pytest.mark.asyncio
+    async def test_silent_no_op_rebuild_is_reported_as_a_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``rebuild_agent_config`` can decline WITHOUT raising.
+
+        ``_decline_shared_agent_home`` returns early when an ephemeral instance
+        would rewrite a shared agent home. Reporting that as success would leave
+        the gate showing no error and a button that changes nothing on every press.
+        """
+        from kiro_crew import agent as agent_module
+
+        self._agents_dir(tmp_path, monkeypatch)
+        monkeypatch.setattr(agent_module, "rebuild_agent_config", lambda: None)
+
+        status = await self._service(tmp_path).repair_agent_specs("owner")
+
+        assert "still missing" in status["agent_spec_repair_error"]
+        assert "kirocrew setup --agent-only --clean" in status["agent_spec_repair_error"]
+        assert status["ready"] is False
+
+    @pytest.mark.asyncio
+    async def test_does_not_rebuild_over_a_present_main_spec(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A present kirocrew.json is never regenerated by this route.
+
+        ``rebuild_agent_config`` rewrites the whole file. It re-merges
+        ``mcpServers`` under ``bridges._mcp_lock``, but NOT the
+        ``tools``/``allowedTools`` half ``api_mcp_toggle`` writes in a separate
+        step — so rebuilding over an existing spec can drop a concurrent toggle's
+        edit and resurrect a server the user just disabled. Gating on the MAIN
+        spec's ABSENCE removes that window: with no file there is no edit to lose.
+        """
+        from kiro_crew import agent as agent_module
+        from kiro_crew.agent_files import LITE_AGENT_FILENAME
+
+        agents = self._agents_dir(tmp_path, monkeypatch)
+        (agents / AGENT_FILENAME).write_text('{"name": "kirocrew"}', encoding="utf-8")
+        calls: list[int] = []
+        monkeypatch.setattr(
+            agent_module, "rebuild_agent_config", lambda: calls.append(1)
+        )
+
+        status = await self._service(tmp_path).repair_agent_specs("owner")
+
+        assert calls == []
+        assert status["missing_agent_specs"] == [LITE_AGENT_FILENAME]
+        assert status["agent_spec_repair_error"] == ""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_repairs_rebuild_exactly_once(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two owner POSTs landing together must produce ONE rebuild.
+
+        ``operation_running`` does not cover repair -- it tracks ``_task``, which
+        only install/login set -- so both callers pass that guard. Without the
+        repair lock both observe the spec missing and both rebuild, and the second
+        regenerates the file the first just wrote: the rebuild-over-an-existing-spec
+        case the main-spec gate exists to avoid, which can drop a concurrent
+        ``api_mcp_toggle`` write to ``tools``/``allowedTools``.
+
+        The interleaving is FORCED rather than hoped for. An earlier version of
+        this test simply gathered two calls and passed even with the lock removed,
+        because the event loop happened to run them end to end. Here the stub parks
+        inside the rebuild until the second caller has had its chance to reach its
+        own check, which is the only ordering that distinguishes the two versions.
+        """
+        from kiro_crew import agent as agent_module
+        from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
+
+        agents = self._agents_dir(tmp_path, monkeypatch)
+        calls: list[int] = []
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _rebuild() -> None:
+            calls.append(1)
+            entered.set()
+            # Runs on a worker thread (asyncio.to_thread), so parking here does not
+            # block the loop -- the second caller keeps running.
+            release.wait(timeout=10)
+            for name in REQUIRED_KIRO_AGENT_FILES:
+                (agents / name).write_text('{"name": "x"}', encoding="utf-8")
+
+        monkeypatch.setattr(agent_module, "rebuild_agent_config", _rebuild)
+        service = self._service(tmp_path)
+
+        first = asyncio.ensure_future(service.repair_agent_specs("owner"))
+        # Wait until the first caller is INSIDE the rebuild, off-loop so the await
+        # does not starve it.
+        await asyncio.to_thread(entered.wait, 10)
+        second = asyncio.ensure_future(service.repair_agent_specs("owner"))
+        # Give the second caller room to run its own overlay + check. Unlocked, it
+        # gets through both and starts a second rebuild here.
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        release.set()
+        first_result, second_result = await asyncio.gather(first, second)
+
+        assert calls == [1], "the second repair must be a no-op, not a second rebuild"
+        # Both callers still get a truthful post-repair answer.
+        for payload in (first_result, second_result):
+            assert payload["missing_agent_specs"] == []
+            assert payload["agent_spec_repair_error"] == ""
+
+    @pytest.mark.asyncio
+    async def test_refuses_while_an_install_or_login_owns_the_status(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._agents_dir(tmp_path, monkeypatch)
+        service = self._service(tmp_path)
+
+        async def _never() -> None:
+            await asyncio.sleep(60)
+
+        service._task = asyncio.ensure_future(_never())
+        try:
+            with pytest.raises(PrerequisiteBusyError):
+                await service.repair_agent_specs("owner")
+        finally:
+            service._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await service._task

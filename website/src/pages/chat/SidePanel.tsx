@@ -119,7 +119,7 @@ interface SidePanelProps {
   tabsCtl: ReturnType<typeof usePanelTabs>
   slot: string
   files?: TouchedFile[]
-  onFileOpen?: (path: string, opts?: { replaceId?: string }) => void
+  onFileOpen?: (path: string, opts?: { replaceId?: string; line?: number }) => void
   /** Open an artifact as a panel tab (the artifact twin of onFileOpen).
    *  Threaded to the Artifacts tab so its rows open here instead of
    *  hard-navigating to the standalone detail page. */
@@ -597,6 +597,7 @@ export default function SidePanel({
                 onClose={() => handleCloseTab(t.id)}
                 onContentChange={(c) => patchTab(t.id, { content: c })}
                 onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
+                onRevealConsumed={() => patchTab(t.id, { revealLine: undefined })}
                 onPathChange={(p) => patchTab(t.id, { path: p, title: p.replace(/\/+$/, '').split('/').pop() || p })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
@@ -669,11 +670,13 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
   return <div className="h-full w-full overflow-auto"><McpAppFrame payload={payload} /></div>
 }
 
-function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange, onPathChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
   onClose: () => void
   onContentChange: (c: string) => void
   onDiffModeChange: (diffMode: boolean) => void
+  /** Drop the tab's one-shot line-reveal target once the panel has acted on it. */
+  onRevealConsumed: () => void
   /** Folder tabs navigate internally; lift the new cwd back to the tab record
    *  so the strip label tracks where the user actually is. */
   onPathChange: (p: string) => void
@@ -700,6 +703,8 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
         onClose={onClose}
         liveWatch
         onSubmitComments={onSubmitComments}
+        revealLine={tab.revealLine}
+        onRevealConsumed={onRevealConsumed}
       />
     )
   }

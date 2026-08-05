@@ -1,10 +1,11 @@
 import { useState, useCallback } from 'react'
-import { ExternalLink, Check, AlertTriangle } from 'lucide-react'
+import { ExternalLink, Check } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsInput } from '../../components/settings'
 import { api } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 type BrowserConfig = { extension_mode: boolean; token: boolean }
 
 export function BrowserPanel() {
@@ -124,12 +125,13 @@ export function BrowserPanel() {
                   {saveMut.isPending ? i18nT('pages.settings.browserPanel.saving') : i18nT('pages.settings.browserPanel.save')}
                 </button>
               </div>
-              {error && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--error)' }}>
-                  <AlertTriangle size={14} />
-                  <span style={{ fontSize: 12 }}>{error}</span>
-                </div>
-              )}
+              {/*
+                Deliberately NOT opted in to the agent hand-off: the token being
+                saved lives in local state (`useState('')`, never persisted) and
+                came out of the Chrome extension, so navigating to the chat would
+                send the user back there to fetch it again.
+              */}
+              <ErrorNotice message={error} variant="inline" />
             </div>
           </SettingsCard>
         </SettingsSection>

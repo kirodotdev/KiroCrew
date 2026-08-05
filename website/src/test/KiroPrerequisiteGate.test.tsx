@@ -22,6 +22,7 @@ vi.mock('../api/client', () => ({
     kiroPrerequisite: vi.fn(),
     installKiroPrerequisite: vi.fn(),
     loginKiroPrerequisite: vi.fn(),
+    repairKiroPrerequisiteSpecs: vi.fn(),
   },
 }))
 
@@ -42,6 +43,8 @@ function status(overrides: Partial<KiroPrerequisiteStatus> = {}): KiroPrerequisi
     sandbox_unavailable: false,
     sandbox_failure_kind: '',
     sandbox_detail: '',
+    missing_agent_specs: [],
+    agent_spec_repair_error: '',
     operation: {
       kind: '',
       status: 'idle',
@@ -246,6 +249,190 @@ describe('KiroPrerequisiteGate', () => {
 
     expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
     expect(screen.queryByText('We could not check Kiro CLI.')).not.toBeInTheDocument()
+  })
+
+  it('blocks an ESTABLISHED install when the agent specs are missing', async () => {
+    // The one condition that hijacks an established install, and deliberately
+    // so: `initial_setup_complete` normally short-circuits to the app because
+    // readiness is a latch that can be stale. A missing spec is not a latch —
+    // it is two stat calls made while answering this request — and it means
+    // kiro-cli fails EVERY session/set_mode, so without this screen the install
+    // has no affordance anywhere to repair itself.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: true,
+      ready: false,
+      initial_setup_complete: true,
+      repair_required: true,
+      missing_agent_specs: ['kirocrew.json', 'kirocrew-lite.json'],
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText("Kiro Crew's agent specs are not installed")).toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+    // Names the actual files, so the user can see what to look for on disk.
+    expect(screen.getByText(/kirocrew\.json/)).toBeInTheDocument()
+    expect(screen.getByText(/kirocrew-lite\.json/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
+  })
+
+  it('points a terminal diagnoser past the app-not-running dead end', async () => {
+    // `kiro-cli diagnostic` is the first command anyone reaches for and it
+    // refuses with "Kiro CLI app is not running" until the app is launched,
+    // which reads as the cause and is not.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: true,
+      initial_setup_complete: true,
+      missing_agent_specs: ['kirocrew.json'],
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    const hint = await screen.findByText(/kiro-cli diagnostic reports nothing/)
+    expect(hint).toHaveTextContent('kiro-cli launch')
+    expect(hint).toHaveTextContent('not the cause')
+  })
+
+  it('surfaces a failed repair verbatim instead of a generic failure', async () => {
+    // The swallowed boot exception is what made the original report
+    // undiagnosable; this text names the failing install step.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: true,
+      initial_setup_complete: true,
+      missing_agent_specs: ['kirocrew.json'],
+      agent_spec_repair_error: 'FileNotFoundError: no shipped defaults.json',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('The repair attempt failed')).toBeInTheDocument()
+    expect(
+      screen.getByText('FileNotFoundError: no shipped defaults.json'),
+    ).toBeInTheDocument()
+  })
+
+  it('repairs via POST, never by re-reading the status GET', async () => {
+    // The gateway's CSRF check and SEL audit are both method-scoped, so the
+    // write cannot hang off the status GET: a SameSite=Lax cookie rides a
+    // top-level cross-site GET, and a GET leaves no audit record.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: true,
+      initial_setup_complete: true,
+      missing_agent_specs: ['kirocrew.json'],
+    }))
+    vi.mocked(api.repairKiroPrerequisiteSpecs).mockResolvedValue(status({
+      installed: true,
+      authenticated: true,
+      ready: true,
+      initial_setup_complete: true,
+      missing_agent_specs: [],
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    const repair = await screen.findByRole('button', { name: 'Check again' })
+    // Every status read stays a free, side-effect-free poll.
+    expect(vi.mocked(api.kiroPrerequisite)).toHaveBeenCalledWith(false)
+    expect(vi.mocked(api.kiroPrerequisite)).not.toHaveBeenCalledWith(true)
+    fireEvent.click(repair)
+
+    await waitFor(() => {
+      expect(vi.mocked(api.repairKiroPrerequisiteSpecs)).toHaveBeenCalledTimes(1)
+    })
+    // The POST response IS the post-repair snapshot, so the app unblocks without
+    // waiting for the next poll.
+    expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
+  })
+
+  it('shows a failed repair returned by the POST', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: true,
+      initial_setup_complete: true,
+      missing_agent_specs: ['kirocrew.json'],
+    }))
+    vi.mocked(api.repairKiroPrerequisiteSpecs).mockResolvedValue(status({
+      installed: true,
+      authenticated: true,
+      initial_setup_complete: true,
+      missing_agent_specs: ['kirocrew.json'],
+      agent_spec_repair_error: 'FileNotFoundError: no shipped defaults.json',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Check again' }))
+
+    // role="alert" so a screen reader hears it: this appears in place, with no
+    // route change to announce.
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('The repair attempt failed')
+    expect(alert).toHaveTextContent('FileNotFoundError: no shipped defaults.json')
+  })
+
+  it('surfaces a rejected repair POST rather than failing silently', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: true,
+      initial_setup_complete: true,
+      missing_agent_specs: ['kirocrew.json'],
+    }))
+    vi.mocked(api.repairKiroPrerequisiteSpecs).mockRejectedValue(
+      new ApiError(403, 'dashboard owner required'),
+    )
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Check again' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('dashboard owner required')
+  })
+
+  it('leaves a healthy install untouched by the spec check', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: true,
+      ready: true,
+      initial_setup_complete: true,
+      missing_agent_specs: [],
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
+    expect(screen.queryByText('Agent specs missing')).not.toBeInTheDocument()
+  })
+
+  it('tolerates a gateway older than the agent-spec fields', async () => {
+    // A partial payload (older gateway, or a fixture built before the field)
+    // must not crash the gate on `.length` of undefined.
+    const legacy = status({ installed: true, authenticated: true, initial_setup_complete: true })
+    delete (legacy as { missing_agent_specs?: unknown }).missing_agent_specs
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(legacy)
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
   })
 
   it('shows NO sign-in chrome when an established install is signed out', async () => {

@@ -95,6 +95,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
@@ -591,8 +592,43 @@ def is_governance_pinned_off(*, audit_tool: str = "") -> bool:
     return getattr(decision, "layer", "") == "policy"
 
 
-def telemetry_permitted(*, enabled: bool, audit_tool: str = "") -> tuple[bool, str]:
-    """Return ``(permitted, reason)`` for ANY outbound telemetry from this install.
+class Verdict(NamedTuple):
+    """A send decision plus both renderings of its reason.
+
+    ``code`` is the STABLE machine-readable discriminant (one of :data:`REASONS`);
+    ``reason`` is the English operator-facing sentence for CLI output and logs.
+    The dashboard renders the code through its own translation catalog, so the
+    prose here never reaches a user's screen: a raw diagnostic string
+    interpolated into the UI is untranslatable and reads as a developer leak.
+    """
+
+    ok: bool
+    reason: str
+    code: str
+
+
+# Every code :func:`status` can report. The dashboard's Privacy panel owns one
+# translated string per entry, so adding a code here without a catalog key leaves
+# the UI with nothing to render. Routes that never reach that panel may use codes
+# outside this tuple (``install_receipt.should_send`` returns ``"unofficial"``).
+REASONS = (
+    "ready",
+    "env_opt_out",
+    "governance",
+    "disabled",
+    "ci",
+    "non_default_home",
+    "awaiting_privacy_ack",
+    "already_sent_today",
+    "no_endpoint",
+    "unreadable_home",
+)
+
+
+def telemetry_permitted(
+    *, enabled: bool, acked: bool, audit_tool: str = ""
+) -> Verdict:
+    """Return the send verdict for ANY outbound telemetry from this install.
 
     The consent gate, factored out of :func:`should_send` so a SECOND outbound
     signal cannot drift from the first. ``apps/install_receipt.py`` calls this
@@ -609,6 +645,16 @@ def telemetry_permitted(*, enabled: bool, audit_tool: str = "") -> tuple[bool, s
     say — an admin debugging a managed host needs to see "policy", not
     "beacon_enabled is false".
 
+    ``acked`` is ``dashboard.privacy_acked``: whether the user has actually been
+    SHOWN the disclosure and its opt-out (the mandatory first-run Privacy
+    chapter, or an explicit ``kirocrew telemetry enable|disable``). It gates the
+    FIRST egress only (see :func:`is_first_send`). Sending before the offer is
+    made would reduce the opt-out to a formality: by the time the user could
+    decline, the ping they were declining had already gone. It is checked LAST
+    among the suppressions so a more specific and more actionable reason (a CI
+    host, a pod's data home) still wins the reported ``code``; ordering cannot
+    weaken the gate, because every check must pass to permit a send.
+
     Pass ``audit_tool`` from an ENFORCEMENT call site so the governance decision
     lands a ``governance_decision`` SEL record naming which control refused;
     leave it empty for a read-only diagnostic probe (see
@@ -620,20 +666,35 @@ def telemetry_permitted(*, enabled: bool, audit_tool: str = "") -> tuple[bool, s
     installs on any given day.
     """
     if _env_truthy(DISABLE_ENV):
-        return False, f"opted out via {DISABLE_ENV}"
+        return Verdict(False, f"opted out via {DISABLE_ENV}", "env_opt_out")
     if is_governance_pinned_off(audit_tool=audit_tool):
-        return False, "disabled by governance policy (capabilities.telemetry)"
+        return Verdict(
+            False, "disabled by governance policy (capabilities.telemetry)", "governance"
+        )
     if not enabled:
-        return False, "disabled (telemetry.beacon_enabled is false)"
+        return Verdict(False, "disabled (telemetry.beacon_enabled is false)", "disabled")
     if is_ci():
-        return False, "CI environment detected"
+        return Verdict(False, "CI environment detected", "ci")
     if not is_default_home():
-        return False, "non-default KIROCREW_HOME (dev home / pod / preview)"
-    return True, "ready"
+        return Verdict(
+            False,
+            "non-default KIROCREW_HOME (dev home / pod / preview)",
+            "non_default_home",
+        )
+    # First-egress only: once this install has sent once, the disclosure is
+    # behind the user and re-gating on the flag would silence an established
+    # install whose config predates the field.
+    if not acked and is_first_send():
+        return Verdict(
+            False,
+            "the first-run privacy disclosure has not been shown yet",
+            "awaiting_privacy_ack",
+        )
+    return Verdict(True, "ready", "ready")
 
 
-def should_send(*, enabled: bool, audit: bool = True) -> tuple[bool, str]:
-    """Return ``(send, reason)``; *reason* explains a skip, for the CLI.
+def should_send(*, enabled: bool, acked: bool, audit: bool = True) -> Verdict:
+    """Return the heartbeat's send verdict; the reason explains a skip.
 
     The shared consent ladder plus the heartbeat's OWN once-per-day throttle,
     which no other route wants (see :func:`telemetry_permitted`).
@@ -644,14 +705,16 @@ def should_send(*, enabled: bool, audit: bool = True) -> tuple[bool, str]:
     read-only diagnostic call (from :func:`status`, which the Privacy panel
     refetches; auditing an inspection would flood the SEL trail).
     """
-    ok, reason = telemetry_permitted(
-        enabled=enabled, audit_tool="beacon_send" if audit else ""
+    verdict = telemetry_permitted(
+        enabled=enabled, acked=acked, audit_tool="beacon_send" if audit else ""
     )
-    if not ok:
-        return False, reason
+    if not verdict.ok:
+        return verdict
     if already_sent_today():
-        return False, f"already sent today ({_today()})"
-    return True, "ready"
+        return Verdict(
+            False, f"already sent today ({_today()})", "already_sent_today"
+        )
+    return Verdict(True, "ready", "ready")
 
 
 def beacon_url(endpoint: str, fields: dict[str, str]) -> str:
@@ -672,12 +735,16 @@ def beacon_url(endpoint: str, fields: dict[str, str]) -> str:
     return f"{base}/b/{BEACON_SCHEMA}/{ident}?{query}"
 
 
-def send(endpoint: str, app_version: str, *, enabled: bool) -> bool:
+def send(endpoint: str, app_version: str, *, enabled: bool, acked: bool) -> bool:
     """Send at most one heartbeat for today. Returns whether one was sent.
 
     Fully best-effort and SILENT on failure: an offline user, a firewall, a DNS
     failure, or a 5xx must never surface as an error or a delay the user
     notices. Telemetry that can break the product is worse than no telemetry.
+
+    ``acked`` is required rather than defaulted: this is the enforcement path for
+    the first-egress privacy gate, and a default would let a future call site
+    silently opt out of it (see :func:`telemetry_permitted`).
     """
     if not endpoint:
         return False
@@ -689,8 +756,7 @@ def send(endpoint: str, app_version: str, *, enabled: bool) -> bool:
         # those propagate into the caller — for the gateway that means
         # threading.excepthook printing a traceback on every boot, and the
         # module's documented in-memory fallback never engaging.
-        ok, _reason = should_send(enabled=enabled)
-        if not ok:
+        if not should_send(enabled=enabled, acked=acked).ok:
             return False
         url = beacon_url(endpoint, payload(app_version))
     except (ValueError, OSError, RuntimeError) as exc:
@@ -723,7 +789,9 @@ def send(endpoint: str, app_version: str, *, enabled: bool) -> bool:
         return False
 
 
-def status(endpoint: str, *, enabled: bool, app_version: str) -> dict[str, object]:
+def status(
+    endpoint: str, *, enabled: bool, app_version: str, acked: bool
+) -> dict[str, object]:
     """Return the exact state for ``kirocrew telemetry status``.
 
     Uses ``create=False`` so inspecting status never materializes an id.
@@ -738,15 +806,23 @@ def status(endpoint: str, *, enabled: bool, app_version: str) -> dict[str, objec
     call in ``send`` is the one that carries the audit.
     """
     try:
-        ok, reason = should_send(enabled=enabled, audit=False)
+        ok, reason, code = should_send(enabled=enabled, acked=acked, audit=False)
     except (OSError, RuntimeError) as exc:
-        ok, reason = False, f"could not read the data home ({exc.__class__.__name__})"
+        ok, reason, code = (
+            False,
+            f"could not read the data home ({exc.__class__.__name__})",
+            "unreadable_home",
+        )
     # send() returns early on an empty endpoint, so reporting would_send=True
     # here would have the diagnostic contradict the code path it describes —
     # including after __post_init__ clears a non-https value, which is exactly
     # when an operator runs this command.
     if ok and not endpoint:
-        ok, reason = False, "no endpoint configured (telemetry.beacon_endpoint is empty)"
+        ok, reason, code = (
+            False,
+            "no endpoint configured (telemetry.beacon_endpoint is empty)",
+            "no_endpoint",
+        )
     try:
         ident = install_id(create=False)
     except (OSError, RuntimeError):
@@ -769,6 +845,7 @@ def status(endpoint: str, *, enabled: bool, app_version: str) -> dict[str, objec
         "install_id": ident or "(not yet generated)",
         "would_send": ok,
         "reason": reason,
+        "reason_code": code,
         "governance_pinned_off": pinned,
         "payload_preview": preview,
     }

@@ -1,8 +1,9 @@
 """Unit tests for kiro_crew.platform_compat — the cross-platform shim that lets
 KiroCrew run natively on Windows alongside macOS/Linux.
 
-These exercise the PURE / platform-dispatching surface without spawning real
-processes: the signal constants, the file-lock context managers (POSIX path on
+These exercise the PURE / platform-dispatching surface, spawning a real process
+only where the contract IS an OS behavior (process-session semantics): the
+signal constants, the file-lock context managers (POSIX path on
 this host; the Windows branch is asserted via its dispatch shape), the
 strftime directive translation (the one piece with a deterministic Windows
 output we can assert directly), and the process-helper return contracts.
@@ -469,6 +470,85 @@ class TestFileLockContention:
             os.close(fd_shared)
             os.close(fd_other)
 
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows LK_LOCK ceiling regression")
+    def test_windows_blocking_acquire_waits_past_lk_lock_ceiling(self, tmp_path):
+        # Regression for issue #470: msvcrt's LK_LOCK "blocking" code gives up
+        # after ~10s with EDEADLOCK and the old shim treated that as "acquired".
+        # A holder that keeps the lock LONGER than that ceiling must make a
+        # blocking contender WAIT (until release or its own timeout) — never
+        # fall through and enter the critical section unserialized at ~10s.
+        #
+        # Drive _win_acquire_blocking directly with an EXPLICIT timeout past the
+        # ceiling: the module default is a short on-loop-safety ceiling, but the
+        # bug being pinned is specifically the ~10s LK_LOCK give-up point.
+        import threading
+
+        lock = tmp_path / ".ceiling.lock"
+        hold_secs = 13.0
+        fd_holder = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fd_contender = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        released_at = {"t": 0.0}
+        entered_at = {"t": 0.0}
+        holder_ready = threading.Event()
+
+        def _hold():
+            with pc.file_lock(fd_holder, exclusive=True, required=True):
+                holder_ready.set()
+                time.sleep(hold_secs)
+                released_at["t"] = time.monotonic()
+
+        holder = threading.Thread(target=_hold)
+        holder.start()
+        try:
+            assert holder_ready.wait(timeout=10.0), "holder never took the lock"
+            # Blocking acquire on the OTHER fd with a timeout past the ~10s
+            # ceiling: it must not succeed until the holder releases at ~13s.
+            got = pc._win_acquire_blocking(fd_contender, timeout=30.0)
+            entered_at["t"] = time.monotonic()
+            assert got is True, "contender never acquired the lock after release"
+            # It entered only AFTER the holder released — proving it waited past
+            # the 10s ceiling that used to let it slip through early.
+            assert entered_at["t"] >= released_at["t"], (
+                "contender entered the critical section before the holder "
+                "released — the blocking acquire fell through the LK_LOCK ceiling"
+            )
+            pc.release_lock(fd_contender)
+        finally:
+            holder.join(timeout=20.0)
+            os.close(fd_holder)
+            os.close(fd_contender)
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows on-loop single-shot acquire")
+    def test_windows_contended_lock_on_event_loop_fails_fast(self, tmp_path):
+        # On the asyncio event-loop thread a contended lock must NOT spin-sleep
+        # (that freezes chat/heartbeat): _win_acquire_blocking is single-shot
+        # there, so file_lock fails closed immediately instead of waiting out
+        # the timeout. Assert both the fast-fail AND that it took ~no time.
+        import asyncio
+
+        lock = tmp_path / ".onloop.lock"
+        fd_holder = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fd_contender = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+
+        async def _contend_on_loop():
+            # Hold on THIS fd (non-blocking), then a second in-loop acquire on
+            # the other fd must raise at once rather than sleep to the ceiling.
+            assert pc.try_acquire_lock(fd_holder, exclusive=True) is True
+            start = time.monotonic()
+            with pytest.raises(OSError):
+                with pc.file_lock(fd_contender, exclusive=True):
+                    pass
+            elapsed = time.monotonic() - start
+            pc.release_lock(fd_holder)
+            # Single-shot: nowhere near the multi-second timeout ceiling.
+            assert elapsed < 1.0, f"on-loop acquire spun for {elapsed:.2f}s"
+
+        try:
+            asyncio.run(_contend_on_loop())
+        finally:
+            os.close(fd_holder)
+            os.close(fd_contender)
+
 
 class TestProcessIdentityPosix:
     def test_get_ppid_of_self_is_positive_on_posix(self):
@@ -518,16 +598,31 @@ class TestProcessIdentityPosix:
         # "Python". Production needles ("kiro-cli", "claude") appear verbatim in
         # the argv they guard, so only the test's choice of needle was fragile.
         token = "kirocrew-procmatch-probe"
+        # Use a readiness pipe: the child signals after exec completes, so we
+        # never race /proc/<pid>/cmdline population on a loaded runner.
         child = subprocess.Popen(
-            [sys.executable, "-c", f"import time; time.sleep(30)  # {token}"],
+            [
+                sys.executable, "-c",
+                f"import sys, time; sys.stdout.write('R'); sys.stdout.flush(); "
+                f"time.sleep(30)  # {token}",
+            ],
             start_new_session=True,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
         try:
-            assert child.poll() is None  # alive
-            result = pc.process_matches(child.pid, (token,))
+            # Wait for the readiness byte (generous timeout for slow CI).
+            ready = child.stdout.read(1)
+            assert ready == b"R", f"child did not signal readiness: {ready!r}"
+            assert child.poll() is None  # still alive after signalling
             if pc.IS_POSIX:
+                # /proc/<pid>/cmdline is guaranteed populated after exec, but
+                # keep a short retry for edge cases on exotic kernels.
+                deadline = time.monotonic() + 10.0
+                result = pc.process_matches(child.pid, (token,))
+                while not result and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    result = pc.process_matches(child.pid, (token,))
                 assert result is True
         finally:
             child.kill()
@@ -1822,3 +1917,117 @@ class TestCurrentUserSidNeverSpawns:
         monkeypatch.setattr(pc.subprocess, "run", self._forbid_spawn)
 
         assert pc.current_user_sid() == "S-1-5-21-9-9-9-500"
+
+
+def test_process_descendants_snapshots_a_new_session_grandchild():
+    """A grandchild in its OWN session is still a descendant.
+
+    This is the case a bare ``killpg`` misses, so the walk that broadens a kill
+    must be able to see it.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX session semantics
+        pytest.skip("POSIX session semantics")
+
+    grandchild: int | None = None
+    child_code = (
+        "import subprocess,sys,time;"
+        "c=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],"
+        "start_new_session=True);"
+        "print(c.pid,flush=True);time.sleep(30)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_code],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        assert proc.stdout is not None
+        grandchild = int(proc.stdout.readline().strip())
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if grandchild in platform_compat.process_descendants(proc.pid):
+                break
+            time.sleep(0.05)
+        descendants = platform_compat.process_descendants(proc.pid)
+        assert grandchild in descendants
+        # It is genuinely outside the parent's process group -- otherwise this
+        # test would pass even without the escape it exists to describe.
+        assert os.getpgid(grandchild) != os.getpgid(proc.pid)
+    finally:
+        for pid in (grandchild, proc.pid):
+            if pid is None:
+                continue
+            try:
+                platform_compat.kill_process_tree(pid)
+            except (ProcessLookupError, OSError, ValueError):
+                pass
+        proc.wait(timeout=5)
+
+
+def test_process_descendants_is_best_effort_on_unreadable_table(monkeypatch):
+    """Introspection failure must not raise into a caller's kill path."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(
+        platform_compat,
+        "_posix_process_parent_map",
+        lambda: (_ for _ in ()).throw(OSError("boom")),
+    )
+    monkeypatch.setattr(
+        platform_compat, "_windows_process_parent_map", lambda: (_ for _ in ()).throw(OSError("boom"))
+    )
+    assert platform_compat.process_descendants(os.getpid()) == []
+
+
+def test_process_descendants_refuses_reserved_pids():
+    from kiro_crew import platform_compat
+
+    assert platform_compat.process_descendants(1) == []
+    assert platform_compat.process_descendants(0) == []
+
+
+def test_parent_map_ignores_a_planted_ps_earlier_on_path(tmp_path, monkeypatch):
+    """A gateway PATH can lead with agent-writable dirs, so PATH is not trusted.
+
+    The shim below would report a bogus tree (and could run any code) if the
+    lookup honored PATH.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    shim = tmp_path / "ps"
+    shim.write_text("#!/bin/sh\necho '999999 999998'\n")
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
+
+    parent_map = platform_compat._posix_process_parent_map()
+    assert 999999 not in parent_map, "planted PATH shim was executed"
+    # A real snapshot still came back, so this is not passing by returning {}.
+    assert os.getpid() in parent_map
+
+
+def test_trusted_system_bin_rejects_a_name_not_in_system_dirs(tmp_path, monkeypatch):
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    fake = tmp_path / "definitely-not-a-system-tool"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert platform_compat.trusted_system_bin("definitely-not-a-system-tool") is None
+    assert platform_compat.trusted_system_bin("ps") is not None
+
+
+def test_parent_map_is_empty_when_no_trusted_ps_exists(monkeypatch):
+    """No trusted binary must degrade to best-effort, never fall back to PATH."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda name: None)
+    assert platform_compat._posix_process_parent_map() == {}
+    assert platform_compat.process_descendants(os.getpid()) == []

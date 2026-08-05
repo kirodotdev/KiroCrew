@@ -7,6 +7,7 @@ import hmac as _hmac  # noqa: F401
 import hmac as _hmac_mod
 import json
 import os
+import sys
 import textwrap
 import time
 from contextlib import ExitStack
@@ -896,7 +897,13 @@ def test_build_env_excludes_credentials(monkeypatch):
     monkeypatch.setenv("HOME", "/home/u")
 
     env = mod._pod_env()
-    assert env["PATH"] == mod._TRUSTED_PATH  # pinned, never inherited
+    # Pinned, never inherited. The pin is _TRUSTED_PATH plus (in the
+    # credential-FREE tier only) the node toolchain dirs prepended, so that
+    # npm's `#!/usr/bin/env node` run-scripts resolve — see
+    # test_dev_fleet_node_toolchain.py for that boundary.
+    assert env["PATH"] != "/usr/bin"
+    assert mod._TRUSTED_PATH in env["PATH"]
+    assert env["PATH"].endswith(mod._TRUSTED_PATH)
     assert "SLACK_BOT_TOKEN" not in env
     assert "AWS_SECRET_ACCESS_KEY" not in env
 
@@ -906,6 +913,10 @@ def test_build_env_excludes_credentials(monkeypatch):
     benv = mod._build_env()
     assert "SLACK_BOT_TOKEN" not in benv
     assert "KIROCREW_POD_REPO" not in benv
+
+    # The credential-bearing tier keeps the bare pinned path — git resolves its
+    # own helpers (git-remote-https, credential helpers) through PATH.
+    assert mod._build_env(with_credentials=True)["PATH"] == mod._TRUSTED_PATH
 
 
 def test_read_pin_strict_rejects_symlinked_env(tmp_path):
@@ -2795,8 +2806,14 @@ async def test_trusted_helpers_loaded_from_global_config(monkeypatch):
     monkeypatch.setattr(mod, "_GIT_TRUSTED_HELPERS", None)
     monkeypatch.setattr(mod, "_trusted_bin", lambda n: f"/usr/bin/{n}")
 
+    scopes: list = []
+
     async def fake_run_cmd(cmd, **kw):
-        assert cmd[:4] == ["git", "config", "--global", "--get-regexp"]
+        assert cmd[:2] == ["git", "config"]
+        assert cmd[3] == "--get-regexp"
+        scopes.append(cmd[2])
+        if cmd[2] != "--global":
+            return 1, "", ""  # nothing machine-wide
         return 0, (
             "credential.https://github.com.helper !gh auth git-credential\n"
             "credential.helper store\n"
@@ -2811,6 +2828,79 @@ async def test_trusted_helpers_loaded_from_global_config(monkeypatch):
     assert h[f"GIT_CONFIG_VALUE_{base}"] == "!/usr/bin/gh auth git-credential"
     assert f"GIT_CONFIG_KEY_{base + 1}" not in h
     assert h["GIT_CONFIG_COUNT"] == str(base + 1)
+    # Both operator-owned scopes are probed, and repo-LOCAL never is: a checkout
+    # Dev Fleet builds can write .git/config, and a helper from there would run
+    # in the credential-bearing standard tier.
+    assert scopes == ["--system", "--global"]
+
+
+@pytest.mark.asyncio
+async def test_trusted_helpers_loaded_from_system_config(monkeypatch):
+    """A SYSTEM-scope helper is re-pinned — the stock-macOS case.
+
+    Xcode's Command Line Tools ship `credential.helper = osxkeychain` in the
+    system gitconfig and a stock install has nothing in global, so scanning only
+    --global left the neutralizer's reset unrepaired and `git fetch` died with
+    "could not read Username" (no tty to prompt on).
+    """
+    monkeypatch.setattr(mod, "_GIT_TRUSTED_HELPERS", None)
+
+    async def fake_run_cmd(cmd, **kw):
+        if cmd[2] == "--system":
+            return 0, "credential.helper osxkeychain\n", ""
+        return 1, "", ""  # nothing in global, as on a stock macOS host
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    await mod._load_trusted_credential_helpers()
+    h = mod._GIT_TRUSTED_HELPERS or {}
+    base = int(mod._GIT_ENV_NEUTRALIZERS["GIT_CONFIG_COUNT"])
+    assert h[f"GIT_CONFIG_KEY_{base}"] == "credential.helper"
+    assert h[f"GIT_CONFIG_VALUE_{base}"] == "osxkeychain"
+    assert h["GIT_CONFIG_COUNT"] == str(base + 1)
+
+
+@pytest.mark.asyncio
+async def test_trusted_helpers_global_is_pinned_after_system(monkeypatch):
+    """Ordering mirrors git's own precedence: system first, then global.
+
+    credential.helper is multi-valued and the LAST entry wins, so an operator's
+    own global setting must still override a machine-wide default.
+    """
+    monkeypatch.setattr(mod, "_GIT_TRUSTED_HELPERS", None)
+
+    async def fake_run_cmd(cmd, **kw):
+        if cmd[2] == "--system":
+            return 0, "credential.helper osxkeychain\n", ""
+        return 0, "credential.helper manager\n", ""
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    await mod._load_trusted_credential_helpers()
+    h = mod._GIT_TRUSTED_HELPERS or {}
+    base = int(mod._GIT_ENV_NEUTRALIZERS["GIT_CONFIG_COUNT"])
+    assert h[f"GIT_CONFIG_VALUE_{base}"] == "osxkeychain"      # system
+    assert h[f"GIT_CONFIG_VALUE_{base + 1}"] == "manager"      # global wins
+    assert h["GIT_CONFIG_COUNT"] == str(base + 2)
+
+
+@pytest.mark.asyncio
+async def test_trusted_helpers_never_read_repo_local_scope(monkeypatch):
+    """--local is never probed.
+
+    Repo-local config is the attack surface the neutralizer's reset exists for:
+    a checkout Dev Fleet builds can write .git/config, and a helper from there
+    would run in the credential-bearing standard tier.
+    """
+    monkeypatch.setattr(mod, "_GIT_TRUSTED_HELPERS", None)
+    scopes: list = []
+
+    async def fake_run_cmd(cmd, **kw):
+        scopes.append(cmd[2])
+        return 1, "", ""
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    await mod._load_trusted_credential_helpers()
+    assert "--local" not in scopes
+    assert set(scopes) == {"--system", "--global"}
 
 
 @pytest.mark.asyncio
@@ -2849,6 +2939,90 @@ def test_build_env_credentials_only_when_requested(monkeypatch):
     assert plain["GIT_CONFIG_COUNT"] == str(base)
 
 
+async def _sync_step_argvs(monkeypatch) -> list:
+    """Run _sync with every spawn stubbed; return each step's argv, in order."""
+    captured: list = []
+
+    def fake_sandbox(argv, mode, *, env=None, **kw):
+        captured.append(list(argv))
+        return list(argv), dict(env or {}), None
+
+    with patch.object(mod, "_git", new_callable=AsyncMock,
+                      return_value=mod.BASE_BRANCH), \
+         patch.object(mod, "_venv_python", return_value=Path("/fake/.venv/bin/python")), \
+         patch.object(mod, "_trusted_bin", side_effect=lambda n: f"/usr/bin/{n}"), \
+         patch.object(mod, "sandboxed_spawn_argv", fake_sandbox), \
+         patch.object(mod, "_start_run", new_callable=AsyncMock,
+                      return_value="rid-steps"):
+        mod._SYNC_RID = None
+        res = await mod._sync()
+    assert res["ok"] is True
+    return captured
+
+
+def _is_stage_step(argv: list) -> bool:
+    # The sync stages via the combined build+stage entry point, which holds the
+    # staging lock across both halves.
+    return any(
+        "stage_built_dist" in str(part) or "build_and_stage" in str(part)
+        for part in argv
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_stages_dist_on_a_stock_checkout(monkeypatch):
+    """The staging step is part of the sync on a stock checkout.
+
+    `npm run build` writes website/dist while the dashboard serves
+    src/kiro_crew/static/dist; without this step Pull+Build reports success and
+    the gateway keeps serving the previous bundle.
+    """
+    monkeypatch.setattr(mod.frontend, "edition_configured", lambda: False)
+    argvs = await _sync_step_argvs(monkeypatch)
+    stage_at = [i for i, a in enumerate(argvs) if _is_stage_step(a)]
+    assert stage_at, f"no staging step in {argvs}"
+    # It must be the COMBINED entry point: a staging-only step would put the
+    # build back outside the lock holder without tripping the guards below.
+    assert any("build_and_stage" in str(x) for x in argvs[stage_at[0]]), \
+        f"the stage step must also perform the build: {argvs[stage_at[0]]}"
+    # Staging cannot precede the build: they are the SAME step, which holds the
+    # staging lock across both so no peer flow can copy a half-written tree.
+    ci_at = [i for i, a in enumerate(argvs)
+             if Path(a[0]).name == "npm" and "ci" in a]
+    assert ci_at and stage_at[0] > ci_at[0], \
+        "the build+stage step must run after npm ci"
+    assert not any(Path(a[0]).name == "npm" and "build" in a for a in argvs), \
+        "a separate npm build step would run outside the staging lock holder"
+    # THIS backend's interpreter, not the target checkout's: resolving the
+    # helper from the pulled revision would make the step's existence contingent
+    # on that revision already carrying it, so an older target would turn the
+    # whole Pull+Build into an ImportError.
+    assert argvs[stage_at[0]][0] == sys.executable
+
+
+@pytest.mark.asyncio
+async def test_sync_never_stages_dist_on_an_edition_checkout(monkeypatch):
+    """An edition checkout must NOT have its dashboard rebuilt or staged over.
+
+    The sync build runs under _build_env(), whose allowlist drops
+    KIROCREW_EDITION_DIR / KIROCREW_ALLOW_EDITION, so on an edition composition
+    root `npm run build` compiles the STOCK SPA. Staging that would silently
+    replace the edition dashboard with upstream's; leaving the shipped bundle in
+    place is what frontend's own edition guards already do.
+    """
+    monkeypatch.setattr(mod.frontend, "edition_configured", lambda: True)
+    argvs = await _sync_step_argvs(monkeypatch)
+    assert not any(_is_stage_step(a) for a in argvs)
+    # The BUILD is skipped too. vite builds with emptyOutDir, so on a source-tree
+    # install -- where static/dist is a symlink to website/dist -- the stock build
+    # alone would replace the served edition dashboard, staging step or not.
+    assert not any(Path(a[0]).name == "npm" for a in argvs)
+    # The backend half of the sync is untouched: an edition still gets the pull
+    # and the editable reinstall.
+    assert any(Path(a[0]).name == "git" and "fetch" in a for a in argvs)
+    assert any("pip" in a for a in argvs)
+
+
 @pytest.mark.asyncio
 async def test_sync_build_steps_never_see_credential_helpers(monkeypatch):
     """Only the network fetch step carries operator credential helpers;
@@ -2881,9 +3055,12 @@ async def test_sync_build_steps_never_see_credential_helpers(monkeypatch):
     build_envs = [
         e for a, e in captured
         if _base(a) == ["git", "merge"] or "pip" in a or Path(a[0]).name == "npm"
+        # The build+stage step is a build step too and must not be exempt from
+        # the credential-absence invariant just because it runs via `python -c`.
+        or any("build_and_stage" in str(x) for x in a)
     ]
     assert fetch_envs and all(key in e for e in fetch_envs)
-    assert len(build_envs) == 4  # merge + pip + npm ci + npm build
+    assert len(build_envs) == 4  # merge + pip + npm ci + (npm build + stage)
     assert all(key not in e for e in build_envs)
 
 
@@ -3064,6 +3241,8 @@ async def test_load_helpers_skips_untrusted(monkeypatch):
     """Untrusted helper lines are dropped; trusted ones survive with a
     correct GIT_CONFIG_COUNT."""
     async def fake_run(cmd, **kw):
+        if cmd[2] != "--global":
+            return 1, "", ""
         return 0, (
             "credential.helper !evil-shim\n"
             "credential.https://github.com.helper !gh auth git-credential\n"
@@ -4753,3 +4932,134 @@ def test_declared_platforms_all_resolve_to_a_real_sys_platform():
     cfg = PlatformConfig(os=manifest["platform"]["os"])
     for sys_platform in ("darwin", "linux", "win32"):
         assert cfg.supports_platform(sys_platform), sys_platform
+
+
+@pytest.mark.asyncio
+async def test_sync_builds_and_stages_under_one_lock_holder(monkeypatch, tmp_path):
+    """Pull+Build must build and stage inside ONE locked step.
+
+    Without a staging step the live gateway keeps serving through the symlink
+    ensure_dev_dist_symlink() points at ``website/dist``, so the build empties
+    and rewrites the assets it is serving. The step runs under the Dev Fleet
+    backend's OWN interpreter with the target repo passed as an argument:
+    resolving the helper from the target would make the step's existence
+    contingent on the pulled revision carrying it, so an older target would turn
+    the whole Pull+Build into an ImportError.
+    """
+    repo = tmp_path / "mainrepo"
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").write_text("")
+    monkeypatch.setattr(mod, "MAIN_REPO", str(repo))
+    monkeypatch.setattr(mod, "_SYNC_RID", None)
+
+    async def fake_remote():
+        return "origin"
+
+    monkeypatch.setattr(mod, "_upstream_remote", fake_remote, raising=False)
+    monkeypatch.setattr(mod, "_trusted_bin", lambda n: f"/usr/bin/{n}")
+    argvs: list[list[str]] = []
+
+    def fake_sandboxed(argv, mode, env=None):
+        argvs.append(list(argv))
+        return list(argv), dict(env or {}), None
+
+    monkeypatch.setattr(mod, "sandboxed_spawn_argv", fake_sandboxed)
+
+    async def fake_run_cmd(cmd, **kw):
+        return 0, "main", ""
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+
+    async def fake_start_run(label, cmd, **kw):
+        return "rid-stage"
+
+    monkeypatch.setattr(mod, "_start_run", fake_start_run)
+
+    res = await mod._sync_start_locked()
+    assert res.get("ok"), res
+
+    def _index(pred) -> int:
+        for i, a in enumerate(argvs):
+            if pred(a):
+                return i
+        raise AssertionError(f"step not found in {argvs}")
+
+    # Build and stage are ONE step so a single lock holder spans both: the build
+    # empties website/dist, and a peer flow staging concurrently would copy a
+    # partially written tree.
+    stage_i = _index(lambda a: any("build_and_stage" in x for x in a))
+    # THIS backend's interpreter, not the target checkout's: the logic is
+    # revision-independent, while resolving it from the target would make the
+    # step's very existence contingent on the pulled revision already carrying
+    # build_and_stage, turning an older target into an ImportError that fails the
+    # whole Pull+Build. The repo to build is passed as an argument instead.
+    assert argvs[stage_i][0] == sys.executable
+    assert str(repo) in argvs[stage_i], "the target repo must be passed explicitly"
+    assert argvs[stage_i][-1].endswith("npm"), "the trusted npm path is passed through"
+    assert not any(
+        a[1:] == ["run", "build", "--prefix", "website"] for a in argvs
+    ), "a separate unlocked npm build step would reintroduce the race"
+    # npm ci does not touch website/dist, so it stays its own step.
+    ci_i = _index(lambda a: a[1:] == ["ci", "--prefix", "website"])
+    assert ci_i < stage_i
+
+
+def test_kill_tree_reaps_a_descendant_that_escaped_the_process_group():
+    """A new-session descendant is outside the group, so killpg alone misses it."""
+    from kiro_crew.apps.builtins.dev_fleet import server as dev
+
+    killed: list[int] = []
+
+    with patch.object(dev.platform_compat, "process_descendants", return_value=[222]), \
+            patch.object(
+                dev.platform_compat,
+                "kill_process_tree",
+                side_effect=lambda pid, *a, **k: killed.append(pid) or True,
+            ):
+        dev._kill_tree_sync(111)
+
+    assert killed == [111, 222], (
+        "the group kill must run first, then each escaped descendant"
+    )
+
+
+def test_kill_tree_enumerates_descendants_before_killing_anything():
+    """Ordering is the whole mechanism.
+
+    A kill reparents survivors to init and erases the PPID links, so a snapshot
+    taken after the kill cannot see the processes that escaped.
+    """
+    from kiro_crew.apps.builtins.dev_fleet import server as dev
+
+    events: list[str] = []
+
+    with patch.object(
+        dev.platform_compat,
+        "process_descendants",
+        side_effect=lambda pid: events.append("enumerate") or [222],
+    ), patch.object(
+        dev.platform_compat,
+        "kill_process_tree",
+        side_effect=lambda pid, *a, **k: events.append(f"kill{pid}") or True,
+    ):
+        dev._kill_tree_sync(111)
+
+    assert events[0] == "enumerate", f"enumeration must precede any kill: {events}"
+    assert events == ["enumerate", "kill111", "kill222"]
+
+
+def test_kill_tree_survives_an_already_dead_descendant():
+    """The group kill usually reaps descendants; a dead pid must not raise."""
+    from kiro_crew.apps.builtins.dev_fleet import server as dev
+
+    def _kill(pid, *a, **k):
+        if pid == 222:
+            raise ProcessLookupError(pid)
+        return True
+
+    with patch.object(dev.platform_compat, "process_descendants", return_value=[222, 333]), \
+            patch.object(dev.platform_compat, "kill_process_tree", side_effect=_kill) as km:
+        dev._kill_tree_sync(111)
+
+    # 333 is still attempted after 222's ProcessLookupError.
+    assert [c.args[0] for c in km.call_args_list] == [111, 222, 333]

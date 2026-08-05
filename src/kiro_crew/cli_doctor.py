@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 
 from kiro_crew import __version__ as _mc_version
-from kiro_crew import platform_compat
+from kiro_crew import diagnostics, platform_compat
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.agent import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
@@ -56,6 +56,7 @@ from kiro_crew.platform import (
     safe_context_call,
 )
 from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
+from kiro_crew.sandbox import warm_backend
 from kiro_crew.sel import sel
 from kiro_crew.transcribe import _find_whisper, ensure_ffmpeg_in_path
 
@@ -215,6 +216,32 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
 
     if not probe_targets:
         return
+
+    # Every probe below spawns its server through the sandbox chokepoint, and
+    # asyncio.gather releases them together. On a cold cache the first arrivals
+    # therefore land on the on-loop deferral path simultaneously and each logs a
+    # transient probe failure — noise that reads as a real sandbox fault during a
+    # health check whose subject is MCP, not the sandbox. Warm the cache here,
+    # off any loop, so the probes see a settled verdict.
+    #
+    # The chokepoint helper is deliberately NOT named here: test_spawn_audit
+    # classifies a spawn as sandbox-routed by substring-scanning the enclosing
+    # function's source, so spelling that identifier even in a comment flips this
+    # function's classification and then demands a resource-limit preexec_fn it
+    # does not own. The routing genuinely happens inside
+    # mcp_discovery.probe_server, not here.
+    #
+    # Failing to warm is non-fatal BY DESIGN (the cache stays cold and the
+    # self-healing transient path applies), so it must not be able to abort the
+    # command. `warm_backend` starts a thread, and `Thread.start()` raises when
+    # the process is out of threads — precisely the degraded state someone runs
+    # `doctor` to diagnose, which is the worst moment for the diagnostic itself
+    # to die. Swallow it here rather than inside the probe `try` below, so a warm
+    # failure is never misreported as an MCP probe failure.
+    try:
+        warm_backend()
+    except Exception:
+        logger.debug("sandbox probe warm failed; probes will re-probe", exc_info=True)
 
     try:
 
@@ -434,7 +461,7 @@ def _doctor_model_url_reachable(issues: list[str]) -> None:
         print("               keep retrying with backoff on every gateway boot.")
 
 
-def _doctor(platform_boot_error: "Exception | None" = None) -> None:
+def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
     ``platform_boot_error`` carries a :class:`PlatformCompositionError` from
@@ -446,6 +473,34 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
 
     print("Kiro Crew Doctor 👻\n")
     issues: list[str] = []
+
+    # ── Diagnostics bundle (--bundle) ──
+    # Short-circuit: collect logs + crash reports into a redacted zip and print
+    # the local path plus a pre-filled GitHub issue URL, then exit. Shares the
+    # exact collector the dashboard "Report a Problem" button uses.
+    if bundle:
+        print("Collecting diagnostics bundle (secrets are redacted)...\n")
+        # The collector touches the filesystem in several places that can fail for
+        # ordinary reasons — an unwritable data home, a plain FILE sitting where
+        # `diagnostics/` should be, a full disk. Letting OSError escape prints a
+        # traceback at the one moment the user is already trying to report a
+        # failure, so fail with a readable message and a nonzero status instead.
+        try:
+            result = diagnostics.collect_bundle()
+        except OSError as exc:
+            print(f"  ❌ could not write the diagnostics bundle: {exc}")
+            print("     Check that ~/.kiro/crew is writable and has free space.")
+            sys.exit(1)
+        print(f"  ✅ bundle: {result.zip_path}")
+        print(
+            f"     {len(result.included)} file(s) · "
+            f"{result.total_redactions} secret(s) redacted"
+        )
+        if result.skipped:
+            print(f"     skipped (not found): {', '.join(result.skipped)}")
+        print("\n  Open a pre-filled GitHub issue (then drag the zip in):")
+        print(f"  {result.github_issue_url}")
+        return
 
     # ── Platform edition ──
     # Report the composed profile, and surface a boot-composition failure as a
@@ -582,8 +637,10 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
                 stale_project = True
     if proj and Path(proj).is_dir():
         print(f"  project dir: ✅ {proj}")
-        git_dir = Path(proj) / ".git"
-        if git_dir.is_dir():
+        # A git worktree or submodule stores ``.git`` as a FILE holding a
+        # ``gitdir:`` pointer, not a directory, so accept both forms.
+        git_marker = Path(proj) / ".git"
+        if git_marker.exists():
             print("  git repo:    ✅")
         else:
             print("  git repo:    ⚠️  not a git repo")

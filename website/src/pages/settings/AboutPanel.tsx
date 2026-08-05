@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Scale, CheckCircle2, AlertCircle, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Package, X, Download } from 'lucide-react'
+import { Trans } from 'react-i18next'
+import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Package, X, Download } from 'lucide-react'
 import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn, Toggle } from '../../components/ui'
 import { useBranding } from '../../hooks/useBranding'
@@ -8,6 +9,7 @@ import { useAppSelector } from '../../store'
 import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowser'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import SegmentedControl from '../../components/SegmentedControl'
+import ReportProblemCard from './ReportProblemCard'
 import { api, ApiError } from '../../api/client'
 import { sanitize } from '../../api/helpers'
 
@@ -130,6 +132,34 @@ const HERO_BG: React.CSSProperties = {
     'linear-gradient(135deg, color-mix(in oklab, var(--accent) 14%, transparent), color-mix(in oklab, var(--accent) 3%, transparent) 55%, var(--card))',
 }
 
+/**
+ * Where the prerelease note sends a bug report.
+ *
+ * Same endpoint as `prompts/featureRequest.ts` FEATURE_REQUEST_URL, deliberately
+ * NOT imported from it: that constant is named for (and used by) the guided
+ * feature-request flow, and a rename or a redirect to an in-app form there must
+ * not silently retarget this link.
+ */
+const REPORT_ISSUE_URL = 'https://github.com/kirodotdev/KiroCrew/issues/new'
+
+/**
+ * Last-resort prerelease test for an info payload with NO channel fields.
+ *
+ * `electron/main.js` has an init-failure fallback whose getInfo() returns only
+ * `{version, packaged}` (updater handle `disabled: "init-failed"`), so both
+ * `stampedChannel` and `channel` are absent there. Without this the note would
+ * hide from a packaged insider/nightly build precisely when its updater is
+ * broken — the user most likely to have something worth reporting.
+ *
+ * Mirrors auto-update.js channelForVersion's rule as far as it needs to: a bare
+ * semver is stable, ANY prerelease suffix (-insider.N, -nightly.<stamp>, -rc.N)
+ * is not. It deliberately does not try to name WHICH lane, because the copy no
+ * longer interpolates the channel.
+ */
+function versionLooksPrerelease(version: string | undefined): boolean {
+  return !!version && version.includes('-')
+}
+
 /** Row: label on the left, value on the right. */
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -197,6 +227,34 @@ export function AboutPanel() {
   const channel = info?.channel
   const updatesDisabled = info?.disabled
   const checking = checkMutation.isPending || updateState?.state === 'checking'
+
+  // "What's the difference?" disclosure next to the channel switcher. Collapsed
+  // by default: the identity card is the densest surface in Settings, and the
+  // explanation is reference material — needed once, when choosing.
+  const [showChannelHelp, setShowChannelHelp] = useState(false)
+  // The report ask is about the BYTES CURRENTLY RUNNING, so it keys on
+  // stampedChannel (the build's own lane) and NOT on `channel`, which is the
+  // feed being FOLLOWED: auto-update.js resolveChannel() returns the user's
+  // switcher preference for any production build, so the two diverge for the
+  // whole window between flipping the switcher and the other channel's build
+  // actually landing. Keying on `channel` inverts the feature in both
+  // directions — it hides the ask from someone still running insider bytes who
+  // just opted back to stable, and shows "less tested than Stable" to someone
+  // on a stable build who just opted into insider.
+  //
+  // Any non-stable lane ships less-tested bytes, so nightly is included as well
+  // as insider. Nightly reports channelSwitchable=false (it is a pinned
+  // side-by-side install), so the note is rendered OUTSIDE the
+  // switchable/pinned branch below to cover both. An unstamped dev build has
+  // stampedChannel=null and correctly gets no ask — there is no published
+  // release for its bytes to be "less tested" than.
+  //
+  // ABSENT (undefined) is a third case, distinct from null: main.js's
+  // init-failure fallback reports neither channel field, so fall back to the
+  // version string for a packaged build. `null` keeps meaning "dev, no lane".
+  const isPrerelease = info?.stampedChannel === undefined
+    ? !!info?.packaged && versionLooksPrerelease(info?.version)
+    : !!info.stampedChannel && info.stampedChannel !== 'stable'
 
   // Desktop status line under the Check button (simple states only — the
   // found/downloading/downloaded lifecycle renders as the update card below).
@@ -456,31 +514,96 @@ export function AboutPanel() {
 
         {isDesktop && channel && (
           info?.channelSwitchable && desktopApi?.setChannel ? (
-            <div className="flex items-center justify-between py-1.5 text-sm gap-3" data-testid="channel-switcher">
-              <div className="flex flex-col min-w-0">
-                <span className="text-muted">{i18nT('pages.settings.aboutPanel.update_channel')}</span>
-                <span className="text-[11.5px] text-muted opacity-80">
-                  {i18nT('pages.settings.aboutPanel.insider_gets_prerelease_builds_early_switching_o')}
-                </span>
+            <div className="flex flex-col" data-testid="channel-switcher">
+              <div className="flex items-center justify-between py-1.5 text-sm gap-3">
+                <div className="flex flex-col items-start min-w-0">
+                  <span className="text-muted">{i18nT('pages.settings.aboutPanel.update_channel')}</span>
+                  <button
+                    type="button"
+                    aria-expanded={showChannelHelp}
+                    data-testid="channel-help-toggle"
+                    // Underlined AT REST, unlike the changelog disclosure lower
+                    // in this file: that one is the only interactive thing in
+                    // its row, while this one sits beside a full-size segmented
+                    // control that wins every eye. A first-time reader read the
+                    // un-underlined version as a category tint and never
+                    // clicked, then flipped the channel without reading.
+                    className="text-[11.5px] text-accent underline decoration-dotted underline-offset-2 hover:decoration-solid cursor-pointer bg-transparent border-none p-0 text-left"
+                    onClick={() => setShowChannelHelp(v => !v)}
+                  >
+                    {showChannelHelp
+                      ? i18nT('pages.settings.aboutPanel.channel_help_hide')
+                      : i18nT('pages.settings.aboutPanel.channel_help_show')}
+                  </button>
+                </div>
+                <div className="shrink-0 flex items-center gap-2">
+                  {channelMutation.isPending && <RefreshCw size={13} className="lucide-inline animate-spin text-muted" />}
+                  <SegmentedControl
+                    segments={[{ key: 'stable', label: i18nT('pages.settings.aboutPanel.stable') }, { key: 'insider', label: i18nT('pages.settings.aboutPanel.insider') }]}
+                    value={channel === 'insider' ? 'insider' : 'stable'}
+                    onChange={next => { if (next !== channel && !channelMutation.isPending) channelMutation.mutate(next) }}
+                    layoutId="update-channel"
+                    // Both lanes stay visible: the wrapper is shrink-0 (so the
+                    // responsive measurement would be circular) and Card's
+                    // .card-glow rule would trap a dropdown overlay under the
+                    // Platform row below.
+                    collapse={false}
+                  />
+                </div>
               </div>
-              <div className="shrink-0 flex items-center gap-2">
-                {channelMutation.isPending && <RefreshCw size={13} className="lucide-inline animate-spin text-muted" />}
-                <SegmentedControl
-                  segments={[{ key: 'stable', label: i18nT('pages.settings.aboutPanel.stable') }, { key: 'insider', label: i18nT('pages.settings.aboutPanel.insider') }]}
-                  value={channel === 'insider' ? 'insider' : 'stable'}
-                  onChange={next => { if (next !== channel && !channelMutation.isPending) channelMutation.mutate(next) }}
-                  layoutId="update-channel"
-                  // Both lanes stay visible: the wrapper is shrink-0 (so the
-                  // responsive measurement would be circular) and Card's
-                  // .card-glow rule would trap a dropdown overlay under the
-                  // Platform row below.
-                  collapse={false}
-                />
-              </div>
+              {showChannelHelp && (
+                // Term + definition rows rather than one prose sentence per
+                // channel: the channel names are the same tokens the segmented
+                // control shows, so reusing the `stable` / `insider` keys keeps
+                // label and explanation from drifting apart per locale.
+                <div className="mb-1 p-2.5 bg-bg rounded-lg border border-border flex flex-col gap-1.5 text-[12px]" data-testid="channel-help">
+                  <div className="flex gap-2">
+                    <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.stable')}</span>
+                    <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_stable')}</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.insider')}</span>
+                    <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_insider')}</span>
+                  </div>
+                  <span className="text-muted opacity-80 pt-1.5 border-t border-border">
+                    {i18nT('pages.settings.aboutPanel.channel_explainer_switch_note')}
+                  </span>
+                </div>
+              )}
             </div>
           ) : (
             <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>{channel}</Row>
           )
+        )}
+        {isDesktop && isPrerelease && (
+          // NOT behind the disclosure: a user already running prerelease bytes
+          // is exactly who must see the ask, and hiding it behind a click means
+          // the people whose bug reports matter most never read it.
+          //
+          // Deliberately NOT warn-tinted with an alert triangle: a first-time
+          // reader took that as "something is wrong with my installation" and
+          // was reluctant to click a link inside it. This is a request for help,
+          // so it speaks in the app's own accent voice, and the anchor names
+          // GitHub because the destination is a new-issue form — a surprise
+          // worth spending four words to avoid.
+          <div className="flex items-start gap-2 p-2.5 rounded-lg border border-border bg-[var(--accent-subtle)] text-[12px]"
+               data-testid="prerelease-report-note">
+            <Bug size={13} className="lucide-inline shrink-0 mt-0.5 text-accent" />
+            <span className="text-text leading-relaxed">
+              {/* ONE catalog string carrying the anchor: splitting it into
+                  fragments around the link would lock every language into
+                  English clause order. `Trans` (not a hand-rolled split on a
+                  mustache literal) is what lets the translator move the anchor
+                  to wherever the target grammar needs it. */}
+              <Trans
+                i18nKey="pages.settings.aboutPanel.prerelease_report_prompt"
+                components={{
+                  // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
+                  report: <a href={REPORT_ISSUE_URL} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
+                }}
+              />
+            </span>
+          </div>
         )}
         {isDesktop && info?.platform && <Row label={i18nT('pages.settings.aboutPanel.platform')}>{info.platform}</Row>}
       </Card>
@@ -615,6 +738,8 @@ export function AboutPanel() {
           </div>
         </div>
       )}
+
+      <ReportProblemCard />
     </>
   )
 }

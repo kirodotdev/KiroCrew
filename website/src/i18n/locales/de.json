@@ -90,7 +90,6 @@
     "star_us": "Stern geben",
     "report_issue": "Problem melden",
     "star_kirocrew_on_github": "Kiro Crew auf GitHub einen Stern geben",
-    "report_an_issue_on_github": "Ein Problem auf GitHub melden",
     "click_to_collapse_readouts": "klicken zum Einklappen der Messwerte",
     "click_to_expand_readouts": "klicken zum Aufklappen der Messwerte",
     "gateway_offline_reconnecting": "Gateway offline — wird neu verbunden",
@@ -103,7 +102,8 @@
     "pulling_latest_changes": "Neueste Änderungen werden abgerufen",
     "rebuilding_package": "Paket wird neu gebaut",
     "restarting_server": "Server wird neu gestartet",
-    "syncing_workspace": "Workspace wird synchronisiert"
+    "syncing_workspace": "Workspace wird synchronisiert",
+    "report_a_problem_with_diagnostics": "Problem melden — erfasst Protokolle und Absturzberichte, Geheimnisse entfernt"
   },
   "appSdk": {
     "chatEmbed": {
@@ -114,6 +114,9 @@
       "send_message": "Nachricht senden",
       "session_ready_type_a_message_to_start": "Sitzung bereit. Geben Sie eine Nachricht ein, um zu beginnen.",
       "streaming": "Streaming"
+    },
+    "chatMessageList": {
+      "open_path": "{{path}} öffnen"
     }
   },
   "apps": {
@@ -194,6 +197,16 @@
         "repeat_hours": "alle {{n}} Std",
         "repeat_days": "alle {{n}} Tage",
         "repeat_daily": "täglich"
+      },
+      "manifest": {
+        "description": "Ein Desktop-Begleiter für Kiro Crew, der dir hilft, dein Tempo zu halten: Er erinnert dich an Pausen, verwaltet die Erinnerungen, die du in normaler Sprache setzt, und führt eine kurze Atemübung durch, wenn du abschalten musst. Außerdem sagt er dir, wenn eine Sitzung endet, fehlschlägt oder deine Zustimmung braucht.",
+        "display_name": "Crew Companion",
+        "highlight_1": "Sanfte Pausenhinweise — trinken, strecken, wegschauen — in einem Intervall, das du wählst",
+        "highlight_2": "Erinnerungen, die du in normaler Sprache setzt, etwa „in 20 Minuten Wasser trinken“",
+        "highlight_3": "Eine kurze Atemübung zum Abschalten, wenn du sie brauchst",
+        "highlight_4": "Sagt dir, wenn eine Sitzung endet, fehlschlägt oder deine Zustimmung braucht",
+        "highlight_5": "Schwebt auf deinem Desktop, mit austauschbarem Avatar",
+        "page_label": "Crew Companion"
       }
     },
     "autoResearch": {
@@ -363,6 +376,18 @@
         "state_stalled": "Blockiert",
         "state_stopped": "Gestoppt",
         "state_working": "Arbeitet"
+      },
+      "manifest": {
+        "description": "Führt Recherchekampagnen über mehrere Zyklen aus, die weiterarbeiten, wenn du längst weg bist. Gib eine Frage vor, und sie wird zu einem Baum engerer Unterfragen aufgefächert; Agenten untersuchen jede einzelne, und Ergebnisse laufen live auf der Seite ein. Eine Kampagne steuert sich selbst, bis die Frage beantwortet ist oder sie merkt, dass der Fortschritt stockt, und den fertigen Bericht kannst du an deine Wissensbibliothek oder ein teilbares Artefakt übergeben.",
+        "display_name": "Research Lab",
+        "highlight_1": "Fächert eine breite Frage in einen abgegrenzten Baum von Unterfragen auf, bevor Agentenzeit verbraucht wird",
+        "highlight_2": "Kampagnen recherchieren zwischen deinen Besuchen weiter, Ergebnisse erscheinen live",
+        "highlight_3": "Erkennt, wenn eine Kampagne keinen Fortschritt mehr macht, statt endlos zu kreisen",
+        "highlight_4": "Der begleitete Modus hält an und fragt dich, wenn eine Entscheidung nötig ist; unbeaufsichtigt läuft er durch",
+        "highlight_5": "Füge mitten in der Kampagne Folgefragen hinzu, ohne neu zu beginnen",
+        "highlight_6": "Jede Kampagne im Dashboard starten, pausieren und fortsetzen",
+        "highlight_7": "Den fertigen Bericht in deine Wissensbibliothek oder ein teilbares Artefakt exportieren",
+        "page_label": "Research Lab"
       }
     },
     "codeReviewSage": {
@@ -440,6 +465,16 @@
         "phase_failed": "fehlgeschlagen",
         "phase_gating": "Design-Gate…",
         "phase_queued": "in Warteschlange"
+      },
+      "manifest": {
+        "description": "Prüft Pull Requests auf GitHub in der Tiefe und sagt dir, welche Änderungen wirklich deine Aufmerksamkeit verdienen. Jede geänderte Datei wird in einer eigenen, isolierten Agentensitzung überprüft, nach ihrer möglichen Wirkungsbreite gewichtet und zu einem priorisierten Fokusbericht zusammengefasst. Ergebnisse werden als Entwurf einer Überprüfung auf GitHub vorbereitet, der unveröffentlicht bleibt, bis du ihn einreichst, und der Prüfer lernt fortlaufend die echten Standards deines Repositorys aus ausgelieferten Korrekturen und früheren Review-Kommentaren.",
+        "display_name": "Code Review Sage",
+        "highlight_1": "Der Fokusbericht sortiert Änderungen nach Wirkungsbreite, damit die riskanten Dateien zuerst gelesen werden",
+        "highlight_2": "Eine isolierte Agentensitzung pro Änderung, damit Ergebnisse nie zwischen Dateien verschwimmen",
+        "highlight_3": "Wird als AUSSTEHENDE (Entwurfs-)Überprüfung auf GitHub veröffentlicht — eingereicht wird sie von dir",
+        "highlight_4": "Lernt pro Repository aus ausgelieferten Korrekturen, Review-Kommentaren und Design-Diskussionen",
+        "highlight_5": "Überprüft Pull Requests auf GitHub; benötigt eine authentifizierte `gh` CLI auf dem Gateway-Host",
+        "page_label": "Code Review Sage"
       }
     },
     "designCritique": {
@@ -552,6 +587,19 @@
         "wait_local": "Der Code wird nach Routen durchsucht…",
         "wait_repo": "Das Repo wird geklont und seine Routen werden aufgelistet…",
         "wait_url": "Die Seite wird geladen und ihren Links wird gefolgt…"
+      },
+      "manifest": {
+        "description": "Eine Design-Kritik, die du einholen kannst, bevor du jemanden im Team fragst. Gib ihr einen einzelnen Screenshot, einen ganzen Ablauf über mehrere Screens, eine Figma-Datei, ein Git-Repository oder eine URL, die schon ausgeliefert wird, und sie findet die möglichen Screens, lässt dich auswählen, was angesehen wird, und meldet dann so zurück, wie es erfahrene Designer tun: ein Gesamteindruck, was funktioniert, und die Punkte, die zu schärfen sind, jeder an eine benannte Heuristik gebunden. Abläufe über mehrere Screens erhalten zusätzlich Ergebnisse über Screens hinweg, die ein einzelner Screen nicht zeigen kann — inkonsistente Bedienelemente, fehlender Fortschritt, kein Weg zurück, Sackgassen. Code und Figma werden gerendert, bevor sie beurteilt werden, damit nie Visuelles kritisiert wird, das nicht wirklich gesehen wurde, und sie sagt klar, welche Screens sie nicht erreicht hat, statt zu raten.",
+        "display_name": "Design Critique",
+        "highlight_1": "Nimmt Screenshots, einen Figma-Link, ein Git-Repository, einen lokalen Ordner oder eine laufende URL — und sagt vor dem Start, was sie gefunden hat",
+        "highlight_2": "Misst Kontrast und Größen von Klickzielen an der gerenderten Seite, statt sie aus einem Bild zu schätzen",
+        "highlight_3": "Abläufe über mehrere Screens erhalten Prüfungen über Screens hinweg: Konsistenz der Bedienelemente, Fortschritt, ein Weg zurück, wiederholte Abfragen, Sackgassen",
+        "highlight_4": "Jedes Ergebnis nennt die dahinterliegende Heuristik (Nielsen 1-10, WCAG, Gestalt, Fitts) und trägt einen Schweregrad auf der NN/g-Skala 1-4",
+        "highlight_5": "Markiere eine beliebige Zeile des Berichts und stelle direkt dort eine Folgefrage dazu",
+        "highlight_6": "Sagt dir, was sie nicht sehen konnte, statt einen leeren oder blockierten Screen zu kritisieren",
+        "highlight_7": "Fasst das geprüfte Projekt nicht an: installiert dessen Abhängigkeiten nie, führt seine Skripte nicht aus, startet seinen Dev-Server nicht und bearbeitet seine Dateien nicht",
+        "highlight_8": "Für Aufnahmen nutzt sie einen Headless-Browser, der bei der ersten Verwendung einmalig in einen Cache in deinem Home-Verzeichnis geladen wird, nie in das Projekt",
+        "page_label": "Design Critique"
       }
     },
     "fileExplorer": {
@@ -598,6 +646,17 @@
       },
       "treeNode": {
         "loading": "wird geladen…"
+      },
+      "manifest": {
+        "description": "Durchsuche und lies Dateien auf dem Rechner, der Kiro Crew ausführt, ohne das Dashboard zu verlassen. Halte mehrere Dateien in Tabs offen, gehe den Verzeichnisbaum durch, in dem neben jeder Datei ihr Git-Status steht, suche in einem ganzen Ordner nach einer Zeichenfolge und lies Markdown gerendert statt im Rohtext. Der Zugriff ist bewusst nur lesend: Dateien werden geöffnet und durchsucht, aber nie bearbeitet, verschoben oder gelöscht, und erreichbar sind nur dein Home-Verzeichnis sowie /tmp und /opt.",
+        "display_name": "Dateien",
+        "highlight_1": "Schreibgeschützt: öffnet und durchsucht Dateien und schreibt, verschiebt oder löscht sie nie",
+        "highlight_2": "Mehrere Dateien gleichzeitig in Tabs offen, mit Syntaxhervorhebung",
+        "highlight_3": "Markdown-Dateien werden als formatierter Text statt als Rohquelle dargestellt",
+        "highlight_4": "Der Verzeichnisbaum zeigt den Git-Status jeder Datei direkt an",
+        "highlight_5": "Suche über ein Verzeichnis hinweg mit Treffern auf Zeilenebene und umgebender Vorschau",
+        "highlight_6": "Erreichbare Pfade sind auf dein Home-Verzeichnis, /tmp und /opt begrenzt — Symlinks nach außen werden abgelehnt",
+        "page_label": "Dateien"
       }
     },
     "issueRadar": {
@@ -1219,6 +1278,20 @@
           "last_update": "Letzte Aktualisierung",
           "number": "Nummer"
         }
+      },
+      "manifest": {
+        "description": "Ein Triage-Assistent für Issues, der sich erinnert. Durchsuche, filtere und triagiere Issues auf GitHub und GitLab mit KI-vorgeschlagenen Labels und Untersuchungsnotizen pro Issue — die Ergebnisse liegen in einem lokalen Register, damit nichts zweimal untersucht wird.",
+        "display_name": "Issue Radar",
+        "highlight_1": "KI-Zusammenfassungen und Label-Vorschläge für Issues und Pull Requests, jeweils mit Begründung",
+        "highlight_2": "Untersuchungsnotizen pro Issue in einem lokalen Register, damit nichts zweimal untersucht wird",
+        "highlight_3": "An einem Pull Request handeln, ohne die App zu verlassen: genehmigen, Änderungen anfordern, kommentieren, mergen, schließen oder wieder öffnen und CI abbrechen oder neu starten — einzeln oder über eine Auswahl hinweg",
+        "highlight_4": "Mergen umgeht nie eine Schranke: Der Anbieter erzwingt seine erforderlichen Reviews und Prüfungen, und Auto-Merge kann eine Änderung selbst übernehmen, sobald sie bestanden sind",
+        "highlight_5": "Eine Genehmigung oder ein Merge ist an den dir angezeigten Commit gebunden, sodass ein Push mitten in der Überprüfung abgelehnt statt ungesehen genehmigt wird",
+        "highlight_6": "Jeder Schreibvorgang braucht Triage- oder Push-Zugriff auf das Repository; eine nur lesende Verbindung bleibt bei Vorschlägen",
+        "highlight_7": "Zeigt Repositorys, zu denen du kürzlich beigetragen hast, sodass das Verbinden ein Klick ist",
+        "highlight_8": "Speichert Issues, Labels und Mitglieder lokal im Cache, auf Anforderung aktualisiert",
+        "highlight_9": "Funktioniert mit GitHub; benötigt eine authentifizierte `gh` CLI auf dem Gateway-Host",
+        "page_label": "Issue Radar"
       }
     },
     "meetings": {
@@ -1404,6 +1477,16 @@
         "chat": "Chat",
         "html": "Diagramm",
         "markdown": "Notizen"
+      },
+      "manifest": {
+        "description": "Ein KI-Assistent für Besprechungen. Transkribiert eine laufende Besprechung, führt dabei strukturierte Notizen und Diagramme, extrahiert Aufgaben und lässt dich sie prüfen, bevor sie angelegt werden.",
+        "display_name": "Besprechungen",
+        "highlight_1": "Live-Transkription über die eigene Sprache-zu-Text-Funktion von Kiro Crew — kein zusätzlicher Daemon, kein Cloud-Konto über das hinaus, was du schon nutzt",
+        "highlight_2": "Ein Team von Agenten bearbeitet die Besprechung parallel: strukturierte Notizen, ein HTML/Mermaid-Diagramm und eine Aufgabenliste",
+        "highlight_3": "Korrigiere wiederkehrende Fehler der Spracherkennung einmal mit einem Fachwörterbuch, und jede spätere Besprechung macht es richtig",
+        "highlight_4": "Prüfe die extrahierten Aufgaben, bevor etwas angelegt wird — archiviere das Rauschen, lege den Rest an",
+        "highlight_5": "Austauschbare Anbieter für Aufgaben und Kalender: enthalten sind ein lokales Aufgabenregister und ein iCalendar-Leser (.ics), und eine Organisation kann eigene registrieren",
+        "page_label": "Besprechungen"
       }
     },
     "papyrus": {
@@ -1503,6 +1586,18 @@
         "warning_count_other": "{{count}} Warnungen",
         "word_count_one": "{{count}} Wort",
         "word_count_other": "{{count}} Wörter"
+      },
+      "manifest": {
+        "description": "Ein LaTeX-Editor für Paper mit Live-PDF-Vorschau und einem KI-Koautor. Schreibe in einem geteilten Editor, drücke Cmd+S (Ctrl+S unter Windows und Linux), um mit pdflatex oder tectonic zu kompilieren, und lies das gerenderte PDF neben deiner Quelle. Kompilierfehler werden zu einer klickbaren Liste geparst, die zur betroffenen Zeile springt. Klone ein bestehendes Paper von einem beliebigen git-Remote, committe und pushe dann aus der Werkzeugleiste. Der Koautor-Bereich ist eine echte Chat-Sitzung von Kiro Crew mit dem Paper als Kontext, sodass der Agent dein LaTeX lesen und bearbeiten kann, während du zusiehst, wie das PDF aktualisiert wird.",
+        "display_name": "Papyrus",
+        "highlight_1": "Geteilter LaTeX-Editor mit einer Live-PDF-Vorschau daneben",
+        "highlight_2": "Kompilieren beim Speichern (Cmd+S, unter Windows und Linux Ctrl+S) über pdflatex oder tectonic, der bibtex-Zyklus läuft für dich mit",
+        "highlight_3": "Kein TeX installiert? Ein Klick installiert einen geprüften Tectonic-Compiler in einen eigenen Ordner von Papyrus",
+        "highlight_4": "Compiler-Fehler und -Warnungen werden zu einer klickbaren Liste geparst, die zur Zeile springt",
+        "highlight_5": "KI-Koautor-Chat mit dem Paper als Kontext — er liest und bearbeitet das LaTeX, das du vor dir hast",
+        "highlight_6": "Klone ein Paper von einem beliebigen git-Remote und committe, pulle und pushe dann aus der Werkzeugleiste",
+        "highlight_7": "Führt den Compiler nie mit Shell-Escape aus, damit eine bösartige .tex-Datei keine Befehle ausführen kann",
+        "page_label": "Papyrus"
       }
     },
     "pptxMaker": {
@@ -1601,6 +1696,17 @@
       },
       "slidePreview": {
         "preview_unavailable": "Keine Vorschau verfügbar"
+      },
+      "manifest": {
+        "description": "Beschreibe im Chat die Präsentation, die du willst, und erhalte eine echte .pptx zurück. Ein Agent befragt dich, schreibt Briefing, Gliederung und Art-Direction, setzt dann jede Folie und erzeugt die Datei — und du siehst jedes Ergebnis in einer Live-Vorschau neben dem Gespräch erscheinen. Folien werden beim Bauen als animiertes SVG dargestellt, sodass du eine Präsentation entstehen siehst, statt auf einen Download zu warten. Wiederverwendbare Stile und .pptx-Vorlagen lassen denselben Inhalt wie drei verschiedene Präsentationen aussehen.",
+        "display_name": "PPTX Maker",
+        "highlight_1": "Chatte dich zu einer fertigen .pptx — der Spec-Modus plant sorgfältig, der Vibe-Modus macht aus einer URL oder eingefügtem Text direkt Folien",
+        "highlight_2": "Live-Vorschau jedes Ergebnisses: Briefing, Gliederung, Art-Direction, dann Folien als animiertes SVG, während sie entstehen",
+        "highlight_3": "Stile bestimmen die visuelle Stimmung, .pptx-Vorlagen die Struktur, sodass eine Präsentation ein neues Aussehen erhalten kann, ohne Inhalte neu zu schreiben",
+        "highlight_4": "Importiere ein eigenes HTML-Stildokument oder eine bestehende .pptx-Vorlage, und der Agent folgt deren Farben, Schriften und Layouts",
+        "highlight_5": "Öffne die fertige Datei oder zeige ihren Ordner an, ohne das Dashboard zu verlassen",
+        "highlight_6": "Kapselt die öffentliche Engine spec-driven-presentation-maker, die in einer per sha256 festgelegten Version geladen wird; nichts von Hand zu installieren",
+        "page_label": "PPTX Maker"
       }
     },
     "workflows": {
@@ -1652,6 +1758,16 @@
         "run_detail": "Ausführungsdetails",
         "select_a_run_to_see_its_phases_agents_and_result": "Wählen Sie eine Ausführung, um ihre Phasen, Agenten und Ergebnisse zu sehen.",
         "unknown": "Unbekannt"
+      },
+      "manifest": {
+        "description": "Dynamische Workflows erstellen, ausführen und beobachten: Python-Skripte, die dir meist ein Agent aus einem Ziel in normaler Sprache schreibt und die mehrere Kiro Crew-Agenten durch geordnete Phasen führen. Ein Skript wird gegen einen abgeschirmten Satz von Workflow-Befehlen geprüft, bevor irgendetwas läuft, sodass Fehler ohne Ausführung sichtbar werden, und die Seite überträgt dann jede Phase und jedes Agentenereignis, während die Ausführung fortschreitet. Ausführbare Beispiele liegen der App bei, um damit zu starten.",
+        "display_name": "Workflows",
+        "highlight_1": "Einen Workflow validieren, bevor du ihn ausführst — Fehler werden sichtbar, ohne dass etwas ausgeführt wird",
+        "highlight_2": "Die Ausführung live verfolgen, Phase für Phase, mit Fortschrittsereignissen pro Agent",
+        "highlight_3": "Skripte sind auf eine abgeschirmte Workflow-API begrenzt statt auf beliebiges Python",
+        "highlight_4": "Werden meist aus einem Ziel in normaler Sprache für dich erstellt und sind dann von Hand bearbeitbar",
+        "highlight_5": "Bringt ausführbare Beispiele mit, um damit zu starten",
+        "page_label": "Workflows"
       }
     },
     "mdNotebook": {
@@ -1810,6 +1926,19 @@
         "empty": "Aus diesem Vault wurde noch nichts gelöscht, daher gibt es keinen .trash-Ordner.",
         "unsupported": "Das Öffnen eines Ordners wird auf diesem System nicht unterstützt.",
         "failed": "Ordner konnte nicht geöffnet werden: {{message}}"
+      },
+      "manifest": {
+        "description": "Führe ein Markdown-Notizbuch, das in einem Git-Repository liegt, damit deine Notizen versioniert, portabel und in jedem anderen Editor lesbar sind. Richte es auf ein GitHub-Repository, und es klont eine Arbeitskopie, oder hänge einen Ordner an, den du schon hast — auch einen bestehenden Obsidian-Vault — und es übernimmt diesen Checkout an seinem Ort, ohne eine zweite Kopie anzulegen. Notizen werden als formatierter Text dargestellt, in den du zum Bearbeiten direkt hineinklickst, [[wikilinks]] verbinden sie, und jede Notiz zeigt, was auf sie zurückverweist. Die Synchronisierung committet, pullt und pusht in einem Schritt, und ein Merge-Konflikt wird gemeldet — mit einer Liste der betroffenen Notizen und Abbruch des Merges — statt irgendetwas zu überschreiben.",
+        "display_name": "Notizen",
+        "highlight_1": "Deine Notizen sind einfaches Markdown in einem Git-Repository — keine Bindung, lesbar mit Obsidian oder jedem Editor",
+        "highlight_2": "Klone ein GitHub-Repository als Vault oder hänge einen Ordner an, den du schon hast, ohne ihn zu kopieren",
+        "highlight_3": "Klicke einen beliebigen dargestellten Block an, um ihn direkt zu bearbeiten; Enter beginnt einen neuen Block, Tab verschachtelt Listen",
+        "highlight_4": "[[Wikilinks]] zwischen Notizen, mit einer Backlink-Liste, die zeigt, was auf die gerade gelesene Notiz verweist",
+        "highlight_5": "Volltextsuche über Titel und Inhalte, dazu Ordner- und Flachansicht mit sechs Sortierungen",
+        "highlight_6": "Die Synchronisierung committet, pullt und pusht in einem Schritt; ein Merge-Konflikt listet die betroffenen Notizen auf und überschreibt nichts",
+        "highlight_7": "Ein Speichern wird abgelehnt, wenn sich die Datei seit dem Öffnen auf der Festplatte geändert hat, damit Änderungen von anderswo nie zerstört werden",
+        "highlight_8": "Optional einen Vault in die Wissensbibliothek indexieren, damit Agenten deine Notizen durchsuchen können",
+        "page_label": "Notizen"
       }
     },
     "mochi": {
@@ -2147,6 +2276,11 @@
         "mcp_desc": "Dies sind die in Kiro Crew installierten MCP-Server. {{name}} kann nur die hier hinzugefügten aufrufen — drücke Hinzufügen, um einen zu gewähren, Entfernen, um ihn zurückzunehmen. Integrierte Server sind immer verfügbar und können nicht entfernt werden.",
         "mcp_disabled": "Deaktiviert",
         "mcp_empty": "Es sind noch keine MCP-Server konfiguriert. Füge einen in den Kiro Crew-Einstellungen → MCP hinzu und öffne dann dieses Panel erneut.",
+        "mcp_error_disabled": "Dieser Server ist deaktiviert. Aktiviere ihn zuerst in den Kiro Crew-Einstellungen → MCP.",
+        "mcp_error_generic": "Tools konnten nicht geladen werden – bitte erneut versuchen.",
+        "mcp_error_in_progress": "Tools werden bereits gesucht – einen Moment.",
+        "mcp_error_not_found": "Dieser Server ist nicht mehr konfiguriert.",
+        "mcp_error_probe_failed": "Dieser Server hat nicht geantwortet. Prüfe seinen Befehl in den Kiro Crew-Einstellungen → MCP.",
         "mcp_from_cache": "(zwischengespeichert — möglicherweise veraltet)",
         "mcp_loading": "Server werden geladen…",
         "mcp_needs_approval": "Benötigt Genehmigung",
@@ -2368,6 +2502,67 @@
           "spawn": "Agent",
           "system": "System"
         }
+      },
+      "manifest": {
+        "description": "Ein Desktop-Begleiter, der auf deinem Bildschirm wohnt. Mochi chattet über sein eigenes Panel, beobachtet Seiten und Feeds für dich, plant seinen Tag um deinen Zeitplan herum, erinnert sich an eure gemeinsame Zeit und tippt dir nur dann auf die Schulter, wenn sich wirklich etwas geändert hat.",
+        "display_name": "Mochi",
+        "highlight_1": "Ein Haustierfenster, das auf deinem Desktop schwebt — transparent, klickdurchlässig, immer Gesellschaft",
+        "highlight_2": "Beobachtungsliste mit Zuverlässigkeitsgarantien: Planung nach Fälligkeit, Backoff bei Fehlern, Benachrichtigung mindestens einmal",
+        "highlight_3": "Erstellt und überarbeitet seine eigene Aufgabenwarteschlange; deterministische Bewegungen und Stimmungen kosten keine Tokens",
+        "highlight_4": "Erinnert sich an eure Beziehung — Serien, geschäftigste Tage, Meilensteine genau einmal gefeiert",
+        "highlight_5": "Bewusst leise: Benachrichtigungen werden zusammengefasst, der stumme Modus hält sie zurück, Besprechungen werden respektiert",
+        "highlight_6": "Der autonome Kern läuft vollständig im Prozess — keine zweite App, keine zusätzliche Laufzeitumgebung",
+        "page_label": "Mochi"
+      }
+    },
+    "agentWorlds": {
+      "manifest": {
+        "description": "Verwandelt deine laufenden Agenten in Figuren einer animierten Pixel-Art-Szene, sodass ein Blick genügt, um zu sehen, wie ausgelastet Kiro Crew ist. Jeder aktive Agent erscheint als Sprite, das reagiert, wenn Arbeit beginnt und endet, über Themenszenen hinweg, vom klassischen Büro bis zum Zauberturm oder Unterwasserlabor. Kopple es in ein eigenes Fenster aus, um es beim Arbeiten auf einem zweiten Bildschirm zu behalten.",
+        "display_name": "Agent Worlds",
+        "highlight_1": "Live-Ansicht der laufenden Agenten, als Figuren statt als Liste",
+        "highlight_2": "Themenszenen wie Büro, Panda-Höhle, Neuronales Netz, Zauberturm und Tiefseelabor",
+        "highlight_3": "In ein separates Fenster für einen zweiten Monitor auskoppeln; die Szenenauswahl bleibt synchron",
+        "highlight_4": "Merkt sich deine gewählte Szene zwischen den Besuchen",
+        "highlight_5": "Rein eine Visualisierung — sie verändert nie, was deine Agenten tun",
+        "page_label": "Welten"
+      }
+    },
+    "channels": {
+      "manifest": {
+        "description": "Ein gemeinsamer Raum, in dem mehrere Agenten ein Problem zusammen bearbeiten, statt dass ein Agent allein arbeitet. Du weist jedem Agenten eine Rolle zu; sie posten ihren Fortschritt in den Kanal und beantworten die @-Erwähnungen der anderen offen — es gibt keine private Kommunikation zwischen Agenten, der gesamte Austausch bleibt also lesbar, und du genehmigst weiterhin alles, was den Zustand ändert. Agenten bleiben im Kanal aktiv, bis sie entlassen werden oder ihre Zeit abläuft.",
+        "display_name": "Kanäle",
+        "highlight_1": "Mehrere Agenten mit zugewiesenen Rollen arbeiten in einem gemeinsamen, lesbaren Protokoll zusammen",
+        "highlight_2": "Keine private Kommunikation zwischen Agenten — jeder Austausch findet im Kanal statt",
+        "highlight_3": "Du bleibst die letzte Instanz für jede Operation, die den Zustand verändert",
+        "highlight_4": "Agenten bleiben im Kanal, bis sie entlassen werden oder ihre Zeit abläuft",
+        "highlight_5": "Im App-Store-Raster ausgeblendet; aktivieren mit `kirocrew app enable channels`",
+        "page_label": "Kanäle"
+      }
+    },
+    "devFleet": {
+      "manifest": {
+        "description": "Ein Steuerpult für die Arbeit an Kiro Crew selbst. Listet jeden Feature-Worktree mit dem Zustand seines Pull Requests, der Anzahl der Commits und dem Speicherverbrauch auf und kann jeden davon als Pod starten: eine vollständige Vorschauinstanz auf eigenem Port mit eigenem Datenverzeichnis, damit du eine unfertige Änderung durchklicken kannst, ohne dein laufendes Gateway zu stören. Es übernimmt auch die Nebenarbeiten — main pullen und neu bauen, einen Branch rebasen, Pod-Protokolle live mitlesen und Worktrees bereinigen, deren Arbeit schon gemergt ist.",
+        "display_name": "Dev Fleet",
+        "highlight_1": "Starte jeden Worktree als isolierten Pod auf eigenem Port und eigenem Datenverzeichnis, ohne dein laufendes Gateway anzutasten",
+        "highlight_2": "Flottenansicht mit PR-Status pro Branch, Commit-Zahlen und Speicherverbrauch",
+        "highlight_3": "Synchronisieren (main pullen und neu bauen) oder einen Branch rebasen, ohne das Dashboard zu verlassen",
+        "highlight_4": "„Zusammengeführte bereinigen“ verweigert das Löschen eines Worktrees mit nicht committeter oder nicht verfolgter Arbeit, statt sie zu verwerfen",
+        "highlight_5": "Pod-Protokolle live mitlesen und Pod-Zugriffstoken in der Benutzeroberfläche erzeugen",
+        "highlight_6": "Für Leute gebaut, die Kiro Crew selbst entwickeln — für den Alltag nicht nötig",
+        "highlight_7": "Pods laufen unter Linux (systemd --user) und macOS (launchd) — der macOS-Pod hat allerdings keine erzwungene Speicher-/CPU-Obergrenze; „Live schalten“ bleibt auf Linux beschränkt; Flottenansicht, PR-Status, Synchronisieren, Rebasen und Bereinigen funktionieren auf jeder Plattform",
+        "page_label": "Dev Fleet"
+      }
+    },
+    "projects": {
+      "manifest": {
+        "description": "Übergib eine mehrstufige Aufgabe und lass sie unbeaufsichtigt bis zum Ende laufen. Beschreibe die Arbeit in normaler Sprache, füge eine schriftliche Spezifikation ein oder lade eine YAML-Datei hoch, und erstelle dann entweder zuerst einen Plan, um die Schritte zu prüfen, oder starte sofort. Jede Ausführung erhält ihre eigene Seite mit dem Schritt-für-Schritt-Fortschritt, und du kannst sie jederzeit pausieren, fortsetzen, wiederholen oder stoppen.",
+        "display_name": "Task Runner",
+        "highlight_1": "Drei Wege hinein: die Arbeit in normaler Sprache beschreiben, eine Spezifikation einfügen oder YAML hochladen",
+        "highlight_2": "Einen Plan erstellen und die Schritte prüfen, bevor du eine Ausführung startest",
+        "highlight_3": "Ausführungen laufen unbeaufsichtigt, mit Schritt-für-Schritt-Fortschritt auf der eigenen Seite der Ausführung",
+        "highlight_4": "Eine Ausführung jederzeit pausieren, fortsetzen, wiederholen oder stoppen",
+        "highlight_5": "Behält einen Verlauf früherer Ausführungen und ihrer Ergebnisse",
+        "page_label": "Task Runner"
       }
     },
     "opsMissionControl": {
@@ -2748,6 +2943,178 @@
         "verification_not_checkable_label": "sent, not confirmed",
         "verification_not_checkable_meaning": "The {{verb}} was accepted, but this app cannot observe whether it took effect — an acknowledgement leaves an alert firing by design, so the alarm's state says nothing either way.",
         "verification_pending_meaning_at": "The {{verb}} returned success, which only means the provider accepted the request. The next heartbeat after {{when}} re-reads the signal to find out whether it took effect."
+      },
+      "manifest": {
+        "display_name": "Ops Mission Control",
+        "description": "Ein autonomer Ersthelfer für den Betrieb. Er beobachtet deine Alarme, Pager-Meldungen und Überwachungen, übernimmt selbst, was auslöst, untersucht es mit echtem Kontext und schlägt eine Korrektur vor — und hält alles Gelernte in einem lokalen Register, damit der zweite Vorfall schneller geht als der erste.",
+        "page_label": "Mission Control",
+        "highlight_1": "Übernimmt einen auslösenden Alarm innerhalb eines Heartbeats und untersucht ihn, bevor jemand hinsehen muss",
+        "highlight_2": "Wissensregister mit Konfidenz- und Vertrauensstufen — ein wiederkehrender Fehler wird aus dem gelöst, was du schon weißt",
+        "highlight_3": "Live-Board im Dashboard und als Slack-Threads, auf die du antworten kannst, sodass der Kanal das Dashboard ist",
+        "highlight_4": "Verbindet AWS CloudWatch, PagerDuty, Datadog, GitHub Issues oder jedes System, das signiertes JSON per POST senden kann — auch Nutzlasten im Alertmanager-Format, aufgefächert zu einem Vorfall pro Alarm",
+        "highlight_5": "Standardmäßig schreibgeschützt — Schreibvorgänge werden pro Signalmuster einzeln freigegeben, und jeder wird protokolliert",
+        "highlight_6": "Berücksichtigt die Rotation: Die Automatisierungsstufe für die aktive Schicht aktiviert und deaktiviert sich selbst"
+      }
+    },
+    "specBuilder": {
+      "api": {
+        "something_went_wrong": "Etwas ist schiefgelaufen ({{status}})",
+        "phase_new": "gerade gestartet",
+        "phase_requirements": "anforderungen",
+        "phase_design": "design",
+        "phase_tasks": "plan fertig",
+        "phase_building": "wird umgesetzt",
+        "phase_ready": "fertig"
+      },
+      "components": {
+        "chatColumn": {
+          "reply_to_the_spec_agent": "Dem Spec-Agenten antworten…"
+        },
+        "columnSplitter": {
+          "drag_or_use_to_resize": "Ziehen oder ← → verwenden, um die Größe zu ändern"
+        },
+        "docView": {
+          "add_comment": "Kommentar hinzufügen",
+          "comment": "Kommentieren",
+          "comment_on_the_selected_passage": "Die markierte Passage kommentieren",
+          "discard_this_comment": "Diesen Kommentar verwerfen",
+          "document_file_name": "{{name}}.md",
+          "nothing_here_yet": "Hier ist noch nichts.",
+          "your_feedback_on_the_passage_in": "Ihr Feedback zur markierten Passage in {{document}}",
+          "your_feedback_on_this_passage_enter_adds_it_to_t": "Ihr Feedback zu dieser Passage… (Enter fügt es dem Stapel hinzu)",
+          "empty_requirements": "Noch keine Anforderungen geschrieben — beschreiben Sie in der Unterhaltung, was Sie möchten, und der Agent entwirft dieses Dokument.",
+          "empty_design": "Noch kein Design. Sobald Sie die Anforderungen in der Unterhaltung freigeben, landet das technische Design hier.",
+          "empty_tasks": "Noch keine Aufgabenliste. Nachdem Sie das Design freigegeben haben, landet die geordnete Aufgabenliste hier."
+        },
+        "newSpecView": {
+          "describe_what_you_want_to_do": "Beschreiben Sie, was Sie vorhaben",
+          "e_g_add_login_with_google_so_users_don_t_need_pa": "z. B. „Login mit Google hinzufügen, damit Nutzer keine Passwörter brauchen“ oder „Der Export-Button stürzt bei großen Dateien ab“",
+          "fresh_worktree_option_pick_a_project_folder_abov": "Option für ein frisches Worktree: Wählen Sie oben einen Projektordner — wenn es ein Git-Repository ist, kann ich in einem eigenen Worktree planen und bauen.",
+          "keeps_your_main_checkout_untouched_branch": "Lässt Ihren Haupt-Checkout unberührt: Ich erstelle einen Branch {{branch}} in einem eigenen Ordner neben dem Repository und plane und baue dort.",
+          "let_s_plan_something": "Planen wir etwas",
+          "never_mind": "Abbrechen",
+          "settings": "Einstellungen",
+          "start_the_conversation": "Unterhaltung beginnen →",
+          "starting": "Wird gestartet…",
+          "tell_me_what_you_have_in_mind_i_ll_ask_a_few_cla": "Sagen Sie mir, was Sie vorhaben. Ich stelle im Chat einige klärende Fragen, schreibe einen Plan, den Sie prüfen können, und baue ihn dann, wenn Sie bereit sind.",
+          "this_folder_isn_t_a_git_repository_so_i_ll_work": "Dieser Ordner ist kein Git-Repository, daher arbeite ich direkt darin. Wählen Sie ein Git-Repository, um die Option eines frischen Worktrees zu erhalten.",
+          "what_do_you_want_to_do": "Was möchten Sie tun?",
+          "what_kind_of_work_is_it": "Um welche Art von Arbeit handelt es sich?",
+          "which_project_is_this_for": "Für welches Projekt ist das?",
+          "work_in_a_fresh_worktree": "In einem frischen Worktree arbeiten",
+          "your_plan_is_saved_as_plain_markdown_inside_your": "Ihr Plan wird als einfaches Markdown in Ihrem Projekt gespeichert (.kiro/specs) und funktioniert damit auch mit der Kiro IDE und der CLI. Wo Specs gespeichert werden, ändern Sie unter",
+          "type_feature_title": "Etwas Neues bauen",
+          "type_feature_blurb": "Ein vollständiger Plan: Anforderungen, technisches Design und eine Aufgabenliste.",
+          "type_bug_title": "Einen Fehler beheben",
+          "type_bug_blurb": "Das Problem untersuchen, die Ursache finden und die Behebung planen.",
+          "type_quick_title": "Schneller Plan",
+          "type_quick_blurb": "Ohne Formalitäten — nur ein Ziel und eine Aufgabenliste."
+        },
+        "projectPicker": {
+          "browse": "Durchsuchen",
+          "change": "ändern",
+          "choose_a_project_folder": "Projektordner auswählen…",
+          "choose_a_project_folder_aria": "Projektordner auswählen",
+          "go_to_parent_folder": "Zum übergeordneten Ordner",
+          "hide_path_input": "Pfadeingabe ausblenden",
+          "home_you_projects_my_app": "/home/you/projects/my-app",
+          "loading": "Wird geladen…",
+          "no_subfolders_here_use_use_this_folder_above_to": "Keine Unterordner hier — verwenden Sie oben „Diesen Ordner verwenden“, um diesen zu wählen.",
+          "open_folder": "Ordner {{name}} öffnen",
+          "project_folder_change": "Projektordner: {{path}} — ändern",
+          "project_folder_path": "Pfad des Projektordners",
+          "recent_projects": "Zuletzt verwendete Projekte",
+          "type_a_path_instead": "Stattdessen einen Pfad eingeben",
+          "up": "Nach oben",
+          "use_recent_project": "Zuletzt verwendetes Projekt {{path}} verwenden",
+          "use_this_folder": "Diesen Ordner verwenden",
+          "use_this_folder_path": "Diesen Ordner verwenden: {{path}}"
+        },
+        "settingsModal": {
+          "cancel": "Abbrechen",
+          "empty_keep_specs_with_each_project_recommended": "Leer = Specs beim jeweiligen Projekt behalten (empfohlen)",
+          "leave_this_empty_to_keep_specs_inside_each_proje": "Lassen Sie dies leer, um Specs in jedem Projekt zu behalten (ein Ordner .kiro/specs neben Ihrem Code — der Kiro-Standard). Oder geben Sie einen Ordnerpfad an, um alle Specs an einem Ort zu sammeln.",
+          "save": "Speichern",
+          "saving": "Wird gespeichert…",
+          "settings": "Einstellungen",
+          "spec_storage_folder_path": "Ordnerpfad für die Spec-Ablage",
+          "where_should_specs_be_saved": "Wo sollen Specs gespeichert werden?"
+        },
+        "shimmer": {
+          "loading_specs": "Specs werden geladen…",
+          "loading_the_conversation": "Unterhaltung wird geladen…",
+          "writing_this_document": "Dieses Dokument wird geschrieben…"
+        },
+        "specDetail": {
+          "an_agent_will_work_through_the_task_list": "Ein Agent arbeitet die Aufgabenliste ab",
+          "clear": "Leeren",
+          "close_esc": "Schließen (Esc)",
+          "close_review_view": "Prüfansicht schließen",
+          "document_file_name": "{{name}}.md",
+          "drag_or_use_to_resize": "Ziehen oder ← → verwenden, um die Größe zu ändern",
+          "expand_document_for_review": "Dokument zur Prüfung vergrößern",
+          "expand_for_review_esc_to_close": "Zur Prüfung vergrößern (Esc schließt)",
+          "pause": "Pausieren",
+          "pausing": "Wird pausiert…",
+          "pending_comment_one": "{{count}} offener Kommentar",
+          "pending_comment_other": "{{count}} offene Kommentare",
+          "remove_comment_on": "Kommentar zu {{document}} entfernen",
+          "resize_document_panel": "Größe des Dokumentbereichs ändern",
+          "review_document": "{{document}} prüfen",
+          "send_all_to_agent": "Alle an den Agenten senden",
+          "sending": "Wird gesendet…",
+          "start_building": "Umsetzung starten",
+          "starting": "Wird gestartet…",
+          "tells_the_agent_this_phase_is_approved_and_to_mo": "Teilt dem Agenten mit, dass diese Phase freigegeben ist und er weitermachen soll — genau wie eine Eingabe im Chat",
+          "working": "arbeitet…",
+          "tab_requirements": "Anforderungen",
+          "tab_design": "Design",
+          "tab_tasks": "Aufgaben",
+          "advance_to_design": "Freigeben → Design",
+          "advance_to_tasks": "Freigeben → Aufgaben"
+        },
+        "specRail": {
+          "agent_working": "Agent arbeitet",
+          "an_agent_is_working": "Ein Agent arbeitet",
+          "filter_specs": "Specs filtern",
+          "filter_specs_by_name": "Specs nach Namen filtern",
+          "new_spec": "Neue Spec",
+          "plan_ready": "PLAN FERTIG",
+          "settings": "Einstellungen",
+          "show_spec_list": "Spec-Liste anzeigen",
+          "show_specs": "Specs anzeigen",
+          "spec_builder": "Spec Builder",
+          "spec_builder_settings": "Spec Builder-Einstellungen",
+          "specs": "SPECS",
+          "v": "v"
+        },
+        "specStatePanel": {
+          "answer_with": "Wie soll „{{title}}“ beantwortet werden?",
+          "decision_title": "Entscheidung — {{title}}",
+          "options_for": "Optionen für {{title}}",
+          "recommended": "EMPFOHLEN",
+          "template": "Vorlage",
+          "tool_calls": "Tool-Aufrufe",
+          "turns": "Runden",
+          "worktree": "Worktree"
+        },
+        "workspace": {
+          "describe_what_you_want_to_build_answer_a_few_que": "Beschreiben Sie, was Sie bauen möchten, beantworten Sie einige Fragen und erhalten Sie einen geprüften Plan — Anforderungen, Design und Aufgaben — den ein Agent umsetzen kann.",
+          "pick_a_spec_to_continue_where_you_left_off": "Wählen Sie eine Spec, um dort weiterzumachen, wo Sie aufgehört haben",
+          "plan_your_next_feature_with_a_spec": "Planen Sie Ihr nächstes Feature mit einer Spec",
+          "resize_spec_list": "Größe der Spec-Liste ändern",
+          "start_your_first_spec": "Erstellen Sie Ihre erste Spec"
+        }
+      },
+      "specBuilderPage": {
+        "dismiss_error": "Fehler schließen",
+        "spec_builder": "Spec Builder",
+        "talk_through_an_idea_review_the_plan_then_let_an": "Besprechen Sie eine Idee, prüfen Sie den Plan und lassen Sie dann einen Agenten sie umsetzen."
+      },
+      "manifest": {
+        "display_name": "Spec Builder",
+        "description": "Spec-getriebene Entwicklung in Kiro Crew: Verwandle eine Feature-Idee mit einem eingebetteten Agenten in Anforderungen → Design → Aufgaben, prüfe das Markdown direkt in der App und übergib den freigegebenen Plan dann an eine autonome Ausführungssitzung.",
+        "page_label": "Spec Builder"
       }
     }
   },
@@ -2884,7 +3251,8 @@
         "verified_publisher": "Verifizierter Herausgeber",
         "verified_publisher_first_party": "Verifizierter Herausgeber (Erstanbieter)",
         "desktop_app": "Desktop-App",
-        "desktop_app_hint": "Aktivieren geht von hier aus, aber das eigene Fenster der App braucht die Kiro Crew-Desktop-App."
+        "desktop_app_hint": "Aktivieren geht von hier aus, aber das eigene Fenster der App braucht die Kiro Crew-Desktop-App.",
+        "view_details_for": "Details zu {{name}} anzeigen"
       },
       "categoryRail": {
         "add_source": "Quelle hinzufügen",
@@ -2900,7 +3268,8 @@
         "get": "Abrufen",
         "installed": "Installiert",
         "desktop_app": "Desktop-App",
-        "desktop_app_hint": "Aktivieren geht von hier aus, aber das eigene Fenster der App braucht die Kiro Crew-Desktop-App."
+        "desktop_app_hint": "Aktivieren geht von hier aus, aber das eigene Fenster der App braucht die Kiro Crew-Desktop-App.",
+        "view_details_for": "Details zu {{name}} anzeigen"
       },
       "featuredSpotlight": {
         "enable": "Aktivieren",
@@ -2909,7 +3278,8 @@
         "installed": "Installiert",
         "v": "v",
         "verified_publisher": "Verifizierter Herausgeber",
-        "verified_publisher_first_party": "Verifizierter Herausgeber (Erstanbieter)"
+        "verified_publisher_first_party": "Verifizierter Herausgeber (Erstanbieter)",
+        "view_details_for": "Details zu {{name}} anzeigen"
       },
       "installedAppCard": {
         "agent_one": "{{count}} Agent",
@@ -3060,7 +3430,6 @@
       "retrying": "Wird wiederholt..."
     },
     "chatInput": {
-      "message_placeholder": "Nachricht an {{bot}}… (/command · @file · $skill)",
       "add_files_options": "Dateien & Optionen hinzufügen",
       "allow_once": "Einmal erlauben",
       "apply_a_ready_made_set_of_instructions": "Vorgefertigten Anweisungssatz anwenden",
@@ -3071,6 +3440,7 @@
       "command": "Befehl",
       "context_usage": "Kontextnutzung",
       "context_window": "Kontextfenster",
+      "continue_interrupted_turn": "Unterbrochenen Durchlauf fortsetzen",
       "could_not_submit_that_decision_see_the_console_f": "Entscheidung konnte nicht übermittelt werden — Details in der Konsole.",
       "drag_to_resize_double_click_to_reset": "Ziehen zum Ändern der Größe (Doppelklick zum Zurücksetzen)",
       "file": "Datei",
@@ -3085,6 +3455,7 @@
       "let_the_agent_read_one_of_your_files": "Dem Agenten erlauben, eine Ihrer Dateien zu lesen",
       "let_the_agent_use_the_browser": "Dem Agenten die Browser-Nutzung erlauben",
       "message_input": "Nachrichteneingabe",
+      "message_placeholder": "Nachricht an {{bot}}… (/command · @file · $skill)",
       "model": "Modell",
       "optimize_prompt": "Prompt optimieren",
       "optimize_prompt_busy_optimizing_another_chat": "Prompt optimieren — anderer Chat wird gerade optimiert",
@@ -3092,6 +3463,8 @@
       "optimizing_prompt": "Prompt wird optimiert…",
       "plan_pre_filled_add_context_then_send": "Plan vorbefüllt — Kontext hinzufügen und dann senden",
       "project": "Projekt",
+      "queue": "Warteschlange",
+      "queue_desc": "Wird nach Abschluss des aktuellen Zugs ausgeführt",
       "queue_message": "Nachricht in die Warteschlange stellen",
       "queue_run_after_the_current_turn_finishes_enter": "In die Warteschlange — nach Ende des aktuellen Zugs ausführen (Enter)",
       "quick_actions_like_clearing_the_chat_or_checking": "Schnellaktionen wie das Leeren des Chats oder das Prüfen des Verbrauchs",
@@ -3114,6 +3487,7 @@
       "skill": "Skill",
       "slash_commands": "Slash-Befehle",
       "steer": "Steuern",
+      "steer_desc": "Wird sofort in den laufenden Zug eingesteuert",
       "steer_inject_into_the_running_turn_enter": "Steuern — in den laufenden Zug einspeisen (Enter)",
       "stop_generation": "Erzeugung stoppen",
       "stop_recording": "Aufnahme beenden",
@@ -3128,13 +3502,11 @@
       "transcribing": "Wird transkribiert…",
       "transcribing_please_wait": "Wird transkribiert, bitte warten…",
       "trust_reads": "Lesevorgängen vertrauen",
+      "turn_interrupted_press_continue": "Letzter Durchlauf wurde unterbrochen – ▶ drücken, um fortzusetzen, oder einfach tippen",
       "upload_file": "Datei hochladen",
       "use_a_skill": "Einen Skill verwenden",
       "used": "Verbraucht",
-      "voice_input": "Spracheingabe",
-      "queue": "Warteschlange",
-      "queue_desc": "Wird nach Abschluss des aktuellen Zugs ausgeführt",
-      "steer_desc": "Wird sofort in den laufenden Zug eingesteuert"
+      "voice_input": "Spracheingabe"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -3606,6 +3978,7 @@
       "s_elapsed": "s vergangen"
     },
     "kiroPrerequisiteGate": {
+      "agent_specs_missing": "Agent-Spezifikationen fehlen",
       "another_sandbox_already_confines_kiro_crew_so_it": "Kiro Crew ist bereits durch eine andere Sandbox eingeschränkt, sodass die eigene Sandbox nicht darin verschachtelt werden kann. Die Sandbox dieses Hosts ist nicht defekt.",
       "ask_the_kiro_crew_owner_to_install_kiro_cli_and": "Bitten Sie den Kiro Crew-Eigentümer, Kiro CLI zu installieren und sich an diesem Gateway anzumelden. Dieses Dashboard\n          öffnet sich für Sie, sobald das Gateway bereit ist.",
       "automatic_installation_is_unavailable_here_insta": "Die automatische Installation ist hier nicht verfügbar. Installieren Sie Kiro CLI gemäß der offiziellen\n                Anleitung auf dem Gateway-Host und wählen Sie dann „Erneut prüfen“.",
@@ -3616,6 +3989,7 @@
       "gateway": "Gateway",
       "gateway_host": "Gateway-Host",
       "gateway_setup_required": "Gateway-Einrichtung erforderlich",
+      "if_you_are_diagnosing_this_from_a_terminal_kiro": "Falls Sie dies über ein Terminal untersuchen: kiro-cli diagnostic meldet nichts, solange die Kiro CLI App selbst nicht läuft — starten Sie sie zuerst mit kiro-cli launch. Diese Verweigerung ist nicht die Ursache hierfür.",
       "install_kiro_cli": "Kiro CLI installieren",
       "install_kiro_cli_sign_in_once_and_kiro_crew_will": "Installieren Sie Kiro CLI, melden Sie sich einmal an, und Kiro Crew übernimmt den Rest.",
       "installation_guide": "Installationsanleitung",
@@ -3624,9 +3998,13 @@
       "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI ist installiert, konnte aber nicht verifiziert werden",
       "kiro_cli_is_installed_finish_signing_in_to_conti": "Kiro CLI ist installiert. Schließe die Anmeldung ab, um fortzufahren.",
       "kiro_crew_downloads_the_official_kiro_installer": "Kiro Crew lädt das offizielle Kiro-Installationsprogramm über HTTPS herunter. Die Installation beginnt\n                  erst, wenn Sie die Schaltfläche unten auswählen.",
+      "kiro_crew_installs_the_agent_specs_kiro_cli_load": "Kiro Crew installiert die Agent-Spezifikationen, die Kiro CLI lädt, bevor es überhaupt antworten kann.",
       "kiro_crew_isolates_the_agent_in_an_os_level_sand": "Kiro Crew isoliert den Agenten in einer Sandbox auf Betriebssystemebene, bevor irgendetwas ausgeführt wird.",
+      "kiro_crew_s_agent_specs_are_not_installed": "Die Agent-Spezifikationen von Kiro Crew sind nicht installiert",
       "kiro_crew_uses_kiro_cli_as_its_agent_engine_comp": "Kiro Crew verwendet Kiro CLI als Agenten-Engine. Führen Sie diese zwei Schritte auf dem",
+      "kiro_crew_writes_its_own_agent_specs_where_kiro": "Kiro Crew schreibt seine eigenen Agent-Spezifikationen dorthin, wo Kiro CLI sie liest. Ohne sie kann Kiro CLI den Agenten nicht auflösen, sodass jede Nachricht fehlschlägt. „Erneut prüfen“ schreibt die Spezifikationen neu und meldet, was fehlgeschlagen ist.",
       "kiro_setup_could_not_start": "Kiro-Setup konnte nicht gestartet werden.",
+      "missing": "Fehlend",
       "open_kiro_sign_in_page": "Kiro-Anmeldeseite öffnen",
       "or_run_in_terminal": "oder im Terminal ausführen:",
       "refresh": "Aktualisieren",
@@ -3646,6 +4024,7 @@
       "the_gateway_owner_needs_to_finish_setup": "Der Gateway-Eigentümer muss die Einrichtung abschließen.",
       "the_gateway_returned_an_unexpected_error": "Das Gateway hat einen unerwarteten Fehler zurückgegeben.",
       "the_gateway_returned_no_prerequisite_status": "Das Gateway hat keinen Status der Voraussetzungen zurückgegeben.",
+      "the_repair_attempt_failed": "Der Reparaturversuch ist fehlgeschlagen",
       "then_the_dashboard_will_open_automatically": ", dann\n              öffnet sich das Dashboard automatisch.",
       "this_host_provides_no_os_level_sandbox_so_kiro_c": "Dieser Host bietet keine Sandbox auf Betriebssystemebene, daher kann Kiro Crew den Agenten nicht isolieren. Es führt den Agenten lieber nicht ohne Sandbox aus, als Ihre Anmeldedaten offenzulegen.",
       "try_again": "Erneut versuchen",
@@ -3891,6 +4270,7 @@
         "kind_heartbeat": "Heartbeat",
         "kind_hooks": "Hooks",
         "kind_notification": "Benachrichtigung",
+        "kind_skills": "Fähigkeiten",
         "kind_subagent": "Subagent",
         "kind_task_runner": "Task Runner",
         "kind_tasks": "Aufgaben",
@@ -3936,6 +4316,7 @@
         "no_notifications": "Keine Benachrichtigungen",
         "reject": "Ablehnen",
         "search": "Suchen…",
+        "toggle_kind": "{{kind}} umschalten",
         "select_all_categories": "Alle Kategorien auswählen",
         "show_less": "Weniger anzeigen",
         "try_a_different_search": "Versuche eine andere Suche"
@@ -4154,7 +4535,6 @@
       "become_installable_and_run_setup_with_gateway_pr": "installierbar werden und die Einrichtung mit Gateway-Rechten ausführen.",
       "branch": "Branch",
       "cancel": "Abbrechen",
-      "dismiss_error": "Fehler schließen",
       "dismiss_trust_notice": "Vertrauenshinweis schließen",
       "display_name": "Anzeigename",
       "e_g_identity_services": "z. B. Identity Services",
@@ -4701,6 +5081,33 @@
       "clear_filter": "Filter löschen",
       "no_matches_for": "Keine Treffer für",
       "no_noun_match": "Keine passenden {{noun}}"
+    },
+    "askAgent": {
+      "ask_the_agent": "Agent fragen",
+      "open_a_chat_with_this_error_s_context_attached": "Chat mit dem vollständigen Kontext dieses Fehlers öffnen",
+      "prompt_lead": "Dieser Fehler ist gerade im Kiro Crew-Dashboard aufgetreten. Diagnostiziere die Ursache und behebe sie."
+    },
+    "errorNotice": {
+      "dismiss": "Schließen"
+    },
+    "reportProblemModal": {
+      "report_a_problem": "Problem melden",
+      "what_happened": "Was ist passiert?",
+      "note_placeholder": "z. B. Nach dem Update schlägt jede Nachricht mit „process exited (rc=None)“ fehl.",
+      "include_recent_logs": "Aktuelle Protokolle einbeziehen",
+      "include_logs_hint": "Protokolle von Gateway und kiro-cli. Ausschalten, um nur Absturzberichte zu senden.",
+      "redaction_notice": "Bearer-Tokens, Sitzungs-Cookies und AWS-Schlüssel werden automatisch entfernt, bevor die ZIP-Datei erstellt wird.",
+      "collect_failed": "Diagnosedaten konnten nicht erfasst werden",
+      "cancel": "Abbrechen",
+      "create_report": "Bericht erstellen",
+      "collecting": "Wird erfasst…",
+      "done": "Fertig",
+      "diagnostics_ready": "Diagnose bereit — {{redactions}} Geheimnis(se) in {{files}} Datei(en) redigiert.",
+      "saved_to": "Gespeichert unter",
+      "show_in_finder": "Im Finder anzeigen",
+      "download_zip": "ZIP herunterladen",
+      "open_github_issue": "GitHub-Issue öffnen",
+      "prefill_hint": "Beim Öffnen des Issues werden die Details vorbefüllt — ziehen Sie dann die ZIP-Datei hinein."
     }
   },
   "hooks": {
@@ -5008,7 +5415,6 @@
       "dependencies": "Abhängigkeiten:",
       "discover": "Entdecken",
       "discover_install_and_manage_agentic_apps": "Agentische Apps entdecken, installieren und verwalten",
-      "dismiss_error": "Fehler schließen",
       "dismiss_message": "Nachricht schließen",
       "failed_to_load_apps": "Apps konnten nicht geladen werden",
       "failed_to_load_registry": "Registry konnte nicht geladen werden",
@@ -5748,11 +6154,13 @@
       "recoveryCard": {
         "backend_error_continuing": "Backend-Fehler · wird automatisch fortgesetzt",
         "cancelled_continuing": "abgebrochen · wird fortgesetzt",
+        "continued_by_you": "Auf Ihre Anfrage fortgesetzt",
         "empty_output_continuing": "leere Ausgabe · wird automatisch fortgesetzt",
         "n_patterns": "{{count}} Muster",
         "n_tool_calls_blocked": "{{count}} Werkzeugaufrufe blockiert",
         "no_response_returned": "Keine Antwort",
         "recovered_continuing": "wiederhergestellt · wird fortgesetzt",
+        "resuming_the_interrupted_turn": "unterbrochener Durchlauf wird fortgesetzt",
         "safety_policy_continuing": "Sicherheitsrichtlinie · wird automatisch fortgesetzt",
         "tool_call_blocked": "Werkzeugaufruf blockiert",
         "tool_stopped_responding": "Werkzeug antwortet nicht mehr",
@@ -5825,6 +6233,8 @@
         "stopping_in_progress": "Stoppen läuft"
       },
       "subagentProgressBar": {
+        "collapse_agent_list": "Subagentenliste einklappen",
+        "expand_agent_list": "Subagentenliste aufklappen",
         "backend_hiccup_retrying": "Backend-Aussetzer — wird wiederholt…",
         "more_running_normally": "weitere laufen normal…",
         "no_activity": "— keine Aktivität",
@@ -5901,7 +6311,12 @@
         "aria_awaiting_approval": "Warten auf Genehmigung für Werkzeug {{label}}",
         "aria_hide_details": "Details für Werkzeug {{label}} ausblenden",
         "aria_show_details": "Details für Werkzeug {{label}} anzeigen",
-        "opened_in_the_side_panel": "Im Seitenbereich geöffnet"
+        "opened_in_the_side_panel": "Im Seitenbereich geöffnet",
+        "blocked_by_security_policy": "Durch Sicherheitsrichtlinie blockiert"
+      },
+      "errorCard": {
+        "continue": "Fortsetzen",
+        "continue_hint": "Ab der Unterbrechung fortsetzen. Bereits auf die Festplatte geschriebene Arbeit bleibt unberührt."
       }
     },
     "chatPage": {
@@ -7150,6 +7565,7 @@
         "skills_tip": "Bedarfsgesteuerte Fähigkeiten, die geladen werden, wenn der Agent sie als relevant einstuft. Fähigkeiten mit dem auto-Abzeichen werden immer in jede Sitzung eingefügt. Fähigkeiten werden aus Kiro Crew, kiro-cli und AIM-Paketen ermittelt.",
         "auto_generated_skill_candidates_awaiting_your_ap": "Automatisch erzeugte Skill-Kandidaten, die auf deine Genehmigung warten. Klicke auf Überprüfen, um die SKILL.md und alle mitgelieferten Skripte vor der Genehmigung zu prüfen. Genehmigen schaltet den Skill live (und macht Skripte ausführbar); Schließen verwirft ihn. Nichts geht live, bevor du es genehmigst.",
         "hide": "Ausblenden",
+        "linked_candidate_no_longer_pending": "Dieser Fähigkeiten-Kandidat wartet nicht mehr auf eine Prüfung. Er wurde genehmigt oder geschlossen.",
         "on_demand_skills_loaded_when_the_agent_determine": "Bedarfsgesteuerte Skills, die geladen werden, wenn der Agent sie für relevant hält.",
         "proposed_change": "Vorgeschlagene Änderung",
         "review": "Überprüfen",
@@ -7602,7 +8018,6 @@
         "download_the_latest_version": "die neueste Version herunterladen",
         "downloaded_and_verified_the_app_restarts_to_fini": "Heruntergeladen und verifiziert. Die App startet neu, um die Installation abzuschließen; Sie können sie auch später beenden, dann wird beim Verlassen installiert.",
         "downloading": "Wird heruntergeladen…",
-        "insider_gets_prerelease_builds_early_switching_o": "„Insider“ erhält Vorabversionen frühzeitig. Beim Wechsel wird der aktuelle Build des anderen Kanals als normale Aktualisierung angeboten.",
         "install_failed": "Die Aktualisierung konnte nicht installiert werden",
         "installing_quiet_note": "Wird installiert — Kiro Crew wird für ein oder zwei Minuten still und startet sich dann selbst neu.",
         "is_available": "ist verfügbar.",
@@ -7641,7 +8056,13 @@
         "update_failed": "Aktualisierung fehlgeschlagen",
         "update_noun": "Aktualisierung",
         "update_now": "Jetzt aktualisieren",
-        "view_full_changelog": "▸ Vollständiges Änderungsprotokoll anzeigen"
+        "view_full_changelog": "▸ Vollständiges Änderungsprotokoll anzeigen",
+        "channel_help_show": "▸ Was ist der Unterschied zwischen Stable und Insider?",
+        "channel_help_hide": "▾ Ausblenden",
+        "channel_explainer_stable": "Nur getestete Releases. Seltenere Updates und weniger Überraschungen.",
+        "channel_explainer_insider": "Frühe Builds, Tage bis Wochen vor Stable veröffentlicht. Neue Funktionen kommen hier zuerst an – neue Fehler ebenfalls.",
+        "channel_explainer_switch_note": "Du kannst jederzeit zurückwechseln. In beiden Richtungen kommt die aktuelle Version des anderen Kanals als normales Update – du entscheidest, wann sie installiert wird.",
+        "prerelease_report_prompt": "Danke, dass du frühe Builds nutzt. Diese Builds sind weniger getestet als Stable, also geht auch mal etwas schief – wenn etwas nicht stimmt, <report>melde es bitte auf GitHub</report>, damit es behoben wird, bevor es alle erreicht."
       },
       "botChannelPanel": {
         "allowed_user_ids": "Erlaubte Benutzer-IDs",
@@ -7728,7 +8149,6 @@
         "default_reasoning_effort": "Standard-Denkaufwand",
         "default_to_autopilot_mode": "Standardmäßig Autopilot-Modus",
         "describe_your_role": "Beschreibe deine Rolle",
-        "dismiss": "Schließen",
         "display_time_on_each_message": "Uhrzeit bei jeder Nachricht anzeigen",
         "display_usage_percentage_next_to_the_context_pro": "Verbrauchsprozentsatz neben dem Kontext-Fortschrittsbalken anzeigen",
         "e_g_solutions_architect_sre_founder": "z. B. Solutions Architect, SRE, Gründer",
@@ -7824,7 +8244,17 @@
         "product_manager": "Produktmanager",
         "somewhat": "Etwas",
         "tail_preserve_end_final_summary": "Ende (Schluss / Abschlusszusammenfassung erhalten)",
-        "ux_designer": "UX-Designer"
+        "ux_designer": "UX-Designer",
+        "knowledge_library": "Wissensbibliothek",
+        "auto_add_documents": "Dokumente automatisch hinzufügen",
+        "let_the_agent_add_documents_it_reads_while_workin": "Erlaubt dem Agenten, Dokumente, die er beim Arbeiten liest, in deine Wissensbibliothek aufzunehmen, damit sie später durchsuchbar bleiben. Er liest sie mit seinen eigenen Werkzeugen und mit deiner Zustimmung – Kiro Crew lädt selbst nichts herunter. Hinzugefügte Dokumente erscheinen in einer einzigen Quelle „Automatisch hinzugefügt“, die sich mit einem Klick entfernen lässt.",
+        "auto_register_project_documents": "Projektdokumente automatisch registrieren",
+        "register_the_documents_of_each_project_you_work_i": "Registriert die Dokumente jedes Projekts, an dem du arbeitest, damit dessen Entwurfsdokumente, Spezifikationen und READMEs durchsuchbar werden, ohne den Ordner von Hand hinzuzufügen. Nur Dokumente – niemals Quellcode, Agentenanweisungen oder generierte Dateien.",
+        "auto_add_saved_artifacts": "Gespeicherte Artefakte automatisch hinzufügen",
+        "mirror_documents_you_save_as_artifacts_into_the_l": "Spiegelt Dokumente, die du als Artefakte speicherst, in die Bibliothek, hält sie beim Bearbeiten aktuell und entfernt sie, wenn du das Artefakt löschst.",
+        "failed_to_save_knowledge_setting": "Wissenseinstellung konnte nicht gespeichert werden",
+        "auto_ingest_limit_per_scan": "Auto-Aufnahmegrenze pro Durchlauf",
+        "how_much_an_automatically_registered_source_may_i": "Wie viel eine automatisch registrierte Quelle in einem Durchlauf aufnehmen darf. Jeder Teil eines Dokuments kostet einen Extraktionsaufruf – das begrenzt also die Kosten. Die neuesten Dokumente kommen zuerst, der Rest folgt in späteren Durchläufen. 0 hebt die Grenze auf. Standard: {{count}}."
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",
@@ -7927,7 +8357,7 @@
         "dismiss_diagnosis": "Diagnose schließen",
         "dismiss_error": "Fehler schließen",
         "distinct": "eindeutig",
-        "enable_it_to_let_this_gateway_open_ssh_tunnels_t": "Aktivieren Sie dies, damit dieses Gateway SSH-Tunnel zu Ihren Remote-Crews öffnen und über die obere Tab-Leiste\n          zwischen ihnen wechseln kann.",
+        "enable_it_to_let_this_gateway_open_ssh_tunnels_t": "Aktivieren Sie dies, damit dieses Gateway Tunnel (SSH oder AWS SSM) zu Ihren Remote-Crews\n          öffnen und über die obere Tab-Leiste zwischen ihnen wechseln kann.",
         "enabled": "aktiviert",
         "enabled_but_not_active_yet_restart_the_gateway": "Aktiviert, aber noch nicht aktiv. Starten Sie das Gateway neu (",
         "equivalent_cli": "Entsprechender CLI-Befehl:",
@@ -7958,10 +8388,10 @@
         "remote_port": "Remote-Port",
         "retry": "Wiederholen",
         "ssh_host_alias": "SSH-Host / Alias",
-        "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "Das Gateway öffnet beim Verbinden einen SSH-Tunnel und erzeugt ein kurzlebiges Token.\n        Der lokale Weiterleitungsport spiegelt den Remote-Port, daher muss jede verbundene Remote-Crew\n        einen eigenen Remote-Port verwenden.",
+        "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "Das Gateway öffnet beim Verbinden einen Tunnel (SSH oder AWS SSM) und erzeugt ein kurzlebiges Token.\n        Der lokale Weiterleitungsport spiegelt den Remote-Port, daher muss jede verbundene Remote-Crew\n        einen eigenen Remote-Port verwenden.",
         "then": "dann",
         "to_fully_tear_down_any_tunnels_still_running_fro": "um alle noch von vorher laufenden Tunnel vollständig abzubauen.",
-        "to_start_the_ssh_tunnel_manager_and_activate_ins": "um den SSH-Tunnel-Manager zu starten und den Wechsel zwischen Remote-Crews zu aktivieren.",
+        "to_start_the_ssh_tunnel_manager_and_activate_ins": "um den Tunnel-Manager zu starten und den Remote-Crew-Wechsel zu aktivieren.",
         "token_ttl": "Token-TTL",
         "ttl": "· TTL",
         "up_to": "Bis zu",
@@ -7983,7 +8413,19 @@
         "failed_to_load_remote_crews": "Remote-Crews konnten nicht geladen werden",
         "remove_failed": "Entfernen von {{id}} fehlgeschlagen: {{error}}",
         "unknown_error": "unbekannter Fehler",
-        "update_setting_failed": "Aktualisieren der Einstellung fehlgeschlagen: {{error}}"
+        "update_setting_failed": "Aktualisieren der Einstellung fehlgeschlagen: {{error}}",
+        "connection_method": "Verbindungsmethode",
+        "ssh_tunnel": "SSH-Tunnel",
+        "aws_ssm_session_manager": "AWS SSM Session Manager",
+        "tunnels_via_aws_ssm_start_session_no_inbound_ssh": "Tunnelt über aws ssm start-session — kein eingehender SSH-Port und kein Schlüssel erforderlich. Benötigt die AWS CLI, das session-manager-plugin und die Berechtigung ssm:StartSession.",
+        "opens_ssh_n_l_to_the_host_requires_non_interacti": "Öffnet ssh -N -L zum Host. Erfordert nicht-interaktiven SSH-Zugriff (Schlüssel im ssh-agent).",
+        "ssm_target_instance_id": "SSM-Ziel (Instanz-ID)",
+        "ec2_instance_id_i_or_ssm_managed_instance_id_mi": "EC2-Instanz-ID (i-…) oder SSM-Managed-Instance-ID (mi-…).",
+        "aws_profile": "AWS-Profil",
+        "aws_region": "AWS-Region",
+        "default_credential_chain": "Standard-Anmeldeinformationskette",
+        "remote_user": "Remote-Benutzer",
+        "the_user_the_remote_gateway_runs_as_sudo_u_for_s": "Der Benutzer, unter dem das Remote-Gateway läuft — SSM-Befehle laufen über sudo -u. Auf Ubuntu-AMIs ubuntu verwenden."
       },
       "mcpPoolableServers": {
         "blocked": "blockiert",
@@ -8289,7 +8731,6 @@
         "bcp_47_language_code_for_speech_recognition": "BCP-47-Sprachcode für die Spracherkennung",
         "default": "Standard",
         "dictation_panel": "Diktierpanel",
-        "dismiss_error": "Fehler schließen",
         "enabled": "Aktiviert",
         "input_device_used_to_capture_your_voice": "Eingabegerät zur Aufnahme Ihrer Stimme",
         "install_mlx_whisper": "MLX Whisper installieren",
@@ -8307,12 +8748,12 @@
         "runtime": "Laufzeitumgebung",
         "show_an_animated_panel_while_recording_instead_of": "Während der Aufnahme ein animiertes Panel anstelle der schmalen Statusleiste anzeigen. Fällt auf die Leiste zurück, wenn der Browser kein WebGL2 unterstützt oder Ihr System reduzierte Bewegung anfordert.",
         "status": "Status",
-        "stream_live_partial_transcripts_into_the_input_b": "Live-Teiltranskripte während des Sprechens in das Eingabefeld streamen (nur Transcribe)",
+        "stream_live_partial_transcripts_into_the_input_b": "Live-Teiltranskripte beim Sprechen in das Eingabefeld streamen. Unterstützt von Transcribe (AWS) und Apple Speech (auf dem Gerät).",
         "streaming": "Streaming",
         "then_click_install_below": "Klicken Sie dann unten auf „Installieren“.",
         "transcribe_voice_into_the_message_box_when_you_c": "Stimme in das Nachrichtenfeld transkribieren, wenn Sie auf das Mikrofon klicken",
         "us_east_1": "us-east-1",
-        "whisper_and_mlx_run_locally_transcribe_calls_aws": "Whisper und MLX laufen lokal; Transcribe ruft AWS auf",
+        "whisper_and_mlx_run_locally_transcribe_calls_aws": "Whisper, MLX und Apple Speech laufen lokal; Transcribe ruft AWS auf",
         "whisper_model_running_on_apple_mlx_metal_gpu_dow": "Whisper-Modell, das auf Apple MLX (Metal GPU) läuft. Wird bei der ersten Nutzung heruntergeladen.",
         "docker": "Docker",
         "failed_to_save_stt_config": "STT-Konfiguration konnte nicht gespeichert werden",
@@ -8323,8 +8764,9 @@
         "pulls_python_3_11_slim_for_docker_based_transcri": "Lädt python:3.11-slim für die Docker-basierte Transkription (AL2).",
         "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper ist installiert, aber ffmpeg fehlt — die Sprachtranskription benötigt ffmpeg.",
         "endpointing": "Automatisch senden, wenn ich fertig gesprochen habe",
-        "endpointing_desc": "Verwendet ein schnelles Modell, um zu erkennen, wann du eine vollständige Anfrage beendet hast, und sendet sie automatisch. Nur für Streaming (Transcribe).",
+        "endpointing_desc": "Ein schnelles Modell erkennt, wann du eine vollständige Anfrage beendet hast, und sendet sie automatisch. Nur Streaming-Anbieter.",
         "provider_mlx": "Whisper MLX (lokal — nur Apple Silicon)",
+        "provider_apple": "Apple Speech (auf dem Gerät — macOS 26+)",
         "provider_transcribe": "Transcribe (AWS)",
         "provider_whisper": "Whisper (lokal)",
         "step_checking": "Python wird gesucht…",
@@ -8421,7 +8863,6 @@
         "aws_region_for_polly_api": "AWS-Region für die Amazon Polly-API",
         "aws_region_polly": "AWS-Region (Amazon Polly)",
         "default": "Standard",
-        "dismiss": "Schließen",
         "engine": "Engine",
         "failed_to_load_voice_config": "Sprachkonfiguration konnte nicht geladen werden.",
         "path_to_the_piper_executable_leave_blank_to_auto": "Pfad zur ausführbaren Piper-Datei. Leer lassen, um automatisch in PATH oder ~/piper-venv/bin/piper zu suchen",
@@ -8560,6 +9001,11 @@
         "token_description": "Das Secret, das neben der Bot ID auf derselben Einstellungsseite angezeigt wird.",
         "token_label": "WeCom-Bot-Secret",
         "token_placeholder": "WeCom-Bot-Secret einfügen"
+      },
+      "reportProblemCard": {
+        "support": "Support",
+        "blurb": "Etwas funktioniert nicht? Senden Sie uns einen Diagnosebericht — Protokolle werden zuvor von Geheimnissen befreit.",
+        "report_a_problem": "Problem melden"
       }
     },
     "settingsPage": {
@@ -8653,60 +9099,73 @@
       "title": "Kontextaufschlüsselung"
     },
     "telemetryPanel": {
-      "acceleration_internals": "Interna der Beschleunigung",
       "agent_turn_latency_fault_rate_populate_after_the": "Latenz und Fehlerrate der Agentenzüge werden gefüllt, nachdem die nächsten Züge abgeschlossen sind.",
-      "cold_spawn": "Kaltstart",
+      "by_channel": "Nach Kanal",
+      "by_model": "Nach Modell",
       "cold_start_p50": "Kaltstart (p50)",
       "cold_start_p90": "Kaltstart (p90)",
+      "context_growth_forecast": "+{{rate}} %/Zug · ~{{turns}} bis 90 %",
       "context_window": "Kontextfenster",
+      "conversation_col": "Konversation",
+      "conversations_by_spend": "Unterhaltungen nach Ausgaben",
+      "conversations_caption": "Größte Ausgaben von {{count}} Unterhaltungen · Titel verlinken zum Chat",
+      "cost_by_context_size": "Kosten nach Kontextgröße",
+      "cost_new": "keine Ausgaben zuvor",
+      "credits": "Guthaben",
+      "credits_col": "Guthaben",
+      "credits_per_turn": "Pro Zug",
+      "credits_this_period": "Letzte {{days}} T",
       "d": "T ·",
       "days": "Tage.",
       "enable_with": "Aktivieren mit",
       "error": "Fehler",
       "fault_rate": "Fehlerrate",
-      "first_use_spawn_of_an_mcp_server_backend": "Start eines MCP-Server-Backends bei der ersten Nutzung",
-      "hit": "% Treffer",
-      "hit_2": "Treffer ·",
-      "hottest_sessions_by_peak_occupancy": "Sitzungen mit der höchsten Spitzenbelegung des Kontexts · Komprimierung startet bei 90 %",
+      "growth_col": "Wachstum",
       "internal_phase_breakdown": "Interne Phasenaufteilung · spawn_init = Prozessstart, session_new = Sitzungs-Handshake, set_model = Modellauswahl · Bestandteile eines Starts, nicht mehrere Starts",
       "key_metrics": "Wichtige Metriken",
       "loading_telemetry": "Telemetrie wird geladen…",
-      "loads": "Ladevorgänge",
       "local_only_no_egress": "· nur lokal, kein Datenausgang",
-      "mcp_backend_acquire": "MCP-Backend-Zuweisung",
-      "mcp_cold_load_first_use": "MCP-Kaltstart (erste Nutzung)",
+      "mean_credits_by_occupancy": "Durchschnittliches Guthaben pro Zug, gruppiert nach genutztem Kontext",
       "measured_from_token_records": "Lokal aus den Nutzungsdatensätzen pro Zug der letzten {{days}} Tage ermittelt — unabhängig vom Telemetrie-Schalter",
       "metrics_stay_local": ". Metriken bleiben lokal (",
-      "n": "· n=",
-      "no_acquisitions_yet": "noch keine Zuweisungen",
-      "no_data_yet": "noch keine Daten",
       "no_telemetry_recorded_yet_in_the_last": "Noch keine Telemetrie aufgezeichnet in den letzten",
       "nothing_leaves_this_machine": ") — nichts verlässt diesen Rechner.",
       "occupancy_p50": "Belegung (p50)",
       "occupancy_p90": "Belegung (p90)",
       "ok": "ok",
-      "on_demand_read_of_a_skill_body_from_disk": "Laden eines Skill-Inhalts vom Datenträger bei Bedarf",
       "overall_mean": "Gesamtmittelwert",
+      "p50_p90_with_sample_count": "p50 oben · p90 {{p90}} · n {{count}}",
+      "peak_ctx_col": "Max. Kontext",
       "peak_occupancy": "Spitzenbelegung",
-      "ready_rate": "Bereitschaftsrate",
+      "per_turn_col": "Pro Zug",
+      "priciest_turn": "Teuerster Zug",
+      "sample_count": "n={{count}}",
       "session_startup": "Sitzungsstart",
-      "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "Sitzungen, die ein warmes MCP-Backend wiederverwenden, statt einen Kaltstart",
       "shard_s_source": "Shard(s) · Quelle",
+      "share_col": "Anteil",
       "showing_partial_window": "Zeigt {{shown}} von {{total}} Messwerten (Histogrammgrenzen haben sich im Zeitfenster geändert)",
-      "skill_load": "Skill-Ladevorgang",
+      "span_col": "Zeitraum",
+      "startup_by_channel": "Start nach Kanal · unknown = Quelle nicht erfasst",
+      "startup_faults": "Startfehler",
       "startup_latency_distribution_from_otel_histogram": "Verteilung der Startlatenz · aus OTEL-Histogramm-Buckets",
+      "startups_recorded_one": "{{n}} Start erfasst",
+      "startups_recorded_other": "{{n}} Starts erfasst",
       "telemetry_enabled_true": "telemetry.enabled = true",
       "telemetry_is_off": "Telemetrie ist aus",
       "throughput": "Durchsatz",
-      "time_to_hand_a_pooled_mcp_backend_to_a_session": "Zeit, um ein MCP-Backend aus dem Pool an eine Sitzung zu übergeben",
       "timeout": "Timeout",
+      "turn_faults_one": "{{n}} Fehler von {{turns}}",
+      "turn_faults_other": "{{n}} Fehler von {{turns}}",
       "turn_latency_p50": "Zuglatenz (p50)",
-      "turns_measured_one": "{{count}} Zug gemessen",
-      "turns_measured_other": "{{count}} Züge gemessen",
-      "typ_p90": "typ. · p90",
-      "warm_pool_efficiency": "Effizienz des Warm-Pools",
+      "turns_col": "Züge",
+      "turns_measured_one": "{{n}} Zug gemessen",
+      "turns_measured_other": "{{n}} Züge gemessen",
+      "untitled_conversation_on": "Ohne Titel · {{date}}",
+      "vs_last_col": "vs. zuvor",
+      "vs_previous_period": "vs. Vorperiode",
       "warm_start_p50": "Warmstart (p50)",
-      "window_last": "Fenster: letzte"
+      "was_value": "vorher {{value}}",
+      "window_last": "OTEL-Abschnitte · Fenster: letzte"
     },
     "worldsPage": {
       "active": "aktiv,",
@@ -8735,7 +9194,6 @@
     "controlsTitle": "Telemetrie-Steuerung",
     "dataNeverSentBody": "Prompts, Antworten, Dateien, Zugangsdaten, Hostnamen, Benutzernamen oder dein Betriebssystem. Deine IP wird nicht gespeichert.",
     "dataNeverSentTitle": "Nie gesendet",
-    "details": "Datenschutzdetails",
     "envOverrideNote": "Das Signal ist deaktiviert, weil {{envVar}} in dieser Umgebung gesetzt ist. Hebe die Variable auf, um die Telemetrie hier zu verwalten.",
     "governanceOverrideNote": "Die Sicherheitsrichtlinie deiner Administration schaltet dies aus. Hier nicht änderbar.",
     "installReceiptBody": "Nach einer erfolgreichen Installation oder Aktualisierung aus dem offiziellen Kiro-Crew-Katalog wird ein anonymer Beleg gesendet. Externe Register, lokale Apps und selbst registrierte Apps werden nie gemeldet.",
@@ -8743,9 +9201,13 @@
     "installReceiptTitle": "Installationsbelege für offizielle Apps",
     "localDataBody": "Nutzungs- und Kontextdaten. Leistungsmetriken sind standardmäßig aus.",
     "localDataTitle": "Bleibt auf deinem Gerät",
-    "notSendingNote": "Derzeit wird kein Signal gesendet: {{reason}}.",
-    "noticeBody": "Kiro Crew sendet täglich einen anonymen Ping und nach offiziellen App-Installationen oder -Updates einen appbezogenen Beleg. Nie deine Prompts, Dateien oder Zugangsdaten.",
-    "noticeTitle": "Datenschutz auf einen Blick",
+    "notSendingAlreadySentToday": "Das Signal von heute wurde bereits gesendet.",
+    "notSendingAwaitingAck": "Es wurde noch nichts gesendet. Das erste Signal wartet, bis du diese Seite gesehen hast.",
+    "notSendingCi": "Pausiert: Dies sieht nach einem Continuous-Integration-Rechner aus.",
+    "notSendingGeneric": "Derzeit wird kein Signal gesendet.",
+    "notSendingNoEndpoint": "Es wird kein Signal gesendet: Es ist kein Endpunkt konfiguriert.",
+    "notSendingNonDefaultHome": "Pausiert: Diese Instanz nutzt ein abweichendes Datenverzeichnis.",
+    "notSendingUnreadableHome": "Es wird kein Signal gesendet: Das Datenverzeichnis konnte nicht gelesen werden.",
     "overlayOverrideNote": "Ein Eintrag telemetry.beacon_enabled in config.local.json überschreibt diese Einstellung. Entferne ihn dort, um die Telemetrie hier zu verwalten.",
     "payloadFields": "Zufällige Installations-ID · App-Version · Python-Nebenversion · Installationskanal · Erstausführungskennzeichen",
     "settingsDescription": "Telemetrie, lokale Daten und Datenschutzeinstellungen",

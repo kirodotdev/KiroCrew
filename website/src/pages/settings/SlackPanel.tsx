@@ -8,6 +8,7 @@ import { Input, Btn } from '../../components/ui'
 import { api, type SlackConfigData, type SlackConfigSave } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/slack-setup.md'
 
 type Draft = {
@@ -104,7 +105,9 @@ export function TagListEditor({ label, description, values, placeholder, onChang
           <Btn onClick={add} disabled={!draft.trim()}><Plus size={13} /> {i18nT('pages.settings.slackPanel.add')}</Btn>
         </div>
       )}
-      {err && <div className="text-[12px] text-danger">{err}</div>}
+      {/* Client-side validation only ("X is not a valid ID") — there is nothing
+          for the agent to diagnose, so no hand-off. */}
+      <ErrorNotice message={err} variant="inline" />
     </div>
   )
 }
@@ -374,11 +377,12 @@ export function SlackPanel() {
             <AlertTriangle size={14} /> {verifyWarning}
           </span>
         )}
-        {error && (
-          <span className="inline-flex items-center gap-1.5 text-[12px] text-danger">
-            <AlertTriangle size={14} /> {error}
-          </span>
-        )}
+        {/*
+          Deliberately NOT opted in, same as `BrowserPanel`: `botToken`/`appToken`
+          live in local state (never persisted — `formKey` even remounts them after
+          a successful save), and both come from the Slack app admin.
+        */}
+        <ErrorNotice message={error} variant="inline" />
       </div>}
     </>
   )
