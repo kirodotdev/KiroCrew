@@ -6806,6 +6806,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               contextUsedTokens={contextTokens?.used}
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
               showContextPct={chatConfig.showContextPct}
+              showContextTokens={chatConfig.showContextTokens}
               isRunning={composerBusy}
               /* Composed with `interrupted`, matching the ErrorCard gate above.
                  Availability alone would put a filled primary button on the

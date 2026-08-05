@@ -314,6 +314,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.show-context-tokens",
+    "label": "Show Context Tokens",
+    "description": "Display used and total tokens next to the context progress bar",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.show-thinking-inline",
     "label": "Show Thinking Inline",
     "description": "Show intermediate reasoning text between tool calls instead of collapsing everything",
