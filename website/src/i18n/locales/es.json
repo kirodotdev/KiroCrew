@@ -4162,6 +4162,7 @@
       "next_match": "Coincidencia siguiente",
       "no_results": "Sin resultados",
       "open_as_artifact": "Abrir como artefacto",
+      "open_folder": "Abrir carpeta {{path}}",
       "preview": "Vista previa",
       "previous_match": "Coincidencia anterior",
       "previous_shift_enter": "Anterior (Shift+Enter)",

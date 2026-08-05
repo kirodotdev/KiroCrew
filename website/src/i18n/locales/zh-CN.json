@@ -4052,6 +4052,7 @@
       "next_match": "下一个匹配",
       "no_results": "无结果",
       "open_as_artifact": "作为工件打开",
+      "open_folder": "打开文件夹 {{path}}",
       "preview": "预览",
       "previous_match": "上一个匹配",
       "previous_shift_enter": "上一个（Shift+Enter）",

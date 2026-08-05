@@ -4107,6 +4107,7 @@
       "next_match": "अगला मैच",
       "no_results": "कोई परिणाम नहीं",
       "open_as_artifact": "आर्टिफ़ैक्ट के रूप में खोलें",
+      "open_folder": "फ़ोल्डर खोलें {{path}}",
       "preview": "प्रीव्यू",
       "previous_match": "पिछला मैच",
       "previous_shift_enter": "पिछला (Shift+Enter)",

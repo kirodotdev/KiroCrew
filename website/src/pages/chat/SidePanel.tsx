@@ -257,7 +257,7 @@ export default function SidePanel({
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
   inlinePreviewPath, onInlinePreviewChange, expanded, fillWidth,
 }: SidePanelProps) {
-  const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
+  const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned, openFolder } = tabsCtl
   // EVERY app frame, every slot, rendered from one stable-keyed list below so a
   // chat switch cannot change a frame's React key and remount its iframe.
   const allAppTabs = useAllAppTabs()
@@ -578,6 +578,7 @@ export default function SidePanel({
                   // tabs via onFileOpen and artifact rows as artifact tabs via
                   // onArtifactOpen.
                   onFileOpen={onFileOpen}
+                  onFolderOpen={(p) => openFolder(p, slot)}
                   onArtifactOpen={onArtifactOpen}
                   onFileRemove={onFileRemove} onFilesClear={onFilesClear}
                   onFileSave={onFileSave} onSubmitComments={onSubmitComments}
@@ -601,6 +602,7 @@ export default function SidePanel({
                 onPathChange={(p) => patchTab(t.id, { path: p, title: p.replace(/\/+$/, '').split('/').pop() || p })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
+                onFolderOpen={(p) => openFolder(p, slot)}
                 onSubmitComments={onSubmitComments}
                 onTerminalSendToChat={onAddSourceToChat}
                 diffLineNumbers={diffLineNumbers}
@@ -670,7 +672,7 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
   return <div className="h-full w-full overflow-auto"><McpAppFrame payload={payload} /></div>
 }
 
-function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onFolderOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
   onClose: () => void
   onContentChange: (c: string) => void
@@ -682,6 +684,8 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
   onPathChange: (p: string) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string) => void
+  /** Open a directory as a folder tab — a file tab's breadcrumb segment click. */
+  onFolderOpen?: (p: string) => void
   onSubmitComments?: (m: string) => void
   onTerminalSendToChat?: (text: string) => void
   diffLineNumbers: boolean; setDiffLineNumbers: (fn: (v: boolean) => boolean) => void
@@ -705,6 +709,7 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
         onSubmitComments={onSubmitComments}
         revealLine={tab.revealLine}
         onRevealConsumed={onRevealConsumed}
+        onOpenFolder={onFolderOpen}
       />
     )
   }

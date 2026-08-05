@@ -4162,6 +4162,7 @@
       "next_match": "Próxima correspondência",
       "no_results": "Nenhum resultado",
       "open_as_artifact": "Abrir como artefato",
+      "open_folder": "Abrir pasta {{path}}",
       "preview": "Visualizar",
       "previous_match": "Correspondência anterior",
       "previous_shift_enter": "Anterior (Shift+Enter)",

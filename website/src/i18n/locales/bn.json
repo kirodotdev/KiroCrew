@@ -4107,6 +4107,7 @@
       "next_match": "পরবর্তী মিল",
       "no_results": "কোনো ফলাফল নেই",
       "open_as_artifact": "আর্টিফ্যাক্ট হিসেবে খুলুন",
+      "open_folder": "ফোল্ডার খুলুন {{path}}",
       "preview": "প্রিভিউ",
       "previous_match": "পূর্ববর্তী মিল",
       "previous_shift_enter": "পূর্ববর্তী (Shift+Enter)",

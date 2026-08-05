@@ -921,6 +921,7 @@
       "full_screen": "Full screen",
       "no_results": "No results",
       "open_as_artifact": "Open as artifact",
+      "open_folder": "Open folder {{path}}",
       "preview": "Preview",
       "refresh_file_re_read_from_disk": "Refresh file (re-read from disk)",
       "save": "Save",

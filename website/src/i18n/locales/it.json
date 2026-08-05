@@ -4162,6 +4162,7 @@
       "next_match": "Corrispondenza successiva",
       "no_results": "Nessun risultato",
       "open_as_artifact": "Apri come artefatto",
+      "open_folder": "Apri cartella {{path}}",
       "preview": "Anteprima",
       "previous_match": "Corrispondenza precedente",
       "previous_shift_enter": "Precedente (Maiusc+Invio)",

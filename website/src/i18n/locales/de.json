@@ -4107,6 +4107,7 @@
       "next_match": "Nächster Treffer",
       "no_results": "Keine Ergebnisse",
       "open_as_artifact": "Als Artefakt öffnen",
+      "open_folder": "Ordner öffnen {{path}}",
       "preview": "Vorschau",
       "previous_match": "Vorheriger Treffer",
       "previous_shift_enter": "Zurück (Shift+Enter)",

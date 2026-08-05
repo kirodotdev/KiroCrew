@@ -4217,6 +4217,7 @@
       "next_match": "Следующее совпадение",
       "no_results": "Ничего не найдено",
       "open_as_artifact": "Открыть как артефакт",
+      "open_folder": "Открыть папку {{path}}",
       "preview": "Просмотр",
       "previous_match": "Предыдущее совпадение",
       "previous_shift_enter": "Назад (Shift+Enter)",
