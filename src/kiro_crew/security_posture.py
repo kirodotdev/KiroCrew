@@ -105,6 +105,15 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Session & task memory panel",
+        "dashboard/session_memory.py",
+        "Chat titles served by `GET /api/sessions/memory`. Titles are generated from "
+        "user content, and the resume path in `chat_handlers` assigns a "
+        "client-supplied `body[\"title\"]` to the slot with no scan of its own, so this "
+        "serializer is the boundary that guarantees the scan — the same "
+        "output-boundary reason as the sibling subagent-task text.",
+    ),
+    (
         "Mochi notify + pin egress",
         "apps/builtins/mochi/hooks.py",
         "Agent-authored notify text (perform_pet_action summary/chatMessage) crosses to "

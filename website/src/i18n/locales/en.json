@@ -6622,6 +6622,36 @@
       "present": "present,",
       "slot_one": "{{count}} slot",
       "slot_other": "{{count}} slots"
+    },
+    "sessionMemoryCard": {
+      "agent": "Agent",
+      "collapse_tasks": "Collapse tasks for {{name}}",
+      "collecting_samples": "Collecting samples…",
+      "cpu": "CPU",
+      "expand_tasks": "Expand tasks for {{name}}",
+      "filter_sessions": "Filter sessions…",
+      "host_headroom": "Host Headroom (GB)",
+      "host_share": "Host share",
+      "kirocrew_used": "Kiro Crew Used (GB)",
+      "largest_session": "Largest Session (GB)",
+      "mcp": "MCP",
+      "mcp_stubs": "MCP stubs",
+      "memory": "Memory",
+      "memory_load": "Memory Load",
+      "no_active_sessions": "No active sessions",
+      "peak": "Peak",
+      "physical_memory": "Physical Memory (GB)",
+      "pid": "PID",
+      "proc": "Proc",
+      "processes": "Processes",
+      "resident_memory_of_each_session_s_whole_process": "Resident memory of each session's whole process tree, including its MCP servers. Shared pages are counted once per process, so a row is an upper bound. A row marked shared runs inside another session's runtime, so its figure is that runtime's measurement divided between them, not an exclusive one.",
+      "session_task": "Session / Task",
+      "session_task_memory": "Session & Task Memory",
+      "sessions": "Sessions",
+      "shared": "shared",
+      "tasks": "Tasks",
+      "tasks_running": "Tasks running",
+      "uptime": "Uptime"
     }
   }
 }

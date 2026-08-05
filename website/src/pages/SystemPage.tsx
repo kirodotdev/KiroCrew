@@ -9,6 +9,7 @@ import { fmtSpeed } from '../api/helpers'
 import { StatCard, PageHeader } from '../components/ui'
 import InfoTip from '../components/InfoTip'
 import McpGatewayCard from './McpGatewayCard'
+import SessionMemoryCard from './SessionMemoryCard'
 import type { SystemData } from '../types'
 
 import { i18nT } from '../i18n/t'
@@ -45,6 +46,7 @@ export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
           ))}
         </div>
         <McpGatewayCard />
+        <SessionMemoryCard />
         <div className="grid grid-cols-2 gap-4 mb-6 max-[900px]:grid-cols-1">
           <div className="flex flex-col">
             <div className="card-glow border border-border border-l-[3px] border-l-accent bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">

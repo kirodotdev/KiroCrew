@@ -9250,6 +9250,36 @@
     "worldsPopout": {
       "hide_controls": "नियंत्रण छिपाएँ",
       "show_controls": "नियंत्रण दिखाएँ"
+    },
+    "sessionMemoryCard": {
+      "agent": "एजेंट",
+      "collapse_tasks": "{{name}} के कार्य छिपाएँ",
+      "collecting_samples": "नमूने एकत्र हो रहे हैं…",
+      "cpu": "CPU",
+      "expand_tasks": "{{name}} के कार्य दिखाएँ",
+      "filter_sessions": "सत्र फ़िल्टर करें…",
+      "host_headroom": "होस्ट हेडरूम (GB)",
+      "host_share": "होस्ट हिस्सा",
+      "kirocrew_used": "Kiro Crew द्वारा प्रयुक्त (GB)",
+      "largest_session": "सबसे बड़ा सत्र (GB)",
+      "mcp": "MCP",
+      "mcp_stubs": "MCP स्टब",
+      "memory": "याद",
+      "memory_load": "मेमरी लोड",
+      "no_active_sessions": "कोई सक्रिय सत्र नहीं",
+      "peak": "शिखर",
+      "physical_memory": "भौतिक मेमरी (GB)",
+      "pid": "PID",
+      "proc": "प्रक्रिया",
+      "processes": "प्रक्रियाएँ",
+      "resident_memory_of_each_session_s_whole_process": "प्रत्येक सत्र के पूरे प्रोसेस ट्री की रेज़िडेंट मेमोरी, उसके MCP सर्वर सहित। साझा पेज हर प्रोसेस में एक बार गिने जाते हैं, इसलिए प्रत्येक पंक्ति एक ऊपरी सीमा है। साझा चिह्नित पंक्ति किसी अन्य सत्र के रनटाइम के भीतर चलती है, इसलिए उसका आंकड़ा उस रनटाइम के माप का उनके बीच विभाजित हिस्सा है, अनन्य नहीं।",
+      "session_task": "सत्र / कार्य",
+      "session_task_memory": "सत्र और कार्य मेमोरी",
+      "sessions": "सत्र",
+      "shared": "साझा",
+      "tasks": "कार्य",
+      "tasks_running": "चल रहे कार्य",
+      "uptime": "अपटाइम"
     }
   },
   "privacyDisclosure": {

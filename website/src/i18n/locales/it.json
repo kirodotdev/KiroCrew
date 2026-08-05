@@ -9342,6 +9342,36 @@
     "worldsPopout": {
       "hide_controls": "Nascondi i controlli",
       "show_controls": "Mostra i controlli"
+    },
+    "sessionMemoryCard": {
+      "agent": "Agente",
+      "collapse_tasks": "Nascondi le attività di {{name}}",
+      "collecting_samples": "Raccolta campioni…",
+      "cpu": "CPU",
+      "expand_tasks": "Mostra le attività di {{name}}",
+      "filter_sessions": "Filtra sessioni…",
+      "host_headroom": "Margine host (GB)",
+      "host_share": "Quota host",
+      "kirocrew_used": "Usato da Kiro Crew (GB)",
+      "largest_session": "Sessione più grande (GB)",
+      "mcp": "MCP",
+      "mcp_stubs": "Stub MCP",
+      "memory": "Memoria",
+      "memory_load": "Carico memoria",
+      "no_active_sessions": "Nessuna sessione attiva",
+      "peak": "Picco",
+      "physical_memory": "Memoria fisica (GB)",
+      "pid": "PID",
+      "proc": "Proc",
+      "processes": "Processi",
+      "resident_memory_of_each_session_s_whole_process": "Memoria residente dell'intero albero di processi di ogni sessione, inclusi i suoi server MCP. Le pagine condivise sono contate una volta per processo, quindi ogni riga è un limite superiore. Una riga contrassegnata come condivisa gira dentro il runtime di un'altra sessione, quindi il suo valore è la misura di quel runtime divisa fra le due, non un valore esclusivo.",
+      "session_task": "Sessione / Attività",
+      "session_task_memory": "Memoria di sessioni e attività",
+      "sessions": "Sessioni",
+      "shared": "in comune",
+      "tasks": "Attività",
+      "tasks_running": "Attività in corso",
+      "uptime": "Tempo attivo"
     }
   },
   "privacyDisclosure": {

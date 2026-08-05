@@ -9434,6 +9434,36 @@
     "worldsPopout": {
       "hide_controls": "Скрыть управление",
       "show_controls": "Показать управление"
+    },
+    "sessionMemoryCard": {
+      "agent": "Агент",
+      "collapse_tasks": "Скрыть задачи {{name}}",
+      "collecting_samples": "Сбор образцов…",
+      "cpu": "CPU",
+      "expand_tasks": "Показать задачи {{name}}",
+      "filter_sessions": "Фильтр сессий…",
+      "host_headroom": "Запас хоста (ГБ)",
+      "host_share": "Доля хоста",
+      "kirocrew_used": "Использует Kiro Crew (ГБ)",
+      "largest_session": "Крупнейшая сессия (ГБ)",
+      "mcp": "MCP",
+      "mcp_stubs": "MCP-заглушки",
+      "memory": "Память",
+      "memory_load": "Нагрузка памяти",
+      "no_active_sessions": "Нет активных сессий",
+      "peak": "Пик",
+      "physical_memory": "Физическая память (ГБ)",
+      "pid": "PID",
+      "proc": "Проц",
+      "processes": "Процессы",
+      "resident_memory_of_each_session_s_whole_process": "Резидентная память всего дерева процессов каждого сеанса, включая его серверы MCP. Общие страницы учитываются по одному разу на процесс, поэтому каждая строка — верхняя граница. Строка с пометкой «общий» выполняется внутри среды выполнения другого сеанса, поэтому её значение — измерение этой среды, разделённое между ними, а не исключительная величина.",
+      "session_task": "Сеанс / Задача",
+      "session_task_memory": "Память сеансов и задач",
+      "sessions": "Сессии",
+      "shared": "общий доступ",
+      "tasks": "Задачи",
+      "tasks_running": "Активные задачи",
+      "uptime": "Время работы"
     }
   },
   "privacyDisclosure": {

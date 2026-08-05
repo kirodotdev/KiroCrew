@@ -9158,6 +9158,36 @@
     "worldsPopout": {
       "hide_controls": "隐藏控制项",
       "show_controls": "展开控制项"
+    },
+    "sessionMemoryCard": {
+      "agent": "代理",
+      "collapse_tasks": "折叠 {{name}} 的任务",
+      "collecting_samples": "正在采集样本…",
+      "cpu": "CPU",
+      "expand_tasks": "展开 {{name}} 的任务",
+      "filter_sessions": "筛选会话…",
+      "host_headroom": "主机余量（GB）",
+      "host_share": "主机占比",
+      "kirocrew_used": "Kiro Crew 占用（GB）",
+      "largest_session": "最大会话（GB）",
+      "mcp": "MCP",
+      "mcp_stubs": "MCP 存根",
+      "memory": "记忆",
+      "memory_load": "内存负载",
+      "no_active_sessions": "无活跃会话",
+      "peak": "峰值",
+      "physical_memory": "物理内存（GB）",
+      "pid": "PID",
+      "proc": "进程",
+      "processes": "进程数",
+      "resident_memory_of_each_session_s_whole_process": "每个会话整个进程树的常驻内存，含其 MCP 服务器。共享页在每个进程中各计一次，因此每行为上界。标记为共享的行运行在另一会话运行时内，其数值为该运行时测量值在两者间均摊，而非独占值。",
+      "session_task": "会话 / 任务",
+      "session_task_memory": "会话与任务内存",
+      "sessions": "会话数",
+      "shared": "共用",
+      "tasks": "任务",
+      "tasks_running": "运行中任务",
+      "uptime": "运行时长"
     }
   },
   "privacyDisclosure": {

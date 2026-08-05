@@ -1045,6 +1045,24 @@ export const api = {
   consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
   restartSessions: () => post('/api/sessions/restart').then(j),
   sessionsContext: () => fetch('/api/sessions/context').then(j),
+  sessionsMemory: () => fetch('/api/sessions/memory').then(j) as Promise<{
+    sessions: {
+      key: string; title: string; slot_key: string; untitled: boolean
+      agent: string; pid: number | null; owns_runtime: boolean; prompts: number
+      rss_mb: number | null; procs: number | null; mcp: number | null
+      cpu_cores: number | null; uptime_s: number | null
+    }[]
+    tasks: {
+      id: string; task: string; agent: string; parent: string
+      rss_mb: number; peak_rss_mb: number; cpu_cores: number
+      started_at: number; shared: boolean; pid: number | null; sampled: boolean
+    }[]
+    totals: {
+      rss_mb: number; runtimes: number; host_mb: number | null
+      host_pct: number | null; rss_is_upper_bound: boolean
+    }
+    history: { t: number; mb: number }[]
+  }>,
   sessionsUsage: () => fetch('/api/sessions/usage').then(j),
   providerUsage: () => fetch('/api/usage').then(j),
   mcpProbeCache: () => fetch('/api/mcp/probe').then(j),

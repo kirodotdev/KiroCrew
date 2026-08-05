@@ -952,6 +952,13 @@ class SubagentInfo:
     # periodically by the reaper loop and folded into the cost store at exit.
     peak_rss_gb: float = 0.0
     peak_cpu_cores: float = 0.0
+    # Most-recent sample of the same two signals. The peaks answer "how big can
+    # this agent get" (what sizing needs); a live task-manager surface needs "how
+    # big is it right now", which a high-water mark cannot express — it never
+    # comes back down. Both are written by the same sweep, so exposing the last
+    # sample costs no extra syscalls.
+    last_rss_gb: float = 0.0
+    last_cpu_cores: float = 0.0
     _cpu_jiffies_prev: int = 0  # last subtree utime+stime sample (clock ticks)
     _cpu_sample_ts: float = 0.0  # monotonic time of the last CPU sample
     # Session sharing — when True, this subagent runs as a session on the
@@ -1503,6 +1510,7 @@ class SubagentManager:
                 rss_kb = _proc_rss_kb(pid_owner)
                 if rss_kb > 0 and shared_n > 0:
                     gb = (rss_kb / (1024 * 1024)) / shared_n
+                    info.last_rss_gb = gb
                     if gb > info.peak_rss_gb:
                         info.peak_rss_gb = gb
                 jiffies = _subtree_cpu_jiffies(pid_owner)
@@ -1510,6 +1518,7 @@ class SubagentManager:
                     dt = now - info._cpu_sample_ts
                     if dt > 0:
                         cores = ((jiffies - info._cpu_jiffies_prev) / (_CLK_TCK * dt)) / shared_n
+                        info.last_cpu_cores = cores
                         if cores > info.peak_cpu_cores:
                             info.peak_cpu_cores = cores
                 info._cpu_jiffies_prev = jiffies
@@ -1519,6 +1528,7 @@ class SubagentManager:
             rss_kb = _proc_rss_kb(pid)
             if rss_kb > 0:
                 gb = rss_kb / (1024 * 1024)
+                info.last_rss_gb = gb
                 if gb > info.peak_rss_gb:
                     info.peak_rss_gb = gb
             jiffies = _subtree_cpu_jiffies(pid)
@@ -1526,6 +1536,7 @@ class SubagentManager:
                 dt = now - info._cpu_sample_ts
                 if dt > 0:
                     cores = (jiffies - info._cpu_jiffies_prev) / (_CLK_TCK * dt)
+                    info.last_cpu_cores = cores
                     if cores > info.peak_cpu_cores:
                         info.peak_cpu_cores = cores
             info._cpu_jiffies_prev = jiffies
@@ -2368,6 +2379,44 @@ class SubagentManager:
             }
             for a in self._agents.values()
             if not a.done and a.parent_session_key == parent_key
+        ]
+
+    def task_memory_rows(self) -> list[dict[str, object]]:
+        """Per-running-task memory/CPU rows for the session-memory surface.
+
+        Reads the samples the reaper sweep already takes (``_sample_live_costs``,
+        every ``_REAPER_INTERVAL`` seconds) — this method itself does no ``/proc``
+        work, so it is safe on the event loop. ``rss_mb`` is 0.0 until the first
+        sweep observes the agent, which is why ``sampled`` is reported separately:
+        a fresh task genuinely has no measurement yet, and rendering that as
+        "0 MB" would be a lie.
+
+        ``shared`` mirrors ``_session_sharing``: the value is that runtime's
+        measurement divided by the number of concurrently-live sharing sessions
+        on the same pid, i.e. an average share, not an exclusive figure.
+        """
+
+        def _r(s: str) -> str:
+            s, _ = redact_exfiltration_urls(s)
+            s, _ = redact_credentials(s)
+            return s
+
+        return [
+            {
+                "id": a.id,
+                "task": _r(a.task[:80]),
+                "agent": _r(a.agent),
+                "parent": a.parent_session_key,
+                "rss_mb": round(a.last_rss_gb * 1024, 1),
+                "peak_rss_mb": round(a.peak_rss_gb * 1024, 1),
+                "cpu_cores": round(a.last_cpu_cores, 2),
+                "started_at": a.started,
+                "shared": a._session_sharing,
+                "pid": a._pid,
+                "sampled": a.last_rss_gb > 0.0 or a.peak_rss_gb > 0.0,
+            }
+            for a in self._agents.values()
+            if not a.done and not a.queued
         ]
 
     def spawn(

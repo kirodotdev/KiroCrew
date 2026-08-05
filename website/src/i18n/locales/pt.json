@@ -9342,6 +9342,36 @@
     "worldsPopout": {
       "hide_controls": "Ocultar controles",
       "show_controls": "Mostrar controles"
+    },
+    "sessionMemoryCard": {
+      "agent": "Agente",
+      "collapse_tasks": "Ocultar tarefas de {{name}}",
+      "collecting_samples": "Coletando amostras…",
+      "cpu": "CPU",
+      "expand_tasks": "Mostrar tarefas de {{name}}",
+      "filter_sessions": "Filtrar sessões…",
+      "host_headroom": "Margem do host (GB)",
+      "host_share": "Quota do host",
+      "kirocrew_used": "Usado pelo Kiro Crew (GB)",
+      "largest_session": "Maior sessão (GB)",
+      "mcp": "MCP",
+      "mcp_stubs": "Stubs MCP",
+      "memory": "Memória",
+      "memory_load": "Carga de memória",
+      "no_active_sessions": "Nenhuma sessão ativa",
+      "peak": "Pico",
+      "physical_memory": "Memória física (GB)",
+      "pid": "PID",
+      "proc": "Proc",
+      "processes": "Processos",
+      "resident_memory_of_each_session_s_whole_process": "Memória residente de toda a árvore de processos de cada sessão, incluindo os seus servidores MCP. As páginas compartilhadas são contadas uma vez por processo, portanto cada linha é um limite superior. Uma linha marcada como compartilhada é executada dentro do runtime de outra sessão, então o seu valor é a medição desse runtime dividida entre ambas, não um valor exclusivo.",
+      "session_task": "Sessão / Tarefa",
+      "session_task_memory": "Memória de sessões e tarefas",
+      "sessions": "Sessões",
+      "shared": "em comum",
+      "tasks": "Tarefas",
+      "tasks_running": "Tarefas em execução",
+      "uptime": "Tempo ativo"
     }
   },
   "privacyDisclosure": {

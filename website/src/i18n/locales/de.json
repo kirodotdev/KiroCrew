@@ -9250,6 +9250,36 @@
     "worldsPopout": {
       "hide_controls": "Steuerung ausblenden",
       "show_controls": "Steuerung anzeigen"
+    },
+    "sessionMemoryCard": {
+      "agent": "Agent",
+      "collapse_tasks": "Aufgaben für {{name}} ausblenden",
+      "collecting_samples": "Messwerte werden gesammelt …",
+      "cpu": "CPU",
+      "expand_tasks": "Aufgaben für {{name}} einblenden",
+      "filter_sessions": "Sitzungen filtern…",
+      "host_headroom": "Freier Hostspeicher (GB)",
+      "host_share": "Host-Anteil",
+      "kirocrew_used": "Von Kiro Crew belegt (GB)",
+      "largest_session": "Größte Sitzung (GB)",
+      "mcp": "MCP",
+      "mcp_stubs": "MCP-Stubs",
+      "memory": "Erinnerung",
+      "memory_load": "Speicherlast",
+      "no_active_sessions": "Keine aktiven Sitzungen",
+      "peak": "Spitze",
+      "physical_memory": "Physischer Speicher (GB)",
+      "pid": "PID",
+      "proc": "Proz",
+      "processes": "Prozesse",
+      "resident_memory_of_each_session_s_whole_process": "Residenter Speicher des gesamten Prozessbaums jeder Sitzung, einschließlich ihrer MCP-Server. Gemeinsam genutzte Seiten werden pro Prozess einmal gezählt, daher ist jede Zeile eine Obergrenze. Eine als geteilt markierte Zeile läuft in der Runtime einer anderen Sitzung, ihr Wert ist also die Messung dieser Runtime aufgeteilt zwischen beiden und kein exklusiver Wert.",
+      "session_task": "Sitzung / Aufgabe",
+      "session_task_memory": "Sitzungs- und Aufgabenspeicher",
+      "sessions": "Sitzungen",
+      "shared": "geteilt",
+      "tasks": "Aufgaben",
+      "tasks_running": "Laufende Aufgaben",
+      "uptime": "Laufzeit"
     }
   },
   "privacyDisclosure": {

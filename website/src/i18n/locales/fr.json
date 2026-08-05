@@ -9342,6 +9342,36 @@
     "worldsPopout": {
       "hide_controls": "Masquer les commandes",
       "show_controls": "Afficher les commandes"
+    },
+    "sessionMemoryCard": {
+      "agent": "Agent",
+      "collapse_tasks": "Masquer les tâches de {{name}}",
+      "collecting_samples": "Collecte des échantillons…",
+      "cpu": "CPU",
+      "expand_tasks": "Afficher les tâches de {{name}}",
+      "filter_sessions": "Filtrer les sessions…",
+      "host_headroom": "Marge de l'hôte (Go)",
+      "host_share": "Part de l'hôte",
+      "kirocrew_used": "Utilisé par Kiro Crew (Go)",
+      "largest_session": "Session la plus grande (Go)",
+      "mcp": "MCP",
+      "mcp_stubs": "Stubs MCP",
+      "memory": "Mémoire",
+      "memory_load": "Charge mémoire",
+      "no_active_sessions": "Aucune session active",
+      "peak": "Pic",
+      "physical_memory": "Mémoire physique (Go)",
+      "pid": "PID",
+      "proc": "Proc",
+      "processes": "Processus",
+      "resident_memory_of_each_session_s_whole_process": "Mémoire résidente de tout l'arbre de processus de chaque session, y compris ses serveurs MCP. Les pages partagées sont comptées une fois par processus, donc chaque ligne est une borne supérieure. Une ligne marquée partagée s'exécute dans le runtime d'une autre session : son chiffre est la mesure de ce runtime divisée entre elles, et non une valeur exclusive.",
+      "session_task": "Session / Tâche",
+      "session_task_memory": "Mémoire des sessions et tâches",
+      "sessions": "Sessions",
+      "shared": "en commun",
+      "tasks": "Tâches",
+      "tasks_running": "Tâches en cours",
+      "uptime": "Durée"
     }
   },
   "privacyDisclosure": {

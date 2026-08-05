@@ -26,6 +26,7 @@ from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.history import INCOGNITO_MEMORY_MODES, SEARCH_MIN_CHARS, _archive_dir
@@ -55,6 +56,23 @@ async def api_sessions_context(request: web.Request) -> web.Response:
     """GET /api/sessions/context — context usage for all active sessions."""
     state: DashboardState = request.app["state"]
     return web.json_response({"sessions": state.sessions.context_info()})
+
+
+# One sampler per process: it carries the CPU jiffy baseline and the rolling load
+# window, both of which are meaningless if rebuilt per request (a fresh baseline
+# always reports CPU as unknown, and a fresh window is always empty).
+_memory_sampler = SessionMemorySampler()
+
+
+async def api_sessions_memory(request: web.Request) -> web.Response:
+    """GET /api/sessions/memory — per-session and per-task memory footprint."""
+    state: DashboardState = request.app["state"]
+    payload = await _memory_sampler.sample(
+        state.sessions,
+        getattr(state, "subagents", None),
+        get_slot=state.get_slot,
+    )
+    return web.json_response(payload)
 
 
 _health_cache: dict[str, dict] = {}

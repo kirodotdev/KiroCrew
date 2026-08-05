@@ -916,3 +916,80 @@ class TestForceReapDrainsQueue:
 
         assert m._running_count == 2  # slot freed
         m._drain_queue.assert_called_once()  # queue pumped
+
+
+class TestLastSampleAndMemoryRows:
+    """The task-manager surface needs the CURRENT sample, which a high-water mark
+    cannot express: a peak never comes back down, so a task that grew and then
+    released memory would read as still holding it."""
+
+    def _agent(self, **kw):
+        from kiro_crew.subagent import SubagentInfo
+
+        info = SubagentInfo(id=kw.pop("id", "a1"), task=kw.pop("task", "t"), agent="kirocrew")
+        info._pid = 4242
+        for k, v in kw.items():
+            setattr(info, k, v)
+        return info
+
+    def test_last_rss_follows_down_while_peak_holds(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent()
+        m._agents = {"a1": info}
+        monkeypatch.setattr(sub, "_subtree_cpu_jiffies", lambda pid: 0)
+        rss_seq = iter([2 * 1024 * 1024, 1 * 1024 * 1024])
+        monkeypatch.setattr(sub, "_proc_rss_kb", lambda pid: next(rss_seq))
+        m._sample_live_costs()
+        m._sample_live_costs()
+
+        assert info.peak_rss_gb == pytest.approx(2.0, abs=0.01)
+        assert info.last_rss_gb == pytest.approx(1.0, abs=0.01)
+
+    def test_shared_agents_report_a_divided_last_sample(self, monkeypatch) -> None:
+        """Sharing agents all report the SAME runtime pid, so the per-agent figure
+        is the runtime's measurement split between them."""
+        import kiro_crew.subagent as sub
+
+        m = _mgr(running=2, max_concurrent=16, last_ts=0.0)
+        a = self._agent(id="a1", _session_sharing=True)
+        b = self._agent(id="a2", _session_sharing=True)
+        m._agents = {"a1": a, "a2": b}
+        monkeypatch.setattr(sub, "_subtree_cpu_jiffies", lambda pid: 0)
+        monkeypatch.setattr(sub, "_proc_rss_kb", lambda pid: 2 * 1024 * 1024)
+        m._sample_live_costs()
+
+        assert a.last_rss_gb == pytest.approx(1.0, abs=0.01)
+
+    def test_memory_rows_expose_the_samples_in_mb(self) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        info = self._agent(last_rss_gb=1.5, peak_rss_gb=2.0, last_cpu_cores=0.25)
+        info.parent_session_key = "dashboard:a"
+        m._agents = {"a1": info}
+
+        (row,) = m.task_memory_rows()
+        assert row["rss_mb"] == pytest.approx(1536.0)
+        assert row["peak_rss_mb"] == pytest.approx(2048.0)
+        assert row["cpu_cores"] == pytest.approx(0.25)
+        assert row["parent"] == "dashboard:a"
+        assert row["sampled"] is True
+
+    def test_never_sampled_task_is_marked_unsampled(self) -> None:
+        """0 MB and "not measured yet" are different claims; the reaper may not
+        have swept a fresh task, and rendering that as 0 would be a lie."""
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        m._agents = {"a1": self._agent()}
+
+        (row,) = m.task_memory_rows()
+        assert row["sampled"] is False
+
+    def test_done_and_queued_agents_are_excluded(self) -> None:
+        m = _mgr(running=1, max_concurrent=16, last_ts=0.0)
+        m._agents = {
+            "a1": self._agent(id="a1", done=True),
+            "a2": self._agent(id="a2", queued=True),
+            "a3": self._agent(id="a3", last_rss_gb=0.5),
+        }
+
+        assert [r["id"] for r in m.task_memory_rows()] == ["a3"]

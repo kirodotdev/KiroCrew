@@ -308,6 +308,13 @@ _STATELESS_PREFIXES = (
 # taskkeeper) to load the same MCP servers.
 BACKGROUND_KEY = "_bg"
 
+# Kiro agent the background session runs as. Named once because it is needed in
+# TWO places — the provider factory call AND the ``_Session`` record — and when
+# only the factory got it, ``_Session.agent`` stayed at its "" default, so every
+# consumer reading ``sess.agent`` (e.g. ``runtime_pids``) saw the background
+# session as agent-less.
+BACKGROUND_AGENT = "kirocrew-lite"
+
 # Heartbeat session key — used by HeartbeatService.  Spawned with the full
 # ``kirocrew`` agent so polled tasks can call read-only MCP tools (CR/ticket
 # status, etc.).  Tool approval at runtime is gated by the
@@ -503,6 +510,10 @@ StopOutcome = Literal["soft", "hard", "idle"]
 class _Session:
     provider: LLMProvider
     last_used: float = field(default_factory=time.monotonic)
+    # Wall-clock spawn time, for the uptime column on the session-memory surface.
+    # ``last_used`` is monotonic (correct for idle math, but it has no epoch), so
+    # it cannot answer "how long has this session been alive".
+    created_at: float = field(default_factory=time.time)
     is_new: bool = True
     prompt_count: int = 0
     consecutive_failures: int = 0
@@ -907,7 +918,7 @@ class SessionManager:
         if not self._provider_factory:
             return
         try:
-            provider = self._provider_factory(BACKGROUND_KEY, agent="kirocrew-lite")
+            provider = self._provider_factory(BACKGROUND_KEY, agent=BACKGROUND_AGENT)
             async with self._start_sem:
                 await provider.start()
         except Exception:
@@ -915,7 +926,9 @@ class SessionManager:
             return
         async with self._lock:
             if BACKGROUND_KEY not in self._sessions:
-                sess = _Session(provider=provider, is_new=False)
+                sess = _Session(
+                    provider=provider, is_new=False, agent=BACKGROUND_AGENT
+                )
                 self._sessions[BACKGROUND_KEY] = sess
                 logger.info("Background session created")
             else:
@@ -1818,6 +1831,100 @@ class SessionManager:
             self._schedule_replenish()
         else:
             logger.debug("Pool health: all %d providers healthy", len(healthy))
+
+    def runtime_pids(self) -> list[dict[str, object]]:
+        """Per-session runtime identity: the pid tree root to sample, and whether
+        this session OWNS that runtime.
+
+        Deliberately does no ``/proc`` work — this returns pure metadata so the
+        caller can offload the (syscall-heavy) sampling off the event loop. The pid
+        is the sandbox launcher parent, NOT the kiro-cli that accumulates the RSS;
+        callers must sum the descendant tree (see
+        ``acp.runtime._get_rss_tree_mb``).
+
+        ``owns_runtime`` is False for a multiplexed co-tenant (the shared ``_bg``
+        runtime, and session-sharing subagents): several sessions then report the
+        SAME pid, so a per-pid measurement is that runtime's total, not this
+        session's share. Consumers must label it rather than present it as
+        exclusive.
+        """
+        rows: list[dict[str, object]] = []
+        for key, sess in self._sessions.items():
+            # Two provider shapes hold the runtime at different depths:
+            # AcpProvider delegates to an AcpClient (``_client._runtime``), while
+            # AcpSessionProvider — the unified/task-runner path, session.py:1331 —
+            # stores ``_runtime`` on itself. Falling back to the provider keeps
+            # the latter from silently reporting an unknown pid and no memory.
+            client = getattr(sess.provider, "_client", None)
+            if client is None:
+                client = sess.provider
+            runtime = getattr(client, "_runtime", None)
+            pid = getattr(runtime, "pid", None)
+            rows.append(
+                {
+                    "key": key,
+                    "agent": sess.agent,
+                    "pid": pid if isinstance(pid, int) and pid > 0 else None,
+                    # Absent attribute means a non-ACP provider with no shared
+                    # runtime — exclusive by construction, so default True.
+                    "owns_runtime": bool(getattr(client, "_owns_runtime", True)),
+                    "created_at": sess.created_at,
+                    "prompts": sess.prompt_count,
+                }
+            )
+        self._append_companion_runtime_rows(rows)
+        return rows
+
+    def _append_companion_runtime_rows(self, rows: list[dict[str, object]]) -> None:
+        """Add rows for live runtimes held ONLY as manager attributes.
+
+        ``self._bg_runtime`` (backing ``get_bg_session`` on a kiro backend) and
+        ``self._subagent_runtimes`` (companion runtimes multiplexing a parent
+        session's subagents) are real process trees — real enough that
+        :meth:`_companion_runtime_pids` must shield them from the orphan sweep
+        with ``register_protected_pid`` — but they are NOT ``_sessions`` entries.
+        Iterating ``_sessions`` alone therefore omitted a whole runtime each from
+        the displayed host total, understating it by the 200-400 MB a runtime
+        costs and hiding the process the user would actually want to know about.
+
+        ``owns_runtime`` is True because the row *is* the runtime: no session
+        co-tenant claims its pid, so there is nothing to divide it between.
+        """
+        now_wall = time.time()
+        now_mono = time.monotonic()
+
+        def add(label: str, runtime: object, agent: str) -> None:
+            try:
+                if runtime is None or not runtime.is_alive():  # type: ignore[attr-defined]
+                    return
+                pid = getattr(runtime, "pid", None)
+                if not isinstance(pid, int) or pid <= 0:
+                    return
+                # A runtime records only ``_spawn_monotonic``; monotonic time
+                # cannot be displayed as an age directly, so project it back
+                # onto the wall clock the consumer subtracts from.
+                spawn = getattr(runtime, "_spawn_monotonic", None)
+                created = (
+                    now_wall - (now_mono - spawn)
+                    if isinstance(spawn, (int, float))
+                    else None
+                )
+                rows.append(
+                    {
+                        "key": label,
+                        "agent": agent,
+                        "pid": pid,
+                        "owns_runtime": True,
+                        "created_at": created,
+                        "prompts": None,
+                    }
+                )
+            except Exception:
+                logger.debug("runtime_pids: probe failed for %s", label, exc_info=True)
+
+        add("Background runtime", self._bg_runtime, BACKGROUND_AGENT)
+        for parent_key, companion in list(self._subagent_runtimes.items()):
+            add(f"Subagent runtime ({parent_key})", companion, "")
 
     def context_info(self) -> list[dict[str, object]]:
         """Return context usage for all active sessions."""
