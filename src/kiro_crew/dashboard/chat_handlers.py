@@ -20,6 +20,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import model_registry
+from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _workspace_name_for_dir,
@@ -1994,6 +1995,12 @@ async def _try_live_model_switch(
         return False
     try:
         await provider.client.set_model(wire)
+    except AcpModelUnavailable:
+        # NOT a "the call didn't land" failure, so the reset fallback below is
+        # the wrong recovery: it would tear down the live conversation and then
+        # cold-start on a DIFFERENT model while the caller reported success.
+        # Propagate so the handler answers 4xx and the slot keeps its old model.
+        raise
     except Exception as exc:
         logger.warning(
             "Live set_model(%s) failed for slot %s: %s: %s — falling back to reset",
@@ -2056,10 +2063,25 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         return web.json_response({"error": reason}, status=400)
     if slot.model == model_name:
         return web.json_response({"ok": True, "model": model_name})
-    slot.model = model_name
     session_key = _history_key_for(name)
     provider = state.sessions.get_provider(session_key)
-    if await _try_live_model_switch(name, slot, provider, model_name):
+    prior_model = slot.model
+    slot.model = model_name
+    try:
+        went_live = await _try_live_model_switch(name, slot, provider, model_name)
+    except AcpModelUnavailable as exc:
+        # The live session refused the pick as unavailable to this account. Roll
+        # the slot back so the picker keeps showing what is actually running, and
+        # answer 4xx — deliberately NOT the reset fallback below, which would
+        # destroy the conversation and cold-start on a different model while
+        # reporting success. Only the session that owns the advertised list gets
+        # to make this call, so there is no pre-emptive gate here to go stale.
+        slot.model = prior_model
+        logger.warning("Slot %s model rejected: %s", name, exc)
+        return web.json_response(
+            {"error": str(exc), "code": "model_unavailable"}, status=400
+        )
+    if went_live:
         _broadcast_context_reset(state, slot.key, provider)
     else:
         logger.info("Slot %s model switched to %r, resetting session", name, model_name or "auto")

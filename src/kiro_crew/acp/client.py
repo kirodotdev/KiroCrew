@@ -684,6 +684,32 @@ class AcpAuthRequired(AcpError):  # noqa: N818
     """
 
 
+class AcpModelUnavailable(AcpError):  # noqa: N818
+    """An explicitly requested model is not available to this account.
+
+    A DISTINCT type because the semantics differ from every other ``set_model``
+    failure. The generic ones ("the call didn't land") are legitimately handled
+    by tearing the session down and cold-starting. This one means "the request
+    itself is invalid, and no amount of restarting changes that" — falling back
+    to a reset would destroy a live conversation and then quietly land on a
+    different model, reporting success. Callers must surface it (4xx / user
+    error), not recover from it.
+
+    Non-retryable: ``transient`` is fixed False, since no retry earns an
+    entitlement.
+    """
+
+    def __init__(self, model_id: str, advertised: Sequence[str] | None = None) -> None:
+        self.model_id = model_id
+        self.advertised = list(advertised or [])
+        usable = ", ".join(self.advertised) if self.advertised else "none advertised"
+        super().__init__(
+            f"The model {model_id!r} is not available on your account. "
+            f"Available models: {usable}.",
+            transient=False,
+        )
+
+
 class AcpPromptBusy(AcpError):  # noqa: N818
     """A prompt is already in progress on this session.
 
@@ -821,6 +847,59 @@ def _is_transient_raw_error(
         or _RE_5XX_HINT.search(haystack)
         or _RE_GENERATE_FAILED.search(data)
     )
+
+
+def advertised_model_ids(entries: object) -> list[str]:
+    """Model ids out of an ``availableModels``-shaped list, defensively.
+
+    The advertised list is remote input reshaped by several backends, so this
+    tolerates anything that is not a list of ``{"modelId": ...}`` dicts and
+    returns what it can. Shared by the three call sites that pre-flight a model
+    so none of them re-derives the shape — and so a surprising payload degrades
+    to "entitlement unknown" (empty list -> :func:`model_is_unusable` allows the
+    send) instead of raising inside session startup.
+    """
+    if not isinstance(entries, (list, tuple)):
+        return []
+    ids: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("modelId") or entry.get("value") or ""
+        if isinstance(model_id, str) and model_id.strip():
+            ids.append(model_id)
+    return ids
+
+
+def model_is_unusable(model_id: str, advertised: Sequence[str] | None) -> bool:
+    """True when *advertised* is known and excludes *model_id*.
+
+    The counterpart to :func:`_model_is_unentitled`, moved BEFORE the wire: that
+    one explains a rejection after the fact, this one declines to send a model
+    the backend already told us the account cannot run. Deliberately ONE shared
+    predicate rather than a copy per call site — the same reason #1550 made the
+    formatter and the retry classifier share a discriminator: two spellings of
+    "can this account use it" would eventually disagree.
+
+    Returns False — allow the send — whenever entitlement is unknowable: an
+    empty/None advertised set (no session yet, or a backend that omits
+    ``models``) must not be read as "nothing is allowed", which would withhold
+    every model on a backend that simply does not advertise.
+
+    Only meaningful where the advertised ids share a namespace with *model_id*,
+    and callers gate on that. kiro-cli's advertised ids are exactly the ids
+    ``session/set_model`` accepts, so an id absent from the list is genuinely
+    unusable. The claude backend advertises BARE ids (``claude-opus-4-8[1m]``)
+    while the configured model is the prefixed provider id
+    (``global.anthropic.claude-opus-4-8[1m]``), so comparing those two
+    namespaces would call every legitimate model unusable; that backend
+    announces its own substitutions through the ``session/new`` advisory
+    instead (see ``_new_session_following_substitution``).
+    """
+    if not advertised:
+        return False
+    wanted = model_id.strip().lower()
+    return wanted not in {m.strip().lower() for m in advertised if m and m.strip()}
 
 
 def _format_acp_error(error: object, available_models: Sequence[str] | None = None) -> str:
@@ -1593,6 +1672,23 @@ class AcpClient:
         """Switch model on a running session (used by warm pool post-claim)."""
         if not self._session_id:
             raise AcpError("Cannot set model before session is initialized")
+        # Unlike the spawn path, this is an explicit request for THIS model, so
+        # a silent downgrade would report success while running something else.
+        # Refuse before the wire and name what the account can use.
+        # AcpModelUnavailable (not a bare AcpError) so callers can tell "invalid
+        # request" from "the call didn't land": the generic failure is recovered
+        # by resetting the session, which for THIS case would destroy a live
+        # conversation and then land on a different model anyway.
+        #
+        # Callers passing an INHERITED value (warm-pool post-claim re-apply of a
+        # persisted slot model) must pre-check with model_is_unusable and skip
+        # instead of calling into here — otherwise the same stale setting that is
+        # quietly withheld on a cold start would raise and kill a warm claim,
+        # making the outcome depend on whether a pooled process happened to exist.
+        if not self._is_claude and self._model_is_unusable(model_id):
+            _rejected_log, _ = redact_exfiltration_urls(str(model_id))
+            _rejected_log, _ = redact_credentials(_rejected_log)
+            raise AcpModelUnavailable(_rejected_log, self._advertised_model_ids())
         if self._is_claude:
             await self.set_config_option("model", model_id)
         else:
@@ -1669,6 +1765,65 @@ class AcpClient:
             if isinstance(model_id, str) and model_id.strip():
                 ids.append(model_id)
         return ids
+
+    def _model_is_unusable(self, model_id: str) -> bool:
+        """Whether this session's advertised set excludes *model_id*.
+
+        Thin bind of :func:`model_is_unusable` to the set captured at
+        ``session/new`` / ``session/load``, so this client and the
+        ``providers.acp`` live path share one definition of entitlement.
+        """
+        return model_is_unusable(model_id, self._advertised_model_ids())
+
+    async def _apply_startup_model(self) -> None:
+        """Apply the configured model to a freshly initialized session.
+
+        Split out of ``_init_session`` step 5 so the withhold decision is
+        reachable without standing up a whole session.
+
+        The model here was NOT chosen for this turn: it arrives from the agent
+        spec, the config default, or a slot value persisted before the account's
+        entitlements were known. So when the backend has already told us the
+        account cannot run it, withholding beats failing — the user did not pick
+        this model and cannot be expected to know why every turn dies. The
+        session simply stays on the backend's own default, which ``session/new``
+        already applied and reported as ``currentModelId``.
+
+        Note this fixes the WIRE, not the stored setting: the persisted config /
+        slot value is untouched, so a picker reading it still shows the model
+        that was withheld. Healing the stored value is a separate change.
+
+        An EXPLICIT switch is handled the opposite way in :meth:`set_model`:
+        there the user asked for that exact model, and quietly running another
+        one would be a lie.
+        """
+        if not self._model or self._model == DEFAULT_MODEL:
+            logger.info("ACP model: %s (from agent config)", self._model or "auto")
+            return
+        if not self._is_claude and self._model_is_unusable(self._model):
+            _withheld_log, _ = redact_exfiltration_urls(str(self._model))
+            _withheld_log, _ = redact_credentials(_withheld_log)
+            logger.warning(
+                "ACP model %s is not available to this account; staying on the "
+                "backend default %s (advertised: %s)",
+                _withheld_log,
+                self._resolved_model_id or DEFAULT_MODEL,
+                ", ".join(self._advertised_model_ids()),
+            )
+            # Record the session as running the default rather than the value we
+            # declined: the "!= DEFAULT_MODEL" test above is also what the
+            # warm-pool re-apply path reads (session_provider), so leaving the
+            # unusable id here would re-offer it on every claim.
+            self._model = DEFAULT_MODEL
+            return
+        if self._is_claude:
+            await self.set_config_option("model", self._model)
+        else:
+            await self._send_request(
+                METHOD_SET_MODEL,
+                {"sessionId": self._session_id, "modelId": self._model},
+            )
+        logger.info("ACP model: %s", self._model)
 
     async def set_config_option(self, config_id: str, value: str) -> None:
         """Set a session config option (e.g. effort level) via session/set_config_option."""
@@ -2406,17 +2561,7 @@ class AcpClient:
             logger.info("ACP agent activated: %s", self._agent)
 
         # 5. Set model — override if KiroCrew config specifies non-default.
-        if self._model and self._model != DEFAULT_MODEL:
-            if self._is_claude:
-                await self.set_config_option("model", self._model)
-            else:
-                await self._send_request(
-                    METHOD_SET_MODEL,
-                    {"sessionId": self._session_id, "modelId": self._model},
-                )
-            logger.info("ACP model: %s", self._model)
-        else:
-            logger.info("ACP model: %s (from agent config)", self._model or "auto")
+        await self._apply_startup_model()
 
         # Drain MCP server init notifications
         await self._drain_notifications()

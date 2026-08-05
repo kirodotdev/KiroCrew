@@ -92,6 +92,7 @@ if TYPE_CHECKING:
     from kiro_crew.acp.types import AcpEvent
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
+from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     POOL_SIZE_MAX,
@@ -2266,8 +2267,30 @@ class SessionManager:
                                 model_registry.to_acp_id(_pool_model) if _pool_model else _pool_model
                             )
                         if _pool_model and _switch_model != _cmp_pool:
-                            await provider.client.set_model(_switch_model)
-                            logger.info("Pool post-claim: switched model to %s", _switch_model)
+                            # This is an INHERITED value (the slot's persisted
+                            # model), not a pick made for this turn, so it gets
+                            # the same withhold treatment as a cold start. Left
+                            # to raise, AcpModelUnavailable would land in the
+                            # except below and kill the claimed provider — the
+                            # identical stale setting would then fail or not
+                            # purely on whether a pooled process happened to
+                            # exist, which is the worst kind of intermittent.
+                            try:
+                                _advertised = advertised_model_ids(provider.available_models())
+                            except Exception:  # pragma: no cover - defensive
+                                _advertised = []
+                            if _advertised and model_is_unusable(_switch_model, _advertised):
+                                logger.warning(
+                                    "Pool post-claim: model %s is not available to this "
+                                    "account; leaving the claimed process on %s",
+                                    _switch_model,
+                                    _pool_model,
+                                )
+                            else:
+                                await provider.client.set_model(_switch_model)
+                                logger.info(
+                                    "Pool post-claim: switched model to %s", _switch_model
+                                )
                 logger.info(
                     "Claimed warm-pool process for %s (agent=%s)", key, agent or self._pool_agent
                 )
