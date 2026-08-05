@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -6623,6 +6624,22 @@ class TestFolderCRUD:
             )
             assert bad.status == 400
             assert (await bad.json())["code"] == "color_invalid"
+
+    def test_folder_color_palette_matches_frontend_catalog(self):
+        """The backend allowlist and the frontend catalog must offer the same
+        hues: the modal renders FOLDER_COLOR_PALETTE (folderColorCatalog.tsx)
+        while create/PATCH validate against _FOLDER_COLOR_PALETTE, so drift
+        means the UI offers a swatch the backend rejects with a 400."""
+        from pathlib import Path
+
+        from kiro_crew.dashboard.chat_folders import _FOLDER_COLOR_PALETTE
+
+        catalog = (
+            Path(__file__).resolve().parent.parent
+            / "website" / "src" / "components" / "folderColorCatalog.tsx"
+        )
+        frontend = set(re.findall(r"#[0-9a-f]{6}", catalog.read_text(encoding="utf-8")))
+        assert frontend == set(_FOLDER_COLOR_PALETTE)
 
     @pytest.mark.asyncio
     async def test_patch_color_set_and_clear(self, tmp_path, monkeypatch):

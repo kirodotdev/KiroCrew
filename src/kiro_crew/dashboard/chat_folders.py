@@ -73,9 +73,10 @@ _FOLDER_ICON_MODEL = "claude-haiku-4.5"
 
 
 # Folder color palette — the identity mark a user picks for a folder in the
-# config modal. Mirrors the Artifacts page's FOLDER_COLORS so the two folder
-# systems speak one visual language. KEEP IN SYNC with FOLDER_COLOR_PALETTE in
-# website/src/components/folderIconCatalog.tsx.
+# config modal. The frontend source of truth is FOLDER_COLOR_PALETTE in
+# website/src/components/folderColorCatalog.tsx (shared by the chat-folder
+# modal and the Artifacts page's folder swatches); this allowlist must match
+# it, and test_folder_color_palette_matches_frontend_catalog pins the two.
 _FOLDER_COLOR_PALETTE = frozenset(
     {
         "#ef4444", "#f97316", "#f59e0b", "#84cc16", "#22c55e", "#14b8a6",

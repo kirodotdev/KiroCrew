@@ -758,8 +758,10 @@ describe('ChatSidebar Folder Reorder', () => {
       expect(screen.getByText('Beta')).toBeInTheDocument()
       expect(screen.getByText('Gamma')).toBeInTheDocument()
     })
-    // Verify order: Alpha before Beta before Gamma
-    const folderNames = screen.getAllByText(/Alpha|Beta|Gamma/).map(el => el.textContent)
+    // Verify order: Alpha before Beta before Gamma. Anchored full-string
+    // match: the empty-folder rows render "New chat in <name>", which an
+    // unanchored /Alpha|Beta|Gamma/ would also collect.
+    const folderNames = screen.getAllByText(/^(Alpha|Beta|Gamma)$/).map(el => el.textContent)
     expect(folderNames).toEqual(['Alpha', 'Beta', 'Gamma'])
   })
 

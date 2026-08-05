@@ -31,6 +31,7 @@ import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import type { Artifact, ArtifactFolder, PublishProviderDescriptor, RemoteArtifact, SessionDoc } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { FOLDER_COLOR_PALETTE } from '../components/folderColorCatalog'
 /** Read the current computed theme CSS vars (capped to the known set, each
  * value sanitized) so a sandboxed preview iframe matches the dashboard theme.
  * Mirrors the helper in ArtifactDetailPage. */
@@ -401,19 +402,21 @@ type FolderActions = {
 }
 
 /** Curated folder color palette (works on light + dark themes). '' = none. */
-const FOLDER_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899', '#94a3b8'] as const
-
-/** Swatch strip for picking a folder color ('' clears back to default). */
+/** Swatch strip for picking a folder color ('' clears back to default).
+ *  The palette is the shared folder catalog (folderColorCatalog.tsx), so
+ *  artifact folders and chat folders offer the same hues and the aria labels
+ *  reuse the localized color names. */
 function FolderColorSwatches({ value, onPick, size = 16 }: { value?: string; onPick: (color: string) => void; size?: number }) {
   return (
     <div className="flex items-center gap-1.5 flex-wrap" role="radiogroup" aria-label={i18nT('pages.artifactsPage.folder_color')}>
-      {FOLDER_COLORS.map((c) => (
+      {FOLDER_COLOR_PALETTE.map(({ value: c, label }) => (
         <button
           key={c}
           type="button"
           role="radio"
           aria-checked={value === c}
-          aria-label={`Color ${c}`}
+          aria-label={label()}
+          title={label()}
           onClick={(e) => { e.stopPropagation(); onPick(c) }}
           onPointerDown={(e) => e.stopPropagation()}
           className={`rounded-full border cursor-pointer transition-transform hover:scale-110 ${
