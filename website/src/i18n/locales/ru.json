@@ -5228,6 +5228,18 @@
       "download_zip": "Скачать zip",
       "open_github_issue": "Открыть issue на GitHub",
       "prefill_hint": "При открытии issue детали подставятся автоматически — затем перетащите туда zip."
+    },
+    "gitPanel": {
+      "changes": "Изменения",
+      "clean": "чисто",
+      "commits": "Коммиты",
+      "empty_state": "Нет изменений или коммитов для отображения.",
+      "just_now": "только что",
+      "loading": "загрузка...",
+      "no_project": "Для этого сеанса не задана папка проекта.",
+      "refresh": "Обновить",
+      "title": "Git",
+      "uncommitted": "{{count}} незакоммичено"
     }
   },
   "hooks": {
@@ -5333,7 +5345,8 @@
       "logs": "Логи",
       "side": "Параллельный чат",
       "subagents": "Субагенты",
-      "workflows": "Рабочие процессы"
+      "workflows": "Рабочие процессы",
+      "git": "Git"
     }
   },
   "nav": {
@@ -6370,7 +6383,9 @@
         "menu_workflows": "Рабочие процессы",
         "menu_workflows_desc": "Запуски, этапы и перезапускаемые шаги",
         "menu_context": "Состав контекста",
-        "menu_context_desc": "Что внедрили ходы этого сеанса"
+        "menu_context_desc": "Что внедрили ходы этого сеанса",
+        "menu_git": "Git",
+        "menu_git_desc": "Ветка, изменения и последние коммиты"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Не удалось остановить, сессия сброшена",

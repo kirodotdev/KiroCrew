@@ -5108,6 +5108,18 @@
       "download_zip": "zip ডাউনলোড করুন",
       "open_github_issue": "GitHub-এ issue খুলুন",
       "prefill_hint": "issue খুললে বিবরণ আগেই বসে যায় — এরপর zip টেনে সেখানে দিন।"
+    },
+    "gitPanel": {
+      "changes": "পরিবর্তন",
+      "clean": "পরিষ্কার",
+      "commits": "কমিট",
+      "empty_state": "দেখানোর মতো কোনো পরিবর্তন বা কমিট নেই।",
+      "just_now": "এইমাত্র",
+      "loading": "লোড হচ্ছে...",
+      "no_project": "এই সেশনের জন্য কোনো প্রজেক্ট ফোল্ডার সেট করা নেই।",
+      "refresh": "রিফ্রেশ",
+      "title": "Git",
+      "uncommitted": "{{count}}টি আনকমিটেড"
     }
   },
   "hooks": {
@@ -5213,7 +5225,8 @@
       "logs": "লগ",
       "side": "সাইড",
       "subagents": "সাবএজেন্ট",
-      "workflows": "ওয়ার্কফ্লো"
+      "workflows": "ওয়ার্কফ্লো",
+      "git": "Git"
     }
   },
   "nav": {
@@ -6222,7 +6235,9 @@
         "menu_workflows": "ওয়ার্কফ্লো",
         "menu_workflows_desc": "রান, ফেজ ও আবার চালানো যায় এমন ধাপ",
         "menu_context": "কনটেক্সট বিশ্লেষণ",
-        "menu_context_desc": "এই সেশনের টার্নগুলি কী ইনজেক্ট করেছে"
+        "menu_context_desc": "এই সেশনের টার্নগুলি কী ইনজেক্ট করেছে",
+        "menu_git": "Git",
+        "menu_git_desc": "ব্রাঞ্চ, পরিবর্তন এবং সাম্প্রতিক কমিট"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "থামানো ব্যর্থ, সেশন রিসেট হয়েছে",

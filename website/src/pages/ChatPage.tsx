@@ -3722,6 +3722,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const projectBranch = projectGitError
     ? ''
     : projectGit?.branch || (projectGit?.detached ? projectGit.head || '' : '')
+
+  // Auto-open the Git panel when the slot has a project dir that is a git repo.
+  // Once per slot+path (dismissed via localStorage marker if the user closes it).
+  useEffect(() => {
+    if (!activeSlot || !_slotProject || projectGitError) return
+    if (!projectGit?.repo) return
+    const key = `mc-git-panel-opened:${activeSlot}:${_slotProject}`
+    if (localStorage.getItem(key)) return
+    try { localStorage.setItem(key, '1') } catch { /* quota */ }
+    tabsCtl.openView('git')
+    dispatch(openActivityPanel())
+  }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch])
+
+  // Auto-open the folder tab for the project dir once per slot+path.
+  useEffect(() => {
+    if (!activeSlot || !_slotProject) return
+    const key = `mc-folder-panel-opened:${activeSlot}:${_slotProject}`
+    if (localStorage.getItem(key)) return
+    try { localStorage.setItem(key, '1') } catch { /* quota */ }
+    tabsCtl.openFolder(_slotProject, activeSlot)
+  }, [activeSlot, _slotProject, tabsCtl])
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
   const isMobile = useIsMobile()
   const [sidebarWidth, setSidebarWidth] = useState(() => {

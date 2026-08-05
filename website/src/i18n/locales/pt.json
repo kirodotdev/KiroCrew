@@ -5168,6 +5168,18 @@
       "download_zip": "Baixar zip",
       "open_github_issue": "Abrir issue no GitHub",
       "prefill_hint": "Ao abrir a issue os detalhes são preenchidos automaticamente — depois arraste o zip para lá."
+    },
+    "gitPanel": {
+      "changes": "Alterações",
+      "clean": "limpo",
+      "commits": "Commits",
+      "empty_state": "Nenhuma alteração ou commit para exibir.",
+      "just_now": "agora mesmo",
+      "loading": "carregando...",
+      "no_project": "Nenhuma pasta de projeto definida para esta sessão.",
+      "refresh": "Atualizar",
+      "title": "Git",
+      "uncommitted": "{{count}} sem commit"
     }
   },
   "hooks": {
@@ -5273,7 +5285,8 @@
       "logs": "Logs",
       "side": "Lateral",
       "subagents": "Subagentes",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "git": "Git"
     }
   },
   "nav": {
@@ -6296,7 +6309,9 @@
         "menu_workflows": "Workflows",
         "menu_workflows_desc": "Execuções, fases e etapas reiniciáveis",
         "menu_context": "Detalhamento do contexto",
-        "menu_context_desc": "O que os turnos desta sessão injetaram"
+        "menu_context_desc": "O que os turnos desta sessão injetaram",
+        "menu_git": "Git",
+        "menu_git_desc": "Branch, alterações e commits recentes"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Falha ao parar, sessão redefinida",

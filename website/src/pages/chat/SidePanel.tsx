@@ -3,7 +3,7 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, Layers } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, Layers } from 'lucide-react'
 import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
@@ -34,7 +34,7 @@ const KIND_ICON: Record<TabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, context: <Layers size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Component size={16} />, folder: <Folder size={16} />,
-  app: <PanelRight size={16} />,
+  app: <PanelRight size={16} />, git: <GitBranch size={16} />,
 }
 
 /**
@@ -65,6 +65,7 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
   side: 'pages.chat.sidePanel.menu_side',
   browser: 'pages.chat.sidePanel.menu_browser',
   terminal: 'pages.chat.sidePanel.menu_terminal',
+  git: 'pages.chat.sidePanel.menu_git',
 }
 
 export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
@@ -79,6 +80,7 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
   side: 'pages.chat.sidePanel.menu_side_desc',
   browser: 'pages.chat.sidePanel.menu_browser_desc',
   terminal: 'pages.chat.sidePanel.menu_terminal_desc',
+  git: 'pages.chat.sidePanel.menu_git_desc',
 }
 
 /** Views offered by the + menu. `kind` is the PERSISTED tab id (`usePanelTabs`),
@@ -95,9 +97,10 @@ const NEW_MENU: { kind: ViewKind | 'terminal'; icon: ReactNode }[] = [
   { kind: 'side', icon: <MessageSquare size={15} /> },
   { kind: 'browser', icon: <Globe size={15} /> },
   { kind: 'terminal', icon: <TerminalSquare size={15} /> },
+  { kind: 'git', icon: <GitBranch size={15} /> },
 ]
 
-const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side'])
+const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side', 'git'])
 
 /** Which `+`-menu entries are offered, given the two gates that hide entries:
  *  Terminal is hidden when the feature is disabled server-side, and Context
@@ -559,7 +562,7 @@ export default function SidePanel({
             return (
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer
-                  view={t.kind as 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side'}
+                  view={t.kind as 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'git'}
                   open onToggle={onClose} slot={slot}
                   subagents={subagents} toolLog={toolLog}
                   files={files}

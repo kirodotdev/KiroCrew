@@ -2723,6 +2723,18 @@
     "agentDropdownList": {
       "no_matches": "No matches"
     },
+    "gitPanel": {
+      "changes": "Changes",
+      "clean": "clean",
+      "commits": "Commits",
+      "empty_state": "No changes or commits to display.",
+      "just_now": "just now",
+      "loading": "loading...",
+      "refresh": "Refresh",
+      "title": "Git",
+      "uncommitted": "{{count}} uncommitted",
+      "no_project": "No project folder set for this session."
+    },
     "agentImportFlow": {
       "back": "Back",
       "bring_your_crew_with_you": "Bring your crew with you.",
@@ -3965,6 +3977,9 @@
     }
   },
   "hooks": {
+    "usePanelTabs": {
+      "git": "Git"
+    },
     "useSceneInteraction": {
       "approve": "Approve",
       "click_for_thread": "click for thread",
@@ -4648,6 +4663,8 @@
       "sidePanel": {
         "close_panel": "Close panel",
         "close_tab": "Close tab",
+        "menu_git": "Git",
+        "menu_git_desc": "Branch, changes, and recent commits",
         "move_to_bottom_panel": "Move to bottom panel",
         "open_in_editor": "Open in Editor",
         "open_side_panel_tab": "Open side panel tab",
