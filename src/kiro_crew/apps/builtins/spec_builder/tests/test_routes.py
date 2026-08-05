@@ -56,10 +56,10 @@ def _redirect_state(monkeypatch, tmp_path):
     return state_dir
 
 
-def _live_state_snapshot() -> dict[str, int]:
+def _live_state_snapshot(state_dir: Path) -> dict[str, int]:
     """Names + mtimes of the USER's real state dir, or {} when there is none."""
     try:
-        return {p.name: p.stat().st_mtime_ns for p in _REAL_STATE_DIR.iterdir()}
+        return {p.name: p.stat().st_mtime_ns for p in state_dir.iterdir()}
     except OSError:
         return {}
 
@@ -75,17 +75,21 @@ def _never_touch_the_real_state(monkeypatch, tmp_path):
     tests rewrote the real deleted.json. The guard therefore compares the WHOLE
     directory (names + mtimes) rather than one known filename, so the next file
     this app learns to write is covered without anyone remembering to list it.
+
+    The live dir is resolved HERE, per test, and deliberately not at import:
+    _state_dir() reads the data home on every call, so a module-level capture
+    would freeze whichever KIROCREW_HOME was active when collection imported
+    this file -- the exact class of bug this app's own override hooks exist to
+    avoid (see test/test_lazy_data_home_paths.py and #874). Resolving it before
+    _redirect_state runs still gives the unpatched value the guard needs.
     """
-    before = _live_state_snapshot()
+    real_state_dir = routes._state_dir()
+    before = _live_state_snapshot(real_state_dir)
     _redirect_state(monkeypatch, tmp_path / "_autouse_state")
     yield
-    assert _live_state_snapshot() == before, (
-        f"a test wrote to the live state dir: {_REAL_STATE_DIR}"
+    assert _live_state_snapshot(real_state_dir) == before, (
+        f"a test wrote to the live state dir: {real_state_dir}"
     )
-
-
-#: Captured at import, before any test can monkeypatch the module attributes.
-_REAL_STATE_DIR = routes._state_dir()
 
 
 @web.middleware
@@ -4257,10 +4261,19 @@ def test_redirect_state_covers_every_path_the_app_writes():
 
 def test_state_guard_watches_the_whole_directory():
     """The guard used to assert one known filename, which is why the second leak
-    got through. It now compares the directory listing."""
+    got through. It now compares the directory listing.
+
+    Also pins that the live dir is resolved inside the fixture rather than at
+    import: a module-level capture freezes the data home for the whole session
+    and trips the #874 ratchet.
+    """
     src = inspect.getsource(_never_touch_the_real_state)
-    assert "_live_state_snapshot()" in src
-    assert "_REAL_STATE_DIR" in inspect.getsource(_live_state_snapshot)
+    assert "_live_state_snapshot(real_state_dir)" in src
+    assert "routes._state_dir()" in src
+    snap = inspect.getsource(_live_state_snapshot)
+    assert "state_dir.iterdir()" in snap
+    module_src = inspect.getsource(sys.modules[__name__])
+    assert not re.search(r"(?m)^_REAL_STATE_DIR\s*=", module_src)
 
 
 # ── GPT round-46 findings (#518) ───────────────────────────────────────────────
