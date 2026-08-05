@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import select
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1890,6 +1891,141 @@ def _allow_unsandboxed_exec() -> bool:
 _IN_SANDBOX_MARKER = "KIROCREW_SANDBOX_ACTIVE"
 
 
+def _bundled_cli_invocation() -> str | None:
+    """Absolute, shell-quoted path to the CLI this process was started from.
+
+    The AppImage persona is defined by the install guide as needing "no Python,
+    pip, npm, or Node" (docs/guides/install.md), so there is usually no
+    ``kirocrew`` on their PATH at all — the CLI is bundled INSIDE the AppImage.
+    Printing the bare command would hand exactly the affected user a
+    ``command not found`` and leave them with only the opt-out, which is the
+    opposite of the point.
+
+    ``shutil.which("kirocrew")`` is deliberately NOT trusted as evidence here:
+    this string is generated inside the gateway process, which inherits the
+    AppImage's own PATH, but it is pasted into the user's shell, which does not.
+    A hit would prove the bundle can find its own CLI, not that the user can.
+
+    Returns None when the path cannot be established, so the caller can fall back
+    to the bare name rather than print something invented.
+    """
+    argv0 = sys.argv[0] if sys.argv else ""
+    if not argv0:
+        return None
+    try:
+        resolved = os.path.realpath(argv0)
+    except OSError:
+        return None
+    name = os.path.basename(resolved).lower()
+    if not name.startswith("kirocrew") or not os.path.isfile(resolved):
+        return None
+    return shlex.quote(resolved)
+
+
+def _apparmor_userns_restricted() -> bool:
+    """True when this kernel is the Ubuntu AppArmor userns-restriction case.
+
+    Read straight from /proc rather than importing
+    :mod:`kiro_crew.service.apparmor`: ``sandbox`` is a low-level dependency of
+    config loading, and pulling the service package in here would create an
+    import cycle. One file read, no subprocess.
+    """
+    try:
+        with open(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8"
+        ) as handle:
+            return handle.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def _no_backend_guidance() -> str:
+    """Remedy text for a genuine no-backend host, specific to WHY it has none.
+
+    The generic "install a sandbox backend, or opt out" advice is actively
+    unhelpful on the single most common affected host: stock Ubuntu 23.10+, where
+    a backend exists and is one AppArmor profile away from working. Worse, the
+    only concrete thing that text suggests is the opt-out, which turns off the
+    isolation the message exists to protect.
+
+    The remedy differs by HOW Kiro Crew was launched, so it is named per shape:
+
+    * AppImage / desktop app — nothing applies a profile to a directly launched
+      binary, so attach one to it (``kirocrew sandbox install-profile``).
+    * anything else on such a host — the profile must be applied by systemd
+      (``kirocrew service install``), because the only executable in a foreground
+      launch is a shared interpreter and attaching there would grant unprivileged
+      userns to every Python process on the machine.
+
+    Deliberately does NOT tell the user to set the sysctl to 0: that trades a
+    kernel-wide protection for one app's need, and the per-application profile
+    exists so they do not have to.
+
+    The ``sandbox_allow_unsandboxed_exec`` opt-out is still named in every case,
+    because it is the documented escape hatch and withholding it would leave a
+    stuck user with no way out. What changes is the ORDER: on a host where the
+    sandbox is one profile away from working, the profile is the remedy and the
+    opt-out is the last resort, where the previous text offered the opt-out as
+    the only concrete suggestion.
+    """
+    optout = (
+        "As a last resort, agent.sandbox_allow_unsandboxed_exec=true in "
+        "~/.kiro/crew/config.json allows unsandboxed execution, but that removes "
+        "the isolation this check exists to protect. "
+    )
+    if sys.platform.startswith("linux") and _apparmor_userns_restricted():
+        base = (
+            "This host restricts unprivileged user namespaces via AppArmor "
+            "(kernel.apparmor_restrict_unprivileged_userns=1, the default on "
+            "Ubuntu 23.10+ and derivatives). A sandbox backend DOES exist here — "
+            "it needs a per-application AppArmor profile granting 'userns', "
+            "exactly as stock Ubuntu already ships for chrome, brave, 1password "
+            "and Discord. "
+        )
+        appimage = os.environ.get("APPIMAGE", "").strip()
+        if appimage:
+            # Name the CLI by ABSOLUTE PATH, not as `kirocrew`. An AppImage user
+            # has no kirocrew on PATH (see _bundled_cli_invocation), so the bare
+            # command would fail for exactly the person reading this. The bundled
+            # path is valid while the app is running, which is when they will run
+            # it, and it is the same binary the desktop app already spawns.
+            cli = _bundled_cli_invocation() or "kirocrew"
+            where = (
+                " (that path is inside the running app, so run it while Kiro Crew "
+                "is open)"
+                if cli != "kirocrew"
+                else ""
+            )
+            # shlex.quote, not bare interpolation: this string is printed for the
+            # user to paste into a shell, and a filename is attacker-influenced in
+            # the cases that matter (a downloaded or unpacked AppImage). An
+            # AppImage named `Kiro-Crew-$(...).AppImage` would otherwise have its
+            # substitution executed by the paste, turning a diagnostic into a
+            # command-injection vector. Mirrors the quoting the desktop side
+            # already does in website/electron/sandbox-profile.js.
+            return base + (
+                "This is an AppImage launch, which no profile is attached to yet. "
+                "Run this in a terminal (it needs sudo, so it cannot be done from "
+                f"the app): {cli} sandbox install-profile --path "
+                f"{shlex.quote(appimage)}{where} — then restart the app. Do NOT "
+                "set the sysctl to 0: that disables a kernel-wide protection for "
+                "every application on the machine. "
+            ) + optout
+        return base + (
+            "Run `kirocrew service install` to install the profile and have "
+            "systemd apply it to the gateway unit. Do NOT set the sysctl to 0: "
+            "that disables a kernel-wide protection for every application on the "
+            "machine. "
+        ) + optout
+    return (
+        "If this host genuinely lacks a sandbox backend, set "
+        "agent.sandbox_allow_unsandboxed_exec=true in "
+        "~/.kiro/crew/config.json to explicitly allow unsandboxed "
+        "execution, or install a supported sandbox backend "
+        "(Linux user namespaces, or macOS sandbox-exec). "
+    )
+
+
 def _classify_unavailable(transient: bool) -> str:
     """Name why no backend is available, given an already-read transient flag.
 
@@ -2408,13 +2544,7 @@ def wrap_argv(
                     '("macOS marker site and the kernel cross-check"). '
                 )
             else:
-                guidance = (
-                    "If this host genuinely lacks a sandbox backend, set "
-                    "agent.sandbox_allow_unsandboxed_exec=true in "
-                    "~/.kiro/crew/config.json to explicitly allow unsandboxed "
-                    "execution, or install a supported sandbox backend "
-                    "(Linux user namespaces, or macOS sandbox-exec). "
-                )
+                guidance = _no_backend_guidance()
             # Emit SEL audit event for this security-relevant denial so it
             # appears in the tamper-evident audit log (security-review requirement).
             try:

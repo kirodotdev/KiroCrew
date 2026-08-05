@@ -377,12 +377,85 @@ AppArmor is not an active LSM, when the sysctl is not `1`, when
 rule needs 4.x or newer). So on Debian, Arch, RHEL and Amazon Linux nothing
 changes.
 
-**Running the gateway outside systemd** (for example `kirocrew gateway` in a
-terminal) does not pick up the profile, because systemd is what applies it. Use:
+### The AppImage (desktop app) needs its own profile
+
+The profile above is applied **by systemd**, so it covers the installed service
+and nothing else. Launching the AppImage directly gives systemd no part to play:
+the app execs the bundled backend itself, so neither process gets a profile and
+agent spawns fail closed exactly as before. Attach a profile to the AppImage
+instead:
 
 ```bash
-aa-exec -p kirocrew-userns -- kirocrew gateway
+kirocrew sandbox install-profile --path ~/Applications/kirocrew.AppImage
 ```
+
+**If you only ever downloaded the AppImage, you have no `kirocrew` on your
+PATH** — the CLI is bundled inside the app, which is the whole point of that
+download. Use the bundled copy instead. The sandbox error message in the app
+prints the exact absolute path for you; it looks like this, and it is valid while
+the app is running:
+
+```bash
+'/tmp/.mount_XXXXXX/resources/backend-dist/kirocrew-backend/bin/kirocrew' \
+  sandbox install-profile --path ~/Applications/kirocrew.AppImage
+```
+
+Do **not** prefix that with `sudo`. The command elevates only the three steps
+that need it (`install`, `apparmor_parser`, `aa-exec`) and prompts you for a
+password when it does; running the whole thing as root would execute application
+code with privilege for no reason.
+
+Then restart the app. To check whether the launch you are looking at is covered:
+
+```bash
+kirocrew sandbox status
+```
+
+This writes `/etc/apparmor.d/kirocrew-launcher`, granting the same single
+`userns` permission — but **attached** to that executable path, which is how the
+kernel can apply it at exec time with no cooperation from the process. The
+backend the app spawns inherits it. It is the same mechanism stock Ubuntu uses
+for `/etc/apparmor.d/chrome`, `brave`, `1password` and `Discord`.
+`kirocrew sandbox remove-profile` unloads and removes it.
+
+Three things the command refuses to do, because an attachment is a permission
+grant keyed on a path:
+
+- **A path you do not own.** An AppImage you downloaded is owned by you, which is
+  the case this serves. A root-owned binary in a system location is shared with
+  every user of the machine, so attaching there would hand the grant to all of
+  them - and no blocklist of shared runtimes can be complete (`java`, `mono`,
+  `dotnet`, `php`, `wine` and friends are all in the same position as
+  `/usr/bin/python3`). If you need to confine a system-wide install, ship a
+  packaged profile the way the distro does for `chrome` and `brave`.
+- **A world-writable location** (`/tmp`, `/var/tmp`, `/dev/shm`, `/run`, or any
+  directory in the path whose permissions let others write). Anyone with a local
+  account could put their own file at that path and inherit the grant. Keep the
+  AppImage somewhere durable such as `~/Applications`. This also rules out the
+  AppImage's own `/tmp/.mount_XXXXXX` runtime directory, which is a fresh random
+  path on every launch and could never match twice.
+- **A shared interpreter** such as `/usr/bin/python3`. That would grant
+  unprivileged user namespaces to every program on the host that runs it.
+
+Because the profile is attached to a path, **moving or renaming the AppImage
+silently stops it applying** — the kernel reports no error, the profile just
+never matches. `kirocrew sandbox status` detects that and names the stale path;
+re-running `install-profile` re-points it. Replacing the file in place (an
+in-place update) keeps working, since the path is unchanged.
+
+**Running the gateway in a terminal** (`kirocrew gateway`) is not covered by
+either profile. Use `kirocrew service install` and let systemd run it. There is
+no correct profile to attach for a foreground run: the only executable involved
+is a shared Python interpreter, and attaching there would hand unprivileged user
+namespaces to every Python process on the machine.
+
+> Earlier versions of this page suggested `aa-exec -p kirocrew-userns -- kirocrew
+> gateway`. That does not work and has been removed. Entering a **named** profile
+> requires `aa_change_onexec`, which an unprivileged unconfined process is not
+> permitted to do, and `aa-exec` does not fail loudly when it cannot transition —
+> it execs the command unconfined, so the gateway appears to start under the
+> profile while running without it. Running it under `sudo aa-exec` does
+> transition, but then the gateway runs as root.
 
 **Please do not "fix" this by setting the sysctl to 0.** That disables a
 kernel-wide protection for every application on the machine to satisfy one
@@ -397,7 +470,7 @@ sandbox probe names the failing step so you can tell them apart:
 
 | Symptom | Mechanism | Remedy |
 |---|---|---|
-| `unshare(CLONE_NEWNS)` fails `EPERM`, sysctl is `1` | Ubuntu >= 23.10 AppArmor userns restriction | `kirocrew service install` (this page) |
+| `unshare(CLONE_NEWNS)` fails `EPERM`, sysctl is `1` | Ubuntu >= 23.10 AppArmor userns restriction | `kirocrew service install`, or `kirocrew sandbox install-profile` for the AppImage (this page) |
 | `unshare(CLONE_NEWUSER)` fails `ENOSPC` / `EUSERS` | `user.max_user_namespaces=0` (CIS-hardened host) | Raise that sysctl |
 | `unshare` fails and `kernel.unprivileged_userns_clone=0` | Debian-family legacy knob (defaults to 1 since Debian 11) | Set it to 1 |
 | `unshare` fails `EINVAL` / `ENOSYS` | Kernel built without `CONFIG_USER_NS` | None short of a different kernel |

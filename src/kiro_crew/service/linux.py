@@ -405,6 +405,32 @@ def remove_apparmor_profile() -> apparmor.ProfileOutcome:
     return apparmor.uninstall(_sudo_run_checked)
 
 
+def install_launcher_profile(exec_path: str | None = None) -> apparmor.ProfileOutcome:
+    """Attach the userns profile to a directly launched app (AppImage/desktop).
+
+    Same three privileged helpers as the service path — one escalation mechanism
+    for both profiles, and still nothing but ``install`` / ``apparmor_parser`` /
+    ``aa-exec`` running under sudo. No kirocrew or LLM-influenced code does.
+
+    Unlike the service profile this is NOT reached from ``service install``: a
+    direct launch has no unit to hang it off, so the user (or the desktop app,
+    which surfaces the exact command) invokes it explicitly.
+    """
+    return apparmor.install_launcher(
+        _install_file_via_sudo,
+        _sudo_run_checked,
+        _sudo_capture,
+        os.getuid(),
+        os.getgid(),
+        exec_path,
+    )
+
+
+def remove_launcher_profile() -> apparmor.ProfileOutcome:
+    """Unload and delete the launcher profile, leaving the host as it was found."""
+    return apparmor.uninstall_launcher(_sudo_run_checked)
+
+
 def uninstall() -> None:
     """Stop, disable, and remove the unit. Idempotent."""
     # Use a non-sudo `test -e` so we don't prompt for a password

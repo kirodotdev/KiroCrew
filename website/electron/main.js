@@ -26,6 +26,7 @@ const {
 } = require("./bundle-location");
 const { stopGatewayGracefully: _stopGatewayGracefully, forceStopPort, classifyPortOwner } = require("./gateway-stop");
 const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = require("./gateway-wait");
+const { describeSandboxProfileNeed } = require("./sandbox-profile");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { createLivenessMonitor } = require("./gateway-liveness");
 const { chooseRecoveryStrategy } = require("./gateway-recovery");
@@ -514,6 +515,29 @@ function spawnGateway(resolve) {
         try { fs.accessSync(bin, fs.constants.X_OK); } catch (e) { execState = `NOT-EXECUTABLE(${e.code})`; }
         glog(`no gateway on :${PORT} — spawning bundled backend: bin=${bin} bundled=${bundled} ${execState}`);
         sendStatus("Starting gateway…");
+
+        // Linux AppImage only: this process is about to exec the backend with no
+        // AppArmor profile applied to either of them, because nothing attaches
+        // one to a directly launched binary (see sandbox-profile.js for why the
+        // app cannot fix that itself). Record the exact remedy command here —
+        // this log is what a bug report pastes, and without it the failure looks
+        // like a generic "no sandbox backend" verdict on a host that has one.
+        try {
+          const need = describeSandboxProfileNeed({
+            platform: process.platform,
+            env: process.env,
+            readSysctl: (p) => fs.readFileSync(p, "utf8"),
+            // The bundled CLI's absolute path: this persona installed no CLI, so
+            // `kirocrew` is not on their PATH and a bare command would fail.
+            cliBin: bin,
+          });
+          if (need) {
+            glog(`WARN agent sandbox will fail closed: ${need.reason}`);
+            glog(`HINT run this in a terminal (needs sudo), then restart the app: ${need.command}`);
+          }
+        } catch (e) {
+          glog(`WARN sandbox profile check failed: ${e.message}`);
+        }
 
         // Strip KIROCREW_PORT and pass the port EXPLICITLY instead (below).
         // Inheriting it would leave the child free to re-derive its own port

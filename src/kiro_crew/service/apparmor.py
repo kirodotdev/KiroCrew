@@ -38,6 +38,7 @@ a regression. All entry points return a result and warn; they do not raise.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 import tempfile
@@ -332,8 +333,15 @@ _VERIFY_SNIPPET = (
 )
 
 
-def verify_enforcement(sudo_capture, uid: int, gid: int) -> tuple[bool, str | None]:
+def verify_enforcement(
+    sudo_capture, uid: int, gid: int, profile_name: str = PROFILE_NAME
+) -> tuple[bool, str | None]:
     """Confirm the loaded profile GRANTS userns. ``(ok, problem)``; problem None if ok.
+
+    ``profile_name`` selects which loaded profile to enter, so the service profile
+    and the direct-launch profile share one verification rather than growing a
+    second, subtly different copy. ``aa-exec -p`` names a loaded profile whether or
+    not it carries an attachment path, so this works for both shapes.
 
     Three constraints shape this, and getting any of them wrong is a real bug:
 
@@ -369,7 +377,7 @@ def verify_enforcement(sudo_capture, uid: int, gid: int) -> tuple[bool, str | No
         rc, output = sudo_capture(
             aa_exec,
             "-p",
-            PROFILE_NAME,
+            profile_name,
             "--",
             setpriv,
             f"--reuid={uid}",
@@ -457,3 +465,453 @@ def uninstall(sudo_run) -> ProfileOutcome:
     except Exception as exc:  # noqa: BLE001
         return ProfileOutcome(False, f"could not remove {PROFILE_PATH}: {exc}", ok=False)
     return ProfileOutcome(True, f"AppArmor profile removed from {PROFILE_PATH}")
+
+
+# ── Direct launch (AppImage / desktop app) ────────────────────────────────────
+#
+# The service profile above is applied BY SYSTEMD and therefore covers exactly
+# one unit. A double-clicked AppImage has no systemd in the picture: Electron
+# execs the bundled backend itself, so nothing transitions it into a profile and
+# the sandbox fails closed on every spawn.
+#
+# The transition cannot be performed from the launcher either. Entering a named
+# profile needs ``aa_change_onexec``, which an ordinary unconfined user is not
+# permitted to do — and ``aa-exec`` does not fail loudly when it cannot
+# transition, it silently execs the command unconfined (see
+# :func:`verify_enforcement`). Re-execing the backend under ``aa-exec`` would
+# therefore look like it worked while changing nothing. ``sudo aa-exec`` does
+# transition, but would run the gateway as root.
+#
+# What DOES work, and is what stock Ubuntu already does for every application in
+# this position (``/etc/apparmor.d/chrome``, ``brave``, ``1password``,
+# ``Discord``), is an ATTACHMENT: the profile names an executable path, and the
+# kernel applies it at exec time with no privileged transition and no cooperation
+# from the process. Children inherit it, which is what the backend needs.
+#
+# The attachment is only safe because of :func:`validate_exec_path` below. An
+# attachment is a grant keyed on a path, so the path must be one that cannot be
+# substituted (not world-writable) and must not be shared with unrelated programs
+# (never a system interpreter). Those two rules are the whole security argument
+# for this file; read them before changing anything here.
+
+LAUNCHER_PROFILE_NAME = "kirocrew-launcher"
+LAUNCHER_PROFILE_PATH = Path("/etc/apparmor.d") / LAUNCHER_PROFILE_NAME
+
+# Directories whose contents any local user can replace. An attachment under one
+# of these grants userns to whatever file appears at that path later, so it is
+# refused outright. ``/tmp`` also covers an AppImage's own runtime mount
+# (``/tmp/.mount_XXXXXX``), which is a fresh random path on every single launch
+# and could never match twice anyway.
+_UNSAFE_EXEC_PARENTS = ("/tmp/", "/var/tmp/", "/dev/shm/", "/run/", "/proc/", "/sys/")
+
+# AppArmor treats an attachment as a glob even inside quotes, so a path
+# containing one of these would silently match more than the file the user meant.
+# Backslash and double quote would break out of the quoted attachment. There is
+# no escaping story here worth trusting, so such a path is refused with an
+# explanation instead.
+_GLOB_METACHARS = '[]{}*?"\\'
+
+# Attaching to one of these would hand unprivileged userns to every process on
+# the host that runs it — the exact over-grant the service profile's docstring
+# warns about for the venv interpreter symlink. Matched against the RESOLVED
+# path, because that is what the kernel matches.
+_SHARED_INTERPRETER_RE = re.compile(
+    r"^/(?:usr/)?(?:local/)?s?bin/"
+    r"(?:python[\d.]*|perl[\d.]*|ruby[\d.]*|node|bash|dash|sh|zsh|env|busybox)$"
+)
+
+_ATTACHMENT_RE = re.compile(
+    r"^profile\s+" + re.escape(LAUNCHER_PROFILE_NAME) + r'\s+"(?P<path>[^"]+)"',
+    re.MULTILINE,
+)
+
+
+def default_exec_path() -> str | None:
+    """Path to attach to for THIS launch, or None when there is nothing to attach.
+
+    ``$APPIMAGE`` is set by the AppImage runtime to the absolute path of the
+    ``.AppImage`` file the user launched — the outer file, not the throwaway
+    ``/tmp/.mount_*`` it unpacks into. That single self-contained file is exactly
+    the right attachment target: it is the thing the user keeps, and it is not
+    shared with any other application.
+
+    Returning None is the correct answer for a foreground ``kirocrew gateway`` in
+    a terminal: the only executable in that picture is a shared Python
+    interpreter, and attaching there would over-grant to every Python process on
+    the machine. That case is served by ``kirocrew service install`` instead.
+    """
+    value = os.environ.get("APPIMAGE", "").strip()
+    return value or None
+
+
+def _substitutable_by_others(resolved: Path) -> str | None:
+    """Explain how another local user could take over *resolved*, or None.
+
+    The prefix denylist above is a good *message* for the common cases, but it is
+    only a heuristic: a world-writable directory anywhere else — ``/srv/shared``
+    at 0777, a group-writable ``/opt/apps``, a permissive network mount — would
+    sail past it, and an attachment there lets any local user drop in their own
+    executable and inherit the userns grant. This is the check that actually
+    delivers the property the denylist only approximates.
+
+    Two rules, mirroring :func:`_resolve_trusted`'s existing test for tools this
+    module hands to sudo (``st_mode & 0o022``), so the module applies one standard
+    to "a path we are willing to trust":
+
+    * **No group- or world-writable component.** Walked all the way to ``/``,
+      because a writable *ancestor* is enough: rename the parent directory and the
+      same absolute path now resolves to an attacker's file.
+    * **Owned by the invoking user.** This is the rule that makes the whole check
+      sound, and it is deliberately stricter than "not owned by a stranger".
+      :data:`_SHARED_INTERPRETER_RE` is a BLOCKLIST, and a blocklist of shared
+      runtimes is incomplete by construction — it names python, perl, ruby, node
+      and the shells, but not ``java``, ``mono``, ``dotnet``, ``php``, ``lua``,
+      ``wine``, ``R`` or ``qemu-*``. Attaching to ``/usr/bin/java`` would grant
+      unprivileged userns to every Java process on the host. Requiring the target
+      to be owned by the caller converts that leaky list into a complete
+      invariant: a root-owned executable in a system location is, by definition,
+      shared with every user of the machine.
+
+    Stock Ubuntu's ``chrome`` and ``brave`` profiles do attach to root-owned
+    binaries, which is not a contradiction — a distro packager knows the path is
+    one specific application, whereas this command is handed an arbitrary
+    ``--path`` and cannot know that. Packaged profiles remain the right answer for
+    a system-wide install; the message says so.
+
+    The check keys on the invoking uid, so an administrator who deliberately runs
+    this as root can still attach to a root-owned path. That is a conscious act by
+    someone who could edit ``/etc/apparmor.d`` by hand anyway; what the rule
+    prevents is an unprivileged user over-granting by accident.
+
+    A sticky bit does not rescue a world-writable directory here. Sticky only
+    stops one user deleting *another's* file; it does nothing when the target does
+    not exist yet, and this check must hold for the whole lifetime of the grant,
+    not just the instant it is installed.
+    """
+    getuid = getattr(os, "getuid", None)  # absent on Windows, where this is moot
+    try:
+        info = resolved.stat()
+    except OSError as exc:
+        return f"{resolved} could not be inspected ({exc})"
+    if getuid is not None and info.st_uid != getuid():
+        owner = "root" if info.st_uid == 0 else f"uid {info.st_uid}"
+        return (
+            f"{resolved} is owned by {owner}, not by you (uid {getuid()}). An "
+            "attachment grants unprivileged user namespaces to whatever runs at "
+            "that path, and an executable you do not own is one you cannot vouch "
+            "for: a root-owned binary in a system location is shared with every "
+            "user of this machine, so attaching there would hand the grant to all "
+            "of them. Point this at your own copy of the app (an AppImage you "
+            "downloaded is owned by you), or ship a packaged profile if you are "
+            "confining a system-wide install."
+        )
+    for component in (resolved, *resolved.parents):
+        try:
+            mode = component.stat().st_mode
+        except OSError as exc:
+            return f"{component} could not be inspected ({exc})"
+        if mode & 0o022:
+            what = "file" if component == resolved else "directory"
+            return (
+                f"the {what} {component} is group- or world-writable (mode "
+                f"{mode & 0o7777:04o}), so another local user could put their own "
+                f"executable at {resolved} and inherit the unprivileged userns "
+                "grant this profile carries. Move the AppImage under a directory "
+                "only you and root can write to (for example ~/Applications), or "
+                f"tighten the permissions on {component}."
+            )
+    return None
+
+
+def validate_exec_path(raw: str) -> tuple[Path | None, str]:
+    """Resolve *raw* to the path AppArmor will match. ``(path, problem)``.
+
+    On refusal returns ``(None, why)`` — every rejection is a real
+    over-grant or a path that could never match, and the message names which.
+
+    The path is RESOLVED first because AppArmor matches the path the kernel
+    resolves, not the symlink used to reach it. Validating before resolving is
+    how a link in a safe directory pointing at ``/usr/bin/python3`` would sneak a
+    host-wide grant past these checks.
+    """
+    if not raw or not raw.strip():
+        return (None, "no executable path was given")
+    candidate = Path(raw.strip())
+    if not candidate.is_absolute():
+        return (None, f"{candidate} is not an absolute path")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        return (None, f"{candidate} could not be resolved ({exc})")
+    if not resolved.is_file():
+        return (None, f"{resolved} is not a regular file")
+    text = str(resolved)
+    for bad in _UNSAFE_EXEC_PARENTS:
+        if text.startswith(bad):
+            return (
+                None,
+                f"{resolved} lives under {bad.rstrip('/')}, which any local user can "
+                "write to. An AppArmor attachment there would grant unprivileged "
+                "user namespaces to whatever file later appears at that path. Move "
+                "the AppImage somewhere durable (for example ~/Applications) and "
+                "re-run this command.",
+            )
+    if _SHARED_INTERPRETER_RE.match(text):
+        return (
+            None,
+            f"{resolved} is a shared system interpreter. Attaching the profile "
+            "there would grant unprivileged user namespaces to every program on "
+            "this host that runs it. Point this at the AppImage file instead, or "
+            "use `kirocrew service install`, which confines a single systemd unit.",
+        )
+    bad_chars = sorted({ch for ch in text if ch in _GLOB_METACHARS} | {
+        ch for ch in text if ord(ch) < 0x20 or ord(ch) == 0x7F
+    })
+    if bad_chars:
+        return (
+            None,
+            f"{resolved} contains {', '.join(repr(c) for c in bad_chars)}, which "
+            "AppArmor reads as glob syntax inside an attachment. The profile would "
+            "match more paths than intended, so rename the file or move it to a "
+            "path without those characters.",
+        )
+    takeover = _substitutable_by_others(resolved)
+    if takeover:
+        return (None, takeover)
+    return (resolved, "")
+
+
+def conflicting_attachment(resolved: Path) -> str | None:
+    """Name another profile in ``/etc/apparmor.d`` already attached to *resolved*.
+
+    A hand-written profile attached to the same AppImage is common — it is the
+    workaround people find first, and #1139's own reproduction host had one. Two
+    profiles claiming one attachment is an ambiguous load, so the caller warns.
+    Best effort by design: a literal scan of the top-level files, no policy
+    parsing, and any unreadable file is skipped rather than failing the install.
+    """
+    needle = f'"{resolved}"'
+    try:
+        entries = sorted(LAUNCHER_PROFILE_PATH.parent.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if entry.name == LAUNCHER_PROFILE_NAME or not entry.is_file():
+            continue
+        try:
+            body = entry.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if needle in body or f" {resolved} " in body or body.rstrip().endswith(str(resolved)):
+            return str(entry)
+    return None
+
+
+def render_launcher_profile(abi: str | None, exec_path: Path) -> str:
+    """Render the attached profile for a directly launched Kiro Crew.
+
+    Same single grant and same ``flags=(unconfined)`` shape as the service
+    profile — it restricts nothing, it only carries ``userns``. The one
+    difference is the attachment, which is what lets the kernel apply it without
+    a privileged transition.
+
+    ``exec_path`` must already have passed :func:`validate_exec_path`; it is
+    quoted so a path containing spaces still parses.
+    """
+    abi_line = f"abi <abi/{abi}>,\n\n" if abi else ""
+    return f"""# Managed by Kiro Crew — regenerated by `kirocrew sandbox install-profile`.
+#
+# This profile grants ONE permission: creating an unprivileged user namespace.
+# Kiro Crew's Linux sandbox isolates the agent by entering a user namespace and
+# then a mount namespace, over-mounting credential paths such as ~/.aws and
+# ~/.ssh. On Ubuntu >= 23.10, kernel.apparmor_restrict_unprivileged_userns=1
+# blocks that second step, so Kiro Crew fail-closes and refuses to run the agent
+# rather than run it unisolated.
+#
+# Unlike the systemd service profile (/etc/apparmor.d/{PROFILE_NAME}), this one
+# is ATTACHED to an executable path. A directly launched desktop app has no
+# systemd to apply a named profile, and a launcher cannot transition itself:
+# entering a named profile needs aa_change_onexec, which an unprivileged
+# unconfined process is not permitted to do. An attachment is applied by the
+# kernel at exec time and inherited by the backend the app spawns.
+#
+# The attachment below is a grant keyed on a path, so `kirocrew sandbox
+# install-profile` refuses to write one that points at a world-writable
+# directory (/tmp and friends — including an AppImage's own /tmp/.mount_* which
+# is random per launch) or at a shared interpreter such as /usr/bin/python3.
+#
+# It applies to THIS path only. Moving or renaming the file silently stops the
+# profile from matching; `kirocrew sandbox status` reports that, and re-running
+# `kirocrew sandbox install-profile` re-points it.
+#
+# flags=(unconfined) means this profile restricts nothing else; it is the same
+# shape /etc/apparmor.d/chrome and /etc/apparmor.d/brave use.
+#
+# Removing this file re-breaks Kiro Crew's sandbox for this app: the gateway will
+# refuse to spawn the agent instead of running it without isolation.
+# `kirocrew sandbox remove-profile` removes it for you.
+{abi_line}include <tunables/global>
+
+profile {LAUNCHER_PROFILE_NAME} "{exec_path}" flags=(unconfined) {{
+  userns,
+
+  # Site-specific additions and overrides. See local/README for details.
+  include if exists <local/{LAUNCHER_PROFILE_NAME}>
+}}
+"""
+
+
+def installed_attachment() -> str | None:
+    """Path the installed launcher profile attaches to, or None if not installed."""
+    try:
+        body = LAUNCHER_PROFILE_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _ATTACHMENT_RE.search(body)
+    return match.group("path") if match else None
+
+
+def install_launcher(
+    sudo_install_file,
+    sudo_run,
+    sudo_capture,
+    uid: int,
+    gid: int,
+    exec_path: str | None = None,
+) -> ProfileOutcome:
+    """Attach the userns profile to a directly launched Kiro Crew. NEVER raises.
+
+    Reuses the same host gate, parser resolution, compile check and enforcement
+    probe as the service profile, so the two paths cannot drift apart in what
+    they consider a supported host or a working grant.
+
+    Re-running is the documented way to re-point the profile after the app moves,
+    so this overwrites unconditionally rather than refusing when a profile is
+    already installed — matching how ``service install`` re-renders its unit.
+    """
+    needed, reason = should_install()
+    if not needed:
+        return ProfileOutcome(False, f"AppArmor profile not needed: {reason}")
+
+    target = exec_path or default_exec_path()
+    if not target:
+        return ProfileOutcome(
+            False,
+            "Could not tell which executable to attach the profile to: $APPIMAGE "
+            "is not set, so this does not look like an AppImage launch. Pass "
+            "--path with the app's executable, or run `kirocrew service install` "
+            "to confine the gateway as a systemd unit instead.",
+            ok=False,
+        )
+    resolved, problem = validate_exec_path(target)
+    if resolved is None:
+        return ProfileOutcome(False, f"AppArmor profile not installed: {problem}", ok=False)
+
+    parser = parser_path()
+    if parser is None:  # pragma: no cover - should_install covers this
+        return ProfileOutcome(False, "AppArmor profile skipped: parser unavailable")
+
+    text = render_launcher_profile(detect_abi(), resolved)
+    valid, detail = validate(parser, text)
+    if not valid:
+        return ProfileOutcome(
+            False,
+            f"AppArmor profile did NOT compile, so it was not installed: {detail}",
+            ok=False,
+        )
+
+    conflict = conflicting_attachment(resolved)
+    try:
+        sudo_install_file(text, LAUNCHER_PROFILE_PATH)
+        sudo_run(parser, "-r", "-W", str(LAUNCHER_PROFILE_PATH))
+    except Exception as exc:  # noqa: BLE001 - any failure here is non-fatal
+        return ProfileOutcome(
+            False,
+            f"AppArmor profile could not be installed ({exc}). The app will still "
+            "start, but the agent sandbox cannot be built, so spawns will fail "
+            "closed until this is resolved.",
+            ok=False,
+        )
+
+    suffix = ""
+    if conflict:
+        suffix = (
+            f" NOTE: {conflict} also appears to attach to {resolved}. Two profiles "
+            "claiming one path is ambiguous — remove the older one and re-run."
+        )
+
+    enforced, why = verify_enforcement(sudo_capture, uid, gid, LAUNCHER_PROFILE_NAME)
+    if not enforced:
+        return ProfileOutcome(
+            True,
+            f"AppArmor profile written to {LAUNCHER_PROFILE_PATH} for {resolved} and "
+            f"loaded, but enforcement was not confirmed ({why}). Not claiming "
+            f"success.{suffix}",
+            ok=False,
+        )
+    return ProfileOutcome(
+        True,
+        f"AppArmor profile installed at {LAUNCHER_PROFILE_PATH} — grants "
+        f"unprivileged userns to {resolved} only, and enforcement is confirmed. "
+        "Restart the app so the kernel applies it at exec time."
+        + suffix,
+    )
+
+
+def uninstall_launcher(sudo_run) -> ProfileOutcome:
+    """Unload and remove the launcher profile. Idempotent, and never raises."""
+    if not LAUNCHER_PROFILE_PATH.exists():
+        return ProfileOutcome(False, "")
+    parser = parser_path()
+    try:
+        if parser is not None:
+            sudo_run(parser, "-R", str(LAUNCHER_PROFILE_PATH))
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not unload the launcher AppArmor profile", exc_info=True)
+    try:
+        sudo_run("rm", "-f", str(LAUNCHER_PROFILE_PATH))
+    except Exception as exc:  # noqa: BLE001
+        return ProfileOutcome(
+            False, f"could not remove {LAUNCHER_PROFILE_PATH}: {exc}", ok=False
+        )
+    return ProfileOutcome(True, f"AppArmor profile removed from {LAUNCHER_PROFILE_PATH}")
+
+
+def launcher_status(exec_path: str | None = None) -> tuple[bool, str]:
+    """Whether the current launch is covered by the launcher profile, plus detail.
+
+    Reports a STALE attachment as its own case, because a moved or renamed
+    AppImage silently stops matching. The kernel gives no error for that — the
+    profile simply never applies — so a status that only checked for the file's
+    existence would report a working setup while the sandbox stayed broken.
+    """
+    if not apparmor_is_active() or not userns_restricted():
+        return (True, "this host does not restrict unprivileged user namespaces")
+    attached = installed_attachment()
+    target = exec_path or default_exec_path()
+    if attached is None:
+        if not target:
+            return (
+                False,
+                "no launcher profile is installed, and $APPIMAGE is not set so this "
+                "is not an AppImage launch. Use `kirocrew service install` to "
+                "confine the gateway as a systemd unit.",
+            )
+        return (
+            False,
+            f"no launcher profile is installed, so {target} runs unconfined and the "
+            "agent sandbox cannot be built. Run `kirocrew sandbox install-profile`.",
+        )
+    if not target:
+        return (True, f"launcher profile is installed and attached to {attached}")
+    resolved, problem = validate_exec_path(target)
+    current = str(resolved) if resolved is not None else target
+    if attached != current:
+        return (
+            False,
+            f"the installed launcher profile attaches to {attached}, but this app "
+            f"is running from {current}, so the profile does not apply"
+            + (f" ({problem})" if problem else "")
+            + ". Re-run `kirocrew sandbox install-profile` to re-point it.",
+        )
+    return (True, f"launcher profile is installed and attached to {current}")

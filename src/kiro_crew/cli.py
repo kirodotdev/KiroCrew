@@ -1292,6 +1292,51 @@ Examples:
     svc_sub.add_parser("uninstall", help="Stop and remove the gateway service (sudo on Linux)")
     svc_sub.add_parser("status", help="Show service status (systemctl/launchctl)")
 
+    # sandbox — the AppArmor grant a DIRECT launch needs. `service install`
+    # already installs a named profile that systemd applies to its unit, but a
+    # double-clicked AppImage has no unit: nothing transitions it into a profile,
+    # so the agent sandbox fails closed on every spawn. These subcommands attach
+    # the same single `userns` grant to the app's own executable path, which the
+    # kernel applies at exec time without any privileged transition.
+    sbx_parser = sub.add_parser(
+        "sandbox",
+        help="Manage the AppArmor profile the agent sandbox needs (Linux/Ubuntu)",
+        epilog="""
+Examples:
+  kirocrew sandbox status                      # is THIS launch covered?
+  kirocrew sandbox install-profile             # attach to $APPIMAGE (sudo)
+  kirocrew sandbox install-profile --path P    # attach to an explicit executable
+  kirocrew sandbox remove-profile              # unload and delete it (sudo)
+
+Only needed on hosts with kernel.apparmor_restrict_unprivileged_userns=1
+(Ubuntu 23.10+ and derivatives). Everywhere else these are no-ops.
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sbx_sub = sbx_parser.add_subparsers(dest="sandbox_action")
+    sbx_install = sbx_sub.add_parser(
+        "install-profile",
+        help="Attach the userns AppArmor profile to this app (sudo on Linux)",
+    )
+    sbx_install.add_argument(
+        "--path",
+        default=None,
+        help=(
+            "Executable to attach the profile to. Defaults to $APPIMAGE. Refused "
+            "for world-writable locations (/tmp and friends) and for shared "
+            "interpreters such as /usr/bin/python3, which would over-grant."
+        ),
+    )
+    sbx_status = sbx_sub.add_parser(
+        "status", help="Report whether this launch is covered by the profile"
+    )
+    sbx_status.add_argument(
+        "--path", default=None, help="Executable to check instead of $APPIMAGE"
+    )
+    sbx_sub.add_parser(
+        "remove-profile", help="Unload and remove the profile (sudo on Linux)"
+    )
+
     # cloud — provision + run KiroCrew on the user's own AWS EC2 (bring-your-own
     # AWS; credentials resolved by the aws CLI, never stored by KiroCrew).
     cloud_parser = sub.add_parser(
@@ -2051,6 +2096,8 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         _restart(args.port)
     elif args.command == "service":
         sys.exit(_service_cmd(args))
+    elif args.command == "sandbox":
+        sys.exit(_sandbox_cmd(args))
     elif args.command == "cloud":
         sys.exit(handle_cloud(args))
     elif args.command == "logs":
@@ -2126,6 +2173,7 @@ from kiro_crew.cli_server import (  # noqa: E402
     _logs_cmd,
     _restart,
     _run_task,
+    _sandbox_cmd,
     _service_cmd,
     _status,
     _stop,

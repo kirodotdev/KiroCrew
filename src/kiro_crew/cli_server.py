@@ -1548,6 +1548,49 @@ def _service_cmd(args: argparse.Namespace) -> int:
     return 2
 
 
+def _sandbox_cmd(args: argparse.Namespace) -> int:
+    """Dispatch ``kirocrew sandbox {install-profile,remove-profile,status}``.
+
+    Mirrors :func:`_service_cmd`: platform detection and the privileged calls
+    live in :mod:`kiro_crew.service.controller`, and this layer only parses
+    arguments, writes the audit record, and returns an exit code.
+
+    Installing an AppArmor profile is a privileged, security-relevant change to
+    the host, so it is audited exactly like a service install.
+    """
+    action = getattr(args, "sandbox_action", None)
+    path = getattr(args, "path", None)
+    if action == "install-profile":
+        rc = service_controller.install_launcher_profile(path)
+        sel().log_api_access(
+            caller="cli",
+            operation="sandbox_profile_install",
+            outcome="allowed" if rc == 0 else "error",
+            source="cli",
+            resources=f"rc={rc} path={path or '$APPIMAGE'}",
+        )
+        return rc
+    if action == "remove-profile":
+        rc = service_controller.remove_launcher_profile()
+        sel().log_api_access(
+            caller="cli",
+            operation="sandbox_profile_remove",
+            outcome="allowed" if rc == 0 else "error",
+            source="cli",
+            resources=f"rc={rc}",
+        )
+        return rc
+    if action == "status":
+        # Read-only, so no audit record — it changes nothing and is expected to
+        # be polled by the desktop app on every launch.
+        return service_controller.sandbox_profile_status(path)
+    print(
+        "Usage: kirocrew sandbox {install-profile|remove-profile|status}",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def _logs_cmd(args: argparse.Namespace) -> None:
     """Tail gateway logs from the most appropriate source.
 
