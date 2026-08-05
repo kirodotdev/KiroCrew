@@ -1844,6 +1844,37 @@ def _allow_unsandboxed_exec() -> bool:
 _IN_SANDBOX_MARKER = "KIROCREW_SANDBOX_ACTIVE"
 
 
+def _classify_unavailable(transient: bool) -> str:
+    """Name why no backend is available, given an already-read transient flag.
+
+    One implementation of the rule shared by ``wrap_argv``'s
+    ``SandboxUnavailableError.kind`` and the public :func:`unavailable_kind`, so
+    the two can never drift into disagreeing about the same host.
+    """
+    if transient:
+        return "transient"
+    return "foreign_sandbox" if _inside_macos_sandbox() else "no_backend"
+
+
+def unavailable_kind() -> str:
+    """Classify a backend-less host for callers that offer a PERSISTENT opt-in.
+
+    Returns ``""`` when a backend IS available, otherwise the same value
+    ``SandboxUnavailableError.kind`` would carry.
+
+    A caller that writes ``sandbox_allow_unsandboxed_exec`` to disk must act
+    ONLY on ``"no_backend"``. ``detect_backend()`` alone is not enough: it also
+    reports ``"none"`` for a momentary fork/resource failure, which self-heals on
+    the next spawn and must never buy a permanent bypass — and for a foreign
+    outer sandbox, where the host's own sandbox is fine and the remedy is to hand
+    isolation back to Kiro Crew rather than disable it.
+    """
+    if detect_backend() != "none":
+        return ""
+    transient, _reason = _last_unshare_failure or (False, "no probe detail recorded")
+    return _classify_unavailable(transient)
+
+
 def _inside_kirocrew_sandbox() -> bool:
     """True when this process already runs inside a KiroCrew OS sandbox.
 
@@ -2362,11 +2393,7 @@ def wrap_argv(
                 "No OS-level sandbox backend is available on this host, and the "
                 "agent subprocess cannot be safely isolated. "
                 f"Probe detail: {probe_reason}. " + guidance,
-                kind=(
-                    "transient"
-                    if transient
-                    else ("foreign_sandbox" if _inside_macos_sandbox() else "no_backend")
-                ),
+                kind=_classify_unavailable(transient),
                 detail=probe_reason,
             )
         # Opted in: warn (or info) and return unmodified argv

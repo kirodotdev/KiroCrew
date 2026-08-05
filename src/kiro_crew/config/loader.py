@@ -790,7 +790,12 @@ class AgentConfig:
             "RuntimeError if no sandbox backend is available and mode is not 'off', "
             "preventing unsandboxed execution entirely (fail-closed). This is "
             "distinct from sandbox_allow_no_isolation which only controls warning "
-            "severity — this field controls whether execution proceeds at all.",
+            "severity — this field controls whether execution proceeds at all. "
+            "The default is platform-independent: on a host with no backend (any "
+            "Windows host, a Linux kernel refusing user namespaces) `kirocrew "
+            "setup` OFFERS this opt-in interactively and writes it only on an "
+            "explicit yes, so unconfined execution stays operator-declared and is "
+            "never enabled implicitly by the platform.",
         ),
     )
     apps_allow_third_party: bool = field(
