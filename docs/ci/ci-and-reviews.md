@@ -54,8 +54,9 @@ Out-of-band lanes that never gate a PR:
   Electron unit suite stops at the `autoUpdater` handoff and never proves a real
   bundle is replaced on disk and relaunches.
 - **Maintenance:** `ship-report.yml` (a scheduled Slack summary),
-  `cleanup-temp-screenshots.yml` (prunes the ephemeral `temp-screenshots/` dir;
-  safe because PR bodies embed commit-SHA-pinned raw URLs that keep resolving),
+  `cleanup-temp-screenshots.yml` (prunes the ephemeral `temp-screenshots/` dir,
+  see [its README](../../temp-screenshots/README.md); safe because PR bodies
+  embed commit-SHA-pinned raw URLs that keep resolving),
   `test-durations.yml` (re-measures `.test_durations` so pytest-split's shards stay
   balanced by recorded runtime, and opens a PR with the update), `issue-triage.yml`
   (a model picks `type:` / `area:` / `platform:` labels from the repository's own
