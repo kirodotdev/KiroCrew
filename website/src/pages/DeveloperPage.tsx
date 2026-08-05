@@ -45,7 +45,7 @@ function buildTabs() {
 export default function DeveloperPage() {
   const tabs = buildTabs()
   return (
-    <SidePanelLayout title={i18nT('pages.developerPage.developer')} tabs={tabs}>
+    <SidePanelLayout title={i18nT('pages.developerPage.developer')} tabs={tabs} rememberKey="developer">
       {tab => <>
         {tab === 'logs' && <div className="h-[calc(100vh-160px)] min-h-[300px] flex flex-col overflow-hidden"><LogViewer compact /></div>}
         {tab === 'system' && <SystemPage embedded />}
