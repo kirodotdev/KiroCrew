@@ -1,0 +1,181 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   cli-mode.css — Kiro CLI–style chat surface (React build)
+
+   Activated via <html data-ui="cli">. Orthogonal to data-theme (palette) and
+   data-mode (light/dark hint, owned by the theme system).
+
+   Scope: ONLY the chat surface. Topbar, main nav, sessions sidebar, and the
+   right activity panel are LEFT UNTOUCHED. Every selector below is anchored
+   to `[style*="--mc-content-width"]` — the chat pane's inline CSS-var which
+   ChatPage.tsx (and the App SDK ChatEmbed via ChatMessageList) sets only on
+   chat surfaces. This anchor prevents `.msg-content` rules leaking into
+   NotificationsPage, ArtifactDetailPage, MarkdownPanel, ContentRenderer,
+   and prevents `[data-testid="input-wrapper"]` rules leaking into
+   WelcomeView's chat input or any embedded ChatInput outside a chat pane.
+
+   Accessibility: user vs assistant messages are distinguished by BOTH a
+   colored left-bar AND a distinct border-style (solid for user, double for
+   assistant) so users with colour-vision deficiency still have a non-color
+   cue.
+
+   Hooks used:
+     [data-role="user"]                — UserMessage root (added by us)
+     [data-role="assistant"]           — AssistantMessage root (added by us)
+     .msg-content                      — message text container (already in tree)
+     [data-testid="input-wrapper"]     — chat-input rounded card wrapper
+     textarea[aria-label="Message input"] — chat input
+     [style*="--mc-content-width"]     — chat pane root (scope anchor)
+     [style*="var(--mc-content-width"] — per-message row wrappers
+   ───────────────────────────────────────────────────────────────────────── */
+
+
+/* ── Token defaults (overridable per theme via Custom Themes) ──────────── */
+
+[data-ui="cli"] {
+  --cli-user-bar: var(--ok);
+  --cli-assistant-bar: var(--aim);
+}
+
+
+/* ── Chat pane root — kill the centered ~900px column ───────────────────── */
+
+[data-ui="cli"] [style*="--mc-content-width"] {
+  --mc-content-width: 100% !important;
+  --mc-input-width: 100% !important;
+}
+
+
+/* ── Per-message row wrappers — kill mx-auto centering & px-5 padding ───── */
+
+[data-ui="cli"] [style*="var(--mc-content-width"] {
+  padding-left: 6px !important;
+  padding-right: 6px !important;
+  max-width: 100% !important;
+}
+
+
+/* ── User message: full-width, left-aligned, solid accent bar ───────────── */
+
+/* Neutralise items-end ONLY on flex containers that wrap a user message —
+   :has() scopes precisely so ToolDetails badge alignment and SideChat
+   layout are unaffected. */
+[data-ui="cli"] [style*="--mc-content-width"] .items-end:has([data-role="user"]) {
+  align-items: flex-start !important;
+  text-align: left !important;
+}
+
+/* The UserMessage root in VIEW mode ONLY — distinguished by having a
+   `.msg-content` direct descendant. Editing-state UserMessage has a
+   textarea instead, so its flex layout for the Save/Cancel button row is
+   preserved. */
+[data-ui="cli"] [style*="--mc-content-width"] [data-role="user"]:has(.msg-content) {
+  display: block !important;
+  text-align: left !important;
+  max-width: none !important;
+  width: 100%;
+  border-left: 4px solid var(--cli-user-bar);
+  padding-left: 10px;
+  margin: 8px 0 6px 0;
+  position: relative;
+}
+
+/* The user-message card chrome: drop bg, border, rounding. Keep a faint
+   background on the text only — Kiro CLI's "the words look slightly
+   highlighted" effect. */
+[data-ui="cli"] [style*="--mc-content-width"] [data-role="user"] .msg-content {
+  background: var(--bg-elevated) !important;
+  color: var(--text) !important;
+  border: none !important;
+  border-radius: 2px !important;
+  padding: 1px 6px !important;
+  max-width: none !important;
+  width: auto !important;
+  display: inline-block;
+  line-height: 1.55;
+}
+
+
+/* ── Assistant message: double-border for non-color cue ─────────────────── */
+
+/* `border-left-style: double` renders two parallel lines — distinct from
+   the user's solid bar even for users with colour-vision deficiency. */
+[data-ui="cli"] [style*="--mc-content-width"] [data-role="assistant"] {
+  border-left: 6px double var(--cli-assistant-bar);
+  padding-left: 10px;
+  margin: 8px 0 6px 0;
+  position: relative;
+}
+
+[data-ui="cli"] [style*="--mc-content-width"] [data-role="assistant"] .msg-content {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 1px 0 !important;
+  max-width: none !important;
+  min-width: 0;
+  width: 100%;
+  line-height: 1.6;
+}
+
+
+/* ── Code blocks inside chat-pane messages — terminal style ─────────────── */
+
+[data-ui="cli"] [style*="--mc-content-width"] .msg-content :not(pre) > code {
+  background: var(--bg-hover);
+  border: none;
+  padding: 0 4px;
+  border-radius: 2px;
+  font-family: var(--mono);
+}
+[data-ui="cli"] [style*="--mc-content-width"] .msg-content pre {
+  background: transparent !important;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font-family: var(--mono);
+}
+
+
+/* ── Streaming indicator (existing .streaming-glow shimmer is preserved) ── */
+
+/* The existing shimmer animation on .streaming-glow conveys streaming state.
+   Per KiroCrew AGENTS.md "Do NOT add new CSS @keyframes — use Framer
+   Motion instead", and Framer Motion can't animate a CSS pseudo-element. */
+
+
+/* ── Input bar: flat, edge-to-edge, terminal prompt at bottom ──────────── */
+
+/* Scoped to chat-pane descendants so WelcomeView's input or any embedded
+   ChatInput outside the chat pane keeps its rounded chrome. */
+[data-ui="cli"] [style*="--mc-content-width"] [data-testid="input-wrapper"] {
+  border-radius: 0 !important;
+  border-top: 1px solid var(--border) !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-bottom: none !important;
+  background: var(--bg) !important;
+  box-shadow: none !important;
+  position: relative;
+}
+
+/* `> ` prompt glyph at the left edge of the textarea. */
+[data-ui="cli"] [style*="--mc-content-width"] [data-testid="input-wrapper"]::before {
+  content: ">";
+  position: absolute;
+  left: 8px;
+  top: 14px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  z-index: 2;
+  user-select: none;
+}
+
+[data-ui="cli"] [style*="--mc-content-width"] textarea[aria-label="Message input"] {
+  padding-left: 24px !important;
+  caret-color: var(--accent);
+  /* font-family + font-size inherit from body; useZoom auto-resolves
+     --font-body to mono in CLI mode by default. */
+}

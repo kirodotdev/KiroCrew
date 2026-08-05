@@ -1,0 +1,111 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # PRs cancel superseded revisions: only a PR's tip commit needs a verdict.
+  # main does not, so let an in-flight run finish instead of killing it.
+  # This does NOT produce a verdict per commit. The group still permits one
+  # pending run, and GitHub evicts that pending run when a newer one queues
+  # (a documented GitHub concurrency behavior). With a ~19min run and a
+  # ~1.4min median merge gap, main gets periodic verdicts instead of none.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-wheel:
+    name: Build Wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Build frontend
+        working-directory: website
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Stage frontend into package
+        run: |
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
+
+      - name: Build wheel
+        run: |
+          pip install --upgrade build
+          python -m build --wheel
+
+      - name: Verify wheel installs cleanly
+        run: |
+          pip install dist/*.whl
+          kirocrew --version
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  build-desktop:
+    name: Build Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # macOS bills at 10x, so an unbounded hang here is the costliest in the repo.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Build desktop app (PBS + uv venv)
+        run: make desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload desktop artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-macos-arm64
+          path: |
+            website/electron/dist/*.dmg
+            website/electron/dist/*.zip
+          if-no-files-found: warn
+
+      - name: Upload desktop artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-linux-x64
+          path: website/electron/dist/*.AppImage
+          if-no-files-found: warn

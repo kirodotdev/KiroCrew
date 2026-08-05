@@ -1,0 +1,85 @@
+"""Tests for the skill-usage ledger (lazy-load hotness ranking)."""
+
+from __future__ import annotations
+
+import json
+import time
+
+from kiro_crew.skill_usage import (
+    _MAX_AGE_SECS,
+    SkillUsageLedger,
+)
+
+
+def _ledger(tmp_path):
+    return SkillUsageLedger(tmp_path / "skill-usage.json")
+
+
+class TestSkillUsageLedger:
+    def test_record_bumps_hits(self, tmp_path):
+        led = _ledger(tmp_path)
+        led.record("a")
+        led.record("a")
+        led.record("b")
+        assert led.score("a")[0] == 2.0
+        assert led.score("b")[0] == 1.0
+        assert led.score("never")[0] == 0.0
+
+    def test_score_orders_by_hits(self, tmp_path):
+        led = _ledger(tmp_path)
+        led.record("hot")
+        led.record("hot")
+        led.record("cold")
+        assert led.score("hot") > led.score("cold")
+
+    def test_recency_boost_lifts_unused(self, tmp_path):
+        led = _ledger(tmp_path)
+        # An unused skill with a recency boost still outranks an unused skill
+        # with none (cold-start protection), but never beats a used one on hits.
+        boosted = led.score("new", recency_boost=time.time())
+        plain = led.score("stale", recency_boost=0.0)
+        assert boosted[0] == plain[0] == 0.0
+        assert boosted[1] > plain[1]
+
+    def test_persist_roundtrip(self, tmp_path):
+        led = _ledger(tmp_path)
+        # Suppress the debounced background-thread flush so this test exercises
+        # the explicit flush deterministically (no race between the two writers).
+        led._last_flush = time.time()
+        led.record("x")
+        led.record("x")
+        assert led.flush() is True
+        # A fresh ledger over the same path restores the tally.
+        led2 = _ledger(tmp_path)
+        assert led2.score("x")[0] == 2.0
+
+    def test_missing_file_is_empty(self, tmp_path):
+        led = _ledger(tmp_path)  # no file yet
+        assert led.score("anything")[0] == 0.0
+
+    def test_corrupt_file_is_ignored(self, tmp_path):
+        (tmp_path / "skill-usage.json").write_text("{ not json ]")
+        led = _ledger(tmp_path)  # must not raise
+        assert led.score("anything")[0] == 0.0
+
+    def test_ttl_drops_stale_entries_on_load(self, tmp_path):
+        stale_ts = time.time() - _MAX_AGE_SECS - 100
+        fresh_ts = time.time()
+        (tmp_path / "skill-usage.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "keys": {
+                        "old": {"hits": 99, "last_seen": stale_ts},
+                        "new": {"hits": 1, "last_seen": fresh_ts},
+                    },
+                }
+            )
+        )
+        led = _ledger(tmp_path)
+        assert led.score("old")[0] == 0.0  # dropped by TTL
+        assert led.score("new")[0] == 1.0
+
+    def test_flush_noop_when_clean(self, tmp_path):
+        led = _ledger(tmp_path)
+        assert led.flush() is False  # nothing recorded → nothing to write

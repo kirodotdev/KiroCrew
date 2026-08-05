@@ -1,0 +1,66 @@
+import { useCallback } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api } from '../api/client'
+import type { Artifact, ArtifactFolder } from '../types'
+
+/**
+ * React-query plumbing for artifact-library folders.
+ *
+ * Query keys:
+ *  - `['artifact-folders']` — the flat folder list (with per-folder item_count).
+ *  - `['artifacts', ...]`   — existing artifact list queries; moves patch these
+ *    optimistically so cards jump folders without a refetch flash.
+ */
+
+export function useArtifactFolders(): { folders: ArtifactFolder[]; isLoading: boolean } {
+  const { data, isLoading } = useQuery<{ folders: ArtifactFolder[] }>({
+    queryKey: ['artifact-folders'],
+    queryFn: () => api.artifactFolders(),
+  })
+  return { folders: data?.folders ?? [], isLoading }
+}
+
+/** Invalidate everything folder membership touches (lists + counts). */
+export function useInvalidateArtifactFolders(): () => void {
+  const qc = useQueryClient()
+  return useCallback(() => {
+    qc.invalidateQueries({ queryKey: ['artifact-folders'] })
+    qc.invalidateQueries({ queryKey: ['artifacts'] })
+  }, [qc])
+}
+
+/**
+ * Move an artifact into a folder (`''` = unfile to root) with optimistic
+ * cache updates: every cached `['artifacts', ...]` list gets the artifact's
+ * `folder_id` patched immediately; a failure rolls back via invalidation.
+ * Mirrors `useMoveSlotToFolder` (the chat-sidebar precedent).
+ */
+export function useMoveArtifactToFolder(): (slug: string, folderId: string) => void {
+  const qc = useQueryClient()
+  const { mutate } = useMutation({
+    mutationFn: ({ slug, folderId }: { slug: string; folderId: string }) =>
+      api.setArtifactFolder(slug, folderId),
+    onMutate: ({ slug, folderId }) => {
+      qc.setQueriesData<{ artifacts: Artifact[] }>({ queryKey: ['artifacts'] }, (old) => {
+        if (!old?.artifacts) return old
+        return {
+          ...old,
+          artifacts: old.artifacts.map(a => (a.slug === slug ? { ...a, folder_id: folderId } : a)),
+        }
+      })
+      qc.setQueryData<Artifact>(['artifact', slug], (old) =>
+        old ? { ...old, folder_id: folderId } : old,
+      )
+    },
+    onError: () => {
+      // Rollback by refetch — cheaper and safer than replaying prior snapshots
+      // across every cached list variant.
+      qc.invalidateQueries({ queryKey: ['artifacts'] })
+    },
+    onSettled: (_data, _err, { slug }) => {
+      qc.invalidateQueries({ queryKey: ['artifact-folders'] })
+      qc.invalidateQueries({ queryKey: ['artifact', slug] })
+    },
+  })
+  return useCallback((slug: string, folderId: string) => mutate({ slug, folderId }), [mutate])
+}

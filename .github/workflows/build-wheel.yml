@@ -1,0 +1,83 @@
+name: Build Wheel (reusable)
+
+# Reusable workflow: build the kirocrew pip wheel + sdist with the frontend
+# staged in, stamped to an exact PEP 440 version. Called by nightly.yml and
+# release.yml so the build recipe exists exactly once -- the callers differ
+# only in how they derive the version (date stamp vs tag).
+#
+# Uploads artifact "cli-wheel" containing dist/* (wheel + sdist). The wheel
+# is what publish-cli.yml ships; the sdist rides along for GitHub Releases.
+
+on:
+  workflow_call:
+    inputs:
+      wheel_version:
+        description: "Exact PEP 440 version to stamp (pyproject.toml + __init__.py)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheel:
+    name: Build Wheel (CLI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Stamp wheel version (PEP 440)
+        env:
+          WHEEL_VERSION: ${{ inputs.wheel_version }}
+        run: |
+          # The wheel version is sourced from pyproject.toml [project].version
+          # (static), NOT src/kiro_crew/__init__.py -- so stamp pyproject to make
+          # the built wheel carry the exact version. Keep __init__.py in sync for
+          # the runtime --version string.
+          sed -i -E "s/^version = \".*\"/version = \"${WHEEL_VERSION}\"/" pyproject.toml
+          sed -i "s/__version__ = \".*\"/__version__ = \"${WHEEL_VERSION}\"/" src/kiro_crew/__init__.py
+          echo "Building wheel: ${WHEEL_VERSION}"
+
+      - name: Stamp distribution channel
+        run: |
+          # Must run BEFORE `python -m build` so _build_info.py is inside the
+          # package tree when the wheel is assembled. Without it every pip
+          # install reports "source" and the channel breakdown is a constant.
+          bash scripts/stamp-distribution.sh wheel
+
+      - name: Build frontend
+        working-directory: website
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Stage frontend into package
+        run: |
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
+
+      - name: Build wheel + sdist
+        run: |
+          pip install --upgrade build
+          python -m build
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-wheel
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

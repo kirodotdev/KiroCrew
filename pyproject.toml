@@ -1,0 +1,104 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kirocrew"
+version = "0.1.2"
+description = "Personal AI agent that runs locally — chat via CLI, dashboard, Slack, or desktop app"
+readme = "README.md"
+# macOS (x86_64 + arm64) and Linux (x86_64 + aarch64), CPython 3.10-3.13.
+# Must be declared in this [project] table: when it exists, setuptools reads
+# requires-python from here (not setup.cfg), and an absent value makes the
+# build backend raise SpecifierSet(None) -> TypeError during wheel builds.
+requires-python = ">=3.10"
+# optional-dependencies must be listed here too: the extras live in setup.cfg
+# ([options.extras_require]), and once a [project] table exists setuptools
+# ignores setup.cfg metadata unless the field is declared dynamic. Omitting it
+# silently drops every extra — `pip install -e ".[dev]"` then reports
+# "does not provide the extra 'dev'" and installs no test tooling.
+dynamic = ["dependencies", "optional-dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/kirodotdev/KiroCrew"
+
+[project.scripts]
+kirocrew = "kiro_crew.cli:main"
+
+[dependency-groups]
+# Pinned dev tool versions for reproducible CI. Bump as needed.
+dev = [
+    "pytest==8.4.1",
+    "pytest-xdist==3.5.0",
+    "pytest-timeout==2.2.0",
+    "pytest-asyncio==0.20.3",
+    "hypothesis==6.98.10",
+    "coverage==7.10.6",
+    "pytest-cov>=5",
+    # Duration-balanced test sharding across parallel CI jobs (--splits/--group).
+    "pytest-split==0.9.0",
+    "flake8==7.1.0",
+    "mypy==1.14.1",
+    "black==26.3.1",
+    "isort==6.0.0",
+    # Not a dev TOOL. kiro_crew.config.validation imports jsonschema behind a
+    # try/except and returns the config unvalidated when the import fails, so a
+    # run without it exercises none of the schema-validation path and silently
+    # SKIPS the 11 tests that cover it (pytest scores a skip as a pass). It is
+    # declared here so those guards actually run. Whether jsonschema should also
+    # be a runtime dependency -- making validation always-on for users rather
+    # than opt-in-by-accident -- is a separate, user-visible call and is
+    # deliberately not made here.
+    "jsonschema==4.26.0",
+]
+
+[tool.black]
+line-length = 100
+# force-exclude (not extend-exclude): formatter hooks pass explicit file paths
+# to black, and only force-exclude is honored for explicit paths. Vendored
+# third-party code must never be reformatted (keeps diffs against upstream
+# wheels clean for upgrades).
+force-exclude = "/_vendor/"
+
+[tool.isort]
+known_first_party = ["kiro_crew"]
+
+# required for compatibility with black:
+profile = "black"
+
+# To maintain consistency with other settings
+line_length = 100
+# skip + skip_glob: isort's skip_glob alone is not honored when a formatter
+# hook passes explicit file paths with --filter-files unset; filter both ways.
+skip_glob = ["**/_vendor/*", "src/kiro_crew/_vendor/*"]
+extend_skip = ["_vendor"]
+
+[tool.mypy]
+mypy_path = "src"
+# See https://mypy.readthedocs.io/en/latest/config_file.html for more mypy options.
+
+# Enables the type-checker on the interior of functions without type annotations.
+check_untyped_defs = true
+
+# Displaying specific error codes makes it easier to silence specific errors
+# See also https://mypy.readthedocs.io/en/latest/error_codes.html
+show_error_codes = true
+
+# Show source code snippets and location markers in error messages
+pretty = true
+
+# Suppresses errors about packages which do not implement type-hint sharing.
+# See also https://mypy.readthedocs.io/en/latest/running_mypy.html#missing-imports.
+ignore_missing_imports = true
+# Vendored third-party code (llama-cpp-python) — never type-check it. The
+# exclude matches _vendor anywhere (src/ and build output trees alike).
+exclude = ['/_vendor/']
+
+[[tool.mypy.overrides]]
+# _vendor has no __init__.py (it is a sys.path root), so mypy may resolve the
+# vendored files as either kiro_crew._vendor.* or top-level llama_cpp.* /
+# diskcache depending on invocation — suppress both spellings.
+module = ["kiro_crew._vendor.*", "llama_cpp", "llama_cpp.*", "diskcache"]
+ignore_errors = true
+follow_imports = "skip"
+

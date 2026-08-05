@@ -1,0 +1,223 @@
+{
+  "_comment": "Error responses without a machine-readable `code`, per file. Generated - regenerate with `python test/test_error_code_contract.py --update`. This is both the CI ratchet and the Track B worklist: drive `missing_code` to zero, one PR per file or per directory, moving each frontend consumer in the same PR. Never raise a number to make CI pass. See test/test_error_code_contract.py for what each bucket means and which false negatives it accepts.",
+  "_totals": {
+    "missing_code": 1465,
+    "opaque_body": 18,
+    "dynamic_status": 43
+  },
+  "_compliant": 223,
+  "files": {
+    "apps/builtins/auto_research/handlers.py": {
+      "dynamic_status": 1,
+      "missing_code": 41,
+      "opaque_body": 3
+    },
+    "apps/builtins/code_review_sage/backend/routes.py": {
+      "dynamic_status": 2,
+      "missing_code": 11
+    },
+    "apps/builtins/dev_fleet/server.py": {
+      "dynamic_status": 1,
+      "missing_code": 20
+    },
+    "apps/builtins/issue_radar/backend/routes.py": {
+      "missing_code": 136
+    },
+    "apps/builtins/ops_mission_control/backend/routes.py": {
+      "dynamic_status": 2
+    },
+    "apps/route_registry.py": {
+      "missing_code": 3
+    },
+    "apps/routes.py": {
+      "dynamic_status": 2,
+      "missing_code": 60,
+      "opaque_body": 8
+    },
+    "dashboard/chat_folders.py": {
+      "missing_code": 23
+    },
+    "dashboard/chat_fork.py": {
+      "missing_code": 17
+    },
+    "dashboard/chat_handlers.py": {
+      "missing_code": 77
+    },
+    "dashboard/chat_mirror.py": {
+      "missing_code": 11
+    },
+    "dashboard/chat_nav.py": {
+      "missing_code": 3
+    },
+    "dashboard/chat_orchestrator.py": {
+      "missing_code": 4
+    },
+    "dashboard/chat_regenerate.py": {
+      "missing_code": 21
+    },
+    "dashboard/chat_rewind.py": {
+      "missing_code": 15
+    },
+    "dashboard/chat_slack.py": {
+      "missing_code": 9
+    },
+    "dashboard/chat_tags.py": {
+      "missing_code": 20
+    },
+    "dashboard/chat_title.py": {
+      "missing_code": 5
+    },
+    "dashboard/chat_voice.py": {
+      "missing_code": 9
+    },
+    "dashboard/handlers/agents.py": {
+      "missing_code": 58
+    },
+    "dashboard/handlers/artifacts.py": {
+      "dynamic_status": 2
+    },
+    "dashboard/handlers/ask_question.py": {
+      "missing_code": 16
+    },
+    "dashboard/handlers/auth_refresh.py": {
+      "missing_code": 8
+    },
+    "dashboard/handlers/autonudge.py": {
+      "dynamic_status": 2,
+      "missing_code": 6
+    },
+    "dashboard/handlers/computer_use.py": {
+      "missing_code": 20
+    },
+    "dashboard/handlers/core.py": {
+      "dynamic_status": 3,
+      "missing_code": 24
+    },
+    "dashboard/handlers/cron.py": {
+      "dynamic_status": 6,
+      "missing_code": 40
+    },
+    "dashboard/handlers/discover.py": {
+      "missing_code": 15
+    },
+    "dashboard/handlers/files.py": {
+      "missing_code": 116
+    },
+    "dashboard/handlers/hooks.py": {
+      "missing_code": 15
+    },
+    "dashboard/handlers/kiro_prerequisite.py": {
+      "missing_code": 3
+    },
+    "dashboard/handlers/knowledge.py": {
+      "missing_code": 66
+    },
+    "dashboard/handlers/mcp.py": {
+      "dynamic_status": 1,
+      "missing_code": 36
+    },
+    "dashboard/handlers/mcp_apps.py": {
+      "dynamic_status": 1,
+      "missing_code": 12
+    },
+    "dashboard/handlers/mcp_custom.py": {
+      "missing_code": 18
+    },
+    "dashboard/handlers/mcp_discover.py": {
+      "missing_code": 19
+    },
+    "dashboard/handlers/memory.py": {
+      "dynamic_status": 1,
+      "missing_code": 31
+    },
+    "dashboard/handlers/messaging.py": {
+      "dynamic_status": 6,
+      "missing_code": 93
+    },
+    "dashboard/handlers/notifications_push.py": {
+      "missing_code": 9
+    },
+    "dashboard/handlers/onboarding_import.py": {
+      "missing_code": 7
+    },
+    "dashboard/handlers/optimizer.py": {
+      "missing_code": 1
+    },
+    "dashboard/handlers/portability.py": {
+      "missing_code": 9
+    },
+    "dashboard/handlers/prompts.py": {
+      "missing_code": 35
+    },
+    "dashboard/handlers/security.py": {
+      "missing_code": 16
+    },
+    "dashboard/handlers/sessions.py": {
+      "missing_code": 17
+    },
+    "dashboard/handlers/side.py": {
+      "missing_code": 13
+    },
+    "dashboard/handlers/source_providers.py": {
+      "missing_code": 12,
+      "opaque_body": 1
+    },
+    "dashboard/handlers/steering.py": {
+      "missing_code": 21
+    },
+    "dashboard/handlers/taskrunner.py": {
+      "missing_code": 54
+    },
+    "dashboard/handlers/terminal.py": {
+      "missing_code": 7
+    },
+    "dashboard/handlers/themes.py": {
+      "dynamic_status": 4,
+      "missing_code": 24
+    },
+    "dashboard/handlers/updates.py": {
+      "missing_code": 9
+    },
+    "dashboard/handlers/webapp_preview.py": {
+      "missing_code": 1
+    },
+    "dashboard/handlers/weixin_qr.py": {
+      "missing_code": 16
+    },
+    "dashboard/handlers/workflows.py": {
+      "dynamic_status": 3,
+      "missing_code": 14
+    },
+    "dashboard/handlers/worktree.py": {
+      "dynamic_status": 1,
+      "missing_code": 16
+    },
+    "dashboard/handlers_channel.py": {
+      "missing_code": 20
+    },
+    "dashboard/handlers_instances.py": {
+      "missing_code": 19,
+      "opaque_body": 3
+    },
+    "dashboard/handlers_project.py": {
+      "missing_code": 1
+    },
+    "dashboard/kiro_readiness.py": {
+      "opaque_body": 1
+    },
+    "dashboard/openai_compat.py": {
+      "missing_code": 19
+    },
+    "dashboard/token_auth.py": {
+      "missing_code": 1
+    },
+    "deploy/handlers.py": {
+      "dynamic_status": 5,
+      "missing_code": 39,
+      "opaque_body": 2
+    },
+    "tips.py": {
+      "missing_code": 4
+    }
+  }
+}

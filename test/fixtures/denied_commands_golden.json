@@ -1,0 +1,836 @@
+[
+  {
+    "id": "credential-exfil-s3-cp",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cp .* s3://.*",
+    "category": "credential-exfil",
+    "description": "Blocks `aws s3 cp` uploads to an s3:// destination, which can exfiltrate local files or credentials into an attacker-controlled bucket."
+  },
+  {
+    "id": "credential-exfil-s3-mv",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+mv .* s3://.*",
+    "category": "credential-exfil",
+    "description": "Blocks `aws s3 mv` moves to an s3:// destination, which can exfiltrate local files or credentials into an attacker-controlled bucket."
+  },
+  {
+    "id": "credential-exfil-s3-sync",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+sync .* s3://.*",
+    "category": "credential-exfil",
+    "description": "Blocks `aws s3 sync` to an s3:// destination, which can bulk-exfiltrate a local directory tree into an attacker-controlled bucket."
+  },
+  {
+    "id": "credential-exfil-echo-aws-secret",
+    "pattern": ".*echo.*\\$AWS_SECRET.*",
+    "category": "credential-exfil",
+    "description": "Blocks echoing the $AWS_SECRET* environment variable, which would print the AWS secret access key to stdout/logs where it can be captured."
+  },
+  {
+    "id": "credential-exfil-echo-aws-session",
+    "pattern": ".*echo.*\\$AWS_SESSION.*",
+    "category": "credential-exfil",
+    "description": "Blocks echoing the $AWS_SESSION* environment variable, which would print the AWS session token to stdout/logs where it can be captured."
+  },
+  {
+    "id": "credential-exfil-echo-aws-access",
+    "pattern": ".*echo.*\\$AWS_ACCESS.*",
+    "category": "credential-exfil",
+    "description": "Blocks echoing the $AWS_ACCESS* environment variable, which would print the AWS access key ID to stdout/logs where it can be captured."
+  },
+  {
+    "id": "credential-exfil-printenv-aws",
+    "pattern": ".*printenv.*AWS.*",
+    "category": "credential-exfil",
+    "description": "Blocks `printenv` dumping any AWS_* environment variable, which can leak AWS credentials held in the environment."
+  },
+  {
+    "id": "credential-exfil-kirocrew-token",
+    "pattern": "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*[\\w.:/\\\\-]*kiro[-.]?crew\\b[^|;&#>/*]*\\btoken\\b",
+    "category": "credential-exfil",
+    "description": "Blocks the `kirocrew token` CLI, which mints a signed dashboard access token an attacker could use to authenticate to the gateway. Matches the CLI name and the token verb within one command segment -- including nested forms such as `kirocrew pod token` and the hyphenated `kiro-crew` spelling -- so an incidental mention of the word in a later command, a comment, or a file path is not a mint. The argv floor additionally covers `python -m kiro_crew ... token`, which mints the same token through the interpreter rather than the console script."
+  },
+  {
+    "id": "credential-exfil-env-grep-aws",
+    "pattern": ".*env.*grep.*AWS.*",
+    "category": "credential-exfil",
+    "description": "Blocks `env | grep AWS`, which filters the environment for AWS_* variables and leaks any credentials stored there."
+  },
+  {
+    "id": "credential-exfil-python-boto3-get-credentials",
+    "pattern": ".*python.*boto3.*get_credentials.*",
+    "category": "credential-exfil",
+    "description": "Blocks a Python/boto3 one-liner calling get_credentials(), which resolves and can print the active AWS credentials from the credential chain."
+  },
+  {
+    "id": "credential-exfil-python-botocore-credentials",
+    "pattern": ".*python.*botocore.*credentials.*",
+    "category": "credential-exfil",
+    "description": "Blocks a Python/botocore one-liner accessing the credentials module, which can resolve and expose the active AWS credentials."
+  },
+  {
+    "id": "credential-exfil-curl-imds",
+    "pattern": ".*curl.*169\\.254\\.169\\.254.*",
+    "category": "credential-exfil",
+    "description": "Blocks `curl` to the 169.254.169.254 instance metadata service (IMDS), a classic path to steal EC2 role credentials."
+  },
+  {
+    "id": "credential-exfil-wget-imds",
+    "pattern": ".*wget.*169\\.254\\.169\\.254.*",
+    "category": "credential-exfil",
+    "description": "Blocks `wget` to the 169.254.169.254 instance metadata service (IMDS), a classic path to steal EC2 role credentials."
+  },
+  {
+    "id": "credential-exfil-curl-aws-secret",
+    "pattern": ".*curl.*\\$AWS_SECRET.*",
+    "category": "credential-exfil",
+    "description": "Blocks `curl` invocations that reference $AWS_SECRET*, which would send the AWS secret access key to a remote endpoint."
+  },
+  {
+    "id": "credential-exfil-curl-aws-access",
+    "pattern": ".*curl.*\\$AWS_ACCESS.*",
+    "category": "credential-exfil",
+    "description": "Blocks `curl` invocations that reference $AWS_ACCESS*, which would send the AWS access key ID to a remote endpoint."
+  },
+  {
+    "id": "credential-exfil-curl-aws-session",
+    "pattern": ".*curl.*\\$AWS_SESSION.*",
+    "category": "credential-exfil",
+    "description": "Blocks `curl` invocations that reference $AWS_SESSION*, which would send the AWS session token to a remote endpoint."
+  },
+  {
+    "id": "aws-destructive-autoscaling-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+autoscaling(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws autoscaling delete-*' command, which tears down Auto Scaling groups, policies, or launch configurations and can permanently disrupt capacity management."
+  },
+  {
+    "id": "aws-destructive-cfn-delete-stack",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloudformation(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-stack.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws cloudformation delete-stack', which destroys an entire CloudFormation stack and every resource it manages."
+  },
+  {
+    "id": "aws-destructive-cfn-deploy-mutate",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloudformation(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+(deploy|create-stack|update-stack|create-change-set|execute-change-set).*",
+    "category": "aws-destructive",
+    "description": "Blocks CloudFormation deploy/create-stack/update-stack/create-change-set/execute-change-set, which create or mutate infrastructure stacks and can overwrite live production resources."
+  },
+  {
+    "id": "aws-destructive-ec2-run-instances",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+run-instances.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws ec2 run-instances', which launches new EC2 instances that incur cost and can be abused for resource sprawl or cryptomining."
+  },
+  {
+    "id": "aws-destructive-ec2-create-security-group",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+create-security-group.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws ec2 create-security-group', which creates new network access-control groups that can widen the attack surface."
+  },
+  {
+    "id": "aws-destructive-ec2-authorize-security-group",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+authorize-security-group-(ingress|egress).*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws ec2 authorize-security-group-ingress/egress', which opens firewall rules and can expose resources to the public internet."
+  },
+  {
+    "id": "aws-destructive-iam-privilege-mutate",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+iam(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+(create-role|create-policy|create-policy-version|put-role-policy|attach-role-policy|create-instance-profile|add-role-to-instance-profile|pass-role).*",
+    "category": "aws-destructive",
+    "description": "Blocks IAM role/policy creation, attachment, and pass-role operations, which grant or escalate privileges and are a classic privilege-escalation vector."
+  },
+  {
+    "id": "aws-destructive-cfn-termination-protection",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloudformation(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+update-termination-protection.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws cloudformation update-termination-protection', which can disable the safeguard that prevents accidental stack deletion."
+  },
+  {
+    "id": "aws-destructive-dynamodb-delete-table",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+dynamodb(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-table.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws dynamodb delete-table', which permanently deletes a DynamoDB table and every item it holds."
+  },
+  {
+    "id": "aws-destructive-ec2-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws ec2 delete-*' command, which removes EC2 resources such as VPCs, subnets, volumes, snapshots, or security groups."
+  },
+  {
+    "id": "aws-destructive-ec2-terminate-instances",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ec2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+terminate-instances.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws ec2 terminate-instances', which permanently shuts down and deletes running EC2 instances."
+  },
+  {
+    "id": "aws-destructive-ssm-send-command",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+send-command.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws ssm send-command', which executes arbitrary commands on managed instances (remote code execution across the fleet)."
+  },
+  {
+    "id": "aws-destructive-ssm-start-session",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+start-session.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws ssm start-session', which opens an interactive shell onto a managed instance, bypassing normal access controls."
+  },
+  {
+    "id": "aws-destructive-ssm-get-command-invocation",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+get-command-invocation.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws ssm get-command-invocation', which reads the output of remotely executed SSM commands (used to harvest results of injected commands)."
+  },
+  {
+    "id": "aws-destructive-ssm-list-command-invocations",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ssm(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+list-command-invocations.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws ssm list-command-invocations', which enumerates remote-command execution history on managed instances."
+  },
+  {
+    "id": "aws-destructive-ecr-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ecr(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws ecr delete-*' command, which removes container image repositories or images and can break deployments relying on them."
+  },
+  {
+    "id": "aws-destructive-ecs-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+ecs(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws ecs delete-*' command, which tears down ECS clusters, services, or task definitions and can cause service outages."
+  },
+  {
+    "id": "aws-destructive-eks-delete-cluster",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+eks(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-cluster.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws eks delete-cluster', which destroys an entire Kubernetes control plane and all workloads running on it."
+  },
+  {
+    "id": "aws-destructive-elasticache-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+elasticache(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws elasticache delete-*' command, which removes Redis/Memcached clusters and destroys their cached data."
+  },
+  {
+    "id": "aws-destructive-elb-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+elb(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws elb delete-*' command (classic load balancers), which can drop traffic routing and cause an outage."
+  },
+  {
+    "id": "aws-destructive-elbv2-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+elbv2(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws elbv2 delete-*' command (ALB/NLB load balancers, listeners, target groups), which can drop traffic routing and cause an outage."
+  },
+  {
+    "id": "aws-destructive-glue-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+glue(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws glue delete-*' command, which removes Glue databases, tables, jobs, or crawlers and can break data pipelines."
+  },
+  {
+    "id": "aws-destructive-iam-create-access-key",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+iam(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+create-access-key.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws iam create-access-key', which mints long-lived programmatic credentials that can be exfiltrated for persistent access."
+  },
+  {
+    "id": "aws-destructive-iam-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+iam(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws iam delete-*' command, which removes roles, users, policies, or access keys and can lock out legitimate access."
+  },
+  {
+    "id": "aws-destructive-kinesis-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+kinesis(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws kinesis delete-*' command, which removes data streams and discards in-flight records."
+  },
+  {
+    "id": "aws-destructive-kms-schedule-key-deletion",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+kms(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+schedule-key-deletion.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws kms schedule-key-deletion', which queues a KMS key for deletion and can permanently render all data encrypted under it unrecoverable."
+  },
+  {
+    "id": "aws-destructive-lambda-delete-function",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+lambda(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-function.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws lambda delete-function', which removes a serverless function and can break dependent workflows."
+  },
+  {
+    "id": "aws-destructive-logs-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+logs(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws logs delete-*' command, which deletes CloudWatch log groups/streams and can destroy audit and forensic evidence."
+  },
+  {
+    "id": "aws-destructive-opensearch-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+opensearch(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws opensearch delete-*' command, which removes OpenSearch domains and destroys their indexed data."
+  },
+  {
+    "id": "aws-destructive-rds-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+rds(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws rds delete-*' command, which removes RDS instances, clusters, or snapshots and can cause irreversible data loss."
+  },
+  {
+    "id": "aws-destructive-redshift-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+redshift(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws redshift delete-*' command, which removes Redshift clusters or snapshots and can cause irreversible data-warehouse loss."
+  },
+  {
+    "id": "aws-destructive-route53-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+route53(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws route53 delete-*' command, which removes DNS hosted zones or records and can take domains offline."
+  },
+  {
+    "id": "aws-destructive-s3-rb",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+rb.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws s3 rb', which removes an S3 bucket (with --force, deleting all its objects)."
+  },
+  {
+    "id": "aws-destructive-s3-rm",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+rm.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws s3 rm', which deletes S3 objects (recursively with --recursive) and can wipe stored data."
+  },
+  {
+    "id": "aws-destructive-s3api-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws s3api delete-*' command, which removes buckets, objects, object versions, or bucket configs and can cause data loss."
+  },
+  {
+    "id": "aws-destructive-s3api-put-object",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+put-object.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws s3api put-object', which writes/overwrites S3 objects and can corrupt data or stage exfiltrated content."
+  },
+  {
+    "id": "aws-destructive-s3api-copy-object",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+copy-object.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws s3api copy-object', which overwrites S3 objects or duplicates data across buckets (a data-movement/exfil vector)."
+  },
+  {
+    "id": "aws-destructive-s3api-multipart-upload",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+(create-multipart-upload|upload-part|upload-part-copy|complete-multipart-upload).*",
+    "category": "aws-destructive",
+    "description": "Blocks S3 multipart-upload operations (create/upload-part/upload-part-copy/complete), which write large objects into S3 and can overwrite data or stage exfiltration."
+  },
+  {
+    "id": "aws-destructive-s3api-put-bucket",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+s3api(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+put-bucket-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws s3api put-bucket-*' command, which mutates bucket configuration such as policy, ACL, encryption, or public-access settings and can weaken data protections."
+  },
+  {
+    "id": "aws-destructive-secretsmanager-delete-secret",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+secretsmanager(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-secret.*",
+    "category": "aws-destructive",
+    "description": "Blocks 'aws secretsmanager delete-secret', which removes stored secrets and can break every service depending on them."
+  },
+  {
+    "id": "aws-destructive-sns-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+sns(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws sns delete-*' command, which removes SNS topics or subscriptions and can silently break notification delivery."
+  },
+  {
+    "id": "aws-destructive-sqs-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+sqs(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws sqs delete-*' command, which removes SQS queues or purges messages and can drop in-flight work."
+  },
+  {
+    "id": "aws-destructive-stepfunctions-delete",
+    "pattern": "aws(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+stepfunctions(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+delete-.*",
+    "category": "aws-destructive",
+    "description": "Blocks any 'aws stepfunctions delete-*' command, which removes Step Functions state machines or activities and can break orchestration workflows."
+  },
+  {
+    "id": "iac-teardown-cdk-destroy",
+    "pattern": "cdk destroy.*",
+    "category": "iac-teardown",
+    "description": "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its provisioned cloud resources — irreversible infrastructure and data loss."
+  },
+  {
+    "id": "local-destructive-chmod-777",
+    "pattern": "chmod 777.*",
+    "category": "local-destructive",
+    "description": "Blocks chmod 777, which grants world read/write/execute permissions and creates a serious security exposure."
+  },
+  {
+    "id": "local-destructive-chmod-usr",
+    "pattern": "chmod.*/usr/.*",
+    "category": "local-destructive",
+    "description": "Blocks chmod changes to /usr, which can corrupt permissions on system binaries and break the OS."
+  },
+  {
+    "id": "local-destructive-chmod-etc",
+    "pattern": "chmod.*/etc/.*",
+    "category": "local-destructive",
+    "description": "Blocks chmod changes to /etc, which can corrupt permissions on critical system config files and break the OS."
+  },
+  {
+    "id": "local-destructive-chmod-sbin",
+    "pattern": "chmod.*/sbin/.*",
+    "category": "local-destructive",
+    "description": "Blocks chmod changes to /sbin, which can corrupt permissions on privileged system binaries and break the OS."
+  },
+  {
+    "id": "local-destructive-chmod-boot",
+    "pattern": "chmod.*/boot/.*",
+    "category": "local-destructive",
+    "description": "Blocks chmod changes to /boot, which can corrupt permissions on boot/kernel files and render the system unbootable."
+  },
+  {
+    "id": "local-destructive-chmod-lib",
+    "pattern": "chmod.*/lib/.*",
+    "category": "local-destructive",
+    "description": "Blocks chmod changes to /lib, which can corrupt permissions on shared system libraries and break the OS."
+  },
+  {
+    "id": "local-destructive-chmod-lib64",
+    "pattern": "chmod.*/lib64/.*",
+    "category": "local-destructive",
+    "description": "Blocks chmod changes to /lib64, which can corrupt permissions on 64-bit shared system libraries and break the OS."
+  },
+  {
+    "id": "local-destructive-chown-usr",
+    "pattern": "chown.*/usr/.*",
+    "category": "local-destructive",
+    "description": "Blocks chown changes to /usr, which can corrupt ownership on system binaries and break the OS."
+  },
+  {
+    "id": "local-destructive-chown-etc",
+    "pattern": "chown.*/etc/.*",
+    "category": "local-destructive",
+    "description": "Blocks chown changes to /etc, which can corrupt ownership on critical system config files and break the OS."
+  },
+  {
+    "id": "local-destructive-chown-sbin",
+    "pattern": "chown.*/sbin/.*",
+    "category": "local-destructive",
+    "description": "Blocks chown changes to /sbin, which can corrupt ownership on privileged system binaries and break the OS."
+  },
+  {
+    "id": "local-destructive-chown-boot",
+    "pattern": "chown.*/boot/.*",
+    "category": "local-destructive",
+    "description": "Blocks chown changes to /boot, which can corrupt ownership on boot/kernel files and render the system unbootable."
+  },
+  {
+    "id": "local-destructive-chown-lib",
+    "pattern": "chown.*/lib/.*",
+    "category": "local-destructive",
+    "description": "Blocks chown changes to /lib, which can corrupt ownership on shared system libraries and break the OS."
+  },
+  {
+    "id": "local-destructive-chown-lib64",
+    "pattern": "chown.*/lib64/.*",
+    "category": "local-destructive",
+    "description": "Blocks chown changes to /lib64, which can corrupt ownership on 64-bit shared system libraries and break the OS."
+  },
+  {
+    "id": "pipe-to-shell-curl-bash",
+    "pattern": "curl .* \\| bash",
+    "category": "pipe-to-shell",
+    "description": "Blocks piping a curl download directly into bash, which executes arbitrary remote code with no chance to inspect the script first."
+  },
+  {
+    "id": "pipe-to-shell-curl-sh",
+    "pattern": "curl .* \\| sh",
+    "category": "pipe-to-shell",
+    "description": "Blocks piping a curl download directly into sh, which executes arbitrary remote code with no chance to inspect the script first."
+  },
+  {
+    "id": "local-destructive-dd-if",
+    "pattern": "dd if=.*",
+    "category": "local-destructive",
+    "description": "Blocks dd invocations with an input file, which can overwrite raw disks/partitions and cause irreversible data loss."
+  },
+  {
+    "id": "sql-drop-database",
+    "pattern": "(?i:DROP\\s+DATABASE.*)",
+    "category": "sql",
+    "description": "Blocks SQL DROP DATABASE statements, which irreversibly delete an entire database and all its tables and data."
+  },
+  {
+    "id": "sql-drop-table",
+    "pattern": "(?i:DROP\\s+TABLE.*)",
+    "category": "sql",
+    "description": "Blocks SQL DROP TABLE statements, which permanently delete a table and every row it contains."
+  },
+  {
+    "id": "credential-exfil-export-aws-access",
+    "pattern": "export AWS_ACCESS.*",
+    "category": "credential-exfil",
+    "description": "Blocks `export AWS_ACCESS...`, which injects an attacker-chosen AWS access key ID into the environment for later use by AWS tooling."
+  },
+  {
+    "id": "credential-exfil-export-aws-secret",
+    "pattern": "export AWS_SECRET.*",
+    "category": "credential-exfil",
+    "description": "Blocks `export AWS_SECRET...`, which injects an attacker-chosen AWS secret access key into the environment for later use by AWS tooling."
+  },
+  {
+    "id": "git-publish-push-bare",
+    "pattern": ".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s*$",
+    "category": "git-publish",
+    "description": "Blocks a bare 'git push' with no explicit remote or branch, which pushes the current branch to its default upstream (often a protected branch like main) without confirmation."
+  },
+  {
+    "id": "git-publish-push-single-arg",
+    "pattern": ".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+\\S+\\s*$",
+    "category": "git-publish",
+    "description": "Blocks 'git push <remote>' with a single argument (no branch), which pushes to the configured upstream and can publish to a protected branch unattended."
+  },
+  {
+    "id": "git-publish-push-protected-branch-name",
+    "pattern": ".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+.*[\\s:]\\+?(main|mainline|master)(\\s.*|$)",
+    "category": "git-publish",
+    "description": "Blocks 'git push' whose refspec targets a protected default branch, including force-push '+' refspecs, preventing unreviewed writes to the trunk."
+  },
+  {
+    "id": "git-publish-push-protected-ref-path",
+    "pattern": ".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+.*(refs/)?(heads/|remotes/[^/\\s]+/)(main|mainline|master)(\\s.*|$)",
+    "category": "git-publish",
+    "description": "Blocks 'git push' targeting a fully-qualified ref path (refs/heads/ or remotes/<remote>/) for a protected default branch, catching path-style evasions of the trunk-push guard."
+  },
+  {
+    "id": "git-publish-push-wildcard-refspec",
+    "pattern": ".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+[^&|;\\n]*\\*",
+    "category": "git-publish",
+    "description": "Blocks 'git push' with a wildcard '*' refspec, which can mass-publish many branches (potentially including protected ones) in a single command."
+  },
+  {
+    "id": "git-publish-push-brace-expansion-refspec",
+    "pattern": ".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+[^&|;\\n]*\\{[^{}]*(,|\\.\\.)[^{}]*\\}",
+    "category": "git-publish",
+    "description": "Blocks 'git push' using shell brace-expansion (e.g. {a,b} or {1..3}) in the refspec, which expands to multiple branch targets and could push to a protected branch."
+  },
+  {
+    "id": "git-publish-push-mirror-all",
+    "pattern": ".*git\\s+(-\\S+\\s+[^-]\\S*\\s+|-\\S+\\s+)*push\\s+.*--(mirror|all)(\\s.*|$)",
+    "category": "git-publish",
+    "description": "Blocks 'git push --mirror' and 'git push --all', which push every local ref/branch to the remote and can overwrite or publish protected branches wholesale."
+  },
+  {
+    "id": "local-destructive-git-reset-hard",
+    "pattern": "git reset --hard.*",
+    "category": "local-destructive",
+    "description": "Blocks git reset --hard, which discards uncommitted changes and rewrites the working tree, causing irreversible loss of local work."
+  },
+  {
+    "id": "iac-teardown-kubectl-delete-namespace",
+    "pattern": "kubectl delete namespace.*",
+    "category": "iac-teardown",
+    "description": "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and cascades to every workload, service, and volume inside it — irreversible cluster-wide teardown."
+  },
+  {
+    "id": "local-destructive-mkfs",
+    "pattern": "mkfs.*",
+    "category": "local-destructive",
+    "description": "Blocks mkfs (and mkfs.* variants), which formats a filesystem and destroys all existing data on the target device."
+  },
+  {
+    "id": "reverse-shell-nc",
+    "pattern": "nc -e.*",
+    "category": "reverse-shell",
+    "description": "Blocks 'nc -e', which spawns a netcat reverse shell handing remote command execution to an attacker."
+  },
+  {
+    "id": "reverse-shell-ncat",
+    "pattern": "ncat -e.*",
+    "category": "reverse-shell",
+    "description": "Blocks 'ncat -e', which spawns an ncat reverse shell handing remote command execution to an attacker."
+  },
+  {
+    "id": "iac-teardown-pulumi-destroy",
+    "pattern": "pulumi destroy.*",
+    "category": "iac-teardown",
+    "description": "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi stack — irreversible infrastructure teardown."
+  },
+  {
+    "id": "local-destructive-rm-rf-root",
+    "pattern": "rm -rf /.*",
+    "category": "local-destructive",
+    "description": "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which can wipe the entire operating system and all data."
+  },
+  {
+    "id": "local-destructive-rm-rf-home",
+    "pattern": "rm -rf ~.*",
+    "category": "local-destructive",
+    "description": "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which would destroy all personal files and config."
+  },
+  {
+    "id": "iac-teardown-terraform-destroy",
+    "pattern": "terraform destroy.*",
+    "category": "iac-teardown",
+    "description": "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform state — irreversible infrastructure and data loss."
+  },
+  {
+    "id": "sql-truncate-table",
+    "pattern": "(?i:TRUNCATE\\s+TABLE.*)",
+    "category": "sql",
+    "description": "Blocks SQL TRUNCATE TABLE statements, which delete all rows in a table in one unrecoverable operation."
+  },
+  {
+    "id": "pipe-to-shell-wget-bash",
+    "pattern": "wget .* \\| bash",
+    "category": "pipe-to-shell",
+    "description": "Blocks piping a wget download directly into bash, which executes arbitrary remote code with no chance to inspect the script first."
+  },
+  {
+    "id": "sensitive-file-read-cat-aws",
+    "pattern": ".*cat.*/\\.aws/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using cat to read files under ~/.aws, which holds AWS access keys and session credentials that could be exfiltrated."
+  },
+  {
+    "id": "sensitive-file-read-cat-ssh",
+    "pattern": ".*cat.*/\\.ssh/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using cat to read files under ~/.ssh, which holds private SSH keys and known-hosts data granting remote access."
+  },
+  {
+    "id": "sensitive-file-read-cat-gnupg",
+    "pattern": ".*cat.*/\\.gnupg/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using cat to read files under ~/.gnupg, which holds GPG private keyrings and trust data used to sign or decrypt secrets."
+  },
+  {
+    "id": "sensitive-file-read-cat-gpg",
+    "pattern": ".*cat.*/\\.gpg/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using cat to read files under ~/.gpg, which holds GPG key material used to sign or decrypt secrets."
+  },
+  {
+    "id": "sensitive-file-read-cat-netrc",
+    "pattern": ".*cat.*/\\.netrc.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using cat to read ~/.netrc, which stores plaintext login/password credentials for FTP, HTTP, and other services."
+  },
+  {
+    "id": "sensitive-file-read-cat-git-credentials",
+    "pattern": ".*cat.*/\\.git-credentials.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using cat to read ~/.git-credentials, which stores plaintext Git remote usernames and access tokens."
+  },
+  {
+    "id": "sensitive-file-read-cat-npmrc",
+    "pattern": ".*cat.*/\\.npmrc.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using cat to read ~/.npmrc, which can contain npm registry auth tokens."
+  },
+  {
+    "id": "sensitive-file-read-cat-pypirc",
+    "pattern": ".*cat.*/\\.pypirc.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using cat to read ~/.pypirc, which can contain PyPI upload usernames and API tokens."
+  },
+  {
+    "id": "sensitive-file-read-cat-docker-config",
+    "pattern": ".*cat.*/\\.docker/config\\.json.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using cat to read ~/.docker/config.json, which holds base64-encoded container registry credentials."
+  },
+  {
+    "id": "sensitive-file-read-cat-kube-config",
+    "pattern": ".*cat.*/\\.kube/config.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using cat to read ~/.kube/config, which holds Kubernetes cluster tokens, client certs, and API credentials."
+  },
+  {
+    "id": "sensitive-file-read-cat-kirocrew-env",
+    "pattern": ".*cat.*/(?:\\.kiro/crew|\\.kirocrew)/\\.env.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using cat to read Kiro Crew's own credential file (~/.kiro/crew/.env, or the pre-move ~/.kirocrew/.env), which holds Kiro Crew's own secrets and environment credentials."
+  },
+  {
+    "id": "sensitive-file-read-head-aws",
+    "pattern": ".*head.*/\\.aws/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using head to read files under ~/.aws, which holds AWS access keys and session credentials."
+  },
+  {
+    "id": "sensitive-file-read-tail-aws",
+    "pattern": ".*tail.*/\\.aws/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using tail to read files under ~/.aws, which holds AWS access keys and session credentials."
+  },
+  {
+    "id": "sensitive-file-read-less-aws",
+    "pattern": ".*less.*/\\.aws/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using less to read files under ~/.aws, which holds AWS access keys and session credentials."
+  },
+  {
+    "id": "sensitive-file-read-more-aws",
+    "pattern": ".*more.*/\\.aws/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using more to read files under ~/.aws, which holds AWS access keys and session credentials."
+  },
+  {
+    "id": "sensitive-file-read-strings-aws",
+    "pattern": ".*strings.*/\\.aws/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using strings to extract text from files under ~/.aws, which holds AWS access keys and session credentials."
+  },
+  {
+    "id": "sensitive-file-read-base64-aws",
+    "pattern": ".*base64.*/\\.aws/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using base64 to encode/dump files under ~/.aws, a common way to exfiltrate AWS credentials past text filters."
+  },
+  {
+    "id": "sensitive-file-read-head-ssh",
+    "pattern": ".*head.*/\\.ssh/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using head to read files under ~/.ssh, which holds private SSH keys granting remote access."
+  },
+  {
+    "id": "sensitive-file-read-tail-ssh",
+    "pattern": ".*tail.*/\\.ssh/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using tail to read files under ~/.ssh, which holds private SSH keys granting remote access."
+  },
+  {
+    "id": "sensitive-file-read-less-ssh",
+    "pattern": ".*less.*/\\.ssh/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using less to read files under ~/.ssh, which holds private SSH keys granting remote access."
+  },
+  {
+    "id": "sensitive-file-read-more-ssh",
+    "pattern": ".*more.*/\\.ssh/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using more to read files under ~/.ssh, which holds private SSH keys granting remote access."
+  },
+  {
+    "id": "sensitive-file-read-strings-ssh",
+    "pattern": ".*strings.*/\\.ssh/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using strings to extract text from files under ~/.ssh, which holds private SSH keys granting remote access."
+  },
+  {
+    "id": "sensitive-file-read-base64-ssh",
+    "pattern": ".*base64.*/\\.ssh/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks using base64 to encode/dump files under ~/.ssh, a common way to exfiltrate private SSH keys past text filters."
+  },
+  {
+    "id": "sensitive-file-read-cp-aws",
+    "pattern": ".*cp.*/\\.aws/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks copying files out of ~/.aws, which would duplicate AWS credentials to an unprotected location for exfiltration."
+  },
+  {
+    "id": "sensitive-file-read-cp-ssh",
+    "pattern": ".*cp.*/\\.ssh/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks copying files out of ~/.ssh, which would duplicate private SSH keys to an unprotected location for exfiltration."
+  },
+  {
+    "id": "sensitive-file-read-python-aws",
+    "pattern": ".*python.*open.*/\\.aws/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks a Python open() of files under ~/.aws, a scripted path to read AWS credentials past shell-verb filters."
+  },
+  {
+    "id": "sensitive-file-read-python-ssh",
+    "pattern": ".*python.*open.*/\\.ssh/.*",
+    "category": "sensitive-file-read",
+    "description": "Blocks a Python open() of files under ~/.ssh, a scripted path to read private SSH keys past shell-verb filters."
+  },
+  {
+    "id": "self-protection-restart",
+    "pattern": ".*kiro.?crew restart.*",
+    "category": "self-protection",
+    "description": "Blocks 'kirocrew restart' so the agent cannot restart its own gateway process and disrupt the running session or evade in-flight controls."
+  },
+  {
+    "id": "self-protection-update",
+    "pattern": ".*kiro.?crew update.*",
+    "category": "self-protection",
+    "description": "Blocks 'kirocrew update' so the agent cannot self-update (git pull + rebuild + execv restart) and swap out its own running code without operator oversight."
+  },
+  {
+    "id": "self-protection-cloud",
+    "pattern": ".*kiro.?crew\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|login).*",
+    "category": "self-protection",
+    "description": "Blocks 'kirocrew cloud' lifecycle subcommands (destroy/stop/start/launch/connect/tunnel/login) so the agent cannot tear down, provision, or re-authenticate its own cloud instance."
+  },
+  {
+    "id": "self-protection-gateway-restart",
+    "pattern": ".*kiro.?crew gateway restart.*",
+    "category": "self-protection",
+    "description": "Blocks 'kirocrew gateway restart' so the agent cannot bounce its own gateway server and interrupt the active session or supervision."
+  },
+  {
+    "id": "self-protection-kill",
+    "pattern": "(?:(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*[\\w.:/\\\\-]*(?:pkill|killall)\\b[^;&#>]*\\bkiro[-.]?crew\\b|(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*[\\w.:/\\\\-]*kill\\b[^;&#>]*(?:\\$\\(|`)[^;&#>]*\\bkiro[-.]?crew\\b)",
+    "category": "self-protection",
+    "description": "Blocks pkill/killall naming a kirocrew process, and a bare kill whose PID comes from a command substitution that resolves the kirocrew name, so the agent cannot terminate its own gateway or supervisor and disable the controls governing it. Scoped to the kill target within one command segment: an incidental mention of the product in a later command or a comment (a file being restored, a log path) is not a kill."
+  },
+  {
+    "id": "legacy-get-secret",
+    "pattern": "get_secret.*",
+    "category": "credential-exfil",
+    "description": "Blocks explicit secret-fetching tool names such as `get_secret_value`, which read credential material that could be exfiltrated."
+  },
+  {
+    "id": "legacy-read-secret",
+    "pattern": "read_secret.*",
+    "category": "credential-exfil",
+    "description": "Blocks explicit secret-reading tool names such as `read_secret`, which read credential material that could be exfiltrated."
+  },
+  {
+    "id": "legacy-delete-stack-underscore",
+    "pattern": ".*delete_stack.*",
+    "category": "aws-destructive",
+    "description": "Blocks the boto3 underscore form `delete_stack`, which destroys a CloudFormation stack and every resource it manages."
+  },
+  {
+    "id": "legacy-terminate-instance-underscore",
+    "pattern": ".*terminate_instance.*",
+    "category": "aws-destructive",
+    "description": "Blocks the boto3 underscore form `terminate_instance(s)`, which permanently shuts down and deletes running EC2 instances."
+  },
+  {
+    "id": "legacy-drop-table-underscore",
+    "pattern": ".*drop_table.*",
+    "category": "sql",
+    "description": "Blocks the underscore form `drop_table`, which permanently deletes a database table and all its rows."
+  },
+  {
+    "id": "legacy-delete-table-underscore",
+    "pattern": ".*delete_table.*",
+    "category": "aws-destructive",
+    "description": "Blocks the boto3 underscore form `delete_table`, which permanently deletes a DynamoDB table and every item it holds."
+  },
+  {
+    "id": "legacy-delete-bucket-underscore",
+    "pattern": ".*delete_bucket.*",
+    "category": "aws-destructive",
+    "description": "Blocks the boto3 underscore form `delete_bucket`, which removes an S3 bucket and can cause irreversible data loss."
+  },
+  {
+    "id": "credential-exfil-kirocrew-token-argv",
+    "pattern": "(?:['\"][\\w.:/\\\\-]*kiro[-.]?crew[\\w.]*['\"][\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"]token['\"]|(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*|kernel\\.system|io\\.popen)\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b[^'\"]*\\btoken\\b)",
+    "category": "credential-exfil",
+    "description": "Blocks an interpreter payload that spawns the `kirocrew token` credential mint through a library call rather than as a shell command -- the CLI name and the token verb as adjacent QUOTED arguments, as in `python -c \"subprocess.run(['kirocrew','token'])\"`. Scoped to the argv-literal shape so a regex literal or prose mentioning both words is not a mint; a single-string spelling is out of reach of command-text matching and is covered by the sensitive-path floor over the signing key instead."
+  },
+  {
+    "id": "self-protection-kill-interpreter",
+    "pattern": "(?:(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*|kernel\\.system|io\\.popen)(?:\\s*\\(?\\s*[a-z]{0,2}['\"][^'\"]*\\b(?:pkill|killall)\\b[^'\"]*\\b(?:kiro[-.]?crew|irocrew)\\b|[\\s\\(\\[]*['\"][\\w.:/\\\\-]*(?:pkill|killall)['\"][\\s,\\[\\]\\(\\)+*'\"=\\w-]*['\"][^'\"]*(?:kiro[-.]?crew|irocrew))|(?:os\\.kill(?:pg)?|process\\.kill|\\bkillpg)\\s*\\([^)]*irocrew)",
+    "category": "self-protection",
+    "description": "Blocks an interpreter payload that terminates a kirocrew process through a library call rather than as a shell command -- a pkill/killall command and the product name inside one quoted string passed to an executing sink such as `os.system(...)` or `execSync(...)`. Sink-qualified so prose, a commit message or a regex literal naming both is not a kill."
+  }
+]

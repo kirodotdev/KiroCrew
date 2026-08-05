@@ -1,0 +1,106 @@
+name: PR Merge-Conflict Label
+
+# Mirrors GitHub's OWN per-PR mergeability onto a single "merge conflict"
+# label. GitHub already shows a conflict on the PR page and blocks the merge
+# button, but it does NOT surface conflicts in the /pulls list -- so a reviewer
+# scanning open PRs cannot tell which green-looking PR is actually unmergeable.
+# A label renders on every row of that list, closing the gap.
+#
+# This workflow is read-only against PR content: it only reads the computed
+# `mergeable` field and toggles a label. It never checks out or executes PR
+# code, recomputes mergeability itself, or re-runs any checks. It also never
+# blocks merge (GitHub already blocks a conflicting merge) -- the label is
+# purely a visibility signal.
+on:
+  schedule:
+    # Backstop sweep. A PR flips MERGEABLE -> CONFLICTING purely because its
+    # base branch advanced, and GitHub emits NO pull_request event for that,
+    # so a periodic sweep is the only way to catch the base-moved case.
+    - cron: "*/30 * * * *"
+  push:
+    # A merge into the default branch is the usual cause of other open PRs
+    # becoming conflicted -- re-sweep immediately so the labels stay fresh
+    # without waiting for the next scheduled run.
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  # Collapse an overlapping sweep (e.g. a push landing during a scheduled run)
+  # into one. The sweep is idempotent, so cancelling an in-flight run is safe.
+  group: pr-merge-conflict-label
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Sync merge-conflict label
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Sync "merge conflict" label across open pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          LABEL: "merge conflict"
+        run: |
+          set -euo pipefail
+
+          # Ensure the label exists (idempotent).
+          existing="$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name')"
+          if ! grep -Fxq "$LABEL" <<<"$existing"; then
+            gh label create "$LABEL" --repo "$REPO" \
+              --color "D93F0B" \
+              --description "Branch has merge conflicts with its base — author must resolve before merge"
+          fi
+
+          # Enumerate open PRs with GitHub's own mergeability + current labels.
+          prs="$(gh pr list --repo "$REPO" --state open --limit 300 \
+            --json number,mergeable,labels)"
+
+          add_label() {
+            jq -n --arg label "$LABEL" '{labels: [$label]}' \
+              | gh api --method POST "repos/$REPO/issues/$1/labels" --input - >/dev/null
+          }
+          remove_label() {
+            local encoded
+            encoded="$(jq -rn --arg value "$LABEL" '$value | @uri')"
+            gh api --method DELETE "repos/$REPO/issues/$1/labels/$encoded" >/dev/null
+          }
+
+          echo "$prs" | jq -c '.[]' | while read -r pr; do
+            number="$(jq -r '.number' <<<"$pr")"
+            mergeable="$(jq -r '.mergeable' <<<"$pr")"
+            has_label="$(jq -r --arg l "$LABEL" 'any(.labels[]?; .name == $l)' <<<"$pr")"
+
+            # GitHub computes mergeability lazily, so a freshly-listed PR is
+            # often UNKNOWN. Re-query it once -- a node read nudges GitHub to
+            # compute it. Anything still UNKNOWN is left untouched this pass and
+            # settles on a later sweep. Only a definitive CONFLICTING/MERGEABLE
+            # ever adds or removes the label; UNKNOWN never does.
+            if [ "$mergeable" = "UNKNOWN" ]; then
+              mergeable="$(gh pr view "$number" --repo "$REPO" \
+                --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")"
+            fi
+
+            case "$mergeable" in
+              CONFLICTING)
+                if [ "$has_label" != "true" ]; then
+                  add_label "$number"
+                  echo "PR #$number: CONFLICTING -> added '$LABEL'"
+                fi
+                ;;
+              MERGEABLE)
+                if [ "$has_label" = "true" ]; then
+                  remove_label "$number"
+                  echo "PR #$number: MERGEABLE -> removed '$LABEL'"
+                fi
+                ;;
+              *)
+                echo "PR #$number: mergeability UNKNOWN -> unchanged"
+                ;;
+            esac
+          done

@@ -1,0 +1,187 @@
+# End-to-end macOS auto-update (OTA) verification.
+#
+# WHY THIS EXISTS: the electron unit suite stops at the autoUpdater handoff --
+# it proves we call the library correctly, never that a real app bundle gets
+# replaced on disk and relaunches at the new version. That gap has bitten this
+# repo before in the analogous case: notarization passed CI and Gatekeeper
+# still rejected the artifact. This job closes it by building two real apps and
+# performing an actual swap.
+#
+# WHY IT IS NOT ON EVERY PR: it packages two Electron apps, launches a GUI app,
+# and depends on a real quit/relaunch cycle, so it is inherently slower and
+# flakier than a unit test. It runs nightly and on demand; a failure here is a
+# signal to investigate, not an automatic merge block.
+#
+# WHAT IT DOES *NOT* PROVE: the apps are signed with a throwaway SELF-SIGNED
+# identity minted in a temporary keychain (no Developer ID, so this job needs no
+# secrets). That validates the SWAP MECHANISM, not Gatekeeper acceptance or
+# notarization -- those are separate questions covered by the signing lane.
+#
+# WHY NOT AD-HOC (it used to be, and the lane could never pass): Squirrel.Mac
+# checks that the downloaded bundle satisfies the RUNNING app's designated code
+# requirement. An ad-hoc signature has no identity, so its requirement degrades
+# to the bundle's own cdhash, which differs for every build -- the update can
+# never satisfy it. Run 30490303783 failed with "code failed to satisfy
+# specified code requirement(s)" (SQRLCodeSignatureErrorDomain -1) for exactly
+# this reason. Signing BOTH bundles with one shared identity is what makes the
+# requirement match.
+#
+# HOW THE CONSENT GATE IS DRIVEN: the updater is deliberately consent-first
+# (autoDownload=false), so a human normally clicks Download then
+# Restart & Update. Rather than add a test-only auto-consent hook to shipped
+# code, scripts/ota-drive.js attaches to the REAL renderer over the Chrome
+# DevTools Protocol and calls the same preload API the buttons call
+# (window.updateAPI.download / .install). The exercised code path is identical
+# to the user's.
+name: OTA Update Test (macOS)
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    # Nightly, offset from the release nightly so they do not contend.
+    - cron: "40 8 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ota-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ota:
+    name: Build two versions and prove the swap
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      PORT: "8799"
+      OUT: "/tmp/kirocrew-ota"
+      INSTALLED_VER: "1.0.0"
+      UPDATE_VER: "1.0.1"
+      CDP_PORT: "9222"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # The app only reaches initAutoUpdate after its gateway connects, and
+      # find-bin.js falls back to a PATH `kirocrew`. Installing the package is
+      # cheaper and less brittle than building the PyInstaller bundle, and the
+      # script stubs an empty backend-dist so electron-builder's extraResources
+      # does not fail on a missing source dir.
+      - name: Install the gateway on PATH
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e .
+          command -v kirocrew
+          kirocrew --version || true
+
+      - name: Install electron dependencies
+        working-directory: website/electron
+        run: npm ci
+
+      # Fail loudly if the updater surface regressed before spending 20 minutes
+      # on packaging -- a cheap gate in front of an expensive one.
+      - name: Unit suite (fast gate)
+        working-directory: website/electron
+        run: npm test
+
+      - name: Build both versions (self-signed with a shared throwaway identity)
+        working-directory: website/electron
+        env:
+          BUILD_ONLY: "1"
+        run: |
+          set -euo pipefail
+          ./scripts/stage3-autoupdate-test.sh | tee /tmp/ota-build.log
+          # Export the paths the script reported so later steps do not re-derive
+          # them (and so a naming change fails here, visibly, not silently).
+          grep -E '^(INSTALLED_APP|INSTALLED_BIN|UPDATE_ZIP)=' /tmp/ota-build.log >> "$GITHUB_ENV"
+
+      - name: Assert the built versions are what we think they are
+        run: |
+          set -euo pipefail
+          got=$(defaults read "$INSTALLED_APP/Contents/Info" CFBundleShortVersionString)
+          echo "installed app reports: $got"
+          [ "$got" = "$INSTALLED_VER" ] || { echo "expected $INSTALLED_VER"; exit 1; }
+          test -f "$UPDATE_ZIP"
+
+      - name: Start the local update feed
+        working-directory: website/electron
+        run: |
+          set -euo pipefail
+          nohup node scripts/local-feed-server.js \
+            --port "$PORT" --zip "$UPDATE_ZIP" --version "$UPDATE_VER" \
+            > /tmp/ota-feed.log 2>&1 &
+          for i in $(seq 1 20); do
+            if curl -fsS "http://127.0.0.1:${PORT}/feed/stable/latest-mac.yml" >/dev/null; then
+              echo "feed up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "feed did not come up"; cat /tmp/ota-feed.log; exit 1
+
+      - name: Launch the installed app with remote debugging
+        run: |
+          set -euo pipefail
+          KIROCREW_UPDATE_FEED="http://127.0.0.1:${PORT}/feed" \
+          KIROCREW_FLAVOR=beta \
+          KIROCREW_HOME="${OUT}/home" \
+          nohup "$INSTALLED_BIN" --remote-debugging-port="${CDP_PORT}" \
+            > /tmp/ota-app.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -fsS "http://127.0.0.1:${CDP_PORT}/json/version" >/dev/null; then
+              echo "devtools up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "app never exposed devtools"; cat /tmp/ota-app.log; exit 1
+
+      # discovery -> consent -> download -> install dispatch, over CDP.
+      - name: Drive the update (unattended consent)
+        working-directory: website/electron
+        run: node scripts/ota-drive.js --cdp "${CDP_PORT}" --expect "$UPDATE_VER" --timeout 300
+
+      # THE ACTUAL ASSERTION. Everything above proves the updater was driven;
+      # only this proves the bundle on disk was replaced. "install dispatched"
+      # is NOT success -- the swap happens asynchronously after the app quits,
+      # so poll for the version to flip.
+      - name: Assert the bundle actually swapped
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            got=$(defaults read "$INSTALLED_APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "")
+            if [ "$got" = "$UPDATE_VER" ]; then
+              echo "SWAP CONFIRMED: bundle now reports $got"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "SWAP FAILED: bundle still reports '${got:-unknown}', expected $UPDATE_VER"
+          echo "--- app log ---"; cat /tmp/ota-app.log || true
+          echo "--- feed log ---"; cat /tmp/ota-feed.log || true
+          exit 1
+
+      - name: Confirm the swapped app is signed and launchable
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict "$INSTALLED_APP" && echo "signature intact after swap"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ota-logs
+          path: |
+            /tmp/ota-build.log
+            /tmp/ota-app.log
+            /tmp/ota-feed.log
+          if-no-files-found: warn
+          retention-days: 7

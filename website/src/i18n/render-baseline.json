@@ -1,0 +1,285 @@
+{
+  "_comment": "Phase 5 render-time gate. Findings from rendering the real DEV build under en-XA -- all three buckets, including layout/latent, so those are measured at PSEUDOLOCALE width rather than in any locale we ship. The one real locale in the set is a DNT probe whose other findings are discarded, so it contributes nothing here; see LOCALES in scripts/lib/i18n-surfaces.mjs for what that trade cost. This is a DEBT RECORD, not the gate: [vs-base] renders the base commit and fails on any per-surface increase without reading this file, because a total is written by whichever branch measured it last and so cannot be attributed to any one diff -- see scripts/lib/render-verdict.mjs. These numbers decide a run in exactly one case: a run that had NO base commit to diff, where the alternative is checking nothing. Regenerate with `node scripts/check-i18n-render.mjs --build --update` whenever it drifts; the goal for every entry is 0. DNT findings are not recorded here -- they are zero-tolerance.",
+  "_total": {
+    "text": 2416,
+    "layout": 3,
+    "latent": 72
+  },
+  "surfaces": {
+    "chat": {
+      "text": 34,
+      "layout": 2,
+      "latent": 12
+    },
+    "settings-display": {
+      "text": 76,
+      "layout": 0,
+      "latent": 4
+    },
+    "settings-overview": {
+      "text": 8,
+      "layout": 0,
+      "latent": 0
+    },
+    "schedule": {
+      "text": 56,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-chat": {
+      "text": 120,
+      "layout": 0,
+      "latent": 18
+    },
+    "settings-privacy": {
+      "text": 36,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-computer-use": {
+      "text": 16,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-security": {
+      "text": 40,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-notifications": {
+      "text": 2,
+      "layout": 0,
+      "latent": 16
+    },
+    "settings-about": {
+      "text": 4,
+      "layout": 0,
+      "latent": 0
+    },
+    "capabilities-crews": {
+      "text": 42,
+      "layout": 0,
+      "latent": 0
+    },
+    "capabilities-mcp": {
+      "text": 44,
+      "layout": 0,
+      "latent": 0
+    },
+    "capabilities-skills": {
+      "text": 44,
+      "layout": 0,
+      "latent": 0
+    },
+    "projects": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "knowledge": {
+      "text": 4,
+      "layout": 0,
+      "latent": 0
+    },
+    "artifacts": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "apps": {
+      "text": 168,
+      "layout": 1,
+      "latent": 8
+    },
+    "app-detail": {
+      "text": 74,
+      "layout": 0,
+      "latent": 0
+    },
+    "notifications": {
+      "text": 16,
+      "layout": 0,
+      "latent": 0
+    },
+    "logs": {
+      "text": 10,
+      "layout": 0,
+      "latent": 0
+    },
+    "developer-system": {
+      "text": 14,
+      "layout": 0,
+      "latent": 0
+    },
+    "design-critique": {
+      "text": 140,
+      "layout": 0,
+      "latent": 0
+    },
+    "issue-radar": {
+      "text": 4,
+      "layout": 0,
+      "latent": 0
+    },
+    "dev-fleet": {
+      "text": 6,
+      "layout": 0,
+      "latent": 0
+    },
+    "auto-research": {
+      "text": 6,
+      "layout": 0,
+      "latent": 0
+    },
+    "channels": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "file-explorer": {
+      "text": 2,
+      "layout": 0,
+      "latent": 4
+    },
+    "workflows": {
+      "text": 16,
+      "layout": 0,
+      "latent": 0
+    },
+    "code-review-sage": {
+      "text": 18,
+      "layout": 0,
+      "latent": 0
+    },
+    "papyrus": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "crew-companion": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "meetings": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "md-notebook": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "worlds": {
+      "text": 224,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-browser": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-channels": {
+      "text": 38,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-developer": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-imports": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-instances": {
+      "text": 48,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-shortcuts": {
+      "text": 422,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-skills": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "settings-voice": {
+      "text": 18,
+      "layout": 0,
+      "latent": 8
+    },
+    "capabilities-hooks": {
+      "text": 112,
+      "layout": 0,
+      "latent": 0
+    },
+    "capabilities-prompts": {
+      "text": 68,
+      "layout": 0,
+      "latent": 0
+    },
+    "capabilities-steering": {
+      "text": 68,
+      "layout": 0,
+      "latent": 0
+    },
+    "capabilities-templates": {
+      "text": 74,
+      "layout": 0,
+      "latent": 0
+    },
+    "developer-archive": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "developer-config": {
+      "text": 142,
+      "layout": 0,
+      "latent": 0
+    },
+    "developer-logs": {
+      "text": 10,
+      "layout": 0,
+      "latent": 0
+    },
+    "developer-mcp-pool": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "developer-memory": {
+      "text": 2,
+      "layout": 0,
+      "latent": 0
+    },
+    "developer-storage": {
+      "text": 68,
+      "layout": 0,
+      "latent": 0
+    },
+    "developer-telemetry": {
+      "text": 4,
+      "layout": 0,
+      "latent": 0
+    },
+    "hooks": {
+      "text": 62,
+      "layout": 0,
+      "latent": 0
+    },
+    "deploy": {
+      "text": 30,
+      "layout": 0,
+      "latent": 2
+    }
+  }
+}

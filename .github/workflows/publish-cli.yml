@@ -1,0 +1,299 @@
+name: Publish CLI (reusable)
+
+# Reusable workflow: publish an already-built CLI wheel to a release channel.
+# Called by nightly.yml (channel: nightly) and release.yml (channel:
+# insider | stable). See docs/build/release.md -> "CLI (Linux / EC2) Distribution".
+#
+# Key properties:
+#   - CI-direct feed: writes feed/<channel>/latest-cli.json straight from CI.
+#   - Independently verifiable manifest: KMS signs every artifact field and the
+#     installer verifies against an offline public key pinned in cli.sh.
+#   - Never gated on macOS signing/notarization (Linux has no Gatekeeper); the
+#     CLI lane uses its own non-exportable asymmetric KMS key.
+#   - Publishes the wheel exactly as built; the manifest version is parsed from
+#     the wheel filename so it always matches what pip will install.
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: "Release channel: nightly | insider | stable"
+        required: true
+        type: string
+      version:
+        description: "Human-readable version label (informational; the wheel's own version is authoritative)"
+        required: false
+        type: string
+        default: ""
+      wheel_artifact:
+        description: "Name of the uploaded artifact containing the wheel"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  publish-cli:
+    name: Publish CLI wheel (${{ inputs.channel }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # REQUIRED for tag-triggered (release) runs: the signing role's OIDC trust
+    # accepts exactly two subjects -- ref:refs/heads/main and environment:prod.
+    # Nightly runs on main's ref and passes bare, which masked this gap until the
+    # first tag-triggered CLI publish failed AssumeRoleWithWebIdentity. Declaring
+    # the environment switches ANY caller's subject to environment:prod, same as
+    # every job in sign-and-notarize.yml.
+    environment: prod
+    env:
+      HAS_PUBLISH_ROLE: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
+      HAS_MANIFEST_KEY: ${{ vars.CLI_MANIFEST_SIGNING_KEY_ARN != '' && 'true' || '' }}
+      CHANNEL: ${{ inputs.channel }}
+      VERSION_LABEL: ${{ inputs.version }}
+    steps:
+      - name: Refuse partial CLI signing configuration
+        if: env.HAS_PUBLISH_ROLE != env.HAS_MANIFEST_KEY
+        run: |
+          echo "::error::CLI publishing requires BOTH AWS_SIGNING_ROLE_ARN and CLI_MANIFEST_SIGNING_KEY_ARN. Refusing to publish an unsigned manifest."
+          exit 1
+
+      - name: Checkout manifest verifier contract
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download wheel artifact
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.wheel_artifact }}
+          path: cli-dist
+
+      - name: Locate wheel and compute checksum
+        id: wheel
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        run: |
+          set -euo pipefail
+          mapfile -t WHEELS < <(find cli-dist -type f -name '*.whl' -print)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one .whl in artifact '${{ inputs.wheel_artifact }}'; found ${#WHEELS[@]}"
+            exit 1
+          fi
+          WHEEL="${WHEELS[0]}"
+          WHEEL_DIR=$(dirname "$WHEEL")
+          WHEEL_NAME=$(basename "$WHEEL")
+          if [[ ! "$WHEEL_NAME" =~ ^kirocrew-([A-Za-z0-9][A-Za-z0-9._+]{0,127})-py3-none-any\.whl$ ]]; then
+            echo "::error::Wheel name does not match the canonical KiroCrew pure-Python artifact contract: $WHEEL_NAME"
+            exit 1
+          fi
+          WHEEL_VERSION="${BASH_REMATCH[1]}"
+          ( cd "$WHEEL_DIR" && sha256sum "$WHEEL_NAME" > SHA256SUMS )
+          SHA256=$(awk '{print $1}' "$WHEEL_DIR/SHA256SUMS")
+          {
+            echo "path=$WHEEL"
+            echo "name=$WHEEL_NAME"
+            echo "sumsdir=$WHEEL_DIR"
+            echo "version=$WHEEL_VERSION"
+            echo "sha256=$SHA256"
+          } >> "$GITHUB_OUTPUT"
+          echo "Wheel: $WHEEL_NAME (version $WHEEL_VERSION, label '${VERSION_LABEL}')"
+
+      - name: Attest wheel provenance
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        # Signed SLSA provenance binding the published wheel's digest to this
+        # repo/workflow/commit (CWE-1104) — complements the self-hosted
+        # SHA256SUMS (integrity, not authenticity). Runs before the wheel is
+        # published to S3/CloudFront.
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: ${{ steps.wheel.outputs.path }}
+
+      - name: Configure AWS credentials
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Build and sign CLI artifact manifest
+        id: manifest
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        env:
+          CDN_BASE: ${{ vars.CLI_CDN_BASE }}
+          KEY_ARN: ${{ vars.CLI_MANIFEST_SIGNING_KEY_ARN }}
+          WHEEL_PATH: ${{ steps.wheel.outputs.path }}
+          WHEEL_NAME: ${{ steps.wheel.outputs.name }}
+          WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
+          SHA256: ${{ steps.wheel.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          case "${CDN_BASE}" in
+            https://*) ;;
+            *) echo "::error::CLI_CDN_BASE must be HTTPS before signing."; exit 1 ;;
+          esac
+          CDN_BASE="${CDN_BASE%/}"
+          PUBLIC_KEY="packaging/signing/cli-manifest-public.pem"
+          PAYLOAD="$RUNNER_TEMP/cli-manifest-payload.json"
+          MANIFEST="$(dirname "$WHEEL_PATH")/cli-manifest.json"
+          PYREQ=$(unzip -p "$WHEEL_PATH" '*.dist-info/METADATA' 2>/dev/null \
+            | awk -F': ' 'tolower($1)=="requires-python"{print $2; exit}' | tr -d '\r')
+          PYREQ="${PYREQ:->=3.10}"
+          # The immutable manifest must be byte-identical when a failed job is
+          # retried. Wall-clock time would change the signed payload and make
+          # put_immutable reject a safe retry, so bind publication time to the
+          # source commit instead.
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          PUB_DATE=$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+          python3 packaging/signing/cli-manifest.py payload \
+            --channel "$CHANNEL" --version "$WHEEL_VERSION" \
+            --wheel-url "${CDN_BASE}/cli/${CHANNEL}/${WHEEL_VERSION}/${WHEEL_NAME}" \
+            --sha256 "$SHA256" --python-requires "$PYREQ" \
+            --pub-date "$PUB_DATE" \
+            --public-key "$PUBLIC_KEY" --output "$PAYLOAD"
+          python3 packaging/signing/cli-manifest.py kms-sign \
+            --payload "$PAYLOAD" --key-arn "$KEY_ARN" \
+            --public-key "$PUBLIC_KEY" --output "$MANIFEST"
+          KEY_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key_id"])' "$MANIFEST")
+          {
+            echo "path=$MANIFEST"
+            echo "key_id=$KEY_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish wheel and signed channel manifest
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        env:
+          BUCKET: ${{ vars.CLI_DIST_BUCKET }}
+          CDN_BASE: ${{ vars.CLI_CDN_BASE }}
+          WHEEL_PATH: ${{ steps.wheel.outputs.path }}
+          WHEEL_NAME: ${{ steps.wheel.outputs.name }}
+          SUMS_DIR: ${{ steps.wheel.outputs.sumsdir }}
+          WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
+          SHA256: ${{ steps.wheel.outputs.sha256 }}
+          MANIFEST_PATH: ${{ steps.manifest.outputs.path }}
+          MANIFEST_KEY_ID: ${{ steps.manifest.outputs.key_id }}
+        run: |
+          set -euo pipefail
+          # The origin bucket is private (OAC), so the raw S3 URL is not publicly
+          # reachable. Publish only when both the dist bucket and the CloudFront
+          # base are configured, and never emit a manifest that points at private
+          # S3. Fail closed (before any upload) otherwise.
+          if [ -z "${BUCKET}" ] || [ -z "${CDN_BASE}" ]; then
+            echo "::error::CLI_DIST_BUCKET and CLI_CDN_BASE repo variables must be set (bucket='${BUCKET}', cdn='${CDN_BASE}')."
+            exit 1
+          fi
+          CDN_BASE="${CDN_BASE%/}"
+          PREFIX="cli/${CHANNEL}/${WHEEL_VERSION}"
+          # Conditional writes (If-None-Match: *): a versioned wheel key is IMMUTABLE.
+          # CloudFront caches cli/* as immutable, so republishing a key with different
+          # bytes leaves stale wheels on some edges while the no-cache manifest is
+          # fresh -> sha256 mismatch for some clients. A republish attempt gets HTTP
+          # 412. Retry idempotency: a job retry after a later-step failure re-uploads
+          # the same bytes -- on 412 we compare content and continue when identical,
+          # failing only on a genuine different-bytes republish.
+          put_immutable() {
+            key="$1"; body="$2"
+            if aws s3api put-object --bucket "${BUCKET}" --key "$key" \
+                --body "$body" --if-none-match '*' > /dev/null 2> /tmp/put_err; then
+              return 0
+            fi
+            if ! grep -q "PreconditionFailed" /tmp/put_err; then
+              cat /tmp/put_err >&2; return 1   # real error (creds, network), not 412
+            fi
+            # Compare via the CDN (no extra IAM needed): under the If-None-Match
+            # invariant an existing key was written exactly once, so the CDN's
+            # copy -- cached or origin-fetched -- is the only content that has
+            # ever existed at this key. This also compares against exactly the
+            # bytes clients receive.
+            curl -fsSL --retry 3 -o /tmp/existing "${CDN_BASE}/${key}"
+            if [ "$(sha256sum /tmp/existing | awk '{print $1}')" = "$(sha256sum "$body" | awk '{print $1}')" ]; then
+              echo "::notice::$key already exists with identical content (idempotent retry); skipping"
+              return 0
+            fi
+            echo "::error::$key exists with DIFFERENT content -- refusing to republish an immutable versioned key"
+            return 1
+          }
+          [ -s "$MANIFEST_PATH" ] || { echo "::error::Signed CLI manifest is missing"; exit 1; }
+          put_immutable "${PREFIX}/${WHEEL_NAME}" "$WHEEL_PATH"
+          put_immutable "${PREFIX}/SHA256SUMS" "${SUMS_DIR}/SHA256SUMS"
+          put_immutable "${PREFIX}/cli-manifest.json" "$MANIFEST_PATH"
+
+          # Signature fields are additive to the legacy channel/version/
+          # wheel_url/sha256 schema, so old clients remain parse-compatible.
+          aws s3 cp "$MANIFEST_PATH" "s3://${BUCKET}/feed/${CHANNEL}/latest-cli.json" \
+            --content-type application/json --cache-control no-cache
+
+          {
+            echo "## CLI Published (${CHANNEL})"
+            echo "- Wheel: \`${WHEEL_NAME}\`"
+            echo "- Version: \`${WHEEL_VERSION}\`"
+            echo "- Signed manifest: \`${PREFIX}/cli-manifest.json\`"
+            echo "- Key: \`${MANIFEST_KEY_ID}\`"
+            echo "- Feed: \`feed/${CHANNEL}/latest-cli.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish PEP 503 simple index
+        if: env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY
+        env:
+          BUCKET: ${{ vars.CLI_DIST_BUCKET }}
+          CDN_BASE: ${{ vars.CLI_CDN_BASE }}
+          WHEEL_NAME: ${{ steps.wheel.outputs.name }}
+          WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
+          SHA256: ${{ steps.wheel.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          # PEP 503 static "simple" index per channel, so pip/uv can install
+          # natively (verified invocation; --index-url alone would cut off PyPI
+          # and fail on dependencies):
+          #   pip install --pre kirocrew --extra-index-url ${CDN_BASE}/feed/<channel>/simple/
+          # pip verifies the #sha256= fragment on each link, giving the same
+          # fail-closed integrity as the feed. Lives under feed/ because that
+          # prefix is CI-writable and CloudFront serves it no-cache.
+          CDN_BASE="${CDN_BASE%/}"
+          SIMPLE="feed/${CHANNEL}/simple"
+          PROJ_URL="${CDN_BASE}/${SIMPLE}/kirocrew/"
+          NEW_LINK="<a href=\"${CDN_BASE}/cli/${CHANNEL}/${WHEEL_VERSION}/${WHEEL_NAME}#sha256=${SHA256}\">${WHEEL_NAME}</a><br/>"
+
+          # Merge with the existing (public) project page so prior versions
+          # stay installable; replace any stale entry for the same wheel name.
+          # Fail-closed on transient fetch errors: only a clean 200 (merge) or
+          # an absent page (403/404 -- S3 behind CloudFront returns 403 for
+          # missing keys) may proceed. Anything else (5xx, timeout, DNS) aborts
+          # the step and leaves the published index untouched, so a CDN blip
+          # can never truncate the version history.
+          STATUS=$(curl -sS --max-time 15 -o existing.html -w '%{http_code}' "$PROJ_URL") || STATUS=000
+          case "$STATUS" in
+            200) ;;
+            403|404) : > existing.html ;;
+            *) echo "::error::Fetching existing index returned HTTP ${STATUS}; aborting without touching the published index."; exit 1 ;;
+          esac
+          { grep -oE '<a href="[^"]+">[^<]+</a><br/>' existing.html || true; } \
+            | { grep -v ">${WHEEL_NAME}<" || true; } > links.txt
+          echo "$NEW_LINK" >> links.txt
+
+          {
+            echo '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>kirocrew</title></head><body><h1>kirocrew</h1>'
+            cat links.txt
+            echo '</body></html>'
+          } > project.html
+          printf '%s' '<!DOCTYPE html><html><head><meta name="pypi:repository-version" content="1.0"><title>Simple index</title></head><body><a href="kirocrew/">kirocrew</a><br/></body></html>' > root.html
+
+          # CloudFront+OAC does NOT resolve directory indexes (no S3-website
+          # hosting), so ALSO upload the literal trailing-slash keys pip hits.
+          # Must use `s3api put-object` (writes the EXACT key): `s3 cp` treats a
+          # trailing-slash destination as a directory prefix and would silently
+          # write .../kirocrew/project.html instead of the .../kirocrew/ key.
+          for DEST in "${SIMPLE}/kirocrew/index.html" "${SIMPLE}/kirocrew/"; do
+            aws s3api put-object --bucket "${BUCKET}" --key "${DEST}" --body project.html \
+              --content-type "text/html" --cache-control no-cache > /dev/null
+          done
+          for DEST in "${SIMPLE}/index.html" "${SIMPLE}/"; do
+            aws s3api put-object --bucket "${BUCKET}" --key "${DEST}" --body root.html \
+              --content-type "text/html" --cache-control no-cache > /dev/null
+          done
+          echo "- Simple index: \`${CDN_BASE}/${SIMPLE}/\` ($(wc -l < links.txt) version(s))" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Skipped (no publish role or manifest key)
+        if: ${{ !env.HAS_PUBLISH_ROLE && !env.HAS_MANIFEST_KEY }}
+        run: |
+          echo "CLI publish role and manifest KMS key are not configured - skipping CLI publish (fork / feature-branch run)." >> "$GITHUB_STEP_SUMMARY"

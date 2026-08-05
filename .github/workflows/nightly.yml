@@ -1,0 +1,242 @@
+name: Nightly Build
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC = 11pm PDT
+  workflow_dispatch: {} # manual trigger for testing
+
+# All build/sign/notarize/publish logic lives in reusable workflows shared
+# with release.yml (build-wheel.yml, build-desktop.yml, publish-cli.yml,
+# sign-and-notarize.yml). This file owns only what is genuinely
+# nightly-specific: the trigger, the concurrency group, and the
+# date-stamped version derivation.
+
+permissions:
+  contents: read
+
+# Single-flight nightly runs. cancel-in-progress also protects the channel
+# feeds (feed/nightly/latest-mac.yml + latest-linux.yml, last-writer-wins):
+# an overlapping older run is cancelled rather than finishing last and
+# rolling a feed back to an older build for every client.
+concurrency:
+  group: nightly-build
+  cancel-in-progress: true
+
+jobs:
+  version:
+    name: Compute Nightly Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      nightly_version: ${{ steps.stamp.outputs.version }}
+      wheel_version: ${{ steps.stamp.outputs.wheel_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: src/kiro_crew/__init__.py
+
+      - name: Compute version
+        id: stamp
+        run: |
+          # Wheel stamp includes HHMM so re-running a nightly on the same UTC date can
+          # never republish an existing version key with different bytes. CloudFront
+          # caches cli/* as immutable (CACHING_OPTIMIZED); a republished key leaves
+          # stale wheels on some edges while the no-cache manifest is fresh, causing
+          # sha256 mismatch failures. All .dev stamps are 12 digits from now on, so
+          # PEP 440 integer ordering stays monotonic across days. Seconds close the
+          # same-minute double-dispatch window; publish-cli.yml additionally enforces
+          # never-republish with an S3 conditional write (If-None-Match).
+          # ONE clock read, everything sliced from it. Three separate
+          # `date -u` calls can straddle UTC midnight, pairing an old-day date
+          # with a new-day time (version goes backward -> the feed offers
+          # clients a downgrade) and can also make the desktop and wheel stamps
+          # disagree for the SAME run.
+          STAMP=$(date -u +%Y%m%d%H%M%S)
+          STAMP_DATE="${STAMP:0:8}"       # YYYYMMDD (desktop)
+          STAMP_TIME="${STAMP:8:6}"       # HHMMSS   (both)
+          STAMP_FULL="${STAMP:0:14}"      # YYYYMMDDHHMMSS (wheel .dev<N>)
+          BASE=$(grep -m1 '__version__' src/kiro_crew/__init__.py | sed -E 's/.*= *"([^"]+)".*/\1/')
+          # Desktop/Squirrel needs semver; the pip wheel needs PEP 440. Emit both:
+          #   nightly_version (semver):  <base>-nightly.<YYYYMMDD>t<HHMMSS> -> Electron app + S3 build path
+          #   wheel_version   (PEP 440): <base>.dev<YYYYMMDDHHMMSS>      -> pip wheel, unique per RUN
+          # The desktop stamp carries the same seconds precision as the wheel:
+          # a date-only stamp meant two nightlies on one UTC date overwrote the
+          # same signed/<channel>/<version>/ and notarized/<channel>/<version>/
+          # keys (the exact republish class #62 fixed for cli/*), which becomes
+          # a CloudFront edge-divergence bug the day mac artifacts go public.
+          # The old shared "-nightly.<date>" is invalid PEP 440, so setuptools normalized
+          # every nightly wheel down to the base version (all became 0.1.0). ".dev<date>"
+          # is valid PEP 440 and keeps nightly wheels uniquely versioned.
+          #
+          # DATE AND TIME ARE ONE ALPHANUMERIC IDENTIFIER SEPARATED BY "t",
+          # never a bare number and never two dot-separated numeric identifiers.
+          # ONE live constraint forces this shape, and two retired ones explain
+          # why it is not just a bare timestamp:
+          #
+          # 1. LIVE -- SemVer forbids leading zeros in a purely NUMERIC
+          #    prerelease identifier. The 06:00 cron yields HHMMSS=060000, so a
+          #    bare `.${STAMP_TIME}` identifier would be invalid and
+          #    electron-builder would reject it. Inside an alphanumeric
+          #    identifier (the "t" makes it alphanumeric) leading zeros are legal.
+          # 2. RETIRED with Squirrel.Windows -- Int32 overflow. Squirrel derived
+          #    each release entry's version from the nupkg FILENAME
+          #    (ReleaseEntry.Version -> Filename.ToSemanticVersion()) and sorted
+          #    entries in WriteReleaseFile; that comparison Int32-parsed digit
+          #    runs, so a run above 2147483647 made `Update.com --releasify` die
+          #    with System.OverflowException. Proven: `-nightly.20260727152449`
+          #    (2.0e13) FAILED, `-nightly.20260727t184500` PASSED. Dot-splitting
+          #    did NOT help: electron-builder concatenates the identifiers into
+          #    the package filename, so a LETTER between the digit runs was
+          #    required. Both runs here (YYYYMMDD ~2.0e7, HHMMSS <= 235959) stay
+          #    far under Int32 anyway.
+          # 3. RETIRED with Squirrel.Windows -- NuGet's 20-char "special version"
+          #    cap. It rejected a prerelease part over 20 chars ("The special
+          #    version part cannot exceed 20 characters."), which killed every
+          #    Windows nightly on this 23-char shape and forced a temporary
+          #    compact date (YYDDD, exactly 20). The Windows target is NSIS as of
+          #    #1428 and electron-updater's win32 path has no NuGet in it, so the
+          #    cap is gone and the readable YYYYMMDD is back.
+          #
+          # 2 and 3 are kept written down because the shape still satisfies 2
+          # (both digit runs stay far under Int32) and DELIBERATELY violates 3
+          # (23 chars against a 20-char cap) -- exceeding that cap is the point
+          # of the readable date. A future NuGet-based Windows target (msi, appx)
+          # would re-impose the cap and require re-compacting the date; this
+          # comment is the only place that records why, and what it would cost.
+          #
+          # Ordering still works: the identifier is fixed-width, and semver
+          # compares alphanumeric identifiers lexically -- which for a
+          # zero-padded YYYYMMDDtHHMMSS is chronological.
+          #
+          # The "-nightly." prefix is load-bearing and preserved: auto-update.js
+          # channelForVersion, instance-guard identityFamily, and
+          # packaging/build-desktop.sh's *-nightly.* glob all match on it.
+          # test/test_nightly_version_contract.py pins every property above.
+          echo "version=${BASE}-nightly.${STAMP_DATE}t${STAMP_TIME}" >> "$GITHUB_OUTPUT"
+          echo "wheel_version=${BASE}.dev${STAMP_FULL}" >> "$GITHUB_OUTPUT"
+          echo "Nightly (semver): ${BASE}-nightly.${STAMP_DATE}t${STAMP_TIME}"
+          echo "Wheel (PEP 440):  ${BASE}.dev${STAMP_FULL}"
+
+  dependency-vulnerability-gate:
+    name: Production Dependency Vulnerability Gate
+    uses: ./.github/workflows/dependency-vulnerability.yml
+
+  build-wheel:
+    name: Build Wheel
+    needs: [version, dependency-vulnerability-gate]
+    uses: ./.github/workflows/build-wheel.yml
+    with:
+      wheel_version: ${{ needs.version.outputs.wheel_version }}
+
+  build-desktop:
+    name: Build Desktop
+    needs: [version, dependency-vulnerability-gate]
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      version: ${{ needs.version.outputs.nightly_version }}
+
+  # Windows builds in its own workflow because it Authenticode-signs during the
+  # build (the Squirrel installer embeds already-signed executables), so unlike
+  # build-desktop.yml it needs OIDC. Keeping it separate is what lets
+  # build-desktop.yml stay credential-free. Installer-only (publishes nothing):
+  # soft_fail keeps a Windows failure from skipping publish-linux /
+  # sign-and-notarize via this caller's result.
+  build-windows:
+    name: Build Windows Desktop
+    needs: [version, dependency-vulnerability-gate]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      version: ${{ needs.version.outputs.nightly_version }}
+      soft_fail: true
+      use_prod_environment: true
+    secrets: inherit
+
+  # ── CLI channel publish ───────────────────────────────────────────────
+  # Publishes the built wheel to the nightly CLI channel (cli/ + latest-cli.json).
+  # Depends only on the wheel and its CLI-specific KMS manifest signer (not
+  # build-desktop, Apple notarization, or CDSigner), so a macOS signing failure
+  # never blocks the CLI release. See docs/build/release.md.
+  publish-cli:
+    name: Publish CLI (nightly channel)
+    needs: [version, build-wheel]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-cli.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      wheel_artifact: cli-wheel
+    secrets: inherit
+
+  # ── Linux desktop publish ─────────────────────────────────────────────
+  # Publishes the built AppImage to the distribution CDN (versioned key +
+  # latest alias). Its own lane beside publish-cli, deliberately NOT inside
+  # sign-and-notarize.yml: the Linux artifact takes no part in the macOS
+  # trust chain, and needing only build-desktop means neither a wheel nor a
+  # macOS signing failure can block it (per-platform releases).
+  publish-linux:
+    name: Publish Linux Desktop (nightly channel)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      publish: true
+      appimage_artifact: build-linux-x64
+    secrets: inherit
+
+  # ── Docker image publish ──────────────────────────────────────────────
+  # Builds the multi-arch gateway image FROM THE SAME WHEEL publish-cli
+  # ships and pushes it to ghcr.io (GITHUB_TOKEN only — no AWS credentials,
+  # no CDN vars, so this lane also works on forks). Its own lane beside
+  # publish-cli/publish-linux per the per-platform release design: only a
+  # wheel-build failure can block it. packages:write is scoped to this job
+  # alone (see test_workflow_permissions.py).
+  publish-docker:
+    name: Publish Docker Image (nightly channel)
+    needs: [version, build-wheel]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-docker.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      publish: true
+      # The GHCR package is public. Nightly is the earliest signal that the
+      # package's visibility regressed, so assert anonymous pull here too.
+      require_public_access: true
+      wheel_artifact: cli-wheel
+    # No `secrets: inherit`: the lane authenticates with GITHUB_TOKEN only
+    # (implicitly available to reusable workflows). Inheriting would expose
+    # every repo secret (signing, CDN) to a lane documented as needing none.
+
+  # Caller job for the reusable sign-and-notarize workflow: a workflow_call
+  # callee can never exceed the caller job's permissions, so the caller must
+  # grant id-token explicitly. attestations:write covers the sign job's
+  # wheel/sdist/AppImage provenance and the notarize job's shipping-DMG
+  # attestation (signed + stapled bytes).
+  sign-and-notarize:
+    name: Sign + Notarize macOS
+    needs: [version, build-wheel, build-desktop]
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
+    uses: ./.github/workflows/sign-and-notarize.yml
+    secrets: inherit
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      write_feed: true

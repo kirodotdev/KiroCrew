@@ -1,0 +1,10 @@
+# Cryptographic material must be checked out BYTE-FOR-BYTE identical on every
+# platform. The CLI manifest trust root is compared byte-for-byte in two places:
+# publish-cli.yml reconciles it against `aws kms get-public-key` output before
+# signing, and test_cli_manifest_signature.py asserts it equals the base64 copy
+# pinned in cli.sh's CLI_MANIFEST_PUBLIC_KEY_B64.
+#
+# With no attribute, git's automatic text detection rewrites LF to CRLF on a
+# Windows checkout, so both comparisons fail there and only there. Marking the
+# file non-text disables newline conversion entirely.
+*.pem -text

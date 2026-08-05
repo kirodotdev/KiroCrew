@@ -1,0 +1,449 @@
+name: PR Readiness
+
+# One current-SHA verdict for the otherwise wide PR workflow fan-out. The
+# commit status is the branch-protection handle; the label is the at-a-glance
+# signal on PR lists and the PR header.
+on:
+  # This workflow never checks out or executes PR code. pull_request_target
+  # gives the trusted base workflow enough permission to replace a stale label
+  # immediately for both same-repository and fork PRs.
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - ready_for_review
+      - converted_to_draft
+      - closed
+  workflow_run:
+    workflows:
+      - CI
+      - Build
+      - Code Review
+      - Opus 5 Review
+      - GPT 5.6 Review
+      - Design Review
+      - UX Review
+      - CodeQL
+    # `completed` publishes the real verdict. `requested`/`in_progress` exist so
+    # a monitored workflow flipping BACK to running -- most commonly a re-run of
+    # a reviewer (e.g. Opus 5 re-run after a human override) -- re-triggers this
+    # job WHILE it runs, instead of leaving the label frozen at the previous
+    # commit's verdict until the re-run completes. On re-evaluation that workflow
+    # is queried live as `in_progress`, buckets into `pending`, and the label
+    # drops from a stale `action required` (red) back to `checking` (yellow) --
+    # an honest "recomputing" signal. Cheap: the in_progress path has pending>0,
+    # and the pr+sha concurrency group (cancel-in-progress) collapses the burst
+    # of near-simultaneous requested/in_progress fires into one live evaluation.
+    types: [requested, in_progress, completed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to refresh"
+        required: true
+        type: string
+      sha:
+        description: "Expected current pull request head SHA"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  # pull_request_target runs are the only readiness runs that surface as a
+  # CheckRun in the PR's status rollup. If they share a cancelling group -- with
+  # the workflow_run burst OR with each other -- a superseded PT run is marked
+  # "cancelled" by GitHub, and that cancelled check then shows on the PR even
+  # though the authoritative "PR Readiness" commit status is fine (this is the
+  # "canceled at the end of CI" symptom: a workflow_run:completed fires as CI
+  # finishes and collapses an in-flight PT run). GitHub always marks a
+  # superseded run cancelled -- cancel-in-progress:true kills the in-flight one,
+  # and false still cancels the pending one -- so the only way a PT run never
+  # shows cancelled is to keep it out of any group that can cancel it. Each PT
+  # run therefore gets its own isolated group and always resolves to a real
+  # conclusion (success / failure / skipped), never cancelled. The evaluate and
+  # publish steps are idempotent and stale-SHA guarded, so un-collapsed PT runs
+  # on superseded revisions simply no-op green. workflow_run / workflow_dispatch
+  # runs do NOT appear in the rollup, so they keep the cheap per-(pr, sha)
+  # burst collapse via cancel-in-progress.
+  group: >-
+    ${{
+      github.event_name == 'pull_request_target'
+      && format('pr-readiness-pt-{0}', github.run_id)
+      || format('pr-readiness-wr-{0}-{1}',
+           inputs.pr
+             || github.event.workflow_run.pull_requests[0].number
+             || github.run_id,
+           inputs.sha
+             || github.event.workflow_run.head_sha
+             || github.run_id)
+    }}
+  cancel-in-progress: true
+
+jobs:
+  readiness:
+    name: Publish readiness signal
+    if: >-
+      github.event_name != 'workflow_run'
+      || (github.event.workflow_run.event == 'pull_request'
+          && github.event.workflow_run.pull_requests[0].number != null)
+      || github.event.workflow_run.event == 'dynamic'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve current pull request revision
+        id: context
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          INPUT_PR: ${{ inputs.pr }}
+          INPUT_SHA: ${{ inputs.sha }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            workflow_dispatch) PR="$INPUT_PR"; EXPECTED_SHA="$INPUT_SHA" ;;
+            workflow_run)
+              PR="$RUN_PR"
+              EXPECTED_SHA="$RUN_SHA"
+              if [ -z "$PR" ] && [ "$RUN_EVENT" = "dynamic" ]; then
+                associated="$(gh api "repos/$REPO/commits/$RUN_SHA/pulls")"
+                PR="$(jq -r --arg sha "$RUN_SHA" '
+                  [.[] | select(.state == "open" and .head.sha == $sha)]
+                  | first.number // empty
+                ' <<<"$associated")"
+              fi
+              if [ -z "$PR" ]; then
+                {
+                  echo "state=SKIP"
+                  echo "stale=true"
+                } >> "$GITHUB_OUTPUT"
+                echo "No open pull request currently has workflow head $RUN_SHA."
+                exit 0
+              fi
+              ;;
+            pull_request_target) PR="$EVENT_PR"; EXPECTED_SHA="$EVENT_SHA" ;;
+            *) echo "::error::unsupported event: $EVENT"; exit 1 ;;
+          esac
+
+          pr_json="$(gh pr view "$PR" --repo "$REPO" \
+            --json number,state,isDraft,isCrossRepository,headRefOid,url)"
+          SHA="$(jq -r '.headRefOid' <<<"$pr_json")"
+          STATE="$(jq -r '.state' <<<"$pr_json")"
+
+          {
+            echo "pr=$PR"
+            echo "sha=$SHA"
+            echo "state=$STATE"
+            echo "fork=$(jq -r '.isCrossRepository' <<<"$pr_json")"
+            echo "draft=$(jq -r '.isDraft' <<<"$pr_json")"
+            echo "url=$(jq -r '.url' <<<"$pr_json")"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -n "$EXPECTED_SHA" ] && [ "$EXPECTED_SHA" != "$SHA" ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "Ignoring stale $EVENT event for $EXPECTED_SHA; PR #$PR is now at $SHA."
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Remove readiness labels from closed pull request
+        if: steps.context.outputs.stale != 'true' && steps.context.outputs.state != 'OPEN'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.context.outputs.pr }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name')"
+          for label in \
+            "readiness: checking" \
+            "readiness: action required" \
+            "readiness: maintainer review" \
+            "readiness: passed"; do
+            if grep -Fxq "$label" <<<"$current"; then
+              encoded="$(jq -rn --arg value "$label" '$value | @uri')"
+              gh api --method DELETE "repos/$REPO/issues/$PR/labels/$encoded" >/dev/null
+            fi
+          done
+
+      - name: Evaluate current revision
+        id: verdict
+        if: steps.context.outputs.stale != 'true' && steps.context.outputs.state == 'OPEN'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.context.outputs.pr }}
+          SHA: ${{ steps.context.outputs.sha }}
+          DRAFT: ${{ steps.context.outputs.draft }}
+          FORK: ${{ steps.context.outputs.fork }}
+          TRIGGER_EVENT: ${{ github.event_name }}
+          TRIGGER_ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+
+          workflow_specs=(
+            "ci.yml|CI"
+            "build.yml|Build"
+            "code-review.yml|Code Review"
+          )
+          skipped=()
+          if [ "$FORK" = "true" ]; then
+            # Fork PRs cannot receive repository OIDC credentials or secrets,
+            # and this repository's managed default-setup CodeQL workflow is
+            # not scheduled for fork heads. Public CI, build, and static review
+            # still determine readiness.
+            skipped+=(
+              "CodeQL (fork PR)"
+              "Opus 5 Review (fork PR)"
+              "GPT 5.6 Review (fork PR)"
+              "Design Review (fork PR)"
+              "UX Review (fork PR)"
+            )
+          else
+            workflow_specs+=(
+              "dynamic/github-code-scanning/codeql|CodeQL"
+              "claude-review.yml|Opus 5 Review"
+              "codex-review.yml|GPT 5.6 Review"
+              "design-review.yml|Design Review"
+              "ux-review.yml|UX Review"
+            )
+          fi
+          passed=()
+          pending=()
+          failed=()
+
+          for spec in "${workflow_specs[@]}"; do
+            file="${spec%%|*}"
+            label="${spec#*|}"
+            if [ "$file" = "dynamic/github-code-scanning/codeql" ]; then
+              runs="$(gh api --method GET \
+                "repos/$REPO/actions/runs?event=dynamic&head_sha=$SHA&per_page=100")"
+              run="$(jq -c --arg path "$file" '
+                [.workflow_runs[] | select(.path == $path)]
+                | sort_by(.created_at)
+                | last // empty
+              ' <<<"$runs")"
+            else
+              runs="$(gh api --method GET \
+                "repos/$REPO/actions/workflows/$file/runs?event=pull_request&head_sha=$SHA&per_page=20")"
+              run="$(jq -c --argjson pr "$PR" '
+                [.workflow_runs[]
+                 | select([.pull_requests[]?.number] | index($pr))]
+                | sort_by(.created_at)
+                | last // empty
+              ' <<<"$runs")"
+            fi
+            if [ -z "$run" ]; then
+              pending+=("$label (not started)")
+              continue
+            fi
+
+            status="$(jq -r '.status // ""' <<<"$run")"
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run")"
+            if [ "$status" != "completed" ]; then
+              pending+=("$label ($status)")
+            else
+              if [ "$file" = "dynamic/github-code-scanning/codeql" ]; then
+                case "$conclusion" in
+                  success|skipped) passed+=("$label") ;;
+                  *) failed+=("$label ($conclusion)") ;;
+                esac
+              elif [ "$label" = "Design Review" ] || [ "$label" = "UX Review" ]; then
+                # Design and UX are advisory: their opinions and infrastructure
+                # failures do not become an independent readiness blocker, but
+                # completion is still required so the verdict is not premature.
+                passed+=("$label (advisory)")
+              else
+                case "$conclusion" in
+                  success|neutral|skipped) passed+=("$label") ;;
+                  *) failed+=("$label ($conclusion)") ;;
+                esac
+              fi
+            fi
+          done
+
+          # A pull_request_target open/synchronize/reopen/edit run is meant to
+          # surface a transient "checking" signal while validation spins up.
+          # But such a run can be runner-queue-delayed by many minutes and
+          # execute AFTER the workflow_run:completed runs have already published
+          # the terminal verdict for this same SHA. Seeding this sentinel
+          # unconditionally would then clobber that decided verdict back to
+          # "checking" with no further event left to recompute it on the
+          # unchanged commit -- freezing the status at pending indefinitely.
+          # Only add it when the live evaluation above still found at least one
+          # monitored workflow genuinely incomplete; in that case the verdict is
+          # already pending and the sentinel is merely a human-readable note.
+          # (A legitimate reviewer re-run arrives via workflow_run and shows up
+          # as an in_progress workflow above, so it keeps producing "checking"
+          # through this same real-pending path.)
+          case "$TRIGGER_EVENT:$TRIGGER_ACTION" in
+            pull_request_target:opened|pull_request_target:synchronize|pull_request_target:reopened|pull_request_target:edited)
+              if [ "${#pending[@]}" -gt 0 ]; then
+                pending+=("validation runs are starting")
+              fi
+              ;;
+          esac
+
+          # (The long-term "Arbiter — judge from comments" gate was retired: its
+          # one-way-door / long-term-reversibility lens now lives in Design
+          # Review. Readiness no longer waits on any API-owned external check.)
+
+          blockers=()
+          waiting=()
+          if [ "${#failed[@]}" -gt 0 ]; then
+            blockers=("${failed[@]}")
+          fi
+          if [ "${#pending[@]}" -gt 0 ]; then
+            waiting=("${pending[@]}")
+          fi
+          if [ "$DRAFT" = "true" ]; then
+            waiting+=("pull request is a draft")
+          fi
+
+          if [ "${#blockers[@]}" -gt 0 ]; then
+            state="action_required"
+            label="readiness: action required"
+            status_state="failure"
+            description="${#blockers[@]} blocking readiness item(s)"
+          elif [ "${#waiting[@]}" -gt 0 ]; then
+            state="checking"
+            label="readiness: checking"
+            status_state="pending"
+            description="${#waiting[@]} readiness check(s) still pending"
+          elif [ "$FORK" = "true" ]; then
+            # Fork PRs structurally CANNOT run the AI code reviews (Opus/GPT/
+            # Design/UX) or CodeQL -- those are guarded off on fork
+            # heads and cannot be made to run there. Passing public CI/Build/
+            # Code Review is therefore NOT full validation, so a fork PR must
+            # never reach "passed". Emit a dedicated RED (failure) terminal
+            # verdict instead: it is unmistakable in the merge box and, as a
+            # required status check, blocks an accidental merge of code the AI
+            # reviewers never saw. A maintainer must review manually, or re-run
+            # validation from a trusted in-repo branch, before merge.
+            state="maintainer_review"
+            label="readiness: maintainer review"
+            status_state="failure"
+            description="Fork PR — AI reviews could not run; maintainer review required before merge"
+          else
+            state="passed"
+            label="readiness: passed"
+            status_state="success"
+            description="Eligible automated validation passed for this revision"
+          fi
+
+          {
+            echo "state=$state"
+            echo "label=$label"
+            echo "status_state=$status_state"
+            echo "description=$description"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### PR Readiness: ${state//_/ }"
+            echo
+            echo "- PR: #$PR"
+            echo "- Revision: \`$SHA\`"
+            echo "- Passed components: ${#passed[@]}"
+            if [ "$state" = "maintainer_review" ]; then
+              echo
+              echo "> ⚠️ **Fork PR — automated AI code reviews (Opus/GPT/Design/UX) and CodeQL cannot run on a fork head.**"
+              echo "> Passing public CI/Build/Code Review is NOT full validation. A maintainer must review manually,"
+              echo "> or re-run validation from a trusted in-repo branch, before this PR is merged."
+            fi
+            if [ "${#skipped[@]}" -gt 0 ]; then
+              echo
+              echo "**Not eligible**"
+              printf -- "- %s\n" "${skipped[@]}"
+            fi
+            if [ "${#blockers[@]}" -gt 0 ]; then
+              echo
+              echo "**Blocking**"
+              printf -- "- %s\n" "${blockers[@]}"
+            fi
+            if [ "${#waiting[@]}" -gt 0 ]; then
+              echo
+              echo "**Waiting**"
+              printf -- "- %s\n" "${waiting[@]}"
+            fi
+          } > "$RUNNER_TEMP/pr-readiness-summary.md"
+
+      - name: Publish status and label
+        if: steps.context.outputs.stale != 'true' && steps.context.outputs.state == 'OPEN'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.context.outputs.pr }}
+          SHA: ${{ steps.context.outputs.sha }}
+          URL: ${{ steps.context.outputs.url }}
+          TARGET_LABEL: ${{ steps.verdict.outputs.label }}
+          STATUS_STATE: ${{ steps.verdict.outputs.status_state }}
+          DESCRIPTION: ${{ steps.verdict.outputs.description }}
+        run: |
+          set -euo pipefail
+          current_sha="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq '.headRefOid')"
+          if [ "$current_sha" != "$SHA" ]; then
+            echo "Ignoring publish for stale revision $SHA; PR #$PR is now at $current_sha."
+            exit 0
+          fi
+
+          label_specs=(
+            "readiness: checking|BFDADC|Automated validation is still running"
+            "readiness: action required|D73A4A|A blocking check or review needs attention"
+            "readiness: maintainer review|B60205|Fork PR — AI reviews could not run; maintainer must review before merge"
+            "readiness: passed|0E8A16|Eligible automated validation passed for the current revision"
+          )
+          existing_labels="$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name')"
+          for spec in "${label_specs[@]}"; do
+            name="${spec%%|*}"
+            rest="${spec#*|}"
+            color="${rest%%|*}"
+            description="${rest#*|}"
+            if ! grep -Fxq "$name" <<<"$existing_labels"; then
+              gh label create "$name" --repo "$REPO" \
+                --color "$color" --description "$description"
+            fi
+          done
+
+          current="$(gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name')"
+          for label in \
+            "readiness: checking" \
+            "readiness: action required" \
+            "readiness: maintainer review" \
+            "readiness: passed"; do
+            if [ "$label" != "$TARGET_LABEL" ] && grep -Fxq "$label" <<<"$current"; then
+              encoded="$(jq -rn --arg value "$label" '$value | @uri')"
+              gh api --method DELETE "repos/$REPO/issues/$PR/labels/$encoded" >/dev/null
+            fi
+          done
+          if ! grep -Fxq "$TARGET_LABEL" <<<"$current"; then
+            jq -n --arg label "$TARGET_LABEL" '{labels: [$label]}' \
+              | gh api --method POST "repos/$REPO/issues/$PR/labels" \
+                  --input - >/dev/null
+          fi
+
+          jq -n \
+            --arg state "$STATUS_STATE" \
+            --arg target_url "$URL" \
+            --arg description "$DESCRIPTION" \
+            '{
+              state: $state,
+              target_url: $target_url,
+              description: $description,
+              context: "PR Readiness"
+            }' \
+            | gh api --method POST "repos/$REPO/statuses/$SHA" --input - >/dev/null
+
+          cat "$RUNNER_TEMP/pr-readiness-summary.md" >> "$GITHUB_STEP_SUMMARY"

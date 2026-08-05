@@ -1,0 +1,869 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # PRs cancel superseded revisions: only a PR's tip commit needs a verdict.
+  # main does not, so let an in-flight run finish instead of killing it.
+  # This does NOT produce a verdict per commit. The group still permits one
+  # pending run, and GitHub evicts that pending run when a newer one queues
+  # (a documented GitHub concurrency behavior). With a ~19min run and a
+  # ~1.4min median merge gap, main gets periodic verdicts instead of none.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  scrub-lint:
+    name: De-Amazon Scrub Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Full history is fetched lazily by the script only for the (skipped)
+        # history scan; the working-tree gate needs just the checkout.
+      - name: Scan working tree for internal markers
+        # Blocking gate: fails the build on any Amazon-internal marker in the
+        # public tree (internal domains/hosts, ticket ids, aliases, credential
+        # shapes) outside the intentional allowlist, so a sync cannot reintroduce
+        # a coupling. --no-history: git-history rewrite is a separate task.
+        run: ./scripts/scrub-lint.sh --no-history
+
+  brand-lint:
+    name: Brand Name Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the product name on the lines this change adds
+        # Diff-scoped on purpose. The tree still carries thousands of prose lines
+        # that join the two words, from before the convention, so a whole-tree
+        # gate would fail every PR until one enormous rename lands and charge the
+        # break to whoever pushed next. Added lines are complete for regression —
+        # a line only reaches main through a diff that added it — and the
+        # whole-tree number is still printed as a non-failing report.
+        env:
+          # `base.sha`, not `origin/<base>`: the merge ref this run checks out was
+          # computed against that exact commit, so the diff cannot pick up main
+          # moves that landed after the run started. Same reasoning as the
+          # i18n gates below; see the longer note at their first use.
+          BRAND_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          BRAND_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$BRAND_BASE_REF" 'the brand-name gate')" || exit 1
+          export BRAND_BASE_REF
+          # Self-test first: it plants one probe per rule family, so a typo that
+          # silently disables an exemption fails here instead of shipping green.
+          python3 scripts/check_brand_name.py --test
+          python3 scripts/check_brand_name.py
+
+  docs-lint:
+    name: Docs Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify the linter's own checks still fire
+        # Self-test first: a gate that has silently stopped detecting anything is
+        # worse than no gate, because it reads as a green signal. Each check is
+        # exercised against a planted defect in a throwaway tree.
+        run: python3 scripts/docs_lint.py --test
+
+      - name: Lint documentation trees
+        # Blocking gate: every internal link resolves, every doc is reachable from
+        # its directory index, every directory holding docs has one, no code comment
+        # cites a doc that does not exist, and no doc whose filename is hardcoded in
+        # code has been renamed out from under its consumer.
+        # No setup-python step: ubuntu-latest ships Python 3 and the script is
+        # stdlib-only.
+        run: ./scripts/docs-lint.sh
+
+  backend-lint:
+    name: Backend Lint & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          # This repo has no uv.lock (pip/pyproject-managed), so point the
+          # cache key at the files that define the dependency set. Without
+          # this, setup-uv defaults to globbing **/uv.lock, finds nothing,
+          # and errors: "No file matched to [**/uv.lock]".
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        # uv resolves/installs the heavy deps far faster than pip and caches
+        # across runs. --system targets the setup-python interpreter (no venv);
+        # --group pulls [dependency-groups].dev from pyproject.
+        run: uv pip install --system -e ".[voice]" --group dev
+
+      # black --check is still disabled: a bulk format pass (~406 files) has not
+      # been run yet. Do it as a standalone formatting PR, then re-enable:
+      #   black --target-version py310 src/ test/ && git commit
+      #   - name: Check formatting (black)
+      #     run: black --check --target-version py310 src/ test/
+      # isort/flake8/mypy below are BLOCKING (config in pyproject.toml + setup.cfg).
+
+      - name: Check imports (isort)
+        run: isort --check-only src/kiro_crew test
+
+      - name: Lint (flake8)
+        run: flake8 src/kiro_crew test
+
+      - name: Type check (mypy)
+        run: mypy src/kiro_crew/
+
+  backend-test:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Don't cancel sibling shards when one fails -- we want the full failure
+      # picture across the suite, not just the first shard to break.
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+        # Duration-balanced shards (pytest-split). 4 groups x 2 Python = 8
+        # parallel jobs, each on its own runner (4 cores via -n auto). To add
+        # shards, extend this list AND bump SHARD_COUNT to match -- mind the
+        # ~20 concurrent-job ceiling for public repos.
+        group: [1, 2, 3, 4]
+    env:
+      SHARD_COUNT: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          # This repo has no uv.lock (pip/pyproject-managed), so point the
+          # cache key at the files that define the dependency set. Without
+          # this, setup-uv defaults to globbing **/uv.lock, finds nothing,
+          # and errors: "No file matched to [**/uv.lock]".
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Run tests (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        # pytest-split slices the suite into SHARD_COUNT balanced groups. With a
+        # committed .test_durations file the split is balanced by *recorded time*,
+        # and brand-new tests are auto-assigned the average duration (distributed
+        # with no manual work); without that file it falls back to an even split
+        # by test count. -n auto still parallelizes within each shard across the
+        # runner's cores -- sharding scales across runners, -n auto across cores.
+        #
+        # Coverage runs only on 3.12 (fast sys.monitoring path); each shard emits
+        # a partial data file merged later by the coverage-combine job. 3.10
+        # passes --no-cov (overriding setup.cfg's forced --cov) for a trace-free,
+        # faster run.
+        run: |
+          pytest -q -n auto --timeout=120 \
+            --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+            ${{ matrix.python-version == '3.12' && '--cov=kiro_crew' || '--no-cov' }} \
+            --deselect=test/test_script_hooks.py \
+            --deselect=test/test_cron_script.py \
+            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
+            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
+        # Deselected tests require capabilities unavailable on GH Actions:
+        #   test_script_hooks, test_cron_script: Linux namespace sandbox (unshare NEWNS)
+        #   ops_mission_control test_ledger_sync_git, test_schedule_file: the same
+        #     capability gap, for the same reason. They drive REAL `git`/`gh` through
+        #     `sandboxed_spawn_argv`, which raises SandboxUnavailableError on these runners
+        #     (`unshare(CLONE_NEWNS)` -> EPERM), so all 29 + 1 of them fail here.
+        #
+        #     These only became visible when `testpaths` grew to cover the in-package app
+        #     suites (see setup.cfg) -- before that they never ran in CI at all, on any job.
+        #     Surfacing them is the point of that change: the ~1490 tests guarding the ops
+        #     autonomy gate now run, and these two files are the residue that cannot.
+        #
+        #     They are NOT added to the namespace-sandbox job below. That was tried and the
+        #     job failed at the test step while its sandbox-verify step passed, so something
+        #     other than the namespace probe is missing there; the two files take ~6 minutes
+        #     against a real `git`, which is also a poor fit for a 20-minute job scoped to
+        #     118 fast tests. Left deselected rather than shipped red -- they run locally
+        #     (220 passed, real sandbox available) and in the app suite. Wiring them into a
+        #     job of their own is a follow-up, tracked in the PR body.
+
+      - name: Stage shard coverage data
+        if: matrix.python-version == '3.12'
+        # Fold any xdist parallel data files into a single .coverage (no-op if
+        # pytest-cov already combined this shard), then name it per-shard so the
+        # combine job can merge all shards with `coverage combine`.
+        run: |
+          coverage combine 2>/dev/null || true
+          test -f .coverage || { echo "::error::shard ${{ matrix.group }} produced no coverage data"; exit 1; }
+          mv .coverage ".coverage.${{ matrix.group }}"
+
+      - name: Upload shard coverage
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-shard-${{ matrix.group }}
+          path: .coverage.${{ matrix.group }}
+          # upload-artifact v4 excludes dotfiles unless this is set.
+          include-hidden-files: true
+          if-no-files-found: error
+
+  # Windows regression line: the backend supports Windows natively via
+  # kiro_crew.platform_compat (see docs/guides/windows-install.md for the
+  # per-feature status), but until this job existed nothing in CI held
+  # that line -- a POSIX-only regression would land silently. Single
+  # Python (3.12: the preferred Windows runtime; numpy 1.x ships no 3.13
+  # Windows wheel), duration-balanced shards like the POSIX matrix,
+  # trace-free (--no-cov: the coverage-combine job merges ubuntu shards
+  # only). Timeout is higher than the POSIX job: windows-latest runners
+  # run the same tests measurably slower.
+  backend-test-windows:
+    name: Backend Tests (Windows)
+    runs-on: windows-latest
+    # windows-latest runs the same shards measurably slower than POSIX.
+    timeout-minutes: 40
+    strategy:
+      # Full failure picture across shards, same as backend-test.
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
+    env:
+      SHARD_COUNT: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          # Same no-uv.lock caveat as backend-test: key the cache on the
+          # files that define the dependency set.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        # bash (Git Bash on windows-latest), not pwsh: the invocation shares
+        # the POSIX job's line-continuation and env-interpolation syntax.
+        shell: bash
+        run: |
+          pytest -q -n auto --timeout=180 --no-cov \
+            --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+            --deselect=test/test_script_hooks.py \
+            --deselect=test/test_cron_script.py \
+            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
+            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
+        # Same deselects as backend-test (the Linux-namespace sandbox tests are
+        # unavailable here too). The ops git/gh suites are deselected for a second reason as
+        # well: they drive a real POSIX `git`/`gh` and the namespace-sandbox job that DOES run
+        # them is Linux-only, so on Windows they are simply out of scope.
+
+  # macOS gateway line. Until this job existed macOS had ZERO pytest coverage in
+  # CI -- the macos-14 runners appear only in build.yml, build-desktop.yml and
+  # sign-and-notarize.yml, all of which merely build and notarize the desktop
+  # app. That left the macOS-only identity primitives (LOCAL_PEERPID for the
+  # peer pid, libproc for the process start id) verified by nothing, on the
+  # platform several maintainers develop on.
+  #
+  # Deliberately SCOPED, not the full suite: a full macOS run would need its own
+  # exclusion burn-down first (the Windows line needed 23 file exclusions plus
+  # ~237 node skips before it held), and shipping a job that is red on arrival
+  # trains people to ignore it. The glob keeps the scope from going stale -- a
+  # new test_mcp_gateway_* suite is picked up without editing this file, which a
+  # hand-maintained list would not do.
+  #
+  # Cheap enough to need no sharding: these suites are ~230 tests and run in
+  # about 4 seconds, so the job's wall time is essentially dependency install.
+  backend-test-macos:
+    name: Gateway Tests (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          # Same no-uv.lock caveat as backend-test: key the cache on the files
+          # that define the dependency set.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      # The macOS peer-identity check is admission-gating: gatewayd refuses any
+      # connection that is not MATCH, so this canary -- a real transport.serve /
+      # connect round trip asserting MATCH on real Darwin hardware -- is the ONLY
+      # evidence that the gate admits its own peer. `pytest -q` does not name
+      # passing tests and a skip exits 0, so a canary that quietly stopped running
+      # (a changed skipif, a collection change) would leave this job green while
+      # the gate it proves went unverified. That is the same blindness that let
+      # four mutation-verified tests sit unrun inside conftest's Windows
+      # collect_ignore. Run it by node id and fail unless it actually PASSED.
+      - name: Assert the macOS peer-identity canary runs (not skipped)
+        run: |
+          set -o pipefail
+          pytest -v -n0 --no-cov --timeout=120 \
+            "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves" \
+            | tee canary.log
+          grep -q "1 passed" canary.log || {
+            echo "::error::macOS peer-identity canary did not PASS (skipped or not collected)"
+            exit 1
+          }
+
+      - name: Run gateway + platform suites
+        run: |
+          pytest -q -rs --timeout=180 --no-cov \
+            test/test_mcp_gateway_*.py \
+            test/test_socketsec.py \
+            test/test_platform_compat.py \
+            test/test_mcp_apps_e2e.py \
+            test/test_pod*.py \
+            test/test_service.py \
+            test/test_dev_fleet_app.py
+
+  # Runs the tests the sharded matrix deselects. They need unprivileged user
+  # namespaces (unshare NEWNS), which ubuntu-24.04 restricts via AppArmor --
+  # the same restriction codex-review.yml clears for its bwrap sandbox. Without
+  # this job the ~/.kiro/crew sensitive-path keystone has no CI coverage at all,
+  # even though branch protection treats breaking it as a blocking offence.
+  #
+  backend-test-sandbox:
+    name: Backend Tests (namespace sandbox)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Enable unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Verify the namespace sandbox is actually available
+        # Fail LOUDLY if the runner image ever stops allowing this, rather than
+        # letting the suite silently skip and the gate go green having asserted
+        # nothing -- the same failure mode the deselects created.
+        run: unshare --mount --map-root-user true
+
+      - name: Run sandbox-dependent tests
+        run: |
+          pytest -q --timeout=180 --no-cov \
+            test/test_script_hooks.py \
+            test/test_cron_script.py
+
+  coverage-combine:
+    name: Coverage Combine
+    needs: backend-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install coverage
+        run: uv pip install --system coverage==7.10.6
+
+      - name: Download shard coverage data
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: coverage-shard-*
+          merge-multiple: true
+
+      - name: Combine into unified coverage.xml
+        # The downloaded .coverage.<group> files are parallel data files;
+        # `coverage combine` merges them. -o pins the output path (setup.cfg's
+        # [coverage:xml] otherwise redirects it under build/coverage/).
+        run: |
+          coverage combine
+          coverage xml -o coverage.xml
+          coverage report
+
+      - name: Upload combined coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-backend
+          path: coverage.xml
+
+  # ── Coverage Gate ──────────────────────────────────────────────────────
+  # Enforces minimum line-coverage thresholds. Rather than re-running the
+  # entire backend + frontend suites (which duplicated ~30 min of work the
+  # test jobs already did on a single serial runner), this job CONSUMES the
+  # coverage artifacts those jobs already produced in this same run:
+  #   * backend-test (3.12 shards) -> coverage-combine -> coverage.xml
+  #     (artifact: coverage-backend)
+  #   * frontend-test -> build/coverage/cobertura-coverage.xml
+  #     (artifact: coverage-frontend)
+  # Result: download + parse + threshold-check only -- runs in seconds.
+  #
+  # Fail-closed: if an expected artifact/report is missing the job errors
+  # (download-artifact errors on a missing artifact; the report presence is
+  # asserted below), so a broken coverage pipeline can never silently pass.
+  # Lives here (not code-review.yml) so it can use `needs:` for a
+  # deterministic same-run handoff instead of a cross-workflow artifact race.
+  # The check name "Coverage Gate" is unchanged, so branch protection that
+  # requires it is still satisfied.
+  coverage-gate:
+    name: Coverage Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [coverage-combine, frontend-test]
+    # Always run so the required check emits a real verdict. Without
+    # `if: always()`, a failing OR skipped dependency would SKIP this job, and
+    # GitHub treats a skipped required check as SATISFIED -- silently defeating
+    # the fail-closed guarantee (including the `if-no-files-found: error` upload
+    # guard this workflow relies on). The first step below converts any
+    # non-success upstream result into an explicit failure.
+    if: ${{ always() }}
+    steps:
+      - name: Require upstream coverage jobs to have succeeded
+        env:
+          CC: ${{ needs.coverage-combine.result }}
+          FE: ${{ needs.frontend-test.result }}
+        run: |
+          echo "coverage-combine=$CC  frontend-test=$FE"
+          if [ "$CC" != "success" ] || [ "$FE" != "success" ]; then
+            echo "::error::Upstream coverage jobs did not succeed (coverage-combine=$CC, frontend-test=$FE) -- failing closed."
+            exit 1
+          fi
+
+      - name: Download backend coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-backend
+          path: backend-cov
+
+      - name: Download frontend coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-frontend
+          path: frontend-cov
+
+      - name: Check backend coverage (min 70%)
+        run: |
+          F=backend-cov/coverage.xml
+          test -f "$F" || { echo "::error::coverage.xml missing from coverage-backend artifact"; exit 1; }
+          # Compare the raw line-rate against the threshold; round only for
+          # display (a round-then-compare would let 69.95%..69.99% pass 70%).
+          python3 - "$F" 70 Backend <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+          rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
+          print(f"{label} coverage: {rate:.2f}%")
+          if rate < floor:
+              print(f"::error::{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
+              sys.exit(1)
+          PY
+
+      - name: Check frontend coverage (min 60%)
+        run: |
+          F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
+          test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
+          python3 - "$F" 60 Frontend <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+          rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
+          print(f"{label} coverage: {rate:.2f}%")
+          if rate < floor:
+              print(f"::error::{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
+              sys.exit(1)
+          PY
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Component | Coverage | Min |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|----------|-----|" >> "$GITHUB_STEP_SUMMARY"
+          BF=backend-cov/coverage.xml
+          if [ -f "$BF" ]; then
+            B=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$BF').getroot().attrib['line-rate'])*100:.2f}\")")
+            echo "| Backend | ${B}% | 70% |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          FF=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
+          if [ -n "$FF" ]; then
+            FR=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$FF').getroot().attrib['line-rate'])*100:.2f}\")")
+            echo "| Frontend | ${FR}% | 60% |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  frontend-lint:
+    name: Frontend Lint & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        working-directory: website
+        # `tsc -b`, NOT `npm run typecheck`: the root tsconfig has `files: []`
+        # + project references, so `tsc --noEmit` (what `typecheck` runs) checks
+        # ZERO files and always passes. `tsc -b` actually type-checks the project.
+        run: npx tsc -b
+
+      - name: Lint
+        working-directory: website
+        # Blocking: fails on any eslint error and on any NEW warning above the
+        # current baseline. Ratchet --max-warnings down toward 0 as the ~1116
+        # pre-existing warnings (no-explicit-any, jsx-a11y, no-console) are burned
+        # down; do not raise it. (Baseline bumped 1066 -> 1116 by the final
+        # Brazil->GitHub sync, which imported upstream warnings that never faced
+        # this gate; burn-down resumes from 1116.)
+        run: npx eslint src/ --max-warnings 1116
+
+      - name: Copy/paste detection
+        working-directory: website
+        run: npx jscpd .
+
+      - name: Check i18n extraction, key references and plurals
+        working-directory: website
+        env:
+          # Two gates need a commit to diff against: `check-source-strings.mjs` compares
+          # the catalogs against it to find NEWLY ADDED keys and CHANGED values, and
+          # `check-i18n-strings.mjs` uses it to find literals on lines this branch wrote.
+          # On a PR this is `base.sha` — the commit the MERGE REF was computed against —
+          # NOT `origin/<base.ref>`. The tip is a moving target measured at step time while
+          # the checked-out tree is a snapshot from job start, so anything that lands on
+          # `main` in between appears only on the base side and is charged to every PR
+          # running in that window. Observed: a PR whose run started 36s before #1223
+          # merged was billed 58 render findings for `WelcomeView` translations its head
+          # simply did not have yet. `base.sha` makes the two sides consistent by
+          # construction. On a push to main it is the commit the push replaced, so a merge
+          # that only breaks in combination with another merge is still charged to a diff. Note `frontend-lint`'s
+          # checkout is shallow, so it has to be fetched — see the step below.
+          # `check-i18n-strings.mjs` falls back from the merge base to the base tip for
+          # exactly that reason, and EXITS NON-ZERO if a configured ref cannot be
+          # resolved rather than skipping itself green.
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        # `npm run i18n:check` is a RUNNER (`website/scripts/i18n-check.mjs`), not an `&&`
+        # chain: it executes all six scripts and reports the eleven checks they contain in
+        # one table, because `&&` short-circuits and a PR only ever learned about its first
+        # failing gate. `--check` on the two codemods is deliberately not `--dry-run`:
+        # dry-run reports and exits 0, which would make this step decorative. An
+        # unrecognised flag makes those scripts refuse to run rather than fall through to
+        # their destructive conversion path.
+        #
+        # ONLY TWO KINDS OF CHECK CAN FAIL THIS STEP.
+        #
+        #   DIFF-SCOPED, zero tolerance — a finding on a line you wrote is yours and there
+        #   is no number to raise:
+        #     [added-lines]     a user-visible literal on a line THIS BRANCH WROTE.
+        #     [vs-base]         a file you touched holds more than it did at the base.
+        #     [source-strings]  new ENGLISH keys must be well-shaped copy.
+        #     [changed-values]  catalog QA over values this branch added or changed.
+        #
+        #   WHOLE-REPO HARD ZEROS — no ceiling to inherit, so a new one is always a diff:
+        #     [key-refs]        a `t()` naming a key that does not exist. i18next returns a
+        #                       missing key as its own fallback, so the symptom is a raw
+        #                       dotted key rendered to a user. Necessarily whole-repo: a
+        #                       reference and its catalog entry are edited independently, so
+        #                       a catalog-only rename dangles references in files the PR
+        #                       never opens. Needs no base ref, so it cannot skip itself.
+        #     [plurals]         a `{n} {t('item')}s` concatenation.
+        #     [pseudolocale]    `en-XA.json` stale against its generator.
+        #
+        # EVERYTHING ELSE IS REPORT ONLY — [untranslated], [allcaps], [extractable] and
+        # [dynamic-keys]. Each is a stored whole-repo total, written by whichever branch
+        # measured it last, so another branch can push it past its number without touching
+        # your files — and then the failure names no diff anyone can fix. Measured twice in
+        # one day: `main` sat at 1120 against its own ALL-CAPS ceiling of 1118 within
+        # minutes of it being set, and every open PR inherited the red. [dynamic-keys] was
+        # the worst, failing when a file IMPROVED. The numbers are still printed; they do
+        # not gate. See docs/ci/i18n-gates.md for the residual gap this leaves on [dynamic-keys]
+        # specifically, and the qa `CEILINGS` / `deadKeys` / `glossary` ratchets that are
+        # still exact in both directions.
+        #
+        # `check-i18n-strings.mjs` drives a SECOND eslint invocation with its own config.
+        # `no-literal-string` at `mode: 'all'` reports thousands of findings, and folding
+        # those into the 1116 budget above would make an i18n regression indistinguishable
+        # from a new `no-explicit-any`.
+        run: |
+          # `actions/checkout` fetches depth 1, so the base branch is not present and
+          # `git show origin/main:…` would fail. Fetch just that one ref.
+          #
+          # `set -e` on the chain is the point: `check-source-strings.mjs` SKIPS ITSELF
+          # and exits 0 when the base ref is unreadable, so a failed fetch used to sail
+          # past this step and silently disable the new-key gate for the whole PR --
+          # observed in practice, where the script printed "OK: skipped -- cannot read
+          # website/src/i18n/locales/en.json at origin/main (shallow clone?)" and the
+          # step still went green. A gate that cannot run must fail, not pass: an
+          # unavailable base ref is a CI problem to fix, not a reason to stop checking.
+          # Absolute path: this step's working-directory is `website`.
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the new-key i18n gate')" || exit 1
+          export I18N_BASE_REF
+          npm run i18n:check
+
+  cfn-lint:
+    name: CloudFormation Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install cfn-lint
+        # Pinned: an unpinned lint tool silently changes the gate's behaviour on
+        # every upstream release. Bump deliberately.
+        run: pip install "cfn-lint==1.22.3"
+
+      - name: Lint deploy templates
+        run: cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml
+
+  # The Electron shell (website/electron) has its own 460+ test node:test suite,
+  # and until now NOTHING ran it on a PR — its only runner was ota-test.yml,
+  # which is nightly/on-demand and called by no other workflow. So main-process
+  # regressions (permission handling, packaging/entitlements contracts, the
+  # updater IPC surface) could land green and surface a day later, or in a
+  # shipped DMG. That is not hypothetical: the missing macOS microphone
+  # entitlement reached users this way. This job is deliberately tiny and fast —
+  # pure unit tests, no Electron binary download, no packaging.
+  electron-test:
+    name: Electron Shell Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: website/electron/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website/electron
+        # Belt-and-braces: this pin currently downloads no Electron binary
+        # anyway (electron 43's package ships no install script), so the var is
+        # inert today — it is set so a future version that reintroduces the
+        # ~100MB postinstall download cannot silently slow this job down. The
+        # tests require() only main-process modules and the stdlib test runner,
+        # so the binary is never needed.
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci --no-audit --no-fund
+
+      - name: Unit tests
+        working-directory: website/electron
+        run: npm test
+
+  frontend-test:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    # vitest + coverage is the longest ubuntu job (~23 min observed max).
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      - name: Unit tests
+        working-directory: website
+        env:
+          # Two vitest gates are DIFF-SCOPED rather than baseline-scoped —
+          # `localeFormatting.test.ts`'s `[added-lines]` / `[vs-base]`. They read the
+          # base commit out of git instead of storing a count, and they skip themselves
+          # when this is empty. Without it they would skip on every PR, which is the
+          # "gate nobody watched go red" failure mode their own docs warn about.
+          # Same expression as `frontend-lint`: the base branch on a PR, the commit the
+          # push replaced on a push to main.
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        # `actions/checkout` fetches depth 1, so the base is not present and
+        # `git diff`/`git show` against it would fail. Fetch just that one commit, and
+        # fail the step if it cannot be fetched — the gates throw on an unresolvable
+        # configured ref rather than skipping green, and this keeps the two consistent.
+        run: |
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the diff-scoped i18n test gates')" || exit 1
+          export I18N_BASE_REF
+          npx vitest run --coverage
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-frontend
+          # vitest's reportsDirectory is website/build/coverage (see
+          # vite.config.ts) -- NOT website/coverage. Uploading the wrong dir
+          # produced an empty artifact, which is why the Coverage Gate used to
+          # re-run vitest instead of consuming this. Fail loudly if the
+          # cobertura report is ever missing again.
+          path: website/build/coverage/
+          if-no-files-found: error
+
+  e2e:
+    name: E2E (stub ACP backend, offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install backend (+ dev)
+        # setuptools is explicit: Python 3.12 no longer bundles it, and an
+        # editable install doesn't add it to the runtime venv -- but
+        # `setup.py test_e2e` imports setuptools.Command, so it must be present.
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e ".[voice,desktop]" --group dev
+
+      - name: Install frontend deps
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      - name: Build frontend
+        working-directory: website
+        run: npm run build
+
+      - name: Stage frontend into package
+        # The dashboard Playwright specs render the bundled UI the harness
+        # gateway serves from src/kiro_crew/static/dist. Mirror nightly.yml's
+        # build-wheel staging so the specs hit a real dashboard, not a 404.
+        run: |
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
+
+      - name: Install Playwright browser (Chromium)
+        working-directory: website
+        run: npx playwright install --with-deps chromium
+
+      - name: i18n render-time gate (en-XA + shipped locales)
+        # Phase 5 of the i18n plan. Every other i18n gate reads SOURCE or CATALOG
+        # JSON, so three defect classes are invisible to all of them: a string that
+        # was never extracted (ordinary TypeScript to a scanner), a sentence
+        # assembled from several keys (several correct lookups), and English in a
+        # title/aria-label (never in the text flow). This renders the real SPA under
+        # the en-XA pseudolocale and reads them off the DOM.
+        #
+        # It lives in this job to reuse the Chromium install on the step above --
+        # its own job would re-download the browser for a ~5min script. It needs no
+        # gateway, no token and no backend: the script serves the build over
+        # loopback and answers every /api/** call from fixtures, like the
+        # capture-*.mjs harnesses. It builds its OWN bundle rather than reusing
+        # `npm run build` above, because en-XA is DEV-only and a production build
+        # tree-shakes the catalog out entirely.
+        #
+        # Two runs, one per tree: [vs-base] renders the BASE commit with the same
+        # scanner and fails on any per-surface increase, reading no committed number.
+        # It is the ONLY thing that fails; the debt record in
+        # `src/i18n/render-baseline.json` is printed and never enforced, because a
+        # stored total is written by whichever branch measured it last and two branches
+        # that never touch the same file can combine into a number neither produced --
+        # `projects.latent 16 -> 24` from #1107 + #985, red on main with no diff anyone
+        # could fix. A push to main therefore gets a base too (the commit it replaced),
+        # which is what keeps that interaction enforced somewhere. It costs a second
+        # bundle build on merges, the same ~5min every PR already pays.
+        # The base must be fetched first because this checkout is shallow; the script
+        # EXITS NON-ZERO if a configured ref cannot be resolved rather than skipping
+        # itself green, for the reason the frontend-lint job documents.
+        working-directory: website
+        env:
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the diff-scoped render gate')" || exit 1
+          export I18N_BASE_REF
+          npm run i18n:render
+
+      - name: Run E2E (smoke + Playwright)
+        # KIROCREW_E2E=1 is set by `setup.py test_e2e` itself. KIROCREW_E2E_REQUIRE=1
+        # turns environment-resolution misses (missing website dir, Playwright CLI,
+        # or node<18) into HARD failures -- without it a skipped suite counts as a
+        # pass and the gate goes green having run zero browser specs. The suite
+        # wires the packaged fake ACP backend (KIROCREW_KIRO_BIN) internally, so
+        # every turn is deterministic and offline: no Kiro/model calls, no cost.
+        env:
+          KIROCREW_E2E_REQUIRE: "1"
+          # CI-enforced on-loop persistence invariant: the e2e gateway boots with
+          # strict mode so any un-offloaded session-JSONL mutator that enters
+          # ``_locked`` on the event loop raises ``OnLoopPersistError`` and fails
+          # this gate at PR time (setup.py test_e2e also sets this; declared here
+          # for discoverability). See docs/system-specs/modules/history.md.
+          KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
+        run: python setup.py test_e2e

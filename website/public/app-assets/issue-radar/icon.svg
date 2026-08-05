@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <circle cx="12" cy="12" r="9" stroke="var(--ico-a, currentColor)" stroke-width="1.4" opacity="0.35"/>
+  <circle cx="12" cy="12" r="6" stroke="var(--ico-a, currentColor)" stroke-width="1.4" opacity="0.55"/>
+  <circle cx="12" cy="12" r="3" stroke="var(--ico-a, currentColor)" stroke-width="1.4" opacity="0.8"/>
+  <path d="M12,12 L12,3.5 A8.5,8.5 0 0,1 19.5,8" fill="var(--ico-b, currentColor)" fill-opacity="0.28"/>
+  <line x1="12" y1="12" x2="12" y2="3" stroke="var(--ico-b, currentColor)" stroke-width="1.8" stroke-linecap="round"/>
+  <circle cx="12" cy="12" r="1.4" fill="var(--ico-b, currentColor)"/>
+  <circle cx="16" cy="8" r="1.2" fill="var(--ico-b, currentColor)"/>
+  <circle cx="8.5" cy="15.5" r="1" fill="var(--ico-a, currentColor)" opacity="0.6"/>
+</svg>

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="/logo.png" type="image/png" />
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0d0f12" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" onload="this.rel='stylesheet'" />
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" /></noscript>
+  <title>Kiro Crew</title>
+  <script>
+    // Set data-ui from localStorage before React hydrates to prevent flash of
+    // chat layout when the user's preferred mode is 'cli'. Mirrors the
+    // pattern used by data-theme bootstrapping. Synced by useUIMode.
+    try { var u = localStorage.getItem('mc-ui'); if (u === 'cli') document.documentElement.dataset.ui = 'cli'; } catch (e) {}
+    // Set <html lang> from the cached language choice before React hydrates, so
+    // assistive tech and :lang() CSS see the right language on the first paint
+    // rather than 'en' briefly. Only the shape is validated here — the real
+    // resolution (browser detection, fallback) happens in src/i18n/detect.ts;
+    // this is a pre-hydration hint, not the source of truth. Synced by
+    // useLanguage.
+    try {
+      var l = localStorage.getItem('mc-lang');
+      if (l && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}$/.test(l)) document.documentElement.lang = l;
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+  <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js')</script>
+</body>
+</html>

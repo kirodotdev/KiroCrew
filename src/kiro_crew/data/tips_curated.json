@@ -1,0 +1,112 @@
+{
+  "_comment": "Hand-authored, action-first feature tips for KiroCrew-native features (keyboard shortcuts, Settings toggles, config keys) that have no docs/*.md entry and so can never surface through the doc-scan catalog. Each tip's body ends with the exact thing to do. An optional 'action' object ({kind:'route', label, route}) renders a one-click button that navigates to the exact settings page/control; tips whose feature has no navigable destination (a keyboard shortcut or a mid-turn composer control) omit 'action' and render body only. Loaded by kiro_crew.tips._load_curated_tips; the seven string fields are validated like generated tips, and 'action' is validated separately by _sanitize_tip_action (kind must be 'route'; route must be an internal path).",
+  "tips": [
+    {
+      "id": "split-view",
+      "feature": "Split View",
+      "title": "Work two sessions side by side",
+      "body": "Run two chats at once. Turn on **Settings › Chat › Split View**, then press **⌘D** (**Ctrl+D**) to split the focused pane. Off by default.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Split View setting", "route": "/settings?tab=chat&highlight=chat.split-view-session-grid" }
+    },
+    {
+      "id": "command-palette",
+      "feature": "Command Palette",
+      "title": "Jump anywhere with ⌘K",
+      "body": "Press **⌘K** (**Ctrl+K**), or double-tap **Shift**, to open Search Everywhere — sessions, pages, skills, prompts, artifacts, settings, and runnable actions in one box.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": ""
+    },
+    {
+      "id": "steer-or-queue",
+      "feature": "Steer or Queue",
+      "title": "Steer a running turn",
+      "body": "While the agent is working, open the send button's **▾** menu: **Steer** injects your message into the live turn right away; **Queue** runs it after the current turn finishes.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": ""
+    },
+    {
+      "id": "interface-cli-mode",
+      "feature": "Interface Layout",
+      "title": "Switch to CLI-style output",
+      "body": "Prefer terminal-style, line-by-line output over chat bubbles? Set **Settings › Display › Interface → CLI**. Applies to this browser.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Interface setting", "route": "/settings?tab=display&highlight=display.interface" }
+    },
+    {
+      "id": "warm-pool",
+      "feature": "Warm Pool",
+      "title": "Cut session startup time",
+      "body": "Pre-spawn agent processes so new sessions start instantly instead of cold-starting. Enable with `kirocrew config set session.pool_size 2`. Off (0) by default.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Warm Pool config", "route": "/settings?tab=overview" }
+    },
+    {
+      "id": "mcp-gateway",
+      "feature": "MCP Gateway",
+      "title": "Use less memory with the MCP gateway",
+      "body": "Route MCP tools through one shared broker instead of a copy per session to cut RAM. Enable the **Shared MCP gateway** toggle (Developer › MCP Pool — requires Developer Mode), or run `kirocrew config set mcp_gateway.enabled true`.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open MCP Gateway", "route": "/developer?tab=mcp-pool" }
+    },
+    {
+      "id": "subagent-parallelism",
+      "feature": "Subagent Parallelism",
+      "title": "Tune how many subagents run at once",
+      "body": "`agent.max_subagents` caps concurrent subagents. **0 = auto-size** to your machine's memory and CPU; pin a number with `kirocrew config set agent.max_subagents 4`.",
+      "why": "",
+      "doc": "dynamic-subagent-sizing.md",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Subagent config", "route": "/settings?tab=overview" }
+    },
+    {
+      "id": "local-telemetry",
+      "feature": "Local Telemetry",
+      "title": "See local OpenTelemetry metrics",
+      "body": "Run `kirocrew config set telemetry.enabled true` to record OpenTelemetry metrics under `~/.kiro/crew/metrics`, viewable in the Telemetry panel. Stays on your machine — nothing is exported.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": ""
+    },
+    {
+      "id": "zero-token-cron",
+      "feature": "Zero-token Crons",
+      "title": "Run crons with no LLM",
+      "body": "A scheduled job can run a shell `command` or a Python `script` directly — no model, zero tokens. Ideal for polling, cleanup, and health checks.",
+      "why": "",
+      "doc": "cron-and-scheduling.md",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "New scheduled job", "route": "/schedule" }
+    },
+    {
+      "id": "dev-fleet",
+      "feature": "Dev Fleet",
+      "title": "Manage worktrees and pods from the dashboard",
+      "body": "Building Kiro Crew itself? Enable the **Dev Fleet** app under **Apps → Installed → Show**, then open **Dev Fleet** to manage git worktrees and isolated test pods.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Apps", "route": "/apps" }
+    },
+    {
+      "id": "app-store",
+      "feature": "Apps",
+      "title": "Add new capabilities with Apps",
+      "body": "Open **Apps → Browse** and click **Enable** to add an app's agents, skills, and crons in one step.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Apps", "route": "/apps" }
+    }
+  ]
+}
