@@ -38,6 +38,7 @@ from kiro_crew.acp._dispatch import (
     _kiro_mcp_server_name,
     _kiro_tool_name,
     extract_tool_purpose,
+    parse_session_modes,
     parse_usage_update,
 )
 from kiro_crew.acp.liveness import VERDICT_UNKNOWN, VERDICT_WORKING, LivenessOracle
@@ -96,6 +97,7 @@ from kiro_crew.acp.types import (
     JsonRpcRequest,
     TurnUsage,
 )
+from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
@@ -1411,6 +1413,16 @@ class AcpClient:
         # offers rather than a hardcoded guess. Each entry: {modelId, name,
         # description}.
         self._available_models: list[dict[str, str]] = []
+        # Mode ids the backend advertised at session init (session/new|load
+        # `modes.availableModes`). Empty when the backend omits `modes` (older
+        # kiro-cli / offline fake) — the set_mode guard treats empty as "attempt"
+        # for backward compatibility. Populated by _store_session_config.
+        self._available_mode_ids: list[str] = []
+        # Whether the backend advertised a `modes` list at all (even an empty
+        # one). Distinguishes "unknown, attempt for backward compat" (False)
+        # from "advertised zero/some modes, honor the list" (True) so an
+        # explicitly-empty availableModes fails closed rather than attempting.
+        self._modes_advertised: bool = False
         # Model kiro-cli/claude-agent-acp actually resolved to (may differ
         # from self._model when that's the "auto" sentinel). Used to look up
         # the context window when usage_update isn't sent (see _track_metadata).
@@ -1696,6 +1708,14 @@ class AcpClient:
             self._acp_config_options = config_options
             logger.debug("ACP config options loaded: %d entries", len(config_options))
             self._sync_effort_levels()
+        # Capture advertised mode ids + whether a modes list was advertised at
+        # all, so step 4's set_mode can fail closed against a requested agent the
+        # backend never loaded (would fault with "Mode '<agent>' not found").
+        # Assigned unconditionally so a re-init that omits `modes` clears any
+        # stale state rather than guarding on it.
+        self._available_mode_ids, _current_mode, self._modes_advertised = (
+            parse_session_modes(resp)
+        )
 
     def _handle_config_option_update(self, msg: JsonRpcMessage) -> None:
         """Process a config_option_update session notification.
@@ -1817,6 +1837,14 @@ class AcpClient:
                 raise AcpError(str(exc)) from exc
             if not kiro_bin:
                 raise AcpError(f"{KIRO_CLI_BIN} not found in PATH")
+            # Self-heal (B): ensure the managed default agent file exists before
+            # this --agent spawn, so kiro-cli registers the mode and step 4's
+            # set_mode succeeds instead of faulting "Mode not found". Best-effort,
+            # off the loop; non-managed agents fall through to the step-4 guard.
+            try:
+                await asyncio.to_thread(ensure_agent_materialized, self._agent)
+            except Exception:
+                logger.warning("pre-spawn agent materialization failed", exc_info=True)
             argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
 
         # OS-level sandbox: wrap the command to hide sensitive paths.
@@ -2398,12 +2426,29 @@ class AcpClient:
                 self._jsonl_pos = 0
 
         # 4. Activate agent via set_mode (claude-agent-acp does not support set_mode — skip).
+        #    Guard (A): fire only when the backend advertised this agent, or
+        #    advertised no modes at all (older kiro-cli / fake → attempt,
+        #    backward-compatible). If modes ARE advertised but this agent is
+        #    absent, its ~/.kiro/agents/<agent>.json didn't load — FAIL CLOSED
+        #    with an actionable error rather than silently running kiro-cli's
+        #    default (broader) mode, which for a restricted agent is a privilege
+        #    escalation. Self-heal (B, in _spawn) regenerates the managed default
+        #    so the common case never reaches this branch.
         if not self._is_claude:
-            await self._send_request(
-                METHOD_SET_MODE,
-                {"sessionId": self._session_id, "modeId": self._agent},
-            )
-            logger.info("ACP agent activated: %s", self._agent)
+            if not self._modes_advertised or self._agent in self._available_mode_ids:
+                await self._send_request(
+                    METHOD_SET_MODE,
+                    {"sessionId": self._session_id, "modeId": self._agent},
+                )
+                logger.info("ACP agent activated: %s", self._agent)
+            else:
+                raise AcpError(
+                    f"Agent mode {self._agent!r} is not available on this session "
+                    f"(advertised modes: {self._available_mode_ids or 'none'}); its "
+                    f"~/.kiro/agents/{self._agent}.json is likely missing. Refusing "
+                    f"to run the backend default mode in its place. Run "
+                    f"`kirocrew setup --agent-only` to materialize the agent config."
+                )
 
         # 5. Set model — override if KiroCrew config specifies non-default.
         if self._model and self._model != DEFAULT_MODEL:

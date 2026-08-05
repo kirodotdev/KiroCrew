@@ -2673,6 +2673,48 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
 install_agent = rebuild_agent_config
 
 
+def ensure_agent_materialized(agent: str | None) -> bool:
+    """Self-heal: guarantee the managed default agent config exists on disk.
+
+    kiro-cli discovers its selectable *modes* at process startup by scanning
+    ``~/.kiro/agents/*.json``. A session that spawns ``kiro chat --agent <name>``
+    and then issues ``session/set_mode {modeId: <name>}`` therefore needs the
+    backing file present BEFORE spawn, or kiro-cli answers
+    ``-32603 "Mode '<name>' not found"`` on every turn (the crash this closes).
+    Normally ``kirocrew setup --agent-only`` writes it, but a source checkout /
+    dev launch that skips setup leaves it absent — this makes the runtime
+    self-sufficient regardless.
+
+    Only the managed default (``AGENT_FILENAME`` → ``kirocrew.json``) is
+    regenerable here, via :func:`rebuild_agent_config`. App/custom agents are
+    owned by their own subsystems, so a missing one is reported (``False``) and
+    left to the caller's graceful set_mode fallback rather than being guessed at.
+
+    Returns ``True`` when the managed default file is present (already, or after
+    a regenerate); ``False`` when *agent* is non-managed or regeneration failed.
+    Best-effort — never raises, so it can sit on the spawn hot path.
+    """
+    try:
+        managed = Path(AGENT_FILENAME).stem
+        if not agent or agent != managed:
+            return False
+        agent_file = kiro_agents_dir_path() / AGENT_FILENAME
+        if agent_file.exists():
+            return True
+        logger.warning(
+            "Managed agent config %s missing — regenerating before spawn "
+            "(self-heal for kiro-cli 'Mode not found')",
+            agent_file,
+        )
+        rebuild_agent_config()
+        return agent_file.exists()
+    except Exception:
+        logger.warning(
+            "ensure_agent_materialized failed for agent %r", agent, exc_info=True
+        )
+        return False
+
+
 def _install_aim_capabilities() -> None:
     """Write a bare ``kirocrew-lite`` agent config.
 

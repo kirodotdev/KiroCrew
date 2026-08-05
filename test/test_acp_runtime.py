@@ -4639,3 +4639,139 @@ class TestToolPurposeExtraction:
         assert (
             extract_tool_purpose({"__tool_use_purpose": "", "__toolUsePurpose": "real"}) == "real"
         )
+
+
+# ── set_mode availableModes guard (regression: "Mode '<agent>' not found") ──
+
+
+def _new_resp(modes: dict | None) -> dict:
+    r: dict = {"sessionId": "s1"}
+    if modes is not None:
+        r["modes"] = modes
+    return r
+
+
+@pytest.mark.asyncio
+async def test_create_session_sets_mode_when_agent_is_advertised():
+    """Happy path: the requested agent is in availableModes → set_mode fires."""
+    rt, _, _ = _make_runtime()
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp(
+        {"currentModeId": "kirocrew", "availableModes": [{"id": "kirocrew"}, {"id": "ops"}]}
+    )
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        handle = await rt.create_session(agent="ops", mcp_servers=[])
+    methods = [c.args[0] for c in rt._send_and_await.call_args_list]
+    assert methods == [METHOD_SESSION_NEW, METHOD_SET_MODE]
+    assert rt._send_and_await.call_args_list[1].args[1] == {
+        "sessionId": "s1",
+        "modeId": "ops",
+    }
+    assert handle.session_id == "s1"
+
+
+@pytest.mark.asyncio
+async def test_create_session_fails_closed_when_agent_not_advertised():
+    """Guard (A): modes advertised but the agent is absent → FAIL CLOSED
+    (terminate + raise), never silently run the backend default. Substituting a
+    broader default for a requested restricted agent would be a privilege
+    escalation."""
+    rt, _, _ = _make_runtime()
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp({"currentModeId": "default", "availableModes": [{"id": "default"}]})
+    # session/new response, then the terminate roundtrip from the fail-closed path
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        with pytest.raises(AcpRuntimeError, match="not available"):
+            await rt.create_session(agent="kirocrew", mcp_servers=[])
+    methods = [c.args[0] for c in rt._send_and_await.call_args_list]
+    assert METHOD_SET_MODE not in methods  # never activated the wrong mode
+    assert METHOD_SESSION_TERMINATE in methods  # created session cleaned up
+    assert "s1" not in rt._session_queues  # unregistered
+
+
+@pytest.mark.asyncio
+async def test_create_session_fails_closed_when_available_modes_empty():
+    """Regression (GPT round 2): an explicitly-empty `availableModes: []` is
+    ADVERTISED (not absent), so it must fail closed — not be treated as
+    "no modes → attempt" and then fault with "Mode not found"."""
+    rt, _, _ = _make_runtime()
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp({"currentModeId": "kirocrew", "availableModes": []})
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        with pytest.raises(AcpRuntimeError, match="not available"):
+            await rt.create_session(agent="kirocrew", mcp_servers=[])
+    methods = [c.args[0] for c in rt._send_and_await.call_args_list]
+    assert METHOD_SET_MODE not in methods
+    assert METHOD_SESSION_TERMINATE in methods
+
+
+@pytest.mark.asyncio
+async def test_create_session_sets_mode_when_no_modes_advertised():
+    """Backward compat: a backend that omits `modes` (older kiro-cli / fake
+    backend) still gets set_mode attempted."""
+    rt, _, _ = _make_runtime()
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp(None)
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        await rt.create_session(agent="kirocrew", mcp_servers=[])
+    methods = [c.args[0] for c in rt._send_and_await.call_args_list]
+    assert METHOD_SET_MODE in methods
+
+
+def test_mode_available_helper():
+    """Unit: the guard predicate. Empty modes ⇒ attempt (True); advertised ⇒
+    membership test."""
+    from kiro_crew.acp.runtime import AcpRuntime
+
+    assert AcpRuntime._mode_available("kirocrew", _new_resp(None)) is True
+    assert (
+        AcpRuntime._mode_available(
+            "kirocrew", _new_resp({"availableModes": [{"id": "kirocrew"}]})
+        )
+        is True
+    )
+    assert (
+        AcpRuntime._mode_available(
+            "kirocrew", _new_resp({"availableModes": [{"id": "default"}]})
+        )
+        is False
+    )
+    # Present-but-empty availableModes → advertised, agent absent → fail closed.
+    assert AcpRuntime._mode_available("kirocrew", _new_resp({"availableModes": []})) is False
+    # A modes dict WITHOUT an availableModes list → not advertised → attempt.
+    assert AcpRuntime._mode_available("kirocrew", _new_resp({"currentModeId": "x"})) is True
+
+
+def test_parse_session_modes_shapes():
+    """The shared parser: absent/odd `modes` ⇒ ([], '', False); a present
+    availableModes list ⇒ advertised=True (even when empty); id read from
+    id → modeId → value fallbacks."""
+    from kiro_crew.acp._dispatch import parse_session_modes
+
+    assert parse_session_modes({}) == ([], "", False)
+    assert parse_session_modes({"modes": "nonsense"}) == ([], "", False)
+    # modes dict but no availableModes list → not advertised (attempt path).
+    assert parse_session_modes({"modes": {"currentModeId": "x"}}) == ([], "x", False)
+    # present but empty → advertised True (fail-closed path).
+    assert parse_session_modes({"modes": {"availableModes": []}}) == ([], "", True)
+    ids, current, advertised = parse_session_modes(
+        {
+            "modes": {
+                "currentModeId": "kirocrew",
+                "availableModes": [
+                    {"id": "kirocrew"},
+                    {"modeId": "ops"},
+                    {"value": "code-reviewer"},
+                    {"name": "no-id-dropped"},
+                    "not-a-dict",
+                ],
+            }
+        }
+    )
+    assert ids == ["kirocrew", "ops", "code-reviewer"]
+    assert current == "kirocrew"
+    assert advertised is True

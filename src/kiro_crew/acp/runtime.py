@@ -28,6 +28,7 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.acp._dispatch import (
     build_session_new_params,
+    parse_session_modes,
     set_mode_params,
 )
 from kiro_crew.acp.client import (
@@ -52,6 +53,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     JsonRpcRequest,
 )
+from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
@@ -567,6 +569,17 @@ class AcpRuntime:
             raise AcpRuntimeError(str(exc)) from exc
         if not kiro_bin:
             raise AcpRuntimeError(f"{KIRO_CLI_BIN} not found in PATH")
+
+        # Self-heal (B): kiro-cli discovers its selectable modes at startup from
+        # ~/.kiro/agents/*.json, so the managed default agent file must exist
+        # BEFORE this --agent spawn or set_mode later fails with
+        # "Mode '<agent>' not found". Regenerate it if missing (best-effort, off
+        # the loop). Non-managed agents can't be materialized here — the
+        # create_session guard fails those closed instead.
+        try:
+            await asyncio.to_thread(ensure_agent_materialized, self._agent)
+        except Exception:
+            logger.warning("pre-spawn agent materialization failed", exc_info=True)
 
         argv: list[str] = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
         if self._model:
@@ -1216,6 +1229,23 @@ class AcpRuntime:
             self._pending_init_notifications.clear()
         return matched
 
+    @staticmethod
+    def _mode_available(agent: str, resp: dict[str, Any]) -> bool:
+        """Whether ``set_mode`` should be attempted for ``agent`` given a
+        ``session/new``|``session/load`` response.
+
+        True when the backend advertised no ``modes`` list at all (older kiro-cli
+        / offline fake backend — attempt for backward compatibility) OR the agent
+        is in the advertised ``availableModes``. False when a modes list WAS
+        advertised (even an empty one) and the agent is absent — the case that
+        would otherwise fault with ``-32603 "Mode '<agent>' not found"``. An
+        explicitly-empty ``availableModes: []`` therefore fails closed, not open.
+        """
+        ids, _current, advertised = parse_session_modes(resp)
+        if not advertised:
+            return True
+        return agent in ids
+
     async def create_session(
         self,
         cwd: str | Path | None = None,
@@ -1272,7 +1302,16 @@ class AcpRuntime:
         # plain local unregister would leak it in the shared process. terminate_
         # session also unregisters the queue. Mirrors the same cleanup in
         # load_session().
-        if agent:
+        #
+        # Guard (A): only activate the mode when the backend advertised it in the
+        # session/new `modes` list, or advertised no modes at all (older kiro-cli
+        # / fake backend → attempt, backward-compatible). If modes ARE advertised
+        # but the requested agent is absent, its ~/.kiro/agents/<agent>.json never
+        # loaded (pre-spawn self-heal covers only the managed default). FAIL CLOSED
+        # rather than silently leaving the session on kiro-cli's default mode: for
+        # a restricted/app agent that would run a BROADER agent than requested (a
+        # privilege escalation), so we terminate and raise an actionable error.
+        if agent and self._mode_available(agent, resp):
             try:
                 await self._send_and_await(
                     METHOD_SET_MODE,
@@ -1281,6 +1320,16 @@ class AcpRuntime:
             except Exception:
                 await self.terminate_session(session_id)
                 raise
+        elif agent:
+            _ids, _current, _adv = parse_session_modes(resp)
+            await self.terminate_session(session_id)
+            raise AcpRuntimeError(
+                f"Agent mode {agent!r} is not available on this session "
+                f"(advertised modes: {_ids or 'none'}); its "
+                f"~/.kiro/agents/{agent}.json is likely missing. Refusing to run "
+                f"the backend default mode {_current or '(unknown)'} in its place. "
+                f"Run `kirocrew setup --agent-only` to materialize the agent config."
+            )
 
         # Drain MCP-server-init / oauth / config notifications before the first
         # prompt so they don't race into the first turn (parity with
@@ -1359,7 +1408,7 @@ class AcpRuntime:
         # succeeded so kiro-cli holds it; a plain local unregister would leak it
         # in the shared process (and leave the reader routing late transcript-
         # replay frames to an abandoned queue). terminate_session unregisters too.
-        if agent:
+        if agent and self._mode_available(agent, resp):
             try:
                 await self._send_and_await(
                     METHOD_SET_MODE,
@@ -1368,6 +1417,20 @@ class AcpRuntime:
             except Exception:
                 await self.terminate_session(resume_sid)
                 raise
+        elif agent:
+            # Guard (A) — see create_session. A resumed session always echoes a
+            # `modes` list (checked above), so an absent agent means its config
+            # isn't loaded. Fail closed rather than silently resuming on a
+            # different (broader) default agent than the one requested.
+            _ids, _current, _adv = parse_session_modes(resp)
+            await self.terminate_session(resume_sid)
+            raise AcpRuntimeError(
+                f"Agent mode {agent!r} is not available for resumed session "
+                f"{resume_sid} (advertised modes: {_ids or 'none'}); its "
+                f"~/.kiro/agents/{agent}.json is likely missing. Refusing to run "
+                f"the backend default mode {_current or '(unknown)'} in its place. "
+                f"Run `kirocrew setup --agent-only` to materialize the agent config."
+            )
 
         # Drain MCP-init / oauth / config notifications before the first prompt
         # (parity with AcpClient). Transcript-replay frames were already dropped
