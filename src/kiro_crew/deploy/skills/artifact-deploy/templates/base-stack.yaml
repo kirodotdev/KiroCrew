@@ -127,19 +127,35 @@ Resources:
       VersioningConfiguration:
         Status: Enabled
       LifecycleConfiguration:
+        # Three coordinated rules give ~365-day retention with tamper-evidence
+        # on a VERSIONED bucket, where a Days expiration inserts a delete marker
+        # rather than erasing data:
+        #  - expire-logs: after 365 days the current log object is replaced by a
+        #    delete marker and its version becomes noncurrent — the declared
+        #    audit-retention window.
+        #  - expire-noncurrent-logs: a noncurrent version (an overwritten/tampered
+        #    object, or one just superseded by its own expiry) is removed 30 days
+        #    later — a short recovery window matching OriginBucket. This bounds the
+        #    retention tail at ~365+30d instead of ~730d (NoncurrentDays counts
+        #    from the moment a version goes noncurrent, not from object creation).
+        #  - expire-delete-markers: reaps the leftover delete marker once nothing
+        #    remains beneath it, so markers do not accumulate unbounded.
+        #    ExpiredObjectDeleteMarker must be its own rule — S3 rejects it in the
+        #    same rule as a Days/Date expiration.
         Rules:
           - Id: expire-logs
             Status: Enabled
             Prefix: ''
             ExpirationInDays: 365
-          # Bound noncurrent versions so tamper-evidence retention does not grow
-          # storage without limit: prior versions of overwritten log objects are
-          # kept for the same 365-day audit window, then expired.
           - Id: expire-noncurrent-logs
             Status: Enabled
             Prefix: ''
             NoncurrentVersionExpiration:
-              NoncurrentDays: 365
+              NoncurrentDays: 30
+          - Id: expire-delete-markers
+            Status: Enabled
+            Prefix: ''
+            ExpiredObjectDeleteMarker: true
           - Id: abort-incomplete-multipart
             Status: Enabled
             Prefix: ''
