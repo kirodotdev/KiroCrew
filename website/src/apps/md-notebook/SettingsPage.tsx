@@ -799,11 +799,19 @@ export function SettingsBar({
         // and full-strength label, since Settings is a peer destination. The
         // separator lives on the wrapper so the fill stays a clean row, and the
         // 8px side margins line it up with the list's own padding.
+        //
+        // The 2px vertical padding is load-bearing, not cosmetic: it makes the
+        // row 28px, so the wrapper's separator lands on the SAME baseline as the
+        // dashboard left-nav's community-row separator ("Star us · Report issue").
+        // Both cards share a grid row and both end 8px above the pane, so the
+        // budget below this border must match the nav's: 8px gap + row + 8px
+        // margin = 44px there too (nav: 10 + 24 + 10). Changing this padding, the
+        // gear size, or either 8px moves the line out of alignment with the nav.
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: '4px',
-          padding: '6px 4px 6px 12px',
+          padding: '2px 4px 2px 12px',
           margin: '0 8px',
           borderRadius: '8px',
           whiteSpace: 'nowrap',
