@@ -306,15 +306,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Slack session mirror",
         "dashboard/chat_slack.py",
-        "Thread titles and mirrored message bodies posted to Slack, via "
-        "redact_and_truncate (redaction BEFORE truncation, so a truncation "
-        "boundary cannot split and hide a credential).",
+        "Thread titles and the conversation history seeded into a newly linked "
+        "thread. Titles go through redact_and_truncate (redaction BEFORE "
+        "truncation, so a truncation boundary cannot split and hide a "
+        "credential); history goes through redact_via_context BEFORE mrkdwn "
+        "conversion, because to_slack_mrkdwn self-truncates at 39k and would "
+        "otherwise cut a credential into an unmatchable prefix.",
     ),
     (
         "Configured-channel session mirror",
         "dashboard/chat_mirror.py",
         "Recent dashboard context posted while linking a configured non-Slack "
-        "destination, via redact_and_truncate before transport dispatch.",
+        "destination, via redact_via_context before transport dispatch, then "
+        "chunked to the channel's own message limit rather than truncated.",
     ),
     (
         "Slack Block Kit views",

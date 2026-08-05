@@ -23,15 +23,37 @@ import logging
 
 from aiohttp import web
 
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.chat_backfill import (
+    backfill_content,
+    gap_summary,
+    select_backfill_messages,
+    session_deep_link,
+)
 from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _resolve_mirror_target
 from kiro_crew.dashboard.chat_slack import list_slack_channels
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
-from kiro_crew.security import redact_and_truncate
+from kiro_crew.messaging.renderer import chunk_text
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
+
+# Used only when a transport reports no message-length capability. Matches
+# ``TransportCapabilities.max_message_chars``' own default, which is the
+# smallest common ceiling across the proactive-capable channels (Telegram and
+# WhatsApp cap at 4096).
+_FALLBACK_MAX_MESSAGE_CHARS = 4096
+
+# Ceiling on how many messages the INLINE mirror backfill will deliver. Each unit
+# costs a governance thread-hop plus a transport send, and a rate-limited channel
+# (Telegram is roughly one message per second) makes the request duration a
+# function of the unit count. Twelve covers a normal opening-turn-plus-five-turns
+# preview outright, so the cap only bites on pathologically long history, and it
+# keeps the request inside a browser fetch timeout.
+_MAX_INLINE_BACKFILL_UNITS = 12
 
 
 async def api_channel_targets(request: web.Request) -> web.Response:
@@ -237,35 +259,130 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
             {"error": "failed to create channel link", "code": "channel_link_failed"}, status=502
         )
 
-    for message in slot.messages[-5:]:
-        role = str(message.get("role", "") or "")
-        content = redact_and_truncate(message.get("content") or "", max_chars=2000)
-        if role in ("user", "assistant") and content:
-            speaker = "You" if role == "user" else "Kiro Crew"
-            try:
-                # Historical context is a sequence of separate egress actions.
-                # Stop immediately if policy narrows while the loop is yielding.
-                governed = await asyncio.to_thread(
-                    _resolve_channel_target, state, session_key, link
+    # Build the ordered delivery units BEFORE the loop. Each unit is one Slack-
+    # free chunk of text, and the gap marker is a unit like any other, so every
+    # single thing that crosses the egress boundary gets its own governance
+    # re-check below rather than riding along on a message's decision.
+    #
+    # Offloaded: selection reads the on-disk transcript when the opening turn is
+    # off-window, and that read parses every tab_id sibling file. On the loop
+    # thread it would stall every other chat turn and the liveness heartbeat.
+    selection = await asyncio.to_thread(select_backfill_messages, state, slot)
+    max_chars = (
+        getattr(getattr(live_transport, "capabilities", None), "max_message_chars", 0)
+        or _FALLBACK_MAX_MESSAGE_CHARS
+    )
+
+    def _units_for(row: dict) -> list[str]:
+        # redact_via_context is the canonical egress shim (a loaded companion's
+        # extra credential regexes apply, not just the OSS baseline) and it never
+        # truncates. chunk_text at the transport's own limit matches how a normal
+        # mirrored turn is delivered in _deliver_cross_surface_reply, so a long
+        # message arrives in full instead of being cut at 2,000 chars. No Slack
+        # mrkdwn conversion here: this path targets Telegram/Discord/Teams.
+        speaker = "You" if row.get("role") == "user" else "Kiro Crew"
+        text = redact_via_context(backfill_content(row))
+        return chunk_text(f"{speaker}: {text}", max_chars)
+
+    # Bound the INLINE delivery. Unlike the Slack drain this cannot be
+    # backgrounded -- the per-unit governance re-check below has to be able to
+    # fail the request closed with 403 -- so an unbounded loop would reintroduce
+    # the very defect backgrounding fixed on the Slack side: a rate-limited
+    # transport (Telegram is roughly one message per second) would hold the HTTP
+    # request open past the browser's fetch timeout and the user would see a
+    # failed link that had actually persisted.
+    #
+    # The budget is spent on WHOLE turns in priority order, and every turn it
+    # cannot afford is folded into the gap marker's count. Trimming composed
+    # units instead would cut a reply mid-sentence and could drop the marker
+    # itself -- the one line telling the reader history is missing.
+    recent_turn_units = [
+        [unit for row in turn for unit in _units_for(row)] for turn in selection.recent
+    ]
+    head_units: list[str] = []
+    for row in selection.first_turn:
+        head_units.extend(_units_for(row))
+
+    total_turns = len(recent_turn_units)
+
+    def _fits(keep: int, with_head: bool) -> bool:
+        """Would keeping the newest *keep* turns fit the budget?
+
+        The marker costs a unit only when something is ACTUALLY skipped -- either
+        selection already skipped turns, or this budget drops one. Reserving it
+        unconditionally made a self-fulfilling gap: with six two-message turns
+        every unit fits, but the reservation pushed the oldest turn out and then
+        spent the reserved slot announcing the omission it had just caused.
+        """
+        tail = recent_turn_units[total_turns - keep:] if keep else []
+        dropped = total_turns - keep
+        marker = 1 if (selection.skipped_turns or dropped) else 0
+        head = len(head_units) if with_head else 0
+        return sum(len(u) for u in tail) + marker + head <= _MAX_INLINE_BACKFILL_UNITS
+
+    # Priority order: keep as much recent history as fits WITH the opening turn;
+    # only give the opening turn up if not even the newest turn fits alongside
+    # it; and always keep the newest turn, which is irreducible (shrinking one
+    # turn means cutting a reply mid-sentence), even if it alone overruns.
+    keep_turns, include_head = 0, False
+    if head_units:
+        for candidate in range(total_turns, 0, -1):
+            if _fits(candidate, True):
+                keep_turns, include_head = candidate, True
+                break
+    if not keep_turns:
+        for candidate in range(total_turns, 0, -1):
+            if _fits(candidate, False):
+                keep_turns, include_head = candidate, False
+                break
+    if not keep_turns and total_turns:
+        keep_turns, include_head = 1, False
+
+    kept = recent_turn_units[total_turns - keep_turns:] if keep_turns else []
+    skipped_total = (
+        selection.skipped_turns
+        + (total_turns - keep_turns)
+        + (1 if selection.first_turn and not include_head else 0)
+    )
+
+    units: list[str] = list(head_units) if include_head else []
+    if skipped_total and kept:
+        summary = gap_summary(skipped_total)
+        deep_link = ""
+        try:
+            # Offloaded for the same reason as the transcript read: config load
+            # is blocking file I/O and must not run on the event loop.
+            cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            deep_link = session_deep_link(cfg.dashboard.url, slot.key)
+        except Exception:
+            logger.debug("mirror-link: could not build session link", exc_info=True)
+        units.append(f"… {summary} — {deep_link}" if deep_link else f"… {summary}")
+    for turn_units in kept:
+        units.extend(turn_units)
+
+    for unit in units:
+        try:
+            # Historical context is a sequence of separate egress actions.
+            # Stop immediately if policy narrows while the loop is yielding.
+            governed = await asyncio.to_thread(_resolve_channel_target, state, session_key, link)
+            if governed is None:
+                # Policy narrowed mid-delivery: fail closed. Do NOT fall
+                # through to set_mirror_link (which would persist a link the
+                # latest governance decision denied) and do NOT report
+                # success. The denial is already SEL-audited inside
+                # _resolve_channel_target via vet_and_audit.
+                return web.json_response(
+                    {"error": "channel is not permitted", "code": "channel_not_permitted"},
+                    status=403,
                 )
-                if governed is None:
-                    # Policy narrowed mid-delivery: fail closed. Do NOT fall
-                    # through to set_mirror_link (which would persist a link the
-                    # latest governance decision denied) and do NOT report
-                    # success. The denial is already SEL-audited inside
-                    # _resolve_channel_target via vet_and_audit.
-                    return web.json_response(
-                        {"error": "channel is not permitted", "code": "channel_not_permitted"},
-                        status=403,
-                    )
-                _, live_transport = governed
-                await live_transport.send_message(
-                    conversation_id,
-                    f"{speaker}: {content}",
-                    thread_id=thread_id,
-                )
-            except Exception:
-                logger.debug("mirror-link context delivery failed", exc_info=True)
+            _, live_transport = governed
+            await live_transport.send_message(
+                conversation_id,
+                unit,
+                thread_id=thread_id,
+            )
+        except Exception:
+            logger.debug("mirror-link context delivery failed", exc_info=True)
 
     state.sessions.set_mirror_link(
         session_key,

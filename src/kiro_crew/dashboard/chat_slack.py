@@ -2,18 +2,34 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from typing import Any
 
 from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import state as dashboard_state
+from kiro_crew.dashboard.chat_backfill import (
+    backfill_content,
+    gap_summary,
+    select_backfill_messages,
+    session_deep_link,
+)
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import effective_session_key
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, _log_task_exception
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security import redact_and_truncate
 from kiro_crew.sel import sel
 from kiro_crew.slack.channel_resolver import _CACHE_FILENAME, ChannelNameResolver
+from kiro_crew.slack.format import (
+    SLACK_MAX_TEXT,
+    SLACK_MSG_LIMIT,
+    split_message,
+    strip_ansi,
+    to_slack_mrkdwn,
+)
 from kiro_crew.sync_bridge import handoff_to_slack
 
 logger = logging.getLogger(__name__)
@@ -48,6 +64,151 @@ def _get_channel_resolver(state: DashboardState) -> ChannelNameResolver:
         cache_path = dashboard_state.config_dir() / _CACHE_FILENAME
         state._channel_resolver = ChannelNameResolver(cache_path=cache_path)
     return state._channel_resolver
+
+
+_USER_ICON = "\U0001f9d1"
+_AGENT_ICON = "\U0001f916"
+
+
+def _format_backfill_parts(content: str) -> list[str]:
+    """Normalise, redact, convert to Slack mrkdwn, redact again, then split.
+
+    ANSI escapes are stripped FIRST, before any redaction. ``to_slack_mrkdwn``
+    strips them itself, and that strip can *reassemble* a credential the escapes
+    had broken up -- so a secret written as ``AKIA<esc>IOSF...`` is invisible to
+    the regex until the strip happens. Normalising up front means the first
+    redaction pass sees the credential whole, while the text is still one piece.
+    Redacting per block after the strip is NOT equivalent: if the split boundary
+    falls inside the credential, each block holds only an unmatchable fragment
+    and two adjacent posts reassemble it for the reader.
+
+    Redaction then runs over the whole normalised text, because
+    ``to_slack_mrkdwn`` self-truncates at ``SLACK_MAX_TEXT`` before converting:
+    converting first would cut a credential at that boundary and leave a prefix
+    the regex no longer matches.
+
+    It runs a second time on each converted block, because conversion can still
+    reorder or drop characters (inline markup, link rewriting) in ways that
+    reveal a secret only afterwards. Redacting on both sides of the transform is
+    what makes the guarantee independent of what conversion does to the bytes.
+
+    The pre-split into blocks below the limit exists for that same truncation
+    reason: converting the whole message and splitting after would silently drop
+    everything past 39,000 characters -- the tail loss the 2,000-char cap used to
+    cause, just further out. Blocks are halved against the limit so a conversion
+    that *grows* text (table and mermaid rewriting) still cannot reach it.
+
+    When -- and only when -- that split actually produces more than one block,
+    tables are left as raw markdown. ``_convert_tables`` keys a table's labels off
+    the first ``|`` row it sees, so a block beginning part-way through a table
+    adopts a DATA row as its header: that row's values are then only ever emitted
+    as labels (and vanish entirely if no data rows follow it, because
+    ``_flush_table`` returns early on an empty body), while every later row is
+    labelled with the wrong names. Raw pipes read worse on mobile than the
+    vertical-list conversion, which is why this is not the default -- but a
+    message that never splits keeps the nicer rendering, and one that does keeps
+    all of its rows.
+    """
+    cleaned = redact_via_context(strip_ansi(content or ""))
+    blocks = split_message(cleaned, limit=SLACK_MAX_TEXT // 2)
+    # A single block IS the whole message, so no table can be straddled.
+    keep_tables = len(blocks) > 1
+    parts: list[str] = []
+    for block in blocks:
+        converted = redact_via_context(to_slack_mrkdwn(block, keep_tables=keep_tables))
+        parts.extend(split_message(converted, limit=SLACK_MSG_LIMIT))
+    return parts
+
+
+async def drain_slack_backfill(
+    state: DashboardState,
+    slot: Any,
+    channel: str,
+    thread_ts: str,
+) -> None:
+    """Seed a freshly linked Slack thread with readable conversation history.
+
+    Posts the opening turn, a gap marker naming how many turns were skipped, then
+    the last few turns in full. Runs as a background task rather than inline in
+    the link request: Slack accepts roughly one message per second per channel,
+    so a long history split across many parts would hold the HTTP request open
+    long enough for the browser fetch to time out while posts kept landing --
+    the user would see a failure on a link that actually worked.
+
+    Backgrounding is safe here specifically because the Slack link path has no
+    per-message governance gate to fail closed on (unlike the configured-channel
+    mirror in ``chat_mirror.py``, which stays inline for that reason).
+    """
+    client = state.slack_client
+    if client is None:
+        return
+    # Offloaded: selection reads the on-disk transcript when the opening turn is
+    # off-window, and read_messages_chained parses every tab_id sibling file (and
+    # globs the sessions dir to rebuild a stale index). On the loop thread that
+    # would stall every other chat turn and the liveness heartbeat.
+    selection = await asyncio.to_thread(select_backfill_messages, state, slot)
+    if not selection.messages:
+        return
+
+    async def _post(text: str) -> bool:
+        try:
+            await client.post_message(channel, text, thread_ts)
+            return True
+        except Exception:
+            # Best-effort: a partially seeded thread is still usable, and the
+            # link itself is already persisted. Never bare-pass -- a silent
+            # swallow here is what made the original failure invisible.
+            logger.debug("slack backfill: post failed", exc_info=True)
+            return False
+
+    for row in selection.first_turn:
+        icon = _USER_ICON if row.get("role") == "user" else _AGENT_ICON
+        for part in _format_backfill_parts(backfill_content(row)):
+            if not await _post(f"{icon} {part}"):
+                return
+
+    if selection.skipped_turns and selection.recent:
+        summary = gap_summary(selection.skipped_turns)
+        link = ""
+        try:
+            # Offloaded: KiroCrewConfig.load() reads and validates the config
+            # file, which is blocking I/O like the transcript read above.
+            cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            link = session_deep_link(cfg.dashboard.url, slot.key)
+        except Exception:
+            logger.debug("slack backfill: could not build session link", exc_info=True)
+        marker = f"_… {summary} — <{link}|open in the dashboard>_" if link else f"_… {summary}_"
+        await _post(marker)
+
+    for row in selection.recent_rows:
+        icon = _USER_ICON if row.get("role") == "user" else _AGENT_ICON
+        for part in _format_backfill_parts(backfill_content(row)):
+            if not await _post(f"{icon} {part}"):
+                return
+
+
+def _spawn_slack_backfill(
+    state: DashboardState,
+    slot: Any,
+    channel: str,
+    thread_ts: str,
+) -> None:
+    """Fire the backfill drain as a tracked background task.
+
+    Uses the established three-callback shape: keep a strong reference so the
+    task is not garbage-collected mid-flight, discard it on completion, and log
+    any exception through ``_log_task_exception`` (which redacts first). Omitting
+    the third callback is a documented defect -- the failure would surface only
+    as an unretrieved-exception warning at interpreter shutdown.
+
+    ``state._background_tasks`` is never cancelled at shutdown, so a gateway stop
+    mid-drain abandons the task and leaves a partially seeded thread. That is
+    accepted: the link is already persisted and the thread is live.
+    """
+    task = asyncio.create_task(drain_slack_backfill(state, slot, channel, thread_ts))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    task.add_done_callback(_log_task_exception)
 
 
 async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
@@ -128,21 +289,11 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
     # while nothing ever told the open tab it had arrived.
     state.link_slack(slot.key, thread_ts, target_channel)
 
-    # Post last 5 messages as context — only when we created a NEW thread.
-    # Linking to an existing thread (challenge-and-redirect) would duplicate
-    # messages the thread already contains.
+    # Seed the new thread with readable history — only when we created a NEW
+    # thread. Linking to an existing thread (challenge-and-redirect) would
+    # duplicate messages the thread already contains.
     if not existing_thread:
-        for m in slot.messages[-5:]:
-            role = m.get("role", "")
-            txt = redact_and_truncate(m.get("content") or "", max_chars=2000)
-            if role in ("user", "assistant") and txt:
-                icon = "\U0001f9d1" if role == "user" else "\U0001f916"
-                try:
-                    await state.slack_client.post_message(
-                        target_channel, f"{icon} {txt}", thread_ts
-                    )
-                except Exception:
-                    pass
+        _spawn_slack_backfill(state, slot, target_channel, thread_ts)
 
     sel().log_api_access(
         caller="dashboard",
