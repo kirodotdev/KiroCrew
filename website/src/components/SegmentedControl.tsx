@@ -131,15 +131,16 @@ export default function SegmentedControl<T extends string = string>({ segments, 
                 />
               )}
               {s.icon && <span className="relative z-[1]">{s.icon}</span>}
-              <AnimatePresence>
+              <AnimatePresence initial={false}>
                 {(mode === 'full' || isActive) && (
                   <motion.span
                     key={`label-${s.key}`}
-                    initial={{ width: 0 }}
-                    animate={{ width: 'auto' }}
-                    exit={{ width: 0 }}
-                    transition={{ type: 'spring', bounce: 0, duration: 0.2 }}
-                    className="relative z-[1] overflow-hidden whitespace-nowrap"
+                    layout
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.15 }}
+                    className="relative z-[1] whitespace-nowrap"
                   >
                     {s.label}
                   </motion.span>
