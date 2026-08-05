@@ -59,7 +59,7 @@
     "@xterm/xterm": "^5.5.0",
     "clsx": "^2.1.1",
     "d3": "^7.9.0",
-    "dompurify": "3.4.12",
+    "dompurify": "3.4.13",
     "framer-motion": "^12.38.0",
     "graphology": "0.26.0",
     "highlight.js": "^11.11.1",
@@ -67,7 +67,7 @@
     "katex": "0.16.44",
     "lottie-web": "5.13.0",
     "lucide-react": "1.7.0",
-    "mermaid": "11.13.0",
+    "mermaid": "11.16.1",
     "monaco-editor": "^0.55.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -101,7 +101,7 @@
     "@typescript-eslint/eslint-plugin": "8.58.0",
     "@typescript-eslint/parser": "8.58.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "@vitest/coverage-v8": "3.2.4",
+    "@vitest/coverage-v8": "3.2.7",
     "autoprefixer": "10.4.27",
     "eslint": "^9.39.4",
     "eslint-plugin-i18next": "^6.1.5",
@@ -115,8 +115,8 @@
     "postcss": "8.5.25",
     "tailwindcss": "^3.4.19",
     "typescript": "^5.6.3",
-    "vite": "5.3.6",
-    "vitest": "^3.2.4"
+    "vite": "5.4.21",
+    "vitest": "^3.2.7"
   },
   "overrides": {
     "@aws-sdk/types": "3.973.6",
@@ -127,7 +127,7 @@
     "@inquirer/core": "11.1.7",
     "@inquirer/figures": "2.0.4",
     "@inquirer/type": "4.0.4",
-    "@mermaid-js/parser": "1.0.1",
+    "@mermaid-js/parser": "1.2.0",
     "@mswjs/interceptors": "0.41.3",
     "@smithy/types": "4.13.1",
     "@tanstack/query-core": "5.96.0",
@@ -143,6 +143,8 @@
     "ajv": "6.14.0",
     "baseline-browser-mapping": "2.10.13",
     "brace-expansion": "1.1.13",
+    "dompurify": "3.4.13",
+    "esbuild": "0.25.12",
     "test-exclude": "8.0.0",
     "minimatch@>=10": {
       "brace-expansion": "5.0.8"
@@ -168,6 +170,6 @@
     "tldts": "7.0.27",
     "tldts-core": "7.0.27",
     "type-fest": "5.5.0",
-    "ws": "8.20.0"
+    "ws": "8.21.2"
   }
 }
