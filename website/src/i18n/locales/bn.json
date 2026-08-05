@@ -3430,7 +3430,6 @@
       "retrying": "আবার চেষ্টা করা হচ্ছে..."
     },
     "chatInput": {
-      "message_placeholder": "{{bot}}-কে মেসেজ করুন… (/command · @file · $skill)",
       "add_files_options": "ফাইল ও অপশন যোগ করুন",
       "allow_once": "একবারের জন্য অনুমতি দিন",
       "apply_a_ready_made_set_of_instructions": "আগে থেকে তৈরি নির্দেশের একটি সেট প্রয়োগ করুন",
@@ -3441,6 +3440,7 @@
       "command": "কমান্ড",
       "context_usage": "কনটেক্সট ব্যবহার",
       "context_window": "কনটেক্সট উইন্ডো",
+      "continue_interrupted_turn": "বিঘ্নিত পালা চালিয়ে যান",
       "could_not_submit_that_decision_see_the_console_f": "সেই সিদ্ধান্ত জমা দেওয়া যায়নি — বিস্তারিত জানতে কনসোল দেখো।",
       "drag_to_resize_double_click_to_reset": "আকার বদলাতে টানুন (রিসেট করতে ডাবল-ক্লিক করুন)",
       "file": "ফাইল",
@@ -3455,6 +3455,7 @@
       "let_the_agent_read_one_of_your_files": "এজেন্টকে আপনার একটি ফাইল পড়তে দিন",
       "let_the_agent_use_the_browser": "এজেন্টকে ব্রাউজার ব্যবহার করতে দিন",
       "message_input": "বার্তা ইনপুট",
+      "message_placeholder": "{{bot}}-কে মেসেজ করুন… (/command · @file · $skill)",
       "model": "মডেল",
       "optimize_prompt": "প্রম্পট অপ্টিমাইজ করো",
       "optimize_prompt_busy_optimizing_another_chat": "প্রম্পট অপ্টিমাইজ করো — এখন অন্য একটি চ্যাট অপ্টিমাইজ হচ্ছে",
@@ -3462,6 +3463,8 @@
       "optimizing_prompt": "প্রম্পট অপ্টিমাইজ করা হচ্ছে…",
       "plan_pre_filled_add_context_then_send": "প্ল্যান আগেই পূরণ করা হয়েছে — কনটেক্সট যোগ করে তারপর পাঠান",
       "project": "প্রজেক্ট",
+      "queue": "কিউ",
+      "queue_desc": "বর্তমান টার্ন শেষ হলে চালাও",
       "queue_message": "বার্তা সারিতে রাখুন",
       "queue_run_after_the_current_turn_finishes_enter": "কিউ — বর্তমান টার্ন শেষ হলে চালাও (Enter)",
       "quick_actions_like_clearing_the_chat_or_checking": "চ্যাট পরিষ্কার করা বা ব্যবহার দেখার মতো দ্রুত অ্যাকশন",
@@ -3484,6 +3487,7 @@
       "skill": "স্কিল",
       "slash_commands": "স্ল্যাশ কমান্ড",
       "steer": "স্টিয়ার",
+      "steer_desc": "চলমান টার্নে সঙ্গে সঙ্গে ঢুকিয়ে দাও",
       "steer_inject_into_the_running_turn_enter": "স্টিয়ার — চলমান টার্নে ঢুকিয়ে দাও (Enter)",
       "stop_generation": "জেনারেশন বন্ধ করুন",
       "stop_recording": "রেকর্ডিং থামাও",
@@ -3498,13 +3502,11 @@
       "transcribing": "ট্রান্সক্রাইব হচ্ছে…",
       "transcribing_please_wait": "ট্রান্সক্রাইব হচ্ছে, অপেক্ষা করো…",
       "trust_reads": "পঠনে ভরসা করুন",
+      "turn_interrupted_press_continue": "শেষ পালা বিঘ্নিত হয়েছে — চালিয়ে যেতে ▶ চাপুন, বা লিখুন",
       "upload_file": "ফাইল আপলোড করুন",
       "use_a_skill": "একটি স্কিল ব্যবহার করুন",
       "used": "ব্যবহৃত",
-      "voice_input": "ভয়েস ইনপুট",
-      "queue": "কিউ",
-      "queue_desc": "বর্তমান টার্ন শেষ হলে চালাও",
-      "steer_desc": "চলমান টার্নে সঙ্গে সঙ্গে ঢুকিয়ে দাও"
+      "voice_input": "ভয়েস ইনপুট"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
@@ -6126,11 +6128,13 @@
       "recoveryCard": {
         "backend_error_continuing": "ব্যাকএন্ড ত্রুটি · স্বয়ংক্রিয়ভাবে চলছে",
         "cancelled_continuing": "বাতিল · চলছে",
+        "continued_by_you": "আপনার অনুরোধে চালানো হয়েছে",
         "empty_output_continuing": "খালি আউটপুট · স্বয়ংক্রিয়ভাবে চলছে",
         "n_patterns": "{{count}}টি প্যাটার্ন",
         "n_tool_calls_blocked": "{{count}}টি টুল কল ব্লক করা হয়েছে",
         "no_response_returned": "কোনো প্রতিক্রিয়া পাওয়া যায়নি",
         "recovered_continuing": "পুনরুদ্ধার হয়েছে · চলছে",
+        "resuming_the_interrupted_turn": "বিঘ্নিত পালা আবার শুরু হচ্ছে",
         "safety_policy_continuing": "নিরাপত্তা নীতি · স্বয়ংক্রিয়ভাবে চলছে",
         "tool_call_blocked": "টুল কল ব্লক করা হয়েছে",
         "tool_stopped_responding": "টুল সাড়া দেওয়া বন্ধ করেছে",
@@ -6283,6 +6287,10 @@
         "aria_show_details": "টুলের বিস্তারিত দেখাও: {{label}}",
         "opened_in_the_side_panel": "সাইড প্যানেলে খোলা হয়েছে",
         "blocked_by_security_policy": "নিরাপত্তা নীতি দ্বারা অবরুদ্ধ"
+      },
+      "errorCard": {
+        "continue": "চালিয়ে যান",
+        "continue_hint": "যেখানে থেমেছিল সেখান থেকে চালান। ডিস্কে লেখা কাজ অপরিবর্তিত থাকে।"
       }
     },
     "chatPage": {

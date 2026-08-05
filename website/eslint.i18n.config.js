@@ -298,6 +298,21 @@ export default [
               // slash-prefixed string (`'/Delete'`) is exempt.
               '^https?://\\S*$',
               '^[.~]?/\\S*$',
+              // A GATEWAY WIRE MARKER, e.g. `[Tool refusal — automatic recovery]` or
+              // `[Continue — requested by the user]`. These are matched with
+              // `startsWith` against gateway-authored transcript rows and must stay
+              // BYTE-IDENTICAL to the Python constants in
+              // `src/kiro_crew/dashboard/state.py`; the matched prefix is then SLICED
+              // OFF, so no character of it ever reaches the screen — the card's visible
+              // copy comes from `i18nT()`. Translating one would silently stop every
+              // recovery card from rendering in that locale, which is the failure this
+              // exemption exists to prevent: without it the gate pushes a contributor
+              // toward "fixing" a wire value by translating it.
+              //
+              // Narrow by SHAPE, not by file: bracket-delimited end to end, and it must
+              // carry a spaced em dash. UI copy is neither bracketed nor em-dash-joined,
+              // and the bracketed CSS attribute selector covered above has no em dash.
+              '^\\[[A-Za-z][A-Za-z0-9 ]* — [A-Za-z0-9 ]+\\]$',
               // NOTE ON SHAPE: the plugin wraps every pattern as `^<pattern>$`
               // (`generateFullMatchRegExp`), so a pattern must describe the WHOLE
               // string. A prefix-only pattern like `^data:` becomes `^^data:$` and can

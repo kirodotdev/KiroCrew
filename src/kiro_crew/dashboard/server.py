@@ -2153,6 +2153,9 @@ async def start_dashboard(
     app.router.add_get("/api/chat/slots/{slot}", chat.api_chat_slot_detail)
     app.router.add_post("/api/chat/slots/{slot}/stop", chat.api_chat_slot_stop)
     app.router.add_post("/api/chat/slots/{slot}/interrupt", chat.api_chat_slot_interrupt)
+    # Deliberately NOT /resume — that path is already taken by "open a history
+    # session into a tab" (api_chat_slot_resume) and means something else.
+    app.router.add_post("/api/chat/slots/{slot}/continue", chat.api_chat_slot_continue)
     app.router.add_delete(
         "/api/chat/slots/{slot}/queue/{queue_id}", chat.api_chat_slot_queue_cancel
     )

@@ -3524,7 +3524,6 @@
       "retrying": "Повтор..."
     },
     "chatInput": {
-      "message_placeholder": "Написать {{bot}}… (/command · @file · $skill)",
       "add_files_options": "Добавить файлы и параметры",
       "allow_once": "Разрешить один раз",
       "apply_a_ready_made_set_of_instructions": "Применить готовый набор инструкций",
@@ -3535,6 +3534,7 @@
       "command": "Команда",
       "context_usage": "Использование контекста",
       "context_window": "Контекстное окно",
+      "continue_interrupted_turn": "Продолжить прерванный ход",
       "could_not_submit_that_decision_see_the_console_f": "Не удалось отправить это решение — подробности в консоли.",
       "drag_to_resize_double_click_to_reset": "Потяните, чтобы изменить размер (двойной щелчок — сброс)",
       "file": "Файл",
@@ -3549,6 +3549,7 @@
       "let_the_agent_read_one_of_your_files": "Разрешить агенту прочитать один из ваших файлов",
       "let_the_agent_use_the_browser": "Разрешить агенту использовать браузер",
       "message_input": "Поле ввода сообщения",
+      "message_placeholder": "Написать {{bot}}… (/command · @file · $skill)",
       "model": "Модель",
       "optimize_prompt": "Улучшить промпт",
       "optimize_prompt_busy_optimizing_another_chat": "Улучшить промпт — идёт улучшение в другом чате",
@@ -3556,6 +3557,8 @@
       "optimizing_prompt": "Оптимизация промпта…",
       "plan_pre_filled_add_context_then_send": "План подставлен — добавьте контекст и нажмите «Отправить»",
       "project": "Проект",
+      "queue": "В очередь",
+      "queue_desc": "Выполнить после текущего хода",
       "queue_message": "Добавить в очередь",
       "queue_run_after_the_current_turn_finishes_enter": "В очередь — выполнить после текущего хода (Enter)",
       "quick_actions_like_clearing_the_chat_or_checking": "Быстрые действия: очистить чат или посмотреть расход",
@@ -3578,6 +3581,7 @@
       "skill": "Навык",
       "slash_commands": "Слэш-команды",
       "steer": "Направить",
+      "steer_desc": "Сразу вставить в выполняющийся ход",
       "steer_inject_into_the_running_turn_enter": "Направить — вставить в выполняющийся ход (Enter)",
       "stop_generation": "Остановить генерацию",
       "stop_recording": "Остановить запись",
@@ -3592,13 +3596,11 @@
       "transcribing": "Расшифровка…",
       "transcribing_please_wait": "Расшифровка, подожди…",
       "trust_reads": "Доверять чтению",
+      "turn_interrupted_press_continue": "Последний ход был прерван — нажмите ▶, чтобы продолжить, или просто напишите",
       "upload_file": "Загрузить файл",
       "use_a_skill": "Использовать навык",
       "used": "Использовано",
-      "voice_input": "Голосовой ввод",
-      "queue": "В очередь",
-      "queue_desc": "Выполнить после текущего хода",
-      "steer_desc": "Сразу вставить в выполняющийся ход"
+      "voice_input": "Голосовой ввод"
     },
     "chatPane": {
       "agent_list": "Список агентов",
@@ -6272,11 +6274,13 @@
       "recoveryCard": {
         "backend_error_continuing": "ошибка бэкенда · продолжение автоматически",
         "cancelled_continuing": "отменено · продолжение",
+        "continued_by_you": "Продолжено по вашему запросу",
         "empty_output_continuing": "пустой вывод · продолжение автоматически",
         "n_patterns": "шаблонов: {{count}}",
         "n_tool_calls_blocked": "Заблокировано вызовов инструментов: {{count}}",
         "no_response_returned": "Ответ не получен",
         "recovered_continuing": "восстановлено · продолжение",
+        "resuming_the_interrupted_turn": "продолжаем прерванный ход",
         "safety_policy_continuing": "политика безопасности · продолжение автоматически",
         "tool_call_blocked": "Вызов инструмента заблокирован",
         "tool_stopped_responding": "Инструмент перестал отвечать",
@@ -6431,6 +6435,10 @@
         "aria_show_details": "Показать подробности инструмента: {{label}}",
         "opened_in_the_side_panel": "Открыто в боковой панели",
         "blocked_by_security_policy": "Заблокировано политикой безопасности"
+      },
+      "errorCard": {
+        "continue": "Продолжить",
+        "continue_hint": "Продолжить с места остановки. Уже записанные на диск изменения не тронуты."
       }
     },
     "chatPage": {

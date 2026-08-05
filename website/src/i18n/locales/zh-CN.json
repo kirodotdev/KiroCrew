@@ -3383,7 +3383,6 @@
       "retrying": "重试中…"
     },
     "chatInput": {
-      "message_placeholder": "给 {{bot}} 发消息… (/command · @file · $skill)",
       "add_files_options": "添加文件与选项",
       "allow_once": "允许一次",
       "apply_a_ready_made_set_of_instructions": "套用现成的指令集",
@@ -3394,6 +3393,7 @@
       "command": "命令",
       "context_usage": "上下文用量",
       "context_window": "上下文窗口",
+      "continue_interrupted_turn": "继续被中断的回答",
       "could_not_submit_that_decision_see_the_console_f": "无法提交此决定 — 详见控制台。",
       "drag_to_resize_double_click_to_reset": "拖动调整大小（双击重置）",
       "file": "文件",
@@ -3408,6 +3408,7 @@
       "let_the_agent_read_one_of_your_files": "让代理读取你的某个文件",
       "let_the_agent_use_the_browser": "允许智能体使用浏览器",
       "message_input": "消息输入",
+      "message_placeholder": "给 {{bot}} 发消息… (/command · @file · $skill)",
       "model": "模型",
       "optimize_prompt": "优化提示词",
       "optimize_prompt_busy_optimizing_another_chat": "优化提示词 — 正在优化另一个聊天",
@@ -3415,6 +3416,8 @@
       "optimizing_prompt": "正在优化提示词…",
       "plan_pre_filled_add_context_then_send": "计划已预填 — 补充上下文后发送",
       "project": "项目",
+      "queue": "排队",
+      "queue_desc": "在当前轮次结束后运行",
       "queue_message": "排队消息",
       "queue_run_after_the_current_turn_finishes_enter": "排队 — 当前轮次结束后运行 (Enter)",
       "quick_actions_like_clearing_the_chat_or_checking": "清空聊天、查看用量等快捷操作",
@@ -3437,6 +3440,7 @@
       "skill": "技能",
       "slash_commands": "斜杠命令",
       "steer": "引导",
+      "steer_desc": "立即注入正在运行的轮次",
       "steer_inject_into_the_running_turn_enter": "引导 — 注入正在运行的轮次 (Enter)",
       "stop_generation": "停止生成",
       "stop_recording": "停止录音",
@@ -3451,13 +3455,11 @@
       "transcribing": "转写中…",
       "transcribing_please_wait": "正在转写，请稍候…",
       "trust_reads": "信任读取",
+      "turn_interrupted_press_continue": "上一轮被中断 — 点 ▶ 继续，或直接输入新消息",
       "upload_file": "上传文件",
       "use_a_skill": "使用技能",
       "used": "已用",
-      "voice_input": "语音输入",
-      "queue": "排队",
-      "queue_desc": "在当前轮次结束后运行",
-      "steer_desc": "立即注入正在运行的轮次"
+      "voice_input": "语音输入"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -6053,11 +6055,13 @@
       "recoveryCard": {
         "backend_error_continuing": "后端错误 · 正在自动继续",
         "cancelled_continuing": "已取消 · 继续中",
+        "continued_by_you": "按你的要求继续",
         "empty_output_continuing": "输出为空 · 正在自动继续",
         "n_patterns": "{{count}} 条规则",
         "n_tool_calls_blocked": "{{count}} 个工具调用被阻止",
         "no_response_returned": "未返回响应",
         "recovered_continuing": "已恢复 · 继续中",
+        "resuming_the_interrupted_turn": "正在从中断处继续",
         "safety_policy_continuing": "安全策略 · 正在自动继续",
         "tool_call_blocked": "工具调用被阻止",
         "tool_stopped_responding": "工具停止响应",
@@ -6209,6 +6213,10 @@
         "aria_show_details": "展开工具详情：{{label}}",
         "opened_in_the_side_panel": "已在侧边栏中打开",
         "blocked_by_security_policy": "已被安全策略阻止"
+      },
+      "errorCard": {
+        "continue": "继续",
+        "continue_hint": "从中断处继续。已经写入磁盘的改动都还在。"
       }
     },
     "chatPage": {

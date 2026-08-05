@@ -3430,7 +3430,6 @@
       "retrying": "फिर कोशिश हो रही है..."
     },
     "chatInput": {
-      "message_placeholder": "{{bot}} को मैसेज करो… (/command · @file · $skill)",
       "add_files_options": "फ़ाइलें और विकल्प जोड़ें",
       "allow_once": "एक बार अनुमति दें",
       "apply_a_ready_made_set_of_instructions": "निर्देशों का तैयार सेट लागू करें",
@@ -3441,6 +3440,7 @@
       "command": "कमांड",
       "context_usage": "कॉन्टेक्स्ट उपयोग",
       "context_window": "कॉन्टेक्स्ट विंडो",
+      "continue_interrupted_turn": "बाधित बारी जारी रखें",
       "could_not_submit_that_decision_see_the_console_f": "वह निर्णय सबमिट नहीं हो सका — विवरण के लिए कंसोल देखें।",
       "drag_to_resize_double_click_to_reset": "आकार बदलने के लिए खींचें (रीसेट करने के लिए डबल-क्लिक करें)",
       "file": "फ़ाइल",
@@ -3455,6 +3455,7 @@
       "let_the_agent_read_one_of_your_files": "एजेंट को अपनी कोई फ़ाइल पढ़ने दें",
       "let_the_agent_use_the_browser": "एजेंट को ब्राउज़र का उपयोग करने दें",
       "message_input": "संदेश इनपुट",
+      "message_placeholder": "{{bot}} को मैसेज करो… (/command · @file · $skill)",
       "model": "मॉडल",
       "optimize_prompt": "प्रॉम्प्ट ऑप्टिमाइज़ करें",
       "optimize_prompt_busy_optimizing_another_chat": "प्रॉम्प्ट ऑप्टिमाइज़ करें — दूसरी चैट ऑप्टिमाइज़ हो रही है",
@@ -3462,6 +3463,8 @@
       "optimizing_prompt": "प्रॉम्प्ट ऑप्टिमाइज़ हो रहा है…",
       "plan_pre_filled_add_context_then_send": "प्लान पहले से भरा गया — संदर्भ जोड़ें, फिर भेजें",
       "project": "प्रोजेक्ट",
+      "queue": "कतार में डालें",
+      "queue_desc": "मौजूदा टर्न ख़त्म होने के बाद चलाएँ",
       "queue_message": "संदेश कतार में डालें",
       "queue_run_after_the_current_turn_finishes_enter": "कतार में डालें — मौजूदा टर्न ख़त्म होने के बाद चलाएँ (Enter)",
       "quick_actions_like_clearing_the_chat_or_checking": "चैट साफ़ करने या उपयोग जाँचने जैसी त्वरित क्रियाएँ",
@@ -3484,6 +3487,7 @@
       "skill": "स्किल",
       "slash_commands": "स्लैश कमांड",
       "steer": "स्टीयर करें",
+      "steer_desc": "चल रहे टर्न में तुरंत डालें",
       "steer_inject_into_the_running_turn_enter": "स्टीयर करें — चल रहे टर्न में डालें (Enter)",
       "stop_generation": "जेनरेशन रोकें",
       "stop_recording": "रिकॉर्डिंग रोकें",
@@ -3498,13 +3502,11 @@
       "transcribing": "ट्रांसक्राइब हो रहा है…",
       "transcribing_please_wait": "ट्रांसक्राइब हो रहा है, कृपया प्रतीक्षा करें…",
       "trust_reads": "पढ़ने पर भरोसा करें",
+      "turn_interrupted_press_continue": "पिछली बारी बाधित हुई — जारी रखने के लिए ▶ दबाएँ, या टाइप करें",
       "upload_file": "फ़ाइल अपलोड करें",
       "use_a_skill": "स्किल का उपयोग करें",
       "used": "उपयोग",
-      "voice_input": "वॉइस इनपुट",
-      "queue": "कतार में डालें",
-      "queue_desc": "मौजूदा टर्न ख़त्म होने के बाद चलाएँ",
-      "steer_desc": "चल रहे टर्न में तुरंत डालें"
+      "voice_input": "वॉइस इनपुट"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",
@@ -6126,11 +6128,13 @@
       "recoveryCard": {
         "backend_error_continuing": "बैकएंड त्रुटि · स्वतः जारी",
         "cancelled_continuing": "रद्द · जारी",
+        "continued_by_you": "अनुरोध पर जारी किया गया",
         "empty_output_continuing": "खाली आउटपुट · स्वतः जारी",
         "n_patterns": "{{count}} पैटर्न",
         "n_tool_calls_blocked": "{{count}} टूल कॉल अवरुद्ध",
         "no_response_returned": "कोई प्रतिक्रिया नहीं मिली",
         "recovered_continuing": "पुनर्प्राप्त · जारी",
+        "resuming_the_interrupted_turn": "बाधित बारी फिर से शुरू हो रही है",
         "safety_policy_continuing": "सुरक्षा नीति · स्वतः जारी",
         "tool_call_blocked": "टूल कॉल अवरुद्ध",
         "tool_stopped_responding": "टूल ने प्रतिक्रिया देना बंद कर दिया",
@@ -6283,6 +6287,10 @@
         "aria_show_details": "टूल के लिए विवरण दिखाएँ: {{label}}",
         "opened_in_the_side_panel": "साइड पैनल में खोला गया",
         "blocked_by_security_policy": "सुरक्षा नीति द्वारा अवरुद्ध"
+      },
+      "errorCard": {
+        "continue": "जारी रखें",
+        "continue_hint": "जहाँ रुका था वहीं से फिर शुरू करें। डिस्क पर लिखा हुआ काम जैसा है वैसा रहेगा।"
       }
     },
     "chatPage": {

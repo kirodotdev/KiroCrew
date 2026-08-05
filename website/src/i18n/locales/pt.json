@@ -3477,7 +3477,6 @@
       "retrying": "Tentando novamente..."
     },
     "chatInput": {
-      "message_placeholder": "Enviar mensagem para {{bot}}… (/command · @file · $skill)",
       "add_files_options": "Adicionar arquivos e opções",
       "allow_once": "Permitir uma vez",
       "apply_a_ready_made_set_of_instructions": "Aplicar um conjunto de instruções pronto",
@@ -3488,6 +3487,7 @@
       "command": "Comando",
       "context_usage": "Uso do contexto",
       "context_window": "Janela de contexto",
+      "continue_interrupted_turn": "Continuar a rodada interrompida",
       "could_not_submit_that_decision_see_the_console_f": "Não foi possível enviar essa decisão — veja os detalhes no console.",
       "drag_to_resize_double_click_to_reset": "Arraste para redimensionar (clique duplo para redefinir)",
       "file": "Arquivo",
@@ -3502,6 +3502,7 @@
       "let_the_agent_read_one_of_your_files": "Permite que o agente leia um dos seus arquivos",
       "let_the_agent_use_the_browser": "Permitir que o agente use o navegador",
       "message_input": "Entrada de mensagem",
+      "message_placeholder": "Enviar mensagem para {{bot}}… (/command · @file · $skill)",
       "model": "Modelo",
       "optimize_prompt": "Otimizar prompt",
       "optimize_prompt_busy_optimizing_another_chat": "Otimizar prompt — ocupado otimizando outro chat",
@@ -3509,6 +3510,8 @@
       "optimizing_prompt": "Otimizando prompt…",
       "plan_pre_filled_add_context_then_send": "Plano pré-preenchido — adicione contexto e clique em Enviar",
       "project": "Projeto",
+      "queue": "Enfileirar",
+      "queue_desc": "Executar depois que o turno atual terminar",
       "queue_message": "Enfileirar mensagem",
       "queue_run_after_the_current_turn_finishes_enter": "Enfileirar — executar depois que o turno atual terminar (Enter)",
       "quick_actions_like_clearing_the_chat_or_checking": "Ações rápidas como limpar o chat ou verificar o uso",
@@ -3531,6 +3534,7 @@
       "skill": "Habilidade",
       "slash_commands": "Comandos de barra",
       "steer": "Direcionar",
+      "steer_desc": "Injetar imediatamente no turno em execução",
       "steer_inject_into_the_running_turn_enter": "Direcionar — injetar no turno em execução (Enter)",
       "stop_generation": "Parar geração",
       "stop_recording": "Parar gravação",
@@ -3545,13 +3549,11 @@
       "transcribing": "Transcrevendo…",
       "transcribing_please_wait": "Transcrevendo, aguarde…",
       "trust_reads": "Confiar em leituras",
+      "turn_interrupted_press_continue": "A última rodada foi interrompida — toque em ▶ para continuar ou apenas escreva",
       "upload_file": "Enviar arquivo",
       "use_a_skill": "Usar uma habilidade",
       "used": "Usado",
-      "voice_input": "Entrada de voz",
-      "queue": "Enfileirar",
-      "queue_desc": "Executar depois que o turno atual terminar",
-      "steer_desc": "Injetar imediatamente no turno em execução"
+      "voice_input": "Entrada de voz"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -6199,11 +6201,13 @@
       "recoveryCard": {
         "backend_error_continuing": "erro do backend · continuando automaticamente",
         "cancelled_continuing": "cancelado · continuando",
+        "continued_by_you": "Continuado a seu pedido",
         "empty_output_continuing": "saída vazia · continuando automaticamente",
         "n_patterns": "{{count}} padrões",
         "n_tool_calls_blocked": "{{count}} chamadas de ferramenta bloqueadas",
         "no_response_returned": "Sem resposta",
         "recovered_continuing": "recuperado · continuando",
+        "resuming_the_interrupted_turn": "retomando a rodada interrompida",
         "safety_policy_continuing": "política de segurança · continuando automaticamente",
         "tool_call_blocked": "Chamada de ferramenta bloqueada",
         "tool_stopped_responding": "A ferramenta parou de responder",
@@ -6357,6 +6361,10 @@
         "aria_show_details": "Mostrar detalhes da ferramenta: {{label}}",
         "opened_in_the_side_panel": "Aberto no painel lateral",
         "blocked_by_security_policy": "Bloqueado pela política de segurança"
+      },
+      "errorCard": {
+        "continue": "Continuar",
+        "continue_hint": "Retomar de onde parou. O trabalho já gravado no disco permanece intacto."
       }
     },
     "chatPage": {
