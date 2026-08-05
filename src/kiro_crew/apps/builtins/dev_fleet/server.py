@@ -2847,6 +2847,7 @@ async def _worktree_remove(
 
     pr = (await _pr_status_cached(branch)) if branch else None
     own = await _own_commits_count(path)
+
     if not force and not _is_pr_merged(pr):
         if own is None or own > 0:
             return {
@@ -3189,7 +3190,14 @@ async def _worktree_remove(
                 )
             return {"ok": False, "error": _redact((stderr or stdout).strip()[:300])}
 
-        # Delete branch if shipped/empty — atomically against the pinned OID.
+        # Delete branch ref only when the PR is MERGED — atomically against
+        # the pinned OID. Unmerged branch refs are always retained, even when
+        # own == 0 (every commit already reachable from the upstream base, so
+        # no unique commits exist): keying deletion to PR state alone is a
+        # deliberately simpler, fail-closed policy (recoverable > irrecoverable).
+        # Known cost: removing an unmerged empty worktree leaves refs/heads/
+        # <branch> behind, which blocks re-creating a worktree under the same
+        # branch name until the ref is deleted manually.
         # Fail-closed ancestry gate: even when the cached PR status says MERGED,
         # verify the branch OID is actually contained in the base branch. A stale
         # or wrong merged verdict cannot delete the only local pointer to unmerged
@@ -3200,7 +3208,7 @@ async def _worktree_remove(
         # using the pr_head_oid already fetched above (or fresh if needed).
         if branch and branch != BASE_BRANCH and verdict_oid:
             should_delete = False
-            if _is_pr_merged(pr) or own == 0:
+            if _is_pr_merged(pr):
                 remote = await _upstream_remote()
                 rc_anc, _, _ = await _run_cmd(
                     [
@@ -3212,7 +3220,7 @@ async def _worktree_remove(
                 should_delete = rc_anc == 0
                 # Squash-safe fallback: ancestry fails for squash/rebase merges.
                 # Use the containment check (branch OID is ancestor of PR head).
-                if not should_delete and _is_pr_merged(pr):
+                if not should_delete:
                     head_oid = pr_head_oid or await _fetch_pr_head_oid(
                         branch, repo=(pr or {}).get("_repo")
                     )
