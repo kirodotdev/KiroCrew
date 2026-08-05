@@ -28,6 +28,7 @@ from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.constants import OPTIONS_RE_LINE
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
+from kiro_crew.history import monotonic_transcript_ts
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
@@ -1221,7 +1222,17 @@ class _ChatSlot:
             "role": role,
             "content": content,
             "cls": cls,
-            "ts": ts or datetime.now(timezone.utc).isoformat(),
+            # This window is re-serialized into the SAME transcript file that
+            # ConversationLog.append writes, so it owes the reader the same
+            # ordering guarantee: strictly after the row before it, even when
+            # the clock does not tick between two appends. An explicit *ts*
+            # (a row replayed from a channel transcript) is preserved verbatim
+            # -- rewriting it would reorder the replay it came from.
+            "ts": ts
+            or monotonic_transcript_ts(
+                self.messages[-1].get("ts") if self.messages else None,
+                datetime.now(timezone.utc),
+            ),
         }
         if meta:
             msg["meta"] = meta

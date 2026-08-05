@@ -49,8 +49,8 @@ class TestCollidingClock:
             aware = h.datetime.now(dt.timezone.utc)
         assert aware.tzinfo is not None
 
-    def test_real_appends_collide(self, tmp_path):
-        from kiro_crew.history import ConversationLog
+    def test_real_appends_survive_the_collision(self, tmp_path):
+        from kiro_crew.history import ConversationLog, transcript_sort_key
 
         log = ConversationLog(base_dir=tmp_path)
         with colliding_clock("kiro_crew.history"):
@@ -58,7 +58,13 @@ class TestCollidingClock:
             log.append("t", "user", "b")
             log.append("t", "user", "c")
         ts = [m["ts"] for m in log.read_messages("t")]
-        assert len(set(ts)) == 1  # the exact coarse-clock collision Windows hits
+        # The simulator still hands every call one instant (test_now_is_frozen
+        # proves that in isolation). ``append`` no longer lets it reach the file:
+        # it stamps each row strictly after the one before, so the coarse-clock
+        # collision Windows hits can no longer collapse a turn onto one stamp.
+        assert len(set(ts)) == 3
+        keys = [transcript_sort_key(t) for t in ts]
+        assert keys == sorted(keys)
 
 
 class TestIncreasingClock:

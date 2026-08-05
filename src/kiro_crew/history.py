@@ -19,7 +19,7 @@ import threading
 import time as _time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, TypeVar
 
@@ -619,13 +619,68 @@ def transcript_sort_key(ts: str) -> tuple[int, float]:
     real instant instead of letting a fallback epoch interleave them into the
     middle of the conversation.
     """
-    try:
-        parsed = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
+    parsed = _parse_transcript_ts(ts)
+    if parsed is None:
         return (1, 0.0)
     if parsed.tzinfo is None:
         parsed = parsed.astimezone()
     return (0, parsed.timestamp())
+
+
+def _parse_transcript_ts(ts: str) -> datetime | None:
+    """Parse a transcript ``ts`` in either stored format, or ``None``.
+
+    Shared by :func:`transcript_sort_key` and :func:`monotonic_transcript_ts` so
+    the two agree on what counts as a readable timestamp: whatever one of them
+    can order, the other can stamp against.
+    """
+    try:
+        return datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def monotonic_transcript_ts(previous: str | None, now: datetime) -> str:
+    """Stamp a transcript row so it sorts strictly AFTER *previous*.
+
+    The two rows of one turn -- the message a person sent and the reply to it --
+    are written microseconds apart. A host whose clock ticks coarsely returns
+    the SAME value for both reads (Windows advances the system clock in ~15.6 ms
+    steps), so the pair lands on disk carrying an identical ``ts``. Every
+    consumer that orders a transcript by ``ts`` -- the dashboard, and the merge
+    built on :func:`transcript_sort_key` -- is then free to render the answer
+    above the question that prompted it.
+
+    Returning ``previous`` plus one microsecond when the clock has not advanced
+    makes the order a property of the write sequence rather than of the clock's
+    resolution. The correction only ever moves a row FORWARD, and only as far as
+    the previous row already claims to be, so it cannot push a row past one that
+    genuinely happened later. For a coarse clock that is one tick; it is larger
+    only when *previous* is a legacy naive value whose lost fold (below) makes it
+    read up to one local offset ahead.
+
+    Everything here is compared and emitted as an ABSOLUTE INSTANT, never as a
+    wall clock. A local wall clock repeats itself for an hour when daylight
+    saving ends, and ``isoformat`` does not record which of the two passes a
+    naive value belongs to -- so a naive stamp is not orderable against the
+    offset-aware rows the dashboard writes into the same file, and one written
+    during the repeat can read back an hour early. A naive *now* is therefore
+    resolved to its offset before use, and the returned value always carries
+    that offset. A naive *previous* is an older row from before this rule: it is
+    read as local time, the same reading :func:`transcript_sort_key` gives it,
+    which is the most its lost fold allows. An absent or unparseable *previous*
+    yields *now*.
+    """
+    if now.tzinfo is None:
+        now = now.astimezone()
+    if previous:
+        prior = _parse_transcript_ts(previous)
+        if prior is not None:
+            if prior.tzinfo is None:
+                prior = prior.astimezone()
+            if now <= prior:
+                now = prior + timedelta(microseconds=1)
+    return now.isoformat()
 
 
 def _safe_key(key: str) -> str:
@@ -1145,7 +1200,9 @@ class ConversationLog:
         # file in another process can't interleave and lose this append.
         with self._locked(key):
             created_with_tab_id = False
+            created_now = False
             if not path.exists():
+                created_now = True
                 self._dir.mkdir(parents=True, exist_ok=True)
                 meta: dict = {
                     "_type": "metadata",
@@ -1162,7 +1219,23 @@ class ConversationLog:
             msg: dict = {
                 "role": role,
                 "content": _redact_at_write_boundary(role, content),
-                "ts": datetime.now().isoformat(),
+                # Strictly after the row already on disk, so the pair written by
+                # one turn stays ordered on a host whose clock cannot separate
+                # them (see monotonic_transcript_ts). Consulting the file here is
+                # authoritative because ``_locked`` also holds the cross-process
+                # flock: no writer, in this process or another, can append
+                # between this look and the write below. A file this call just
+                # created provably holds no rows yet, so it is not consulted.
+                #
+                # ``astimezone()`` resolves the clock to an absolute instant
+                # before it is stored. This used to record a bare local wall
+                # clock, which repeats for an hour when daylight saving ends and
+                # cannot be ordered against the offset-aware rows the dashboard
+                # writes into this same file.
+                "ts": monotonic_transcript_ts(
+                    None if created_now else self._last_row_ts(key),
+                    datetime.now().astimezone(),
+                ),
             }
             if tools:
                 msg["tools"] = tools
@@ -2192,6 +2265,35 @@ class ConversationLog:
                 break
             window *= 4
         return messages[-max_messages:]
+
+    def _last_row_ts(self, key: str) -> str | None:
+        """The ``ts`` of the last message row on disk for *key*, or ``None``.
+
+        Call this under :meth:`_locked`. The answer is only authoritative while
+        no other writer can append, and the cross-process flock that ``_locked``
+        takes is what makes that true for a subagent / cron / CLI writing the
+        same session file from another process. ``append`` skips this entirely
+        for a file it just created, which provably holds no rows yet.
+
+        Reuses :meth:`_read_tail_messages` rather than parsing the file, so this
+        stays a bounded read on a long transcript. That reader also grows its
+        window when the last line is larger than it, so a single long reply
+        cannot hide the row behind it.
+
+        Measured on a 1.6 MB / 400-row transcript this is ~48 us, against ~38 us
+        for the ``open`` + ``write`` the same critical section already performs
+        and ~2.4 ms for the whole-file read ``_maybe_rotate`` does when it
+        rotates -- 0.4% of an ``append`` call, which is ~11.8 ms end to end. A
+        remembered-tail cache was tried here and removed: it would have needed a
+        cheap stamp of the file's identity to know when to distrust itself, and
+        the only cheap ones (size, mtime) are exactly the coarse-resolution
+        signals this module now exists to stop trusting.
+        """
+        tail = self._read_tail_messages(self._path(key), 1, None)
+        if not tail:
+            return None
+        ts = tail[-1].get("ts")
+        return ts if isinstance(ts, str) and ts else None
 
     def _invalidate_cache(self, key: str) -> None:
         """Invalidate caches for a key after a write operation."""

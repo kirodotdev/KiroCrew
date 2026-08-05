@@ -11,6 +11,7 @@ import pytest
 from kiro_crew.history import (
     _CONSOLIDATION_THRESHOLD,
     _SESSION_KEEP_LINES,
+    _SESSION_MAX_BYTES,
     ConversationLog,
     HistoryConsolidator,
 )
@@ -120,8 +121,14 @@ class TestConversationLog:
             log.append("t1", "user", f"{content} msg {i}")
         path = tmp_path / "t1.jsonl"
         lines = path.read_text(encoding="utf-8").splitlines()
-        # Should have metadata + kept lines (+ a few from post-rotation appends)
-        assert len(lines) <= _SESSION_KEEP_LINES + 5
+        # Rotation keeps _SESSION_KEEP_LINES and then shrinks further until the
+        # retained tail fits the byte budget, so the steady state is the cap plus
+        # however many appends landed since the last rotation crossed it. That
+        # overshoot is a function of a row's byte size, so assert the budget
+        # rotation actually promises; the loose line bound is only here to catch
+        # rotation not happening at all.
+        assert path.stat().st_size <= _SESSION_MAX_BYTES
+        assert len(lines) <= _SESSION_KEEP_LINES + 50
 
     def test_rotation_resets_consolidated(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
