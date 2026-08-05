@@ -293,6 +293,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.show-token-usage",
+    "label": "Show Token Usage",
+    "description": "Display used and total tokens next to the context progress bar",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.simplified-tool-call-names",
     "label": "Simplified Tool Call Names",
     "description": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run",

@@ -30,7 +30,7 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useImeGuard } from '../hooks/useImeGuard'
-import ContextBar, { contextTip, contextPctClamped, contextColor } from './ContextBar'
+import ContextBar, { contextTip, contextColor, composeContextReadout, contextPctClamped, fmtTokens } from './ContextBar'
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import FollowUpBar from './FollowUpBar'
 import { dispatchLightbox } from './MarkdownRenderer'
@@ -76,7 +76,7 @@ import { matchFileToken, matchSkillToken, replaceTokenAtCaret } from './composer
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 
 import { i18nT } from '../i18n/t'
-import { fmtDateFields } from '../i18n/format'
+import { fmtDateFields, fmtPercent } from '../i18n/format'
 const INPUT_MIN_H = 44
 const INPUT_DEFAULT_MAX_H = 140
 const INPUT_PREFILL_MAX_H = 320
@@ -297,6 +297,8 @@ interface ChatInputProps {
   contextUsedTokens?: number
   contextWindowTokens?: number
   showContextPct?: boolean
+  /** Show used/window token counts in the inline context readout. */
+  showContextTokens?: boolean
   isRunning?: boolean
   onStop?: () => void
   /**
@@ -501,6 +503,7 @@ function ChatInput({
   contextUsedTokens,
   contextWindowTokens,
   showContextPct,
+  showContextTokens,
   isRunning = false,
   onStop,
   continuable = false,
@@ -2728,7 +2731,21 @@ function ChatInput({
           )}
           </div>
           <div className="flex items-center shrink-0">
-          {contextPct != null && (
+          {contextPct != null && (() => {
+            const pct = Math.round(contextPct)
+            const win = contextWindowTokens || 0
+            const used = contextUsedTokens != null ? contextUsedTokens : (win ? Math.round((pct / 100) * win) : 0)
+            const remaining = win ? Math.max(win - used, 0) : 0
+            const approx = contextUsedTokens == null
+            const pctColor = contextColor(contextPct)
+            const showAnyReadout = !!(showContextPct || showContextTokens)
+            // Graceful degrade: on a narrow shelf, collapse to the percentage
+            // alone (or tokens, if that's the only segment enabled) so the
+            // readout never crowds out the agent/model controls.
+            const readout = shelfCompact
+              ? composeContextReadout(contextPct, used, win, { approx, showPct: showContextPct, showTokens: !!showContextTokens && !showContextPct })
+              : composeContextReadout(contextPct, used, win, { approx, showPct: showContextPct, showTokens: showContextTokens })
+            return (
             <div ref={ctxWrapRef} className="relative flex items-center">
               <button
                 className={`inline-flex items-center h-7 px-2.5 rounded-md transition-colors border-none cursor-pointer ${ctxPopoverOpen ? 'bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]' : 'bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]'}`}
@@ -2737,41 +2754,29 @@ function ChatInput({
                 aria-label={i18nT('components.chatInput.context_usage')}
               >
                 <ContextBar pct={contextPct} width={40} height={3} />
-                {showContextPct && <span className="text-[11px] ml-1.5 tabular-nums" style={{ color: contextColor(contextPct) }}>{contextPctClamped(contextPct)}%</span>}
+                {showAnyReadout && <span className="text-[11px] ml-1.5 tabular-nums whitespace-nowrap" style={{ color: pctColor }}>{readout}</span>}
               </button>
               {ctxPopoverOpen && (
                 <div className="absolute bottom-full right-0 mb-1 z-[60] w-52 rounded-xl border border-border bg-bg-elevated shadow-xl p-3 animate-slide-up">
-                    {(() => {
-                      const pct = Math.round(contextPct)
-                      const win = contextWindowTokens || 0
-                      const used = contextUsedTokens != null ? contextUsedTokens : (win ? Math.round((pct / 100) * win) : 0)
-                      const remaining = win ? Math.max(win - used, 0) : 0
-                      const approx = contextUsedTokens == null
-                      const k = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}K` : `${n}`
-                      const pctColor = pct >= 90 ? 'var(--danger)' : pct >= 75 ? 'var(--warn)' : 'var(--accent)'
-                      return (
-                        <>
                           <div className="flex items-center justify-between mb-2">
                             <span className="text-[11px] font-semibold text-text">{i18nT('components.chatInput.context_window')}</span>
-                            <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{pct}%</span>
+                            <span className="text-[12px] font-mono font-bold" style={{ color: pctColor }}>{fmtPercent(contextPctClamped(contextPct) / 100)}</span>
                           </div>
                           <div className="flex flex-col gap-1 text-[11px] font-mono">
-                            <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.used')}</span><span className="text-text">{approx ? '~' : ''}{k(used)}</span></div>
-                            <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.remaining')}</span><span className="text-text">{approx ? '~' : ''}{k(remaining)}</span></div>
-                            <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.total')}</span><span className="text-text">{k(win)}</span></div>
+                            <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.used')}</span><span className="text-text">{approx ? '~' : ''}{fmtTokens(used)}</span></div>
+                            <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.remaining')}</span><span className="text-text">{approx ? '~' : ''}{fmtTokens(remaining)}</span></div>
+                            <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.total')}</span><span className="text-text">{fmtTokens(win)}</span></div>
                           </div>
                           {modelName && (
                             <div className="mt-2 pt-2 border-t border-border flex justify-between text-[11px] font-mono">
                               <span className="text-muted">{i18nT('components.chatInput.model')}</span><span className="text-text truncate max-w-[120px]" title={modelName}>{modelName}</span>
                             </div>
                           )}
-                        </>
-                      )
-                    })()}
                   </div>
               )}
             </div>
-          )}
+            )
+          })()}
           {onModelClick && modelName && (
             <button
               className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"

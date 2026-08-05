@@ -6080,7 +6080,9 @@
         "startup": "स्टार्टअप",
         "us_east_1": "us-east-1",
         "voice": "आवाज़",
-        "when_enabled_tool_pills_show_purpose_instead_of": "चालू होने पर, टूल पिल सटीक कमांड के बजाय उद्देश्य दिखाते हैं"
+        "when_enabled_tool_pills_show_purpose_instead_of": "चालू होने पर, टूल पिल सटीक कमांड के बजाय उद्देश्य दिखाते हैं",
+        "show_token_usage": "टोकन उपयोग दिखाएँ",
+        "display_used_and_total_tokens_next_to_the_contex": "संदर्भ बार के पास उपयोग किए गए और कुल टोकन दिखाएँ"
       },
       "collapsibleToolGroup": {
         "approval_needed": "स्वीकृति आवश्यक",
@@ -8258,7 +8260,9 @@
         "mirror_documents_you_save_as_artifacts_into_the_l": "आर्टिफ़ैक्ट के रूप में सहेजे गए दस्तावेज़ पुस्तकालय में प्रतिबिंबित होते हैं, संपादन के साथ समकालिक रहते हैं, और आर्टिफ़ैक्ट हटाने पर हट जाते हैं।",
         "failed_to_save_knowledge_setting": "ज्ञान सेटिंग सहेजने में विफल",
         "auto_ingest_limit_per_scan": "प्रति स्कैन स्वतः-ग्रहण सीमा",
-        "how_much_an_automatically_registered_source_may_i": "स्वतः पंजीकृत स्रोत एक बार में कितना ले सकता है। दस्तावेज़ के प्रत्येक हिस्से पर एक निष्कर्षण कॉल खर्च होती है, इसलिए यही लागत को सीमित करता है; नवीनतम दस्तावेज़ पहले आते हैं और बाकी बाद के चक्रों में। 0 का अर्थ कोई सीमा नहीं। डिफ़ॉल्ट {{count}}।"
+        "how_much_an_automatically_registered_source_may_i": "स्वतः पंजीकृत स्रोत एक बार में कितना ले सकता है। दस्तावेज़ के प्रत्येक हिस्से पर एक निष्कर्षण कॉल खर्च होती है, इसलिए यही लागत को सीमित करता है; नवीनतम दस्तावेज़ पहले आते हैं और बाकी बाद के चक्रों में। 0 का अर्थ कोई सीमा नहीं। डिफ़ॉल्ट {{count}}।",
+        "show_token_usage": "टोकन उपयोग दिखाएँ",
+        "display_used_and_total_tokens_next_to_the_contex": "कॉन्टेक्स्ट प्रोग्रेस बार के आगे उपयोग किए गए और कुल टोकन दिखाएँ"
       },
       "computerUsePanel": {
         "accessibility": "सुलभता",

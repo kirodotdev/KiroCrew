@@ -6152,7 +6152,9 @@
         "startup": "Démarrage",
         "us_east_1": "us-east-1",
         "voice": "Voix",
-        "when_enabled_tool_pills_show_purpose_instead_of": "Si activé, les pastilles d'outils affichent l'objectif au lieu de la commande exacte"
+        "when_enabled_tool_pills_show_purpose_instead_of": "Si activé, les pastilles d'outils affichent l'objectif au lieu de la commande exacte",
+        "show_token_usage": "Afficher l'utilisation des jetons",
+        "display_used_and_total_tokens_next_to_the_contex": "Afficher les jetons utilisés et le total à côté de la barre de contexte"
       },
       "collapsibleToolGroup": {
         "approval_needed": "Approbation requise",
@@ -8345,7 +8347,9 @@
         "mirror_documents_you_save_as_artifacts_into_the_l": "Reflète dans la bibliothèque les documents que vous enregistrez comme artéfacts, les tient à jour au fil de vos modifications et les retire quand vous supprimez l’artéfact.",
         "failed_to_save_knowledge_setting": "Échec de l’enregistrement du paramètre de connaissances",
         "auto_ingest_limit_per_scan": "Limite d’ingestion automatique par analyse",
-        "how_much_an_automatically_registered_source_may_i": "Ce qu’une source enregistrée automatiquement peut absorber en une passe. Chaque fragment de document coûte un appel d’extraction : c’est donc ce qui borne le coût. Les documents les plus récents arrivent d’abord, le reste suit lors des passes suivantes. 0 supprime la limite. Valeur par défaut : {{count}}."
+        "how_much_an_automatically_registered_source_may_i": "Ce qu’une source enregistrée automatiquement peut absorber en une passe. Chaque fragment de document coûte un appel d’extraction : c’est donc ce qui borne le coût. Les documents les plus récents arrivent d’abord, le reste suit lors des passes suivantes. 0 supprime la limite. Valeur par défaut : {{count}}.",
+        "show_token_usage": "Afficher l'utilisation des jetons",
+        "display_used_and_total_tokens_next_to_the_contex": "Afficher les jetons utilisés et le total à côté de la barre de progression du contexte"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",
