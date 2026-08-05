@@ -18,13 +18,27 @@ The agent cannot directly run `kirocrew restart` — kiro-cli blocks it. Even if
 
 ### Restart Mechanism
 
-The agent cannot run `kirocrew restart` directly — kiro-cli's security filter blocks it at the shell command level (regex match on the command string). A bundled script (`do-restart.sh`) handles this indirectly:
+The agent cannot run `kirocrew restart` directly — kiro-cli's security filter blocks it at the shell command level (regex match on the command string). Platform-specific scripts handle this indirectly:
+
+**Linux / macOS:**
 
 ```bash
 nohup /path/to/skills/gateway-restart/do-restart.sh >/dev/null 2>&1 & disown
 ```
 
 The script sleeps 10 seconds (giving the session time to respond), then invokes the restart. Because it's a detached process reparented to PID 1, it survives the gateway's death and executes reliably.
+
+**Windows:**
+
+```powershell
+$kiroBin = (Get-Command kirocrew).Source
+$logFile = Join-Path $env:USERPROFILE ".kiro\crew\logs\restart.log"
+Start-Process -WindowStyle Hidden powershell -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "`"<path>\do-restart.ps1`"", "-KirocrewBin", "`"$kiroBin`"", "-LogFile", "`"$logFile`""
+```
+
+The PowerShell script (`do-restart.ps1`) accepts `-KirocrewBin` (the resolved absolute path to `kirocrew.exe`) and `-LogFile` (optional, for diagnosing silent failures). It sleeps 10 seconds, then calls the binary. `Start-Process -WindowStyle Hidden` creates a detached process that survives the gateway's death. Unlike Unix, Windows has no `nohup`/`disown` — `Start-Process` with `-WindowStyle Hidden` is the equivalent pattern for fire-and-forget background work.
+
+> **Important:** Always resolve `kirocrew` to an absolute path at schedule time (before the detached process launches). A hidden process may not inherit the same PATH as the agent session — this is the documented Windows reality. If resolution fails, the script falls back to PATH lookup and then to `python -m kiro_crew.cli restart` via the venv Python. All path arguments passed to `Start-Process -ArgumentList` must be wrapped in escaped quotes (`` `"..`" ``) to handle paths containing spaces (e.g. `C:\Users\John Smith\...`).
 
 ### Resume Jobs
 
@@ -74,11 +88,23 @@ Always schedule both fast and slow resume jobs with the current channel and thre
 
 Launch the bundled script as a detached process:
 
+**Linux / macOS:**
 ```bash
 nohup /path/to/skills/gateway-restart/do-restart.sh >/dev/null 2>&1 & disown
 ```
 
+**Windows:**
+```powershell
+$kiroBin = (Get-Command kirocrew).Source
+$scriptPath = Join-Path (Split-Path $PSScriptRoot) "skills\gateway-restart\do-restart.ps1"
+if (-not (Test-Path $scriptPath)) { $scriptPath = "$env:USERPROFILE\.kiro\crew\skills\gateway-restart\do-restart.ps1" }
+$logFile = "$env:USERPROFILE\.kiro\crew\logs\restart.log"
+Start-Process -WindowStyle Hidden powershell -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "`"$scriptPath`"", "-KirocrewBin", "`"$kiroBin`"", "-LogFile", "`"$logFile`""
+```
+
 The script's 10-second delay gives the current session time to finish responding.
+
+> **Path resolution:** On both platforms, use the installed skill path (`~/.kiro/crew/skills/gateway-restart/`). The `<path>` in the Restart Mechanism section above is the same directory.
 
 ### 4. Confirm to user
 
@@ -130,3 +156,5 @@ Save the user's answer as a lesson so the auto-update cron knows whether to rest
 - **Forgetting `channel` and `thread_ts`** — resume fires as a disconnected DM instead of replying in the original thread.
 - **Not cleaning up the slow job** — the fast resume message MUST instruct the agent to remove `restart-resume-slow`.
 - **Setting delay too short** — if the restart cron fires before the agent finishes responding, the response is lost. 10 seconds is safe.
+- **Windows: inline Python `-c` scripts via Start-Process** — nested quotes and backslash paths break PowerShell argument passing. Always use a script file (`do-restart.ps1`), never an inline `-c "..."` command.
+- **Windows: using bash/nohup/disown** — these don't exist on Windows. Use `Start-Process -WindowStyle Hidden powershell` instead.
