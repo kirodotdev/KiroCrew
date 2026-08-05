@@ -56,10 +56,25 @@ def _redirect_state(monkeypatch, tmp_path):
     return state_dir
 
 
+#: Real state dir, captured on FIRST USE -- which is fixture setup, before
+#: _redirect_state monkeypatches the module attributes, so it still snapshots
+#: the USER's live dir. Resolved lazily rather than at module level because
+#: binding a data-home path at import time freezes whichever KIROCREW_HOME was
+#: active at collection (test_lazy_data_home_paths enforces this repo-wide).
+_REAL_STATE_DIR: Path | None = None
+
+
+def _real_state_dir() -> Path:
+    global _REAL_STATE_DIR
+    if _REAL_STATE_DIR is None:
+        _REAL_STATE_DIR = routes._state_dir()
+    return _REAL_STATE_DIR
+
+
 def _live_state_snapshot() -> dict[str, int]:
     """Names + mtimes of the USER's real state dir, or {} when there is none."""
     try:
-        return {p.name: p.stat().st_mtime_ns for p in _REAL_STATE_DIR.iterdir()}
+        return {p.name: p.stat().st_mtime_ns for p in _real_state_dir().iterdir()}
     except OSError:
         return {}
 
@@ -80,12 +95,8 @@ def _never_touch_the_real_state(monkeypatch, tmp_path):
     _redirect_state(monkeypatch, tmp_path / "_autouse_state")
     yield
     assert _live_state_snapshot() == before, (
-        f"a test wrote to the live state dir: {_REAL_STATE_DIR}"
+        f"a test wrote to the live state dir: {_real_state_dir()}"
     )
-
-
-#: Captured at import, before any test can monkeypatch the module attributes.
-_REAL_STATE_DIR = routes._state_dir()
 
 
 @web.middleware
@@ -4260,7 +4271,7 @@ def test_state_guard_watches_the_whole_directory():
     got through. It now compares the directory listing."""
     src = inspect.getsource(_never_touch_the_real_state)
     assert "_live_state_snapshot()" in src
-    assert "_REAL_STATE_DIR" in inspect.getsource(_live_state_snapshot)
+    assert "_real_state_dir()" in inspect.getsource(_live_state_snapshot)
 
 
 # ── GPT round-46 findings (#518) ───────────────────────────────────────────────
