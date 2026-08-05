@@ -78,6 +78,37 @@ machine, not a parallel implementation; the native SSM tunnel even reuses the
 cloud module's own `cloud/ssm.py` primitives (`build_port_forward_argv`,
 `run_command`).
 
+## Launching a box (one command)
+
+The launcher provisions the EC2 box, installs and starts the gateway (bound to
+loopback `:5476`, never public), signs kiro-cli in over SSM, registers the box
+here, and opens the dashboard — all from your laptop.
+
+1. **One-time prep.** Install the AWS CLI and `session-manager-plugin` — on a bare
+   machine the `cloud-install.sh` (macOS/Linux) or `install.ps1` (Windows)
+   bootstrapper does this and hands off to the wizard. Verify prerequisites with
+   `kirocrew cloud doctor`. Attach the least-privilege policy printed by
+   `kirocrew cloud iam-policy` to the AWS profile you'll launch with.
+2. **Launch.** Run `kirocrew cloud launch` — interactive (size picker + confirm),
+   or non-interactive, e.g. `kirocrew cloud launch --size power --region us-west-2
+   --profile dev -y`. Useful flags: `--new` (a separate box instead of resuming
+   your saved one) and `--keep-on-failure` (disable CloudFormation rollback to
+   inspect a failed bootstrap).
+3. **Reach it — and the ports.** Launch ends by opening an SSM port-forward and
+   your browser at `http://localhost:<local>/?token=…`. You never choose the
+   **remote** port: the gateway always listens on loopback `:5476` on the box. The
+   **local** forwarded port defaults to `5599` (deliberately not `5476`, so it
+   won't collide with a local gateway you may run yourself); override it with
+   `--local-port` on the `connect` / `tunnel` verbs, or suppress the browser with
+   `--no-browser`. Because the box is registered here as an SSM crew, the Instances
+   hub afterwards opens its **own** managed SSM tunnel — allocating its own local
+   port, with token refresh and startup auto-reconnect — independent of that
+   one-shot launch tunnel. Re-running `launch` for the same box updates its record
+   in place; `kirocrew cloud destroy` removes both the box and this registration.
+
+For setting up a box you manage yourself (SSH or SSM, and the common EC2 gotchas),
+see [remote-crew-on-ec2.md](remote-crew-on-ec2.md).
+
 ## What you see in Settings → Instances
 
 A launched box appears as a managed instance whose connection line reads, e.g.:
