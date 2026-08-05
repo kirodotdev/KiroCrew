@@ -4712,7 +4712,8 @@
       "model_list": "モデルリスト",
       "models": "モデル",
       "reasoning": "推論",
-      "set_default_for_agent": "{{agent}} のデフォルトとして設定",
+      "set_default_for_agent": "{{model}} を {{agent}} の既定に設定",
+      "pin_model_unavailable": "{{model}} は現在提供されていません",
       "set_default_for_new_sessions": "新規セッションのグローバルフォールバック…",
       "type_to_filter": "フィルターするには入力…"
     },

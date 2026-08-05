@@ -4810,7 +4810,8 @@
       "model_list": "Lista de modelos",
       "models": "Modelos",
       "reasoning": "Raciocínio",
-      "set_default_for_agent": "Definir como padrão de {{agent}}",
+      "set_default_for_agent": "Definir {{model}} como padrão para {{agent}}",
+      "pin_model_unavailable": "{{model}} não está sendo oferecido no momento",
       "set_default_for_new_sessions": "Reserva global para novas sessões…",
       "type_to_filter": "Digite para filtrar…"
     },

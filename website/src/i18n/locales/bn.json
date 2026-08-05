@@ -4754,7 +4754,8 @@
       "model_list": "মডেল তালিকা",
       "models": "মডেল",
       "reasoning": "রিজনিং",
-      "set_default_for_agent": "{{agent}}-এর জন্য ডিফল্ট হিসেবে সেট করো",
+      "set_default_for_agent": "{{agent}}-এর জন্য {{model}} ডিফল্ট করুন",
+      "pin_model_unavailable": "{{model}} এই মুহূর্তে অফার করা হচ্ছে না",
       "set_default_for_new_sessions": "নতুন সেশনের জন্য গ্লোবাল ফলব্যাক…",
       "type_to_filter": "ফিল্টার করতে টাইপ করুন…"
     },

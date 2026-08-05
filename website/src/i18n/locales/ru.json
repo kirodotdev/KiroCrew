@@ -4866,7 +4866,8 @@
       "models": "Модели",
       "reasoning": "Рассуждения",
       "default_for_agent": "По умолчанию для {{agent}}",
-      "set_default_for_agent": "Назначить по умолчанию для {{agent}}",
+      "set_default_for_agent": "Использовать {{model}} по умолчанию для {{agent}}",
+      "pin_model_unavailable": "{{model}} сейчас не предлагается",
       "set_default_for_new_sessions": "Глобальный запасной вариант для новых сессий…",
       "type_to_filter": "Введите для фильтрации…"
     },

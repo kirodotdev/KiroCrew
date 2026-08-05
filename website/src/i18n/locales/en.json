@@ -3432,7 +3432,8 @@
       "model_list": "Model list",
       "models": "Models",
       "reasoning": "Reasoning",
-      "set_default_for_agent": "Set as default for {{agent}}",
+      "set_default_for_agent": "Set {{model}} as default for {{agent}}",
+      "pin_model_unavailable": "{{model}} isn't offered right now",
       "set_default_for_new_sessions": "Global fallback for new sessions…",
       "type_to_filter": "Type to filter…"
     },

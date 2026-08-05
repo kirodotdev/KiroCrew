@@ -4754,7 +4754,8 @@
       "model_list": "मॉडल सूची",
       "models": "मॉडल",
       "reasoning": "रीज़निंग",
-      "set_default_for_agent": "{{agent}} के लिए डिफ़ॉल्ट बनाओ",
+      "set_default_for_agent": "{{agent}} के लिए {{model}} को डिफ़ॉल्ट बनाएँ",
+      "pin_model_unavailable": "{{model}} अभी पेश नहीं किया जा रहा है",
       "set_default_for_new_sessions": "नए सेशन के लिए ग्लोबल फ़ॉलबैक…",
       "type_to_filter": "फ़िल्टर करने के लिए टाइप करें…"
     },

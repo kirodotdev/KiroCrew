@@ -4673,7 +4673,8 @@
       "model_list": "Modellliste",
       "models": "Modelle",
       "reasoning": "Reasoning",
-      "set_default_for_agent": "Als Standard für {{agent}} festlegen",
+      "set_default_for_agent": "{{model}} als Standard für {{agent}} festlegen",
+      "pin_model_unavailable": "{{model}} wird derzeit nicht angeboten",
       "set_default_for_new_sessions": "Globaler Fallback für neue Sitzungen…",
       "type_to_filter": "Zum Filtern tippen…"
     },

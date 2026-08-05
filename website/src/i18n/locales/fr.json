@@ -4729,7 +4729,8 @@
       "model_list": "Liste des modèles",
       "models": "Modèles",
       "reasoning": "Raisonnement",
-      "set_default_for_agent": "Définis par défaut pour {{agent}}",
+      "set_default_for_agent": "Définir {{model}} par défaut pour {{agent}}",
+      "pin_model_unavailable": "{{model}} n'est pas proposé pour le moment",
       "set_default_for_new_sessions": "Repli global pour les nouvelles sessions…",
       "type_to_filter": "Saisir pour filtrer…"
     },

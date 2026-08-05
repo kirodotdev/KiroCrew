@@ -4810,7 +4810,8 @@
       "model_list": "Elenco dei modelli",
       "models": "Modelli",
       "reasoning": "Ragionamento",
-      "set_default_for_agent": "Imposta come predefinito per {{agent}}",
+      "set_default_for_agent": "Imposta {{model}} come predefinito per {{agent}}",
+      "pin_model_unavailable": "{{model}} non è offerto al momento",
       "set_default_for_new_sessions": "Fallback globale per le nuove sessioni…",
       "type_to_filter": "Digita per filtrare…"
     },

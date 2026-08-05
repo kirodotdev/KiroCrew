@@ -10,19 +10,49 @@
 // key) so it is provider-safe. Default is "not degraded" (undefined → false):
 // a provider whose adapter never marks itself only ever stops polling, so this
 // can never regress an unmarked provider into perpetual polling.
+import { useSyncExternalStore } from 'react'
 
 const degradedByProvider = new Map<string, boolean>()
+const subscribers = new Set<() => void>()
 
 /** Record whether the last fetch for a provider was degraded (fallback) or
  *  live. The adapter calls this on every fetch outcome. */
 export function markModelsDegraded(providerId: string, degraded: boolean): void {
+  if (degradedByProvider.get(providerId) === degraded) return
   degradedByProvider.set(providerId, degraded)
+  for (const cb of subscribers) cb()
+}
+
+function subscribe(cb: () => void): () => void {
+  subscribers.add(cb)
+  return () => {
+    subscribers.delete(cb)
+  }
 }
 
 /** True only when the provider's last served list is known to be a degraded
  *  fallback. Unknown/never-fetched providers report false (not degraded). */
 export function modelsDegraded(providerId: string): boolean {
   return degradedByProvider.get(providerId) === true
+}
+
+/**
+ * Reactive form of `modelsDegraded`, for components that RENDER something from
+ * the flag rather than just deciding a refetch cadence.
+ *
+ * A plain call cannot be read during render: a failed fetch resolves
+ * SUCCESSFULLY with the last-good cached list, so when that list is
+ * structurally identical to the one React Query already holds it hands back the
+ * same reference and notifies nobody. The flag flips with no re-render, and the
+ * component keeps rendering the previous decision until something unrelated
+ * happens to re-render it.
+ */
+export function useModelsDegraded(providerId: string): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => modelsDegraded(providerId),
+    () => false,
+  )
 }
 
 /**

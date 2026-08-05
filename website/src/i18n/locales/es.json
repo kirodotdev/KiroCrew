@@ -4810,7 +4810,8 @@
       "models": "Modelos",
       "reasoning": "Razonamiento",
       "default_for_agent": "Predeterminado para {{agent}}",
-      "set_default_for_agent": "Definir como predeterminado para {{agent}}",
+      "set_default_for_agent": "Establecer {{model}} como predeterminado para {{agent}}",
+      "pin_model_unavailable": "{{model}} no se ofrece en este momento",
       "set_default_for_new_sessions": "Reserva global para las nuevas sesiones…",
       "type_to_filter": "Escribe para filtrar…"
     },

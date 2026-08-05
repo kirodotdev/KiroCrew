@@ -16,6 +16,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import agent_state, model_registry
+from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.agent_discovery import (
     clear_list_agents_cache,
     list_agents,
@@ -668,6 +669,81 @@ def _advertised_cc_models(request: web.Request) -> list[dict]:
     return []
 
 
+def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict]:
+    """Narrow the ``--list-models`` catalog to what a live session advertises.
+
+    ``kiro chat --list-models`` is a CATALOG, not an entitlement: it returns the
+    same rows whatever the account's tier, so after a downgrade the picker kept
+    offering (and kept SHOWING as selected) a model no turn can run. The
+    per-session ``session/new`` ``availableModels`` list is the tier-aware one —
+    the same signal ``model_is_unusable`` pre-flights against before the wire —
+    so when a live session has one, it wins here too. Same rule #1549 applied to
+    the claude_code branch in :func:`_cc_models`: advertised is authoritative
+    when present.
+
+    The keep/drop decision delegates to ``model_is_unusable`` rather than
+    comparing ids here, so the picker cannot disagree with the wire about what
+    "this account can run" means. A local comparison would be a second spelling
+    of that question — the exact drift that predicate exists to prevent — and any
+    difference in how the two fold spelling variants shows up as a row the picker
+    offers and the wire then withholds.
+
+    The ``auto`` sentinel is never filtered: it means "inherit whatever the
+    session already resolved", so it stays selectable even on a backend that does
+    not advertise it by name.
+
+    Fails open in every unknowable case — no live session, a backend that
+    advertises nothing, or an advertised set that does not intersect the catalog
+    at all (a namespace mismatch rather than an entitlement, e.g. the claude
+    backend's bare ids). Filtering on any of those would empty the picker, which
+    is worse than listing one model too many.
+    """
+    try:
+        state: DashboardState = request.app["state"]
+        providers = state.sessions.active_providers()
+    except (KeyError, AttributeError):
+        return models
+    advertised: list[str] = []
+    # Newest session first. `active_providers()` walks a dict of live sessions, so
+    # forward order is creation order — and a session that started BEFORE a plan
+    # change still holds the advertised list it captured at its own session/new.
+    # Reading the oldest one would narrow the catalog to pre-downgrade
+    # entitlements, i.e. keep offering exactly the models this narrowing exists to
+    # hide. The most recently started session carries the most recent snapshot.
+    for provider in reversed(providers):
+        getter = getattr(provider, "available_models", None)
+        if not callable(getter):
+            continue
+        try:
+            ids = advertised_model_ids(getter())
+        except Exception:
+            continue
+        if ids:
+            advertised = ids
+            break
+    if not advertised:
+        return models
+    advertises_auto = any(_normalize_model_key(i) == "auto" for i in advertised)
+    kept = [
+        m
+        for m in models
+        if _normalize_model_key(m.get("model_name", "")) == "auto"
+        or not model_is_unusable(m.get("model_name", ""), advertised)
+    ]
+    # Tell "not comparable" apart from "entitled to almost nothing". A backend
+    # that advertises `auto` shares a namespace with the catalog by definition, so
+    # `auto` alone is a real answer — the most restricted tier there is — and must
+    # narrow the picker to it. Only when nothing at all lines up, `auto` included,
+    # is this a namespace mismatch (bare vs prefixed provider ids) where showing
+    # the whole catalog beats emptying the picker. `auto` is always kept, so it can
+    # never serve as the evidence that the two sides are comparable.
+    if not advertises_auto and not any(
+        _normalize_model_key(m.get("model_name", "")) != "auto" for m in kept
+    ):
+        return models
+    return kept
+
+
 def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]:
     """Assemble the CC model dropdown, scoped to what the account can actually use.
 
@@ -894,6 +970,7 @@ async def api_models(request: web.Request) -> web.Response:
                 maintenance_executor(), model_registry.persist_kiro_windows
             )
         models = [m for m in models if not is_deprecated_model(m.get("model_name", ""))]
+        models = _entitled_kiro_models(request, models)
         return web.json_response(models)
     except Exception:
         # Spawn failure, JSON parse error, etc. — degraded, not "zero models".
