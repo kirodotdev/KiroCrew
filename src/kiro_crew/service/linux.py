@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.service import apparmor
 from kiro_crew.service.common import (
     SERVICE_NAME,
@@ -187,7 +188,7 @@ def render_unit(apparmor_profile: str = "") -> str:
         f"ExecStart={exec_start}\n"
         "Restart=on-failure\n"
         "RestartSec=10\n"
-        "TimeoutStopSec=20\n"
+        f"TimeoutStopSec={TOTAL_SHUTDOWN_BUDGET_SECS}\n"
         # Pin a high open-file limit rather than inheriting the host's
         # ambient DefaultLimitNOFILE. Stock systemd defaults to 1024 — and
         # the frontend production build (vite/rollup) opens ~1000

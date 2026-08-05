@@ -1,18 +1,22 @@
 """launchd LaunchAgent generation and control for macOS.
 
 The plist lives at ``~/Library/LaunchAgents/dev.kirocrew.gateway.plist``
-and is loaded via ``launchctl load -w``. The service starts on user login
-and is restarted on crash by ``KeepAlive``.
+and is loaded via ``launchctl load -w``. It keeps the gateway continuously
+running. Dev Fleet's ``launchctl stop`` restart is launchd-owned: SIGTERM first,
+then SIGKILL only after the finite ``ExitTimeOut`` if cooperative shutdown does
+not finish.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import plistlib
 import subprocess
 import tempfile
 from pathlib import Path
 
+from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.service.common import (
     LAUNCHD_LABEL,
     kirocrew_bin,
@@ -80,10 +84,9 @@ def render_plist() -> str:
         "    <key>RunAtLoad</key>\n"
         "    <true/>\n"
         "    <key>KeepAlive</key>\n"
-        "    <dict>\n"
-        "        <key>SuccessfulExit</key>\n"
-        "        <false/>\n"
-        "    </dict>\n"
+        "    <true/>\n"
+        "    <key>ExitTimeOut</key>\n"
+        f"    <integer>{TOTAL_SHUTDOWN_BUDGET_SECS}</integer>\n"
         "    <key>EnvironmentVariables</key>\n"
         "    <dict>\n"
         f"{env_entries}"
@@ -94,6 +97,60 @@ def render_plist() -> str:
         f"    <string>{err_log}</string>\n"
         "</dict>\n"
         "</plist>\n"
+    )
+
+
+def _plist_payload(path: Path) -> dict[str, object] | None:
+    try:
+        payload = plistlib.loads(path.read_bytes())
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return None
+    except Exception as exc:
+        # plistlib's XML parser exposes ExpatError without re-exporting its type.
+        # Avoid importing the unsafe low-level XML module; malformed local plist
+        # input fails closed, while an unrelated parser failure still surfaces.
+        if (type(exc).__module__, type(exc).__name__) == (
+            "xml.parsers.expat",
+            "ExpatError",
+        ):
+            return None
+        raise
+    return payload if isinstance(payload, dict) else None
+
+
+def _launchctl_print_value(printed: str, key: str) -> str | None:
+    prefix = f"{key} = "
+    for line in printed.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            return stripped[len(prefix):].strip()
+    return None
+
+
+def loaded_restart_contract_current(printed: str) -> bool:
+    """Return whether the loaded launchd job has the expected restart contract."""
+    timeout = _launchctl_print_value(printed, "exit timeout")
+    properties = _launchctl_print_value(printed, "properties")
+    if timeout is None or properties is None:
+        return False
+    try:
+        parsed_timeout = int(timeout)
+    except ValueError:
+        return False
+    flags = {part.strip().lower() for part in properties.split("|")}
+    return "keepalive" in flags and parsed_timeout == TOTAL_SHUTDOWN_BUDGET_SECS
+
+
+def restart_contract_current(path: Path | None = None) -> bool:
+    """Return whether *path* has the expected ``launchctl stop`` contract."""
+    payload = _plist_payload(path or PLIST_PATH)
+    if payload is None:
+        return False
+    timeout = payload.get("ExitTimeOut")
+    return (
+        payload.get("KeepAlive") is True
+        and type(timeout) is int
+        and timeout == TOTAL_SHUTDOWN_BUDGET_SECS
     )
 
 
@@ -263,14 +320,10 @@ def is_active() -> bool:
 
 
 def stop() -> None:
-    """Stop the running agent.
+    """Stop the agent without triggering its ``KeepAlive`` restart.
 
-    ``launchctl stop`` only sends SIGTERM, which the plist's
-    ``KeepAlive={SuccessfulExit: false}`` treats as an unsuccessful exit
-    and immediately restarts — so a plain ``stop`` is effectively a
-    no-op. Use ``unload`` (without ``-w``) so the agent stops and stays
-    stopped for the current session, but reloads automatically on next
-    login. This mirrors ``systemctl stop`` semantics on Linux.
+    Dev Fleet restarts with ``launchctl stop``; operator stop unloads the job
+    from the current domain while leaving it enabled for the next login.
     """
     if PLIST_PATH.exists():
         _launchctl("unload", str(PLIST_PATH))
@@ -287,9 +340,8 @@ def restart() -> bool:
     from the gateway, the ``unload`` half SIGTERMs the caller, so the ``load``
     half never executes and the agent stays down — the exact failure mode that
     made Dev Fleet's Restart unimplementable on macOS. ``launchctl restart`` is
-    deprecated and behaves like ``stop``, which ``KeepAlive`` treats as an
-    unsuccessful exit and respawns immediately, so it re-runs the OLD job
-    definition rather than re-reading anything.
+    deprecated and behaves like ``stop``; ``KeepAlive`` immediately respawns the
+    loaded job definition rather than re-reading anything.
 
     Returns False when the plist is absent or launchd rejects the kickstart, so
     callers never report a restart that never happened.

@@ -15,6 +15,7 @@ subprocess calls in :mod:`kiro_crew.service.linux` and
 from __future__ import annotations
 
 import os
+import plistlib
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -62,6 +63,20 @@ class TestPlatformDetection:
         ):
             mock_sys.platform = "win32"
             assert current_platform() == Platform.UNSUPPORTED
+
+
+class TestShutdownBudget:
+    def test_service_deadline_covers_gateway_grace(self):
+        from kiro_crew.gateway_shutdown_budget import (
+            GRACEFUL_SHUTDOWN_SECS,
+            SIGNAL_MARGIN_SECS,
+            TOTAL_SHUTDOWN_BUDGET_SECS,
+        )
+
+        assert TOTAL_SHUTDOWN_BUDGET_SECS == (
+            GRACEFUL_SHUTDOWN_SECS + SIGNAL_MARGIN_SECS
+        )
+        assert (GRACEFUL_SHUTDOWN_SECS, TOTAL_SHUTDOWN_BUDGET_SECS) == (10, 20)
 
 
 class TestLinuxUnitRendering:
@@ -344,6 +359,43 @@ class TestMacOSPlistRendering:
         assert "<string>gateway</string>" in plist
         assert "<key>RunAtLoad</key>" in plist
         assert "<key>KeepAlive</key>" in plist
+
+    def test_render_plist_pins_bounded_graceful_restart_contract(self, tmp_path):
+        from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
+        from kiro_crew.service import macos as svc_macos
+
+        rendered = svc_macos.render_plist()
+        payload = plistlib.loads(rendered.encode())
+        assert payload["KeepAlive"] is True
+        assert payload["ExitTimeOut"] == TOTAL_SHUTDOWN_BUDGET_SECS
+        plist = tmp_path / "agent.plist"
+        plist.write_text(rendered)
+        assert svc_macos.restart_contract_current(plist) is True
+
+    def test_restart_contract_rejects_legacy_and_unbounded_definitions(self, tmp_path):
+        from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
+        from kiro_crew.service import macos as svc_macos
+
+        plist = tmp_path / "agent.plist"
+        for payload in (
+            {"KeepAlive": {"SuccessfulExit": False}},
+            {"KeepAlive": True},
+            {"KeepAlive": True, "ExitTimeOut": 0},
+        ):
+            plist.write_bytes(plistlib.dumps(payload))
+            assert svc_macos.restart_contract_current(plist) is False
+
+        current = (
+            f"exit timeout = {TOTAL_SHUTDOWN_BUDGET_SECS}\n"
+            "properties = keepalive | runatload\n"
+        )
+        assert svc_macos.loaded_restart_contract_current(current) is True
+        assert svc_macos.loaded_restart_contract_current(
+            current.replace("keepalive | ", "")
+        ) is False
+        assert svc_macos.loaded_restart_contract_current(
+            current.replace(str(TOTAL_SHUTDOWN_BUDGET_SECS), "5")
+        ) is False
 
     def test_render_plist_xml_escapes_special_chars(self, monkeypatch, tmp_path):
         """The Program path is XML-escaped.

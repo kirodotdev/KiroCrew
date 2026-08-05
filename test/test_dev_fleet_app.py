@@ -1884,6 +1884,13 @@ def _stub_make_live(monkeypatch, wt, *, live=None, in_pod=False, unit_status="ok
         pointer_dir.mkdir(parents=True, exist_ok=True)
         ptr_file = pointer_dir / "live_target.json"
         monkeypatch.setattr(mod.live_target, "pointer_path", lambda: ptr_file)
+    if platform == "darwin":
+        monkeypatch.setattr(
+            mod.gateway_service, "restart_contract_current", lambda _path: True
+        )
+        monkeypatch.setattr(
+            mod.gateway_service, "loaded_restart_contract_current", lambda _out: True
+        )
 
 
 @pytest.mark.asyncio
@@ -2337,7 +2344,42 @@ async def test_live_user_unit_status_darwin_ok(monkeypatch, tmp_path):
     monkeypatch.setattr(
         mod.gateway_service.LaunchdBackend, "live_program", staticmethod(lambda: link)
     )
+    monkeypatch.setattr(
+        mod.gateway_service, "restart_contract_current", lambda _path: True
+    )
+    monkeypatch.setattr(
+        mod.gateway_service, "loaded_restart_contract_current", lambda _out: True
+    )
     assert await mod._live_user_unit_status() == "ok"
+
+
+@pytest.mark.asyncio
+async def test_live_user_unit_status_darwin_loaded_contract_outdated(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
+    )
+    link = tmp_path / "live-gateway"
+    link.write_text("#!/bin/sh\n")
+    plist = tmp_path / "agent.plist"
+    plist.write_text(f"<string>{link}</string>")
+    monkeypatch.setattr(
+        mod.gateway_service.LaunchdBackend, "plist_path", staticmethod(lambda: plist)
+    )
+    monkeypatch.setattr(
+        mod.gateway_service.LaunchdBackend, "live_program", staticmethod(lambda: link)
+    )
+    monkeypatch.setattr(
+        mod.gateway_service, "restart_contract_current", lambda _path: True
+    )
+    monkeypatch.setattr(
+        mod.gateway_service, "loaded_restart_contract_current", lambda _out: False
+    )
+    monkeypatch.setattr(mod, "_run_cmd", AsyncMock(return_value=(0, "pid = 7\n", "")))
+
+    assert await mod._live_user_unit_status() == "agent_restart_contract_outdated"
 
 
 @pytest.mark.asyncio
@@ -2450,19 +2492,20 @@ async def test_make_live_unsafe_path_returns_code(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_restart_gateway_darwin_kickstarts_the_agent(monkeypatch):
-    """macOS restart is ONE `launchctl kickstart -k`, performed by launchd.
-
-    It has to be a single call: `unload` + `load` cannot be issued from inside
-    the gateway, because the unload SIGTERMs the caller before the load can run.
-    That is precisely why Restart was unimplementable on macOS before this.
-    """
+async def test_restart_gateway_darwin_requests_graceful_stop(monkeypatch):
+    """macOS restart asks launchd for a bounded SIGTERM-first stop."""
     monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
     monkeypatch.setattr(
         mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
     )
     monkeypatch.setattr(mod, "_GATEWAY_SERVICE_ACTIVE", None, raising=False)
     monkeypatch.setattr(mod, "_GATEWAY_SERVICE_CHECK_AT", 0.0, raising=False)
+    monkeypatch.setattr(
+        mod.gateway_service, "restart_contract_current", lambda _path: True
+    )
+    monkeypatch.setattr(
+        mod.gateway_service, "loaded_restart_contract_current", lambda _out: True
+    )
     calls: list = []
 
     async def fake_run_cmd(cmd, **kw):
@@ -2477,10 +2520,33 @@ async def test_restart_gateway_darwin_kickstarts_the_agent(monkeypatch):
     # The PID stands in for systemd's monotonic start stamp: it changes on every
     # respawn, which is the edge the frontend handshake waits for.
     assert res["start_id"] == "4242"
-    kick = [c for c in calls if c[:2] == ["launchctl", "kickstart"]]
-    assert len(kick) == 1, f"expected exactly one kickstart, got {calls}"
-    assert kick[0][2] == "-k" and kick[0][3].startswith("gui/")
-    assert not any(c[:2] == ["launchctl", "unload"] for c in calls)
+    assert ["launchctl", "stop", mod._gateway_label()] in calls
+    assert not any(c[:2] == ["launchctl", "kickstart"] for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_restart_gateway_darwin_refuses_stale_loaded_contract(monkeypatch):
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
+    )
+    monkeypatch.setattr(
+        mod.gateway_service, "restart_contract_current", lambda _path: True
+    )
+    monkeypatch.setattr(
+        mod.gateway_service, "loaded_restart_contract_current", lambda _out: False
+    )
+    calls = []
+
+    async def fake_run_cmd(cmd, **_kw):
+        calls.append(cmd)
+        return (0, "pid = 4242\n", "")
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    res = await mod._restart_gateway()
+    assert res["ok"] is False
+    assert "loaded launchd restart contract is outdated" in res["error"]
+    assert not any(c[:2] == ["launchctl", "stop"] for c in calls)
 
 
 @pytest.mark.asyncio
@@ -2517,12 +2583,8 @@ _posix_symlink_only = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 @_posix_symlink_only
-async def test_make_live_darwin_writes_pointer_and_kickstarts(monkeypatch, tmp_path):
-    """A macOS cutover writes the pointer file, then kickstarts the agent.
-
-    The mechanism is identical to linux (pointer file) — the only difference is
-    HOW the restart is issued (kickstart vs systemd-run).
-    """
+async def test_make_live_darwin_writes_pointer_and_stops_agent(monkeypatch, tmp_path):
+    """A macOS cutover writes the pointer, then asks launchd to stop the agent."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
     _stub_make_live(monkeypatch, wt, platform="darwin", pointer_dir=ptr_dir)
@@ -2544,9 +2606,8 @@ async def test_make_live_darwin_writes_pointer_and_kickstarts(monkeypatch, tmp_p
     import json as _json
     data = _json.loads(ptr_file.read_text())
     assert Path(data["checkout"]).resolve() == wt.resolve()
-    # Kickstart issued (the launchd restart mechanism).
-    assert any(c[:3] == ["launchctl", "kickstart", "-k"] for c in calls)
-    # No bootout/bootstrap: kickstart is the single-call restart.
+    assert any(c[:2] == ["launchctl", "stop"] for c in calls)
+    assert not any(c[:2] == ["launchctl", "kickstart"] for c in calls)
     assert not any("bootout" in c or "bootstrap" in c for c in calls)
 
 
@@ -2555,7 +2616,7 @@ async def test_make_live_darwin_writes_pointer_and_kickstarts(monkeypatch, tmp_p
 async def test_make_live_darwin_rolls_back_pointer_on_restart_failure(
     monkeypatch, tmp_path
 ):
-    """A failed kickstart restores the prior pointer state.
+    """A rejected launchd stop restores the prior pointer state.
 
     Leaving the new pointer in place would silently activate the new checkout
     on the NEXT unrelated restart.
@@ -2568,8 +2629,8 @@ async def test_make_live_darwin_rolls_back_pointer_on_restart_failure(
     async def fake_run_cmd(cmd, **kw):
         if cmd[:2] == ["launchctl", "print"]:
             return (0, "  pid = 99\n", "")
-        if cmd[:2] == ["launchctl", "kickstart"]:
-            return (1, "", "kickstart refused")
+        if cmd[:2] == ["launchctl", "stop"]:
+            return (1, "", "stop refused")
         return (0, "", "")
 
     monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)

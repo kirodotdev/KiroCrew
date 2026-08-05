@@ -406,9 +406,10 @@ On Linux this writes a **system-level** systemd unit at
 `/etc/systemd/system/kirocrew.service` and enables it, so the gateway survives
 SSH disconnects, restarts on failure, and starts on boot
 (`WantedBy=multi-user.target`). On macOS it writes a launchd LaunchAgent at
-`~/Library/LaunchAgents/dev.kirocrew.gateway.plist` with `RunAtLoad` and
-`KeepAlive`/`SuccessfulExit=false`, so it starts at user login and relaunches on
-a non-zero exit but stays down after a clean stop.
+`~/Library/LaunchAgents/dev.kirocrew.gateway.plist` with `RunAtLoad`,
+`KeepAlive=true`, and a finite `ExitTimeOut`, so it starts at login, relaunches
+after exit, and force-kills only after the graceful stop deadline. An explicit
+`kirocrew stop` unloads the agent so it stays down for the current login session.
 
 ```bash
 kirocrew service status      # service state

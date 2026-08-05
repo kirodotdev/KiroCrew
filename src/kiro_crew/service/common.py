@@ -23,7 +23,7 @@ def launchd_live_program() -> "os.PathLike[str]":
     only re-reads a plist on ``bootout`` + ``bootstrap`` (``kickstart`` restarts
     the in-memory job definition), and ``bootout`` kills the very process that
     would have to run the ``bootstrap``. The gateway would stop and never come
-    back. Rewriting THIS file plus ``kickstart -k`` leaves nothing for a dying
+    back. Rewriting THIS file plus ``launchctl stop`` leaves nothing for a dying
     process to do.
 
     It is a generated launcher SCRIPT rather than a symlink to the binary

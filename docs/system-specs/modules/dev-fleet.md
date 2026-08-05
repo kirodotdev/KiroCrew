@@ -56,7 +56,7 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/pod/token` | `{name}` | Mint a dashboard token for the pod |
 | `/apps/dev-fleet/api/pod/provision` | `{name}` | Start async venv+dist build (returns `{run_id}`) |
 | `/apps/dev-fleet/api/rebase` | `{name}` | Rebase worktree onto origin/main |
-| `/apps/dev-fleet/api/restart-gateway` | — | Restart the live gateway in place (detached `systemd-run`); returns the pre-restart `start_id` for the restart handshake |
+| `/apps/dev-fleet/api/restart-gateway` | — | Restart the live gateway through its service-manager backend; returns the pre-restart `start_id` for the restart handshake |
 | `/apps/dev-fleet/api/make-live` | `{path, dry_run?}` | Repoint the live gateway at another worktree (see Make Live); a real cutover returns `start_id` for the restart handshake |
 
 ## Authorization
@@ -297,21 +297,17 @@ duplicate Restart Gateway causes a second real ~10s gateway outage
 ### Restart identity handshake
 
 `POST /apps/dev-fleet/api/restart-gateway` returns `{"ok": true, "start_id": …}`
-the instant `systemd-run --collect systemctl --user restart <unit>` has
-**scheduled** the restart — the bounce happens after the response and takes ~10s
-because graceful shutdown times out. "The request succeeded" therefore says
-nothing about whether the gateway is back.
+after the platform manager accepts the restart. Linux schedules detached
+`systemd-run`; macOS submits `launchctl stop` under the loaded contract described
+below. The bounce happens after the response, so success does not mean the new
+gateway is serving yet.
 
 To close that gap the backend captures the unit's **start identity** BEFORE
 scheduling the restart and hands it to the frontend:
 
-- **Identity = `ExecMainStartTimestampMonotonic`** — the CLOCK_MONOTONIC
-  microsecond stamp of the unit's ExecStart *main* PID (`_gateway_start_id`).
-  Chosen because it is (a) monotonic, so it can only increase and never repeats
-  or goes backwards across a restart even if the wall clock is stepped by NTP,
-  and (b) tied to the actual main-process spawn, so it changes the instant the
-  NEW process starts (a unit can enter `active` before its replacement main PID
-  exists, so `ActiveEnterTimestampMonotonic` is a weaker signal).
+- **Identity is manager-specific.** systemd uses
+  `ExecMainStartTimestampMonotonic`; launchd uses the loaded job PID. Both change
+  when the replacement main process starts.
 - The current identity is reported by extending the existing **`/health`**
   surface (`{status, start_id}`). Because the gateway proxies only
   `/apps/dev-fleet/api/*` to the backend, the same handler is registered at
@@ -321,10 +317,9 @@ scheduling the restart and hands it to the frontend:
   DIFFERS from the one captured before the restart. A 200 from the old process
   still winding down returns the SAME identity and is correctly NOT counted as
   recovered.
-- **None-safe degrade.** On a platform that cannot report identity (non-Linux,
-  no `systemctl`, or a `0`/absent stamp) `start_id` is `null`; the frontend then
-  degrades to the legacy "reload on the first reachable response" instead of
-  hanging forever in the restarting overlay.
+- **None-safe degrade.** An absent/zero systemd stamp or absent launchd PID
+  yields `start_id: null`; the frontend then reloads on the first reachable
+  response instead of waiting forever.
 - **A reachable 404 counts as recovery.** Cutting over to a worktree whose
   dev-fleet backend predates `/api/health` leaves that route answering 404
   permanently, so its `start_id` can never appear and waiting for one would burn
@@ -499,15 +494,16 @@ content, or absence) was successfully restored on disk.
 The cutover writes the pointer on every platform. What differs is whether Dev
 Fleet can also bounce the gateway:
 
-- **Automatic restart** (`can_restart = True`): the gateway runs as a systemd
-  `--user` unit that Dev Fleet can drive. After writing the pointer, Dev Fleet
-  issues a detached `systemd-run` restart (survives its own death), sets the
-  `_MAKE_LIVE_COMMITTED` latch, and returns `start_id` for the restart
-  handshake. The next gateway process reads the pointer and execs into the
-  target checkout.
+- **Automatic restart** (`can_restart = True`): the gateway runs as an active
+  systemd `--user` unit or a current macOS LaunchAgent that Dev Fleet can drive.
+  After writing the pointer, Dev Fleet asks the manager to restart it (`systemd-run`
+  on Linux, bounded graceful `launchctl stop` on macOS), sets the
+  `_MAKE_LIVE_COMMITTED` latch, and returns `start_id` for the restart handshake.
+  The next gateway process reads the pointer and execs into the target checkout.
 - **Staged only** (`can_restart = False`): no drivable service manager is
   available (system unit via `kirocrew service install`, macOS without a launchd
-  agent, terminal-launched gateway, or non-Linux host). The pointer is still
+  agent or with a legacy restart contract, terminal-launched gateway, or another
+  unsupported manager). The pointer is still
   written and the cutover is reported as a success carrying `staged_only: true`,
   plus `manual_restart` (the shell command that finishes it) and a human-readable
   `notice`. The latch is deliberately NOT set — no restart is pending, so a
@@ -572,9 +568,18 @@ when there was none. The refusal response carries `rolled_back: true|false`.
 ### Platform scope
 
 Staging (writing the pointer) works on every platform — Linux, macOS, and
-Windows. Only the automatic restart still requires a drivable service manager
-(a loaded systemd `--user` unit). Cutover from inside a pod is always refused
-(`pod` / `pod_indeterminate`).
+Windows. Automatic restart requires a drivable manager: an active systemd
+`--user` unit or an active macOS per-user LaunchAgent with the current restart
+contract. Without one, the cutover succeeds as `staged_only` and the operator
+restarts manually. Cutover from inside a pod is always refused (`pod` /
+`pod_indeterminate`).
+
+On macOS, Restart and automatic Make Live submit `launchctl stop <label>`.
+Disk and loaded launchd definitions must both report `KeepAlive=true` and
+`ExitTimeOut=TOTAL_SHUTDOWN_BUDGET_SECS` (20s). The Gateway's cooperative cap is
+`GRACEFUL_SHUTDOWN_SECS` (10s), leaving the remaining budget for cleanup and
+exit before launchd escalates to SIGKILL. An agent with a legacy contract falls
+back to staged-only Make Live and names `kirocrew service install` as the repair.
 
 ## Output Redaction
 
@@ -641,8 +646,9 @@ Per-platform behavior:
   worktree's venv + dist works anywhere; Make Live stages the pointer on any
   platform and reports `staged_only` when it cannot bounce the gateway itself.
 - **Make Live** — staging (pointer write) works on every platform. Automatic
-  restart requires a loaded systemd `--user` unit; without one the cutover
-  succeeds with `staged_only: true` and the operator restarts manually.
+  restart requires an active systemd `--user` unit or a current macOS
+  LaunchAgent; without one the cutover succeeds with `staged_only: true` and
+  the operator restarts manually.
 - **git** and **gh** CLI required for full functionality; missing binaries produce
   graceful degradation via OSError catch in `_run_cmd`.
 

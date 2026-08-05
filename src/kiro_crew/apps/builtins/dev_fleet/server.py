@@ -3706,8 +3706,9 @@ async def _live_user_unit_status() -> str:
                            the process serving this request: restarting it would
                            bounce an idle unit while the real gateway (foreground,
                            or a system unit) keeps serving the old code;
-      ``"no_launchd"`` / ``"no_agent"`` / ``"agent_not_indirected"`` — the launchd
-                           counterparts (see ``gateway_service``);
+      ``"no_launchd"`` / ``"no_agent"`` / ``"agent_not_indirected"`` /
+      ``"agent_restart_contract_outdated"`` — the launchd counterparts (see
+                           ``gateway_service``);
       ``"ok"``           — the live service is known to the manager AND running,
                            so a restart actually replaces the gateway we are in.
     """
@@ -3779,6 +3780,11 @@ def _make_live_status_error(code: str) -> str:
             "live-gateway launcher, so Dev Fleet does not treat it as one it "
             "can safely bounce. Re-run `kirocrew service install` to refresh "
             "the agent definition"
+        ),
+        "agent_restart_contract_outdated": (
+            f"the launchd agent {_LIVE_GATEWAY_LABEL} lacks the bounded graceful "
+            "restart contract required by Dev Fleet. Re-run "
+            "`kirocrew service install` to refresh the agent definition"
         ),
         "live_program_missing": (
             f"the launchd agent {_LIVE_GATEWAY_LABEL} is loaded but its "
@@ -4043,8 +4049,8 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
                     "error": _redact(err)}
 
         # The restart tears down THIS backend with the gateway, so it is handed
-        # to the service manager to perform (systemd-run on Linux, launchd's own
-        # kickstart on macOS) so it survives our own death. Capture the
+        # to the service manager to perform (systemd-run on Linux, launchd's
+        # stop/relaunch transaction on macOS) so it survives our own death. Capture the
         # pre-restart identity FIRST so the dashboard reuses the same handshake
         # it uses for restart-gateway (wait for a DIFFERENT start id, not "a 200
         # came back") -- a cutover is just a restart into different code, so it
