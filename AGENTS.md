@@ -116,6 +116,38 @@ destructive-command deny rules, `~/.aws` / `~/.ssh` path blocking, the SEL audit
   resolve onto `"global"`: that is the only thing between an ordinary click and the
   operator's real cursor.
 
+## Model selection
+
+Never hardcode a model id (`claude-*`, `opus*`, `sonnet*`, `haiku*`, `gpt-*`,
+`fable*`) as a default or fallback in code. Accounts differ in entitlement
+(free-tier plans are served only a subset), so a hardcoded flagship — or any
+specific model — fails at runtime for anyone not entitled to it, with a
+silent-until-first-prompt shape.
+
+- The entitlement-safe default is the `"auto"` sentinel: the provider resolves it
+  server-side against what the account is actually served. `agent.model` and
+  `config/defaults.json` ship `"auto"` for exactly this reason — do not replace it
+  with a concrete model.
+- To deliberately run a class of work on a cheaper model, use
+  `agent.role_models.<role>` (roles: `background`, `subagent`) resolved through
+  `AgentConfig.resolve_model(role)` — the ONLY sanctioned place to pin a model.
+  Each role is INDEPENDENT of the chat model: it defaults to `""` / `"auto"` (the
+  provider picks) and does NOT inherit `agent.model`, so unattended background
+  (lite / heartbeat) work never rides the interactive chat flagship. An unpinned
+  role stays usable on every subscription tier.
+- The one allowed concrete fallback is the `claude_code` seam's `cc_model`
+  (`_BACKGROUND_CC_MODEL`): that backend cannot resolve `"auto"`. Keep such
+  fallbacks off the user-facing default path.
+- When checking whether an account may use a model id, use the shared predicate
+  `acp.client.model_is_unusable(id, advertised)` with `advertised_model_ids(...)`
+  — the SAME check the session-init withhold uses — so the picker, the config
+  validator, and the wire cannot disagree. It compares within one namespace
+  (kiro's advertised ids are exactly the ids `set_model` accepts) and treats an
+  empty/unknown advertised set as "allow", so never hand-roll a membership test.
+
+`code-review.yml` carries a deterministic tripwire that fails on a newly added
+hardcoded model literal outside `model_registry*`, the config schema, and tests.
+
 ## Specification management
 
 - MUST read the relevant spec under `docs/system-specs/modules/` before changing

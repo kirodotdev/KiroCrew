@@ -308,6 +308,41 @@ def _resolve_injection_timeout() -> float:
 
 
 INJECTION_TIMEOUT = _resolve_injection_timeout()
+
+
+def _subagent_default_model() -> str:
+    """Explicit sub-agent model pin (``agent.role_models['subagent']``), or ``""``.
+
+    Returns ``""`` when the sub-agent role is unpinned so the caller OMITS the
+    model kwarg and keeps deferring to the provider's configured default exactly
+    as before this knob existed — rather than forcing the chat default on as an
+    explicit override (which also breaks callers/mocks that don't expect the
+    kwarg). Only a deliberate pin overrides. Never raises.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig, normalize_agent_model
+
+        return normalize_agent_model(KiroCrewConfig.load().agent.role_models.get("subagent", ""))
+    except Exception:
+        return ""
+
+
+def _subagent_default_effort() -> str:
+    """Explicit sub-agent effort pin (``agent.role_efforts['subagent']``), or ``""``.
+
+    Returns ``""`` when unpinned so the caller omits ``reasoning_effort_override``
+    and the factory's default effort applies — the prior behavior. Only a
+    deliberate pin overrides. Never raises.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        val = KiroCrewConfig.load().agent.role_efforts.get("subagent", "")
+        return val if isinstance(val, str) else ""
+    except Exception:
+        return ""
+
+
 _STALL_IDLE_SECS = (
     120  # seconds with no stream activity before a running subagent is surfaced as "stalled"
 )
@@ -3998,8 +4033,19 @@ class SubagentManager:
                 resources=f"subagent_id={info.id},inherited_agent={agent}",
             )
         extra_kwargs: dict[str, Any] = {}
-        if info.model:
-            extra_kwargs["model"] = info.model
+        # An explicit per-spawn model wins; otherwise fall back to the
+        # configured sub-agent role model (agent.role_models['subagent']). When
+        # that role is unpinned the helper returns "" so we omit the kwarg and
+        # keep deferring to the provider's configured default, exactly as before.
+        eff_model = info.model or _subagent_default_model()
+        if eff_model:
+            extra_kwargs["model"] = eff_model
+        # Sub-agent reasoning effort (role_efforts['subagent'] -> chat default).
+        # Passed as an override so it wins over the factory's agent-derived
+        # default; "" leaves it to that default.
+        eff_effort = _subagent_default_effort()
+        if eff_effort:
+            extra_kwargs["reasoning_effort_override"] = eff_effort
         if info.bare:
             extra_kwargs["bare"] = True
         if info.allowed_tools:
@@ -4024,6 +4070,14 @@ class SubagentManager:
             self._sessions.mark_continuable(session_key)
             self._conversations[session_key] = time.time()
         use_session_sharing = (not info.keep) and self._should_use_session_sharing(info)
+        # A per-spawn or per-role model / reasoning-effort override cannot be
+        # applied to the parent's already-started shared runtime (it was spawned
+        # with the parent's model and cannot switch model per session). Force the
+        # dedicated process path so the override in extra_kwargs actually reaches
+        # get_or_create -> the provider factory; otherwise a configured sub-agent
+        # model/effort would silently no-op on the default (session-sharing) path.
+        if eff_model or eff_effort:
+            use_session_sharing = False
         if use_session_sharing:
             try:
                 client = await self._create_shared_session(info, session_key, agent)

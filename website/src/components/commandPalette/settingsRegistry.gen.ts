@@ -105,6 +105,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.background-effort",
+    "label": "Background Effort",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.background-model",
+    "label": "Background Model",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
     "id": "chat.completion-event-characters",
     "label": "Completion Event Characters",
     "tab": "chat",
@@ -312,6 +326,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Split View (Session Grid)",
     "tab": "chat",
     "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.subagent-effort",
+    "label": "Subagent Effort",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.subagent-model",
+    "label": "Subagent Model",
+    "tab": "chat",
+    "type": "select",
     "occurrence": 1
   },
   {

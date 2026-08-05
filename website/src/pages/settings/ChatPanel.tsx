@@ -139,6 +139,8 @@ export function ChatPanel() {
     session?: { autocompact_pct?: number }
     agent?: {
       model?: string
+      role_models?: { background?: string; subagent?: string }
+      role_efforts?: { background?: string; subagent?: string }
       reasoning_effort?: string
       soft_stop_budget_secs?: number
       completion_keep?: CompletionKeepMode
@@ -300,6 +302,52 @@ export function ChatPanel() {
     onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_default_reasoning_effort')),
   })
 
+  // ── Per-role model defaults (agent.role_models) ──
+  // Same picker as the chat default above; "auto" (or unset) means "inherit the
+  // chat default". Lets an operator run background (lite / heartbeat) or
+  // sub-agent work on a cheaper model without changing the interactive default.
+  const backgroundModel = mcCfg?.agent?.role_models?.background || 'auto'
+  const subagentModel = mcCfg?.agent?.role_models?.subagent || 'auto'
+  // A pinned model the live backend no longer advertises must stay selectable
+  // (same reasoning as the chat-default picker), so prepend it when missing.
+  const roleModelOptions = (current: string): string[] => {
+    const opts = availableModels.map(m => m.name)
+    if (!opts.includes(current)) opts.unshift(current)
+    return opts
+  }
+  const roleModelLabels = (opts: string[]): string[] =>
+    opts.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.default_auto') : m))
+  const backgroundModelMut = useMutation({
+    mutationFn: (v: string) => api.patchConfig('agent.role_models.background', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_role_model')),
+  })
+  const subagentModelMut = useMutation({
+    mutationFn: (v: string) => api.patchConfig('agent.role_models.subagent', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_role_model')),
+  })
+
+  // Per-role reasoning effort, paired with each role's model. Empty inherits the
+  // chat default. The effort row is only meaningful on a reasoning-capable
+  // model, so it disables against the role's RESOLVED model (its pin, else the
+  // chat default) — mirroring the chat effort row's gate.
+  const backgroundEffort = mcCfg?.agent?.role_efforts?.background ?? ''
+  const subagentEffort = mcCfg?.agent?.role_efforts?.subagent ?? ''
+  const bgEffortSupported = modelSupportsEffort(backgroundModel !== 'auto' ? backgroundModel : defaultModel)
+  const subEffortSupported = modelSupportsEffort(subagentModel !== 'auto' ? subagentModel : defaultModel)
+  const effortLabels = EFFORT_LEVELS.map(l => (l === '' ? i18nT('pages.settings.chatPanel.model_default') : effortLabel(l)))
+  const backgroundEffortMut = useMutation({
+    mutationFn: (v: string) => api.patchConfig('agent.role_efforts.background', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_role_effort')),
+  })
+  const subagentEffortMut = useMutation({
+    mutationFn: (v: string) => api.patchConfig('agent.role_efforts.subagent', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_role_effort')),
+  })
+
   // ── Local chat config (localStorage) ──
   const setChat = useCallback(<K extends keyof ChatConfig>(k: K, v: ChatConfig[K]) => {
     setChatCfg(prev => {
@@ -332,7 +380,12 @@ export function ChatPanel() {
       )}
 
       <SettingsSection title={i18nT('pages.settings.chatPanel.model')}>
+        {/* Grouped by role so each block reads as "which model + how hard it
+            thinks" for one kind of work, rather than six stacked selects.
+            Chat is the interactive default; Background and Sub-agents inherit it
+            when left on Auto. */}
         <SettingsCard>
+          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_chat')}</div>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.default_model')}
             description={i18nT('pages.settings.chatPanel.which_model_new_sessions_start_with_pick_a_model')}
@@ -349,13 +402,59 @@ export function ChatPanel() {
             hint={
               effortSupported
                 ? i18nT('pages.settings.chatPanel.model_default_applies_no_override_the_model_pick')
-                : `Reasoning effort is not available on ${defaultModel}. Choose a reasoning-capable model to set a default.`
+                : i18nT('pages.settings.chatPanel.role_effort_hint')
             }
             value={defaultEffort}
             options={[...EFFORT_LEVELS]}
-            optionLabels={EFFORT_LEVELS.map(l => (l === '' ? i18nT('pages.settings.chatPanel.model_default') : effortLabel(l)))}
+            optionLabels={effortLabels}
             onChange={v => defaultEffortMut.mutate(v)}
             disabled={!mcQ.isSuccess || !effortSupported}
+          />
+        </SettingsCard>
+
+        <SettingsCard>
+          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_background')}</div>
+          <div className="text-[12px] text-muted -mt-0.5">{i18nT('pages.settings.chatPanel.model_for_background_lite_heartbeat_work')}</div>
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.background_model')}
+            hint={i18nT('pages.settings.chatPanel.role_model_auto_hint')}
+            value={backgroundModel}
+            options={roleModelOptions(backgroundModel)}
+            optionLabels={roleModelLabels(roleModelOptions(backgroundModel))}
+            onChange={v => backgroundModelMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+          />
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.background_effort')}
+            hint={i18nT('pages.settings.chatPanel.role_effort_hint')}
+            value={backgroundEffort}
+            options={[...EFFORT_LEVELS]}
+            optionLabels={effortLabels}
+            onChange={v => backgroundEffortMut.mutate(v)}
+            disabled={!mcQ.isSuccess || !bgEffortSupported}
+          />
+        </SettingsCard>
+
+        <SettingsCard>
+          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_subagents')}</div>
+          <div className="text-[12px] text-muted -mt-0.5">{i18nT('pages.settings.chatPanel.model_for_spawned_sub_agents')}</div>
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.subagent_model')}
+            hint={i18nT('pages.settings.chatPanel.role_model_auto_hint')}
+            value={subagentModel}
+            options={roleModelOptions(subagentModel)}
+            optionLabels={roleModelLabels(roleModelOptions(subagentModel))}
+            onChange={v => subagentModelMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+          />
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.subagent_effort')}
+            hint={i18nT('pages.settings.chatPanel.role_effort_hint')}
+            value={subagentEffort}
+            options={[...EFFORT_LEVELS]}
+            optionLabels={effortLabels}
+            onChange={v => subagentEffortMut.mutate(v)}
+            disabled={!mcQ.isSuccess || !subEffortSupported}
           />
         </SettingsCard>
       </SettingsSection>

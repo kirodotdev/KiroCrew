@@ -159,8 +159,42 @@ def missing_required_agent_specs() -> list[str]:
 # AGENT_FILENAME imported from agent_files (single source of truth).
 _MAIN_AGENT_NAME = "kirocrew"
 # Cheap Claude Code model for KiroCrew's background agents (lite / heartbeat).
-# Stored in the agent_state sidecar, never in the kiro spec (deny_unknown_fields).
+# Last-resort fallback for the claude_code (CC) seam ONLY: that backend cannot
+# resolve the "auto" sentinel, so an unpinned background role needs a concrete
+# cheap model. The kiro-cli path uses the resolved role model (default "auto").
 _BACKGROUND_CC_MODEL = "claude-sonnet-4.6"
+
+
+def _background_agent_model() -> str:
+    """Kiro-spec model for background worker agents (lite / heartbeat).
+
+    Resolves ``agent.role_models['background']`` -> ``agent.model`` -> ``"auto"``
+    (see :meth:`AgentConfig.resolve_model`). Defaults to ``"auto"`` — which the
+    provider resolves server-side against the account's entitlement — so a
+    background agent stays usable on every subscription tier unless an operator
+    deliberately pins a (cheaper) model. Never raises: a config hiccup falls
+    back to ``"auto"``.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return KiroCrewConfig.load().agent.resolve_model("background")
+    except Exception:
+        logger.debug("background model resolve failed; using 'auto'", exc_info=True)
+        return "auto"
+
+
+def _background_cc_model() -> str:
+    """cc_model (claude_code seam) for background agents.
+
+    The CC backend cannot resolve ``"auto"``, so an unpinned background role
+    falls back to :data:`_BACKGROUND_CC_MODEL`; an operator's explicit pin is
+    honored when it names a concrete model.
+    """
+    m = _background_agent_model()
+    return m if m and m != "auto" else _BACKGROUND_CC_MODEL
+
+
 _KIRO_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
 # Well-known Claude Code global MCP config. The core does not read this at
 # rebuild/discovery/apply time (OSS is Kiro-only); a companion contributes it as
@@ -2742,7 +2776,7 @@ def _install_lite_agent_fallback() -> None:
     lite_path = kiro_agents_dir_path() / _LITE_AGENT_FILENAME
     lite_config = {
         "name": "kirocrew-lite",
-        "model": "auto",
+        "model": _background_agent_model(),
         "tools": [],
         "mcpServers": {},
         "prompt": "",
@@ -2750,12 +2784,12 @@ def _install_lite_agent_fallback() -> None:
     _atomic_json_write(lite_path, lite_config)
     # Cheap model for the claude_code (CC) provider. kiro-cli resolves the lite
     # model from `model` via --agent; the CC backend can't, so the provider
-    # factory reads this cc_model for the lite agent. Sonnet is plenty for
-    # background title/compaction/heartbeat work. "auto" for the kiro spec keeps
-    # the lite agent usable on every subscription tier (a pinned premium model
-    # is rejected outright on accounts that lack it). Stored in the sidecar
-    # (kiro spec stays schema-clean).
-    agent_state.set_cc_model("kirocrew-lite", _BACKGROUND_CC_MODEL)
+    # factory reads this cc_model for the lite agent. The kiro spec above uses
+    # the resolved background role model (default "auto", entitlement-safe on
+    # every tier); the CC seam needs a concrete model, so it falls back to the
+    # cheap default when the role is unpinned. Stored in the sidecar (kiro spec
+    # stays schema-clean).
+    agent_state.set_cc_model("kirocrew-lite", _background_cc_model())
 
 
 _KNOWLEDGE_SYSTEM_PROMPT = (
@@ -3005,7 +3039,7 @@ def _install_heartbeat_agent() -> None:
             "cycle with a read-only MCP toolset. Tool approval is gated "
             "gateway-side against HEARTBEAT_SAFE_TOOLS."
         ),
-        "model": "claude-sonnet-4.6",
+        "model": _background_agent_model(),
         "includeMcpJson": False,
         "prompt": _HEARTBEAT_SYSTEM_PROMPT,
         "mcpServers": mcp,
@@ -3017,7 +3051,7 @@ def _install_heartbeat_agent() -> None:
 
     _atomic_json_write(path, config)
     # CC model for the heartbeat agent lives in the sidecar, not the kiro spec.
-    agent_state.set_cc_model("kirocrew-heartbeat", _BACKGROUND_CC_MODEL)
+    agent_state.set_cc_model("kirocrew-heartbeat", _background_cc_model())
     logger.info("Installed heartbeat agent config: %s", path)
 
 
