@@ -13,6 +13,10 @@ import { i18nT } from '../i18n/t'
  * batch hook.
  */
 
+/** Wire frame that tells the backend to end the Transcribe stream. Protocol,
+ *  not copy — it is never shown to anyone. */
+const STOP_FRAME = JSON.stringify({ type: 'stop' })
+
 export const streamingSupported =
   typeof window !== 'undefined' &&
   typeof window.AudioContext !== 'undefined' &&
@@ -57,6 +61,20 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
   // discard instead of delivering. Per-session, not a shared boolean, so a
   // socket superseded by a restart can never mistake a new session for its own.
   const sessionRef = useRef<{ cancelled: boolean } | null>(null)
+
+  // `ready` itself lives in start()'s closure, but stop() has to know whether
+  // the PCM it would be ending is still sitting in the local buffer. These two
+  // refs are the only channel between them.
+  //
+  // Why it matters: capture begins (and `recording` goes true) as soon as the
+  // worklet connects, but PCM cannot be SENT until the server's `ready` frame
+  // lands ~2-3s later. A stop frame sent inside that window ends the Transcribe
+  // stream while the user's speech is still local, so it is transcribed as
+  // silence -- which is the normal case for a short push-to-talk tap, not an
+  // edge case.
+  const readyRef = useRef(false)
+  const pendingStopRef = useRef(false)
+  const pendingStopTimerRef = useRef<number | null>(null)
   // Keep callback refs fresh so the long-lived WS handlers (`ws.onmessage`
   // / `ws.onclose`) always invoke the latest caller-supplied callbacks,
   // not the versions captured when `start()` was invoked.
@@ -76,6 +94,12 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
   const cleanup = useCallback(() => {
     try { levelStopRef.current?.() } catch { /* ignore */ }
     levelStopRef.current = null
+    if (pendingStopTimerRef.current !== null) {
+      clearTimeout(pendingStopTimerRef.current)
+      pendingStopTimerRef.current = null
+    }
+    readyRef.current = false
+    pendingStopRef.current = false
     try { wsRef.current?.close() } catch { /* ignore */ }
     wsRef.current = null
     try { streamRef.current?.getTracks().forEach(t => t.stop()) } catch { /* ignore */ }
@@ -88,6 +112,23 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
   }, [])
 
   useEffect(() => () => { cleanup() }, [cleanup])
+
+  /** Send the stop frame and hand the socket to the backend to drain. */
+  const commitStop = useCallback((ws: WebSocket) => {
+    try { ws.send(STOP_FRAME) } catch { /* ignore */ }
+    // Do NOT call ws.close() here — let the backend flush any in-flight
+    // finals from Transcribe and close the socket itself. Our onclose
+    // handler joins finalsRef and fires onFinal. If the backend hangs,
+    // force-cleanup after 8s so the UI never gets stuck. Must exceed
+    // the backend's 3s handler-drain timeout + a safety margin for
+    // end_stream() and network RTT.
+    window.setTimeout(() => {
+      if (wsRef.current === ws) {
+        try { ws.close() } catch { /* ignore */ }
+        cleanup()
+      }
+    }, 8000)
+  }, [cleanup])
 
   const start = useCallback(async () => {
     if (!streamingSupported || wsRef.current) return
@@ -271,29 +312,66 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     buffer.length = 0
     bufferedBytes = 0
     ready = true
-  }, [cleanup, sampleRef])
+    readyRef.current = true
+    // The user may already have released the key while we were waiting. The
+    // buffered speech has just gone out, so NOW the stop frame is safe to send:
+    // the Transcribe stream ends after the audio rather than before it.
+    if (pendingStopRef.current) {
+      pendingStopRef.current = false
+      if (pendingStopTimerRef.current !== null) {
+        clearTimeout(pendingStopTimerRef.current)
+        pendingStopTimerRef.current = null
+      }
+      if (ws.readyState === WebSocket.OPEN) commitStop(ws)
+      else cleanup()
+    }
+  }, [cleanup, commitStop, sampleRef])
 
   const stop = useCallback(() => {
     const ws = wsRef.current
     if (ws && ws.readyState === WebSocket.OPEN) {
-      try { ws.send('{"type":"stop"}') } catch { /* ignore */ }
-      // Do NOT call ws.close() here — let the backend flush any in-flight
-      // finals from Transcribe and close the socket itself. Our onclose
-      // handler joins finalsRef and fires onFinal. If the backend hangs,
-      // force-cleanup after 8s so the UI never gets stuck. Must exceed
-      // the backend's 3s handler-drain timeout + a safety margin for
-      // end_stream() and network RTT.
-      window.setTimeout(() => {
-        if (wsRef.current === ws) {
-          try { ws.close() } catch { /* ignore */ }
-          cleanup()
+      if (!readyRef.current) {
+        // Pre-`ready`: the speech is still in start()'s local buffer, so
+        // sending stop NOW would end the Transcribe stream before a single
+        // frame of it had been sent. Record the intent instead; the flush in
+        // start() commits it the moment `ready` lands.
+        pendingStopRef.current = true
+        // Deferring the FRAME must not defer the END OF CAPTURE. The worklet
+        // handler appends to the same buffer while `ready` is false, so leaving
+        // it attached would keep recording the room after the user let go and
+        // ship all of it on flush -- extra words in the transcript, and audio
+        // captured after release sent to the transcriber. Freeze the buffer at
+        // release: detach the handler, stop the level meter, and release the
+        // mic. The socket and the already-buffered PCM deliberately survive,
+        // because they are what the flush still has to send.
+        try {
+          if (workletRef.current) workletRef.current.port.onmessage = null
+        } catch { /* ignore */ }
+        try { levelStopRef.current?.() } catch { /* ignore */ }
+        levelStopRef.current = null
+        onLevelRef.current?.(0)
+        try { streamRef.current?.getTracks().forEach(t => t.stop()) } catch { /* ignore */ }
+        // Ceiling, because a `ready` that never arrives would otherwise leave
+        // the mic hot forever. 8s matches the buffer cap: past that point the
+        // oldest audio is already being dropped FIFO, so waiting longer cannot
+        // preserve a whole utterance anyway.
+        if (pendingStopTimerRef.current === null) {
+          pendingStopTimerRef.current = window.setTimeout(() => {
+            pendingStopTimerRef.current = null
+            if (wsRef.current === ws && pendingStopRef.current) {
+              pendingStopRef.current = false
+              cleanup()
+            }
+          }, 8000)
         }
-      }, 8000)
+        return
+      }
+      commitStop(ws)
     } else {
       // WS never opened or already closing — cleanup directly.
       cleanup()
     }
-  }, [cleanup])
+  }, [cleanup, commitStop])
 
   /**
    * Swap the capture device WITHOUT ending the transcription session.

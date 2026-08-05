@@ -389,6 +389,22 @@ export default [
               // a shape UI copy takes — copy has spaces and capitals, which is what keeps
               // `['Save changes', 'Delete item']` reported.
               '^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$',
+              // A `KeyboardEvent.code` SIDE-SPECIFIC MODIFIER identifier, i.e.
+              // `AltRight`, `ControlLeft`, `MetaRight`, `ShiftLeft`. These are DOM
+              // protocol values: they are compared against `e.code` and never
+              // rendered — the strings a user sees for the same keys come from the
+              // catalog (`ptt_key_right_option` and friends). Such lists live at
+              // module level under an ALL-CAPS name (`SELECTABLE_BARE_CODES`), so
+              // `i18n-strict` looks inside them.
+              //
+              // Enumerated rather than shaped, deliberately. The obvious shape,
+              // `^[A-Z][a-zA-Z0-9]*$` (PascalCase single token), was tried and
+              // rejected: it also exempts `'Save'`, `'Delete'` and `'Done'`, which
+              // are exactly the single-word copy the config already calls out as
+              // the hardest false-negative class. Spelling out the eight members of
+              // a closed DOM set cannot match prose — no English phrase is
+              // `AltRight` — and a new key code has to be added here on purpose.
+              '^(?:Alt|Control|Meta|Shift)(?:Left|Right)$',
               // A `mc:`-NAMESPACED BROWSER-STORAGE KEY, e.g.
               // `mc:notif:activeKinds:v2`, `mc:notif:seenChannels`. The dashboard
               // namespaces every localStorage key it owns under `mc:`, and such

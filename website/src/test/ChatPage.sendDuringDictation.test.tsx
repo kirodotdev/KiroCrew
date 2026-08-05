@@ -34,17 +34,29 @@ vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
 }))
 // Controllable voice mock: `recording` is flipped per test and `toggle` is the
-// spy that proves send() ended the dictation.
+// spy that proves send() ended the dictation. `start`/`stop` exist because
+// ChatPage's startVoice/stopVoice call them directly (the push-to-talk driver
+// needs explicit start and stop, not just a toggle).
 const voice = vi.hoisted(() => {
   const v = {
     recording: false,
+    // Live partial, mirroring useVoiceInput's own `partial`. cancelVoice reads it
+    // to reconstruct (and roll back) the dictated region, so a test exercising
+    // the discard path has to set it alongside firing onPartial.
+    partial: '',
     onPartial: null as ((t: string) => void) | null,
     onText: null as ((t: string) => void) | null,
     toggle: (() => {}) as () => void,
+    start: (() => {}) as () => void,
+    stop: (() => {}) as () => void,
+    cancel: (() => {}) as () => void,
   }
   return v
 })
 voice.toggle = vi.fn(() => { voice.recording = !voice.recording })
+voice.start = vi.fn(() => { voice.recording = true })
+voice.stop = vi.fn(() => { voice.recording = false })
+voice.cancel = vi.fn(() => { voice.recording = false })
 vi.mock('../hooks/useVoiceInput', () => ({
   useVoiceInput: (onText: (t: string) => void, opts?: { onPartial?: (t: string) => void; streaming?: boolean }) => {
     voice.onPartial = opts?.onPartial ?? null
@@ -55,12 +67,15 @@ vi.mock('../hooks/useVoiceInput', () => ({
     sessionOwner: null,
     streamEnabled: !!opts?.streaming,
     toggle: voice.toggle,
+    start: voice.start,
+    stop: voice.stop,
+    cancel: voice.cancel,
     prewarm: vi.fn(),
     error: null,
     level: 0,
     deviceLabel: '',
     clearError: vi.fn(),
-    partial: '',
+    partial: voice.partial,
     sampleRef: { current: { level: 0, centroid: 0.5, onset: 0 } },
     })
   },
@@ -82,6 +97,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPage from '../pages/ChatPage'
 import { api } from '../api/client'
+import { savePttConfig } from '../lib/pushToTalk'
 
 function makeStore(activeSlot: string, slots: { key: string; mode?: string }[]) {
   return configureStore({
@@ -265,5 +281,130 @@ describe('ChatPage — sending while dictating', () => {
     await act(async () => { ta.setSelectionRange(0, 7); fireEvent.select(ta) })
     await act(async () => { voice.onText?.('') })
     expect(ta.value).toBe('keep me')
+  })
+
+  it('keeps the utterance when a streaming stop beats the first partial', async () => {
+    // A COLD stream: useStreamingStt connects its worklet and buffers PCM before
+    // the server's `ready` frame, so a short press can end capture before ANY
+    // partial has landed. The composer therefore holds no copy of the speech and
+    // the draining final is the only one — disarming it deletes the utterance
+    // outright, which is the ordinary outcome of the first push-to-talk press of
+    // a session (the one where the handshake is slowest).
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    expect(typeof voice.onText).toBe('function')
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    expect(voice.recording).toBe(true)
+    // Type a prefix. This is also what re-renders ChatPage so the mic button
+    // re-reads `recording` from the mock — mutating that property does not
+    // notify React, so without a render in between the second click would read
+    // a stale `false` and START again instead of stopping. Do not "simplify"
+    // this away.
+    await act(async () => { fireEvent.change(ta, { target: { value: 'note: ' } }) })
+    // Deliberately NO onPartial: the handshake never produced one.
+    await act(async () => { fireEvent.click(mic) })
+    expect(voice.recording).toBe(false)
+
+    // The final drains in after the stop and must still reach the composer.
+    await act(async () => { voice.onText?.('hello there') })
+    expect(ta.value).toBe('note: hello there')
+  })
+
+  it('rolls the composer back when a push-to-talk press is discarded', async () => {
+    // Capture opens on the keydown now, so a partial can reach the composer
+    // BEFORE the press is revealed as a chord or a sub-threshold tap in
+    // hold-only mode. The discard therefore has to run the streaming rollback
+    // (`cancelVoice`) — the hook's raw `cancel` would drop the capture and leave
+    // that text stranded in the composer with nothing left to clear it.
+    setStt(true)
+    savePttConfig({ mode: 'ptt', binding: { code: 'AltRight' }, holdMs: 500 })
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    // Press: the driver opens capture immediately.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { code: 'AltRight', altKey: true, bubbles: true, cancelable: true }))
+    })
+    expect(voice.recording).toBe(true)
+
+    // A fast partial lands while the press is still arming.
+    voice.partial = 'hello'
+    await act(async () => { voice.onPartial?.('hello') })
+    expect(ta.value).toBe('hello')
+
+    // Released under the threshold: in hold-only mode a tap means nothing, so the
+    // press is discarded — and the composer must not keep the dictated text.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keyup', { code: 'AltRight', bubbles: true }))
+    })
+    expect(voice.cancel).toHaveBeenCalled()
+    expect(ta.value).toBe('')
+    voice.partial = ''
+  })
+
+  it('rolls back a discarded press when the dictation spliced mid-draft', async () => {
+    // The rollback has to reconstruct the region the SAME way onPartial wrote
+    // it. onPartial splices at the snapshotted caret, so with the caret in the
+    // middle of the draft the composer reads `before + partial + after` — an
+    // append-only reconstruction (`frozen + separator + partial`) fails its
+    // startsWith check, falls through to the leave-unchanged branch, and strands
+    // the dictated word inside the user's sentence. A chord like ⌥e typed
+    // mid-sentence hits exactly this path, so the stranded text is something the
+    // user never asked to dictate.
+    setStt(true)
+    savePttConfig({ mode: 'ptt', binding: { code: 'AltRight' }, holdMs: 500 })
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    // Draft with the caret parked in the middle, after "Hello".
+    await act(async () => { fireEvent.change(ta, { target: { value: 'Hello world' } }) })
+    await act(async () => { ta.setSelectionRange(5, 5); fireEvent.select(ta) })
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { code: 'AltRight', altKey: true, bubbles: true, cancelable: true }))
+    })
+    expect(voice.recording).toBe(true)
+
+    // A fast partial splices in at the caret before the press resolves.
+    voice.partial = 'there'
+    await act(async () => { voice.onPartial?.('there') })
+    expect(ta.value).toBe('Hello there world')
+
+    // Sub-threshold release in hold-only mode: discarded, and the draft must be
+    // exactly what the user had typed.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keyup', { code: 'AltRight', bubbles: true }))
+    })
+    expect(voice.cancel).toHaveBeenCalled()
+    expect(ta.value).toBe('Hello world')
+    voice.partial = ''
+  })
+
+  it('still drops the draining final once partials have populated the composer', async () => {
+    // The guard being narrowed is real, so pin it: with the speech already in
+    // the composer the draining final is redundant, and letting it land rebuilds
+    // the value from the stale pre-dictation snapshot — clobbering whatever the
+    // user typed while the socket drained.
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    await act(async () => { voice.onPartial?.('hello') })
+    expect(ta.value).toBe('hello')
+    await act(async () => { fireEvent.click(mic) })
+
+    // The user edits while the socket drains, then the final arrives.
+    await act(async () => { fireEvent.change(ta, { target: { value: 'edited by hand' } }) })
+    await act(async () => { voice.onText?.('hello there') })
+    expect(ta.value).toBe('edited by hand')
   })
 })

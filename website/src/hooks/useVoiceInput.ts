@@ -62,7 +62,17 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
   const sampleRef = useRef(createAudioSample())
   const mediaRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
+  /**
+   * Re-entrancy latch for the async startup window: a second click during
+   * `start()` must not open a second stream or reassign ownership.
+   *
+   * `startGenRef` scopes it. Releasing the latch is not enough on its own,
+   * because the startup that OWNED it is still in flight and its `finally`
+   * would clear a newer startup's latch on the way out. Every `start()` takes a
+   * generation; the release only fires while that generation is still current.
+   */
   const startingRef = useRef(false)
+  const startGenRef = useRef(0)
   // Set by cancel() to tell the pending MediaRecorder.onstop to DROP its audio
   // instead of transcribing it — how Esc discards a batch dictation. A ref (not
   // state) because onstop reads it synchronously at fire time, after cancel()
@@ -247,6 +257,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
       // this stream to the slot now on screen.
       if (startingRef.current) return
       startingRef.current = true
+      const gen = ++startGenRef.current
       const streamSession = sessionIdRef.current
       streamSessionRef.current = streamSession
       try {
@@ -254,14 +265,22 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
         // Aborted by a slot switch during startup — stop the stream rather than
         // capture invisibly for a slot that is no longer on screen.
         if (streamSession !== sessionIdRef.current) { streamStop(); return }
+        // Cancelled mid-startup: `cancel()` already released the latch and
+        // `useStreamingStt.start()` bailed without building a socket, so there is
+        // no session to own. Claiming ownership here would advertise a stream
+        // that does not exist.
+        if (gen !== startGenRef.current) return
         setSessionOwner(streamSession)
       } finally {
-        startingRef.current = false
+        // Only if still ours: a cancel (or a later start) has already moved the
+        // generation on, and clearing here would unlatch THAT startup.
+        if (gen === startGenRef.current) startingRef.current = false
       }
       return
     }
     if (!voiceInputSupported || startingRef.current) return
     startingRef.current = true
+    const gen = ++startGenRef.current
     // Attribute this recording's transcript to the slot that owns the mic RIGHT
     // NOW. Captured as a local (not the ref) so a second recording started in
     // another slot before this one's async transcription returns can't reassign
@@ -286,7 +305,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
         levelStopRef.current = null
         setLevel(0)
         setDeviceLabel(''); setDeviceId('')
-        startingRef.current = false
+        if (gen === startGenRef.current) startingRef.current = false
         return
       }
       const mimeType = pickMimeType()
@@ -346,6 +365,16 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
       // misattributed to the slot now on screen.
       setSessionOwner(sessionAtStart)
     } catch (e) {
+      // Release whatever THIS startup acquired, always — an orphaned track is a
+      // live microphone.
+      stream?.getTracks().forEach(t => t.stop())
+      // Everything else is SHARED state, so only the still-current startup may
+      // touch it. A startup abandoned by `cancel()` lands here too (`acquireWarm`
+      // throws 'mic acquisition cancelled' once its promise ref has moved on),
+      // and without this guard it would tear down the replacement session the
+      // user just started: nulling the warm promise it is awaiting, clearing its
+      // ownership, and surfacing a mic error for a recording that is running fine.
+      if (gen !== startGenRef.current) return
       if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
       levelStopRef.current?.()
       levelStopRef.current = null
@@ -357,7 +386,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
       setSessionOwner(null)
       setError(humanizeMicError(e))
     }
-    startingRef.current = false
+    if (gen === startGenRef.current) startingRef.current = false
   }, [onText, streamEnabled, streamStart, acquireWarm])
 
   const stop = useCallback(() => {
@@ -380,6 +409,17 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
   // disarms the draining final and restores the pre-dictation composer text.
   const cancel = useCallback(() => {
     if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
+    // Abandon any startup still in flight and RELEASE the re-entrancy latch, so a
+    // replacement press can start a new session immediately instead of being
+    // swallowed. Without this, cancelling while `getUserMedia` is still awaiting
+    // the permission dialog left the latch held for as long as that dialog stayed
+    // open — nothing settles that await, so `start()` returned early and the next
+    // press recorded nothing at all. Bumping the generation is what makes the
+    // release safe: the abandoned startup's own teardown can no longer clear the
+    // latch a newer start may already hold, and it will not claim ownership of a
+    // stream `useStreamingStt` has already bailed on.
+    startGenRef.current++
+    startingRef.current = false
     setPartial('')
     if (streamEnabled) { streamCancel(); setSessionOwner(null); return }
     if (mediaRef.current?.state === 'recording') {
@@ -397,7 +437,6 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
 
   const isRecording = streamEnabled ? streamRecording : recording
   const toggle = useCallback(() => { if (isRecording) stop(); else start() }, [isRecording, start, stop])
-
   /**
    * Change the capture device from the in-chat picker.
    *
@@ -439,5 +478,5 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
   /** True when `switchDevice` takes effect immediately rather than next recording. */
   const deviceSwitchIsLive = streamEnabled && streamRecording
 
-  return { recording: isRecording, transcribing, sessionOwner, streamEnabled, toggle, cancel, prewarm, error, level, deviceLabel, deviceId, clearError, partial, sampleRef, switchDevice, deviceSwitchIsLive }
+  return { recording: isRecording, transcribing, sessionOwner, streamEnabled, toggle, start, stop, cancel, prewarm, error, level, deviceLabel, deviceId, clearError, partial, sampleRef, switchDevice, deviceSwitchIsLive }
 }

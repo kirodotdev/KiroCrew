@@ -202,7 +202,14 @@ interface SettingsStepperProps {
   label: string
   description?: string
   hint?: string
-  value: number
+  /**
+   * The displayed value. `string` is allowed for an ALREADY-FORMATTED, localised
+   * value — a duration rendered as "0.5 seconds", for instance, where the unit
+   * word is part of the catalog string and cannot be split off into `suffix`
+   * (locales place and inflect it differently). The stepper only interpolates
+   * this, so the numeric state stays with the caller either way.
+   */
+  value: number | string
   onIncrement: () => void
   onDecrement: () => void
   onReset?: () => void
