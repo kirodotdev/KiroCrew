@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { KiroPrerequisiteStatus } from '../api/client'
 import KiroPrerequisiteGate, {
   asSentence,
+  kiroPrerequisiteIsBlocking,
   kiroPrerequisiteRefetchInterval,
 } from '../components/KiroPrerequisiteGate'
 import { renderWithProviders } from './helpers'
@@ -20,8 +21,6 @@ vi.mock('../api/client', () => ({
   },
   api: {
     kiroPrerequisite: vi.fn(),
-    installKiroPrerequisite: vi.fn(),
-    loginKiroPrerequisite: vi.fn(),
     repairKiroPrerequisiteSpecs: vi.fn(),
   },
 }))
@@ -35,24 +34,15 @@ function status(overrides: Partial<KiroPrerequisiteStatus> = {}): KiroPrerequisi
     authenticated: false,
     ready: false,
     initial_setup_complete: false,
-    can_auto_install: true,
-    can_login: true,
     repair_required: false,
-    docs_url: 'https://kiro.dev/docs/cli/installation/',
+    docs_url: 'https://kiro.dev/cli/',
+    login_command: 'kiro-cli login',
     setup_allowed: true,
     sandbox_unavailable: false,
     sandbox_failure_kind: '',
     sandbox_detail: '',
     missing_agent_specs: [],
     agent_spec_repair_error: '',
-    operation: {
-      kind: '',
-      status: 'idle',
-      message: '',
-      detail: '',
-      url: '',
-      error: '',
-    },
     ...overrides,
   }
 }
@@ -68,16 +58,85 @@ describe('KiroPrerequisiteGate', () => {
 
   it('keeps a slow readiness poll after setup so later sign-out is detected', () => {
     expect(kiroPrerequisiteRefetchInterval(status({ ready: true }))).toBe(30_000)
-    expect(kiroPrerequisiteRefetchInterval(status({
-      operation: {
-        kind: 'login',
-        status: 'running',
-        message: '',
-        detail: '',
-        url: '',
-        error: '',
-      },
-    }))).toBe(1_000)
+    expect(kiroPrerequisiteRefetchInterval(status({ initial_setup_complete: true }))).toBe(30_000)
+  })
+
+  it('polls the host faster while the first-run gate blocks the dashboard', () => {
+    // The gate is what the user stares at while they install Kiro CLI from
+    // kiro.dev and sign in. Neither step touches the gateway, so the gate has to
+    // keep asking or it can never lift on its own.
+    expect(kiroPrerequisiteIsBlocking(status())).toBe(true)
+    expect(kiroPrerequisiteRefetchInterval(status())).toBe(5_000)
+
+    // Not blocking: ready, a returning user, and a non-owner each have their own
+    // screen and must not drive a host probe every 5s.
+    expect(kiroPrerequisiteIsBlocking(status({ ready: true }))).toBe(false)
+    expect(kiroPrerequisiteIsBlocking(status({ initial_setup_complete: true }))).toBe(false)
+    expect(kiroPrerequisiteIsBlocking(status({ setup_allowed: false }))).toBe(false)
+    expect(kiroPrerequisiteIsBlocking(undefined)).toBe(false)
+  })
+
+  it('forces a real host probe on the blocking gate, not a latched read', async () => {
+    // The status endpoint serves the boot-time LATCH unless refresh is set, so a
+    // poll that omits it can never observe a CLI the user just installed. Driven
+    // by an explicit refetch rather than by waiting out the interval, so the
+    // assertion is about the force decision and not about elapsed time.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status())
+
+    const rendered = renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    await screen.findByText(/Kiro Crew uses Kiro CLI/)
+    // Cold mount has no cached status, so it reads the latch.
+    expect(vi.mocked(api.kiroPrerequisite).mock.calls[0][0]).toBe(false)
+
+    await rendered.queryClient.invalidateQueries({ queryKey: ['kiro-prerequisite'] })
+
+    // Every later fetch sees a cached status that reports the gate as blocking, so
+    // it probes the host — as 'auto', the coalesced mode, NOT the human 'explicit'.
+    await waitFor(() => expect(
+      vi.mocked(api.kiroPrerequisite).mock.calls.some(([refresh]) => refresh === 'auto'),
+    ).toBe(true))
+    expect(vi.mocked(api.kiroPrerequisite).mock.calls.some(([r]) => r === 'explicit'))
+      .toBe(false)
+  })
+
+  it('sends the human Check again as the uncoalesced explicit mode', async () => {
+    // A button that can be answered from a cache looks broken, so the click must
+    // be distinguishable from the automatic poll at the API boundary.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed: true }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: /Check again/ }))
+
+    await waitFor(() => expect(
+      vi.mocked(api.kiroPrerequisite).mock.calls.some(([refresh]) => refresh === 'explicit'),
+    ).toBe(true))
+  })
+
+  it('lifts the gate as soon as detection reports a signed-in CLI', async () => {
+    // "Guard until sign-in succeeds" in one assertion: the same mounted gate goes
+    // from blocking to rendering the app on a later poll, with no reload.
+    vi.mocked(api.kiroPrerequisite)
+      .mockResolvedValueOnce(status())
+      .mockResolvedValue(status({
+        installed: true,
+        authenticated: true,
+        ready: true,
+        initial_setup_complete: true,
+      }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText(/Kiro Crew uses Kiro CLI/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
   })
 
   it('renders the application immediately when Kiro is ready', async () => {
@@ -97,20 +156,11 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.queryByText('Set up Kiro')).not.toBeInTheDocument()
   })
 
-  it('installs on the named gateway host and unlocks device login', async () => {
+  it('sends the user to Kiro CLI setup instead of installing anything', async () => {
+    // Kiro Crew does not install Kiro CLI. A missing CLI must offer a link to
+    // Kiro's own setup page and NO install action of any kind, so there is
+    // nothing for the user to press that would download and run a script.
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ platform: 'Windows' }))
-    vi.mocked(api.installKiroPrerequisite).mockResolvedValue(status({
-      platform: 'Windows',
-      installed: true,
-      operation: {
-        kind: 'install',
-        status: 'succeeded',
-        message: 'Kiro CLI is installed.',
-        detail: '',
-        url: '',
-        error: '',
-      },
-    }))
 
     renderWithProviders(
       <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
@@ -118,85 +168,60 @@ describe('KiroPrerequisiteGate', () => {
 
     expect(await screen.findByText(/Kiro Crew uses Kiro CLI/)).toBeInTheDocument()
     expect((await screen.findAllByText(/Windows gateway host/)).length).toBeGreaterThan(0)
-    fireEvent.click(screen.getByRole('button', { name: 'Install Kiro CLI' }))
-    await waitFor(() => expect(api.installKiroPrerequisite).toHaveBeenCalledOnce())
-    expect(await screen.findByRole('button', { name: 'Sign in to Kiro' })).toBeEnabled()
+
+    const setupLink = screen.getByRole('link', { name: /Open Kiro CLI setup/ })
+    expect(setupLink).toHaveAttribute('href', 'https://kiro.dev/cli/')
+    expect(setupLink).toHaveAttribute('target', '_blank')
+    expect(setupLink).toHaveAttribute('rel', expect.stringContaining('noopener'))
+    expect(screen.queryByRole('button', { name: /Install Kiro CLI/ })).not.toBeInTheDocument()
+    // No sign-in action exists at all — the user signs in with Kiro CLI.
+    expect(screen.queryByRole('button', { name: 'Sign in to Kiro' })).not.toBeInTheDocument()
   })
 
-  it('offers sign-in for an already-installed CLI regardless of install source', async () => {
-    // A user-owned / self-updated / toolbox Kiro CLI that runs is installed and
-    // sign-in ready — no "unverified executable" dead end, no repair prompt.
-    // The mock sets a rejected-provenance status (can_login:false +
-    // repair_required:true); the "runs" contract ignores both fields and still
-    // offers an enabled Sign-in rather than a button-less "Reinstall" dead end.
+  it('tells an installed-but-signed-out CLI to sign in via Kiro CLI', async () => {
+    // Any Kiro CLI that runs is usable regardless of install source, so this
+    // state must show the sign-in instruction and the exact command — and no
+    // action that would sign the user in on their behalf.
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
       installed: true,
       authenticated: false,
-      can_auto_install: false,
-      can_login: false,
-      repair_required: true,
     }))
 
     renderWithProviders(
       <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
     )
 
-    const loginButton = await screen.findByRole('button', { name: 'Sign in to Kiro' })
-    expect(loginButton).toBeEnabled()
+    expect(await screen.findByText(/Sign in with Kiro CLI on the gateway host/))
+      .toBeInTheDocument()
+    // The command is rendered verbatim so it can be copied and typed.
+    expect(screen.getByText('kiro-cli login').tagName).toBe('CODE')
+    // The only action is a re-check.
+    expect(screen.getByRole('button', { name: /Check again/ })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Sign in to Kiro' })).not.toBeInTheDocument()
     expect(screen.queryByText(/unverified executable/)).not.toBeInTheDocument()
-    expect(screen.queryByText('rm -- ~/.local/bin/kiro-cli')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Installed' })).toBeDisabled()
   })
 
-  it('shows the secure device URL and advances when login becomes ready', async () => {
+  it('exposes no way to start a sign-in from the dashboard', async () => {
+    // Kiro Crew does not authenticate for the user: there is no device-flow
+    // trigger, no sign-in URL, and no device code surfaced anywhere.
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed: true }))
-    vi.mocked(api.loginKiroPrerequisite).mockResolvedValue(status({
-      installed: true,
-      operation: {
-        kind: 'login',
-        status: 'running',
-        message: 'Open the sign-in page.',
-        detail: 'Enter code ABCD-EFGH',
-        url: 'https://view.awsapps.com/start/',
-        error: '',
-      },
-    }))
 
     renderWithProviders(
       <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Sign in to Kiro' }))
-    const link = await screen.findByRole('link', { name: /Open Kiro sign-in page/ })
-    expect(link).toHaveAttribute('href', 'https://view.awsapps.com/start/')
-    expect(screen.getByText(/ABCD-EFGH/)).toBeInTheDocument()
-  })
-
-  it('does not render a login link when browser URL parsing rejects it', async () => {
-    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
-      installed: true,
-      operation: {
-        kind: 'login',
-        status: 'running',
-        message: 'Open the sign-in page.',
-        detail: 'Enter code ABCD-EFGH',
-        url: 'https://evil.example\\@view.awsapps.com/start',
-        error: '',
-      },
-    }))
-
-    renderWithProviders(
-      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
-    )
-
-    expect(await screen.findByText(/ABCD-EFGH/)).toBeInTheDocument()
+    await screen.findByText(/Sign in with Kiro CLI on the gateway host/)
+    expect(api).not.toHaveProperty('loginKiroPrerequisite')
     expect(screen.queryByRole('link', { name: /Open Kiro sign-in page/ })).not.toBeInTheDocument()
+    // Only the two step cards' own affordances: the setup link is gone once the
+    // CLI is found, leaving exactly one control — Check again.
+    const buttons = screen.getAllByRole('button').map(b => b.textContent || '')
+    expect(buttons.filter(t => /Check again/.test(t))).toHaveLength(1)
   })
 
   it('shows non-owners a redacted owner-setup state', async () => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
       platform: 'gateway',
-      can_auto_install: false,
       setup_allowed: false,
     }))
 
@@ -205,7 +230,7 @@ describe('KiroPrerequisiteGate', () => {
     )
 
     expect(await screen.findByText(/gateway owner needs to finish setup/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Install Kiro CLI' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Open Kiro CLI setup/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
   })
 
@@ -213,7 +238,6 @@ describe('KiroPrerequisiteGate', () => {
     vi.mocked(api.kiroPrerequisite)
       .mockResolvedValueOnce(status({
         platform: 'gateway',
-        can_auto_install: false,
         setup_allowed: false,
       }))
       .mockResolvedValueOnce(status({

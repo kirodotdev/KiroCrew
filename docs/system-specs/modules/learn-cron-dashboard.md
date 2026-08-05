@@ -374,7 +374,8 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
 - `handlers/kiro_prerequisite.py` + `kiro_prerequisite.py` — authenticated
   first-run readiness surface. `GET /api/kiro-prerequisite` discovers viable
   `kiro-cli` candidates and checks `whoami`; exact owners receive structured
-  platform/install/auth/operation progress, while authenticated non-owner
+  platform/install/auth state — all of it DETECTED, never performed, since
+  Kiro Crew neither installs the CLI nor signs in — while authenticated non-owner
   dashboard users receive only redacted `ready` and
   `initial_setup_complete` results plus `setup_allowed=false`, so readiness
   cannot lock them out and host details do not leak. Successful authentication
@@ -382,8 +383,8 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
   inferred only from that marker or non-empty persisted session/history
   content. Empty directories and zero-byte files created during gateway startup
   do not bypass first-run setup. App tokens remain denied. The two
-  owner-only POST routes start one serialized background install or device-login
-  operation and return `202`.
+  owner-only POST route (`repair-specs`) rewrites Kiro Crew's own agent specs and
+  returns `200`; it is the only write on this surface.
   **Probing is boot-and-explicit-action only.** The readiness probe (two
   `kiro-cli` spawns) runs ONCE per gateway, in `warm_up()` shortly after start,
   and thereafter only on an explicit user action: the gate's Refresh / Check
@@ -464,10 +465,11 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
 - **WebSocket origin validation**: `ws.py:_check_ws_origin()` validates the `Origin` header on every WebSocket upgrade request before accepting the connection. Rejects missing Origin (non-browser clients) and cross-origin requests. Only allows `http://127.0.0.1:{port}`, `http://localhost:{port}`, and `http://kirocrew.localhost:5476`. Prevents cross-origin WebSocket hijacking where a malicious page could connect to `ws://127.0.0.1:5476/api/ws` and passively exfiltrate conversation data.
 - **Token authentication**: `dashboard/token_auth.py` validates the signed HMAC session token on every request including WebSocket upgrades. Pure stdlib — no external deps. Returns `401` if invalid. The enterprise SSO status surface (`dashboard/sso_status.py`) is an inert stub in the OSS build — no cookie validation is performed.
 - **CSRF protection**: `server.py` CSRF middleware validates `Origin` header on all non-safe HTTP methods (POST, PUT, DELETE). Same allowed origins as WebSocket.
-- **Prerequisite mutations**: install/login are ordinary authenticated,
-  CSRF-protected dashboard routes. They accept no body-controlled command, URL,
-  argument, or path. All three handlers require an explicit empty app claim, so
-  an app token stays denied even if its manifest declares the route prefix.
+- **Prerequisite mutations**: agent-spec repair is the ONLY one left — there is
+  no install route and no login route (see the gate section), so the only other
+  endpoint is the status read. Repair accepts no body-controlled command, URL,
+  argument, or path, and requires an explicit empty app claim, so an app token
+  stays denied even if its manifest declares the route prefix.
   Invoked actions are critical-audited before spawn and terminal outcomes are
   best-effort audited.
 - Static assets (`/assets/`, `/static/`) bypass auth check.
@@ -630,19 +632,74 @@ auth-cookie refresh scheduler outside this gate, so a stale access cookie can
 still refresh while the dashboard body is blocked. On a new gateway it:
 
 1. displays the connected gateway's OS so a remote browser does not imply the
-   install occurs on the browser machine;
-2. offers the fixed official installer when the gateway reports it is safe;
-3. unlocks Kiro device sign-in only after a viable CLI is found;
-4. polls setup operations every second, surfaces the HTTPS login URL and code
-   as React text, and records first-run completion when `ready=true`.
+   CLI is needed on the browser machine;
+2. links out to Kiro's official setup page (`OFFICIAL_INSTALL_DOCS_URL`,
+   `https://kiro.dev/cli/`) — a link, never a button;
+3. once a viable CLI is found, names the command the USER runs to sign in
+   (`KIRO_CLI_LOGIN_COMMAND`, `kiro-cli login`) and offers **Check again**;
+4. records first-run completion when `ready=true`.
+
+**Kiro Crew performs neither setup step, and there is no code path that could.**
+Both belong to Kiro CLI. Deleted for install: the installer download
+(`https://cli.kiro.dev/install`), its pinned SHA-256 pair, the bash/PowerShell
+interpreter plan, `POST /api/kiro-prerequisite/install`, the `_install`
+operation, `can_auto_install`, and the `.kiro_cli_binary_trust.json`
+attestation. Deleted for sign-in: `POST /api/kiro-prerequisite/login`, the
+`_login`/`start_login` device-flow spawn, `extract_secure_login_url` and its
+trusted-host allowlist, the progress/ANSI scrubbers that rendered the CLI's
+spinner, `_capture_operation_output`, `can_login`, and the whole
+`OperationStatus` concept — with no operation left to run, the gate has no
+progress UI. The payload still carries an `operation` key, but it is a
+**compatibility shim** (`legacy_idle_operation()`), permanently idle: a dashboard
+loaded before this change reads `status.operation.status` unconditionally in its
+refetch-interval callback (the optional chain there guards `status`, not
+`operation`), and that callback runs for every user, not only the first-run gate —
+so a tab open across a gateway upgrade would throw on its next poll and drop to
+the root error screen. It is served to owner and non-owner alike so the shape
+never varies by caller, and can be deleted once no shipped client reads it.
+
+The reasons are the same for both: the vendor's tooling does it better and stays
+correct as it changes, owning it here meant owning a privileged surface (a
+remote shell script executed unsandboxed; a credential-writing child process),
+and each copy on the Kiro Crew side was one more thing to drift — the installer's
+pin silently broke setup on any upstream change.
+
+What remains is detection only. `_run_process` no longer accepts `sandboxed=`,
+`stdin_data=`, or `on_output=`, so every spawn is one of two read-only probes
+(`--version`, `whoami`), sandboxed, with a fixed argv, and nothing can be piped
+into an interpreter or scraped out of a child's stdout.
+`TestKiroCrewNeverSetsUpKiroCli` pins the absence of each symbol.
+
+The sign-in card therefore shows the command in a `<code>` element, rendered
+verbatim from the backend-supplied `login_command`. It is a **code constant, not
+a catalog value** — a translated command cannot be typed (see
+`website/docs/i18n-catalog.md`). The card's only control is Check again, which is
+also why the screen no longer carries a second Check again button in its
+footer.
+
+`repair_required` therefore has ONE producer now, the missing-agent-spec overlay.
+A missing CLI is not a repair: the user obtains it from Kiro, so the gateway reports
+`installed=false` and offers no action of its own rather than claiming a remedy it
+does not have.
 
 Any Kiro CLI that runs is directly usable for sign-in regardless of how it was
-installed (toolbox, Homebrew, winget, the official installer, or a self-updated
+installed (toolbox, Homebrew, winget, Kiro's installer, or a self-updated
 bundle). Trust is "the CLI runs, and it has a valid login" — install source,
 owner, and path do not gate setup or ACP launch — so an installed-but-signed-out
 CLI always offers an enabled **Sign in to Kiro** rather than a button-less
-"repair" dead end. The `.kiro_cli_binary_trust.json` the dashboard installer
-still writes is bookkeeping only and does not gate credential access.
+"repair" dead end.
+
+**The first-run gate is the one screen that polls the HOST rather than the latch.**
+`kiroPrerequisiteIsBlocking(status)` is true only while the full-screen first-run
+gate is the whole UI (not `ready`, not `initial_setup_complete`, owner). In that
+state the gate polls every 5s AND passes `?refresh=1`, because the two steps it is
+waiting on — installing from kiro.dev and signing in, possibly from a terminal —
+touch the gateway not at all, so a latch-reading poll could never observe either
+and the gate would hold until the user pressed Check again. The cost is bounded to
+exactly this screen: two short `kiro-cli` spawns per interval, ending the moment
+`ready` flips, and a returning user never reaches it. This does NOT reintroduce
+reauthentication chrome for an established install — that decision is unchanged
+(see "The dashboard does not guide the user to sign in").
 
 Ready dashboards continue prerequisite polling every 30 seconds, but that poll
 is a **free read of the gateway's latched state** — it spawns no `kiro-cli`.

@@ -10,11 +10,11 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.kiro_prerequisite import (
+    KIRO_CLI_LOGIN_COMMAND,
     OFFICIAL_INSTALL_DOCS_URL,
     KiroPrerequisiteService,
-    OperationStatus,
-    PrerequisiteBusyError,
     PrerequisiteStatus,
+    legacy_idle_operation,
 )
 from kiro_crew.sel import sel
 
@@ -42,13 +42,8 @@ def _not_ready_snapshot(initial_setup_complete: bool = False) -> dict[str, Any]:
             initial_setup_complete=initial_setup_complete,
         )
     )
-    result["operation"] = asdict(
-        OperationStatus(
-            status="failed",
-            message="Could not check Kiro CLI. Retry the gateway check.",
-            error="Kiro CLI status check could not run.",
-        )
-    )
+    # See _LEGACY_IDLE_OPERATION: a pre-upgrade tab crashes without this key.
+    result["operation"] = legacy_idle_operation()
     return result
 
 
@@ -110,8 +105,11 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
 
     Reads LATCHED state by default: readiness is probed at gateway start and
     then only on explicit request, so the SPA's background poll costs no
-    ``kiro-cli`` subprocess. ``?refresh=1`` (the gate's Refresh / Check again
-    button) is the explicit user action that forces a real probe.
+    ``kiro-cli`` subprocess. Two query modes force a real probe, and they are
+    deliberately distinct: ``?refresh=explicit`` (also ``1``/``true``) is the
+    HUMAN action (the gate's Check again) and always probes, while
+    ``?refresh=auto`` is the blocking gate's machine poll, which is coalesced
+    behind a short floor so several open tabs cannot multiply the spawns.
     """
 
     if request.get("app") != "":
@@ -121,14 +119,17 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
 
     # Only an owner may force a host probe; a non-owner's refresh reads latched
     # state like any other poll (they receive the redacted payload regardless).
-    force = request.query.get("refresh") in ("1", "true") and _is_dashboard_owner(request)
+    refresh = request.query.get("refresh")
+    is_owner = _is_dashboard_owner(request)
+    explicit = refresh in ("1", "true", "explicit") and is_owner
+    auto = refresh == "auto" and is_owner
 
     # Resolve the service OUTSIDE the guard: a genuinely unwired service is a
     # real misconfiguration that must stay a 503, not be masked as a 200
     # not-ready. Only the probe itself is guarded.
     service = _service(request)
     try:
-        snapshot = await service.snapshot(force=force)
+        snapshot = await service.snapshot(force=explicit or auto, coalesce=auto)
     except asyncio.CancelledError:
         raise
     except web.HTTPException:
@@ -156,10 +157,9 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "authenticated": False,
             "ready": bool(snapshot.get("ready")),
             "initial_setup_complete": bool(snapshot.get("initial_setup_complete")),
-            "can_auto_install": False,
-            "can_login": False,
             "repair_required": False,
             "docs_url": OFFICIAL_INSTALL_DOCS_URL,
+            "login_command": KIRO_CLI_LOGIN_COMMAND,
             "setup_allowed": False,
             # Redacted like the rest of this block: the failure kind and probe
             # detail describe the HOST's sandbox posture (kernel knobs, errnos),
@@ -177,42 +177,11 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             # withholding them costs them nothing.
             "missing_agent_specs": [],
             "agent_spec_repair_error": "",
-            "operation": {
-                "kind": "",
-                "status": "idle",
-                "message": "",
-                "detail": "",
-                "url": "",
-                "error": "",
-            },
+            # See _LEGACY_IDLE_OPERATION: a pre-upgrade tab crashes without this,
+            # and the payload shape must not vary by caller either way.
+            "operation": legacy_idle_operation(),
         }
     )
-
-
-async def api_kiro_prerequisite_install(request: web.Request) -> web.Response:
-    """POST /api/kiro-prerequisite/install — start the fixed official installer."""
-
-    denied = await _dashboard_owner_only(request)
-    if denied is not None:
-        return denied
-    try:
-        snapshot = _service(request).start_install(_caller(request))
-    except PrerequisiteBusyError as exc:
-        return web.json_response({"error": str(exc)}, status=409)
-    return web.json_response({**snapshot, "setup_allowed": True}, status=202)
-
-
-async def api_kiro_prerequisite_login(request: web.Request) -> web.Response:
-    """POST /api/kiro-prerequisite/login — start Kiro device-flow login."""
-
-    denied = await _dashboard_owner_only(request)
-    if denied is not None:
-        return denied
-    try:
-        snapshot = _service(request).start_login(_caller(request))
-    except PrerequisiteBusyError as exc:
-        return web.json_response({"error": str(exc)}, status=409)
-    return web.json_response({**snapshot, "setup_allowed": True}, status=202)
 
 
 async def api_kiro_prerequisite_repair_specs(request: web.Request) -> web.Response:
@@ -232,12 +201,5 @@ async def api_kiro_prerequisite_repair_specs(request: web.Request) -> web.Respon
     denied = await _dashboard_owner_only(request)
     if denied is not None:
         return denied
-    try:
-        snapshot = await _service(request).repair_agent_specs(_caller(request))
-    except PrerequisiteBusyError as exc:
-        # Coded, per the error-code contract: the dashboard renders `error`
-        # verbatim into a localized UI, so `code` is what a caller can act on.
-        return web.json_response(
-            {"error": str(exc), "code": "kiro_setup_busy"}, status=409
-        )
+    snapshot = await _service(request).repair_agent_specs(_caller(request))
     return web.json_response({**snapshot, "setup_allowed": True})
