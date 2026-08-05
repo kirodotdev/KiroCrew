@@ -833,6 +833,19 @@ export interface KiroPrerequisiteStatus {
   sandbox_failure_kind: string
   /** Technical probe reason, e.g. 'unshare(CLONE_NEWNS) failed with errno 1 (EPERM)'. */
   sandbox_detail: string
+  /**
+   * Kiro Crew's own agent spec files missing from the kiro-cli agents directory.
+   * Non-empty means kiro-cli will answer every session/set_mode with
+   * "Mode '<name>' not found", so `ready` is forced false and `repair_required`
+   * true — a viable binary and a good `whoami` are NOT sufficient on their own.
+   */
+  missing_agent_specs: string[]
+  /**
+   * Failure text from the repair the Check again button attempts when specs are
+   * missing. Empty when none was attempted or it succeeded. Shown verbatim and
+   * untranslated: it names the failing install step.
+   */
+  agent_spec_repair_error: string
   operation: KiroPrerequisiteOperation
 }
 
@@ -914,6 +927,11 @@ export const api = {
     post('/api/kiro-prerequisite/install').then(j) as Promise<KiroPrerequisiteStatus>,
   loginKiroPrerequisite: () =>
     post('/api/kiro-prerequisite/login').then(j) as Promise<KiroPrerequisiteStatus>,
+  // A POST, not a flag on the status GET: the gateway's CSRF check and its SEL
+  // audit are both method-scoped, so a spec rewrite reached from a GET would be
+  // cross-site triggerable and would leave no audit record.
+  repairKiroPrerequisiteSpecs: () =>
+    post('/api/kiro-prerequisite/repair-specs').then(j) as Promise<KiroPrerequisiteStatus>,
   onboardingImportScan: () =>
     get('/api/onboarding/import/scan').then(j) as Promise<AgentImportScanResponse>,
   onboardingImportApply: (body: AgentImportApplyRequest) =>

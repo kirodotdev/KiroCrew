@@ -302,6 +302,50 @@ async def test_awaited_response_resolves_pending_future():
 
 
 @pytest.mark.asyncio
+async def test_missing_agent_spec_error_reaches_caller_actionable(tmp_path):
+    """A missing agent spec must not reach the caller as a raw -32603 dict.
+
+    kiro-cli answers ``session/set_mode`` for an agent it cannot resolve with a
+    bare "Internal error" whose data is ``Mode '<name>' not found``. Routed raw,
+    the caller — and the dashboard chat bubble behind it — got the JSON-RPC dict
+    verbatim: an internal ACP concept, no mention of the missing file, and no
+    remedy, on a condition that fails every subsequent turn too.
+
+    This pins the formatting AT THE CALL SITE rather than only unit-testing the
+    helper: the awaited-request branch of the reader is the single path every
+    handshake error (initialize / session/new / session/set_mode) takes, so a
+    regression that unwires the helper is invisible to a helper-only test.
+    """
+    rt, reader, _ = _make_runtime()
+    fut: asyncio.Future = asyncio.get_event_loop().create_future()
+    rt._pending_requests[7] = fut
+    task = await _start_reader(rt)
+    try:
+        with patch("kiro_crew.acp.runtime.kiro_agents_dir", return_value=tmp_path):
+            _feed(
+                reader,
+                {
+                    "id": 7,
+                    "error": {
+                        "code": -32603,
+                        "message": "Internal error",
+                        "data": "Mode 'kirocrew' not found",
+                    },
+                },
+            )
+            with pytest.raises(AcpRuntimeError) as excinfo:
+                await asyncio.wait_for(fut, timeout=1.0)
+    finally:
+        await _stop_reader(task)
+
+    text = str(excinfo.value)
+    assert "'kirocrew.json'" in text  # the file that is missing
+    assert str(tmp_path) in text  # where it was looked for
+    assert "kirocrew setup --agent-only --clean" in text  # the repair
+    assert "-32603" not in text  # no raw protocol frame
+
+
+@pytest.mark.asyncio
 async def test_non_numeric_response_id_dropped_without_killing_demux():
     """The id in a response frame is agent-controlled. int("req-1") raised
     ValueError, which the reader's catch-all turned into _mark_dead — poisoning

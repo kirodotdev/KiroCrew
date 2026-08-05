@@ -32,7 +32,7 @@ import tempfile
 import time
 import urllib.request
 from collections.abc import Awaitable, Callable, MutableMapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -41,6 +41,7 @@ import aiohttp
 
 from kiro_crew import platform_compat
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.kiro_cli import (
@@ -262,6 +263,17 @@ class PrerequisiteStatus:
     # Technical probe reason, e.g. "unshare(CLONE_NEWNS) failed with errno 1
     # (EPERM)". Names the failing step, so it is shown verbatim, untranslated.
     sandbox_detail: str = ""
+    # Kiro Crew's own agent specs (~/.kiro/agents/kirocrew*.json). ``ready``
+    # requires these on disk, not merely a viable binary and a good ``whoami``:
+    # without them kiro-cli answers every ``session/set_mode`` with
+    # "Mode '<name>' not found", so an install missing one cannot run a single
+    # turn. Filenames rather than a bool so the surface can name what is missing.
+    missing_agent_specs: list[str] = field(default_factory=list)
+    # Exception text from the repair attempt the Refresh / Check again button
+    # makes when specs are missing. Empty when no repair was attempted or it
+    # succeeded. Shown verbatim, untranslated: it names the failing install step,
+    # which is the one thing a support conversation actually needs.
+    agent_spec_repair_error: str = ""
 
 
 @dataclass
@@ -1793,6 +1805,13 @@ class KiroPrerequisiteService:
         # Injectable so tests need not sleep out the real boot-contention delay.
         self._warm_up_delay = warm_up_delay
         self._probe_lock = asyncio.Lock()
+        # Serializes spec repair. `operation_running` does NOT cover it: that
+        # tracks `_task`, which only install/login set, so two concurrent owner
+        # repair POSTs would both pass it. Without this lock the second rebuild
+        # runs over the spec the first just wrote -- the exact
+        # rebuild-over-an-existing-file case the main-spec gate exists to avoid,
+        # which can drop a concurrent api_mcp_toggle write.
+        self._repair_lock = asyncio.Lock()
         self._last_probe_at = 0.0
         self._has_probed = False
         self._viable_binary = ""
@@ -1820,6 +1839,136 @@ class KiroPrerequisiteService:
         result = asdict(self._status)
         result["operation"] = asdict(self._operation)
         return result
+
+    @staticmethod
+    def _missing_agent_specs() -> list[str]:
+        """The required agent specs absent from the agents dir (blocking call)."""
+        from kiro_crew.agent import missing_required_agent_specs  # circular import
+
+        return missing_required_agent_specs()
+
+    async def _agent_spec_overlay(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Fold agent-spec presence into a snapshot, narrowing ``ready``.
+
+        Applied on EVERY read, not only on a forced probe. That is affordable
+        because it is two ``stat`` calls rather than the probe's two sandboxed
+        ``kiro-cli`` spawns, so it does not violate the boot-and-explicit-action
+        rule the subprocess probe follows (see :meth:`snapshot`). Off-loop anyway,
+        matching this package's discipline of never doing filesystem work inline
+        on the event loop.
+
+        Only ever NARROWS: a missing spec turns ``ready`` off and
+        ``repair_required`` on; a present spec grants nothing the probe did not
+        already grant.
+
+        Deliberately scoped to the dashboard-facing snapshot and NOT to
+        :meth:`session_ready`. That predicate gates poll-driven spawn sites, and
+        turn-starting paths intentionally do not block on it — they let the turn
+        carry the failure, which now arrives as an actionable missing-spec message
+        from ``acp/runtime.py`` instead of a raw JSON-RPC dict. Narrowing it here
+        would re-introduce the stale-latch lockout that design removed.
+        """
+
+        if self._assume_ready:
+            # ``assume_ready`` is the deliberate host-reality bypass (test mode,
+            # fixtures, offline E2E). Those homes have no managed specs on disk, so
+            # applying the overlay there would report a repair-required gate for
+            # every such gateway.
+            return result
+        try:
+            missing = await asyncio.to_thread(self._missing_agent_specs)
+        except Exception:
+            # Unreadable agents dir: report nothing rather than inventing a
+            # missing spec and blocking a working install behind a repair card.
+            logger.debug("Could not check Kiro Crew agent specs", exc_info=True)
+            return result
+        result["missing_agent_specs"] = list(missing)
+        if missing:
+            result["ready"] = False
+            result["repair_required"] = True
+        return result
+
+    async def _repair_agent_specs(self) -> str:
+        """Rewrite the managed agent specs. Returns the failure text, or ``""``.
+
+        Reached ONLY from the ``POST /api/kiro-prerequisite/repair-specs`` handler,
+        never from ``snapshot()``. That placement is load-bearing, not stylistic:
+        the status route is an ``add_get``, and both dashboard barriers are
+        method-scoped — ``csrf_middleware`` skips ``check_origin`` for
+        ``{GET, HEAD, OPTIONS}`` and ``sel_audit_middleware`` logs only
+        ``{POST, PUT, DELETE, PATCH}``. A write hung off the GET would therefore
+        be cross-site triggerable (a ``SameSite=Lax`` cookie rides a top-level
+        cross-site GET) and would leave no SEL record, while every sibling
+        operation in this service — including the read-only probes — audits.
+
+        Only rebuilds when the MAIN spec is absent, which keeps it out of a
+        lost-update class: ``rebuild_agent_config`` regenerates the whole file and
+        re-merges ``mcpServers`` under ``bridges._mcp_lock``, but NOT the
+        ``tools``/``allowedTools`` half ``api_mcp_toggle`` writes separately — so
+        rebuilding over an existing spec can drop a concurrent toggle's edit. With
+        no file on disk there is nothing to lose (the toggle path itself bails
+        with "Cannot read agent config, skipping sync").
+
+        Failure is returned rather than raised: the caller reports it in the
+        payload, which is the entire point — the boot path's swallowed exception is
+        what made the original install undiagnosable. Sanitized like every other
+        dashboard-facing string in this module, because the rebuild's call graph
+        merges ``mcpServers[*].env``.
+        """
+
+        def _rebuild() -> None:
+            from kiro_crew.agent import rebuild_agent_config  # circular import
+
+            rebuild_agent_config()
+
+        try:
+            await asyncio.to_thread(_rebuild)
+        except Exception as exc:
+            logger.error("Agent spec repair from the readiness gate failed", exc_info=True)
+            return _sanitize_detail(f"{type(exc).__name__}: {exc}")
+        logger.info("Agent specs repaired from the readiness gate")
+        return ""
+
+    async def repair_agent_specs(self, caller: str = "") -> dict[str, Any]:
+        """Repair the managed agent specs, then return the post-repair snapshot.
+
+        The Check again button's repair arm, behind a POST so the write is
+        origin-checked and audited (see :meth:`_repair_agent_specs`). Re-reporting
+        alone could never help the install this exists to fix: the probe's two
+        inputs (binary, ``whoami``) are both already true in that state.
+
+        Returns a snapshot with ``agent_spec_repair_error`` set — empty on success.
+        A no-op rebuild is reported as a failure rather than a success: the write
+        can decline silently (``_decline_shared_agent_home`` returns early without
+        raising), and reporting that as ``""`` would leave the gate showing a
+        button that changes nothing on every press.
+        """
+
+        if self.operation_running:
+            raise PrerequisiteBusyError("A Kiro setup operation is already running.")
+        del caller  # the SEL record is written by the route's audit middleware
+        # The missing-spec check and the rebuild must be ONE critical section. Read
+        # outside the lock they are a TOCTOU: two concurrent repairs both observe
+        # the spec missing, both rebuild, and the second one regenerates the file
+        # the first just wrote. Re-reading inside the lock makes the loser a no-op.
+        async with self._repair_lock:
+            before = await self._agent_spec_overlay(self._snapshot_dict())
+            missing_before = before.get("missing_agent_specs") or []
+            if AGENT_FILENAME not in missing_before:
+                # Nothing to repair, only an auxiliary spec is missing (which the
+                # main-spec gate deliberately excludes), or a concurrent repair
+                # already wrote it. Report, do not write.
+                before["agent_spec_repair_error"] = ""
+                return before
+            error = await self._repair_agent_specs()
+            result = await self._agent_spec_overlay(self._snapshot_dict())
+            if not error and (result.get("missing_agent_specs") or []):
+                error = (
+                    "The rebuild reported success but the specs are still missing. "
+                    "Run `kirocrew setup --agent-only --clean` on the gateway host."
+                )
+            result["agent_spec_repair_error"] = error
+            return result
 
     def warm_up(self) -> asyncio.Task[None] | None:
         """Resolve readiness in the background shortly after gateway start.
@@ -1869,7 +2018,15 @@ class KiroPrerequisiteService:
             # Nothing has resolved yet (warm-up still pending or it failed).
             # One probe here is the boot probe, just arriving late.
             await self._probe()
-        return self._snapshot_dict()
+        result = await self._agent_spec_overlay(self._snapshot_dict())
+
+        # The repair arm deliberately does NOT live here. This is an ``add_get``
+        # route, and both dashboard barriers are method-scoped (csrf_middleware
+        # skips check_origin for GET; sel_audit_middleware logs only
+        # POST/PUT/DELETE/PATCH), so a write reached from a status read would be
+        # cross-site triggerable and unaudited. It is a POST route instead:
+        # ``repair_agent_specs`` / ``POST /api/kiro-prerequisite/repair-specs``.
+        return result
 
     def mark_signed_out(self) -> None:
         """Latch readiness to signed-out after an observed ACP auth failure.

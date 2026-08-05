@@ -155,6 +155,7 @@ from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.kiro_prerequisite import (  # noqa: E402, F401
     api_kiro_prerequisite_install,
     api_kiro_prerequisite_login,
+    api_kiro_prerequisite_repair_specs,
     api_kiro_prerequisite_status,
 )
 from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401

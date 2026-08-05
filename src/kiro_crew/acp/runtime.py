@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -51,6 +52,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     JsonRpcRequest,
 )
+from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
@@ -110,6 +112,47 @@ _DEFAULT_MAX_RSS_MB = 500.0  # 500 MiB
 # CPU-only for young runtimes and only pays the offloaded RSS probe once a
 # runtime has lived long enough to plausibly have ballooned.
 _RSS_PROBE_MIN_AGE_SECS = 300.0  # 5 minutes
+
+# ── Awaited-request error formatting ──
+#
+# kiro-cli returns this when session/set_mode names an agent it cannot resolve,
+# i.e. no ``<name>.json`` in its agents directory. The wire shape is a bare
+# -32603 "Internal error", so nothing about the frame itself says "missing file".
+# The name charset is bounded to what a real spec filename can hold (see
+# validation of agent names elsewhere) rather than a greedy match, so a hostile
+# or malformed backend string is not echoed back into a user-facing message.
+_MODE_NOT_FOUND_RE = re.compile(r"""Mode ['"](?P<name>[A-Za-z0-9._-]{1,64})['"] not found""")
+
+
+def _format_runtime_rpc_error(error: object) -> str:
+    """Format an awaited-request JSON-RPC error into user-facing text.
+
+    Awaited requests are the handshake ones — ``initialize``, ``session/new``,
+    ``session/set_mode`` — so this is NOT the same population as
+    ``client._format_acp_error``, which rewrites PROMPT-time provider failures
+    (throttling, auth, 5xx) and has no branch that matches a missing agent spec.
+    The two are deliberately separate rather than merged: their inputs come from
+    different protocol phases and share no shape.
+
+    Exactly one shape is rewritten today: a missing agent spec. Left raw it
+    surfaces to the user as ``RPC error: {'code': -32603, 'message': 'Internal
+    error', 'data': "Mode 'kirocrew' not found"}`` — which names an internal ACP
+    concept, reads as a backend bug, and hides that the cause is a local file and
+    the fix is one command. Every other shape falls through to the raw dict, so a
+    shape nobody has classified is surfaced rather than swallowed.
+    """
+    if isinstance(error, dict):
+        match = _MODE_NOT_FOUND_RE.search(str(error.get("data", "") or ""))
+        if match:
+            name = match.group("name")
+            return (
+                f"Agent spec '{name}' is not installed: kiro-cli found no "
+                f"'{name}.json' in {kiro_agents_dir()}. Every turn fails until it "
+                f"is restored — repair with `kirocrew setup --agent-only --clean`, "
+                f"then restart the gateway."
+            )
+    return f"RPC error: {error}"
+
 
 # ── Unroutable-frame drop accounting ──
 #
@@ -886,7 +929,9 @@ class AcpRuntime:
                     future = self._pending_requests.pop(req_id, None)
                     if future and not future.done():
                         if msg.error:
-                            future.set_exception(AcpRuntimeError(f"RPC error: {msg.error}"))
+                            future.set_exception(
+                                AcpRuntimeError(_format_runtime_rpc_error(msg.error))
+                            )
                         else:
                             future.set_result(msg.result or {})
                         continue

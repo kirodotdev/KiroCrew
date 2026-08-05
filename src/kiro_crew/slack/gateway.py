@@ -1457,7 +1457,46 @@ class GatewayOrchestrator:
                 log_message="agent_runtime.run_first_run_setup failed",
             )
         except Exception:
-            logger.warning("Agent config install failed", exc_info=True)
+            # Boot deliberately continues: a gateway with no agent spec still
+            # serves the dashboard, and one command repairs it. But this is NOT a
+            # warning-level event — without a spec on disk kiro-cli answers every
+            # session/set_mode with "Mode '<name>' not found", so EVERY chat turn
+            # and every background turn fails for the life of the install. Log at
+            # ERROR and print the remedy, mirroring _check_missing_deps: the
+            # desktop app launches the gateway with no terminal in sight, so the
+            # log is the only durable record and the print is what a
+            # console-launched operator actually sees.
+            logger.error("Agent config install failed", exc_info=True)
+            print(
+                "ERROR: agent config install failed — chat sessions cannot start. "
+                "Repair with: kirocrew setup --agent-only --clean"
+            )
+
+        # Verify what actually landed on disk, whether or not the block above
+        # raised. An exception is only one of the ways to end up with no spec (see
+        # missing_required_agent_specs for the two silent ones), and the failure
+        # mode is identical in all of them: every turn dies at session/set_mode.
+        # Deliberately outside the try above so a raising install still gets
+        # verified, and best-effort itself so a stat error cannot break boot.
+        try:
+            from kiro_crew.agent import missing_required_agent_specs  # circular import
+
+            missing = missing_required_agent_specs()
+            if missing:
+                logger.error(
+                    "Agent specs missing after install: %s (in %s) — every chat turn "
+                    "will fail at session/set_mode with \"Mode '<name>' not found\". "
+                    "Repair with: kirocrew setup --agent-only --clean",
+                    ", ".join(missing),
+                    kiro_agents_dir(),
+                )
+                print(
+                    f"ERROR: agent specs missing after install: {', '.join(missing)} — "
+                    "chat sessions cannot start. "
+                    "Repair with: kirocrew setup --agent-only --clean"
+                )
+        except Exception:
+            logger.debug("Agent spec verification failed", exc_info=True)
 
         self.slack = RealSlackClient(self._bot_token) if self._slack_enabled else None
         factory = build_provider_factory(self._cfg)

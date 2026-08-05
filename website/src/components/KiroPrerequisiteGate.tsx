@@ -322,6 +322,75 @@ function SandboxUnavailable({
   )
 }
 
+function AgentSpecsMissing({
+  specs,
+  repairError,
+  retrying,
+  onRepair,
+}: {
+  specs: string[]
+  repairError: string
+  retrying: boolean
+  onRepair: () => void
+}) {
+  return (
+    <SetupShell
+      asideHeadline={i18nT('components.kiroPrerequisiteGate.agent_specs_missing')}
+      asideBody={i18nT('components.kiroPrerequisiteGate.kiro_crew_installs_the_agent_specs_kiro_cli_load')}
+    >
+      <>
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-danger/10 text-danger">
+          <AlertTriangle className="lucide-inline" />
+        </div>
+        <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-danger">
+          {i18nT('components.kiroPrerequisiteGate.agent_specs_missing')}
+        </p>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+          {i18nT('components.kiroPrerequisiteGate.kiro_crew_s_agent_specs_are_not_installed')}
+        </h1>
+        <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
+          {i18nT('components.kiroPrerequisiteGate.kiro_crew_writes_its_own_agent_specs_where_kiro')}
+        </p>
+        <div className="mt-5 w-full max-w-lg text-left">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
+            {i18nT('components.kiroPrerequisiteGate.missing')}
+          </p>
+          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-bg p-3 text-xs text-muted">
+            {specs.join('\n')}
+          </pre>
+        </div>
+        {/* Verbatim and untranslated: it names the failing install step, which is
+            the one thing a support conversation actually needs. Its absence is
+            also informative — it means no repair has been attempted yet.
+            `role="alert"` because it appears in place after the button press with
+            no route change, so a screen reader would otherwise get nothing. */}
+        {repairError ? (
+          <div className="mt-4 w-full max-w-lg text-left" role="alert">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-danger">
+              {i18nT('components.kiroPrerequisiteGate.the_repair_attempt_failed')}
+            </p>
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-danger/10 p-3 text-xs text-danger">
+              {repairError}
+            </pre>
+          </div>
+        ) : null}
+        {/* The self-diagnosis dead end: `kiro-cli diagnostic` is the first command
+            anyone reaches for, and it refuses with "Kiro CLI app is not running"
+            until the app is launched — which reads as the cause and is not. */}
+        <p className="mt-5 max-w-lg text-[13px] leading-relaxed text-muted">
+          {i18nT('components.kiroPrerequisiteGate.if_you_are_diagnosing_this_from_a_terminal_kiro')}
+        </p>
+        <div className="mt-6">
+          <Btn type="button" disabled={retrying} onClick={onRepair}>
+            <RefreshCw className="lucide-inline" />
+            {i18nT('components.kiroPrerequisiteGate.check_again')}
+          </Btn>
+        </div>
+      </>
+    </SetupShell>
+  )
+}
+
 export default function KiroPrerequisiteGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   // The gateway probes kiro-cli at boot and on explicit request only, so the
@@ -346,6 +415,14 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   })
   const loginMutation = useMutation({
     mutationFn: api.loginKiroPrerequisite,
+    onSuccess: updateStatus,
+  })
+  // The repair is a POST, not a flag on the status GET: the gateway's CSRF check
+  // and its SEL audit are both method-scoped, so a spec rewrite driven from a GET
+  // would be cross-site triggerable and would leave no audit record. Its response
+  // IS the post-repair snapshot, so the result seeds the cache directly.
+  const repairMutation = useMutation({
+    mutationFn: api.repairKiroPrerequisiteSpecs,
     onSuccess: updateStatus,
   })
 
@@ -415,6 +492,35 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     || loginMutation.isPending
   const mutationError = installMutation.error || loginMutation.error
   const platform = status.platform || 'local'
+  // Defensive `?? []`: a gateway older than this field, and every test fixture
+  // that builds a partial status object, has no key here.
+  const missingSpecs = status.missing_agent_specs ?? []
+  const repairError = repairMutation.data?.agent_spec_repair_error
+    || (repairMutation.error ? asSentence(repairMutation.error.message) : '')
+    || (status.agent_spec_repair_error ?? '')
+  // Kiro Crew's own agent specs are absent, so kiro-cli answers every
+  // session/set_mode with "Mode '<name>' not found" and not one message can
+  // succeed. Placed BEFORE the `initial_setup_complete` bail-out -- the only
+  // branch here that hijacks an established install -- and gated ON that same
+  // flag, so a GENUINE first run still reaches Install / Sign in instead of a
+  // screen offering to repair specs the installer has not written yet.
+  //
+  // That rule protects against a STALE LATCH: readiness is latched, and blocking
+  // an established user on stale state is the failure it avoids. This check is
+  // not a latch — it is two `stat` calls made while answering the request, so it
+  // cannot be stale, and the condition it reports is total rather than
+  // intermittent. It is also the only affordance in the product for repairing
+  // this state, so an install without it has no route back.
+  if (missingSpecs.length > 0 && status.initial_setup_complete) {
+    return (
+      <AgentSpecsMissing
+        specs={missingSpecs}
+        repairError={repairError}
+        retrying={retrying || repairMutation.isPending}
+        onRepair={() => repairMutation.mutate()}
+      />
+    )
+  }
   // Established install, signed out: render NOTHING and pause nothing. The user
   // is not guided to sign in — the chat error card carries that, in context,
   // only when they actually try to use the agent. A persistent banner nagged
