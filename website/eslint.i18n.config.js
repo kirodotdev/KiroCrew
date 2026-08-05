@@ -627,4 +627,29 @@ export default [
       'i18next/no-literal-string': 'off',
     },
   },
+
+  // A GLSL-ONLY module: two shader programs (`VERT`, `FRAG`) as template literals,
+  // plus CSS custom-property token names and Tailwind classes. The component
+  // renders exactly one `<canvas aria-hidden="true">` and no text node, so it has
+  // no path to user-visible copy at all.
+  //
+  // A `words.exclude` shape rule was tried first and cannot do this job: WebGL2
+  // makes `#version 300 es` the mandatory first line, so `'#version [\\s\\S]*$'`
+  // looks like a precise, self-anchoring shape — but upstream validates a template
+  // literal QUASI BY QUASI (`no-literal-string.js` -> `TemplateLiteral`), and this
+  // shader interpolates its loop bounds (`uColors[${MAX_COLORS}]`,
+  // `i < ${MAX_STRANDS}`). Only the first chunk carries the version pragma; every
+  // chunk after an interpolation starts mid-program, so the pattern exempts the
+  // first and reports the second. Widening it to "C-like punctuation" would exempt
+  // any prose carrying braces and semicolons.
+  //
+  // Scoped to this one file for the same reason as `styles.ts` above: a shape rule
+  // cannot express "GLSL, but only in this module". Keep this module shader-only —
+  // any copy later added here belongs in the catalog, not behind this exemption.
+  {
+    files: ['src/components/Strands.tsx'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
 ]
