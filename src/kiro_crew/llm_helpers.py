@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp.client import AcpError
+from kiro_crew.acp.client import AcpError, AcpPromptBusy
 from kiro_crew.acp.types import TurnUsage
 from kiro_crew.hooks import fire_tool_hooks, get_global_hook_store
 from kiro_crew.providers.base import (
@@ -65,7 +65,17 @@ _TRANSIENT_MARKERS = (
     "connectionreset",
     "dispatch failure",  # AWS SDK connector-level I/O failure (conn/DNS/TLS drop)
     "dispatchfailure",  # Rust DispatchFailure variant (unspaced)
-    "is unavailable on bedrock",  # capacity/region rollout (formatted message)
+    # Model-unavailable capacity/rollout, matched against _format_acp_error's
+    # wording. Two phrasings are listed: the current "on the backend" text
+    # (#1550) and the pre-2026-08 "on Bedrock" one, so a transcript or log line
+    # written by an older gateway still classifies. Any future rewording of
+    # that branch must add its marker here.
+    #
+    # Deliberately does NOT cover the sibling unentitled-model branch: that one
+    # is terminal by design (_model_is_unentitled), so a marker matching it
+    # would resurrect the pointless retry loop #1550 removed.
+    "is unavailable on the backend",
+    "is unavailable on bedrock",
     "transient error (http 5xx)",  # _format_acp_error's generic-5xx message
 )
 
@@ -435,7 +445,18 @@ async def stream_and_collect(
             return result_text
         except AcpError as exc:
             msg = str(exc)
-            busy = "already in progress" in msg
+            # Prompt-busy is matched STRUCTURALLY first, with the substring kept
+            # as a fallback. _format_acp_error rewrites the backend's "prompt
+            # already in progress" into friendly prose that no longer carries
+            # the marker, so a string-only check silently loses BOTH arms below
+            # (cancel+retry and PromptBusyExhaustedError) for any producer that
+            # formats before raising — which the shared-runtime AcpSessionHandle
+            # now does. Unattended callers (workflows/agent_pool, handlers/side,
+            # the subagent-completion injector) depend on those arms to reset a
+            # wedged parent session, so losing them surfaces a generic failure
+            # and leaves the session stuck. The fallback still covers
+            # unformatted / history-restored messages.
+            busy = isinstance(exc, AcpPromptBusy) or "already in progress" in msg
 
             # ── Case 1: prompt-busy (provider mid-turn) — cancel + retry. ──
             if busy:

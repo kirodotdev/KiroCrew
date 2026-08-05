@@ -6455,6 +6455,9 @@ class TestFormatAcpError:
         # the model lives in config.json / the agent spec.
         assert "settings.json" not in out
         assert "config.json" in out
+        # Nor echo the provider's own "use '/model'" advice: that is a kiro-cli
+        # TUI command, inert in the dashboard, Slack, and cron.
+        assert "/model" not in out
         # Request id is preserved for support correlation.
         assert "3ce0318a-24d6-4b1a-a4a7-ee81f1a3991e" in out
         # Should not leak the raw dict prefix when we have a real rewrite.
