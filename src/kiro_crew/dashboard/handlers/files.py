@@ -2624,3 +2624,285 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "gitlab_hosts": list(cfg.dashboard.gitlab_hosts),
         }
     )
+
+
+# ── Git status & log endpoints ──────────────────────────────────────────────
+
+
+async def api_project_git_status(request: web.Request) -> web.Response:
+    """GET /api/project/git/status?path=... - working tree status for a project dir.
+
+    Returns staged/unstaged/untracked files with per-file line-change counts.
+    Path must match a known project directory (same allow-list as api_project_git).
+    """
+    state: DashboardState = request.app["state"]
+    caller = request.get("user", "dashboard")
+    raw = request.query.get("path", "").strip()
+    if not raw:
+        return web.json_response({"error": "path required"}, status=400)
+    project = await asyncio.to_thread(
+        _match_known_project_for, _slot_project_snapshot(state), raw
+    )
+    if project is None:
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_status",
+            outcome="denied",
+            resources=raw,
+            error="not a known project directory",
+        )
+        return web.json_response({"error": "Unknown project directory"}, status=403)
+
+    base = await asyncio.to_thread(
+        lambda: os.path.realpath(os.path.expanduser(project))
+    )
+    if not os.path.isdir(base):
+        return web.json_response({"repo": False, "files": []})
+    if is_sensitive_path(base):
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_status",
+            outcome="denied",
+            resources=base,
+            error="sensitive path",
+        )
+        return web.json_response({"error": "Access denied"}, status=403)
+
+    def _run() -> dict:
+        _git_cmd = [
+            "git",
+            "-c", "diff.textconv=",
+            "-c", "core.attributesFile=/dev/null",
+            "-c", "core.fsmonitor=",
+        ]
+        _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
+
+        # Check if it's a repo
+        try:
+            subprocess.run(
+                [*_git_cmd, "rev-parse", "--git-dir"],
+                cwd=base, capture_output=True, timeout=5, check=True, env=_env,
+            )
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+            return {"repo": False, "files": []}
+
+        # Get repo root and branch info
+        root_r = subprocess.run(
+            [*_git_cmd, "rev-parse", "--show-toplevel"],
+            cwd=base, capture_output=True, text=True, timeout=5, env=_env,
+        )
+        repo_root = root_r.stdout.strip() if root_r.returncode == 0 else base
+
+        # Branch + ahead/behind via status -b
+        status_r = subprocess.run(
+            [*_git_cmd, "status", "--porcelain=v1", "-b"],
+            cwd=base, capture_output=True, text=True, timeout=10, env=_env,
+        )
+        if status_r.returncode != 0:
+            return {"repo": True, "repoRoot": repo_root, "files": []}
+
+        lines = status_r.stdout.splitlines()
+        branch = None
+        ahead = 0
+        behind = 0
+
+        # Parse the branch header line: ## branch...tracking [ahead N, behind M]
+        if lines and lines[0].startswith("## "):
+            header = lines[0][3:]
+            # Extract branch name (before ... or end)
+            dot_idx = header.find("...")
+            if dot_idx >= 0:
+                branch = header[:dot_idx]
+            else:
+                # Could be "## branch" or "## No commits yet on branch"
+                if header.startswith("No commits yet on "):
+                    branch = header[len("No commits yet on "):]
+                else:
+                    branch = header.split()[0] if header else None
+            # Parse ahead/behind
+            bracket_idx = header.find("[")
+            if bracket_idx >= 0:
+                info = header[bracket_idx + 1:header.find("]")]
+                for part in info.split(","):
+                    part = part.strip()
+                    if part.startswith("ahead "):
+                        try:
+                            ahead = int(part[6:])
+                        except ValueError:
+                            pass
+                    elif part.startswith("behind "):
+                        try:
+                            behind = int(part[7:])
+                        except ValueError:
+                            pass
+
+        # Parse file entries
+        files: list[dict] = []
+        for line in lines[1:]:
+            if len(line) < 4:
+                continue
+            x = line[0]  # index status
+            y = line[1]  # worktree status
+            filepath = line[3:]
+
+            # Handle renames: "R  old -> new"
+            if " -> " in filepath:
+                filepath = filepath.split(" -> ", 1)[1]
+
+            # Determine status code and staged flag
+            if x == "?" and y == "?":
+                files.append({"path": filepath, "status": "?", "staged": False})
+            elif x == "!" and y == "!":
+                continue  # ignored
+            else:
+                # If X is non-space/non-?, there's a staged change
+                if x not in (" ", "?", "!"):
+                    files.append({"path": filepath, "status": x, "staged": True})
+                # If Y is non-space, there's an unstaged change
+                if y not in (" ", "?", "!"):
+                    files.append({"path": filepath, "status": y, "staged": False})
+
+        # Merge numstat for line counts (staged + unstaged vs HEAD)
+        try:
+            numstat_r = subprocess.run(
+                [*_git_cmd, "diff", "--numstat", "HEAD"],
+                cwd=base, capture_output=True, text=True, timeout=10, env=_env,
+            )
+            if numstat_r.returncode == 0:
+                stats: dict[str, tuple[int | None, int | None]] = {}
+                for ns_line in numstat_r.stdout.splitlines():
+                    parts = ns_line.split("\t", 2)
+                    if len(parts) == 3:
+                        add_s, del_s, ns_path = parts
+                        adds = int(add_s) if add_s != "-" else None
+                        dels = int(del_s) if del_s != "-" else None
+                        stats[ns_path] = (adds, dels)
+                for f in files:
+                    if f["path"] in stats:
+                        adds, dels = stats[f["path"]]
+                        if adds is not None:
+                            f["additions"] = adds
+                        if dels is not None:
+                            f["deletions"] = dels
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        result: dict = {"repo": True, "repoRoot": repo_root, "files": files[:500]}
+        if len(files) > 500:
+            result["truncated"] = True
+        if branch:
+            result["branch"] = branch
+        if ahead:
+            result["ahead"] = ahead
+        if behind:
+            result["behind"] = behind
+        return result
+
+    result = await asyncio.to_thread(_run)
+    _sel().log_api_access(
+        caller=caller, operation="project_git_status", outcome="allowed", resources=base
+    )
+    return web.json_response(result)
+
+
+async def api_project_git_log(request: web.Request) -> web.Response:
+    """GET /api/project/git/log?path=...&limit=N - recent commit log for a project dir.
+
+    Returns short sha, subject, author, date (ISO), and isHead flag.
+    Path must match a known project directory (same allow-list as api_project_git).
+    """
+    state: DashboardState = request.app["state"]
+    caller = request.get("user", "dashboard")
+    raw = request.query.get("path", "").strip()
+    if not raw:
+        return web.json_response({"error": "path required"}, status=400)
+
+    limit_s = request.query.get("limit", "20")
+    try:
+        limit = max(1, min(100, int(limit_s)))
+    except (ValueError, TypeError):
+        limit = 20
+
+    project = await asyncio.to_thread(
+        _match_known_project_for, _slot_project_snapshot(state), raw
+    )
+    if project is None:
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_log",
+            outcome="denied",
+            resources=raw,
+            error="not a known project directory",
+        )
+        return web.json_response({"error": "Unknown project directory"}, status=403)
+
+    base = await asyncio.to_thread(
+        lambda: os.path.realpath(os.path.expanduser(project))
+    )
+    if not os.path.isdir(base):
+        return web.json_response({"repo": False, "commits": []})
+    if is_sensitive_path(base):
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_log",
+            outcome="denied",
+            resources=base,
+            error="sensitive path",
+        )
+        return web.json_response({"error": "Access denied"}, status=403)
+
+    def _run() -> dict:
+        _git_cmd = [
+            "git",
+            "-c", "diff.textconv=",
+            "-c", "core.attributesFile=/dev/null",
+            "-c", "core.fsmonitor=",
+        ]
+        _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
+
+        # Check if it's a repo
+        try:
+            subprocess.run(
+                [*_git_cmd, "rev-parse", "--git-dir"],
+                cwd=base, capture_output=True, timeout=5, check=True, env=_env,
+            )
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+            return {"repo": False, "commits": []}
+
+        # Get HEAD sha for isHead marking
+        head_r = subprocess.run(
+            [*_git_cmd, "rev-parse", "--short", "HEAD"],
+            cwd=base, capture_output=True, text=True, timeout=5, env=_env,
+        )
+        head_sha = head_r.stdout.strip() if head_r.returncode == 0 else ""
+
+        # Separator unlikely in commit data
+        sep = "\x1f"
+        fmt = f"%h{sep}%s{sep}%an{sep}%aI"
+        log_r = subprocess.run(
+            [*_git_cmd, "log", f"--pretty=format:{fmt}", f"-{limit}"],
+            cwd=base, capture_output=True, text=True, timeout=15, env=_env,
+        )
+        if log_r.returncode != 0:
+            return {"repo": True, "commits": []}
+
+        commits: list[dict] = []
+        for line in log_r.stdout.splitlines():
+            parts = line.split(sep, 3)
+            if len(parts) < 4:
+                continue
+            sha, message, author, date = parts
+            commits.append({
+                "sha": sha,
+                "message": message,
+                "author": author,
+                "date": date,
+                "isHead": sha == head_sha,
+            })
+        return {"repo": True, "commits": commits}
+
+    result = await asyncio.to_thread(_run)
+    _sel().log_api_access(
+        caller=caller, operation="project_git_log", outcome="allowed", resources=base
+    )
+    return web.json_response(result)

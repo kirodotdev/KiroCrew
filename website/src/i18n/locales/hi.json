@@ -5108,6 +5108,18 @@
       "download_zip": "zip डाउनलोड करें",
       "open_github_issue": "GitHub पर issue खोलें",
       "prefill_hint": "issue खोलने पर विवरण पहले से भर जाते हैं — फिर zip को उसमें खींचकर डालें।"
+    },
+    "gitPanel": {
+      "changes": "परिवर्तन",
+      "clean": "साफ़",
+      "commits": "कमिट",
+      "empty_state": "दिखाने के लिए कोई परिवर्तन या कमिट नहीं।",
+      "just_now": "अभी-अभी",
+      "loading": "लोड हो रहा है...",
+      "no_project": "इस सत्र के लिए कोई प्रोजेक्ट फ़ोल्डर सेट नहीं है।",
+      "refresh": "रिफ़्रेश करें",
+      "title": "Git",
+      "uncommitted": "{{count}} अनकमिटेड"
     }
   },
   "hooks": {
@@ -5213,7 +5225,8 @@
       "logs": "लॉग",
       "side": "साइड",
       "subagents": "सब-एजेंट",
-      "workflows": "वर्कफ़्लो"
+      "workflows": "वर्कफ़्लो",
+      "git": "Git"
     }
   },
   "nav": {
@@ -6222,7 +6235,9 @@
         "menu_workflows": "वर्कफ़्लो",
         "menu_workflows_desc": "रन, फ़ेज़ और दोबारा शुरू होने वाले चरण",
         "menu_context": "संदर्भ विश्लेषण",
-        "menu_context_desc": "इस सत्र के टर्न ने क्या इंजेक्ट किया"
+        "menu_context_desc": "इस सत्र के टर्न ने क्या इंजेक्ट किया",
+        "menu_git": "Git",
+        "menu_git_desc": "ब्रांच, परिवर्तन और हाल के कमिट"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "रोकना विफल, सत्र रीसेट",

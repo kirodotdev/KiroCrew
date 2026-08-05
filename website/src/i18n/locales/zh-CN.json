@@ -5048,6 +5048,18 @@
       "download_zip": "下载 zip",
       "open_github_issue": "新建 GitHub issue",
       "prefill_hint": "打开后会自动填好详情 — 再把 zip 拖进去即可。"
+    },
+    "gitPanel": {
+      "changes": "更改",
+      "clean": "干净",
+      "commits": "提交",
+      "empty_state": "没有可显示的更改或提交。",
+      "just_now": "刚刚",
+      "loading": "加载中…",
+      "no_project": "此会话未设置项目文件夹。",
+      "refresh": "刷新",
+      "title": "Git",
+      "uncommitted": "{{count}} 个未提交"
     }
   },
   "hooks": {
@@ -5153,7 +5165,8 @@
       "logs": "日志",
       "side": "旁支",
       "subagents": "子代理",
-      "workflows": "工作流"
+      "workflows": "工作流",
+      "git": "Git"
     }
   },
   "nav": {
@@ -6148,7 +6161,9 @@
         "menu_workflows": "工作流",
         "menu_workflows_desc": "运行、阶段与可重启的步骤",
         "menu_context": "上下文构成",
-        "menu_context_desc": "本会话各轮注入了什么"
+        "menu_context_desc": "本会话各轮注入了什么",
+        "menu_git": "Git",
+        "menu_git_desc": "分支、更改和最近的提交"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "停止失败，会话已重置",

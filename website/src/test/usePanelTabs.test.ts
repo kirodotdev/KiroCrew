@@ -346,4 +346,25 @@ describe('usePanelTabs — per-slot isolation', () => {
     act(() => result.current.syncPinned([]))
     expect(result.current.tabs.map(t => t.id)).toEqual(['logs', 'side'])
   })
+
+  it('openView("git") creates a singleton tab titled "Git"', () => {
+    const { result } = renderHook(() => usePanelTabs())
+    act(() => result.current.openView('git'))
+    expect(result.current.tabs).toHaveLength(1)
+    expect(result.current.activeTab).toMatchObject({
+      id: 'git', kind: 'git', title: 'Git',
+    })
+    // Reopen: no duplicate, still one tab.
+    act(() => result.current.openView('git'))
+    expect(result.current.tabs).toHaveLength(1)
+    expect(result.current.activeId).toBe('git')
+  })
+
+  it('git view is closable (not a pinned view)', () => {
+    const { result } = renderHook(() => usePanelTabs())
+    act(() => result.current.openView('git'))
+    act(() => result.current.closeTab('git'))
+    expect(result.current.tabs).toHaveLength(0)
+    expect(result.current.activeId).toBeNull()
+  })
 })

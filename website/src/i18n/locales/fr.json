@@ -5168,6 +5168,18 @@
       "download_zip": "Télécharger le zip",
       "open_github_issue": "Ouvrir un ticket GitHub",
       "prefill_hint": "L’ouverture du ticket pré-remplit les détails — glissez-y ensuite le zip."
+    },
+    "gitPanel": {
+      "changes": "Modifications",
+      "clean": "propre",
+      "commits": "Commits",
+      "empty_state": "Aucune modification ni commit à afficher.",
+      "just_now": "à l'instant",
+      "loading": "chargement...",
+      "no_project": "Aucun dossier de projet défini pour cette session.",
+      "refresh": "Actualiser",
+      "title": "Git",
+      "uncommitted": "{{count}} non validé(s)"
     }
   },
   "hooks": {
@@ -5273,7 +5285,8 @@
       "logs": "Journaux",
       "side": "Annexe",
       "subagents": "Sous-agents",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "git": "Git"
     }
   },
   "nav": {
@@ -6296,7 +6309,9 @@
         "menu_workflows": "Workflows",
         "menu_workflows_desc": "Exécutions, phases et étapes redémarrables",
         "menu_context": "Répartition du contexte",
-        "menu_context_desc": "Ce que les tours de cette session ont injecté"
+        "menu_context_desc": "Ce que les tours de cette session ont injecté",
+        "menu_git": "Git",
+        "menu_git_desc": "Branche, modifications et commits récents"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Échec de l'arrêt, session réinitialisée",
