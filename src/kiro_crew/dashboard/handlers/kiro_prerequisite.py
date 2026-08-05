@@ -169,6 +169,7 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "sandbox_unavailable": False,
             "sandbox_failure_kind": "",
             "sandbox_detail": "",
+            "sandbox_remedy": "",
             # Redacted for the same reason as the block above, and kept present
             # for the same shape-stability reason: only the owner can act on a
             # missing spec (the repair is an owner-gated POST). A non-owner on an

@@ -8,6 +8,11 @@ import KiroPrerequisiteGate, {
 } from '../components/KiroPrerequisiteGate'
 import { renderWithProviders } from './helpers'
 
+vi.mock('../utils/clipboard', () => ({
+  copyToClipboard: vi.fn().mockResolvedValue(undefined),
+  copyCode: vi.fn(),
+}))
+
 vi.mock('../api/client', () => ({
   ApiError: class ApiError extends Error {
     status: number
@@ -41,6 +46,7 @@ function status(overrides: Partial<KiroPrerequisiteStatus> = {}): KiroPrerequisi
     sandbox_unavailable: false,
     sandbox_failure_kind: '',
     sandbox_detail: '',
+    sandbox_remedy: '',
     missing_agent_specs: [],
     agent_spec_repair_error: '',
     ...overrides,
@@ -776,6 +782,196 @@ describe('KiroPrerequisiteGate', () => {
     // The aside must not contradict the headline by still saying "Install Kiro CLI".
     expect(screen.queryByText(/Install Kiro CLI, sign in once/)).not.toBeInTheDocument()
     expect(screen.queryByText(/provides no OS-level sandbox/)).not.toBeInTheDocument()
+    // A momentary failure identifies nothing to reconfigure, so the host
+    // remedies must stay hidden — they would be advice to break a working setup.
+    expect(screen.queryByText('How to fix')).not.toBeInTheDocument()
+    expect(screen.queryByText('kirocrew service install')).not.toBeInTheDocument()
+  })
+
+  it('offers the cap remedy on a transient verdict without telling the user to act now', async () => {
+    // `user.max_user_namespaces` exhaustion surfaces as ENOSPC, which is
+    // indistinguishable from momentary pressure, so a host with the cap set to 0
+    // is reported transient forever and is never cached. Suppressing the remedy
+    // here left exactly that host with a retry button and no way out.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'transient',
+      sandbox_detail: 'unshare(CLONE_NEWUSER) failed with errno 28 (ENOSPC)',
+      sandbox_remedy: 'max_user_namespaces',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    // Conditional framing, so it never reads as "reconfigure a host that is fine".
+    expect(await screen.findByText('If this keeps happening')).toBeInTheDocument()
+    expect(screen.queryByText('How to fix')).not.toBeInTheDocument()
+    expect(screen.getByText(/per-user cap/)).toBeInTheDocument()
+    // Both the explanation and the copyable command name the sysctl.
+    expect(screen.getAllByText(/user\.max_user_namespaces/).length).toBeGreaterThan(1)
+    // The transient body still leads, and still must not push a disable.
+    expect(screen.getByText(/temporary resource limit/)).toBeInTheDocument()
+    expect(screen.getByText(/do not disable the sandbox/)).toBeInTheDocument()
+  })
+
+  it('names the AppArmor mechanism and the command that fixes it', async () => {
+    // Issue #1660: the screen used to show `errno 1 (EPERM)` and a retry button.
+    // The probe already knew this was Ubuntu's restricted-profile restriction —
+    // NEWUSER succeeded and NEWNS was denied — and that the fix is the narrow
+    // AppArmor profile `service install` writes.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+      sandbox_detail: 'unshare(CLONE_NEWNS) failed with errno 1 (EPERM)',
+      sandbox_remedy: 'apparmor_userns',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('How to fix')).toBeInTheDocument()
+    expect(screen.getByText('kirocrew service install')).toBeInTheDocument()
+    // `aa-exec -p` must NOT be offered: entering a named profile is not
+    // permitted for an unconfined user and aa-exec execs unconfined instead of
+    // failing, so the command looks applied and changes nothing.
+    expect(screen.queryByText(/aa-exec/)).not.toBeInTheDocument()
+    // The generic "this host provides no OS-level sandbox" line is FALSE here:
+    // user namespaces work, the kernel denied the second step.
+    expect(screen.queryByText(/provides no OS-level sandbox/)).not.toBeInTheDocument()
+    expect(screen.getByText(/allows user namespaces/)).toBeInTheDocument()
+    // The reporter's explicit ask: tell me to run doctor.
+    expect(screen.getByText('kirocrew doctor')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Linux sandbox guide/ })).toHaveAttribute(
+      'href',
+      expect.stringContaining('docs/guides/install.md'),
+    )
+  })
+
+  it('copies a command to the clipboard when its block is clicked', async () => {
+    // The command has to be retyped on the gateway host and one typo restarts
+    // the loop, so the whole block is the copy target rather than a small glyph.
+    const { copyToClipboard } = await import('../utils/clipboard')
+    vi.mocked(copyToClipboard).mockClear()
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+      sandbox_detail: 'unshare(CLONE_NEWNS) failed with errno 1 (EPERM)',
+      sandbox_remedy: 'apparmor_userns',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    const command = await screen.findByText('kirocrew service install')
+    const button = command.closest('button')
+    expect(button).not.toBeNull()
+    fireEvent.click(button!)
+
+    // Read out of the DOM, so what is copied is exactly what is shown — not a
+    // duplicated prop that could drift from the rendered text.
+    await waitFor(() =>
+      expect(copyToClipboard).toHaveBeenCalledWith('kirocrew service install'),
+    )
+  })
+
+  it('offers exactly one AppArmor command, and never aa-exec', async () => {
+    // systemd is what attaches the profile, so the service is the only path that
+    // applies it. An `aa-exec -p` alternative is worse than none: entering a
+    // named profile needs privilege, and aa-exec execs unconfined rather than
+    // failing, so it reads as applied while changing nothing.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+      sandbox_detail: 'unshare(CLONE_NEWNS) failed with errno 1 (EPERM)',
+      sandbox_remedy: 'apparmor_userns',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    const command = await screen.findByText('kirocrew service install')
+    const list = command.closest('ul, ol')
+    expect(list).not.toBeNull()
+    expect(list!.querySelectorAll('li')).toHaveLength(1)
+    expect(screen.queryByText(/aa-exec/)).not.toBeInTheDocument()
+    // No numerals: a single item must not read as step one of several.
+    expect(screen.queryByText('1.')).not.toBeInTheDocument()
+  })
+
+  it('still points at doctor when the mechanism is unknown', async () => {
+    // An unclassified failure has no command to offer, but a dead end with a
+    // retry button was the original complaint. The diagnostic pointer is the
+    // floor, not the bonus — and the "How to fix" heading must NOT appear over a
+    // section holding only a diagnostic, or it promises a fix it cannot deliver.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+      sandbox_detail: 'unshare(CLONE_NEWNS) failed with errno 5 (EIO)',
+      sandbox_remedy: '',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('kirocrew doctor')).toBeInTheDocument()
+    expect(screen.queryByText('How to fix')).not.toBeInTheDocument()
+    expect(screen.queryByText('kirocrew service install')).not.toBeInTheDocument()
+    // Unclassified means the generic body is the honest one.
+    expect(screen.getByText(/provides no OS-level sandbox/)).toBeInTheDocument()
+  })
+
+  it('keeps the retry button out of the scrolling region', async () => {
+    // The remedy content overflows the panel's fixed height, and a primary
+    // action bisected by the panel edge reads as a rendering defect rather than
+    // a scroll cue. Pinning it below the scroll region keeps it whole at any
+    // content length or locale.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+      sandbox_detail: 'unshare(CLONE_NEWNS) failed with errno 1 (EPERM)',
+      sandbox_remedy: 'apparmor_userns',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    const button = await screen.findByRole('button', { name: 'Check again' })
+    // The scrim also scrolls, so target the inner content column specifically —
+    // that is the one whose overflow was clipping the button.
+    const column = document.querySelector('div.flex-1.overflow-y-auto')
+    expect(column).not.toBeNull()
+    expect(column!.contains(button)).toBe(false)
+  })
+
+  it('offers no host remedy when a foreign sandbox is the cause', async () => {
+    // This host's sandbox is fine — it just cannot nest. Sending the user to
+    // change a sysctl would be a fix for a problem they do not have.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'foreign_sandbox',
+      sandbox_detail: 'sandbox-exec probe failed',
+      sandbox_remedy: '',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText(/Another sandbox already confines/)).toBeInTheDocument()
+    expect(screen.queryByText('How to fix')).not.toBeInTheDocument()
   })
 
   it('never withholds the dashboard from a ready install over a sandbox flag', async () => {

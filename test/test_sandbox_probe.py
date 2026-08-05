@@ -217,7 +217,7 @@ class TestProbeSplitSequence:
         monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(("U", 0), ("N", errno.EPERM)))
         monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: None)
 
-        ok, transient, reason = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
+        ok, transient, reason, _remedy = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
 
         assert ok is False
         assert transient is False, "an AppArmor userns denial will not clear on retry"
@@ -231,14 +231,14 @@ class TestProbeSplitSequence:
 
         verdict = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
 
-        assert verdict == (True, False, "ok")
+        assert verdict == (True, False, "ok", "")
 
     def test_newuser_denial_names_newuser_not_newns(self, monkeypatch, pipe_fds):
         """A kernel with no CONFIG_USER_NS fails at the FIRST step."""
         read_fd, write_fd = pipe_fds
         monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(("U", errno.EPERM)))
 
-        ok, transient, reason = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
+        ok, transient, reason, _remedy = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
 
         assert (ok, transient) == (False, False)
         assert "CLONE_NEWUSER" in reason and "CLONE_NEWNS" not in reason, reason
@@ -253,7 +253,7 @@ class TestProbeSplitSequence:
         read_fd, write_fd = pipe_fds
         monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(("U", errno.ENOSPC)))
 
-        ok, transient, reason = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
+        ok, transient, reason, _remedy = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
 
         assert (ok, transient) == (False, True)
         assert "CLONE_NEWUSER" in reason and "ENOSPC" in reason, reason
@@ -264,7 +264,7 @@ class TestProbeSplitSequence:
         monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(("U", 0)))
         monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: failure)
 
-        ok, transient, reason = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
+        ok, transient, reason, _remedy = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
 
         assert (ok, transient) == (False, False)
         assert "uid_map" in reason and "EPERM" in reason, reason
@@ -276,7 +276,7 @@ class TestProbeSplitSequence:
         monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(("U", 0)))
         monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: failure)
 
-        ok, transient, _reason = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
+        ok, transient, _reason, _remedy = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
 
         assert (ok, transient) == (False, True)
 
@@ -285,7 +285,7 @@ class TestProbeSplitSequence:
         monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(("U", 0), None))
         monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: None)
 
-        ok, transient, reason = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
+        ok, transient, reason, _remedy = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
 
         assert (ok, transient) == (False, True)
         assert "CLONE_NEWNS" in reason, reason
@@ -302,7 +302,7 @@ class TestProbeSplitSequence:
         monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(("U", 0)))
         monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: None)
         try:
-            ok, transient, reason = sb._probe_parent_sequence(4242, read_fd, dead_w, 1000, 1000)
+            ok, transient, reason, _remedy = sb._probe_parent_sequence(4242, read_fd, dead_w, 1000, 1000)
         finally:
             os.close(dead_w)
 
@@ -313,7 +313,7 @@ class TestProbeSplitSequence:
         read_fd, write_fd = pipe_fds
         monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(("X", 0)))
 
-        ok, transient, _reason = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
+        ok, transient, _reason, _remedy = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
 
         assert (ok, transient) == (False, True)
 
@@ -409,7 +409,7 @@ class TestProbeScaffolding:
         monkeypatch.setattr(sb.os, "close", tracking_close)
         monkeypatch.setattr(sb.os, "fork", boom)
 
-        ok, transient, reason = sb._probe_unshare_once()
+        ok, transient, reason, _remedy = sb._probe_unshare_once()
 
         assert (ok, transient) == (False, True)
         assert reason == "fork failed with errno 11 (EAGAIN)"
@@ -422,9 +422,9 @@ class TestProbeScaffolding:
         reaped: list[int] = []
         monkeypatch.setattr(sb.os, "fork", lambda: 4242)
         monkeypatch.setattr(sb, "_probe_reap", reaped.append)
-        monkeypatch.setattr(sb, "_probe_parent_sequence", lambda *_a: (True, False, "ok"))
+        monkeypatch.setattr(sb, "_probe_parent_sequence", lambda *_a: (True, False, "ok", ""))
 
-        assert sb._probe_unshare_once() == (True, False, "ok")
+        assert sb._probe_unshare_once() == (True, False, "ok", "")
         assert reaped == [4242]
 
     @_linux_only
@@ -451,4 +451,4 @@ class TestProbeScaffolding:
         )
 
         assert sb._probe_unshare() is False
-        assert sb._last_unshare_failure == (False, "not Linux")
+        assert sb._last_unshare_failure == (False, "not Linux", "")

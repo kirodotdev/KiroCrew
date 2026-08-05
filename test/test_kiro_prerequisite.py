@@ -3651,14 +3651,14 @@ class TestSandboxUnavailableIsNotAMissingBinary:
         )
 
     @staticmethod
-    def _sandbox_refused(kind: str, detail: str) -> Any:
+    def _sandbox_refused(kind: str, detail: str, remedy: str = "") -> Any:
         """A runner standing in for wrap_argv fail-closing on this spawn."""
 
         async def run(_command: str, _args: list[str], **_kwargs: Any) -> ProcessResult:
             return ProcessResult(
                 ok=False,
                 error=f"Sandbox backend unavailable ... Probe detail: {detail}.",
-                sandbox_failure=(kind, detail),
+                sandbox_failure=(kind, detail, remedy),
             )
 
         return run
@@ -3694,6 +3694,44 @@ class TestSandboxUnavailableIsNotAMissingBinary:
         # Signing in cannot fix a missing sandbox backend, so an action that
         # cannot help is not offered.
         assert status["repair_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_remedy_token_reaches_the_dashboard_payload(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The mechanism the probe identified must survive to the gate screen.
+
+        Without it the dashboard can only render ``errno 1 (EPERM)`` and a retry
+        button, which is the dead end reported in issue #1660: the probe already
+        knows the fix is an AppArmor profile and the user has no way to learn it.
+        """
+        _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
+        detail = "unshare(CLONE_NEWNS) failed with errno 1 (EPERM)"
+
+        status = await self._service(
+            tmp_path, self._sandbox_refused("no_backend", detail, "apparmor_userns")
+        ).snapshot(force=True)
+
+        assert status["sandbox_remedy"] == "apparmor_userns"
+
+    @pytest.mark.asyncio
+    async def test_absent_remedy_is_empty_not_missing(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Shape stability: the key is always present, even with no mechanism.
+
+        The gate reads it unconditionally, so an absent key would make the field
+        ``undefined`` and select a remedy branch by accident.
+        """
+        _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
+
+        status = await self._service(
+            tmp_path, self._sandbox_refused("no_backend", "not Linux")
+        ).snapshot(force=True)
+
+        assert status["sandbox_remedy"] == ""
 
     @pytest.mark.asyncio
     async def test_missing_binary_still_reports_not_installed(

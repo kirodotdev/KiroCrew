@@ -215,11 +215,12 @@ class ProcessResult:
     returncode: int | None = None
     timed_out: bool = False
     error: str = ""
-    # ``(kind, detail)`` when the spawn was refused because the sandbox could not
-    # be built — set ONLY from the typed SandboxUnavailableError, never inferred
-    # from host capability. A probe that failed for any other reason leaves this
-    # None, so an unrelated failure can never be misreported as a sandbox problem.
-    sandbox_failure: tuple[str, str] | None = None
+    # ``(kind, detail, remedy)`` when the spawn was refused because the sandbox
+    # could not be built — set ONLY from the typed SandboxUnavailableError, never
+    # inferred from host capability. A probe that failed for any other reason
+    # leaves this None, so an unrelated failure can never be misreported as a
+    # sandbox problem.
+    sandbox_failure: tuple[str, str, str] | None = None
 
 
 @dataclass
@@ -253,6 +254,11 @@ class PrerequisiteStatus:
     # Technical probe reason, e.g. "unshare(CLONE_NEWNS) failed with errno 1
     # (EPERM)". Names the failing step, so it is shown verbatim, untranslated.
     sandbox_detail: str = ""
+    # Machine-readable host mechanism behind a Linux userns denial — one of the
+    # sandbox ``REMEDY_*`` tokens, or "" when unknown. Without it the gate could
+    # only show the raw errno, which is the dead end reported in issue #1660: the
+    # probe knows the fix is an AppArmor profile and the user cannot tell.
+    sandbox_remedy: str = ""
     # Kiro Crew's own agent specs (~/.kiro/agents/kirocrew*.json). ``ready``
     # requires these on disk, not merely a viable binary and a good ``whoami``:
     # without them kiro-cli answers every ``session/set_mode`` with
@@ -1122,7 +1128,7 @@ async def _run_process(
         # evidence about why THIS spawn failed.
         await _unlink_off_loop(cleanup_path)
         return ProcessResult(
-            ok=False, error=str(exc), sandbox_failure=(exc.kind, exc.detail)
+            ok=False, error=str(exc), sandbox_failure=(exc.kind, exc.detail, exc.remedy)
         )
     except (OSError, RuntimeError) as exc:
         await _unlink_off_loop(cleanup_path)
@@ -1801,7 +1807,7 @@ class KiroPrerequisiteService:
                     _is_runnable_executable, first_candidate, self._platform
                 )
                 if sandbox_failure is not None and candidate_runnable:
-                    kind, detail = sandbox_failure
+                    kind, detail, remedy = sandbox_failure
                     logger.warning(
                         "Kiro CLI at %s is present and executable but could not be "
                         "verified: the sandbox refused the probe (%s: %s)",
@@ -1823,6 +1829,7 @@ class KiroPrerequisiteService:
                         sandbox_unavailable=True,
                         sandbox_failure_kind=kind,
                         sandbox_detail=detail,
+                        sandbox_remedy=remedy,
                     )
                     self._last_probe_at = self._clock()
                     self._has_probed = True

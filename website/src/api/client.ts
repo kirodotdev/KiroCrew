@@ -853,6 +853,13 @@ export interface KiroPrerequisiteStatus {
   /** Technical probe reason, e.g. 'unshare(CLONE_NEWNS) failed with errno 1 (EPERM)'. */
   sandbox_detail: string
   /**
+   * Machine-readable host mechanism behind a Linux user-namespace denial:
+   * 'apparmor_userns' | 'max_user_namespaces' | 'no_user_ns' | 'userns_denied' | ''.
+   * Selects which concrete remedy the gate renders — the errno alone leaves the
+   * user with nothing to act on.
+   */
+  sandbox_remedy: string
+  /**
    * Kiro Crew's own agent spec files missing from the kiro-cli agents directory.
    * Non-empty means kiro-cli will answer every session/set_mode with
    * "Mode '<name>' not found", so `ready` is forced false and `repair_required`

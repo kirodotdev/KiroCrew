@@ -1686,7 +1686,7 @@ class TestMacOsNestingDetection:
         monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: False)
         monkeypatch.setattr(sandbox_mod, "kiro_internal_sandbox_enabled", lambda: False)
         monkeypatch.setattr(sandbox_mod, "_allow_unsandboxed_exec", lambda: False)
-        sandbox_mod._last_unshare_failure = (False, "EPERM: kernel refuses userns")
+        sandbox_mod._last_unshare_failure = (False, "EPERM: kernel refuses userns", "")
         with pytest.raises(RuntimeError, match="Sandbox backend unavailable"):
             wrap_argv(["kiro-cli", "acp"], mode="strict")
         mock_detect.assert_called_once()
@@ -1717,7 +1717,7 @@ class TestMacOsNestingDetection:
         monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: True)
         monkeypatch.setattr(sandbox_mod, "kiro_internal_sandbox_enabled", lambda: False)
         monkeypatch.setattr(sandbox_mod, "_allow_unsandboxed_exec", lambda: False)
-        sandbox_mod._last_unshare_failure = (False, "sandbox_apply: Operation not permitted")
+        sandbox_mod._last_unshare_failure = (False, "sandbox_apply: Operation not permitted", "")
         with pytest.raises(RuntimeError) as ei:
             wrap_argv(["git", "status"], mode="standard")
         msg = str(ei.value)
@@ -1735,7 +1735,7 @@ class TestMacOsNestingDetection:
         monkeypatch.setattr(sandbox_mod, "_macos_sandbox_state", lambda: False)
         monkeypatch.setattr(sandbox_mod, "kiro_internal_sandbox_enabled", lambda: False)
         monkeypatch.setattr(sandbox_mod, "_allow_unsandboxed_exec", lambda: False)
-        sandbox_mod._last_unshare_failure = (False, "EPERM: kernel refuses userns")
+        sandbox_mod._last_unshare_failure = (False, "EPERM: kernel refuses userns", "")
         with pytest.raises(RuntimeError, match="Sandbox backend unavailable"):
             wrap_argv(["kiro-cli", "acp"], mode="standard")
 

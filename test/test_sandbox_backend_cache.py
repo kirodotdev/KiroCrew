@@ -70,8 +70,8 @@ def test_transient_errno_set_covers_resource_exhaustion():
 
 def test_probe_success_clears_failure_detail(monkeypatch):
     monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))  # hermetic: gate precedes the mocked probe
-    monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (True, False, "ok"))
-    sb._last_unshare_failure = (True, "stale detail from a previous probe")
+    monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (True, False, "ok", ""))
+    sb._last_unshare_failure = (True, "stale detail from a previous probe", "")
     assert sb._probe_unshare() is True
     assert sb._last_unshare_failure is None
 
@@ -82,12 +82,12 @@ def test_probe_transient_failure_retries_once(monkeypatch):
 
     def fake_once():
         calls.append(1)
-        return (False, True, _EAGAIN_REASON)
+        return (False, True, _EAGAIN_REASON, "")
 
     monkeypatch.setattr(sb, "_probe_unshare_once", fake_once)
     assert sb._probe_unshare() is False
     assert len(calls) == 2  # one in-probe retry on transient failure
-    assert sb._last_unshare_failure == (True, _EAGAIN_REASON)
+    assert sb._last_unshare_failure == (True, _EAGAIN_REASON, "")
 
 
 def test_probe_permanent_failure_does_not_retry(monkeypatch):
@@ -96,17 +96,17 @@ def test_probe_permanent_failure_does_not_retry(monkeypatch):
 
     def fake_once():
         calls.append(1)
-        return (False, False, _EPERM_REASON)
+        return (False, False, _EPERM_REASON, "")
 
     monkeypatch.setattr(sb, "_probe_unshare_once", fake_once)
     assert sb._probe_unshare() is False
     assert len(calls) == 1
-    assert sb._last_unshare_failure == (False, _EPERM_REASON)
+    assert sb._last_unshare_failure == (False, _EPERM_REASON, "")
 
 
 def test_probe_transient_then_success_recovers(monkeypatch):
     monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))  # hermetic: gate precedes the mocked probe
-    results = [(False, True, _EAGAIN_REASON), (True, False, "ok")]
+    results = [(False, True, _EAGAIN_REASON, ""), (True, False, "ok", "")]
     monkeypatch.setattr(sb, "_probe_unshare_once", lambda: results.pop(0))
     assert sb._probe_unshare() is True
     assert sb._last_unshare_failure is None
@@ -115,20 +115,22 @@ def test_probe_transient_then_success_recovers(monkeypatch):
 def test_probe_non_linux_is_permanent(monkeypatch):
     monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="darwin"))
     assert sb._probe_unshare() is False
-    assert sb._last_unshare_failure == (False, "not Linux")
+    assert sb._last_unshare_failure == (False, "not Linux", "")
 
 
 # ── detect_backend cache policy ──
 
 
-def _install_probe(monkeypatch, outcomes: list[tuple[bool, bool, str]]) -> list[int]:
+def _install_probe(
+    monkeypatch, outcomes: list[tuple[bool, bool, str, str]]
+) -> list[int]:
     """Install a fake _probe_unshare fed by *outcomes*; returns the call log."""
     calls: list[int] = []
 
     def fake_probe() -> bool:
         calls.append(1)
-        ok, transient, reason = outcomes.pop(0)
-        sb._last_unshare_failure = None if ok else (transient, reason)
+        ok, transient, reason, remedy = outcomes.pop(0)
+        sb._last_unshare_failure = None if ok else (transient, reason, remedy)
         return ok
 
     monkeypatch.setattr(sb, "_probe_unshare", fake_probe)
@@ -139,7 +141,7 @@ def _install_probe(monkeypatch, outcomes: list[tuple[bool, bool, str]]) -> list[
 def test_transient_failure_is_not_cached(monkeypatch):
     calls = _install_probe(
         monkeypatch,
-        [(False, True, _EAGAIN_REASON), (False, True, _EAGAIN_REASON)],
+        [(False, True, _EAGAIN_REASON, ""), (False, True, _EAGAIN_REASON, "")],
     )
     assert sb.detect_backend(config_mode="auto") == "none"
     assert sb._backend is None  # transient "none" must not be cached
@@ -148,7 +150,7 @@ def test_transient_failure_is_not_cached(monkeypatch):
 
 
 def test_permanent_failure_is_cached(monkeypatch):
-    calls = _install_probe(monkeypatch, [(False, False, _EPERM_REASON)])
+    calls = _install_probe(monkeypatch, [(False, False, _EPERM_REASON, "")])
     assert sb.detect_backend(config_mode="auto") == "none"
     assert sb._backend == "none"
     assert sb.detect_backend(config_mode="auto") == "none"
@@ -159,7 +161,7 @@ def test_recovery_after_transient_failure(monkeypatch):
     """The incident scenario: a momentary EAGAIN must self-heal on next spawn."""
     calls = _install_probe(
         monkeypatch,
-        [(False, True, _EAGAIN_REASON), (True, False, "ok")],
+        [(False, True, _EAGAIN_REASON, ""), (True, False, "ok", "")],
     )
     assert sb.detect_backend(config_mode="auto") == "none"
     assert sb.detect_backend(config_mode="auto") == "namespace"
@@ -169,7 +171,7 @@ def test_recovery_after_transient_failure(monkeypatch):
 
 def test_positive_result_cached_across_modes(monkeypatch):
     """Backend capability is mode-independent: no re-probe on mode alternation."""
-    calls = _install_probe(monkeypatch, [(True, False, "ok")])
+    calls = _install_probe(monkeypatch, [(True, False, "ok", "")])
     assert sb.detect_backend(config_mode="auto") == "namespace"
     assert sb.detect_backend(config_mode="cc") == "namespace"
     assert sb.detect_backend(config_mode="strict") == "namespace"
@@ -177,7 +179,7 @@ def test_positive_result_cached_across_modes(monkeypatch):
 
 
 def test_off_mode_short_circuits_without_probing(monkeypatch):
-    calls = _install_probe(monkeypatch, [(True, False, "ok")])
+    calls = _install_probe(monkeypatch, [(True, False, "ok", "")])
     assert sb.detect_backend(config_mode="off") == "none"
     assert len(calls) == 0
     assert sb._backend is None  # "off" never touches the cache
@@ -191,7 +193,7 @@ def test_off_mode_short_circuits_without_probing(monkeypatch):
 def test_fail_closed_transient_message_advises_retry_not_optout(monkeypatch):
     monkeypatch.setattr(sb, "detect_backend", lambda config_mode="auto": "none")
     monkeypatch.setattr(sb, "_allow_unsandboxed_exec", lambda: False)
-    sb._last_unshare_failure = (True, _EAGAIN_REASON)
+    sb._last_unshare_failure = (True, _EAGAIN_REASON, "")
     with pytest.raises(RuntimeError) as excinfo:
         sb.wrap_argv(["kiro-cli", "acp"], mode="standard")
     msg = str(excinfo.value)
@@ -211,7 +213,7 @@ def test_fail_closed_permanent_message_includes_optout_and_detail(monkeypatch):
     # Seatbelt-confined — green on CI, red on a sandboxed dev machine.
     monkeypatch.setattr(sb, "_macos_sandbox_state", lambda: False)
     monkeypatch.setattr(sb, "kiro_internal_sandbox_enabled", lambda: False)
-    sb._last_unshare_failure = (False, _EPERM_REASON)
+    sb._last_unshare_failure = (False, _EPERM_REASON, "")
     with pytest.raises(RuntimeError) as excinfo:
         sb.wrap_argv(["kiro-cli", "acp"], mode="standard")
     msg = str(excinfo.value)
@@ -246,7 +248,7 @@ def test_probe_child_killed_by_signal_is_transient(monkeypatch):
     fake_libc = FakeLibC()
     monkeypatch.setattr(_ct, "CDLL", lambda *a, **kw: fake_libc)
 
-    ok, transient, reason = sb._probe_unshare_once()
+    ok, transient, reason, _remedy = sb._probe_unshare_once()
     assert ok is False
     assert transient is True
     assert "signal 9" in reason
@@ -273,7 +275,7 @@ def test_on_loop_cold_cache_returns_none_without_probing(monkeypatch):
     result = asyncio.run(_run())
     assert result is False
     assert sb._last_unshare_failure is not None
-    transient, reason = sb._last_unshare_failure
+    transient, reason, _remedy = sb._last_unshare_failure
     assert transient is True
     assert "deferred to background thread" in reason
     # Cache must stay None (transient → never cached)
@@ -287,7 +289,7 @@ def test_on_loop_kicks_background_warm_that_populates_cache(monkeypatch):
 
     def recording_probe():
         probe_thread_names.append(threading.current_thread().name)
-        return (True, False, "ok")
+        return (True, False, "ok", "")
 
     monkeypatch.setattr(sb, "_probe_unshare_once", recording_probe)
 
@@ -311,7 +313,7 @@ def test_warm_dedupe_two_rapid_calls_start_at_most_one_thread(monkeypatch):
 
     def slow_probe():
         gate.wait(timeout=5.0)
-        return (True, False, "ok")
+        return (True, False, "ok", "")
 
     monkeypatch.setattr(sb, "_probe_unshare_once", slow_probe)
 
@@ -342,7 +344,7 @@ def test_warm_dedupe_two_rapid_calls_start_at_most_one_thread(monkeypatch):
 
 def test_prewarm_backend_populates_cache(monkeypatch):
     """prewarm_backend() fires background probe that fills cache."""
-    monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (True, False, "ok"))
+    monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (True, False, "ok", ""))
     monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))
 
     sb.prewarm_backend()
@@ -369,7 +371,7 @@ def test_warm_backend_returns_with_cache_already_populated(monkeypatch):
         # Independent of sb.time.sleep (patched by the autouse fixture) so the
         # delay is real for this thread.
         threading.Event().wait(0.05)
-        return (True, False, "ok")
+        return (True, False, "ok", "")
 
     monkeypatch.setattr(sb, "_probe_unshare_once", slow_probe)
 
@@ -398,7 +400,7 @@ def test_warm_backend_makes_on_loop_transient_path_unreachable(monkeypatch):
         # than by the guarantee under test.
         threading.Event().wait(0.05)
         probe_calls.append(threading.current_thread().name)
-        return (True, False, "ok")
+        return (True, False, "ok", "")
 
     monkeypatch.setattr(sb, "_probe_unshare_once", counting_probe)
 
@@ -417,7 +419,7 @@ def test_warm_backend_makes_on_loop_transient_path_unreachable(monkeypatch):
 def test_warm_backend_permanent_failure_caches_none(monkeypatch):
     """A permanent denial is a real verdict and must be cached, not retried."""
     monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))
-    monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (False, False, _EPERM_REASON))
+    monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (False, False, _EPERM_REASON, ""))
 
     sb.warm_backend()
 
@@ -436,7 +438,7 @@ def test_warm_backend_wait_is_bounded_and_leaves_cache_cold(monkeypatch):
 
     def wedged_probe():
         release.wait(10.0)
-        return (True, False, "ok")
+        return (True, False, "ok", "")
 
     monkeypatch.setattr(sb, "_probe_unshare_once", wedged_probe)
 
@@ -474,7 +476,7 @@ def test_off_loop_transient_retry_sleeps(monkeypatch):
     monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))  # hermetic: gate precedes the mocked probe
     sleep_calls: list[float] = []
     monkeypatch.setattr(sb.time, "sleep", lambda s: sleep_calls.append(s))
-    monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (False, True, "EAGAIN"))
+    monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (False, True, "EAGAIN", ""))
     sb._probe_unshare()
     assert len(sleep_calls) == 1
     assert sleep_calls[0] == sb._PROBE_TRANSIENT_RETRY_DELAY_SECS
@@ -482,7 +484,7 @@ def test_off_loop_transient_retry_sleeps(monkeypatch):
 
 def test_off_loop_does_not_kick_background_warm(monkeypatch):
     """Off-loop probes directly — no background thread involved."""
-    monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (True, False, "ok"))
+    monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (True, False, "ok", ""))
     sb._probe_unshare()
     # No warm thread should be started for off-loop probes
     assert sb._warm_thread is None
