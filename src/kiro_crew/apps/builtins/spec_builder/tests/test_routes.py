@@ -57,7 +57,19 @@ def _redirect_state(monkeypatch, tmp_path):
 
 
 def _live_state_snapshot() -> dict[str, int]:
-    """Names + mtimes of the USER's real state dir, or {} when there is none."""
+    """Names + mtimes of the guarded live state dir, or {} when there is none.
+
+    The guarded dir is captured on FIRST call and memoized: the capture must
+    happen before any test's ``_redirect_state`` patches the ``routes``
+    attributes (the autouse guard calls this before redirecting, so first use
+    is always un-redirected), but it must NOT happen at import time -- a
+    module-level ``routes._state_dir()`` freezes whichever ``KIROCREW_HOME``
+    is active at collection, defeating pod isolation and the per-test home
+    isolation (the issue #874 class the lazy-paths ratchet enforces).
+    """
+    global _REAL_STATE_DIR
+    if _REAL_STATE_DIR is None:
+        _REAL_STATE_DIR = routes._state_dir()
     try:
         return {p.name: p.stat().st_mtime_ns for p in _REAL_STATE_DIR.iterdir()}
     except OSError:
@@ -84,8 +96,10 @@ def _never_touch_the_real_state(monkeypatch, tmp_path):
     )
 
 
-#: Captured at import, before any test can monkeypatch the module attributes.
-_REAL_STATE_DIR = routes._state_dir()
+#: The un-redirected state dir the autouse guard watches. ``None`` until
+#: :func:`_live_state_snapshot`'s first call fills it (see its docstring for
+#: why capture is first-use, not import-time).
+_REAL_STATE_DIR: Path | None = None
 
 
 @web.middleware
