@@ -271,7 +271,10 @@ the runtime boundary instead of relying only on prompt instructions.
   the underlying deny and sensitive-path controls.
 - **OS sandbox.** On Linux and macOS, `kiro-cli` can run inside namespace or
   Seatbelt isolation. Standard, strict, and off modes make the tradeoff
-  explicit. Windows does not currently provide this OS-level layer.
+  explicit. Windows offers no equivalent OS-level layer, so Kiro Crew fails
+  closed there: agent subprocesses are refused rather than run unconfined, until
+  you declare the
+  [`sandbox_allow_unsandboxed_exec` opt-in](docs/guides/windows-install.md#the-unsandboxed-exec-opt-in).
 - **Sensitive data guards.** Kiro Crew blocks direct access to protected paths,
   strips sensitive environment variables, and redacts credential patterns from
   output before it reaches a chat surface.
