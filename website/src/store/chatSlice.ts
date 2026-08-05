@@ -1256,8 +1256,9 @@ const chatSlice = createSlice({
         // Model switch / compaction / session reset: the stored counts belong
         // to a window that no longer describes the session. Deleting re-enables
         // the model-derived fallback (provider.getContextWindow(slot.model)).
-        // Per-turn events without `reset` deliberately never delete, so a
-        // pct-only event cannot wipe good token counts.
+        // A frame WITHOUT `reset` never deletes — it only fills or replaces — so
+        // the backend sets `reset` whenever it has no real counts to send,
+        // clearing stale counts instead of leaving them beside a fresh pct.
         delete state.slotContextTokens[safeKey(slot)]
       }
     },

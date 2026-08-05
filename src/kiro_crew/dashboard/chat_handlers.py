@@ -2153,12 +2153,12 @@ def _broadcast_context_reset(state: "DashboardState", slot_key: str, provider: A
     Without this the frontend keeps the previous model's stored ``{used,
     window}`` until the next turn emits an event. ``reset: true`` tells the
     ``sseContextUsage`` reducer it may REPLACE or DELETE the stored token entry
-    (per-turn events deliberately never delete, so a pct-only event cannot wipe
-    good counts). With a live provider the payload carries the freshly rebased
-    stats from ``set_model``; without one (the session-reset path) it carries no
-    tokens, so the reducer deletes the entry and the UI falls back to its own
-    model-derived window for the slot's new model. Best-effort: a broadcast
-    failure must not fail the switch.
+    (a frame WITHOUT ``reset`` never deletes, so the backend sets ``reset``
+    whenever it has no real counts to send). With a live provider the payload
+    carries the freshly rebased stats from ``set_model``; without one (the
+    session-reset path) it carries no tokens, so the reducer deletes the entry
+    and the UI falls back to its own model-derived window for the slot's new
+    model. Best-effort: a broadcast failure must not fail the switch.
     """
     try:
         if provider is not None:

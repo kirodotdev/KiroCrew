@@ -1556,7 +1556,12 @@ describe('sseContextUsage reducer', () => {
   it('reset without a window deletes the stored entry (session reset / compaction)', () => {
     // Deleting re-enables the model-derived fallback for the slot's NEW model;
     // without reset the stale old-model entry short-circuits it until the next turn.
-    const seeded = reducer(initial, sseContextUsage({ slot: 's1', pct: 10, used_tokens: 100000, window_tokens: 1000000 }))
+    //
+    // #1645: this is the frontend half of the "225K used / 0%" bug. After
+    // /compact the backend zeroes `used` but keeps the window, so it emits a
+    // reset frame here. Honouring it deletes the pre-compaction token entry so
+    // the ring can never show a stale count beside the freshly-reset 0%.
+    const seeded = reducer(initial, sseContextUsage({ slot: 's1', pct: 10, used_tokens: 225000, window_tokens: 1000000 }))
     const state = reducer(seeded, sseContextUsage({ slot: 's1', pct: 0, reset: true }))
     expect(state.slotContextTokens['s1']).toBeUndefined()
     expect(state.slotContextPct['s1']).toBe(0)
