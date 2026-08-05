@@ -465,7 +465,22 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
     >
       {badge}
       {iconEl}
-      {!collapsed && <span className="whitespace-nowrap overflow-hidden">{label}</span>}
+      {/* `aria-label` carries the FULL label: this span is `whitespace-nowrap overflow-hidden`, so
+          a translation longer than the rail is silently cut off with no way to read it. Surfaced by
+          the render gate under the en-XA pseudolocale at 2.2x once a new app entry narrowed the
+          row (`layout/clipped-without-title`), which accepts `title` OR `aria-label`. Deliberately
+          `aria-label`, NOT `title`: a page-wide `getByTitle('Settings'/'Board'/…)` in another app's
+          Playwright specs (ops-mission-control) matches on `title`, and a sidebar nav item titled
+          the same as one of those segment names would be clicked instead of the segment. `label`
+          is already the resolved, translated string. */}
+      {!collapsed && (
+        <span
+          aria-label={typeof label === 'string' ? label : undefined}
+          className="whitespace-nowrap overflow-hidden"
+        >
+          {label}
+        </span>
+      )}
       {collapsed && tip && createPortal(
         <div
           className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
@@ -548,7 +563,14 @@ function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
       onBlur={hideTip}
     >
       <span className="w-4 h-4 flex items-center justify-center shrink-0 opacity-70"><Icon size={16} /></span>
-      {!collapsed && <span className="whitespace-nowrap overflow-hidden">{labelText}</span>}
+      {/* Same reason as the nav-item label above: clipped by `whitespace-nowrap
+          overflow-hidden`, so the full string lives on `aria-label` (not `title` — see the
+          getByTitle collision note on the NavItem span above). */}
+      {!collapsed && (
+        <span aria-label={labelText} className="whitespace-nowrap overflow-hidden">
+          {labelText}
+        </span>
+      )}
       {collapsed && tip && createPortal(
         <div
           className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}

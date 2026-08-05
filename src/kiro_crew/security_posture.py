@@ -130,6 +130,126 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "target process — so it is an egress boundary, redacted on the way out.",
     ),
     (
+        "Auto-Improvement fallback tool audit",
+        "apps/builtins/auto_improvement/spine/agent_runner.py",
+        "Per-tool SEL events for the unattended subprocess agent carry the tool's TARGET "
+        "HINT — a path, glob or shell command the model chose. On-disk SEL records are not "
+        "redacted by the writer and the persisted HMAC chain signs the bytes as-written, so "
+        "the hint is redacted here, before `log_tool_invocation`. Fail-closed: a redactor "
+        "that cannot run emits a fixed placeholder rather than raw agent text.",
+    ),
+    (
+        "Auto-Improvement commit messages",
+        "apps/builtins/auto_improvement/spine/driver.py",
+        "Agent-authored commit subjects/bodies redacted before they become PERMANENT git "
+        "history — both the local keep commit and the direct-push commit. A pushed commit "
+        "message cannot be edited without rewriting history, so this is a one-way egress "
+        "boundary.",
+    ),
+    (
+        "Auto-Improvement one-click commit",
+        "apps/builtins/auto_improvement/backend/commit.py",
+        "The operator-triggered commit path builds its message from the queued PR body "
+        "(agent-authored prose) and redacts before committing — same "
+        "cannot-be-unpublished reason as the driver's path.",
+    ),
+    (
+        "Auto-Improvement MCP tool results",
+        "apps/builtins/auto_improvement/backend/mcp_server.py",
+        "Every `tools/call` result is serialized run evidence handed to an LLM — a finding's "
+        "note/signature/hypothesis are the model's own prose. Redacted BEFORE truncation so "
+        "the cut cannot split a credential into a fragment the scanner misses. FAIL-CLOSED: "
+        "these six tools are conveniences, so withholding a result beats leaking. The ERROR "
+        "paths are scanned too (`_redact_error`): tool ARGUMENTS reach exception text by "
+        "design — `get_finding` raises \"no finding with fingerprint <fp>\" with the caller's "
+        "raw value — so a credential-shaped argument was echoed straight back to the model "
+        "and into the SEL record. Measured before fixing. The exception type and JSON-RPC "
+        "error code are composed in after scrubbing, so the message stays actionable.",
+    ),
+    (
+        # The watcher's residual risk, disclosed because accepting it is the OPERATOR's
+        # decision and a silent limitation is the real defect. Measured: a nested process under
+        # `mode="strict"` sees ~/.aws, ~/.config/gh and ~/.docker EMPTY on a populated host,
+        # and ~/.ssh exposes only `known_hosts` (host-key verification needs it) while
+        # id_rsa/*.key stay hidden — so CREDENTIALS are confined. NETWORK EGRESS is NOT: the
+        # sandbox never enters a network namespace (no CLONE_NEWNET; its docstring explains
+        # agentic commands need reachable networking), and while curl/wget/nc are denied,
+        # `python helper.py` is allowed and can open a socket. The shell denylist cannot close
+        # that — it gates the requested command, not what the command then does. Consequence:
+        # point the PR watcher only at repositories whose PR comments you would be willing to
+        # execute. Raised by the GPT review (twice); the credential half was already verified
+        # under D-84, the egress half is new and correct.
+        "Auto-Improvement PR-watcher egress boundary",
+        "apps/builtins/auto_improvement/backend/pr_watchers.py",
+        "The watcher reads UNTRUSTED text (pull-request comments, check logs) and runs with an "
+        "auto-approved shell, because its job is to run the repository's own build/test/lint, "
+        "rebase, and commit. Credential stores are hidden by the strict sandbox (verified), but "
+        "network EGRESS is deliberately reachable and a nested interpreter can open a socket "
+        "even though curl/wget/nc are denied. Two OPT-IN gates, both default OFF, both a "
+        "one-time consent: `watcherAcceptEgressRisk` is a HARD precondition — `_make_runner` "
+        "refuses to build any watcher runner without it, so a watcher cannot run at all until "
+        "the operator acknowledges this egress boundary — and `watcherAutoStart` separately "
+        "gates whether a polled GET may PROMOTE watchers (a promote used to happen with no "
+        "operator action, leaving no consent moment). Treat setting either flag as agreeing to "
+        "execute the pull request's comments.",
+    ),
+    (
+        "Auto-Improvement run activity feed",
+        "apps/builtins/auto_improvement/backend/runner.py",
+        "The live activity ring buffer carries RAW model output — assistant text and the "
+        "`command` of a bash tool call — and is served verbatim by GET /run into the "
+        "dashboard — so this is an egress boundary, not an internal log. FAIL-CLOSED: an "
+        "unscannable string becomes a fixed placeholder while the event structure, "
+        "timestamps and other fields survive, so the operator still sees the run "
+        "progressing without unscanned text reaching the browser. Recursive, because the "
+        "agent event is nested. The WATCHER snapshot and chat-session records are scanned on "
+        "the same grounds (`routes._redact_tree`): the watcher log ring is redacted on WRITE, "
+        "but `WatcherState.as_dict` beside it served `target`/`title`/`lastNote`/"
+        "`verdictReason`/`fixing` raw — all model- or pull-request-derived, and the watcher "
+        "ingests PR text as untrusted input by design. Measured with a credential-shaped "
+        "`target` (an access-key literal, not reproduced here — this disclosure is itself "
+        "scanned): it reached the browser verbatim. The session "
+        "records go through it too, because `save_session` merges the caller's patch and the "
+        "stored `title` is built from a finding's target. So do the route ERROR bodies: "
+        "`commit.py` builds its `error` from `(proc.stderr or '')[:160]` — raw git stderr, "
+        "which quotes refs, paths and whatever a repository's own hooks printed. That was "
+        "latent while nothing rendered it; surfacing a refused commit at the finding row made "
+        "it a live path to the browser, so all five `result.get(\"error\")` responses plus the "
+        "PR-status and draft bodies are scanned. "
+        "Covers the TERMINAL ERROR field on the same response too "
+        "(`_fail`): `f\"{type(exc).__name__}: {exc}\"` was assigned raw while the feed "
+        "beside it was scanned, and an exception message routinely quotes what failed — a "
+        "git url, a subprocess argv, a path — so a run dying on an agent-influenced value "
+        "carried it to the browser. The exception TYPE is composed in after redaction so "
+        "the message stays actionable.",
+    ),
+    (
+        "Auto-Improvement PR prose",
+        "apps/builtins/auto_improvement/profiles/github_repo/pr_recipe.py",
+        "The pull-request TITLE and BODY are agent-authored prose published by `gh pr "
+        "create`, and a PR description cannot be un-published. Redacted in place because "
+        "prose survives rewriting; the DIFF beside it is instead detected-and-refused by "
+        "`spine/push_policy.py:scan_content_for_secrets`, since rewriting a patch would "
+        "corrupt the fix the gate proved.",
+    ),
+    (
+        "Auto-Improvement finding evidence",
+        "apps/builtins/auto_improvement/backend/routes.py",
+        "The candidate diff and drafted PR body are agent-authored text read back off "
+        "disk and rendered in the operator's browser by GET /findings/{fp}. FAIL-CLOSED, "
+        "unlike the watcher log below: the text stays on disk and re-readable, so "
+        "withholding it beats serving it unscanned.",
+    ),
+    (
+        "Auto-Improvement watcher log",
+        "apps/builtins/auto_improvement/backend/pr_watchers.py",
+        "Per-PR watcher log lines carry agent output and third-party CI text and are "
+        "served to the dashboard via GET /watchers/{fp}/log with NO second scan, so this is "
+        "the only pass between that text and the browser. FAIL-CLOSED: an unscannable "
+        "line becomes a fixed placeholder, so the log keeps advancing without serving "
+        "unscanned text.",
+    ),
+    (
         "Side-chat parent snapshot",
         "dashboard/side_context.py",
         "Parent user/assistant turns embedded in the side-chat prompt. The prompt "
@@ -494,6 +614,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # message with and without redaction, so a raw comparison would keep both
         # copies — nothing redacted here is ever written or shown.
         "channel_transcript_migration.py",
+        # DETECTOR, not a redactor: the pre-push content scan calls both scanners only
+        # to COUNT findings and then refuses the push. It deliberately discards the
+        # cleaned text — rewriting a code diff would corrupt the very fix the gate
+        # proved — so it is not a redaction egress path. The push it guards is not an
+        # output boundary this panel measures either: nothing reaches GitHub when the
+        # scan hits, and the change degrades to the local queue instead. Lives in
+        # push_policy because all three push paths share this one implementation.
+        "apps/builtins/auto_improvement/spine/push_policy.py",
         # Internal persistence / indexing (the on-disk or in-memory copy), whose
         # user-visible surface is already covered by a registered sink.
         "dashboard/chat_folders.py",

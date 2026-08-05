@@ -190,13 +190,25 @@ jobs:
             --deselect=test/test_script_hooks.py \
             --deselect=test/test_cron_script.py \
             --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
-            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
+            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_lint_findings.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_github_profile.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_profile_capture.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_perf_track_propose.py
         # Deselected tests require capabilities unavailable on GH Actions:
         #   test_script_hooks, test_cron_script: Linux namespace sandbox (unshare NEWNS)
         #   ops_mission_control test_ledger_sync_git, test_schedule_file: the same
         #     capability gap, for the same reason. They drive REAL `git`/`gh` through
         #     `sandboxed_spawn_argv`, which raises SandboxUnavailableError on these runners
         #     (`unshare(CLONE_NEWNS)` -> EPERM), so all 29 + 1 of them fail here.
+        #   auto_improvement: same capability gap. These seven spawn a real `git`/`pytest`
+        #     through the profile's strict-mode sandbox (or need a real OS sandbox), which the
+        #     runner cannot provide; they pass locally with a working sandbox and are the exact
+        #     set kept off the shards while `testpaths` was a per-file list, now that the dir
+        #     is globbed. Making them CI-portable is tracked as a follow-up in the PR body.
         #
         #     These only became visible when `testpaths` grew to cover the in-package app
         #     suites (see setup.cfg) -- before that they never ran in CI at all, on any job.
@@ -281,11 +293,22 @@ jobs:
             --deselect=test/test_script_hooks.py \
             --deselect=test/test_cron_script.py \
             --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
-            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
+            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_lint_findings.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_github_profile.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_profile_capture.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py \
+            --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_perf_track_propose.py
         # Same deselects as backend-test (the Linux-namespace sandbox tests are
         # unavailable here too). The ops git/gh suites are deselected for a second reason as
         # well: they drive a real POSIX `git`/`gh` and the namespace-sandbox job that DOES run
-        # them is Linux-only, so on Windows they are simply out of scope.
+        # them is Linux-only, so on Windows they are simply out of scope. The seven
+        # auto_improvement suites are deselected for the same sandbox reason; the two that also
+        # carry POSIX path/rmtree assumptions (test_dogfood_learnings, test_pr_watchers) would
+        # fail on Windows regardless, and their residual node ids stay tracked in
+        # test/windows-expected-failures.txt.
 
   # macOS gateway line. Until this job existed macOS had ZERO pytest coverage in
   # CI -- the macos-14 runners appear only in build.yml, build-desktop.yml and
