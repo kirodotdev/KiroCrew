@@ -1,5 +1,6 @@
 {
   "_comment": "Model → context window tokens, read by the ACP provider adapter (providers/adapters/acp.ts) for getContextWindow. Default fallback: 200,000.",
+  "auto": 1000000,
   "claude-fable-5": 1000000,
   "claude-opus-4.8": 1000000,
   "claude-opus-4.7": 1000000,

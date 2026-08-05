@@ -133,34 +133,36 @@ class TestModelRegistry:
         assert mr.window("nonexistent-zzz") == mr.REFERENCE_WINDOW_TOKENS
 
     def test_refresh_kiro_windows_overrides_and_extends_registry(self, tmp_path, monkeypatch):
-        # The kiro-list cache wins over the static registry (corrects stale
-        # values) AND covers models the registry lacks (GPT). Uses 'auto' for the
-        # override case: the registry lists auto=200k but kiro serves it at 1M.
+        # The kiro-list cache wins over the static registry (it is the ground
+        # truth for what kiro actually serves) AND covers models the registry
+        # lacks (GPT). Uses 'auto' for the override case: the registry carries a
+        # literal for it, and a served window that disagrees must win.
         # Manipulate the in-memory cache directly (restored in teardown) to avoid
         # a module reload that would leak state into other tests.
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         saved = dict(mr._KIRO_WINDOWS)
         try:
             mr._KIRO_WINDOWS.clear()
-            assert mr.model_window("auto") == 200_000  # stale registry literal
+            assert mr.model_window("auto") == 1_000_000  # static registry literal
+            assert mr.window_source("auto") == "registry"
             assert mr.model_window("unlisted-model-zzz") is None  # neither registry nor supplementary
             # refresh does the in-memory update synchronously and returns True
             # when the cache changed (signalling the async caller to persist).
             changed = mr.refresh_kiro_windows(
                 [
-                    {"model_id": "auto", "context_window_tokens": 1000000},
+                    {"model_id": "auto", "context_window_tokens": 900000},
                     {"model_id": "unlisted-model-zzz", "context_window_tokens": 272000},
                     {"model_id": "bad", "context_window_tokens": 0},  # skipped
                     {"model_id": "alsobad"},  # missing field, skipped
                 ]
             )
             assert changed is True
-            assert mr.model_window("auto") == 1000000  # cache corrects stale registry 200k
+            assert mr.model_window("auto") == 900000  # cache overrides the registry literal
             assert mr.window_source("auto") == "kiro-list"
             assert mr.model_window("unlisted-model-zzz") == 272000
             assert mr.model_window("bad") is None  # 0 not cached
             # A no-op refresh (same data) returns False — no persist needed.
-            assert mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 1000000}]) is False
+            assert mr.refresh_kiro_windows([{"model_id": "auto", "context_window_tokens": 900000}]) is False
             # persist is a separate step (offloaded to an executor by the caller).
             mr.persist_kiro_windows()
             assert (tmp_path / "model_windows.json").is_file()  # persisted

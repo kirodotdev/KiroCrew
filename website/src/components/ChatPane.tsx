@@ -118,7 +118,12 @@ export default function ChatPane({
     queryKey: ['available-models', provider.id],
     queryFn: async () => {
       const models = await provider.fetchAvailableModels()
-      return [{ name: 'auto', description: 'Default' }, ...models.filter((m) => m.name !== 'auto')]
+      // Auto pinned first, described by what the backend advertised for it —
+      // see the matching comment in pages/ChatPage.tsx for why it is not
+      // relabelled "Default".
+      const advertisedAuto = models.find((m) => m.name === 'auto')
+      const rest = models.filter((m) => m.name !== 'auto')
+      return advertisedAuto ? [advertisedAuto, ...rest] : rest
     },
     refetchInterval: modelListRefetchInterval,
   })

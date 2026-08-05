@@ -29,7 +29,7 @@ from kiro_crew.acp.client import (
     AcpProcessDied,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
-from kiro_crew.acp.types import STOP_REASON_END_TURN
+from kiro_crew.acp.types import STOP_REASON_END_TURN, advertises_model
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
@@ -100,12 +100,14 @@ class AcpSessionProvider(LLMProvider):
             cwd=self._runtime._work_dir,
             agent=self._runtime._agent or None,
         )
-        # Re-apply the configured non-default model to the fresh session. A new
-        # session/new reverts to the agent-config default model, so a warm worker
-        # configured with a non-default model (via the cold-start set_model in
+        # Re-apply the configured model to the fresh session. A new session/new
+        # reverts to the agent-config default model, so a warm worker configured
+        # with a specific model (via the cold-start set_model in
         # AcpProvider._start_kiro_runtime_impl, recorded on the old handle) would
         # silently run every reused task on the wrong model without this. Mirrors
-        # that cold-start handshake: skip the "auto" sentinel (let kiro pick).
+        # that cold-start handshake, including the "auto" sentinel: kiro serves
+        # `auto` as a real routing model, so a worker that WAS on auto must be
+        # put back on it rather than inheriting the agent spec's pinned model.
         #
         # If the re-apply FAILS we must NOT commit the fresh handle — a
         # wrong-model session would silently run every subsequent pooled step on
@@ -113,7 +115,14 @@ class AcpSessionProvider(LLMProvider):
         # (WorkerPool) performs its hard-reset fallback and the old, correctly
         # configured handle is not destroyed below.
         prior_model = getattr(old, "model", "")
-        if isinstance(prior_model, str) and prior_model and prior_model != DEFAULT_MODEL:
+        if (
+            isinstance(prior_model, str)
+            and prior_model
+            and (
+                prior_model != DEFAULT_MODEL
+                or advertises_model(new_handle.available_models, DEFAULT_MODEL)
+            )
+        ):
             try:
                 await new_handle.set_model(prior_model)
             except Exception as exc:

@@ -20,6 +20,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import model_registry
+from kiro_crew.acp.types import advertises_model
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _workspace_name_for_dir,
@@ -1918,8 +1919,7 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
     if is_default:
         # kiro DOES express Auto as a real model id — but only switch to it when
         # this session's backend actually advertised it.
-        advertised = {m.get("modelId", "") for m in provider.available_models()}
-        return "auto" if "auto" in advertised else ""
+        return "auto" if advertises_model(provider.available_models(), "auto") else ""
     return model_registry.to_acp_id(model_name)
 
 
