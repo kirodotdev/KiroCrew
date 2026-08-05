@@ -6782,6 +6782,26 @@
         "generate_now": "Genera ora",
         "generating": "Generazione…"
       },
+      "exclusionsDisclosure": {
+        "any_folder_whose_name_starts_with_a_dot_is_skipp": "Qualsiasi cartella il cui nome inizia con un punto viene ignorata completamente, a qualsiasi profondità.",
+        "anything_else_in_the_folder_is_ignored_including": "Tutto il resto nella cartella viene ignorato, comprese immagini, archivi e binari.",
+        "credential_paths": "Percorsi delle credenziali",
+        "dependency_build_and_version_control_directories": "Directory di dipendenze, build e controllo versione. Una ricompilazione riscrive migliaia di file in una volta, bloccando l'indicizzazione.",
+        "file_limit": "Limite di file",
+        "files": "file",
+        "files_resolving_inside_protected_locations_such": "I file che risolvono in posizioni protette come le directory di credenziali SSH o cloud vengono rifiutati.",
+        "files_with_no_extension_at_all_are_also_read_as": "Anche i file senza alcuna estensione vengono letti come testo semplice.",
+        "hidden_folders": "Cartelle nascoste",
+        "matched_against_the_filename_case_insensitively": "Confrontati con il nome del file, senza distinzione tra maiuscole e minuscole.",
+        "never_scanned_folders": "Cartelle mai analizzate",
+        "only_these_file_types_are_read": "Vengono letti solo questi tipi di file",
+        "skipped_for_specific_source_types_only": "Ignorate solo per tipi di origine specifici.",
+        "system_and_temporary_files": "File di sistema e temporanei",
+        "the_newest_files_up_to_this_limit_are_indexed_ol": "Vengono indicizzati i file più recenti fino a questo limite; quelli più vecchi oltre il limite vengono ignorati.",
+        "these_rules_always_apply_and_are_not_configurabl": "Queste regole si applicano sempre e non sono configurabili. Usa il campo dei pattern di esclusione per ignorare altro.",
+        "vault_metadata": "Metadati del vault",
+        "what_gets_skipped_automatically": "Cosa viene ignorato automaticamente"
+      },
       "index": {
         "all_namespaces": "Tutti i namespace",
         "all_statuses": "Tutti gli stati",

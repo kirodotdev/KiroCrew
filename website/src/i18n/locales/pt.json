@@ -6782,6 +6782,26 @@
         "generate_now": "Gerar agora",
         "generating": "Gerando…"
       },
+      "exclusionsDisclosure": {
+        "any_folder_whose_name_starts_with_a_dot_is_skipp": "Qualquer pasta cujo nome comece com um ponto é ignorada por completo, em qualquer profundidade.",
+        "anything_else_in_the_folder_is_ignored_including": "Todo o resto na pasta é ignorado, incluindo imagens, arquivos compactados e binários.",
+        "credential_paths": "Caminhos de credenciais",
+        "dependency_build_and_version_control_directories": "Diretórios de dependências, compilação e controle de versão. Uma recompilação reescreve milhares de arquivos ao mesmo tempo, o que travaria a indexação.",
+        "file_limit": "Limite de arquivos",
+        "files": "arquivos",
+        "files_resolving_inside_protected_locations_such": "Arquivos que resolvem dentro de locais protegidos, como diretórios de credenciais SSH ou de nuvem, são recusados.",
+        "files_with_no_extension_at_all_are_also_read_as": "Arquivos sem nenhuma extensão também são lidos como texto simples.",
+        "hidden_folders": "Pastas ocultas",
+        "matched_against_the_filename_case_insensitively": "Comparados com o nome do arquivo, sem diferenciar maiúsculas.",
+        "never_scanned_folders": "Pastas nunca analisadas",
+        "only_these_file_types_are_read": "Somente estes tipos de arquivo são lidos",
+        "skipped_for_specific_source_types_only": "Ignoradas apenas para tipos de origem específicos.",
+        "system_and_temporary_files": "Arquivos de sistema e temporários",
+        "the_newest_files_up_to_this_limit_are_indexed_ol": "Os arquivos mais recentes até este limite são indexados; os mais antigos além dele são ignorados.",
+        "these_rules_always_apply_and_are_not_configurabl": "Estas regras sempre se aplicam e não são configuráveis. Use o campo de padrões de exclusão para ignorar mais.",
+        "vault_metadata": "Metadados do vault",
+        "what_gets_skipped_automatically": "O que é ignorado automaticamente"
+      },
       "index": {
         "all_namespaces": "Todos os namespaces",
         "all_statuses": "Todos os status",

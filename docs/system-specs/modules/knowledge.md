@@ -45,7 +45,7 @@ files / uploads / artifacts / URLs
 | `FETCH_TIMEOUT` | `120.0` | `llm_pool.py`, `agent_fetch.py` | URL-fetch worker timeout |
 | `AGENT_NAME` | `"kirocrew-knowledge"` | `llm_pool.py` | kiro-cli agent the ACP worker drives |
 | `_VALID_SANDBOX_MODES` | `{auto, standard, strict, cc, off}` | `llm_pool.py` | Accepted `agent.sandbox` values |
-| `HARD_SKIP_DIRS` | `{.git, node_modules, __pycache__, .venv, venv}` | `folder_watcher.py` | Directories never walked |
+| `HARD_SKIP_DIRS` | `{.git, node_modules, __pycache__, .venv, venv, dist, build, out, target}` | `folder_watcher.py` | Directories never walked (perf/stability floor). Reported via `GET /api/knowledge/exclusions` |
 | `_LARGE_REBUILD_WARN_THRESHOLD` | `1000` | `watcher.py` | Stale-item count at which the self-heal rebuild logs a prominent WARNING (usually an embedder-sig change invalidating the whole corpus) |
 | `DEFAULT_MAX_FILES` | `5000` | `folder_watcher.py` | Per-source file cap (newest-first) |
 | `CHUNK_TOKEN_SIZE` | `800` | `chunker.py` | Target chunk size (words) |
@@ -188,6 +188,50 @@ Returns the item count per source **under the active filters**:
 - Sourceless items are reported under the `__none__` key.
 - The list view derives its rows from these counts, which is what guarantees
   every source is visible at once regardless of relative size.
+
+### `GET /api/knowledge/exclusions`
+
+Read-only report of everything a folder scan drops **by default**, so the UI can
+show it instead of leaving the user to infer it from a file count that doesn't
+match their folder. Rendered by
+`website/src/pages/knowledge/ExclusionsDisclosure.tsx` as a collapsed disclosure
+in the Add Source panel.
+
+```json
+{ "rules": [
+  { "id": "hidden_dirs",         "kind": "rule",       "entries": [] },
+  { "id": "hard_skip_dirs",      "kind": "directories", "entries": ["…9 names…"] },
+  { "id": "source_type_dirs",    "kind": "directories_by_source_type", "entries": [],
+    "entries_by_source_type": { "obsidian_vault": [".obsidian", ".trash"] } },
+  { "id": "junk_files",          "kind": "globs",      "entries": ["._*", "…"] },
+  { "id": "extension_allowlist", "kind": "allowlist",  "entries": [".md", "…"],
+    "accepts_no_extension": true },
+  { "id": "sensitive_paths",     "kind": "guard",      "entries": [] },
+  { "id": "file_cap",            "kind": "limit",      "entries": [], "value": 5000 }
+] }
+```
+
+- Each `entries` list is read from the live constant the scanner uses
+  (`HARD_SKIP_DIRS`, `SOURCE_TYPE_SKIP_DIRS`, `DEFAULT_IGNORE_GLOBS`,
+  `FileReader.SUPPORTED`, `DEFAULT_MAX_FILES`), so the report cannot drift from
+  scan behaviour.
+- Rule `id`s are the contract; the frontend supplies all labels (so copy stays
+  translatable). An unknown `id` renders with the id as its heading rather than
+  being dropped.
+- `entries` is always present (possibly empty). The empty extension `''` (which
+  makes `Makefile`/`LICENSE` eligible) is reported as `accepts_no_extension`, not
+  as an entry — mirroring `get_config`.
+- Reports the defaults only; a source's own `properties.ignore_patterns` applies
+  on top per-source.
+- On request failure the panel renders nothing, so a gateway without this route
+  falls back to the prior UI.
+
+The report lists only what the scanner actually skips. `.env` is intentionally
+absent because it is *not* skipped today: `Path('.env').suffix` is `''`, which is
+in the allowlist; the hidden-name prune covers directories only; and
+`is_sensitive_path()` does not match it, so a project-local `.env` is ingested.
+`TestExclusionsEndpoint::test_does_not_claim_dotfiles_are_excluded` enforces its
+absence until the scanner skips it.
 
 ## Invariants
 

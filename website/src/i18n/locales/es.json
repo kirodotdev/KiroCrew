@@ -6782,6 +6782,26 @@
         "generate_now": "Generar ahora",
         "generating": "Generando…"
       },
+      "exclusionsDisclosure": {
+        "any_folder_whose_name_starts_with_a_dot_is_skipp": "Cualquier carpeta cuyo nombre empiece por un punto se omite por completo, a cualquier profundidad.",
+        "anything_else_in_the_folder_is_ignored_including": "Todo lo demás en la carpeta se ignora, incluidas imágenes, archivos comprimidos y binarios.",
+        "credential_paths": "Rutas de credenciales",
+        "dependency_build_and_version_control_directories": "Directorios de dependencias, compilación y control de versiones. Una recompilación reescribe miles de archivos a la vez, lo que bloquearía la indexación.",
+        "file_limit": "Límite de archivos",
+        "files": "archivos",
+        "files_resolving_inside_protected_locations_such": "Se rechazan los archivos que resuelven dentro de ubicaciones protegidas como directorios de credenciales SSH o de nube.",
+        "files_with_no_extension_at_all_are_also_read_as": "Los archivos sin ninguna extensión también se leen como texto plano.",
+        "hidden_folders": "Carpetas ocultas",
+        "matched_against_the_filename_case_insensitively": "Se comparan con el nombre de archivo, sin distinguir mayúsculas.",
+        "never_scanned_folders": "Carpetas nunca analizadas",
+        "only_these_file_types_are_read": "Solo se leen estos tipos de archivo",
+        "skipped_for_specific_source_types_only": "Se omiten solo para tipos de origen concretos.",
+        "system_and_temporary_files": "Archivos del sistema y temporales",
+        "the_newest_files_up_to_this_limit_are_indexed_ol": "Se indexan los archivos más recientes hasta este límite; los más antiguos que lo superen se omiten.",
+        "these_rules_always_apply_and_are_not_configurabl": "Estas reglas siempre se aplican y no son configurables. Usa el campo de patrones de exclusión para omitir más.",
+        "vault_metadata": "Metadatos del vault",
+        "what_gets_skipped_automatically": "Qué se omite automáticamente"
+      },
       "index": {
         "all_namespaces": "Todos los espacios de nombres",
         "all_statuses": "Todos los estados",

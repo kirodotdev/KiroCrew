@@ -6620,6 +6620,26 @@
         "generate_now": "立即生成",
         "generating": "正在生成…"
       },
+      "exclusionsDisclosure": {
+        "any_folder_whose_name_starts_with_a_dot_is_skipp": "名称以点开头的任何文件夹都会在任意层级被完全跳过。",
+        "anything_else_in_the_folder_is_ignored_including": "文件夹中的其他所有内容都会被忽略，包括图片、压缩包和二进制文件。",
+        "credential_paths": "凭证路径",
+        "dependency_build_and_version_control_directories": "依赖、构建和版本控制目录。重新构建会一次性重写数千个文件，这会导致索引停滞。",
+        "file_limit": "文件数量上限",
+        "files": "个文件",
+        "files_resolving_inside_protected_locations_such": "解析到受保护位置（如 SSH 或云凭证目录）的文件会被拒绝。",
+        "files_with_no_extension_at_all_are_also_read_as": "完全没有扩展名的文件也会作为纯文本读取。",
+        "hidden_folders": "隐藏文件夹",
+        "matched_against_the_filename_case_insensitively": "按文件名匹配，不区分大小写。",
+        "never_scanned_folders": "从不扫描的文件夹",
+        "only_these_file_types_are_read": "仅读取这些文件类型",
+        "skipped_for_specific_source_types_only": "仅针对特定来源类型跳过。",
+        "system_and_temporary_files": "系统和临时文件",
+        "the_newest_files_up_to_this_limit_are_indexed_ol": "会索引此上限以内最新的文件；超出上限的较旧文件会被跳过。",
+        "these_rules_always_apply_and_are_not_configurabl": "这些规则始终生效且不可配置。请使用忽略模式字段来跳过更多内容。",
+        "vault_metadata": "保管库元数据",
+        "what_gets_skipped_automatically": "哪些内容会被自动跳过"
+      },
       "index": {
         "all_namespaces": "所有命名空间",
         "all_statuses": "所有状态",

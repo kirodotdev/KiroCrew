@@ -6782,6 +6782,26 @@
         "generate_now": "Générer maintenant",
         "generating": "Génération…"
       },
+      "exclusionsDisclosure": {
+        "any_folder_whose_name_starts_with_a_dot_is_skipp": "Tout dossier dont le nom commence par un point est entièrement ignoré, à n'importe quelle profondeur.",
+        "anything_else_in_the_folder_is_ignored_including": "Tout le reste du dossier est ignoré, y compris les images, archives et binaires.",
+        "credential_paths": "Chemins d'identifiants",
+        "dependency_build_and_version_control_directories": "Répertoires de dépendances, de build et de gestion de versions. Une recompilation réécrit des milliers de fichiers d'un coup, ce qui bloquerait l'indexation.",
+        "file_limit": "Limite de fichiers",
+        "files": "fichiers",
+        "files_resolving_inside_protected_locations_such": "Les fichiers résolus dans des emplacements protégés tels que les répertoires d'identifiants SSH ou cloud sont refusés.",
+        "files_with_no_extension_at_all_are_also_read_as": "Les fichiers sans aucune extension sont également lus comme du texte brut.",
+        "hidden_folders": "Dossiers masqués",
+        "matched_against_the_filename_case_insensitively": "Comparés au nom de fichier, sans tenir compte de la casse.",
+        "never_scanned_folders": "Dossiers jamais analysés",
+        "only_these_file_types_are_read": "Seuls ces types de fichiers sont lus",
+        "skipped_for_specific_source_types_only": "Ignorés uniquement pour certains types de source.",
+        "system_and_temporary_files": "Fichiers système et temporaires",
+        "the_newest_files_up_to_this_limit_are_indexed_ol": "Les fichiers les plus récents jusqu'à cette limite sont indexés ; les plus anciens au-delà sont ignorés.",
+        "these_rules_always_apply_and_are_not_configurabl": "Ces règles s'appliquent toujours et ne sont pas configurables. Utilisez le champ de motifs d'exclusion pour en ignorer davantage.",
+        "vault_metadata": "Métadonnées du coffre",
+        "what_gets_skipped_automatically": "Ce qui est ignoré automatiquement"
+      },
       "index": {
         "all_namespaces": "Tous les espaces de noms",
         "all_statuses": "Tous les statuts",

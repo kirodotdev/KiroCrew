@@ -31,7 +31,12 @@ from kiro_crew.knowledge.embedder import (
     floats_to_bytes,
 )
 from kiro_crew.knowledge.extractor import EntityExtractor
-from kiro_crew.knowledge.folder_watcher import SOURCE_TYPE_SKIP_DIRS
+from kiro_crew.knowledge.folder_watcher import (
+    DEFAULT_IGNORE_GLOBS,
+    DEFAULT_MAX_FILES,
+    HARD_SKIP_DIRS,
+    SOURCE_TYPE_SKIP_DIRS,
+)
 from kiro_crew.knowledge.ingestion import (
     IngestionPipeline,
     _redact,
@@ -1146,6 +1151,70 @@ async def get_config(request: web.Request) -> web.Response:
     })
 
 
+async def get_exclusions(request: web.Request) -> web.Response:
+    """GET /api/knowledge/exclusions -- what a folder scan skips by default.
+
+    Folder ingestion silently drops a great deal: nine hard-skipped directory
+    names, every hidden directory, OS junk files, anything outside the
+    extension allowlist, and more. None of that was visible to the user, who
+    could only infer it from a file count that didn't match their folder.
+
+    Every ``entries`` list below is derived from the **live** constant that
+    ``FolderWatcher._walk`` actually consults, so this endpoint cannot drift
+    from real behaviour -- adding a name to ``HARD_SKIP_DIRS`` surfaces it here
+    with no change to this handler. Labels are deliberately absent: ids are the
+    contract and the frontend owns presentation, so exclusion copy stays
+    translatable.
+
+    NOTE: this reports only the *defaults*. A source's own
+    ``properties.ignore_patterns`` is layered on top per-source.
+    """
+    return web.json_response({
+        "rules": [
+            {
+                "id": "hidden_dirs",
+                "kind": "rule",
+                "entries": [],
+            },
+            {
+                "id": "hard_skip_dirs",
+                "kind": "directories",
+                "entries": sorted(HARD_SKIP_DIRS),
+            },
+            {
+                "id": "source_type_dirs",
+                "kind": "directories_by_source_type",
+                "entries": [],
+                "entries_by_source_type": {
+                    stype: sorted(dirs) for stype, dirs in sorted(SOURCE_TYPE_SKIP_DIRS.items())
+                },
+            },
+            {
+                "id": "junk_files",
+                "kind": "globs",
+                "entries": list(DEFAULT_IGNORE_GLOBS),
+            },
+            {
+                "id": "extension_allowlist",
+                "kind": "allowlist",
+                "entries": sorted(FileReader.SUPPORTED - {''}),
+                "accepts_no_extension": '' in FileReader.SUPPORTED,
+            },
+            {
+                "id": "sensitive_paths",
+                "kind": "guard",
+                "entries": [],
+            },
+            {
+                "id": "file_cap",
+                "kind": "limit",
+                "entries": [],
+                "value": DEFAULT_MAX_FILES,
+            },
+        ],
+    })
+
+
 # ---------- Stats ----------
 
 
@@ -1643,6 +1712,7 @@ def setup_knowledge_routes(app: web.Application) -> None:
         app.on_startup.append(_start_artifact_ingest_async)
 
     app.router.add_get("/api/knowledge/config", get_config)
+    app.router.add_get("/api/knowledge/exclusions", get_exclusions)
     app.router.add_get("/api/knowledge/items", list_items)
     app.router.add_get("/api/knowledge/namespaces", list_namespaces)
     app.router.add_get("/api/knowledge/stats", get_stats)

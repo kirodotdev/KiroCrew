@@ -6,6 +6,7 @@ import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, SUPPORTED_FORMATS } from './helpers'
 import { parseSourceProps, shouldShowWordCount } from './knowledgeUtils'
+import ExclusionsDisclosure from './ExclusionsDisclosure'
 import type { Source, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
 import { i18nT } from '../../i18n/t'
@@ -405,6 +406,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 <input id="sources-recursive" aria-label={i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')} type="checkbox" checked={addRecursive} onChange={e => setAddRecursive(e.target.checked)} className="accent-accent" />
                 {i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')}
               </label>
+              <ExclusionsDisclosure />
               <div className="flex gap-2 justify-end">
                 <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
                 <button onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim()}

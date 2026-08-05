@@ -6701,6 +6701,26 @@
         "generate_now": "এখনই তৈরি করো",
         "generating": "তৈরি হচ্ছে…"
       },
+      "exclusionsDisclosure": {
+        "any_folder_whose_name_starts_with_a_dot_is_skipp": "যে ফোল্ডারের নাম ডট দিয়ে শুরু হয়, তা যেকোনো স্তরে সম্পূর্ণভাবে বাদ দেওয়া হয়।",
+        "anything_else_in_the_folder_is_ignored_including": "ফোল্ডারের বাকি সবকিছু উপেক্ষা করা হয়, ছবি, আর্কাইভ ও বাইনারি সহ।",
+        "credential_paths": "ক্রেডেনশিয়াল পাথ",
+        "dependency_build_and_version_control_directories": "ডিপেন্ডেন্সি, বিল্ড ও ভার্সন-কন্ট্রোল ডিরেক্টরি। রিবিল্ড একসাথে হাজারো ফাইল পুনর্লিখন করে, যা ইনডেক্সিং আটকে দিত।",
+        "file_limit": "ফাইল সীমা",
+        "files": "ফাইল",
+        "files_resolving_inside_protected_locations_such": "SSH বা ক্লাউড ক্রেডেনশিয়াল ডিরেক্টরির মতো সুরক্ষিত স্থানে সমাধান হওয়া ফাইল প্রত্যাখ্যান করা হয়।",
+        "files_with_no_extension_at_all_are_also_read_as": "কোনো এক্সটেনশন ছাড়া ফাইলগুলোও প্লেইন টেক্সট হিসেবে পড়া হয়।",
+        "hidden_folders": "লুকানো ফোল্ডার",
+        "matched_against_the_filename_case_insensitively": "বড়-ছোট হাতের পার্থক্য না করে ফাইলের নামের সাথে মেলানো হয়।",
+        "never_scanned_folders": "কখনও স্ক্যান না হওয়া ফোল্ডার",
+        "only_these_file_types_are_read": "শুধু এই ফাইল টাইপগুলো পড়া হয়",
+        "skipped_for_specific_source_types_only": "শুধু নির্দিষ্ট সোর্স টাইপের জন্য বাদ দেওয়া হয়।",
+        "system_and_temporary_files": "সিস্টেম ও অস্থায়ী ফাইল",
+        "the_newest_files_up_to_this_limit_are_indexed_ol": "এই সীমা পর্যন্ত সাম্প্রতিক ফাইল ইনডেক্স করা হয়; এর বাইরের পুরোনো ফাইল বাদ দেওয়া হয়।",
+        "these_rules_always_apply_and_are_not_configurabl": "এই নিয়মগুলো সর্বদা প্রযোজ্য এবং কনফিগারযোগ্য নয়। আরও বাদ দিতে ইগনোর প্যাটার্ন ফিল্ড ব্যবহার করুন।",
+        "vault_metadata": "ভল্ট মেটাডেটা",
+        "what_gets_skipped_automatically": "স্বয়ংক্রিয়ভাবে যা বাদ দেওয়া হয়"
+      },
       "index": {
         "all_namespaces": "সব নেমস্পেস",
         "all_statuses": "সব স্ট্যাটাস",
