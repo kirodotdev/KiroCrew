@@ -3626,6 +3626,10 @@ class SessionManager:
         """Remove a session's outbound mirror binding. Returns True iff present."""
         return self._session_map.clear_mirror_link(key)
 
+    def clear_mirror_links_at(self, link: ChannelLink) -> list[str]:
+        """Clear every session mirroring to an exact location; return cleared keys."""
+        return self._session_map.clear_mirror_links_at(link)
+
     # Backward-compat aliases used by callers not yet migrated
     async def set_channel(self, key: str, channel_id: str) -> None:
         """Set channel for a session. Prefer set_slack_link for new code."""

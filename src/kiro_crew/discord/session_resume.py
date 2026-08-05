@@ -147,7 +147,19 @@ class DiscordSessionResume:
     def leave_resumed_session(self, channel_id: str) -> str | None:
         key = self.resumed_session(channel_id)
         if key is not None:
-            self.sessions.clear_mirror_link(key)
+            # Free the LOCATION, not just the resume binding: the dashboard's
+            # mirror-link endpoint performs no occupancy check, so an outbound
+            # mirror can be laid onto a conversation a resumed session already
+            # holds. This early path bypasses the dispatcher's own sweep —
+            # clearing only *key* here would leave that mirror occupying the
+            # location and reproduce the "already attached" refusal after an
+            # apparently successful unlink.
+            cleared = self.sessions.clear_mirror_links_at(self.link_for(channel_id))
+            logger.info(
+                "discord: released resumed session %s (cleared bindings: %s)",
+                key,
+                ", ".join(cleared) or "none",
+            )
             self._push_slots()
         return key
 
@@ -344,14 +356,12 @@ class DiscordSessionResume:
             if candidate != key
         ]
         if occupants:
-            guidance = (
-                "Run `!unlink` first."
-                if any(candidate in inbound for candidate in occupants)
-                else "Unlink the existing dashboard mirror first."
-            )
+            # `!unlink` clears every binding at this location by value —
+            # resumed sessions and outbound dashboard mirrors alike — so one
+            # instruction is always followable from inside the conversation.
             return (
                 "⚠️ This Discord conversation is already attached to another "
-                f"session. {guidance}"
+                "session. Run `!unlink` first."
             )
         return None
 

@@ -133,6 +133,13 @@ class _Sessions:
         self.inbound_keys.discard(key)
         return self.mirror_links.pop(key, None) is not None
 
+    def clear_mirror_links_at(self, link: ChannelLink) -> list[str]:
+        cleared = self.find_mirror_sessions(link)
+        for key in cleared:
+            self.inbound_keys.discard(key)
+            self.mirror_links.pop(key, None)
+        return cleared
+
     def max_generation(self, bucket: str) -> int:
         return -1
 
@@ -1000,6 +1007,51 @@ async def test_choice_refuses_occupied_discord_conversation() -> None:
 
     assert "dashboard:chat-1" not in sessions.mirror_links
     assert any("!unlink" in text for _, text, _ in client.edits)
+
+
+@pytest.mark.asyncio
+async def test_choice_refusal_for_outbound_mirror_names_unlink() -> None:
+    # The outbound-only occupant used to get "Unlink the existing dashboard
+    # mirror first" — an instruction with no in-channel action. `!unlink` now
+    # clears outbound mirrors by location, so the guidance is unified and must
+    # name the command for BOTH occupant kinds.
+    dispatcher, client, sessions = _dispatcher({"u1"}, _log())
+    sessions.set_mirror_link(
+        "dashboard:other",
+        ChannelLink(channel_type="discord", channel_id="c1"),
+    )
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+
+    assert "dashboard:chat-1" not in sessions.mirror_links
+    assert any("Run `!unlink` first" in text for _, text, _ in client.edits)
+    # And the instruction is followable: the sweep frees the location, after
+    # which the conflict check no longer refuses.
+    sessions.clear_mirror_links_at(ChannelLink(channel_type="discord", channel_id="c1"))
+    conflict = dispatcher._session_resume._binding_conflict(
+        "dashboard:chat-1",
+        "chat one",
+        ChannelLink(channel_type="discord", channel_id="c1"),
+    )
+    assert conflict is None
+
+
+@pytest.mark.asyncio
+async def test_leave_resumed_session_frees_whole_location() -> None:
+    # The resumed-session release must clear co-located occupants too: the
+    # dashboard mirror-link endpoint performs no occupancy check, so an
+    # outbound mirror can share the location with the resume binding.
+    dispatcher, client, sessions = _dispatcher({"u1"}, _log())
+    loc = ChannelLink(channel_type="discord", channel_id="c1")
+    sessions.set_mirror_link("dashboard:resumed", loc, accepts_inbound=True)
+    sessions.set_mirror_link("dashboard:bystander", loc)
+
+    released = dispatcher._session_resume.leave_resumed_session("c1")
+
+    assert released == "dashboard:resumed"
+    assert sessions.mirror_links == {}
 
 
 @pytest.mark.asyncio

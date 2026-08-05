@@ -502,6 +502,12 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
 - `SessionManager.set_mirror_link(key, link)` / `clear_mirror_link(key)` /
   `get_mirror_link(key)` — persist/read the outbound `ChannelLink` (Slack routes
   to `set_slack_link` so its reverse index stays intact).
+- `SessionManager.clear_mirror_links_at(link)` — value-keyed sweep: clears
+  EVERY session whose mirror targets that exact non-Slack location and returns
+  the cleared keys. The write counterpart of `find_mirror_sessions`, and the
+  only clear that reaches a binding stranded under a key spelling the
+  conversation no longer derives (a rotated DM generation, a pre-unification
+  `dashboard:` row).
 - `POST /api/chat/slots/{name}/mirror-link` | `mirror-unlink` — dashboard-side
   endpoints (auth posture matches `slack-link`: under the `/api/chat`
   `mixed_internal_paths` prefix, never the strict `internal_paths` set).
@@ -516,10 +522,17 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   silently omitted (Teams before first inbound; WeCom proactive send); the menu
   keeps those rows keyboard-focusable, shows the reason inline, and announces
   the same reason instead of presenting an unexplained disabled action.
-- In-channel `/link` / `/unlink` — write/clear the link on the current
-  conversation's `dashboard_mirror_key`. `/link` does not control display,
-  history, or the inbound direction — only the outbound echo; `/unlink` changes
-  nothing else, since the two sids already exist independently.
+- In-channel `/link` / `/unlink` — `/link` writes the link on the current
+  conversation's `dashboard_mirror_key`; it does not control display, history,
+  or the inbound direction — only the outbound echo. `/unlink` frees the
+  LOCATION via the shared `messaging.link.release_conversation_location`
+  helper (one implementation for every DM dispatcher): after the key-addressed
+  clears it sweeps every binding whose mirror targets this conversation
+  (`clear_mirror_links_at`), including a binding stranded under a rotated DM
+  generation and another dashboard session's outbound mirror into the
+  conversation — the same occupant set the Discord resume conflict check
+  refuses on, so its "Run `!unlink` first" guidance is always followable. The
+  reply reports the count when more than one binding was cleared.
 
 **Delivery** (`chat_runner._deliver_cross_surface_reply` /
 `_deliver_cross_surface_user_message`, via the shared `_resolve_mirror_target`
