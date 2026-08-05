@@ -532,7 +532,7 @@ export default function AppDetailPage() {
               </span>
               {deniedByPolicy ? (
                 <div className="mt-2">
-                  <Btn danger onClick={() => navigate('/settings?tab=security')}>
+                  <Btn danger onClick={() => navigate('/settings?tab=security&section=apps')}>
                     {i18nT('pages.appDetailPage.open_security_settings')}
                   </Btn>
                 </div>

@@ -8560,7 +8560,19 @@
         "third_party_apps_tip": "适用于所有非 Kiro Crew 内置的应用。内置应用不受影响，无论此开关状态如何都照常工作。",
         "third_party_apps_on_warning": "这会信任所有第三方应用，包括你以后才安装的，而不只是你正要启动那一个。受信任应用与 Kiro Crew 拥有同等访问权限：你的文件、你保存的凭据，以及网络。",
         "third_party_apps_scope_note": "在下一次加载应用代码时生效。重新关闭后，Kiro Crew 不再放行这些代码；已在运行的应用会持续到被关闭或 Kiro Crew 重启。",
-        "third_party_apps_save_failed": "无法保存该设置。"
+        "third_party_apps_save_failed": "无法保存该设置。",
+        "section_group_status": "状态",
+        "section_group_your_settings": "你的设置",
+        "section_group_enforced": "强制生效",
+        "section_group_reference": "参考",
+        "security_sections": "安全分区",
+        "search_rules_placeholder": "搜索规则、模式或分类…",
+        "no_rules_match": "没有规则匹配“{{query}}”。",
+        "custom_patterns_hidden_by_filter": "当前筛选条件隐藏了你的自定义模式。",
+        "built_in_rules_enforced_note": "在你的退出选项和任何策略固定之后，当前有 {{total}} 条内置规则中的 {{enabled}} 条正在生效。",
+        "custom_patterns_counted_separately": "你的自定义模式在“拒绝的命令”中单独计数。",
+        "state_allowed": "已允许",
+        "state_blocked": "已阻止"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "取消",

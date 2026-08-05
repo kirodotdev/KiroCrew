@@ -181,7 +181,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: s
               </div>
               <button
                 className="mt-1.5 text-[11px] text-muted hover:text-text underline bg-transparent border-none cursor-pointer p-0"
-                onClick={() => { onOpenChange(false); navigate('/settings?tab=security') }}
+                onClick={() => { onOpenChange(false); navigate('/settings?tab=security&section=approval') }}
               >
                 {i18nT('components.approvalModePicker.configure_duration')}
               </button>

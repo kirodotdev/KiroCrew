@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks, ArrowLeft, Boxes, BookOpen } from 'lucide-react'
 import { useAppSelector } from '../../store'
+import { useContainerWidth } from '../../hooks/useContainerWidth'
 import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
 import { SettingsSection, SettingsCard } from '../../components/settings'
 import Modal from '../../components/Modal'
@@ -236,49 +238,77 @@ function BuiltinDenyRow({ rule, dimmed, onToggle }: { rule: DeniedCommandRule; d
 
 /** A collapsible category group (Card A) — folds its rules under a header that
  *  shows the category name, an enabled/total count, and a pinned-lock hint.
- *  Collapsed by default to keep the 137-rule panel scannable. */
+ *  Collapsed by default to keep the 137-rule panel scannable.
+ *
+ *  `rules` is what renders; `allRules` is the category as SHIPPED and is what the
+ *  count badge, the pinned-lock hint and the all-off warning are computed from.
+ *  They differ only while a search filter is active, and the distinction is
+ *  load-bearing: reporting "2/2" for two search hits inside a 21-rule category
+ *  would tell the reader the gate is 19 rules smaller than it is. */
 function CategoryGroup({
   category,
   rules,
+  allRules,
   open,
   onToggleOpen,
   disableAll,
   onRuleToggle,
+  collapsible = true,
 }: {
   category: string
   rules: DeniedCommandRule[]
+  allRules?: DeniedCommandRule[]
   open: boolean
   onToggleOpen: () => void
   disableAll: boolean
   onRuleToggle: (rule: DeniedCommandRule, next: boolean) => void
+  /** False while a search filter is active: matches are force-open, so a
+   *  chevron would be a control that visibly does nothing. Render a plain
+   *  header instead of an inert button. */
+  collapsible?: boolean
 }) {
   const Chevron = open ? ChevronDown : ChevronRight
-  const enabled = rules.filter(r => r.enabled).length
-  const pinned = rules.some(r => r.pinned)
+  const counted = allRules ?? rules
+  const enabled = counted.filter(r => r.enabled).length
+  const pinned = counted.some(r => r.pinned)
   // "off" when every non-pinned rule in the group is disabled.
   const allOff = enabled === 0
   return (
     <div className="border-t border-border first:border-t-0">
-      <button
-        type="button"
-        className="w-full flex items-center gap-2 py-2.5 bg-transparent border-none cursor-pointer text-left group"
-        onClick={onToggleOpen}
-        aria-expanded={open}
-        aria-label={open
-          ? i18nT('pages.settings.securityPanel.collapse_category_rules', { category: categoryLabel(category) })
-          : i18nT('pages.settings.securityPanel.expand_category_rules', { category: categoryLabel(category) })}
-      >
-        <Chevron size={14} className="shrink-0 text-muted group-hover:text-text transition-colors" />
-        <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted group-hover:text-text transition-colors">
-          {categoryLabel(category)}
-        </span>
-        {pinned && <Lock size={12} className="shrink-0 text-muted" />}
-        <span className="flex-1" />
-        {allOff && !pinned && (
-          <span className="text-[11px] text-warn">{i18nT('pages.settings.securityPanel.off')}</span>
-        )}
-        <Badge variant="muted" className="tabular-nums">{enabled}/{rules.length}</Badge>
-      </button>
+      {collapsible ? (
+        <button
+          type="button"
+          className="w-full flex items-center gap-2 py-2.5 bg-transparent border-none cursor-pointer text-left group"
+          onClick={onToggleOpen}
+          aria-expanded={open}
+          aria-label={open
+            ? i18nT('pages.settings.securityPanel.collapse_category_rules', { category: categoryLabel(category) })
+            : i18nT('pages.settings.securityPanel.expand_category_rules', { category: categoryLabel(category) })}
+        >
+          <Chevron size={14} className="shrink-0 text-muted group-hover:text-text transition-colors" />
+          <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted group-hover:text-text transition-colors">
+            {categoryLabel(category)}
+          </span>
+          {pinned && <Lock size={12} className="shrink-0 text-muted" />}
+          <span className="flex-1" />
+          {allOff && !pinned && (
+            <span className="text-[11px] text-warn">{i18nT('pages.settings.securityPanel.off')}</span>
+          )}
+          <Badge variant="muted" className="tabular-nums">{enabled}/{counted.length}</Badge>
+        </button>
+      ) : (
+        <div className="w-full flex items-center gap-2 py-2.5 pl-[22px]">
+          <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted">
+            {categoryLabel(category)}
+          </span>
+          {pinned && <Lock size={12} className="shrink-0 text-muted" />}
+          <span className="flex-1" />
+          {allOff && !pinned && (
+            <span className="text-[11px] text-warn">{i18nT('pages.settings.securityPanel.off')}</span>
+          )}
+          <Badge variant="muted" className="tabular-nums">{enabled}/{counted.length}</Badge>
+        </div>
+      )}
       {open && (
         <div className="divide-y divide-border pb-1.5 pl-6">
           {rules.map(rule => (
@@ -313,9 +343,13 @@ function CustomDenyRow({ rule, onToggle, onDelete }: { rule: DeniedUserRule; onT
   )
 }
 
-/** Add-a-custom-pattern input with client-side RegExp validation (Card B). */
-function AddDenyInput({ onAdd, busy }: { onAdd: (pattern: string) => void; busy: boolean }) {
-  const [value, setValue] = useState('')
+/** Add-a-custom-pattern input with client-side RegExp validation (Card B).
+ *
+ *  `value` is CONTROLLED from the panel shell rather than held here, because the
+ *  rules section unmounts when the reader picks another rail section — local
+ *  state would silently discard a half-typed deny pattern. `error` stays local:
+ *  it is derived from the value and costs nothing to recompute. */
+function AddDenyInput({ value, onChange, onAdd, busy }: { value: string; onChange: (next: string) => void; onAdd: (pattern: string) => void; busy: boolean }) {
   const [error, setError] = useState('')
 
   const submit = () => {
@@ -329,7 +363,7 @@ function AddDenyInput({ onAdd, busy }: { onAdd: (pattern: string) => void; busy:
     }
     setError('')
     onAdd(pattern)
-    setValue('')
+    onChange('')
   }
 
   return (
@@ -337,7 +371,7 @@ function AddDenyInput({ onAdd, busy }: { onAdd: (pattern: string) => void; busy:
       <div className="flex items-center gap-2">
         <Input
           value={value}
-          onChange={e => { setValue(e.target.value); if (error) setError('') }}
+          onChange={e => { onChange(e.target.value); if (error) setError('') }}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submit() } }}
           placeholder={i18nT('pages.settings.securityPanel.add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi')}
           aria-label={i18nT('pages.settings.securityPanel.custom_deny_pattern')}
@@ -885,10 +919,17 @@ type ConfirmTarget =
   | { kind: 'builtin'; id: string; description: string }
   | { kind: 'disable-all' }
 
-export function SecurityPanel() {
+/* ── Live Security Posture section ── */
+
+/** The two single-valued modes plus the live posture registry.
+ *
+ *  Reads `denied-commands` on the SAME query key the rules section uses, so the
+ *  two share one cache entry and one request rather than racing: the deny gate's
+ *  pill has to show the EFFECTIVE count (after opt-outs), which only that
+ *  endpoint knows. */
+function PostureSection() {
   const status = useAppSelector(s => s.dashboard.status)
   const yolo = status?.yolo ?? false
-  const qc = useQueryClient()
   const { data: dc, isError: dcError } = useQuery<DeniedCommandsData>({ queryKey: ['denied-commands'], queryFn: api.deniedCommands })
   // The posture registry supersedes the old flat `securityStats` counts — it
   // carries the same numbers PLUS the items behind them, so the panel reads one
@@ -901,12 +942,115 @@ export function SecurityPanel() {
     staleTime: 300_000,
   })
   const controls = posture?.controls ?? []
+  // Enabled BUILT-INS only. `dc.effective_count` is builtins + user_added, which
+  // is the right number for "rules enforced overall" but wrong for the posture
+  // row, whose denominator is the built-in table: one custom deny made it read
+  // "138 of 137 built-in rules".
+  const enabledBuiltins = (dc?.builtins ?? []).filter(r => r.enabled).length
+
+  return (
+    <SettingsSection title={i18nT('pages.settings.securityPanel.live_security_posture')}>
+      <SettingsCard>
+        {/* Non-expandable rows: single-valued modes, not counted sets. */}
+        <StatusRow icon={<Lock size={14} />} label={i18nT('pages.settings.securityPanel.process_sandbox')} value={i18nT('pages.settings.securityPanel.standard')} variant="ok"
+          href={`${CODE_BASE}/src/kiro_crew/sandbox.py`} />
+        <StatusRow
+          icon={yolo ? <ShieldAlert size={14} /> : <ShieldCheck size={14} />}
+          label={i18nT('pages.settings.securityPanel.tool_approval')}
+          value={yolo ? i18nT('pages.settings.securityPanel.yolo_auto_approve') : i18nT('pages.settings.securityPanel.interactive')}
+          variant={yolo ? 'err' : 'ok'}
+        />
+
+        {/* Expandable rows, driven entirely by the live posture registry — each
+            count is derived server-side from the control it describes, and
+            clicking it reveals the concrete list. */}
+        <div className="mt-1 pt-1 border-t border-border">
+          <div className="text-[12px] text-muted pb-1 leading-relaxed">
+            {i18nT('pages.settings.securityPanel.click_any_control_to_see_exactly_what_it_covers')}
+          </div>
+          {postureError ? (
+            <div className="flex items-start gap-2.5 py-2">
+              <AlertTriangle size={14} className="lucide-inline text-warn shrink-0 mt-0.5" />
+              <span className="text-[12px] text-muted leading-relaxed">
+                {i18nT('pages.settings.securityPanel.security_posture_detail_is_temporarily_unavailab')}
+              </span>
+            </div>
+          ) : postureLoading ? (
+            <div className="text-[12px] text-muted py-2">{i18nT('pages.settings.securityPanel.loading_security_posture')}</div>
+          ) : (
+            controls.map(control => (
+              <PostureDisclosureRow
+                key={control.key}
+                control={control}
+                icon={POSTURE_ICONS[control.key] ?? <ShieldCheck size={14} />}
+                // The registry counts the SHIPPED built-in rule table; the live
+                // effective count reflects the user's opt-outs and policy pins,
+                // so the pill must show the latter to match what is enforced.
+                //
+                // Three distinct states, because conflating them misreports the
+                // gate in one direction or the other:
+                //   resolved  → enabledBuiltins (what is actually enforced)
+                //   LOADING   → undefined, i.e. fall back to the server's shipped
+                //               total. Honest while in flight: it is the real rule
+                //               count, just not yet narrowed by opt-outs. Passing
+                //               null here instead would paint "unavailable" over a
+                //               fully-enforced gate — the misleading-security-signal
+                //               failure the governance viewer also guards against.
+                //   ERROR     → null, i.e. "unavailable". We cannot know the opt-out
+                //               state, so claiming the shipped total is enforced
+                //               would over-report — a rule the user disabled would
+                //               be counted as active, indefinitely (the query has
+                //               stopped retrying).
+                //
+                // Counts ENABLED BUILTINS, not `dc.effective_count`: that field is
+                // builtins + user_added, so a single custom deny made this row read
+                // "138 of 137 built-in rules" — a nonsense ratio against a
+                // built-in-only denominator. Custom rules have their own card in
+                // the Denied Commands section.
+                countOverride={control.key !== 'denied_commands'
+                  ? undefined
+                  : dc ? enabledBuiltins : dcError ? null : undefined}
+                // The custom-pattern sentence carries no count on purpose: a count
+                // here would need per-locale plural forms to say "1 pattern" vs
+                // "2 patterns" (the previous raw-English version read "1 custom
+                // pattern are"), and the number is already on the rail and in the
+                // Denied Commands pane. This sentence's job is to explain the
+                // DENOMINATOR, not to enumerate.
+                note={control.key === 'denied_commands' && dc
+                  ? i18nT('pages.settings.securityPanel.built_in_rules_enforced_note', {
+                    enabled: enabledBuiltins,
+                    total: dc.builtins.length,
+                  })
+                    + (dc.user_added.length > 0
+                      ? ' ' + i18nT('pages.settings.securityPanel.custom_patterns_counted_separately')
+                      : '')
+                  : undefined}
+              />
+            ))
+          )}
+        </div>
+      </SettingsCard>
+    </SettingsSection>
+  )
+}
+
+/* ── Denied Commands section ────────────────────────────────────────────────
+ *
+ * Owns its own query, mutations and confirm modal so the rail can mount it on
+ * demand: the built-in rule table is by far the panel's largest surface (137
+ * rules across 10 categories) and there is no reason to build it while the
+ * reader is looking at something else.
+ */
+function DeniedCommandsSection({ draft, onDraftChange }: { draft: string; onDraftChange: (next: string) => void }) {
+  const qc = useQueryClient()
+  const { data: dc } = useQuery<DeniedCommandsData>({ queryKey: ['denied-commands'], queryFn: api.deniedCommands })
 
   const [confirm, setConfirm] = useState<ConfirmTarget | null>(null)
   const [ack, setAck] = useState(false)
-  // Category accordion state (Card A). Categories are collapsed by default —
-  // an id in this set is EXPANDED. Keeps the 137-rule list scannable.
+  // Category accordion state. Categories are collapsed by default — an id in
+  // this set is EXPANDED. Keeps the 137-rule list scannable.
   const [expandedCats, setExpandedCats] = useState<Set<string>>(() => new Set())
+  const [filter, setFilter] = useState('')
 
   // The acknowledgment checkbox resets whenever the modal opens or closes.
   useEffect(() => { setAck(false) }, [confirm])
@@ -945,13 +1089,37 @@ export function SecurityPanel() {
     return groups
   }, [dc])
 
+  const query = filter.trim().toLowerCase()
+  const filtering = query.length > 0
+
+  /** Categories reduced to their matching rules. A category whose NAME matches
+   *  keeps all of its rules, so searching "credential" reads as a category jump
+   *  rather than a partial list. */
+  const visibleGroups = useMemo(() => {
+    if (!query) return grouped
+    const out: Record<string, DeniedCommandRule[]> = {}
+    for (const [category, rules] of Object.entries(grouped)) {
+      const hits = categoryLabel(category).toLowerCase().includes(query)
+        ? rules
+        : rules.filter(r =>
+          r.description.toLowerCase().includes(query)
+          || r.pattern.toLowerCase().includes(query))
+      if (hits.length > 0) out[category] = hits
+    }
+    return out
+  }, [grouped, query])
+
+  const visibleUserRules = useMemo(() => {
+    const rules = dc?.user_added ?? []
+    if (!query) return rules
+    return rules.filter(r => r.pattern.toLowerCase().includes(query))
+  }, [dc, query])
+
+  const matchedRules = Object.values(visibleGroups).reduce((n, rules) => n + rules.length, 0)
+  const nothingMatches = filtering && matchedRules === 0 && visibleUserRules.length === 0
+
   const disableAll = dc?.disable_all ?? false
   const governanceLocked = dc?.governance_locked ?? false
-  // Enabled BUILT-INS only. `dc.effective_count` is builtins + user_added, which
-  // is the right number for "rules enforced overall" but wrong for the posture
-  // row, whose denominator is the built-in table: one custom deny made it read
-  // "138 of 137 built-in rules".
-  const enabledBuiltins = (dc?.builtins ?? []).filter(r => r.enabled).length
 
   // Enabling a rule (or re-enabling all built-ins) is immediate; disabling
   // opens a confirm modal. `next` is the toggle's new value.
@@ -978,142 +1146,61 @@ export function SecurityPanel() {
       + 'defense-in-depth controls.'
 
   return (
-    <>
-      {/* ── Data Classification Warning ── */}
-      <div className="mb-5 bg-bg-elevated border rounded-lg p-4 flex items-start gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-        <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
-        <div>
-          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.securityPanel.data_classification_notice')}</div>
-          <div className="text-[12px] text-muted mt-1 leading-relaxed">
-            {i18nT('pages.settings.securityPanel.do_not_enter_highly_sensitive_or_restricted_data')}
+    <SettingsSection title={i18nT('pages.settings.securityPanel.denied_commands')}>
+      {/* Card A — Built-in denies */}
+      <SettingsCard>
+        <div className="flex items-center justify-between py-1.5">
+          <div className="flex-1 min-w-0 mr-4">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.disable_all_built_in_denies')}</span>
+              {governanceLocked && <Lock size={13} className="text-muted" />}
+            </div>
+            <div className="text-[12px] text-muted mt-0.5 leading-relaxed">
+              {governanceLocked
+                ? i18nT('pages.settings.securityPanel.turn_off_every_rule_governance_locked')
+                : i18nT('pages.settings.securityPanel.turn_off_every_rule')}
+            </div>
           </div>
+          {/* Disable-all stays available even when governance-locked: the
+              backend keeps policy-pinned rules enforced under disable_all
+              (compute_effective_denied), so a pin on one rule must not block
+              opting every OTHER (unpinned) rule out. When locked, show the
+              pinned-policy tooltip alongside the still-functional toggle. */}
+          <span className="flex items-center gap-1.5 shrink-0">
+            {governanceLocked && <InfoTip text={i18nT(PINNED_TOOLTIP_KEY)} />}
+            <Toggle checked={disableAll} onChange={onDisableAllToggle} disabled={!dc} label={i18nT('pages.settings.securityPanel.disable_all_built_in_denies')} />
+          </span>
         </div>
-      </div>
 
-      {/* ── Live Security Posture ── */}
-      <SettingsSection title={i18nT('pages.settings.securityPanel.live_security_posture')}>
-        <SettingsCard>
-          {/* Non-expandable rows: single-valued modes, not counted sets. */}
-          <StatusRow icon={<Lock size={14} />} label={i18nT('pages.settings.securityPanel.process_sandbox')} value={i18nT('pages.settings.securityPanel.standard')} variant="ok"
-            href={`${CODE_BASE}/src/kiro_crew/sandbox.py`} />
-          <StatusRow
-            icon={yolo ? <ShieldAlert size={14} /> : <ShieldCheck size={14} />}
-            label={i18nT('pages.settings.securityPanel.tool_approval')}
-            value={yolo ? i18nT('pages.settings.securityPanel.yolo_auto_approve') : i18nT('pages.settings.securityPanel.interactive')}
-            variant={yolo ? 'err' : 'ok'}
-          />
+        <div className="text-[12px] text-muted mt-1 mb-2 leading-relaxed">
+          {i18nT('pages.settings.securityPanel.disabling_a_rule_that_overlaps_an_always_on_cont')}
+        </div>
 
-          {/* Expandable rows, driven entirely by the live posture registry — each
-              count is derived server-side from the control it describes, and
-              clicking it reveals the concrete list. */}
-          <div className="mt-1 pt-1 border-t border-border">
-            <div className="text-[12px] text-muted pb-1 leading-relaxed">
-              {i18nT('pages.settings.securityPanel.click_any_control_to_see_exactly_what_it_covers')}
+        {!dc ? (
+          <div className="text-[12px] text-muted py-2">{i18nT('pages.settings.securityPanel.loading_built_in_rules')}</div>
+        ) : (
+          <>
+            <div className="mb-1.5">
+              <Input
+                value={filter}
+                onChange={e => setFilter(e.target.value)}
+                placeholder={i18nT('pages.settings.securityPanel.search_rules_placeholder')}
+                aria-label={i18nT('pages.settings.securityPanel.search_rules_placeholder')}
+              />
             </div>
-            {postureError ? (
-              <div className="flex items-start gap-2.5 py-2">
-                <AlertTriangle size={14} className="lucide-inline text-warn shrink-0 mt-0.5" />
-                <span className="text-[12px] text-muted leading-relaxed">
-                  {i18nT('pages.settings.securityPanel.security_posture_detail_is_temporarily_unavailab')}
-                </span>
-              </div>
-            ) : postureLoading ? (
-              <div className="text-[12px] text-muted py-2">{i18nT('pages.settings.securityPanel.loading_security_posture')}</div>
-            ) : (
-              controls.map(control => (
-                <PostureDisclosureRow
-                  key={control.key}
-                  control={control}
-                  icon={POSTURE_ICONS[control.key] ?? <ShieldCheck size={14} />}
-                  // The registry counts the SHIPPED built-in rule table; the live
-                  // effective count reflects the user's opt-outs and policy pins,
-                  // so the pill must show the latter to match what is enforced.
-                  //
-                  // Three distinct states, because conflating them misreports the
-                  // gate in one direction or the other:
-                  //   resolved  → enabledBuiltins (what is actually enforced)
-                  //   LOADING   → undefined, i.e. fall back to the server's shipped
-                  //               total. Honest while in flight: it is the real rule
-                  //               count, just not yet narrowed by opt-outs. Passing
-                  //               null here instead would paint "unavailable" over a
-                  //               fully-enforced gate — the misleading-security-signal
-                  //               failure the governance viewer also guards against.
-                  //   ERROR     → null, i.e. "unavailable". We cannot know the opt-out
-                  //               state, so claiming the shipped total is enforced
-                  //               would over-report — a rule the user disabled would
-                  //               be counted as active, indefinitely (the query has
-                  //               stopped retrying).
-                  //
-                  // Counts ENABLED BUILTINS, not `dc.effective_count`: that field is
-                  // builtins + user_added, so a single custom deny made this row read
-                  // "138 of 137 built-in rules" — a nonsense ratio against a
-                  // built-in-only denominator. Custom rules have their own card below.
-                  countOverride={control.key !== 'denied_commands'
-                    ? undefined
-                    : dc ? enabledBuiltins : dcError ? null : undefined}
-                  note={control.key === 'denied_commands' && dc
-                    ? `${enabledBuiltins} of ${dc.builtins.length} built-in rules are currently enforced, after your opt-outs and any policy pins.`
-                      + (dc.user_added.length > 0
-                        ? ` Your ${dc.user_added.length} custom ${dc.user_added.length === 1 ? 'pattern' : 'patterns'} are counted separately below.`
-                        : '')
-                    : undefined}
-                />
-              ))
-            )}
-          </div>
-        </SettingsCard>
-      </SettingsSection>
-
-      {/* ── Governance Policy (read-only effective ceiling) ── */}
-      <SettingsSection title={i18nT('pages.settings.securityPanel.yolo_auto_approve')}>
-        <YoloDurationCard />
-      </SettingsSection>
-
-      <GovernancePolicyViewer />
-
-      {/* ── Third-party app execution ── */}
-      <SettingsSection title={i18nT('pages.settings.securityPanel.third_party_apps_section')}>
-        <ThirdPartyAppsCard />
-      </SettingsSection>
-
-
-      {/* ── Denied Commands ── */}
-      <SettingsSection title={i18nT('pages.settings.securityPanel.denied_commands')}>
-        {/* Card A — Built-in denies */}
-        <SettingsCard>
-          <div className="flex items-center justify-between py-1.5">
-            <div className="flex-1 min-w-0 mr-4">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.disable_all_built_in_denies')}</span>
-                {governanceLocked && <Lock size={13} className="text-muted" />}
-              </div>
-              <div className="text-[12px] text-muted mt-0.5 leading-relaxed">
-                {governanceLocked
-                  ? i18nT('pages.settings.securityPanel.turn_off_every_rule_governance_locked')
-                  : i18nT('pages.settings.securityPanel.turn_off_every_rule')}
-              </div>
-            </div>
-            {/* Disable-all stays available even when governance-locked: the
-                backend keeps policy-pinned rules enforced under disable_all
-                (compute_effective_denied), so a pin on one rule must not block
-                opting every OTHER (unpinned) rule out. When locked, show the
-                pinned-policy tooltip alongside the still-functional toggle. */}
-            <span className="flex items-center gap-1.5 shrink-0">
-              {governanceLocked && <InfoTip text={i18nT(PINNED_TOOLTIP_KEY)} />}
-              <Toggle checked={disableAll} onChange={onDisableAllToggle} disabled={!dc} label={i18nT('pages.settings.securityPanel.disable_all_built_in_denies')} />
-            </span>
-          </div>
-
-          <div className="text-[12px] text-muted mt-1 mb-2 leading-relaxed">
-            {i18nT('pages.settings.securityPanel.disabling_a_rule_that_overlaps_an_always_on_cont')}
-          </div>
-
-          {!dc ? (
-            <div className="text-[12px] text-muted py-2">{i18nT('pages.settings.securityPanel.loading_built_in_rules')}</div>
-          ) : (
-            <>
-              <div className="flex items-center justify-between mt-1 mb-0.5">
-                <span className="text-[11px] text-muted">{Object.keys(grouped).length} {i18nT('pages.settings.securityPanel.categories')} {dc.builtins.length} {i18nT('pages.settings.securityPanel.rules')}</span>
+            <div className="flex items-center justify-between mt-1 mb-0.5">
+              {/* While filtering, report matched-of-total as a RATIO — but keep
+                  every category badge on its full enabled/total, so a filter can
+                  never make the gate read as smaller than it is. A ratio also
+                  sidesteps count grammar, so this needs no plural forms. */}
+              <span className="text-[11px] text-muted tabular-nums">
+                {filtering
+                  ? <>{matchedRules} / {dc.builtins.length} {i18nT('pages.settings.securityPanel.rules')}</>
+                  : <>{Object.keys(grouped).length} {i18nT('pages.settings.securityPanel.categories')} {dc.builtins.length} {i18nT('pages.settings.securityPanel.rules')}</>}
+              </span>
+              {/* Hidden while filtering: matches render open regardless, so both
+                  controls would record state the user cannot see take effect. */}
+              {!filtering && (
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
@@ -1130,79 +1217,71 @@ export function SecurityPanel() {
                     {i18nT('pages.settings.securityPanel.collapse_all')}
                   </button>
                 </div>
-              </div>
-              <div>
-                {Object.entries(grouped).map(([category, rules]) => (
-                  <CategoryGroup
-                    key={category}
-                    category={category}
-                    rules={rules}
-                    open={expandedCats.has(category)}
-                    onToggleOpen={() => setExpandedCats(prev => {
-                      const next = new Set(prev)
-                      if (next.has(category)) next.delete(category)
-                      else next.add(category)
-                      return next
-                    })}
-                    disableAll={disableAll}
-                    onRuleToggle={onBuiltinToggle}
-                  />
-                ))}
-              </div>
-            </>
-          )}
-        </SettingsCard>
-
-        {/* Card B — Your custom denies */}
-        <SettingsCard>
-          <div className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.your_custom_denies')}</div>
-          <div className="text-[12px] text-muted mt-0.5 mb-1 leading-relaxed">
-            {i18nT('pages.settings.securityPanel.add_your_own_deny_patterns_python_compatible_reg')}
-          </div>
-          {dc && dc.user_added.length > 0 && (
-            <div className="divide-y divide-border">
-              {dc.user_added.map(rule => (
-                <CustomDenyRow
-                  key={rule.id}
-                  rule={rule}
-                  onToggle={next => toggleUser.mutate({ id: rule.id, enabled: next })}
-                  onDelete={() => deleteUser.mutate(rule.id)}
+              )}
+            </div>
+            <div>
+              {Object.entries(visibleGroups).map(([category, rules]) => (
+                <CategoryGroup
+                  key={category}
+                  category={category}
+                  rules={rules}
+                  // The badge's denominator is the SHIPPED category, never the
+                  // filtered slice: "2/2" on a search hit inside a 21-rule
+                  // category would misreport how much of that category is
+                  // enforced.
+                  allRules={grouped[category]}
+                  // A filter that leaves its hits folded away is a filter that
+                  // did nothing, so matches render open regardless of the
+                  // accordion state the user left behind.
+                  open={filtering || expandedCats.has(category)}
+                  onToggleOpen={() => setExpandedCats(prev => {
+                    const next = new Set(prev)
+                    if (next.has(category)) next.delete(category)
+                    else next.add(category)
+                    return next
+                  })}
+                  disableAll={disableAll}
+                  onRuleToggle={onBuiltinToggle}
+                  collapsible={!filtering}
                 />
               ))}
             </div>
-          )}
-          <AddDenyInput onAdd={pattern => addUser.mutate(pattern)} busy={addUser.isPending} />
-        </SettingsCard>
-      </SettingsSection>
+            {nothingMatches && (
+              <div className="text-[12px] text-muted py-2">
+                {i18nT('pages.settings.securityPanel.no_rules_match', { query: filter.trim() })}
+              </div>
+            )}
+          </>
+        )}
+      </SettingsCard>
 
-      {/* ── Defense-in-Depth Layers ── */}
-      <SettingsSection title={i18nT('pages.settings.securityPanel.defense_in_depth_architecture')}>
-        <SettingsCard>
-          <div className="text-[12px] text-muted mb-3 leading-relaxed">
-            {i18nT('pages.settings.securityPanel.kirocrew_implements_6_security_layers_each_layer')}
-          </div>
+      {/* Card B — Your custom denies */}
+      <SettingsCard>
+        <div className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.your_custom_denies')}</div>
+        <div className="text-[12px] text-muted mt-0.5 mb-1 leading-relaxed">
+          {i18nT('pages.settings.securityPanel.add_your_own_deny_patterns_python_compatible_reg')}
+        </div>
+        {visibleUserRules.length > 0 && (
           <div className="divide-y divide-border">
-            {FEATURES.map(f => <FeatureRow key={f.key} feature={f} />)}
-          </div>
-        </SettingsCard>
-      </SettingsSection>
-
-      {/* ── Documentation Links ── */}
-      <SettingsSection title={i18nT('pages.settings.securityPanel.documentation')}>
-        <SettingsCard>
-          <div className="flex flex-col gap-2">
-            {[
-              { label: i18nT('pages.settings.securityPanel.security_deep_dive'), href: `${CODE_BASE}/docs/architecture/security-deep-dive.md` },
-              { label: i18nT('pages.settings.securityPanel.security_module_spec'), href: `${CODE_BASE}/docs/system-specs/modules/security.md` },
-            ].map(link => (
-              <a key={link.label} href={link.href} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-[13px] text-accent hover:underline py-1">
-                <ExternalLink size={12} />
-                {link.label}
-              </a>
+            {visibleUserRules.map(rule => (
+              <CustomDenyRow
+                key={rule.id}
+                rule={rule}
+                onToggle={next => toggleUser.mutate({ id: rule.id, enabled: next })}
+                onDelete={() => deleteUser.mutate(rule.id)}
+              />
             ))}
           </div>
-        </SettingsCard>
-      </SettingsSection>
+        )}
+        {/* Say so when the filter is what emptied this card, rather than letting
+            it read as "you have no custom patterns". */}
+        {filtering && visibleUserRules.length === 0 && (dc?.user_added.length ?? 0) > 0 && (
+          <div className="text-[12px] text-muted py-1.5">
+            {i18nT('pages.settings.securityPanel.custom_patterns_hidden_by_filter')}
+          </div>
+        )}
+        <AddDenyInput value={draft} onChange={onDraftChange} onAdd={pattern => addUser.mutate(pattern)} busy={addUser.isPending} />
+      </SettingsCard>
 
       {/* ── Confirm modal (disable a built-in rule / disable all) ── */}
       <Modal
@@ -1221,12 +1300,336 @@ export function SecurityPanel() {
           <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
           <div className="text-[13px] text-text leading-relaxed">{confirmBody}</div>
         </div>
-        {/* eslint-disable-next-line jsx-a11y/label-has-associated-control, jsx-a11y/label-has-for -- the Checkbox control is nested inside the label */}
+        {/* eslint-disable-next-line jsx-a11y/label-has-for -- the Checkbox control is nested inside the label */}
         <label className="flex items-center gap-2.5 mt-4 cursor-pointer">
           <Checkbox checked={ack} onChange={e => setAck(e.target.checked)} />
           <span className="text-[13px] text-text">{i18nT('pages.settings.securityPanel.i_understand_this_weakens_kirocrew_s_protection')}</span>
         </label>
       </Modal>
-    </>
+    </SettingsSection>
+  )
+}
+
+/* ── Defense-in-depth section ── */
+function LayersSection() {
+  return (
+    <SettingsSection title={i18nT('pages.settings.securityPanel.defense_in_depth_architecture')}>
+      <SettingsCard>
+        <div className="text-[12px] text-muted mb-3 leading-relaxed">
+          {i18nT('pages.settings.securityPanel.kirocrew_implements_6_security_layers_each_layer')}
+        </div>
+        <div className="divide-y divide-border">
+          {FEATURES.map(f => <FeatureRow key={f.key} feature={f} />)}
+        </div>
+      </SettingsCard>
+    </SettingsSection>
+  )
+}
+
+/* ── Documentation section ── */
+function DocsSection() {
+  return (
+    <SettingsSection title={i18nT('pages.settings.securityPanel.documentation')}>
+      <SettingsCard>
+        <div className="flex flex-col gap-2">
+          {[
+            { label: i18nT('pages.settings.securityPanel.security_deep_dive'), href: `${CODE_BASE}/docs/architecture/security-deep-dive.md` },
+            { label: i18nT('pages.settings.securityPanel.security_module_spec'), href: `${CODE_BASE}/docs/system-specs/modules/security.md` },
+          ].map(link => (
+            <a key={link.label} href={link.href} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-[13px] text-accent hover:underline py-1">
+              <ExternalLink size={12} />
+              {link.label}
+            </a>
+          ))}
+        </div>
+      </SettingsCard>
+    </SettingsSection>
+  )
+}
+
+/* ── Section registry ───────────────────────────────────────────────────────
+ *
+ * The panel is a list-detail inspector rather than one long scroll: it mixes
+ * things the user can change (approval, rules, third-party apps) with things
+ * that are enforced for them (the layers, the enterprise ceiling), and stacking
+ * both in one column gave a knob and a read-only fact identical visual weight.
+ * The rail states which is which before any row is read, and the two large
+ * tables (137 rules, ~20 governed scopes) get a pane instead of a fold.
+ */
+type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'apps' | 'layers' | 'governance' | 'docs'
+type SecuritySectionGroup = 'status' | 'yours' | 'enforced' | 'reference'
+
+interface SecuritySectionDef {
+  key: SecuritySectionKey
+  icon: React.ReactNode
+  group: SecuritySectionGroup
+}
+
+/**
+ * Catalog KEY per rail label — reusing each section's EXISTING heading key, not
+ * a new parallel set. The rail label and the pane's own `SettingsSection` title
+ * are the same words by construction, so they cannot drift, and translators are
+ * not asked to name the same section twice.
+ *
+ * Keys, not copy, and indexed inline at the `i18nT()` call for the reason given
+ * on `FEATURE_LABEL_KEY`: a module-scope `i18nT()` would freeze the boot
+ * language, and a key the i18n lint cannot resolve statically is a key it cannot
+ * verify exists.
+ */
+export const SECTION_LABEL_KEY: Record<SecuritySectionKey, string> = {
+  posture: 'pages.settings.securityPanel.live_security_posture',
+  approval: 'pages.settings.securityPanel.yolo_auto_approve',
+  rules: 'pages.settings.securityPanel.denied_commands',
+  apps: 'pages.settings.securityPanel.third_party_apps_section',
+  layers: 'pages.settings.securityPanel.defense_in_depth_architecture',
+  governance: 'pages.settings.securityPanel.governance_policy',
+  docs: 'pages.settings.securityPanel.documentation',
+}
+
+/** Catalog KEY per rail group header. */
+export const SECTION_GROUP_KEY: Record<SecuritySectionGroup, string> = {
+  status: 'pages.settings.securityPanel.section_group_status',
+  yours: 'pages.settings.securityPanel.section_group_your_settings',
+  enforced: 'pages.settings.securityPanel.section_group_enforced',
+  reference: 'pages.settings.securityPanel.section_group_reference',
+}
+
+/** Display order. The group of each entry drives the rail's headers, so entries
+ *  sharing a group must stay adjacent. */
+const SECURITY_SECTIONS: readonly SecuritySectionDef[] = [
+  { key: 'posture', icon: <ShieldCheck size={15} />, group: 'status' },
+  { key: 'approval', icon: <Gauge size={15} />, group: 'yours' },
+  { key: 'rules', icon: <Terminal size={15} />, group: 'yours' },
+  { key: 'apps', icon: <Boxes size={15} />, group: 'yours' },
+  { key: 'layers', icon: <Layers size={15} />, group: 'enforced' },
+  { key: 'governance', icon: <Gavel size={15} />, group: 'enforced' },
+  { key: 'docs', icon: <BookOpen size={15} />, group: 'reference' },
+]
+
+/** Below this container width the rail and the detail pane stack: the rail
+ *  becomes the whole view and choosing a section replaces it (with a back
+ *  link), the same responsive contract ChannelsPanel uses. */
+const TWO_PANE_MIN_WIDTH = 760
+
+/** One rail row. `summary` is a live, FACTUAL value (a count, an on/off) — never
+ *  a verdict: a rail that renders its own "OK" is a security claim made by the
+ *  navigation, and it would keep claiming it while the underlying read failed.
+ *
+ *  Two lines, with the summary UNDER the label rather than beside it. Side-by-side
+ *  they compete for the same row: at any rail width that still fits the settings
+ *  page, a badge next to the label truncated the longest names to
+ *  "Denied Comman…" and "Defense-in-Dept…". Stacking is what lets the rail reuse
+ *  each section's real heading instead of inventing shorter rail-only copy. */
+function SectionRow({ section, active, summary, onSelect, twoPane }: {
+  section: SecuritySectionDef
+  active: boolean
+  summary?: string
+  onSelect: () => void
+  twoPane: boolean
+}) {
+  const label = i18nT(SECTION_LABEL_KEY[section.key])
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={active}
+      onClick={onSelect}
+      // The longest label still ellipsizes in the most verbose locales, so the
+      // full string stays reachable on hover rather than being lost.
+      title={label}
+      className={`flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-left cursor-pointer border-none transition-colors ${
+        active ? 'bg-accent-subtle text-accent' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
+      }`}
+    >
+      <span className={`w-4 h-4 shrink-0 flex items-center justify-center ${active ? 'text-accent' : 'text-muted'}`}>
+        {section.icon}
+      </span>
+      <span className="flex-1 min-w-0">
+        {/* Wraps to two lines rather than truncating. The rail is a fixed 248px
+            and the longest label ("Defense-in-Depth Architecture") inflates to
+            52 characters under the pseudolocale, which truncated at 1.36x —
+            over the render gate's 1.35x budget, and a real problem in any
+            verbose locale, not just en-XA. Widening the rail would only move
+            the boundary; not truncating removes it. `title` stays for the
+            pathological case. */}
+        <span className="block text-[13px] font-medium line-clamp-2">{label}</span>
+        {summary && (
+          <span className="block text-[11px] text-muted tabular-nums truncate mt-px">{summary}</span>
+        )}
+      </span>
+      {!twoPane && <ChevronRight size={14} className="text-muted shrink-0" />}
+    </button>
+  )
+}
+
+export function SecurityPanel() {
+  const [params, setParams] = useSearchParams()
+  const [containerRef, width] = useContainerWidth<HTMLDivElement>()
+  // null width = first paint before measurement; assume wide to avoid flashing
+  // the narrow layout on desktop.
+  const twoPane = width === null || width >= TWO_PANE_MIN_WIDTH
+
+  // Held HERE, not in the rules pane: picking another rail section unmounts that
+  // pane, and a half-typed deny pattern living in its local state would be
+  // silently discarded. The 137-row rule table still unmounts — only the draft
+  // string is lifted, so the reason the rail mounts lazily is preserved.
+  const [denyDraft, setDenyDraft] = useState('')
+
+  const rawSection = params.get('section')
+  const selectedKey = SECURITY_SECTIONS.some(s => s.key === rawSection)
+    ? (rawSection as SecuritySectionKey)
+    : null
+  // Wide mode always shows a detail pane; default to the first section.
+  const effectiveKey = selectedKey ?? (twoPane ? SECURITY_SECTIONS[0].key : null)
+
+  const setSection = (key: SecuritySectionKey | null) => setParams(prev => {
+    const next = new URLSearchParams(prev)
+    if (key) next.set('section', key)
+    else next.delete('section')
+    return next
+  }, { replace: true })
+
+  // Canonicalize the wide-mode implicit selection into the URL, so shrinking
+  // below the breakpoint does not silently drop the shown pane back to the bare
+  // rail. Gated on a REAL measurement: the pre-measurement paint optimistically
+  // renders wide, and writing `section=posture` before the ResizeObserver
+  // reports would make a fresh narrow visit open a section instead of the rail.
+  useEffect(() => {
+    if (width !== null && twoPane && !selectedKey) setSection(SECURITY_SECTIONS[0].key)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [width, twoPane, selectedKey])
+
+  // Rail summaries. Both reads are shared cache entries with the sections that
+  // own them, so the rail adds no extra request.
+  const status = useAppSelector(s => s.dashboard.status)
+  const { data: dc } = useQuery<DeniedCommandsData>({ queryKey: ['denied-commands'], queryFn: api.deniedCommands })
+  const { data: cfg, isError: cfgError } = useQuery<KirocrewCfgShape>({ queryKey: ['kirocrewConfig'], queryFn: api.kirocrewConfig })
+
+  const summaryFor = (key: SecuritySectionKey): string | undefined => {
+    switch (key) {
+      case 'approval':
+        // An active grant outranks the configured duration: it is the state that
+        // is currently weakening the install, so it is what the rail reports.
+        if (status?.yolo) return i18nT('pages.settings.securityPanel.yolo_auto_approve')
+        // `== null`, NOT `=== undefined`: `dashboard.status` is typed
+        // `StatusData | null` and initialises to `null`, so an `undefined` check
+        // never fires and the rail would claim the safe "Interactive" on every
+        // fresh load — before any status payload has arrived, on an install where
+        // auto-approve may well be active. Same rule the apps case follows, where
+        // React Query genuinely yields `undefined`: an unread state is reported as
+        // no summary, never as the reassuring one.
+        return status == null ? undefined : i18nT('pages.settings.securityPanel.interactive')
+      case 'rules':
+        return dc ? String(dc.builtins.filter(r => r.enabled).length) : undefined
+      case 'apps':
+        // An UNREADABLE value is not "off" — mirror the card's own handling and
+        // render no summary rather than asserting a state we could not read.
+        if (cfgError || cfg === undefined) return undefined
+        // Names what the gate DOES rather than "On"/"Off": a bare "On" is a
+        // connector word with nothing for a translator to work from, and the
+        // verb reads better against a blanket admission control.
+        return cfg.agent?.apps_allow_third_party === true
+          ? i18nT('pages.settings.securityPanel.state_allowed')
+          : i18nT('pages.settings.securityPanel.state_blocked')
+      case 'layers':
+        return String(FEATURES.length)
+      default:
+        return undefined
+    }
+  }
+
+  // Grouped as listbox > group > option. The group headers used to be
+  // `aria-hidden`, which handed screen-reader users seven flat options and threw
+  // away the yours-vs-enforced split the rail exists to convey; `role="group"`
+  // with the header as its accessible name is the ARIA-valid way to keep it,
+  // since a listbox may contain groups but not arbitrary children.
+  const groupedSections = SECURITY_SECTIONS.reduce<{ group: SecuritySectionGroup; items: SecuritySectionDef[] }[]>(
+    (acc, section) => {
+      const last = acc[acc.length - 1]
+      if (last && last.group === section.group) last.items.push(section)
+      else acc.push({ group: section.group, items: [section] })
+      return acc
+    },
+    [],
+  )
+
+  const rail = (
+    // No aria-label on the wrapper: the listbox inside already carries this name,
+    // and naming both makes a screen reader announce it twice.
+    <nav className={twoPane ? 'w-[248px] shrink-0' : 'w-full'}>
+      <div className="flex flex-col gap-0.5" role="listbox" aria-label={i18nT('pages.settings.securityPanel.security_sections')}>
+        {groupedSections.map(({ group, items }) => (
+          <div key={group} role="group" aria-label={i18nT(SECTION_GROUP_KEY[group])}>
+            <div className="text-[11px] text-muted uppercase tracking-wider font-medium px-2.5 pt-2.5 pb-1 select-none">
+              {i18nT(SECTION_GROUP_KEY[group])}
+            </div>
+            {items.map(section => (
+              <SectionRow
+                key={section.key}
+                section={section}
+                active={twoPane && section.key === effectiveKey}
+                summary={summaryFor(section.key)}
+                onSelect={() => setSection(section.key)}
+                twoPane={twoPane}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+    </nav>
+  )
+
+  return (
+    <div ref={containerRef}>
+      {/* ── Data Classification Warning ──
+       *  Outside the rail on purpose. It is an instruction about what to type
+       *  into the product, not a section of the security model, and a notice you
+       *  can navigate away from is a notice most readers never see. */}
+      <div className="mb-5 bg-bg-elevated border rounded-lg p-4 flex items-start gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
+        <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
+        <div>
+          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.securityPanel.data_classification_notice')}</div>
+          <div className="text-[12px] text-muted mt-1 leading-relaxed">
+            {i18nT('pages.settings.securityPanel.do_not_enter_highly_sensitive_or_restricted_data')}
+          </div>
+        </div>
+      </div>
+
+      {/* Both responsive modes render the same child slots in the same order
+          (rail?, back-link?, pane wrapper) so React reconciles the pane by
+          position and a width transition never remounts it — remounting would
+          discard an unsaved custom deny pattern mid-type. Only changing the
+          selected section remounts, which is intended. */}
+      <div className={twoPane ? 'flex gap-6 items-start' : 'flex flex-col'}>
+        {(twoPane || !effectiveKey) && rail}
+        {!twoPane && effectiveKey && (
+          <button
+            type="button"
+            onClick={() => setSection(null)}
+            className="flex items-center gap-1.5 self-start text-[13px] font-medium text-accent bg-transparent border-none cursor-pointer px-0 py-1 mb-2 hover:underline"
+          >
+            <ArrowLeft size={14} />
+            {i18nT('pages.settings.securityPanel.security_sections')}
+          </button>
+        )}
+        <div className={twoPane ? 'flex-1 min-w-0' : 'w-full'}>
+          {effectiveKey === 'posture' && <PostureSection />}
+          {effectiveKey === 'approval' && (
+            <SettingsSection title={i18nT('pages.settings.securityPanel.yolo_auto_approve')}>
+              <YoloDurationCard />
+            </SettingsSection>
+          )}
+          {effectiveKey === 'rules' && <DeniedCommandsSection draft={denyDraft} onDraftChange={setDenyDraft} />}
+          {effectiveKey === 'apps' && (
+            <SettingsSection title={i18nT('pages.settings.securityPanel.third_party_apps_section')}>
+              <ThirdPartyAppsCard />
+            </SettingsSection>
+          )}
+          {effectiveKey === 'layers' && <LayersSection />}
+          {effectiveKey === 'governance' && <GovernancePolicyViewer />}
+          {effectiveKey === 'docs' && <DocsSection />}
+        </div>
+      </div>
+    </div>
   )
 }

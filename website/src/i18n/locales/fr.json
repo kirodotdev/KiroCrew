@@ -8734,7 +8734,19 @@
         "third_party_apps_tip": "Applies to any app that is not built into Kiro Crew. Built-in apps are unaffected and keep working either way.",
         "third_party_apps_on_warning": "This trusts every third-party app, including ones you install later — not just the one you were trying to start. A trusted app runs with the same access Kiro Crew has: your files, your saved credentials, and the internet.",
         "third_party_apps_scope_note": "Takes effect the next time an app's code is loaded. Turning it back off stops Kiro Crew admitting that code again; an app already running stays up until it is switched off or Kiro Crew restarts.",
-        "third_party_apps_save_failed": "Could not save this setting."
+        "third_party_apps_save_failed": "Could not save this setting.",
+        "section_group_status": "État",
+        "section_group_your_settings": "Vos réglages",
+        "section_group_enforced": "Imposé",
+        "section_group_reference": "Référence",
+        "security_sections": "Sections de sécurité",
+        "search_rules_placeholder": "Rechercher des règles, motifs, catégories…",
+        "no_rules_match": "Aucune règle ne correspond à « {{query}} ».",
+        "custom_patterns_hidden_by_filter": "Le filtre actuel masque vos motifs personnalisés.",
+        "built_in_rules_enforced_note": "{{enabled}} règles intégrées sur {{total}} sont actuellement appliquées, après vos désactivations et les éventuels verrouillages de politique.",
+        "custom_patterns_counted_separately": "Vos motifs personnalisés sont comptés séparément dans Commandes refusées.",
+        "state_allowed": "Autorisé",
+        "state_blocked": "Bloqué"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "Annuler",

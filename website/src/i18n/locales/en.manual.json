@@ -2775,7 +2775,19 @@
         "third_party_apps_tip": "Applies to any app that is not built into Kiro Crew. Built-in apps are unaffected and keep working either way.",
         "third_party_apps_on_warning": "This trusts every third-party app, including ones you install later — not just the one you were trying to start. A trusted app runs with the same access Kiro Crew has: your files, your saved credentials, and the internet.",
         "third_party_apps_scope_note": "Takes effect the next time an app's code is loaded. Turning it back off stops Kiro Crew admitting that code again; an app already running stays up until it is switched off or Kiro Crew restarts.",
-        "third_party_apps_save_failed": "Could not save this setting."
+        "third_party_apps_save_failed": "Could not save this setting.",
+        "section_group_status": "Status",
+        "section_group_your_settings": "Your settings",
+        "section_group_enforced": "Enforced",
+        "section_group_reference": "Reference",
+        "security_sections": "Security sections",
+        "search_rules_placeholder": "Search rules, patterns, categories…",
+        "no_rules_match": "No rules match “{{query}}”.",
+        "custom_patterns_hidden_by_filter": "Your custom patterns are hidden by the current filter.",
+        "built_in_rules_enforced_note": "{{enabled}} of {{total}} built-in rules are currently enforced, after your opt-outs and any policy pins.",
+        "custom_patterns_counted_separately": "Your custom patterns are counted separately in Denied Commands.",
+        "state_allowed": "Allowed",
+        "state_blocked": "Blocked"
       },
       "sharedMcpGatewayToggle": {
         "active_sessions_share_pooled_mcp_backends_see_th": "Active — sessions share pooled MCP backends. See the live pool under Developer > System.",

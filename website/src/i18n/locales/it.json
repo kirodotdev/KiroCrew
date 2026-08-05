@@ -8734,7 +8734,19 @@
         "third_party_apps_tip": "Applies to any app that is not built into Kiro Crew. Built-in apps are unaffected and keep working either way.",
         "third_party_apps_on_warning": "This trusts every third-party app, including ones you install later — not just the one you were trying to start. A trusted app runs with the same access Kiro Crew has: your files, your saved credentials, and the internet.",
         "third_party_apps_scope_note": "Takes effect the next time an app's code is loaded. Turning it back off stops Kiro Crew admitting that code again; an app already running stays up until it is switched off or Kiro Crew restarts.",
-        "third_party_apps_save_failed": "Could not save this setting."
+        "third_party_apps_save_failed": "Could not save this setting.",
+        "section_group_status": "Stato",
+        "section_group_your_settings": "Le tue impostazioni",
+        "section_group_enforced": "Imposto",
+        "section_group_reference": "Riferimenti",
+        "security_sections": "Sezioni di sicurezza",
+        "search_rules_placeholder": "Cerca regole, pattern, categorie…",
+        "no_rules_match": "Nessuna regola corrisponde a «{{query}}».",
+        "custom_patterns_hidden_by_filter": "Il filtro attuale nasconde i tuoi pattern personalizzati.",
+        "built_in_rules_enforced_note": "{{enabled}} regole integrate su {{total}} sono attualmente applicate, dopo le tue esclusioni e gli eventuali blocchi da criterio.",
+        "custom_patterns_counted_separately": "I tuoi pattern personalizzati sono conteggiati separatamente in Comandi negati.",
+        "state_allowed": "Consentito",
+        "state_blocked": "Bloccato"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "Annulla",

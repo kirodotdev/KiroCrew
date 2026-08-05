@@ -8647,7 +8647,19 @@
         "third_party_apps_tip": "Applies to any app that is not built into Kiro Crew. Built-in apps are unaffected and keep working either way.",
         "third_party_apps_on_warning": "This trusts every third-party app, including ones you install later — not just the one you were trying to start. A trusted app runs with the same access Kiro Crew has: your files, your saved credentials, and the internet.",
         "third_party_apps_scope_note": "Takes effect the next time an app's code is loaded. Turning it back off stops Kiro Crew admitting that code again; an app already running stays up until it is switched off or Kiro Crew restarts.",
-        "third_party_apps_save_failed": "Could not save this setting."
+        "third_party_apps_save_failed": "Could not save this setting.",
+        "section_group_status": "অবস্থা",
+        "section_group_your_settings": "আপনার সেটিং",
+        "section_group_enforced": "বলবৎ",
+        "section_group_reference": "রেফারেন্স",
+        "security_sections": "সুরক্ষা বিভাগ",
+        "search_rules_placeholder": "নিয়ম, প্যাটার্ন, বিভাগ খুঁজুন…",
+        "no_rules_match": "“{{query}}”-এর সঙ্গে কোনো নিয়ম মেলে না।",
+        "custom_patterns_hidden_by_filter": "বর্তমান ফিল্টার আপনার নিজের প্যাটার্নগুলো লুকিয়ে রেখেছে।",
+        "built_in_rules_enforced_note": "আপনার অপ্ট-আউট এবং যেকোনো নীতি পিনের পরে, এখন {{total}}টির মধ্যে {{enabled}}টি অন্তর্নির্মিত নিয়ম বলবৎ আছে।",
+        "custom_patterns_counted_separately": "আপনার নিজের প্যাটার্নগুলো “প্রত্যাখ্যাত কমান্ড”-এ আলাদাভাবে গণনা করা হয়।",
+        "state_allowed": "অনুমোদিত",
+        "state_blocked": "অবরুদ্ধ"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "বাতিল",

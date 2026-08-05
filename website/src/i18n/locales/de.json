@@ -8647,7 +8647,19 @@
         "third_party_apps_tip": "Applies to any app that is not built into Kiro Crew. Built-in apps are unaffected and keep working either way.",
         "third_party_apps_on_warning": "This trusts every third-party app, including ones you install later — not just the one you were trying to start. A trusted app runs with the same access Kiro Crew has: your files, your saved credentials, and the internet.",
         "third_party_apps_scope_note": "Takes effect the next time an app's code is loaded. Turning it back off stops Kiro Crew admitting that code again; an app already running stays up until it is switched off or Kiro Crew restarts.",
-        "third_party_apps_save_failed": "Could not save this setting."
+        "third_party_apps_save_failed": "Could not save this setting.",
+        "section_group_status": "Status",
+        "section_group_your_settings": "Ihre Einstellungen",
+        "section_group_enforced": "Erzwungen",
+        "section_group_reference": "Referenz",
+        "security_sections": "Sicherheitsbereiche",
+        "search_rules_placeholder": "Regeln, Muster, Kategorien suchen…",
+        "no_rules_match": "Keine Regeln passen zu „{{query}}“.",
+        "custom_patterns_hidden_by_filter": "Ihre eigenen Muster sind durch den aktuellen Filter ausgeblendet.",
+        "built_in_rules_enforced_note": "{{enabled}} von {{total}} integrierten Regeln sind derzeit aktiv, nach Ihren Abwahlen und etwaigen Richtlinien-Fixierungen.",
+        "custom_patterns_counted_separately": "Ihre eigenen Muster werden unter „Verweigerte Befehle“ separat gezählt.",
+        "state_allowed": "Erlaubt",
+        "state_blocked": "Blockiert"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "Abbrechen",

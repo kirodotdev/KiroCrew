@@ -8647,7 +8647,19 @@
         "third_party_apps_tip": "Applies to any app that is not built into Kiro Crew. Built-in apps are unaffected and keep working either way.",
         "third_party_apps_on_warning": "This trusts every third-party app, including ones you install later — not just the one you were trying to start. A trusted app runs with the same access Kiro Crew has: your files, your saved credentials, and the internet.",
         "third_party_apps_scope_note": "Takes effect the next time an app's code is loaded. Turning it back off stops Kiro Crew admitting that code again; an app already running stays up until it is switched off or Kiro Crew restarts.",
-        "third_party_apps_save_failed": "Could not save this setting."
+        "third_party_apps_save_failed": "Could not save this setting.",
+        "section_group_status": "स्थिति",
+        "section_group_your_settings": "तुम्हारी सेटिंग",
+        "section_group_enforced": "अनिवार्य",
+        "section_group_reference": "संदर्भ",
+        "security_sections": "सुरक्षा अनुभाग",
+        "search_rules_placeholder": "नियम, पैटर्न, श्रेणियाँ खोजें…",
+        "no_rules_match": "“{{query}}” से कोई नियम मेल नहीं खाता।",
+        "custom_patterns_hidden_by_filter": "मौजूदा फ़िल्टर तुम्हारे स्वयं के पैटर्न छिपा रहा है।",
+        "built_in_rules_enforced_note": "तुम्हारे ऑप्ट-आउट और किसी भी नीति पिन के बाद, अभी {{total}} में से {{enabled}} अंतर्निहित नियम लागू हैं।",
+        "custom_patterns_counted_separately": "तुम्हारे स्वयं के पैटर्न “अस्वीकृत कमांड” में अलग से गिने जाते हैं।",
+        "state_allowed": "अनुमत",
+        "state_blocked": "अवरोधित"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "रद्द करें",
