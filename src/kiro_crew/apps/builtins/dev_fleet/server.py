@@ -3888,9 +3888,138 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
     can_restart = svc is not None and unit_status == "ok"
 
     live = await _live_worktree_path()
-    if live is not None and _same_path(str(real), live):
+    same_as_running = live is not None and _same_path(str(real), live)
+    if same_as_running and _staged_target() is None:
+        # Nothing staged: pointing at the checkout already running is a no-op on
+        # EVERY host. This guard sits before the cancel below so that a drivable
+        # host cannot turn a harmless repeat click into a real gateway restart by
+        # falling through to the cutover path.
         return {"ok": False, "code": "already_live",
                 "error": f"{real.name} is already the live gateway"}
+    if same_as_running and not can_restart:
+        # Pointing at the checkout already running is normally a no-op — EXCEPT
+        # while a cutover is staged, where it is the operator cancelling it. The
+        # pointer names a different checkout than the running image, so re-pinning
+        # the running one is exactly "stay on what is running", and it is the only
+        # cancel a non-drivable host can offer: without this the operator's only
+        # routes are to complete the cutover into the wrong code and reverse it
+        # (two manual restarts) or to hand-delete a keystone-fenced file the
+        # product never names.
+        #
+        # Deliberately limited to hosts this app cannot drive. A drivable host
+        # also stages a service DEFINITION naming the staged checkout, and this
+        # shortcut only touches the pointer — so the definition would keep naming
+        # a checkout nobody intends to run. Once that checkout is pruned the unit
+        # fails to start before it ever reads the pointer, turning a recoverable
+        # mis-stage into a gateway that will not boot. A drivable host therefore
+        # falls through to the full cutover below, which restages the definition
+        # and the pointer together and restarts.
+        pending_target = _staged_target()
+        if pending_target is None:
+            # Defensive re-read: the check above and this one straddle no await,
+            # but keeping it means the cancel never builds a plan around a stage
+            # that has since disappeared.
+            return {"ok": False, "code": "already_live",
+                    "error": f"{real.name} is already the live gateway"}
+        cancel_plan = {
+            "action": "cancel_staged_cutover",
+            "staged_target": pending_target,
+            "keeps_live_target": str(real),
+            "pointer_path": str(live_target.pointer_path()),
+            "restart": "not needed",
+        }
+        # Deleting the pointer IS a mutation, so it owes the same two duties as
+        # the cutover below: never act under ``dry_run``, and never touch the
+        # pointer outside the single-flight lock.
+        if dry_run:
+            return {"ok": True, "dry_run": True, "plan": cancel_plan}
+        if _MAKE_LIVE_LOCK.locked():
+            return {"ok": False, "code": "busy", "error": (
+                "another make-live cutover is in progress"
+            )}
+        async with _MAKE_LIVE_LOCK:
+            if _MAKE_LIVE_COMMITTED:
+                return {"ok": False, "code": "restart_pending", "error": (
+                    "a cutover has been scheduled; the gateway is restarting — "
+                    "retry after it comes back"
+                )}
+            # Re-read under the lock: the awaits above mean the stage may have
+            # been completed or re-pointed since the entry check, and cancelling
+            # a stage that no longer exists would delete a pointer someone else
+            # just wrote.
+            if _staged_target() is None:
+                return {"ok": False, "code": "already_live",
+                        "error": f"{real.name} is already the live gateway"}
+            # Re-pin the RUNNING checkout rather than deleting the pointer.
+            # Deleting only means "stay here" when the running image is the
+            # installed build; if this checkout was itself selected by an earlier
+            # cutover, the pointer is the only record of that choice, so removing
+            # it would silently demote the operator back to the installed build
+            # on the next restart — the opposite of the cancel they asked for.
+            # Writing is idempotent when the pointer already named it.
+            loop = asyncio.get_running_loop()
+            try:
+                prior_pointer = await loop.run_in_executor(
+                    subprocess_executor(), live_target.snapshot
+                )
+            except (OSError, ValueError) as exc:
+                return {"ok": False, "code": "write_failed", "error": (
+                    "refusing to cancel the staged cutover: the staged pointer "
+                    "exists but could not be read, so a failed cancel could not "
+                    f"be rolled back: {_redact(str(exc))}"
+                )}
+            try:
+                await loop.run_in_executor(
+                    subprocess_executor(), live_target.write_target, real
+                )
+            except (live_target.InvalidTarget, OSError) as exc:
+                # InvalidTarget refuses before anything is written. OSError can
+                # arrive AFTER the pointer has been replaced, because
+                # write_target re-applies the owner-only mode as its last step —
+                # so a failure there would otherwise leave a code-execution input
+                # in place with inherited permissions while this call reported
+                # failure. Roll the pointer back so the cancel is all-or-nothing,
+                # and only when there was one: restore(None) DELETES, which is
+                # the demotion this branch exists to avoid.
+                rolled_back = True
+                if prior_pointer is not None:
+                    rolled_back = await loop.run_in_executor(
+                        subprocess_executor(), live_target.restore, prior_pointer
+                    )
+                detail = "" if rolled_back else (
+                    " The rollback also failed, so the pointer may name the "
+                    "running checkout without owner-only permissions — check it "
+                    "before the next restart."
+                )
+                return {"ok": False, "code": "write_failed", "error": (
+                    "refusing to cancel the staged cutover: the running "
+                    "checkout could not be re-pinned as the live target: "
+                    f"{_redact(str(exc))}.{detail}"
+                )}
+            _LIVE_WORKTREE = None
+            _LIVE_CHECK_AT = 0.0
+            return {"ok": True, "cancelled": True, "target": str(real),
+                    "plan": cancel_plan,
+                    "notice": (
+                        f"Staged cutover cancelled. {real.name} stays the live "
+                        f"target and no restart is needed."
+                    )}
+    if same_as_running:
+        # Drivable host with a stage pending. The pointer-only cancel above is
+        # unsafe here (it would leave the service definition naming the staged
+        # checkout), but falling through to the full cutover would bounce a live
+        # gateway carrying real sessions in response to a request that reads as
+        # "keep running what is already running". Refuse and name both real
+        # exits instead: surprising an operator in the destructive direction is
+        # worse than doing nothing.
+        pending = _staged_target()
+        pending_name = Path(pending).name if pending else "another checkout"
+        return {"ok": False, "code": "staged_cutover_pending", "error": (
+            f"a cutover to {pending_name} is already staged. Dev Fleet can "
+            f"restart this host, so cancelling by re-pointing here would leave "
+            f"the service definition naming {pending_name}. Make {pending_name} "
+            f"live to complete the cutover, or restart the gateway to apply it."
+        )}
 
     kcbin = real / ".venv" / "bin" / "kirocrew"
     if not kcbin.is_file():
@@ -3997,12 +4126,22 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
                     f"rolled back: {_redact(str(exc))}"
                 )}
 
-        def _unwind() -> bool:
+        def _unwind_sync() -> bool:
             """Restore both staged surfaces. False when either did not land."""
             ok = live_target.restore(prior_content)
             if can_restart and svc is not None:
                 ok = svc.rollback(prior_definition) and ok
             return ok
+
+        async def _unwind() -> bool:
+            # Both halves block: restore() ends in restrict_to_owner, which shells
+            # out to icacls on Windows, and svc.rollback() rewrites the service
+            # definition. Offload them for the same reason the write below is
+            # offloaded — an unwind must not stall every other gateway request for
+            # the duration of a subprocess.
+            return await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), _unwind_sync
+            )
 
         try:
             # write_target ends in restrict_to_owner, which shells out to icacls
@@ -4015,7 +4154,8 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
         except live_target.InvalidTarget as exc:
             return {"ok": False, "code": "unsafe_path", "error": _redact(str(exc))}
         except OSError as exc:
-            return {"ok": False, "code": "write_failed", "rolled_back": _unwind(),
+            return {"ok": False, "code": "write_failed",
+                    "rolled_back": await _unwind(),
                     "error": _redact(str(exc))}
 
         # Nothing bounces the gateway on this host, so the cutover is STAGED and
@@ -4035,7 +4175,7 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
 
         staged, code, err = await svc.stage(real, kcbin)
         if not staged:
-            rolled_back = _unwind()
+            rolled_back = await _unwind()
             # Re-read definitions so the loaded config matches the restored disk
             # state rather than the rejected override.
             await svc.reload()
@@ -4052,7 +4192,7 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
         start_id = await _gateway_start_id()
         restarted, err = await svc.restart_detached()
         if not restarted:
-            rolled_back = _unwind()
+            rolled_back = await _unwind()
             await svc.reload()
             return {"ok": False, "code": "restart_failed", "rolled_back": rolled_back,
                     "error": _redact(err)}

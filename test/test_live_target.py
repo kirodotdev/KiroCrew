@@ -358,6 +358,49 @@ class TestSnapshotRestore:
         with pytest.raises(OSError):
             snapshot()
 
+    def test_restore_reapplies_the_owner_only_dacl(self, tmp_path, monkeypatch):
+        """A rollback must not be the step that widens access to the pointer.
+
+        atomic_write's mode is a POSIX bit and a no-op on Windows, so without an
+        explicit restrict_to_owner the restored pointer -- a code-execution input
+        read at every startup -- comes back inheriting the directory ACL, and on
+        a shared data home another local account could redirect it.
+        """
+        hardened: list = []
+        monkeypatch.setattr(
+            "kiro_crew.service.live_target.platform_compat.restrict_to_owner", lambda path: hardened.append(path))
+        path = pointer_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        assert restore('{"checkout": "/old/path"}\n') is True
+
+        assert hardened == [path], "restore must harden the file it wrote"
+
+    def test_restore_none_does_not_harden_a_deleted_pointer(self, tmp_path, monkeypatch):
+        """Deleting leaves no file, so there is nothing to apply a DACL to."""
+        hardened: list = []
+        monkeypatch.setattr(
+            "kiro_crew.service.live_target.platform_compat.restrict_to_owner", lambda path: hardened.append(path))
+        path = pointer_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("anything")
+
+        assert restore(None) is True
+
+        assert not path.exists()
+        assert hardened == []
+
+    def test_restore_returns_false_when_hardening_fails(self, tmp_path, monkeypatch):
+        """A partial rollback reports False so the caller can warn the operator."""
+        def boom(_path):
+            raise OSError(5, "icacls failed")
+
+        monkeypatch.setattr("kiro_crew.service.live_target.platform_compat.restrict_to_owner", boom)
+        path = pointer_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        assert restore('{"checkout": "/old/path"}\n') is False
+
     def test_restore_returns_false_on_oserror(self, tmp_path, monkeypatch):
         """Best-effort: returns False rather than raising."""
         # Parent is a FILE, so both the mkdir and the write fail on every

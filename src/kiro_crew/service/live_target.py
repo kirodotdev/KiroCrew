@@ -228,6 +228,12 @@ def restore(prior: str | None) -> bool:
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write(path, prior, mode=_MODE)
+            # Harden the restored file for the same reason write_target does:
+            # atomic_write's mode is a POSIX permission bit and a no-op on
+            # Windows, so without this the pointer — a code-execution input read
+            # at every startup — would come back inheriting the directory's ACL.
+            # A rollback must not be the step that widens access to it.
+            platform_compat.restrict_to_owner(path)
         return True
     except OSError:
         return False

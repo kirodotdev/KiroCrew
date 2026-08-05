@@ -8,7 +8,9 @@ import hmac as _hmac_mod
 import json
 import os
 import sys
+import tempfile
 import textwrap
+import threading
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -1853,6 +1855,27 @@ def _mk_make_live_wt(tmp_path, *, venv: bool = False, dist: bool = False,
     return wt
 
 
+def _assert_sandboxed(path, what: str) -> None:
+    """Fail loudly when a host-mutating make-live seam resolves outside the sandbox.
+
+    The seams below decide WHERE the cutover writes and WHAT it executes. If one is
+    left unpatched the production code is correct and does exactly what it is told —
+    against the developer's own machine: it rewrites the live gateway's systemd
+    drop-in to point at a pytest tmpdir and restarts the unit, which then fails
+    203/EXEC on every boot once the tmpdir is reaped. Asserting containment here
+    makes the next missed seam fail inside the test instead of taking down the host.
+    """
+    resolved = Path(path).resolve()
+    tmp_root = Path(tempfile.gettempdir()).resolve()
+    assert tmp_root in resolved.parents, (
+        f"{what} resolved OUTSIDE the temp sandbox: {resolved}. A test that reaches "
+        f"the cutover path must never touch a real host path."
+    )
+    assert (Path.home() / ".config").resolve() not in resolved.parents, (
+        f"{what} resolved inside the real user config dir: {resolved}"
+    )
+
+
 def _stub_make_live(monkeypatch, wt, *, live=None, in_pod=False, unit_status="ok",
                     platform="linux", pointer_dir=None):
     """Wire the make-live seams: the path resolves to *wt*, pod/live/unit state
@@ -1863,6 +1886,15 @@ def _stub_make_live(monkeypatch, wt, *, live=None, in_pod=False, unit_status="ok
     sub-directory), ``live_target.pointer_path`` returns a file inside it so no
     test ever reads or writes the real data home. Every test that reaches the
     cutover path MUST pass this.
+
+    The service-definition and command seams are isolated **unconditionally**,
+    because forgetting them is not a test failure — it is a live-host outage.
+    ``_dropin_path`` otherwise resolves ``$XDG_CONFIG_HOME``/``~/.config`` and
+    ``_run_cmd`` otherwise runs the real ``systemctl --user``, so a test reaching
+    the cutover path would repoint and restart the developer's own gateway at a
+    tmpdir. Both are redirected under *wt*'s parent and containment-asserted; a
+    test that needs to observe or shape them re-patches after this call, which
+    wins because it is applied later.
 
     ``platform`` pins the service backend (default systemd). Without it these
     assertions silently follow the HOST's platform: the same test would check a
@@ -1880,6 +1912,15 @@ def _stub_make_live(monkeypatch, wt, *, live=None, in_pod=False, unit_status="ok
     monkeypatch.setattr(mod, "_live_worktree_path", AsyncMock(return_value=live))
     monkeypatch.setattr(mod, "_in_pod", lambda: in_pod)
     monkeypatch.setattr(mod, "_live_user_unit_status", AsyncMock(return_value=unit_status))
+    sandbox_dropin = (
+        Path(wt).parent / "_systemd" / f"{mod._LIVE_GATEWAY_UNIT}.d" / "make-live.conf"
+    )
+    _assert_sandboxed(sandbox_dropin, "_dropin_path")
+    monkeypatch.setattr(mod, "_dropin_path", lambda: sandbox_dropin)
+    monkeypatch.setattr(mod, "_run_cmd", AsyncMock(return_value=(0, "", "")))
+    # Prove the redirect actually took: a rename of the production symbol would
+    # otherwise leave the real path live while every test still looked green.
+    _assert_sandboxed(mod._dropin_path(), "patched _dropin_path()")
     if pointer_dir is not None:
         pointer_dir.mkdir(parents=True, exist_ok=True)
         ptr_file = pointer_dir / "live_target.json"
@@ -2866,6 +2907,294 @@ async def test_live_worktree_path_honours_pointer_when_checkout_unknown(monkeypa
 
     assert await mod._live_worktree_path() == str(target_wt.resolve())
     assert mod._staged_target() is None
+
+
+@pytest.mark.asyncio
+async def test_repointing_at_the_running_checkout_cancels_a_staged_cutover(monkeypatch, tmp_path):
+    """While a cutover is staged, naming the checkout that is RUNNING is a cancel.
+
+    Without this the operator has no un-stage route on exactly the host class this
+    feature serves: `already_live` refuses (the running image IS that checkout) and
+    the UI hides Make live on live rows, so the only ways out are to complete the
+    cutover into the wrong code and reverse it — two manual restarts — or to
+    hand-delete a keystone-fenced file the product never names.
+    """
+    running = _mk_make_live_wt(tmp_path / "running", venv=True, dist=True)
+    other = _mk_make_live_wt(tmp_path / "other", venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    ptr_dir.mkdir()
+
+    # The running image IS `running`, so the already_live branch is the one reached.
+    # A host this app cannot drive -- exactly the `service install` case #1700 is
+    # about, and the only class where the pointer-only cancel applies.
+    _stub_make_live(monkeypatch, running, live=str(running), pointer_dir=ptr_dir,
+                    unit_status="no_user_unit")
+    monkeypatch.setattr(mod, "_running_checkout", lambda: running)
+
+    # A cutover to a DIFFERENT checkout is staged.
+    import json as _json
+    ptr = mod.live_target.pointer_path()
+    ptr.write_text(_json.dumps({"checkout": str(other)}) + "\n")
+    assert mod._staged_target() == str(other)
+
+    res = await mod._make_live(str(running))
+
+    assert res.get("ok") is True, res
+    assert res.get("cancelled") is True, res
+    assert res.get("code") != "already_live"
+    # The pointer is RE-PINNED to the running checkout, not deleted: deleting it
+    # would discard the record that this checkout is the chosen live target.
+    assert ptr.exists(), "cancelling must not delete the live-target record"
+    assert mod.live_target.read_target() == running.resolve()
+    assert mod._staged_target() is None
+
+
+def _stage_a_cutover(monkeypatch, tmp_path):
+    """running checkout + a pointer staged at a DIFFERENT checkout."""
+    running = _mk_make_live_wt(tmp_path / "running", venv=True, dist=True)
+    other = _mk_make_live_wt(tmp_path / "other", venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    ptr_dir.mkdir()
+    # A host this app cannot drive -- exactly the `service install` case #1700 is
+    # about, and the only class where the pointer-only cancel applies.
+    _stub_make_live(monkeypatch, running, live=str(running), pointer_dir=ptr_dir,
+                    unit_status="no_user_unit")
+    monkeypatch.setattr(mod, "_running_checkout", lambda: running)
+    import json as _json
+    ptr = mod.live_target.pointer_path()
+    ptr.write_text(_json.dumps({"checkout": str(other)}) + "\n")
+    assert mod._staged_target() == str(other)
+    return running, other, ptr
+
+
+@pytest.mark.asyncio
+async def test_cutover_unwind_runs_off_the_event_loop(monkeypatch, tmp_path):
+    """The rollback must not block the loop.
+
+    restore() ends in restrict_to_owner, which shells out to icacls on Windows,
+    and svc.rollback() rewrites the service definition. Run inline, an unwind
+    would stall every other gateway request for the duration of a subprocess, so
+    it has to reach the executor like the write it is undoing.
+    """
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir, unit_status="no_user_unit")
+
+    # Force the cutover write to fail so the unwind path runs.
+    monkeypatch.setattr(mod.live_target, "write_target",
+                        lambda _c: (_ for _ in ()).throw(OSError(28, "No space")))
+    loop_thread = threading.get_ident()
+    restore_threads: list = []
+    monkeypatch.setattr(
+        mod.live_target, "restore",
+        lambda prior: restore_threads.append(threading.get_ident()) or True)
+
+    res = await mod._make_live(str(wt))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "write_failed", res
+    assert restore_threads, "the unwind must have run"
+    # The thread identity is the real evidence: observing that
+    # subprocess_executor() was called proves nothing, since the cutover write
+    # already uses it.
+    assert all(t != loop_thread for t in restore_threads), (
+        "restore ran on the event-loop thread — the unwind was not offloaded"
+    )
+
+
+@pytest.mark.asyncio
+async def test_drivable_host_with_a_stage_pending_refuses(monkeypatch, tmp_path):
+    """On a host Dev Fleet CAN drive, this request must do NOTHING destructive.
+
+    Two wrong answers to avoid. The pointer-only cancel is unsafe here: a drivable
+    host also stages a service DEFINITION, so re-pinning just the pointer leaves
+    the definition naming a checkout nobody intends to run, and once that is
+    pruned the unit fails to start before it ever reads the pointer. But falling
+    through to the full cutover is worse -- it bounces a live gateway carrying
+    real sessions in response to a request that reads as "keep running what is
+    already running". So it refuses and names both real exits.
+    """
+    running = _mk_make_live_wt(tmp_path / "running", venv=True, dist=True)
+    other = _mk_make_live_wt(tmp_path / "other", venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    ptr_dir.mkdir()
+    _stub_make_live(monkeypatch, running, live=str(running), pointer_dir=ptr_dir,
+                    unit_status="ok")          # drivable
+    monkeypatch.setattr(mod, "_running_checkout", lambda: running)
+    ptr = mod.live_target.pointer_path()
+    ptr.write_text(json.dumps({"checkout": str(other)}) + "\n")
+    assert mod._staged_target() == str(other)
+
+    res = await mod._make_live(str(running))
+
+    # Neither the pointer-only cancel...
+    assert res.get("ok") is False, res
+    assert res.get("cancelled") is not True, res
+    assert res.get("plan", {}).get("action") != "cancel_staged_cutover", res
+    assert res.get("code") == "staged_cutover_pending", res
+    # ...nor a cutover: no definition written, and the staged pointer is intact.
+    assert not mod._dropin_path().exists(), "a refusal must not write a definition"
+    assert mod._staged_target() == str(other), "the stage must survive untouched"
+    # The message names the staged checkout so the operator knows both exits.
+    assert other.name in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_keeps_a_pointer_selected_checkout_live(monkeypatch, tmp_path):
+    """The scenario that makes deletion wrong.
+
+    Checkout A was made live BY the pointer (so the installed build is something
+    else). Staging B and then cancelling must leave A as the live target — if the
+    cancel deleted the pointer, the next restart would boot the installed build
+    instead of A, silently undoing a cutover the operator never asked to undo.
+    """
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+
+    res = await mod._make_live(str(running))
+
+    assert res.get("cancelled") is True, res
+    assert res["plan"]["keeps_live_target"] == str(running)
+    # The record survives AND still names the running checkout.
+    assert ptr.exists()
+    assert mod.live_target.read_target() == running.resolve()
+    # Nothing is staged any more, so no restart is pending.
+    assert mod._staged_target() is None
+
+
+@pytest.mark.parametrize("boom", [
+    OSError(28, "No space left on device"),
+    OSError(30, "Read-only file system"),
+])
+@pytest.mark.asyncio
+async def test_cancel_write_failure_is_a_refusal_not_a_crash(monkeypatch, tmp_path, boom):
+    """A full or read-only data home must refuse, not raise into a 500.
+
+    write_target mkdirs, writes atomically and re-applies the owner-only mode, so
+    the failure mode here is OSError — which the InvalidTarget guard alone (a
+    ValueError) does not cover.
+    """
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+
+    def explode(_checkout):
+        raise boom
+
+    monkeypatch.setattr(mod.live_target, "write_target", explode)
+
+    res = await mod._make_live(str(running))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "write_failed", res
+    assert "could not be re-pinned" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_rolls_the_pointer_back_when_hardening_fails(monkeypatch, tmp_path):
+    """write_target can fail AFTER replacing the pointer.
+
+    It re-applies the owner-only mode as its last step, so a failure there leaves
+    a code-execution input in place with inherited permissions. The cancel must be
+    all-or-nothing: the staged pointer goes back exactly as it was.
+    """
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+    staged_before = ptr.read_text(encoding="utf-8")
+
+    real_write = mod.live_target.write_target
+
+    def write_then_fail(checkout):
+        real_write(checkout)                      # the pointer IS replaced
+        raise OSError(5, "SetNamedSecurityInfo failed")
+
+    monkeypatch.setattr(mod.live_target, "write_target", write_then_fail)
+
+    res = await mod._make_live(str(running))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "write_failed", res
+    # Rolled back byte-for-byte: the stage is still staged, nothing half-applied.
+    assert ptr.read_text(encoding="utf-8") == staged_before
+    assert mod._staged_target() is not None
+
+
+@pytest.mark.asyncio
+async def test_cancel_reports_a_failed_rollback(monkeypatch, tmp_path):
+    """When the rollback itself fails the operator is told, not left guessing."""
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+
+    def write_then_fail(_checkout):
+        raise OSError(5, "SetNamedSecurityInfo failed")
+
+    monkeypatch.setattr(mod.live_target, "write_target", write_then_fail)
+    monkeypatch.setattr(mod.live_target, "restore", lambda _prior: False)
+
+    res = await mod._make_live(str(running))
+
+    assert res.get("ok") is False, res
+    assert "rollback also failed" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_invalid_target_is_a_refusal_not_a_crash(monkeypatch, tmp_path):
+    """The validation half of the same guard."""
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+
+    def explode(_checkout):
+        raise mod.live_target.InvalidTarget("no src/kiro_crew in target")
+
+    monkeypatch.setattr(mod.live_target, "write_target", explode)
+
+    res = await mod._make_live(str(running))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "write_failed", res
+
+
+@pytest.mark.asyncio
+async def test_dry_run_cancel_reports_the_plan_without_deleting(monkeypatch, tmp_path):
+    """`dry_run` must never mutate.
+
+    The already_live check runs BEFORE the dry_run return because it is
+    validation; turning that point into a pointer delete would make a dry run
+    destroy a staged cutover it was only asked to describe.
+    """
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+
+    res = await mod._make_live(str(running), dry_run=True)
+
+    assert res.get("ok") is True, res
+    assert res.get("dry_run") is True
+    assert res.get("cancelled") is not True, "dry run must not claim to have acted"
+    assert res["plan"]["action"] == "cancel_staged_cutover"
+    assert res["plan"]["staged_target"] == str(other)
+    assert ptr.exists(), "dry run must NOT delete the pointer"
+    assert mod._staged_target() == str(other)
+
+
+@pytest.mark.asyncio
+async def test_cancel_fails_fast_while_a_cutover_holds_the_lock(monkeypatch, tmp_path):
+    """The cancel mutates the same pointer a cutover writes, so it takes the
+    same single-flight lock and reports `busy` instead of racing it."""
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+
+    async with mod._MAKE_LIVE_LOCK:
+        res = await mod._make_live(str(running))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "busy", res
+    assert ptr.exists(), "a contended cancel must not delete the pointer"
+
+
+@pytest.mark.asyncio
+async def test_cancel_refuses_once_a_cutover_has_committed(monkeypatch, tmp_path):
+    """A committed cutover is already restarting; deleting the pointer then would
+    land the pending restart somewhere the operator did not choose."""
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", True, raising=False)
+
+    res = await mod._make_live(str(running))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "restart_pending", res
+    assert ptr.exists()
 
 
 @pytest.mark.asyncio
