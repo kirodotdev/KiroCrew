@@ -46,6 +46,51 @@ const ensureMsgId = (msg: ChatMessage): ChatMessage => {
   return msg
 }
 
+/** True when a WS chat frame is a REDELIVERY of a row the transcript already
+ *  holds, so applying it again would render the same message twice — or, in the
+ *  `assistant` branch, overwrite a live stream with stale text.
+ *
+ *  Identity is the server-minted row id `meta.mid` (`_ChatSlot.append`), and
+ *  nothing else. The backend stamps it once per row and every door the row can
+ *  arrive through carries it: the slot-detail HTTP rebuild, the live
+ *  `chat_message` broadcast, and the JSONL round trip (persisted with `meta`,
+ *  restored with it), so the two copies of one row are recognisably one row.
+ *
+ *  What this replaces, and why: a (`ts`, role, content) tuple cannot express
+ *  this. A coarse OS clock stamps two rows appended in the same tick identically
+ *  (the collision `mergePreservedClientTs` pass 1 already guards against) and two
+ *  byte-identical messages are legitimate — a Slack channel window can replay
+ *  exactly that pair. So a tuple either misses a redelivery (a duplicate bubble)
+ *  or matches two distinct rows (a message silently disappears), and no tuning
+ *  removes the ambiguity. An explicit id does.
+ *
+ *  A frame with NO `mid` is never treated as a duplicate: rows a client mints
+ *  locally (streaming, thinking, optimistic bubbles) have no server identity yet,
+ *  and channel-replayed rows genuinely carry no `meta` at all (`ConversationLog`
+ *  writes only role/content/ts/source_* for those). Declining to dedup renders a
+ *  duplicate at worst; guessing would drop a real message.
+ *
+ *  Called from ONE chokepoint per path, placed so it dominates every branch that
+ *  creates OR mutates a row — the `tool` insert, the `assistant` reconcile (which
+ *  overwrites the trailing `streaming` row, so a late redelivery of an old frame
+ *  would clobber a NEW segment's live content), the `user` echo reconcile, and
+ *  the generic push. A guard sitting after any of those is a guard some frame
+ *  slips past.
+ *
+ *  Scans from the tail — a redelivery is almost always the newest row — but
+ *  scans the whole list, since a replayed frame can be older. */
+function isRedeliveredMessage(
+  msgs: Array<{ meta?: Record<string, unknown> }>,
+  meta?: Record<string, unknown>,
+): boolean {
+  const mid = meta?.mid
+  if (typeof mid !== 'string' || !mid) return false
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].meta?.mid === mid) return true
+  }
+  return false
+}
+
 /** Finalize the most recent live `streaming` message in place (streaming →
  *  assistant), or drop it entirely when its content is a trivial placeholder
  *  the model emits before tool calls ("...", "…", "---", ". . .", etc.).
@@ -266,6 +311,16 @@ interface ChatState {
   loadingOlder: boolean
   lastChunkSeq: number | undefined
   _wsChunkedDuringFetch: boolean
+  /** How many `chat_message` frames were dropped as redeliveries (see
+   *  `isRedeliveredMessage`), across every slot, for the life of this tab.
+   *
+   *  Diagnostic, not product state: nothing renders it. It exists because the
+   *  dedup makes at-least-once delivery INVISIBLE — the duplicate bubbles were
+   *  the only user-facing signal that something upstream re-emits frames after a
+   *  restart, and that source is still unidentified. A non-zero count here is
+   *  that signal, and it survives in a Redux state dump rather than in console
+   *  scrollback. Steady state on a healthy gateway is 0. */
+  _redeliveredFramesDropped: number
   history: SessionInfo[]
   historyHasMore: boolean
   historyOffset: number
@@ -370,6 +425,7 @@ const initialState: ChatState = {
   loadingOlder: false,
   lastChunkSeq: undefined,
   _wsChunkedDuringFetch: false,
+  _redeliveredFramesDropped: 0,
   history: [],
   historyHasMore: false,
   historyOffset: 0,
@@ -491,6 +547,22 @@ function applyNonActiveFrame(
     return
   }
   if (role === 'compacting') { run.state = 'compacting'; return }
+  // Permission rows carry request_id/tool_input inside `cls` (JSON); lift it
+  // here — BEFORE the guard — so the identity comparison sees the same
+  // `tool_call_id` the stored row has.
+  let effectiveMeta = meta
+  if (role === 'permission' && !meta?.approval_id && cls) {
+    try {
+      const parsed = JSON.parse(cls)
+      if (parsed.request_id) {
+        effectiveMeta = { ...meta, approval_id: parsed.request_id, tool_input: parsed.tool_input ?? '', is_read_only: parsed.is_read_only ?? '', ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}), ...(parsed.resolved ? { resolved: parsed.resolved } : {}) }
+      }
+    } catch { /* not JSON cls, ignore */ }
+  }
+  // Idempotent append — ONE chokepoint that dominates every branch below, which
+  // is the point: each of those branches creates or mutates a row and returns,
+  // so a guard placed after any of them is a guard some frame slips past.
+  if (isRedeliveredMessage(msgs, effectiveMeta)) { state._redeliveredFramesDropped += 1; return }
   if (role === 'tool') {
     run.state = 'tool_running'
     let insertIdx = msgs.length
@@ -504,7 +576,15 @@ function applyNonActiveFrame(
   }
   if (role === 'assistant') {
     for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'streaming') { msgs[i].role = 'assistant'; msgs[i].content = content; if (ts) msgs[i].ts = ts; return }
+      if (msgs[i].role === 'streaming') {
+        msgs[i].role = 'assistant'; msgs[i].content = content; if (ts) msgs[i].ts = ts
+        // Carry the frame's meta — crucially `mid`, this row's server identity.
+        // The row was minted client-side by the first `chunk` and has none until
+        // now; without it a later redelivery of THIS frame is unrecognisable and
+        // would overwrite whatever is streaming at that moment.
+        if (meta) msgs[i].meta = { ...(msgs[i].meta || {}), ...meta }
+        return
+      }
     }
   }
   if (role === 'user') {
@@ -521,15 +601,6 @@ function applyNonActiveFrame(
       if (meta) lastUser.meta = { ...(lastUser.meta || {}), ...meta }
       return
     }
-  }
-  let effectiveMeta = meta
-  if (role === 'permission' && !meta?.approval_id && cls) {
-    try {
-      const parsed = JSON.parse(cls)
-      if (parsed.request_id) {
-        effectiveMeta = { ...meta, approval_id: parsed.request_id, tool_input: parsed.tool_input ?? '', is_read_only: parsed.is_read_only ?? '', ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}), ...(parsed.resolved ? { resolved: parsed.resolved } : {}) }
-      }
-    } catch { /* not JSON cls, ignore */ }
   }
   msgs.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
 }
@@ -2070,6 +2141,33 @@ const chatSlice = createSlice({
         state.slotRunning = true
         return
       }
+      // Permission messages carry request_id/tool_input in cls (JSON) — lift into
+      // meta here, BEFORE the guard, so the identity comparison sees the same
+      // `tool_call_id` the stored row has.
+      let effectiveMeta = meta
+      if (role === 'permission' && !meta?.approval_id && cls) {
+        try {
+          const parsed = JSON.parse(cls)
+          if (parsed.request_id) {
+            effectiveMeta = { ...meta, approval_id: parsed.request_id, tool_input: parsed.tool_input ?? '', is_read_only: parsed.is_read_only ?? '', ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}), ...(parsed.resolved ? { resolved: parsed.resolved } : {}) }
+          }
+        } catch { /* not JSON cls, ignore */ }
+      }
+      // If this permission's tool was already rejected/stopped, mark it resolved immediately
+      if (role === 'permission') {
+        const tcid = (effectiveMeta?.tool_call_id as string) || ''
+        if (tcid) {
+          const entry = state.toolLog.findLast(e => e.type === 'tool' && e.tool_call_id === tcid)
+          if (entry?.rejected) effectiveMeta = { ...effectiveMeta, resolved: 'rejected' }
+        }
+      }
+      // Idempotent append — ONE chokepoint that dominates every branch below,
+      // which is the point: each of those branches creates or MUTATES a row and
+      // returns, so a guard placed after any of them is a guard some frame slips
+      // past. The `assistant` branch is the sharpest case: it overwrites the
+      // trailing `streaming` row, so a late redelivery of an OLD assistant frame
+      // would clobber the live content of a NEW segment already streaming.
+      if (isRedeliveredMessage(state.messages, effectiveMeta)) { state._redeliveredFramesDropped += 1; return }
       // Tool call — update state, insert before streaming message
       if (role === 'tool') {
         state.slotState = 'tool_running'
@@ -2093,6 +2191,11 @@ const chatSlice = createSlice({
         for (let i = state.messages.length - 1; i >= 0; i--) {
           if (state.messages[i].role === 'streaming') {
             state.messages[i].role = 'assistant'; state.messages[i].content = content; if (ts) state.messages[i].ts = ts
+            // Carry the frame's meta — crucially `mid`, this row's server
+            // identity. The row was minted client-side by the first `chunk` and
+            // has none until now; without it a later redelivery of THIS frame is
+            // unrecognisable and would overwrite whatever is streaming then.
+            if (meta) state.messages[i].meta = { ...(state.messages[i].meta || {}), ...meta }
             return
           }
         }
@@ -2106,24 +2209,6 @@ const chatSlice = createSlice({
             if (m.meta) m.meta.resolved = 'rejected'
             else m.meta = { resolved: 'rejected' }
           }
-        }
-      }
-      // Permission messages carry request_id/tool_input in cls (JSON) — lift into meta
-      let effectiveMeta = meta
-      if (role === 'permission' && !meta?.approval_id && cls) {
-        try {
-          const parsed = JSON.parse(cls)
-          if (parsed.request_id) {
-            effectiveMeta = { ...meta, approval_id: parsed.request_id, tool_input: parsed.tool_input ?? '', is_read_only: parsed.is_read_only ?? '', ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}), ...(parsed.resolved ? { resolved: parsed.resolved } : {}) }
-          }
-        } catch { /* not JSON cls, ignore */ }
-      }
-      // If this permission's tool was already rejected/stopped, mark it resolved immediately
-      if (role === 'permission') {
-        const tcid = (effectiveMeta?.tool_call_id as string) || ''
-        if (tcid) {
-          const entry = state.toolLog.findLast(e => e.type === 'tool' && e.tool_call_id === tcid)
-          if (entry?.rejected) effectiveMeta = { ...effectiveMeta, resolved: 'rejected' }
         }
       }
       state.messages.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
@@ -2278,6 +2363,23 @@ const chatSlice = createSlice({
         // If WS already delivered newer streaming content, append it to fetched messages
         const lastLocal = state.messages[state.messages.length - 1]
         const preserved = mergePreservedPastes(state.messages, messages)
+        // Does the fetched history already contain the local trailing reply?
+        // The server row id answers it exactly, so when the local reply HAS one
+        // that is the only test — falling back to content as well would let a
+        // stale snapshot row with identical text (a different row, different id)
+        // match and drop the newest reply. Content equality is only for a reply
+        // that has no id yet: streamed in this session and never reloaded, so the
+        // server history cannot hold it under a different id anyway.
+        //
+        // Preferring the id also survives the redaction asymmetry: this endpoint
+        // redacts on emit (chat_utils._prepare_messages) while the streamed copy
+        // is raw, so one row legitimately arrives with different bytes.
+        const localMid = lastLocal?.meta?.mid
+        const serverHasLastLocal = !!lastLocal && (
+          typeof localMid === 'string' && !!localMid
+            ? preserved.some(m => m.role === 'assistant' && m.meta?.mid === localMid)
+            : preserved.some(m => m.role === 'assistant' && m.content === lastLocal.content)
+        )
         if (
           state._wsChunkedDuringFetch
           && lastLocal?.role === 'streaming'
@@ -2289,15 +2391,17 @@ const chatSlice = createSlice({
           lastLocal
           && (lastLocal.role === 'assistant' || lastLocal.role === 'streaming')
           && !!lastLocal.content && lastLocal.content.length > 0
-          && !preserved.some(m => m.role === 'assistant' && m.content === lastLocal.content)
+          && !serverHasLastLocal
         ) {
           // The HTTP fetch resolved with a history that predates the reply we
           // already finalized locally (via applyNonActiveFrame while this slot
           // was backgrounded). Blindly replacing with the server response here
           // is the "switch away and back drops the latest response" regression.
           // Keep the server history but re-attach the local trailing reply.
-          // Guarded by the content check above so we never duplicate a reply
-          // the server already returned.
+          // Guarded by serverHasLastLocal above (row id, else exact content) so
+          // we never duplicate a reply the server already returned, and never
+          // drop a genuinely newer one: a different row has a different id, and
+          // the content fallback stays EXACT rather than fuzzy.
           //
           // Only finalize a still-'streaming' partial to 'assistant' when the
           // turn is NOT still running. If the slot is still streaming

@@ -428,6 +428,12 @@ _SESSION_RECYCLED_NOTICE = (
     "Conversation history is preserved — your next message starts a fresh process."
 )
 _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles performance
+
+#: Roles that exist only on the wire: appended so a reader/flush can see them,
+#: never broadcast as a `chat_message` and never persisted (the mirror of
+#: ``chat_persistence._TRANSIENT_ROLES`` minus the rows that ARE broadcast).
+#: They get no ``meta.mid`` — see ``_ChatSlot.append``.
+_WIRE_ONLY_ROLES = frozenset({"chunk", "done", "streaming"})
 _MAX_SOURCE_LINKS_PER_SLOT = 64
 # How many source links each slot payload actually serializes (the sidebar
 # renders at most this many chips). Shared with the periodic check-status
@@ -1225,6 +1231,40 @@ class _ChatSlot:
         }
         if meta:
             msg["meta"] = meta
+        # Stamp a per-row delivery identity. A client sees the SAME row through
+        # two doors — the slot-detail HTTP rebuild and the live `chat_message`
+        # broadcast — and must be able to tell "this row again" from "another row
+        # that happens to look identical". `ts` cannot answer that: a coarse OS
+        # clock stamps two rows appended in the same tick identically (the same
+        # collision mergePreservedClientTs already guards), and content cannot
+        # either, since two identical messages are legitimate. So identity is an
+        # explicit id, minted once here, carried on the message dict, and thus
+        # present on every path that ships it: persisted by _build_message_entry,
+        # restored with the rest of `meta`, broadcast as `payload["meta"]`, and
+        # returned by _prepare_messages.
+        #
+        # Random rather than a per-slot counter deliberately: a counter rebased
+        # after a restore could reissue an id a restored row already holds, and a
+        # colliding id makes a client DROP a real message. There is no such
+        # failure mode for a random id.
+        #
+        # A caller-supplied `mid` (a row replayed from disk) is preserved — the
+        # id must survive the round trip or a post-restart redelivery of that row
+        # would not be recognisable.
+        #
+        # Skipped for the wire-only roles: `chunk` is appended once per streamed
+        # token and `done`/`streaming` are internal markers. None of them is ever
+        # broadcast as a `chat_message` (the broadcast below excludes them) or
+        # persisted (`_TRANSIENT_ROLES`), so an id would buy nothing and cost a
+        # uuid4 plus a dict on the hottest path in the runner.
+        if role not in _WIRE_ONLY_ROLES and not (
+            isinstance(msg.get("meta"), dict) and msg["meta"].get("mid")
+        ):
+            existing = msg.get("meta")
+            msg["meta"] = {
+                **(existing if isinstance(existing, dict) else {}),
+                "mid": f"m-{uuid.uuid4().hex[:16]}",
+            }
         self.messages.append(msg)
         self.invalidate_source_links()
         self.total_messages += 1

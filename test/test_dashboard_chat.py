@@ -8050,29 +8050,39 @@ class TestForkSlot:
         visible = [m for m in new_slot.messages if m["role"] in ("user", "assistant")]
         assert len(visible) == 2
 
-        # User message: meta.paste_refs survived
+        # User message: meta.paste_refs survived. Compared as a subset, not an
+        # exact dict: `_ChatSlot.append` also stamps `meta.mid` (the per-row
+        # delivery identity) on every persisted row, so an equality assertion
+        # here would be asserting the absence of that id rather than the survival
+        # of the caller's keys, which is what this regression is about.
         assert visible[0]["role"] == "user"
-        assert visible[0].get("meta") == {
-            "paste_refs": ["ref-abc123"]
-        }, f"Fork dropped user meta. Got: {visible[0].get('meta')!r}"
+        user_meta = visible[0].get("meta") or {}
+        assert user_meta.get("paste_refs") == [
+            "ref-abc123"
+        ], f"Fork dropped user meta. Got: {visible[0].get('meta')!r}"
 
         # Assistant message: meta.knowledge_chips survived
         assert visible[1]["role"] == "assistant"
-        assert visible[1].get("meta") == {
-            "knowledge_chips": [{"id": "kb-42", "title": "Cite-X"}]
-        }, f"Fork dropped assistant meta. Got: {visible[1].get('meta')!r}"
+        assistant_meta = visible[1].get("meta") or {}
+        assert assistant_meta.get("knowledge_chips") == [
+            {"id": "kb-42", "title": "Cite-X"}
+        ], f"Fork dropped assistant meta. Got: {visible[1].get('meta')!r}"
 
     @pytest.mark.asyncio
     async def test_fork_handles_messages_without_meta(self, tmp_path):
-        # The mirror of test_fork_preserves_meta: messages with no meta dict
-        # must NOT acquire a spurious meta=None or meta={} after fork. Guards
-        # against regressions where the fix accidentally added empty meta to
-        # every copied message.
+        # The mirror of test_fork_preserves_meta: fork must not INVENT meta keys
+        # the parent row did not have. Since `_ChatSlot.append` now stamps
+        # `meta.mid` on every row, "no meta at all" is no longer the observable
+        # invariant; the equivalent one is that the forked row's meta matches the
+        # parent's exactly -- nothing added, nothing dropped.
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src")
         slot.append("user", "plain msg", "msg msg-u")
         slot.append("assistant", "plain reply", "msg msg-a")
         slot.drain()
+        parent_meta = [
+            m.get("meta") for m in slot.messages if m["role"] in ("user", "assistant")
+        ]
 
         app = _make_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -8082,11 +8092,11 @@ class TestForkSlot:
 
         new_slot = state._slots.get(data["key"])
         visible = [m for m in new_slot.messages if m["role"] in ("user", "assistant")]
-        # No spurious "meta" key should appear when the parent had none.
-        for m in visible:
+        assert len(visible) == len(parent_meta)
+        for m, expected in zip(visible, parent_meta):
             assert (
-                "meta" not in m
-            ), f"Fork added spurious meta to a message without meta. Got: {m!r}"
+                m.get("meta") == expected
+            ), f"Fork changed a message's meta. Got: {m.get('meta')!r}, want: {expected!r}"
 
     @pytest.mark.asyncio
     async def test_fork_not_found(self, tmp_path):
