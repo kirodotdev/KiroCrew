@@ -728,6 +728,45 @@ def is_wsl() -> bool:
         return False
 
 
+@functools.lru_cache(maxsize=1)
+def is_docker_container() -> bool:
+    """Public: True if this process is running inside a Docker/OCI container.
+
+    Centralized host probe (parallel to :func:`is_wsl`) so consumers never
+    re-implement container detection.  Used by :func:`wrap_argv` to produce an
+    actionable error message when ``unshare(CLONE_NEWUSER)`` is blocked by the
+    container runtime's seccomp/AppArmor policy instead of a kernel-level
+    user-namespace restriction — the two cases warrant different remedies.
+
+    Detection order (cheap, no I/O on fast paths):
+
+    1. ``/.dockerenv`` — Docker daemon creates this in every container.
+    2. ``/run/.containerenv`` — Podman's equivalent OCI marker.
+    3. ``CONTAINER=oci`` env var — set by Podman rootless and some runtimes.
+    4. ``/proc/1/cgroup`` — contains ``docker``, ``containerd``, or
+       ``kubepods`` in container-managed cgroups; also fires in nested
+       Docker-in-Docker setups.
+
+    Result is cached — the container context does not change within a process.
+    Always False off Linux.
+    """
+    if sys.platform != "linux":
+        return False
+    # Fast path: Docker always creates /.dockerenv; Podman creates /run/.containerenv.
+    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+        return True
+    # Podman rootless and some OCI runtimes export CONTAINER=oci.
+    if os.environ.get("CONTAINER") == "oci":
+        return True
+    # Fallback: inspect the cgroup hierarchy for well-known runtime markers.
+    try:
+        with open("/proc/1/cgroup", encoding="utf-8", errors="replace") as fh:
+            content = fh.read().lower()
+        return "docker" in content or "containerd" in content or "kubepods" in content
+    except OSError:
+        return False
+
+
 def _probe_sandbox_exec() -> bool:
     """Return True if macOS ``sandbox-exec`` actually works.
 
@@ -2406,6 +2445,36 @@ def wrap_argv(
                     "sandboxes (e.g. an operator-wrapped gateway) hit the same "
                     "nesting limit — see docs/system-specs/modules/security.md "
                     '("macOS marker site and the kernel cross-check"). '
+                )
+            elif is_docker_container():
+                # Inside a Docker/OCI container the runtime's seccomp or
+                # AppArmor policy blocked unshare(CLONE_NEWUSER).  This is a
+                # container-policy restriction, NOT a kernel-level limitation
+                # on the host — the correct fix is at the container level, not
+                # disabling the sandbox everywhere.
+                guidance = (
+                    "Running inside a Docker/OCI container where the runtime's "
+                    "seccomp or AppArmor policy blocks user namespace creation "
+                    f"(probe: {probe_reason}). "
+                    "This is a container policy restriction, not a host kernel "
+                    "limitation. To resolve, choose one of:\n"
+                    "  (a) Use the Kiro Crew custom seccomp profile (adds "
+                    "unconditional unshare/clone/mount allows to the Docker "
+                    "default — less permissive than seccomp=unconfined):\n"
+                    "        # With a repo checkout:\n"
+                    "        docker run --security-opt "
+                    "seccomp=docker/seccomp/kirocrew-seccomp.json ...\n"
+                    "        # Without a checkout (image-only):\n"
+                    "        curl -fsSL https://raw.githubusercontent.com/"
+                    "kirodotdev/KiroCrew/main/docker/seccomp/kirocrew-seccomp.json"
+                    " -o kirocrew-seccomp.json\n"
+                    "        docker run --security-opt seccomp=kirocrew-seccomp.json ...\n"
+                    "  (b) Restart with explicit unsandboxed consent "
+                    "(the container is then the only isolation boundary):\n"
+                    "        docker run -e KIROCREW_ALLOW_UNSANDBOXED=1 ...\n"
+                    "  (c) Manually set agent.sandbox_allow_unsandboxed_exec=true "
+                    "in ~/.kiro/crew/config.json inside the container.\n"
+                    "See docs/guides/docker.md for the full sandbox troubleshooting guide."
                 )
             else:
                 guidance = (
