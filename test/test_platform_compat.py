@@ -598,19 +598,26 @@ class TestProcessIdentityPosix:
         # "Python". Production needles ("kiro-cli", "claude") appear verbatim in
         # the argv they guard, so only the test's choice of needle was fragile.
         token = "kirocrew-procmatch-probe"
+        # Use a readiness pipe: the child signals after exec completes, so we
+        # never race /proc/<pid>/cmdline population on a loaded runner.
         child = subprocess.Popen(
-            [sys.executable, "-c", f"import time; time.sleep(30)  # {token}"],
+            [
+                sys.executable, "-c",
+                f"import sys, time; sys.stdout.write('R'); sys.stdout.flush(); "
+                f"time.sleep(30)  # {token}",
+            ],
             start_new_session=True,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
         try:
-            assert child.poll() is None  # alive
-            # Poll: a just-spawned child's /proc/<pid>/cmdline (or ps output) is
-            # not populated until it finishes exec'ing, so an immediate single
-            # check races the scheduler on a loaded runner. Wait for the match
-            # with a generous deadline rather than asserting once.
+            # Wait for the readiness byte (generous timeout for slow CI).
+            ready = child.stdout.read(1)
+            assert ready == b"R", f"child did not signal readiness: {ready!r}"
+            assert child.poll() is None  # still alive after signalling
             if pc.IS_POSIX:
+                # /proc/<pid>/cmdline is guaranteed populated after exec, but
+                # keep a short retry for edge cases on exotic kernels.
                 deadline = time.monotonic() + 10.0
                 result = pc.process_matches(child.pid, (token,))
                 while not result and time.monotonic() < deadline:
