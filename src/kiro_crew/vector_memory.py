@@ -1317,6 +1317,35 @@ class VectorMemoryStore:
             )
 
     @timed("vector", "search")
+    def _episodic_relevance_threshold(self, text: str) -> float:
+        """Minimum RAW cosine for a memory to be admitted as relevant context.
+
+        Long texts dilute cosine similarity, so the gate relaxes above the
+        long-text cutoff.
+        """
+        return (
+            _EPISODIC_LONG_TEXT_THRESHOLD
+            if len(text) > _EPISODIC_LONG_TEXT_CHARS
+            else _EPISODIC_RELEVANCE_THRESHOLD
+        )
+
+    def _filter_by_relevance(self, candidates: list[dict]) -> list[dict]:
+        """Drop candidates below the length-aware raw-cosine relevance gate.
+
+        Admission reads the raw ``cosine_sim``, never the decay-adjusted
+        ``score``, and runs BEFORE ranking/MMR/truncation so a highly relevant
+        but old memory is admitted rather than ordered past ``limit`` by a
+        cluster of recent-but-irrelevant rows (which the gate then removes,
+        leaving nothing). Rows without a ``cosine_sim`` (keyword fallback) were
+        never scored on cosine, so the gate does not apply to them.
+        """
+        return [
+            c
+            for c in candidates
+            if "cosine_sim" not in c
+            or c["cosine_sim"] >= self._episodic_relevance_threshold(c.get("text", ""))
+        ]
+
     def search_episodic(
         self,
         query_embedding: list[float] | None = None,
@@ -1324,6 +1353,7 @@ class VectorMemoryStore:
         limit: int = 8,
         mmr: bool = True,
         tag_filter: list[str] | None = None,
+        relevance_filter: bool = False,
     ) -> list[dict]:
         """Search episodic memories by vector similarity with decay scoring.
 
@@ -1331,6 +1361,10 @@ class VectorMemoryStore:
         reranking to balance relevance with diversity.
         When ``tag_filter`` is provided, only entries matching ANY of the
         given tags are returned.
+        When ``relevance_filter=True``, candidates below the raw-cosine
+        relevance gate are dropped BEFORE ranking, so recency cannot order a
+        relevant match out of the result. Defaults to False so dashboard/API/CLI
+        callers still receive the full ranked set.
         Falls back to FTS5 text search if no embedding provided.
         """
         if (
@@ -1387,6 +1421,8 @@ class VectorMemoryStore:
                         {**mem, "score": round(score, 4), "cosine_sim": round(cosine_sim, 4)}
                     )
 
+            if relevance_filter:
+                candidates = self._filter_by_relevance(candidates)
             candidates.sort(key=lambda x: x["score"], reverse=True)
             result = _mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
 
@@ -1404,7 +1440,12 @@ class VectorMemoryStore:
         # Fallback 1: stdlib cosine search over SQLite embeddings (no FAISS/numpy needed)
         if query_embedding is not None:
             return self._sqlite_vector_search(
-                query_embedding, query_text, limit, mmr=mmr, tag_filter=tag_filter
+                query_embedding,
+                query_text,
+                limit,
+                mmr=mmr,
+                tag_filter=tag_filter,
+                relevance_filter=relevance_filter,
             )
 
         # Fallback 2: FTS5 keyword search (no embeddings — MMR not useful here)
@@ -1422,6 +1463,7 @@ class VectorMemoryStore:
         limit: int,
         mmr: bool = True,
         tag_filter: list[str] | None = None,
+        relevance_filter: bool = False,
     ) -> list[dict]:
         """Cosine similarity search using embeddings stored in SQLite (stdlib only)."""
         import struct
@@ -1480,6 +1522,8 @@ class VectorMemoryStore:
                 }
             )
 
+        if relevance_filter:
+            candidates = self._filter_by_relevance(candidates)
         candidates.sort(key=lambda x: x["score"], reverse=True)
         result = _mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
         # Same lock discipline as the FAISS path in search_episodic. This UPDATE
@@ -1531,31 +1575,23 @@ class VectorMemoryStore:
     ) -> str:
         """Format episodic search results for prompt injection.
 
-        When vector search is used, results below ``_EPISODIC_RELEVANCE_THRESHOLD``
-        cosine similarity are filtered out to avoid injecting irrelevant context.
+        Results below the length-aware cosine relevance gate are dropped by
+        ``search_episodic(relevance_filter=True)`` BEFORE decay ranking, so a
+        relevant-but-old memory is admitted rather than ordered out by recency.
         """
         if query_embedding is None and query_text and self.embed_fn is not None:
             query_embedding = self._try_embed(query_text)
         results = self.search_episodic(
-            query_embedding=query_embedding, query_text=query_text, limit=self._episodic_limit
+            query_embedding=query_embedding,
+            query_text=query_text,
+            limit=self._episodic_limit,
+            relevance_filter=True,
         )
         if not results:
             return ""
         lines: list[str] = []
         total = 0
         for i, r in enumerate(results, 1):
-            # Filter low-relevance results when vector scores are available.
-            # Longer texts produce lower cosine scores (embedding dilution),
-            # so we relax the threshold for entries above _EPISODIC_LONG_TEXT_CHARS.
-            if "cosine_sim" in r:
-                text_len = len(r.get("text", ""))
-                threshold = (
-                    _EPISODIC_LONG_TEXT_THRESHOLD
-                    if text_len > _EPISODIC_LONG_TEXT_CHARS
-                    else _EPISODIC_RELEVANCE_THRESHOLD
-                )
-                if r["cosine_sim"] < threshold:
-                    continue
             text = r["text"][:1500]
             line = f"{i}. {text}"
             if total + len(line) > cap:
