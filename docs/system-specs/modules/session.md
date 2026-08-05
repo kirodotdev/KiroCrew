@@ -755,7 +755,15 @@ In-place compaction (both backends) keeps the `_sessions` entry healthy:
 a concurrent `get_or_create()` reuses it, queueing on the session
 semaphore behind the compact, then continues on the compacted session.
 
-Only the kiro-cli recycle fallback tears the entry down. It records the
+Only the kiro-cli failure recycle tears the entry down, and it runs inside
+`_compact_in_place` under the turn semaphore that the compact attempt
+already holds — never after releasing it. That is load-bearing: releasing
+first and re-acquiring for the recycle leaves a gap a queued turn wins, and
+that turn is then dispatched into a kiro-cli still finishing its compaction,
+receives the late `completed` status instead of an `end_turn`, and hangs
+holding the semaphore until the prompt timeout.
+
+The recycle records the
 exact session object under teardown in `_recycling` (distinct from
 `_compacting`, which is just the trigger dedup gate): `get_or_create()`
 skips reuse only when the map still holds that exact object, then
