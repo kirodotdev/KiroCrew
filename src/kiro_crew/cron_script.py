@@ -654,7 +654,7 @@ def run_script_sandboxed(
                 # Popen.communicate does not kill the child on timeout
                 # (unlike subprocess.run) — clean up before re-raising.
                 _kill_proc_group(proc)
-                proc.communicate()
+                proc.communicate(timeout=5)
                 raise
         finally:
             cancelled = _unregister_proc(job_id, proc)
@@ -783,7 +783,7 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
                 output, stderr_out = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 _kill_proc_group(proc)
-                proc.communicate()
+                proc.communicate(timeout=5)
                 return {"status": "error", "output": f"❌ Command timed out after {timeout}s", "exit_code": -1}
         finally:
             if job_id:
