@@ -14,19 +14,86 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-// The single definition of "this LISTEN owner is one of ours". Shared by
-// forceStopPort (which may only ever SIGKILL our own processes) and
-// classifyPortOwner (which may only ever authorise an eviction of one).
-// Keep it in one place: a drift between the two would let one of them
-// mis-target a stranger's process.
-// Match a Kiro Crew PROCESS from a command line, not a mere path substring.
-// Two shapes only: the `kirocrew`/`kirocrew-backend` executable as a command
-// token (optionally `.exe`, ending at whitespace/quote/EOL — so a
-// `/Users/kirocrew/…` or `C:\Users\kirocrew\other.exe` user directory does NOT
-// match), or the `-m kiro_crew` python-module invocation. Anything else (an ssh
-// forward, an unrelated app under a `kirocrew` home dir) is foreign.
-const KIROCREW_PROC_RE =
-  /(?:^|[\s"'/\\])kirocrew(?:-backend)?(?:\.exe)?(?=$|[\s"'])|-m\s+kiro_crew(?=$|[\s"'.])/i;
+const KIROCREW_EXE_NAMES = new Set(["kirocrew", "kirocrew-backend"]);
+const PYTHON_EXE_RE = /^(?:python(?:\d+(?:\.\d+)*)?w?|py)$/i;
+
+function commandLineTokens(commandLine) {
+  const tokens = [];
+  const input = String(commandLine || "").replace(/^\s*CommandLine=/i, "").trim();
+  const tokenRe = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match;
+  while ((match = tokenRe.exec(input)) !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3]);
+  }
+  return tokens;
+}
+
+function executableName(token) {
+  const basename = String(token || "").replace(/\\/g, "/").split("/").pop().toLowerCase();
+  return basename.endsWith(".exe") ? basename.slice(0, -4) : basename;
+}
+
+function normalizedWindowsPath(token) {
+  return String(token || "").replace(/\//g, "\\").toLowerCase();
+}
+
+function normalizedWindowsAbsolutePath(token) {
+  const value = String(token || "").replace(/\//g, "\\");
+  if (!/^(?:[A-Za-z]:\\|\\\\)/.test(value)) return "";
+  return path.win32.normalize(value).toLowerCase();
+}
+
+/**
+ * Match only a Kiro Crew executable, or a Python process whose first execution
+ * selector invokes the `kiro_crew` module or a Kiro Crew script. Later process
+ * arguments never establish ownership, so SSH aliases and unrelated script
+ * arguments cannot authorize a kill. Absolute Windows executables must also
+ * match the exact path selected by the launch resolver.
+ */
+function isKirocrewCommand(commandLine, { trustedExecutablePaths = [] } = {}) {
+  const tokens = commandLineTokens(commandLine);
+  if (!tokens.length) return false;
+
+  const windowsExecutablePath = normalizedWindowsAbsolutePath(tokens[0]);
+  if (windowsExecutablePath) {
+    const trusted = new Set(
+      trustedExecutablePaths
+        .map(normalizedWindowsAbsolutePath)
+        .filter(Boolean)
+    );
+    if (!trusted.has(windowsExecutablePath)) return false;
+  }
+
+  const ownerExecutable = executableName(tokens[0]);
+  if (KIROCREW_EXE_NAMES.has(ownerExecutable)) return true;
+  if (!PYTHON_EXE_RE.test(ownerExecutable)) return false;
+
+  let index = 1;
+  // Windows process identity prefixes ExecutablePath to the OS command line.
+  // Skip that exact duplicate without skipping a Python-named script argument.
+  if (normalizedWindowsPath(tokens[index]) === normalizedWindowsPath(tokens[0])) {
+    index += 1;
+  }
+
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === "-m") return tokens[index + 1] === "kiro_crew";
+    if (token === "-c" || token === "-") return false;
+    if (token === "--") {
+      index += 1;
+      break;
+    }
+    if (token === "-W" || token === "-X") {
+      index += 2;
+      continue;
+    }
+    if (!token.startsWith("-")) break;
+    index += 1;
+  }
+
+  const script = tokens[index];
+  return /[\\/]/.test(script || "") && KIROCREW_EXE_NAMES.has(executableName(script));
+}
 
 // A gateway whose parent is init (PID 1) is owned by the OS service manager —
 // a launchd LaunchAgent on macOS, a systemd unit on Linux — not by this app.
@@ -163,6 +230,9 @@ async function stopGatewayGracefully(
  * `freed === false` means a respawn would just fail to bind — the caller MUST
  * NOT respawn; it should tell the user a restart is required (`survivors`, an
  * unkillable wedge) or that another app holds the port (`foreignHolder`).
+ * With `failClosedOnProbeError`, an unavailable owner probe returns
+ * `probeFailed:true, freed:false` instead of throwing or claiming the port is
+ * free. Windows uses this because netstat failures must block a blind respawn.
  *
  * All side effects are injected so this is unit-testable without Electron or a
  * real OS process:
@@ -171,7 +241,7 @@ async function stopGatewayGracefully(
  *   - kill(pid, signal)                          (process.kill; may throw)
  *   - sleep(ms)           -> Promise<void>
  *
- * @returns {Promise<{killed:number, freed:boolean, survivors:number[], foreignHolder:boolean}>}
+ * @returns {Promise<{killed:number, freed:boolean, survivors:number[], foreignHolder:boolean, probeFailed?:boolean}>}
  */
 async function forceStopPort(
   port,
@@ -181,13 +251,24 @@ async function forceStopPort(
     kill,
     sleep,
     getPpid = null,
-    isKirocrew = KIROCREW_PROC_RE,
+    isKirocrew = isKirocrewCommand,
     verifyTimeoutMs = 4000,
     pollIntervalMs = 250,
+    failClosedOnProbeError = false,
     log = () => {},
   }
 ) {
-  const owners = await getListenPids(port);
+  let owners;
+  try {
+    owners = await getListenPids(port);
+  } catch (e) {
+    if (!failClosedOnProbeError) throw e;
+    log(`force-stop: LISTEN probe failed on :${port} (${e && e.message})`);
+    return {
+      killed: 0, freed: false, survivors: [], foreignHolder: false,
+      serviceHolder: false, probeFailed: true,
+    };
+  }
   if (!owners.length) {
     log(`force-stop: no LISTEN owner found on :${port}`);
     return { killed: 0, freed: true, survivors: [], foreignHolder: false, serviceHolder: false };
@@ -199,7 +280,8 @@ async function forceStopPort(
   let serviceHolder = false;
   for (const pid of owners) {
     const cmd = (await getCommand(pid)).trim();
-    if (isKirocrew.test(cmd)) {
+    const ours = isKirocrew(cmd);
+    if (ours) {
       // A service-managed gateway is respawned by launchd/systemd the moment we
       // kill it, so evicting it cannot free the port — it only makes the retry
       // race the respawn. Leave it alone and tell the caller why.
@@ -209,7 +291,7 @@ async function forceStopPort(
         continue;
       }
       try {
-        kill(pid, "SIGKILL");
+        await kill(pid, "SIGKILL");
         targets.push(pid);
         log(`force-stop: SIGKILL pid=${pid} (${cmd.slice(0, 80)})`);
       } catch (e) {
@@ -231,7 +313,16 @@ async function forceStopPort(
   while (survivors.length && waited < deadline) {
     await sleep(pollIntervalMs);
     waited += pollIntervalMs;
-    remaining = new Set(await getListenPids(port));
+    try {
+      remaining = new Set(await getListenPids(port));
+    } catch (e) {
+      if (!failClosedOnProbeError) throw e;
+      log(`force-stop: verify LISTEN probe failed on :${port} (${e && e.message})`);
+      return {
+        killed, freed: false, survivors: [], foreignHolder: false,
+        serviceHolder, probeFailed: true,
+      };
+    }
     survivors = survivors.filter((pid) => remaining.has(pid));
   }
 
@@ -239,7 +330,16 @@ async function forceStopPort(
   // loop above didn't re-probe — do one explicit check so `freed` reflects the
   // real port state instead of vacuously claiming free because WE killed nothing.
   if (!targets.length) {
-    remaining = new Set(await getListenPids(port));
+    try {
+      remaining = new Set(await getListenPids(port));
+    } catch (e) {
+      if (!failClosedOnProbeError) throw e;
+      log(`force-stop: verify LISTEN probe failed on :${port} (${e && e.message})`);
+      return {
+        killed, freed: false, survivors: [], foreignHolder: false,
+        serviceHolder, probeFailed: true,
+      };
+    }
   }
 
   // `freed` means the port is genuinely free, NOT just "our targets died". A
@@ -272,7 +372,7 @@ async function forceStopPort(
  *
  * Deliberately fail-safe: every outcome except a positively identified local
  * KiroCrew process is a reason NOT to evict.
- *   "kirocrew" — a local LISTEN owner matching KIROCREW_PROC_RE. Only this
+ *   "kirocrew" — a local LISTEN owner matching isKirocrewCommand. Only this
  *                value may authorise a takeover.
  *   "foreign"  — a local LISTEN owner exists but is not ours (e.g. `ssh`).
  *   "none"     — nothing is listening locally, yet something answered. A race,
@@ -291,7 +391,7 @@ async function forceStopPort(
  */
 async function classifyPortOwner(
   port,
-  { getListenPids, getCommand, getPpid = null, isKirocrew = KIROCREW_PROC_RE, log = () => {} }
+  { getListenPids, getCommand, getPpid = null, isKirocrew = isKirocrewCommand, log = () => {} }
 ) {
   let pids;
   try {
@@ -306,7 +406,8 @@ async function classifyPortOwner(
   }
   for (const pid of pids) {
     const cmd = (await getCommand(pid)).trim();
-    if (isKirocrew.test(cmd)) {
+    const ours = isKirocrew(cmd);
+    if (ours) {
       if (await isServiceManaged(pid, getPpid)) {
         log(`port-owner: :${port} held by SERVICE-MANAGED KiroCrew pid=${pid} (${cmd.slice(0, 80)}) — reuse, never evict`);
         return "service";
@@ -344,6 +445,6 @@ module.exports = {
   forceStopPort,
   classifyPortOwner,
   isServiceManaged,
-  KIROCREW_PROC_RE,
+  isKirocrewCommand,
   INIT_PPID,
 };
