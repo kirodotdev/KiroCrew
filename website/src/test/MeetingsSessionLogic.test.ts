@@ -23,6 +23,7 @@ const TranscriptionSource = readFileSync(
   'src/apps/meetings/hooks/useMeetingTranscription.ts', 'utf-8',
 )
 const SessionSource = readFileSync('src/apps/meetings/hooks/useMeetingSession.ts', 'utf-8')
+const SettingsSource = readFileSync('src/apps/meetings/SettingsView.tsx', 'utf-8')
 
 const AGENTS: AgentDef[] = [
   { id: 'note-taker', name: 'Note Taker', widget_type: 'markdown', enabled_by_default: true },
@@ -443,6 +444,22 @@ describe('settings saves cannot revert each other', () => {
 
   it('a failed save does not wedge the chain', () => {
     expect(settings).toMatch(/\.catch\(\(\) => undefined\)/)
+  })
+})
+
+describe('settings layout remains scrollable', () => {
+  it('keeps cards out of a shrinking flex column', () => {
+    // Cards hide overflow for their glow treatment. Making them flex items lets
+    // the browser shrink each card to the viewport, clipping its contents while
+    // leaving the scroll container with no overflow to scroll.
+    const scrollContainer = SettingsSource.match(
+      /<div className="([^"]*overflow-y-auto[^"]*)">/,
+    )
+
+    expect(scrollContainer).not.toBeNull()
+    expect(scrollContainer![1]).toContain('flex-1 min-h-0')
+    expect(scrollContainer![1]).not.toMatch(/(?:^|\s)flex(?:\s|$)/)
+    expect(scrollContainer![1]).not.toContain('flex-col')
   })
 })
 
